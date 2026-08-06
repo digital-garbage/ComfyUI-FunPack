@@ -487,6 +487,26 @@ def test_a_project_with_its_own_loaders_keeps_its_silence(monkeypatch):
     assert _project_models(p).get("model_family") is None
 
 
+def test_a_project_wired_to_ltx_only_core_nodes_is_never_flipped(monkeypatch):
+    """The case that decided the hold-back rule, as a fixture rather than a live project.
+
+    `core_overrides` on concat/audiodec means LTXVConcatAVLatent and LTXVAudioVAEDecode —
+    both dropped from H3's core. Inheriting a global H3 family here would leave those
+    overrides pointing at nodes the graph never builds, which is the very failure this
+    whole change exists to stop.
+    """
+    from movie_editor.backend import nodes
+
+    monkeypatch.setattr(nodes, "load_models", lambda: {"slots": [], "model_family": "minimax_h3"})
+    p = _project(scenes=[{"id": "s1", "text": "a"}])
+    p.models = {
+        "slots": [],
+        "links": {"audiodec": {"audio_vae": "out:x:0"}},
+        "core_overrides": {"concat": {}, "audiodec": {}},
+    }
+    assert _project_models(p).get("model_family") is None
+
+
 def test_inheriting_the_family_does_not_mutate_the_stored_project(monkeypatch):
     from movie_editor.backend import nodes
 
