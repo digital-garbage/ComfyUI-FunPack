@@ -78,18 +78,25 @@
 
   // ── FunPack Studio: refiner fields ─────────────────────────────────────────
   const STUDIO_REFINER_ESSENTIALS = [
-    { name: "vision_conditioning", label: "Vision conditioning", default: true },
-    { name: "reference_injection", label: "Reference injection", default: false },
+    { name: "vision_conditioning", label: "Vision conditioning", default: true,
+      hint: "Lets Studio look at your anchor image and write what it sees into the prompt. Turn it off if the prompt should stand on its own." },
+    { name: "reference_injection", label: "Reference injection", default: false,
+      hint: "Pushes the reference image's own attention into the identity blocks while sampling, so the face holds harder. Only does something on i2v scenes that have a source image." },
   ];
   const STUDIO_REFINER_ADVANCED = [
-    { name: "value_guidance", label: "Value guidance", kind: "bool", default: true },
-    { name: "steer_mode", label: "Steer mode", kind: "combo", choices: ["relative", "absolute", "both"], default: "relative" },
+    { name: "value_guidance", label: "Value guidance", kind: "bool", default: true,
+      hint: "Moves the prompt toward what your ratings say you like, before sampling starts. Learning happens either way — this only decides whether it gets applied." },
+    { name: "steer_mode", label: "Steer mode", kind: "combo", choices: ["relative", "absolute", "both"], default: "relative",
+      hint: "'relative' finds the best conditioning for THIS prompt; 'absolute' pulls toward your global taste whatever the prompt says; 'both' layers them." },
     { name: "absolute_strength", label: "Absolute strength", kind: "float", default: 0.6, min: 0, max: 1, step: 0.05,
-      dependsOn: "steer_mode", dependsVals: ["absolute", "both"] },
+      dependsOn: "steer_mode", dependsVals: ["absolute", "both"],
+      hint: "How hard Absolute mode pulls toward your global taste. 0.6 is visible without overriding the prompt; higher overrides it more." },
     { name: "temporal_style", label: "Temporal style", kind: "combo",
-      choices: ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse", "rapid_start", "rapid_end", "rapid_start_end"], default: "natural" },
+      choices: ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse", "rapid_start", "rapid_end", "rapid_start_end"], default: "natural",
+      hint: "Lies to the model about the frame rate to change how motion feels — faster, heavier, looping, frozen. Free. 'auto' and 'pulse' pick per scene and need the Chain Sampler." },
     { name: "split_transition_placement", label: "Transition placement", kind: "combo",
-      choices: ["start", "end", "silent"], default: "start" },
+      choices: ["start", "end", "silent"], default: "start",
+      hint: "Where a transition sentence lands when a prompt is split into scenes: the start of the next scene, the end of the previous one, or neither." },
   ];
 
   function parseStudioSettings(p) {
@@ -148,7 +155,7 @@
     const ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!cur;
     ctrl.dataset.k = "rf-" + f.name;
     ctrl.onchange = () => persistStudioRefiner({ [f.name]: ctrl.checked }, true);
-    parentGroup.append(toggleField(f.label, ctrl));
+    parentGroup.append(toggleField(f.label, ctrl, f.hint));
   }
 
   function renderStudioRefinerField(parentGroup, rf, f) {
@@ -174,54 +181,87 @@
       ctrl.value = val; ctrl.dataset.k = "rf-" + f.name;
       ctrl.oninput = () => persistStudioRefiner({ [f.name]: parseFloat(ctrl.value || "0") }, false);
     }
-    parentGroup.append(field(f.label, ctrl));
+    parentGroup.append(field(f.label, ctrl, f.hint, f.detail));
   }
 
   // ── Chain Sampler knobs ────────────────────────────────────────────────────
   const SAMPLER_KNOBS = [
-    { name: "frame_overlap",         label: "Frame overlap",         kind: "int",   default: 16,    min: 0, max: 512, step: 8 },
-    { name: "transition_duration",   label: "Transition duration",   kind: "int",   default: 16,    min: 0, max: 128, step: 2 },
-    { name: "use_same_seed",         label: "Same seed per scene",   kind: "bool",  default: false },
-    { name: "carry_i2v_guides",      label: "Carry i2v guides",      kind: "bool",  default: false, lockMulti: true },
-    { name: "cfg",                   label: "CFG",                   kind: "float", default: 1.0,   min: 0, max: 20,  step: 0.1 },
-    { name: "embed_guidance",        label: "Embed guidance",        kind: "bool",  default: false },
-    { name: "embed_guidance_source", label: "Embed mode",            kind: "combo", choices: ["relative", "absolute"], default: "relative", dependsOn: "embed_guidance" },
-    { name: "embed_guidance_strength", label: "Embed strength",      kind: "float", default: 0.02,  min: 0.005, max: 0.1, step: 0.005, dependsOn: "embed_guidance" },
-    { name: "score_slider",          label: "Score slider",          kind: "bool",  default: false },
-    { name: "score_slider_strength", label: "Slider strength (eta)", kind: "float", default: 1.0,   min: 0, max: 3, step: 0.25, dependsOn: "score_slider" },
+    { name: "frame_overlap",         label: "Frame overlap",         kind: "int",   default: 16,    min: 0, max: 512, step: 8,
+      hint: "Copies this many frames from the previous scene into the next one so the join doesn't show. 0 turns blending off, which is known to look bad together with Carry i2v guides." },
+    { name: "transition_duration",   label: "Transition duration",   kind: "int",   default: 16,    min: 0, max: 128, step: 2,
+      hint: "Adds this much extra fade on each side of a scene boundary. 0 turns every transition effect off." },
+    { name: "use_same_seed",         label: "Same seed per scene",   kind: "bool",  default: false,
+      hint: "Gives every scene the same seed instead of one each. Makes scenes resemble each other more, and makes the run repeatable when you also set a fixed seed below." },
+    { name: "carry_i2v_guides",      label: "Carry i2v guides",      kind: "bool",  default: false, lockMulti: true,
+      hint: "Shows each scene the protected frames of the one before it, so the look carries down the chain. Costs guide tokens (slightly slower scenes)." },
+    { name: "cfg",                   label: "CFG",                   kind: "float", default: 1.0,   min: 0, max: 20,  step: 0.1,
+      hint: "How hard the model is pushed toward the prompt. LTX and H3 are distilled and want 1.0 — raising it burns the image instead of improving prompt-following." },
+    { name: "embed_guidance",        label: "Embed guidance",        kind: "bool",  default: false,
+      hint: "Nudges every step toward what your ratings say you like. Costs 20-30% more time, and only does something with a refinement key and enough liked generations to have learned a direction." },
+    { name: "embed_guidance_source", label: "Embed mode",            kind: "combo", choices: ["relative", "absolute"], default: "relative", dependsOn: "embed_guidance",
+      hint: "Which learned direction to use: 'relative' is what worked for prompts like this one, 'absolute' is your overall taste regardless of prompt." },
+    { name: "embed_guidance_strength", label: "Embed strength",      kind: "float", default: 0.02,  min: 0.005, max: 0.1, step: 0.005, dependsOn: "embed_guidance",
+      hint: "How hard each step is nudged. It applies at every step so it compounds — 0.01-0.03 is the usable band, above that the prompt starts losing." },
+    { name: "score_slider",          label: "Score slider",          kind: "bool",  default: false,
+      hint: "A stronger version of Embed guidance that steers the prediction itself instead of the prompt. Doubles the cost of the late steps, needs 3+ liked generations, and affects video only." },
+    { name: "score_slider_strength", label: "Slider strength (eta)", kind: "float", default: 1.0,   min: 0, max: 3, step: 0.25, dependsOn: "score_slider",
+      hint: "How hard to push along the learned taste axis. 1.0 is a clear, safe push; up to 3.0 pushes harder; 0 is off." },
     { name: "taste_nearest_prompt",  label: "Per-prompt taste direction", kind: "bool", default: false,
       hint: "Steers each scene toward what you liked on SIMILAR prompts, instead of one global average.",
       detail: "EXPERIMENTAL: source Embed guidance / Score slider from the taste direction learned on the prompts NEAREST this scene's prompt, instead of one global liked-direction average. Each liked rating records (prompt → its liked direction); this retrieves the closest matches per scene (a forest prompt pulls what worked on forests). No extra model pass — a cosine lookup + vector mean. Falls back to the global direction when nothing rated is close. Needs Embed guidance or Score slider on. UNVALIDATED LIVE." },
-    { name: "output_guidance",       label: "Output guidance",       kind: "bool",  default: false },
-    { name: "output_guidance_strength", label: "Output guidance strength", kind: "float", default: 0.02, min: 0.005, max: 0.1, step: 0.005, dependsOn: "output_guidance" },
-    { name: "decode_noise_scale",    label: "Decode noise scale",    kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01 },
-    { name: "decode_timestep",       label: "Decode timestep",       kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01 },
-    { name: "decode_tile_size",      label: "Decode tile size",      kind: "int",   default: 0,     min: 0, max: 4096, step: 64 },
-    { name: "mid_scene_guide",       label: "Mid-scene guide",       kind: "bool",  default: false },
-    { name: "mid_scene_guide_strength", label: "Guide strength",   kind: "float", default: 0.25,  min: 0.0, max: 1.0, step: 0.05, dependsOn: "mid_scene_guide" },
-    { name: "joyai_memory",          label: "JoyAI-Echo memory",     kind: "bool",  default: false },
-    { name: "joyai_memory_size",     label: "Memory size",           kind: "int",   default: 7,     min: 1, max: 32, step: 1, dependsOn: "joyai_memory" },
-    { name: "joyai_fix_frames",      label: "Pinned anchors",        kind: "int",   default: 3,     min: 0, max: 16, step: 1, dependsOn: "joyai_memory" },
-    { name: "joyai_frame_select",    label: "Frame select",          kind: "combo", choices: ["center", "first", "random"], default: "center", dependsOn: "joyai_memory" },
-    { name: "joyai_memory_strength", label: "Memory strength",       kind: "float", default: 0.3,   min: 0.25, max: 10.0, step: 0.05, dependsOn: "joyai_memory" },
-    { name: "joyai_audio_memory",    label: "Paired audio memory",   kind: "bool",  default: false, dependsOn: "joyai_memory" },
-    { name: "v2a_grad_scale",        label: "Video→audio coupling", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.25, dependsOn: "joyai_audio_memory" },
-    { name: "alg_blur_guides",       label: "Blur i2v guides and JoyAI memory", kind: "bool", default: false },
-    { name: "alg_guide_blur_strength", label: "Guide blur strength", kind: "float", default: 2.0, min: 1.0, max: 4.0, step: 0.1, dependsOn: "alg_blur_guides" },
-    { name: "alg_guide_blur_sigma_threshold", label: "Guide blur sigma threshold", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "alg_blur_guides" },
-    { name: "bounded_attention_enabled", label: "Bounded attention (multi-subject)", kind: "bool", default: false },
-    { name: "dynashift",             label: "DynaShift (steer off bad gens)", kind: "bool", default: false },
-    { name: "dynashift_strength",    label: "DynaShift strength",    kind: "float", default: 0.3, min: 0.05, max: 1.0, step: 0.05, dependsOn: "dynashift" },
-    { name: "dynashift_threshold",   label: "DynaShift match threshold", kind: "float", default: 0.6, min: 0.3, max: 0.95, step: 0.05, dependsOn: "dynashift" },
+    { name: "output_guidance",       label: "Output guidance",       kind: "bool",  default: false,
+      hint: "Applies your learned taste to what the model predicts instead of to the prompt. Almost free, but it trains a separate memory and needs its own 10+ rated generations before it does anything." },
+    { name: "output_guidance_strength", label: "Output guidance strength", kind: "float", default: 0.02, min: 0.005, max: 0.1, step: 0.005, dependsOn: "output_guidance",
+      hint: "How hard the prediction is corrected each step. Same scale as Embed strength — start there and adjust." },
+    { name: "decode_noise_scale",    label: "Decode noise scale",    kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01,
+      hint: "Adds fine detail and grain back while decoding. 0 is a clean decode, ~0.025 is a gentle restore. Free, and affects the video only — not the latent." },
+    { name: "decode_timestep",       label: "Decode timestep",       kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01,
+      hint: "How much freedom the decoder gets while adding that detail. Higher looks more detailed but drifts further from what was actually generated. Only used when Decode noise scale is above 0." },
+    { name: "decode_tile_size",      label: "Decode tile size",      kind: "int",   default: 0,     min: 0, max: 4096, step: 64,
+      hint: "Decodes the video in tiles instead of all at once, to fit in less VRAM. 0 is off — set it to 512 if decoding runs out of memory." },
+    { name: "mid_scene_guide",       label: "Mid-scene guide",       kind: "bool",  default: false,
+      hint: "Shows each scene the middle frame of the one before it, so people and layout stay put across a cut. Costs about 45% more time per scene, and JoyAI-Echo memory replaces it when that's on." },
+    { name: "mid_scene_guide_strength", label: "Guide strength",   kind: "float", default: 0.25,  min: 0.0, max: 1.0, step: 0.05, dependsOn: "mid_scene_guide",
+      hint: "How hard that frame pulls. 0.25-0.35 is the measured band: below it the audio degrades and appearance drifts, above it the guide fights any real change of composition." },
+    { name: "joyai_memory",          label: "JoyAI-Echo memory",     kind: "bool",  default: false,
+      hint: "Keeps a bank of frames from earlier shots and shows them to every new scene, so a character stays the same across the whole video. Costs guide tokens (slower scenes), and takes over from Mid-scene guide." },
+    { name: "joyai_memory_size",     label: "Memory size",           kind: "int",   default: 7,     min: 1, max: 32, step: 1, dependsOn: "joyai_memory",
+      hint: "How many remembered frames each scene gets. More holds identity better over a long video and makes every scene slower." },
+    { name: "joyai_fix_frames",      label: "Pinned anchors",        kind: "int",   default: 3,     min: 0, max: 16, step: 1, dependsOn: "joyai_memory",
+      hint: "How many opening scenes stay in the bank forever as a fixed anchor. Everything past them is a rolling window of the most recent shots." },
+    { name: "joyai_frame_select",    label: "Frame select",          kind: "combo", choices: ["center", "first", "random"], default: "center", dependsOn: "joyai_memory",
+      hint: "Which frame of a finished scene gets remembered — its middle, its first, or a random one." },
+    { name: "joyai_memory_strength", label: "Memory strength",       kind: "float", default: 0.3,   min: 0.25, max: 10.0, step: 0.05, dependsOn: "joyai_memory",
+      hint: "How hard remembered frames pull. 0.25-0.5 is the audio-safe band; higher holds the character harder but can degrade audio and stiffen motion." },
+    { name: "joyai_audio_memory",    label: "Paired audio memory",   kind: "bool",  default: false, dependsOn: "joyai_memory",
+      hint: "Carries voice and ambience across shots too, not just the face. This deliberately changes the audio, which nothing else here does. Needs JoyAI-Echo memory on." },
+    { name: "v2a_grad_scale",        label: "Video→audio coupling", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.25, dependsOn: "joyai_audio_memory",
+      hint: "How much the carried audio follows the new shot's picture. 1.0 is the model's own behaviour and costs nothing; JoyAI uses 2.0; 0 makes audio ignore the video." },
+    { name: "alg_blur_guides",       label: "Blur i2v guides and JoyAI memory", kind: "bool", default: false,
+      hint: "Blurs guide and memory frames during the first, noisiest steps, so they steer composition without pasting their own detail into the shot — which is what makes anchored scenes look static. Needs the FunPack Distilled Flow sampler, and does nothing on a scene with no guide frames." },
+    { name: "alg_guide_blur_strength", label: "Guide blur strength", kind: "float", default: 2.0, min: 1.0, max: 4.0, step: 0.1, dependsOn: "alg_blur_guides",
+      hint: "How blurry those frames get while they're blurred. Higher = looser guidance and more freedom to move." },
+    { name: "alg_guide_blur_sigma_threshold", label: "Guide blur sigma threshold", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "alg_blur_guides",
+      hint: "How long they stay blurred before switching to sharp. Higher = a shorter blurred window." },
+    { name: "bounded_attention_enabled", label: "Bounded attention (multi-subject)", kind: "bool", default: false,
+      hint: "Stops two people in one frame swapping each other's features, by letting each half of the frame see only its own sentence. Nearly free, and does nothing unless the scene prompt has two sentences describing two subjects." },
+    { name: "dynashift",             label: "DynaShift (steer off bad gens)", kind: "bool", default: false,
+      hint: "Steers away from generations you rated bad — a negative prompt built from your ratings instead of from text. Nearly free, and needs a refinement key plus some bad ratings already banked." },
+    { name: "dynashift_strength",    label: "DynaShift strength",    kind: "float", default: 0.3, min: 0.05, max: 1.0, step: 0.05, dependsOn: "dynashift",
+      hint: "How much of the matched bad direction is removed per step. 0.3 is a gentle nudge; 1.0 removes it outright each step." },
+    { name: "dynashift_threshold",   label: "DynaShift match threshold", kind: "float", default: 0.6, min: 0.3, max: 0.95, step: 0.05, dependsOn: "dynashift",
+      hint: "How closely a frame must resemble a banked bad one before steering starts. Lower is more aggressive and more likely to push away from content that was actually fine." },
     { name: "identity_transfer_enabled", label: "Best-FaceID compatibility", kind: "bool", default: false,
       hint: "Feeds the identity pin image the way Best-FaceID identity LoRAs expect it. Needs an Identity pin set.",
       detail: "Full native port of the overlap+source_phase+ArcFace conditioning Best-FaceID-style identity LoRAs were trained on. Replaces Continuity's Identity pin guide (Engine → Continuity) with separate, non-rendered reference tokens plus an optional ArcFace projector below. Load the LoRA itself the normal way — Models → add a LoRA loader onto the model path. No effect without an Identity pin image set." },
     { name: "source_id", label: "Source-phase id", kind: "float", default: 2.0, min: 0.0, max: 8.0, step: 1.0, dependsOn: "identity_transfer_enabled",
       hint: "Matches the LoRA's training convention (ltx-trainer used 2). 0 disables the rotation." },
-    { name: "phase_scale", label: "Phase scale", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.1, dependsOn: "identity_transfer_enabled" },
+    { name: "phase_scale", label: "Phase scale", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.1, dependsOn: "identity_transfer_enabled",
+      hint: "Multiplies Source-phase id before the rotation is applied. Leave it at 1.0 unless you are matching a LoRA trained with an unusual convention." },
     { name: "id_strength", label: "ArcFace token strength", kind: "float", default: 1.0, min: 0.0, max: 50.0, step: 0.5, dependsOn: "identity_transfer_enabled",
       hint: "Only used when an ArcFace projector is set below. Weak channel — push high (5-20) to test." },
-    { name: "arcface_mode", label: "ArcFace detection mode", kind: "combo", choices: ["auto_adjust", "as_is", "disable"], default: "auto_adjust", dependsOn: "identity_transfer_enabled" },
+    { name: "arcface_mode", label: "ArcFace detection mode", kind: "combo", choices: ["auto_adjust", "as_is", "disable"], default: "auto_adjust", dependsOn: "identity_transfer_enabled",
+      hint: "What to do when the face detector can't get a clean crop of the pin image: 'auto_adjust' fixes the crop, 'as_is' uses it anyway, 'disable' skips the ArcFace channel entirely." },
     { name: "debug_log", label: "Debug log", kind: "bool", default: false, dependsOn: "identity_transfer_enabled",
       hint: "Print per-scene identity-transfer shape/status logs to the ComfyUI console." },
     { name: "plateau_cache", label: "Plateau step-cache (speed)", kind: "bool", default: false,
@@ -485,12 +525,14 @@
     [["funpack", "FunPack Studio"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
       .forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.conditioning_slot || "funpack") === v) o.selected = true; condSel.append(o); });
     condSel.onchange = () => S.setConditioningSlot(condSel.value);
-    g.append(field("Conditioning", condSel));
+    g.append(field("Conditioning", condSel,
+      "Which node turns your prompt into conditioning. Picking anything but FunPack Studio hides the Studio settings below."));
     const sampSel = el("select"); sampSel.dataset.k = "pj-samp";
     [["funpack", "FunPack Chain Sampler"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
       .forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.sampler_slot || "funpack") === v) o.selected = true; sampSel.append(o); });
     sampSel.onchange = () => S.setSamplerSlot(sampSel.value);
-    g.append(field("Sampler", sampSel));
+    g.append(field("Sampler", sampSel,
+      "Which node does the actual sampling. Picking anything but the FunPack Chain Sampler hides the Chain Sampler settings below."));
 
     if (!studioOn) pane.append(hintEl("Custom conditioning node — wire and tune it in Models & Pipeline. FunPack Studio categories are hidden."));
     if (!chainOn) pane.append(hintEl("Custom sampler node — wire and tune it in Models & Pipeline. Chain Sampler categories are hidden."));
@@ -516,7 +558,8 @@
       const keyCtrl = el("input"); keyCtrl.type = "text"; keyCtrl.dataset.k = "refinement_key";
       keyCtrl.placeholder = "default"; keyCtrl.value = p.refinement_key || "default";
       keyCtrl.onchange = () => S.patchProject({ refinement_key: (keyCtrl.value || "").trim() || "default" });
-      gKey.append(field("Refinement key", keyCtrl, "Named learning session — \"default\" is the keyless store."));
+      gKey.append(field("Refinement key", keyCtrl,
+        "Names the learning session your ratings train. Everything rating-driven below reads from it; \"default\" is the shared one."));
     }
 
     const gEss = group(pane, "Essentials");
@@ -635,11 +678,14 @@
     const autoCb = el("input"); autoCb.type = "checkbox"; autoCb.checked = cs.auto_enabled;
     autoCb.dataset.k = "cs-auto";
     autoCb.onchange = () => patchContinuitySettings({ auto_enabled: autoCb.checked });
-    g.append(toggleField("Auto continuity (recommended)", autoCb));
+    g.append(toggleField("Auto continuity (recommended)", autoCb,
+      "Builds the guides for every run itself, so characters and places hold across scenes. Turn it off only to drive the guide stack by hand."));
 
     const pinRow = el("div", "sw-row eng-field eng-stack");
     const pinMain = el("div", "sw-row-main");
     pinMain.append(el("div", "sw-row-title", "Identity pin (all scenes)"));
+    pinMain.append(el("div", "sw-row-hint",
+      "One image every scene is pulled toward, so the same face carries the whole video."));
     pinRow.append(pinMain);
     const pin = window.MediaPicker.create({
       value: cs.identity_pin_ref,
@@ -659,21 +705,27 @@
       cb.onchange = () => patchContinuitySettings({ [key]: cb.checked });
       gAdv.append(toggleField(label, cb, opts.hint));
     };
-    mk("Borrow prior-scene guides", cs.prior_scene_guides, "prior_scene_guides");
+    mk("Borrow prior-scene guides", cs.prior_scene_guides, "prior_scene_guides",
+      { hint: "Lets each scene look at frames from the one before it, so the look carries down the chain." });
     mk("Prior guides on solo mixed runs", cs.solo_scene_guides, "solo_scene_guides",
-      { hint: "Mixed mode only — image/empty/generated_frame solo runs use their anchor only" });
+      { hint: "Does the same when you render a single scene out of a mixed timeline. Off, that scene uses only its own anchor." });
     mk("Mid-scene layout guide (carry chains)", cs.mid_scene_guide, "mid_scene_guide",
-      { disabled: !multiScene, title: multiScene ? "" : "Only applies to multi-scene carry chains" });
-    const num = (label, val, key, min, max, step) => {
+      { disabled: !multiScene, title: multiScene ? "" : "Only applies to multi-scene carry chains",
+        hint: "Shows each scene the middle frame of the one before it, so people stay where they were. Only applies to multi-scene carry chains." });
+    const num = (label, val, key, min, max, step, hint) => {
       const i = el("input"); i.type = "number"; i.min = String(min); i.max = String(max); i.step = String(step);
       i.value = val; i.disabled = !cs.auto_enabled; i.dataset.k = "cs-" + key;
       i.oninput = () => patchContinuitySettings({ [key]: parseFloat(i.value || "0") });
-      gAdv.append(field(label, i));
+      gAdv.append(field(label, i, hint));
     };
-    num("Pin strength", cs.identity_pin_strength, "identity_pin_strength", 0.0, 1.0, 0.05);
-    num("Prior guide strength", cs.prior_scene_strength, "prior_scene_strength", 0.0, 1.0, 0.05);
-    num("Mid-scene strength", cs.mid_scene_guide_strength, "mid_scene_guide_strength", 0.0, 1.0, 0.05);
-    num("Guide decay / scene", cs.guide_decay, "guide_decay", 0.5, 1, 0.05);
+    num("Pin strength", cs.identity_pin_strength, "identity_pin_strength", 0.0, 1.0, 0.05,
+      "How hard the identity pin pulls. Higher holds the face better and follows the prompt less.");
+    num("Prior guide strength", cs.prior_scene_strength, "prior_scene_strength", 0.0, 1.0, 0.05,
+      "How hard borrowed frames from earlier scenes pull. Higher keeps the look, lower lets each scene be its own shot.");
+    num("Mid-scene strength", cs.mid_scene_guide_strength, "mid_scene_guide_strength", 0.0, 1.0, 0.05,
+      "How hard the mid-scene layout frame pulls. 0.25-0.35 is the safe band — below it the audio degrades, above it the guide fights real changes of composition.");
+    num("Guide decay / scene", cs.guide_decay, "guide_decay", 0.5, 1, 0.05,
+      "How much weaker guides get with each scene further down the chain. 1.0 keeps them at full strength the whole way.");
 
     const gMan = group(pane, "Manual");
     renderKnobList(gMan, st, CHAIN_VIEW_KNOBS.chain_continuity);
@@ -681,17 +733,18 @@
     stackCb.dataset.k = "gs-stack";
     stackCb.onchange = () => patchGuideSettings({ stack_enabled: stackCb.checked });
     gMan.append(toggleField("Custom guide stack", stackCb,
-      gs.stack_enabled
-        ? "Per-scene lists in the Scene inspector. Scenes without entries use the Studio default (scene 1 template · frame 0 · apply 0)."
+      "Lets you choose each scene's guide frames yourself, in the Scene inspector, instead of having them built for you. "
+      + (gs.stack_enabled
+        ? "Scenes you leave empty fall back to scene 1's first frame."
         : (cs.auto_enabled
-          ? "Auto continuity supplies guides at generation time."
-          : "Studio default: one i2v guide from scene 1's template on multi-scene carry runs.")));
+          ? "Auto continuity is supplying them right now."
+          : "Without it, multi-scene carry runs get one guide from scene 1."))));
     if (gs.stack_enabled) {
       const accCb = el("input"); accCb.type = "checkbox"; accCb.checked = gs.accumulate_prior;
       accCb.dataset.k = "gs-accum";
       accCb.onchange = () => patchGuideSettings({ accumulate_prior: accCb.checked });
       gMan.append(toggleField("Stack guides from all prior scenes", accCb,
-        "Negative frame_idx / apply_at count from the end (e.g. −1 = last frame)."));
+        "Gives each scene the guides of every scene before it, not just its own. Holds the look harder and makes later scenes slower."));
     } else if (multiScene) {
       pane.append(hintEl("Carry i2v guides is auto-enabled for multi-scene runs."));
     }
