@@ -35,14 +35,23 @@
   };
 
   // ── editor settings ─────────────────────────────────────────────────────────
-  // Per-browser editor preferences (not part of the project file). Govern how the
-  // prompt is parsed/edited, not what is generated from already-distributed scenes.
+  // Editor preferences. Govern how the prompt is parsed/edited, not what is generated
+  // from already-distributed scenes. They live in this browser's localStorage AND, once
+  // a project is open, are mirrored into `project.editor_settings`: on a fresh machine
+  // (a newly rented GPU box) localStorage is empty and the server-side revolver sidecar
+  // does not exist, so without the mirror every one of these is back at its default and
+  // has to be set by hand again. Opening a project restores what it remembers.
   const EDITOR_SETTINGS_KEY = "funpack_editor_settings";
   const EDITOR_SETTINGS_DEFAULTS = {
     autocomplete: true, suggestions: true, anchorEnabled: true,
     // "Anchor as guide" i2v bypass: declare a custom i2v node so it can be forced
     // to a state (value-only) on anchor_guide runs. anchorGuideBypass = {node, input, value}.
     anchorGuideHasI2v: false, anchorGuideBypass: null,
+    // Snapshot of the shortcut revolver, which is NOT a browser setting — it lives
+    // server-side next to the shortcut DB because previews and generation share one
+    // cycle. Carried here purely so the project can put it back on a new instance;
+    // the server copy stays the single source of truth while the app is running.
+    revolver: null,   // {enabled, random} | null = never recorded
   };
   function _loadEditorSettings() {
     try {
@@ -51,12 +60,28 @@
     } catch (_) { return { ...EDITOR_SETTINGS_DEFAULTS }; }
   }
   let _editorSettings = _loadEditorSettings();
+  function _persistEditorSettings() {
+    try { localStorage.setItem(EDITOR_SETTINGS_KEY, JSON.stringify(_editorSettings)); } catch (_) {}
+  }
   function getEditorSettings() { return { ..._editorSettings }; }
   function getEditorSetting(key) { return _editorSettings[key]; }
   function setEditorSetting(key, val) {
-    if (_editorSettings[key] === val) return;
+    // Mirrored into the open project so it travels with the file. Deliberately BEFORE the
+    // unchanged-value return: a browser that was already configured before the project
+    // learned to remember would otherwise never record anything, because re-picking the
+    // value you already have is a no-op — and the setting you never touch again is exactly
+    // the one you lose on the next machine. Silent, since changing a preference is not a
+    // timeline edit and should not mark the project dirty in the UI.
+    if (state.project) {
+      const stored = state.project.editor_settings || {};
+      if (JSON.stringify(stored[key]) !== JSON.stringify(val)) {
+        state.project.editor_settings = { ...stored, [key]: val };
+        scheduleSaveSilent();
+      }
+    }
+    if (JSON.stringify(_editorSettings[key]) === JSON.stringify(val)) return;
     _editorSettings = { ..._editorSettings, [key]: val };
-    try { localStorage.setItem(EDITOR_SETTINGS_KEY, JSON.stringify(_editorSettings)); } catch (_) {}
+    _persistEditorSettings();
     notify();
     // Anchor toggle changes how the global prompt maps onto the timeline — re-split now.
     if (key === "anchorEnabled" && state.project) {
@@ -64,6 +89,60 @@
         || state.preview?.display_prompt || state.preview?.combined_prompt || "").trim();
       if (cur) { _pinnedGlobalPrompt = cur; applyGlobalPromptQuiet(cur).catch(() => {}); }
     }
+  }
+
+  /** Put a freshly-opened project's remembered preferences back in force.
+   *
+   * Key-by-key, and only for keys the project actually carries: a project saved before
+   * this existed has no `editor_settings` at all, and that must leave the current browser
+   * alone rather than resetting it to defaults. Applied wholesale (not via
+   * setEditorSetting) so the anchor toggle's re-split side effect doesn't fire — the
+   * caller re-syncs the prompt from the timeline straight after this anyway.
+   *
+   * The revolver is the one that isn't ours to set: it is a server setting shared by every
+   * browser and by generation. We POST it only when it actually differs, so opening a
+   * project that agrees with the server costs nothing and never restarts a live cycle.
+   */
+  function _applyProjectEditorSettings(project) {
+    if (!project) return;
+    const saved = project.editor_settings || {};
+    const keys = Object.keys(saved).filter((k) => k !== "revolver" && k in EDITOR_SETTINGS_DEFAULTS);
+    if (keys.length) {
+      const next = { ..._editorSettings };
+      keys.forEach((k) => { next[k] = saved[k]; });
+      _editorSettings = next;
+      _persistEditorSettings();
+    } else {
+      // A project from before this existed, opened on a machine that IS configured: adopt
+      // this browser's settings rather than leaving the project blank, so the very next
+      // move carries them. Nothing changes here and now — these already are the settings
+      // in force — it only stops the project from travelling empty.
+      project.editor_settings = { ...(project.editor_settings || {}), ...getEditorSettings() };
+      delete project.editor_settings.revolver;   // the server's copy is authoritative below
+      scheduleSaveSilent();
+    }
+    const rev = saved.revolver;
+    if (rev && typeof rev === "object") {
+      _editorSettings = { ..._editorSettings, revolver: { enabled: !!rev.enabled, random: !!rev.random } };
+      _persistEditorSettings();
+      API.revolverSettings().then((cur) => {
+        if (!!cur.enabled === !!rev.enabled && !!cur.random === !!rev.random) return;
+        return API.setRevolverSettings({ enabled: !!rev.enabled, random: !!rev.random })
+          .then(() => notify());
+      }).catch(() => {});
+      return;
+    }
+    // Nothing recorded yet: take whatever the server has now, so the mode you already set
+    // by hand travels with the project without you having to toggle it to register it.
+    API.revolverSettings().then((cur) => {
+      const snap = { enabled: !!cur.enabled, random: !!cur.random };
+      _editorSettings = { ..._editorSettings, revolver: snap };
+      _persistEditorSettings();
+      if (state.project === project) {
+        project.editor_settings = { ...(project.editor_settings || {}), revolver: snap };
+        scheduleSaveSilent();
+      }
+    }).catch(() => {});
   }
 
   const listeners = new Set();
@@ -709,6 +788,9 @@
     }
     state.project = loaded;
     state.notice = "";
+    // Before anything reads a preference: anchorEnabled decides how the global prompt
+    // splits into scenes, and syncGlobalPromptFromTimeline() below runs on that answer.
+    _applyProjectEditorSettings(loaded);
     const first = state.project.scenes[0]?.id || null;
     state.selectedSceneId = first;
     state.selectedSceneIds = first ? [first] : [];
@@ -742,6 +824,13 @@
     const p = await API.createProject(name || "Untitled montage");
     await refreshProjectList();
     await loadProject(p.id);
+    // A project born on a configured machine inherits that configuration, so it can carry
+    // it away later. Without this it would only start remembering once a preference was
+    // toggled — and the settings you never have to touch are exactly the ones you'd lose.
+    if (state.project && state.project.id === p.id) {
+      state.project.editor_settings = { ...getEditorSettings() };
+      scheduleSaveSilent();
+    }
   }
 
   async function deleteProject(id) {

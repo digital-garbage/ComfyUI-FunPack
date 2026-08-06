@@ -622,6 +622,14 @@ class Project:
     # Guide stack toggles — empty / stack_enabled=false keeps Studio carry behaviour.
     guide_settings: dict = field(default_factory=dict)
     continuity_settings: dict = field(default_factory=dict)
+    # Editor preferences carried WITH the project (autocomplete, ideas, anchor, i2v bypass,
+    # and a snapshot of the shortcut-revolver mode). These are otherwise per-machine —
+    # browser localStorage and a server-side sidecar — so on a fresh rented instance every
+    # one of them is back at its default. Riding along in the project file is what makes
+    # them survive the move. Never read by generation; the editor applies them on open.
+    # An ABSENT key means "leave whatever this browser already has" — opening a project
+    # saved before this existed must not reset anything.
+    editor_settings: dict = field(default_factory=dict)
     # Last queued generation prompt fingerprint — used to auto-reset Studio session when
     # the timeline text changes (avoids stale repair memory overriding new actions).
     generation_meta: dict = field(default_factory=dict)
@@ -672,6 +680,7 @@ class Project:
             models=dict(d.get("models") or {"slots": []}),
             guide_settings=dict(d.get("guide_settings") or {}),
             continuity_settings=dict(d.get("continuity_settings") or {}),
+            editor_settings=dict(d.get("editor_settings") or {}),
             generation_meta=dict(d.get("generation_meta") or {}),
             scene_renders=dict(d.get("scene_renders") or {}),
             scene_ghosts=list(d.get("scene_ghosts") or []),
