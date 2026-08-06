@@ -22,8 +22,16 @@
     return slot === "funpack";
   }
 
+  // Read the family from whichever config actually carries it. `models()` returns the FIRST
+  // truthy of state.models / project.models, and state.models is {slots: []} both while the
+  // live config is still loading and after a failed fetch — truthy, but with no family — so
+  // taking it from there alone reports LTXAV for an H3 project during that window, and every
+  // family-dependent answer here (frame grid, fps, inert-setting chips) is wrong with it.
   function modelFamily(st) {
-    const f = String(models(st).model_family || "ltxav").toLowerCase();
+    const live = st && st.models;
+    const saved = st && st.project && st.project.models;
+    const raw = (live && live.model_family) || (saved && saved.model_family) || "ltxav";
+    const f = String(raw).toLowerCase();
     return f === "minimax_h3" ? "minimax_h3" : "ltxav";
   }
 

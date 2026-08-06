@@ -535,8 +535,27 @@ def _project_models(p: Optional[Project]) -> dict:
         return nodes.load_models()
     # Treat slots: [] as intentional (user removed all loaders) — do not fall back to global.
     if "slots" in m or m.get("links") or m.get("core_overrides") or m.get("disable_core") or m.get("full_control"):
-        return m
+        return _inherit_model_family(m)
     return nodes.load_models()
+
+
+def _inherit_model_family(m: dict) -> dict:
+    """Fill in a missing `model_family` from the global default — but only for a project
+    that has no pipeline of its own to contradict it.
+
+    Every project saved before the creation-time seeding was fixed carries no family, so the
+    builder silently treated it as LTXAV. Backfilling is safe exactly when the project has no
+    loaders and no links: there is then no wiring built under the old assumption that
+    changing the answer could break. A project that HAS its own slots keeps its silence —
+    those were wired as LTXAV and must go on being read that way until the user says
+    otherwise in the pipeline dialog, which now shows them the truth.
+    """
+    if m.get("model_family") or m.get("slots") or m.get("links"):
+        return m
+    family = nodes.load_models().get("model_family")
+    if not family:
+        return m
+    return {**m, "model_family": family}
 
 
 def _solo(p: Project, only_scene: Optional[str]) -> Project:
@@ -1273,9 +1292,18 @@ if web is not None and PromptServer is not None:
     async def _create(req):
         body = await req.json()
         p = projects.create(str(body.get("name") or "Untitled"))
-        # seed the new project's pipeline config from the global default
+        # Seed the new project's pipeline config from the global default.
+        #
+        # This used to be gated on `glob.get("slots") or glob.get("links")`, which silently
+        # dropped EVERYTHING ELSE in the global config whenever the user had no loader slots
+        # — most damagingly `model_family`. The project then had no family at all, so the
+        # builder fell back to LTXAV while the setup dialog (which reads the global) went on
+        # reporting H3: an H3 project wired with LTXAV rules, whose audio VAE was routed to
+        # LTXVAudioVAEDecode, a node H3's core does not contain. `full_control` and
+        # `core_overrides` were lost the same way. The global IS the default for new
+        # projects, so copy it whole and let the per-key rules below decide the rest.
         glob = nodes.load_models()
-        if glob.get("slots") or glob.get("links"):
+        if isinstance(glob, dict) and glob:
             p.models = glob
             projects.save(p)
         return web.json_response(p.to_dict())
@@ -2233,11 +2261,25 @@ if web is not None and PromptServer is not None:
         except Exception:
             oi = {}
         mgr = await pipeline_deps.manager_available()
+        # Report the family of the project being asked about, not the global default. Reading
+        # the global here is what let the setup dialog show "MiniMax H3" as already chosen for
+        # a project that had no family at all: the user saw the right answer, closed the
+        # dialog, and nothing was ever written. `pid` is optional so callers without an open
+        # project (Easy Gen, first run) still get the global default.
+        pid = _req.query.get("pid")
+        models = nodes.load_models()
+        if pid:
+            try:
+                p = projects.get(pid)
+            except Exception:   # corrupt/incompatible file — the global default still answers
+                p = None
+            if p is not None:
+                models = _project_models(p)
         return web.json_response(pipeline_deps.status_payload(
             oi,
             manager_available=mgr,
             manager_on_disk=pipeline_deps.manager_dir_on_disk(),
-            family=pipeline_wiring.family_of(nodes.load_models()),
+            family=pipeline_wiring.family_of(models),
         ))
 
     @routes.post(UI_PREFIX + "/api/pipeline-deps/install")
@@ -2460,7 +2502,16 @@ if web is not None and PromptServer is not None:
         body.setdefault("slots", [])
         p.models = body
         projects.save(p)
-        nodes.save_models(body)  # keep the global default in sync (seeds new projects)
+        # Keep the global default in sync (it seeds new projects) — but never let a save that
+        # simply omits `model_family` erase the one already recorded there. A caller that
+        # means to change the family sends it; one that is only rearranging loaders does not,
+        # and silently clearing it is how every later project ends up with no family at all.
+        glob = dict(body)
+        if not glob.get("model_family"):
+            inherited = nodes.load_models().get("model_family")
+            if inherited:
+                glob["model_family"] = inherited
+        nodes.save_models(glob)
         return web.json_response(body)
 
     # --- UI: static frontend (must be registered AFTER api routes) ---

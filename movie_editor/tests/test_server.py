@@ -450,6 +450,62 @@ def test_project_models_keeps_empty_slots(monkeypatch):
     assert _project_models(p)["slots"] != nodes.load_models()["slots"]
 
 
+# ── the project remembers which model family it is for ──────────────────────
+# The whole class of bug: an H3 project whose model_family never got persisted reads back as
+# LTXAV, and LTXAV's wiring routes the audio VAE to LTXVAudioVAEDecode — a node H3's core
+# does not contain. Everything below guards one link in that chain.
+
+def test_a_project_with_no_pipeline_of_its_own_inherits_the_default_family(monkeypatch):
+    """Every project on disk before this fix has model_family=None. They must come back as
+    the family the user actually works in, not silently as LTXAV."""
+    from movie_editor.backend import nodes
+
+    monkeypatch.setattr(nodes, "load_models", lambda: {"slots": [], "model_family": "minimax_h3"})
+    p = _project(scenes=[{"id": "s1", "text": "a"}])
+    p.models = {"slots": []}
+    assert _project_models(p)["model_family"] == "minimax_h3"
+
+
+def test_an_explicit_family_is_never_overridden_by_the_default(monkeypatch):
+    from movie_editor.backend import nodes
+
+    monkeypatch.setattr(nodes, "load_models", lambda: {"slots": [], "model_family": "minimax_h3"})
+    p = _project(scenes=[{"id": "s1", "text": "a"}])
+    p.models = {"slots": [], "model_family": "ltxav"}
+    assert _project_models(p)["model_family"] == "ltxav"
+
+
+def test_a_project_with_its_own_loaders_keeps_its_silence(monkeypatch):
+    """A project that already has slots was wired under the old LTXAV assumption. Flipping it
+    to H3 behind the user's back would break that wiring — the pipeline dialog now shows the
+    real answer, so this stays a decision they make, not one inferred for them."""
+    from movie_editor.backend import nodes
+
+    monkeypatch.setattr(nodes, "load_models", lambda: {"slots": [], "model_family": "minimax_h3"})
+    p = _project(scenes=[{"id": "s1", "text": "a"}])
+    p.models = {"slots": [{"id": "a", "role": "unet"}]}
+    assert _project_models(p).get("model_family") is None
+
+
+def test_inheriting_the_family_does_not_mutate_the_stored_project(monkeypatch):
+    from movie_editor.backend import nodes
+
+    monkeypatch.setattr(nodes, "load_models", lambda: {"slots": [], "model_family": "minimax_h3"})
+    p = _project(scenes=[{"id": "s1", "text": "a"}])
+    p.models = {"slots": []}
+    _project_models(p)
+    assert "model_family" not in p.models     # read-time fill only, not a silent write
+
+
+def test_no_default_family_means_nothing_is_invented(monkeypatch):
+    from movie_editor.backend import nodes
+
+    monkeypatch.setattr(nodes, "load_models", lambda: {"slots": []})
+    p = _project(scenes=[{"id": "s1", "text": "a"}])
+    p.models = {"slots": []}
+    assert _project_models(p).get("model_family") is None
+
+
 def test_timeline_duration_sec_from_overlays_and_audio():
     p = _project(scenes=[])
     p.scenes = []

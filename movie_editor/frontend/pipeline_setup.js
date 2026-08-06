@@ -212,7 +212,7 @@
       }
     }
     let deps;
-    try { deps = await API.pipelineDeps(); } catch (_) { closeModal(); return; }
+    try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { closeModal(); return; }
     if (!deps?.needs_setup) { closeModal(); return; }
     openModal(deps);
   }
@@ -371,7 +371,7 @@
     const st = S.get();
     if (!st.project || !builtInPipelineActive(st)) return;
     let deps;
-    try { deps = await API.pipelineDeps(); } catch (_) { return; }
+    try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { return; }
     if (!deps?.needs_setup) return;
     openModal(deps);
   }
@@ -381,7 +381,7 @@
   async function open() {
     if (!S.get().project) return;
     let deps;
-    try { deps = await API.pipelineDeps(); } catch (_) { return; }
+    try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { return; }
     openModal(deps);
   }
 
