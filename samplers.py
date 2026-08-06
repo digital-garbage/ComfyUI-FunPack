@@ -2717,7 +2717,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "cut_opening_frames": ("INT", {
                     "default": 0, "min": 0, "max": 512, "step": 8,
-                    "tooltip": "Let the i2v anchor do its work, then cut it out of the clip: generate the scene exactly as normal (anchor pinned at full strength the whole way, nothing weakened, no extra sampling), then drop this many frames off the FRONT of the finished clip. The anchor is a pinned latent frame at position 0 — it transfers identity, style and composition better than anything that softens it on the way in (ALG blurs it and loses character detail; Best-FaceID tokens approximate it and lose some too), but it is also literally the first frame you see, so every i2v scene opens on the exact reference still. Cutting it afterwards keeps the transfer and removes the tell: an i2v generation that reads as t2v. 0 (default) = off. The value is in REAL frames and is converted with the VAE's own time scale; one latent frame (8 real frames at the standard scale) removes just the anchor itself, which is usually NOT enough — the anchor is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening yet, and on a prompt that asks for immediate action that dead time is exactly what you want gone (48 was the value that worked on a 768x768x305@30 i2v chain with a quick-cut prompt — a starting point for this pipeline, not a universal default). NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you asked for, and the audio is cropped to match. That is the trade — every surviving frame was generated as part of one continuous shot, with no invented ending. Needs a pinned i2v anchor; skipped with the reason in the scene report on continuation scenes and on scenes carrying guide frames or JoyAI audio memory.",
+                    "tooltip": "Let the i2v anchor do its work, then cut it out of the clip: generate the scene exactly as normal (anchor pinned at full strength the whole way, nothing weakened, no extra sampling), then drop this many frames off the FRONT of the finished clip. The anchor is a pinned latent frame at position 0 — it transfers identity, style and composition better than anything that softens it on the way in (ALG blurs it and loses character detail; Best-FaceID tokens approximate it and lose some too), but it is also literally the first frame you see, so every i2v scene opens on the exact reference still. Cutting it afterwards keeps the transfer and removes the tell: an i2v generation that reads as t2v. 0 (default) = off. The value is in REAL frames and is converted with the VAE's own time scale; one latent frame (8 real frames at the standard scale) removes just the anchor itself, which is usually NOT enough — the anchor is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening yet, and on a prompt that asks for immediate action that dead time is exactly what you want gone (48 was the value that worked on a 768x768x305@30 i2v chain with a quick-cut prompt — a starting point for this pipeline, not a universal default). NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you asked for, and the audio is cropped to match. That is the trade — every surviving frame was generated as part of one continuous shot, with no invented ending. Needs a pinned i2v anchor; skipped with the reason in the scene report on continuation scenes and on scenes carrying guide frames or JoyAI audio memory. ON MINIMAX H3 the same setting works differently, because H3's anchor is a keyframe condition row rather than a pinned latent frame and its video latent lives on a 5k+2 grid an arbitrary cut cannot land on: the frames are dropped off the front of the DECODED image batch instead (exact to the frame, no rounding), and the latent's audio stream is cropped to match so sound and picture still start together. The LATENT output keeps its full video stream there — take video from IMAGES on a cut H3 run — and only the chain's opening is cut, not each scene's.",
                 }),
                 "context_windows": ("BOOLEAN", {
                     "default": False,
@@ -3590,6 +3590,26 @@ class FunPackLTXAVSceneChainSampler:
         result["noise_mask"] = self._clone_value(mask)
         return result
 
+    def _crop_stream_head_to(self, tensor, stream, kept, total):
+        """Crop a non-video stream's HEAD so it keeps `kept/total` of its own time.
+
+        Each extra stream (audio) has its own rate and its own time AXIS: LTXAV puts time on
+        dim 2 for every stream, MiniMax H3 puts the stereo channel there and time last. The
+        kept length is derived from the VIDEO proportion rather than from a separately rounded
+        drop, because audio timing comes from the audio stream's own index — cropping the two
+        by different amounts of TIME desyncs the clip silently, with no error.
+        """
+        if not isinstance(tensor, torch.Tensor):
+            return tensor
+        dim = self._stream_dim(stream)
+        n = int(tensor.shape[dim])
+        keep = max(1, min(n, int(round(n * max(0, kept) / max(1, total)))))
+        if keep >= n:
+            return tensor
+        idx = [slice(None)] * tensor.dim()
+        idx[dim] = slice(n - keep, n)
+        return tensor[tuple(idx)]
+
     def _cut_opening_latent(self, latent, drop):
         """Cut the first `drop` latent frames off a FINISHED scene latent.
 
@@ -3626,13 +3646,7 @@ class FunPackLTXAVSceneChainSampler:
         tensors[0] = video[:, :, drop:]
         kept = frames - drop
         for _idx in range(1, len(tensors)):
-            _t = tensors[_idx]
-            if _t is None:
-                continue
-            _n = self._tensor_frames(_t)
-            _keep = max(1, min(_n, int(round(_n * kept / max(1, frames)))))
-            if _keep < _n:
-                tensors[_idx] = _t[:, :, _n - _keep:]
+            tensors[_idx] = self._crop_stream_head_to(tensors[_idx], _idx, kept, frames)
         if self._is_nested(result.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
         else:
@@ -3640,6 +3654,53 @@ class FunPackLTXAVSceneChainSampler:
         # The pin belongs to a frame that no longer exists.
         result.pop("noise_mask", None)
         return result, drop
+
+    def _cut_opening_pixels(self, images, latent, pixel_frames):
+        """MiniMax H3's cut: drop the opening off the DECODED frames, not off the latent.
+
+        Same user intent as the LTX path above — let the anchor condition the shot at full
+        strength, then remove the frames that are still visibly the reference still — but H3
+        cannot express it in latent space. Two reasons, both structural:
+
+        * H3's anchor is not a pinned latent frame at all. It is a keyframe CONDITION row
+          packed beside the text (see _apply_h3_anchor), never denoised and never rendered,
+          so there is no pinned prefix to slice off and no mask to read a length from.
+        * H3's video latent lives on a 5k+2 grid (17k+5 pixel frames). Cutting an arbitrary
+          number of latent frames leaves a count the VAE has no defined decode for, where
+          LTXAV decodes any f >= 1 as (f-1)*scale+1.
+
+        Cutting the decoded IMAGE batch has neither problem and is exact to the frame: N means
+        N. The AUDIO stream still has to move with it — audio decodes from this node's LATENT
+        output (VAEDecodeAudio on H3), so leaving it alone would start the sound N frames
+        before the picture. Its head is cropped by the same PROPORTION of time, on its own
+        axis (H3 puts audio time last).
+
+        The latent's VIDEO stream is deliberately left at full length: it is off-grid the
+        moment it is cut. So the latent comes back with a full video stream beside a cropped
+        audio one, and the caller says so — video must come from the IMAGES output on a cut
+        H3 run.
+
+        Returns (images, latent, dropped).
+        """
+        drop = int(pixel_frames)
+        if not isinstance(images, torch.Tensor) or images.dim() < 1 or drop <= 0:
+            return images, latent, 0
+        total = int(images.shape[0])
+        drop = max(0, min(drop, total - 1))
+        if drop <= 0:
+            return images, latent, 0
+        images = images[drop:]
+        kept = total - drop
+        result = self._clone_latent(latent)
+        tensors = self._latent_tensors(result)
+        for _idx in range(1, len(tensors)):
+            tensors[_idx] = self._crop_stream_head_to(tensors[_idx], _idx, kept, total)
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+        else:
+            result["samples"] = tensors[0]
+        result.pop("noise_mask", None)
+        return images, result, drop
 
     def _output_connected(self, prompt, unique_id, output_index):
         """Return True if the given output slot index is wired to any downstream node."""
@@ -5966,6 +6027,8 @@ class FunPackLTXAVSceneChainSampler:
         scene_count = len(scene_conditionings)
         # Keyframe pins wired in from a MiniMax H3 Image to Video node, read once for the run.
         _h3_wired_pins = self._h3_external_pins(h3_keyframes) if self._is_h3 else None
+        # Did the opening scene get an anchor pin? cut_opening_frames' H3 path needs it.
+        _h3_opening_anchored = False
         if h3_keyframes and not self._is_h3:
             print("[FunPackSceneChain] h3_keyframes is wired but this model is not MiniMax H3 — ignored.")
         elif h3_keyframes and _h3_wired_pins is None:
@@ -6242,6 +6305,12 @@ class FunPackLTXAVSceneChainSampler:
                         scene_positive, chunk, vae, _anchor_image, _anchor_strength)
                     if _pinned:
                         run_mechanisms.append(f"h3_keyframe_anchor(strength={_anchor_strength:g})")
+                        # cut_opening_frames cuts the front of the FINISHED clip, so what it
+                        # needs to know is whether the clip OPENS on an anchor — i.e. whether
+                        # the first scene got one. A later scene's anchor sits in the middle
+                        # of the batch, where a head crop would never reach it.
+                        if scene_index == 0:
+                            _h3_opening_anchored = True
                 # Pins rescued from a wired MiniMax H3 Image to Video node. Applied AFTER the
                 # anchor so an explicitly wired first_frame wins the frame-0 slot — the user
                 # drew that wire, the anchor is inferred from the timeline.
@@ -6250,6 +6319,8 @@ class FunPackLTXAVSceneChainSampler:
                         scene_positive, _h3_wired_pins, scene_index, scene_count)
                     if _pin_labels:
                         run_mechanisms.append(f"h3_wired_keyframes({'+'.join(_pin_labels)})")
+                    if "first" in _pin_labels:
+                        _h3_opening_anchored = True
 
             # ref2va reference blocks. Applied after the chunk is final because the blocks are
             # sized against this scene's canvas, and to every scene branch (fresh / anchored /
@@ -6440,8 +6511,11 @@ class FunPackLTXAVSceneChainSampler:
                 # tokens approximate it and lose some too). Eligibility is decided here, while
                 # the pre-sampling chunk is still around; the cut itself is a post-process on
                 # the finished latent, below, and costs no sampling at all.
+                # H3 takes the other path entirely (_cut_opening_pixels, after decode): its
+                # anchor is a keyframe condition row, not a pinned latent prefix, so none of
+                # the eligibility below can even be evaluated.
                 _cut_drop = 0
-                if int(cut_opening_frames) > 0:
+                if int(cut_opening_frames) > 0 and not self._is_h3:
                     _cut_drop = self._expected_latent_frames(
                         int(cut_opening_frames) + 1, time_scale) - 1
                     if carried + soft_carried > 0:
@@ -6697,6 +6771,41 @@ class FunPackLTXAVSceneChainSampler:
                 decoded = decoded.reshape(b * t, h, w, c)
             images = self._apply_transitions_pixel(decoded, boundary_entries, transition_duration)
             _phase_decode = _time.perf_counter() - _t_dec0
+
+        # cut_opening_frames, H3 path. The LTX path cut each scene's finished LATENT inside
+        # the loop above; H3 has no pinned latent prefix to cut and an off-grid video latent
+        # cannot be decoded, so the cut lands here instead — exactly N frames off the head of
+        # the decoded batch, with the audio stream moved to match. Every skip is stated: the
+        # toggle is on, so silence would read as "it ran".
+        if self._is_h3 and int(cut_opening_frames) > 0:
+            _h3_cut_reason = None
+            if not _h3_opening_anchored:
+                _h3_cut_reason = ("the opening scene has no anchor image (t2v) — the cut exists "
+                                  "to hide an anchor, and here it would just throw away real "
+                                  "generated frames")
+            elif not want_image:
+                _h3_cut_reason = ("the IMAGES output is not connected — on H3 the cut is a crop "
+                                  "on the decoded frames, so there is nothing to crop")
+            if _h3_cut_reason is not None:
+                report_lines.append(f"cut_opening_frames(SKIPPED: {_h3_cut_reason})")
+            else:
+                _before = int(images.shape[0])
+                images, output, _dropped = self._cut_opening_pixels(
+                    images, output, int(cut_opening_frames))
+                report_lines.append(
+                    f"cut_opening_frames(H3: dropped {_dropped} of {_before} decoded frames "
+                    f"from the front — the clip is {_dropped} frames SHORTER and the audio "
+                    f"stream was cropped to match)")
+                # Said plainly because the two outputs genuinely disagree after this, and the
+                # disagreement is silent in a graph that decodes video from the latent.
+                report_lines.append(
+                    "cut_opening_frames NOTE: the LATENT output keeps its FULL video stream "
+                    "(H3's 5k+2 latent grid cannot express the cut) — take video from the "
+                    "IMAGES output on a cut run, audio from the latent as usual.")
+                if scene_count > 1:
+                    report_lines.append(
+                        "cut_opening_frames NOTE: only the chain's opening is cut. A later "
+                        "scene's own anchor sits mid-batch, where a head crop cannot reach it.")
 
         if images is None:
             images = torch.zeros(1, 8, 8, 3)

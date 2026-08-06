@@ -139,6 +139,63 @@ def test_cut_keeps_proportion_when_the_rate_does_not_divide_evenly(nested_stub):
         assert audio.shape[2] >= 1 and video.shape[2] >= 1
 
 
+def test_cut_uses_each_streams_own_time_axis(nested_stub):
+    """MiniMax H3 puts the STEREO CHANNEL on dim 2 and time last ([B, 32, 2, T]); LTXAV puts
+    time on dim 2 for both streams. Slicing an H3 audio stream on dim 2 would crop the stereo
+    pair down to mono and leave the duration untouched — silent, and wrong both ways."""
+    n = _node()
+    video = torch.zeros(1, 4, 10, 2, 2)
+    audio = torch.arange(20, dtype=torch.float32).view(1, 1, 1, 20).repeat(1, 32, 2, 1)
+    n._time_dims = (2, 3, 3, 3)  # what _set_stream_axes records on H3
+    cut, _ = n._cut_opening_latent(
+        {"samples": _FakeNested([video, audio])}, 3)
+    _v, a = cut["samples"].unbind()
+    assert a.shape[2] == 2       # both stereo channels survive
+    assert a.shape[3] == 14      # 7/10 of the duration, cropped from the head
+    assert [int(v) for v in a[0, 0, 0]] == list(range(6, 20))
+
+
+# ── H3: the cut lands on the decoded frames, not the latent ─────────────────
+
+def test_h3_cut_drops_the_opening_off_the_image_batch(nested_stub):
+    """H3's anchor is a keyframe condition row, not a pinned latent frame, and its video
+    latent sits on a 5k+2 grid an arbitrary cut cannot land on. So the frames come off the
+    DECODED batch — exact to the frame, no time-scale rounding."""
+    n = _node()
+    n._time_dims = (2, 3, 3, 3)
+    images = torch.arange(48, dtype=torch.float32).view(48, 1, 1, 1)
+    latent = {"samples": _FakeNested([torch.zeros(1, 4, 12, 2, 2),
+                                      torch.arange(80, dtype=torch.float32).view(1, 1, 1, 80).repeat(1, 32, 2, 1)])}
+    out_images, out_latent, dropped = n._cut_opening_pixels(images, latent, 17)
+    assert dropped == 17
+    assert out_images.shape[0] == 31
+    assert [int(v) for v in out_images[:, 0, 0, 0]] == list(range(17, 48))
+    video, audio = out_latent["samples"].unbind()
+    # Audio moves with the picture: 31/48 of its own duration, cropped from the head.
+    assert audio.shape[3] == round(80 * 31 / 48)
+    # The video latent is deliberately LEFT ALONE — cutting it would put it off-grid.
+    assert video.shape[2] == 12
+
+
+def test_h3_cut_never_consumes_the_whole_batch_and_never_mutates_its_input(nested_stub):
+    n = _node()
+    n._time_dims = (2, 3, 3, 3)
+    images = torch.arange(9, dtype=torch.float32).view(9, 1, 1, 1)
+    before = images.clone()
+    latent = {"samples": _FakeNested([torch.zeros(1, 4, 4, 2, 2), torch.zeros(1, 32, 2, 16)])}
+    out_images, _out_latent, dropped = n._cut_opening_pixels(images, latent, 999)
+    assert dropped == 8 and out_images.shape[0] == 1
+    assert torch.equal(images, before)
+
+
+def test_h3_zero_cut_is_a_no_op(nested_stub):
+    n = _node()
+    images = torch.zeros(6, 1, 1, 1)
+    latent = {"samples": _FakeNested([torch.zeros(1, 4, 4, 2, 2), torch.zeros(1, 32, 2, 16)])}
+    out_images, out_latent, dropped = n._cut_opening_pixels(images, latent, 0)
+    assert dropped == 0 and out_images is images and out_latent is latent
+
+
 # ── the t2v guard ───────────────────────────────────────────────────────────
 
 def test_pinned_frames_counts_the_anchor_prefix():
