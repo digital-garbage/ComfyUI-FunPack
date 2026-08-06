@@ -805,6 +805,71 @@ def _video_only(x_new, x_old, mask):
         return x_new
 
 
+def _audio_clock_setup(model, x, sigmas, enabled):
+    """Build the per-step audio-clock correction for a MiniMax H3 run, or None.
+
+    Returns (factors, mask) where `factors[i]` scales the audio stream's displacement on
+    step i and `mask` is the packed video mask. None whenever the correction cannot be
+    made — not H3, no readable packed layout, or shifts that make it a no-op — so callers
+    just fall through to comfy's own tangent approximation.
+    """
+    if not enabled:
+        return None
+    try:
+        try:
+            from .minimax_h3 import audio_clock_factors, is_h3_model, resolve_sigma_shifts
+        except ImportError:
+            from minimax_h3 import audio_clock_factors, is_h3_model, resolve_sigma_shifts
+        patcher = getattr(getattr(model, "inner_model", None), "model_patcher", None)
+        if not is_h3_model(patcher):
+            print("[FunPack AV] h3_audio_clock is on but this is not a MiniMax H3 model — "
+                  "the two-schedule correction it applies exists only on H3. Not running.")
+            return None
+        mask = _packed_video_mask(model, x)
+        if mask is None:
+            print("[FunPack AV] h3_audio_clock is on but the packed video+audio latent layout "
+                  "could not be read, so the audio stream cannot be located. Not running.")
+            return None
+        shift_v, shift_a = resolve_sigma_shifts(getattr(patcher, "model_options", None))
+        factors = audio_clock_factors(sigmas, shift_v, shift_a)
+        if not factors or all(abs(f - 1.0) < 1e-6 for f in factors):
+            print(f"[FunPack AV] h3_audio_clock is on but shift_video ({shift_v:g}) and "
+                  f"shift_audio ({shift_a:g}) put both streams on the same schedule — "
+                  f"nothing to correct. Not running.")
+            return None
+        worst = min(factors)
+        print(f"[FunPack AV] h3_audio_clock on (shift_video={shift_v:g}, shift_audio={shift_a:g}) "
+              f"— audio integrated on its own schedule over {len(factors)} step(s); the most "
+              f"corrected step moves audio to {worst * 100.0:.0f}% of what the video grid alone "
+              f"would have moved it.")
+        return factors, mask
+    except Exception as error:
+        print(f"[FunPack AV] h3_audio_clock could not be set up ({error}) — not running.")
+        return None
+
+
+def _audio_clock_step(x_new, x_old, clock, i):
+    """Re-scale the audio stream's displacement over one step onto its own schedule.
+
+    Video keeps `x_new` untouched. Audio keeps the same direction but the length the
+    audio schedule actually calls for. Confining it to the displacement means any
+    ancestral noise or steering the caller already restricted to video rides through
+    unchanged. No-op without a clock, or past the end of the factor list.
+    """
+    if clock is None:
+        return x_new
+    try:
+        factors, mask = clock
+        if i >= len(factors):
+            return x_new
+        factor = factors[i]
+        # video region -> multiplier 1, audio region -> multiplier `factor`
+        scale = mask + (1.0 - mask) * factor
+        return x_old + (x_new - x_old) * scale
+    except Exception:
+        return x_new
+
+
 def _video_span(model, x):
     """(offset, size, stream_shape) of the video stream inside a packed AV latent
     [B,1,N], or None when the layout can't be verified (same guards and stream
@@ -1109,7 +1174,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                           velocity_refinement_key,
                           rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
                           quality_sharpness=0.0, velocity_bias_source="mean",
-                          normalize_strength=0.0, normalize_start_sigma=0.9):
+                          normalize_strength=0.0, normalize_start_sigma=0.9,
+                          h3_audio_clock=False):
     """Full-feature rectified-flow sampler for CONST models (LTXAV).
 
     Rectified-flow-correct port of the hybrid sampler so its features actually run on
@@ -1176,6 +1242,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         print(f"[FunPack AV] latent normalization on (strength={normalize_strength}, "
               f"start_sigma={normalize_start_sigma}, video-only)")
 
+    audio_clock = _audio_clock_setup(model, x, sigmas, h3_audio_clock)
+
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
@@ -1235,7 +1303,9 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         prev_h = h
 
         if sigma_next == 0:
-            x = denoised_eff
+            # Identical displacement to the euler-RF step below at sigma_next = 0, so the
+            # audio clock corrects this final step like any other.
+            x = _audio_clock_step(denoised_eff, x, audio_clock, i)
             continue
 
         if in_quality:
@@ -1251,7 +1321,10 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
             dt = sigma_next - sigma
             d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
             if effective_blend > 0.0:
-                x_pred = x + d1 * dt
+                # Audio in the predicted state gets the clock too: the corrector's audio
+                # output is discarded, but video and audio share one packed sequence, so
+                # an over-stepped audio half skews the video correction via joint attention.
+                x_pred = _audio_clock_step(x + d1 * dt, x, audio_clock, i)
                 denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
                 d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
                 d_use = d1 + effective_blend * ((d1 + d2) * 0.5 - d1)
@@ -1259,7 +1332,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                 d_use = d1
             # Audio rides the plain euler direction (d1); only video gets the Heun correction.
             d_use = _video_only(d_use, d1, video_mask)
-            x = x + d_use * dt
+            x = _audio_clock_step(x + d_use * dt, x, audio_clock, i)
             # Heun changed x with a corrected direction; invalidate AB2 history.
             prev_denoised = None
             prev_h = None
@@ -1282,9 +1355,12 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                 renoise_coeff = (sigma_next ** 2 - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
                 x_anc = (alpha_ip1 / alpha_down) * x_anc + noise_sampler(sigma, sigma_next) * s_noise * renoise_coeff
                 # Video gets full ancestral noise; audio stays on the deterministic step.
-                x = _video_only(x_anc, x_det, video_mask)
+                # The clock is applied to the combined result: its audio half is exactly
+                # x_det's (the noise above is video-only), so it scales the deterministic
+                # audio displacement and leaves the noised video untouched.
+                x = _audio_clock_step(_video_only(x_anc, x_det, video_mask), x, audio_clock, i)
             else:
-                x = x_det
+                x = _audio_clock_step(x_det, x, audio_clock, i)
 
     return x
 
@@ -1311,7 +1387,8 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    rescue_prompt_sig=None,
                                    eta_final=1.0,
                                    normalize_strength=0.0,
-                                   normalize_start_sigma=0.9):
+                                   normalize_start_sigma=0.9,
+                                   h3_audio_clock=False):
     """
     Hybrid sampler:
     - Early schedule: Euler ancestral with order-2 denoised extrapolation for
@@ -1388,8 +1465,11 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             velocity_bias_source=velocity_bias_source,
             normalize_strength=normalize_strength,
             normalize_start_sigma=normalize_start_sigma,
+            h3_audio_clock=h3_audio_clock,
         )
 
+    # Below here is the eps-parameterised loop, which MiniMax H3 (CONST) never reaches —
+    # h3_audio_clock is deliberately not wired into it rather than added as dead code.
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = k_diffusion_sampling.default_noise_sampler(x, seed=seed)
@@ -1759,7 +1839,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    alg_guide_tail_frames=0,
                                    alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975,
-                                   quality_sharpness=0.0):
+                                   quality_sharpness=0.0, h3_audio_clock=False):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1800,6 +1880,10 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     - Optional quality_sharpness: temporal-average unsharp on the x0 prediction, applied only
       during the final Heun-correction steps (same mechanism as the Hybrid Euler 2S sampler's
       quality-phase sharpening, ported here). Free (no extra model eval), video-only.
+    - Optional h3_audio_clock: on MiniMax H3, integrate the audio stream on its own flow
+      schedule instead of the tangent approximation the DiT hands the sampler. Matters most
+      here — this sampler exists for the few-step schedules where that tangent is worst.
+      Free (a scalar per step), no-op off H3.
     """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
@@ -1833,6 +1917,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     if normalize_strength > 0.0:
         print(f"[FunPack AV] latent normalization on (strength={normalize_strength}, "
               f"start_sigma={normalize_start_sigma}, video-only)")
+    audio_clock = _audio_clock_setup(model, x, sigmas, h3_audio_clock)
     s_in = x.new_ones([x.shape[0]])
     prev_denoised = None
     prev_h = None
@@ -1993,7 +2078,9 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             prev_h = h
 
             if sigma_next == 0:
-                x = denoised_eff
+                # Same displacement the euler branch below would produce at dt = -sigma,
+                # so the audio clock corrects this final step like any other.
+                x = _audio_clock_step(denoised_eff, x, audio_clock, i)
                 continue
 
             dt = sigma_next - sigma  # negative: sigmas decrease
@@ -2002,21 +2089,25 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                 # Heun predictor-corrector.
                 # Predictor: Euler step using the (multistep-corrected) denoised.
                 d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
-                x_pred = x + d1 * dt
+                # The corrector's own audio output is discarded (audio rides d1), but the
+                # state it is evaluated at is shared: audio and video are one packed
+                # sequence, so an over-stepped audio half would skew the VIDEO correction
+                # through joint attention. Predict the audio where the clock says it lands.
+                x_pred = _audio_clock_step(x + d1 * dt, x, audio_clock, i)
                 # Corrector: evaluate model at the predicted x and sigma_next.
                 denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
                 d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
                 # Audio rides the plain euler direction (d1); only video gets the Heun correction.
                 d_use = _video_only((d1 + d2) / 2.0, d1, video_mask)
                 d_use = _mg_step(d_use, video_mask)
-                x = x + d_use * dt
+                x = _audio_clock_step(x + d_use * dt, x, audio_clock, i)
                 # Heun updates x differently; invalidate multistep history.
                 prev_denoised = None
                 prev_h = None
             else:
                 d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
                 d = _mg_step(d, video_mask)
-                x = x + d * dt
+                x = _audio_clock_step(x + d * dt, x, audio_clock, i)
                 if s_noise > 0.0:
                     sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
                     if sigma_up > 0.0:
@@ -2027,6 +2118,12 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             model.latent_image = alg_sharp_latent_image
 
     return x
+
+
+# FunPack sampler functions that accept h3_audio_clock. The hybrid entry point is here
+# because on a CONST model (which MiniMax H3 is) it delegates to _sample_const_rf_full,
+# which carries the correction; its own eps loop is unreachable on H3.
+_AUDIO_CLOCK_SAMPLERS = (sample_funpack_distilled_flow, sample_funpack_hybrid_euler_2s)
 
 
 class FunPackDistilledFlowSampler:
@@ -2537,6 +2634,10 @@ class FunPackLTXAVSceneChainSampler:
                 "second_pass_op": (["none", "sharpen", "upscale_2x"], {
                     "default": "none",
                     "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor) — the scene report says so when it happens. Both use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official one on first use). Video stream only; audio is never reshaped.",
+                }),
+                "h3_audio_clock": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only: integrate the audio stream on its OWN flow schedule. H3 denoises video and audio on two different schedules (the MiniMax H3 Sigma Shift node's shift_video 12 / shift_audio 3), but only one sigma grid reaches a sampler, so the model reconciles them by scaling the audio velocity by the slope between the two schedules at the START of each step. That is exact for infinitesimal steps and increasingly wrong as steps get bigger: on a 4-step schedule the last step drives audio roughly 2.5x past where its own schedule puts it, which is heard as distortion. This replaces that start-of-step slope with the one that actually spans the step, so audio lands where its schedule says. Costs one scalar multiply per step — no extra model call. Turn it on for few-step schedules (turbo/distilled LoRAs, 4-8 steps); above ~20 steps the two agree and it changes almost nothing. Video output is bit-identical either way; only the audio stream moves. Needs a FunPack sampler (Distilled Flow, or Hybrid Euler 2S which routes to the rectified-flow path on H3) — it cannot reach inside a stock ComfyUI sampler, and says so rather than pretending to run.",
                 }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
@@ -3136,7 +3237,7 @@ class FunPackLTXAVSceneChainSampler:
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
-                      bounded_attention_enabled=False):
+                      bounded_attention_enabled=False, h3_audio_clock=False):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
@@ -3161,6 +3262,18 @@ class FunPackLTXAVSceneChainSampler:
             extra_options["alg_guide_tail_frames"] = int(alg_guide_tail_frames)
             extra_options["alg_guide_blur_strength"] = float(alg_guide_blur_strength)
             extra_options["alg_guide_blur_sigma_threshold"] = float(alg_guide_blur_sigma_threshold)
+        # h3_audio_clock reaches the sampler the same way, but it belongs to every FunPack
+        # sampler function that can run on H3 (see _AUDIO_CLOCK_SAMPLERS), not just this one.
+        # A stock comfy sampler has no such option and cannot be reached — say so once per
+        # run rather than leaving the toggle looking active.
+        if isinstance(extra_options, dict) and getattr(sampler, "sampler_function", None) in _AUDIO_CLOCK_SAMPLERS:
+            extra_options["h3_audio_clock"] = bool(h3_audio_clock)
+        elif h3_audio_clock and not self._h3_clock_unreachable_noted:
+            self._h3_clock_unreachable_noted = True
+            print("[FunPackSceneChain] h3_audio_clock is on, but the wired sampler is not a "
+                  "FunPack one — the correction lives inside the sampling loop and cannot be "
+                  "applied from outside it. Wire FunPack Distilled Flow (or Hybrid Euler 2S) "
+                  "to use it. Sampling continues without it.")
         # EXPERIMENTAL Bounded Attention: model-level attention hooks (sampler-agnostic, unlike
         # the toggles above which only work on Distilled Flow), so install/remove here rather
         # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
@@ -4212,6 +4325,7 @@ class FunPackLTXAVSceneChainSampler:
     _is_h3 = False
     _h3_ref_cache: dict = {}
     _h3_mode_noted = False
+    _h3_clock_unreachable_noted = False
 
     def _h3_add_keyframes(self, conditioning, pins, frame_count, aug=None):
         """Merge keyframe pins into a conditioning, keeping any already attached.
@@ -5546,6 +5660,7 @@ class FunPackLTXAVSceneChainSampler:
                context_window_freenoise=True, context_window_retain_first=False,
                cut_opening_frames=0,
                second_pass=False, second_pass_op="none", second_pass_sigmas=None,
+               h3_audio_clock=False,
                audio_vae=None, h3_keyframes=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
@@ -5579,6 +5694,7 @@ class FunPackLTXAVSceneChainSampler:
         # live in THIS request (see [[feedback_no_persistent_state_caches]]).
         self._h3_ref_cache = {}
         self._h3_mode_noted = False
+        self._h3_clock_unreachable_noted = False
         if self._is_h3:
             print("[FunPackSceneChain] MiniMax H3 detected — audio stream time axis is the last "
                   "dim, frame grid is 17k+5, conditioning is a single packed self-attention "
@@ -5696,6 +5812,7 @@ class FunPackLTXAVSceneChainSampler:
                 cut_opening_frames=cut_opening_frames,
                 second_pass=second_pass, second_pass_op=second_pass_op,
                 second_pass_sigmas=second_pass_sigmas,
+                h3_audio_clock=h3_audio_clock,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -6169,6 +6286,7 @@ class FunPackLTXAVSceneChainSampler:
                     alg_guide_blur_strength=alg_guide_blur_strength,
                     alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
                     bounded_attention_enabled=bounded_attention_enabled,
+                    h3_audio_clock=h3_audio_clock,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene
                 # at full strength, then cut it out of the finished clip instead of weakening
@@ -6649,7 +6767,7 @@ class FunPackLTXAVSceneChainSampler:
                             context_window_retain_first=False,
                             cut_opening_frames=0,
                             second_pass=False, second_pass_op="none",
-                            second_pass_sigmas=None):
+                            second_pass_sigmas=None, h3_audio_clock=False):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -6712,6 +6830,7 @@ class FunPackLTXAVSceneChainSampler:
                 cut_opening_frames=cut_opening_frames,
                 second_pass=second_pass, second_pass_op=second_pass_op,
                 second_pass_sigmas=second_pass_sigmas,
+                h3_audio_clock=h3_audio_clock,
                 unique_id=None, prompt=None,
             )
             last = out

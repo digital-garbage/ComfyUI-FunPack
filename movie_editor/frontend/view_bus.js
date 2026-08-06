@@ -139,6 +139,9 @@
       h3Detail: st.project?.sampler_inputs?.segmented_detailing,
       h3Pass2: st.project?.sampler_inputs?.second_pass,
       h3Pass2Op: st.project?.sampler_inputs?.second_pass_op,
+      // H3-ONLY settings get a chip when the pipeline is NOT H3, so this belongs here for
+      // exactly the same reason as the ones above — in the mirror direction.
+      h3Clock: st.project?.sampler_inputs?.h3_audio_clock,
       // ... including the project's frame rate, which the H3 fixed-24-fps chip reads.
       h3Fps: st.project?.frame_rate,
     });

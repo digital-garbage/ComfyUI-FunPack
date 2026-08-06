@@ -114,11 +114,30 @@
     return out;
   }
 
+  // The mirror image of H3_DEAD_SAMPLER_INPUTS: settings that only mean something ON H3.
+  // Left on against an LTX pipeline they are just as silently inert, so they get a chip
+  // by the same rule — the user should not have to spend a generation to find out.
+  // key -> why it cannot run off H3.
+  const H3_ONLY_SAMPLER_INPUTS = {
+    h3_audio_clock:
+      "The audio clock corrects for H3 denoising video and audio on two different flow "
+      + "schedules. LTX puts both streams on one schedule, so there is nothing to correct.",
+  };
+
   // Returns [{short, detail}] for settings that are ON but cannot do anything on H3.
   function h3InertSettings(st) {
     const p = st && st.project;
-    if (!p || !isH3(st) || !usesChainSampler(st)) return [];
+    if (!p || !usesChainSampler(st)) return [];
     const si = p.sampler_inputs || {};
+    if (!isH3(st)) {
+      return Object.keys(H3_ONLY_SAMPLER_INPUTS)
+        .filter((key) => si[key])
+        .map((key) => ({
+          short: key.replace(/_/g, " ") + " needs MiniMax H3",
+          detail: H3_ONLY_SAMPLER_INPUTS[key]
+            + " Turn it off in Settings → Engine to stop it showing here.",
+        }));
+    }
     const issues = [];
     Object.keys(H3_DEAD_SAMPLER_INPUTS).forEach((key) => {
       if (si[key]) issues.push([key, H3_DEAD_SAMPLER_INPUTS[key]]);

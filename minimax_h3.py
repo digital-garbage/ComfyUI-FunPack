@@ -74,6 +74,114 @@ AUDIO_TIME_DIM = -1
 VIDEO_TIME_DIM = 2
 
 
+# ── the audio clock ──────────────────────────────────────────────────────────
+# H3 denoises video and audio on two different flow schedules (shift 12 / shift 3).
+# Only ONE sigma grid reaches a sampler, so comfy reconciles them inside the DiT: it
+# returns the audio velocity pre-multiplied by d(sigma_a)/d(sigma_v), which makes the
+# flat ODE a sampler integrates on the video grid equal to the audio stream's true ODE
+# on its own grid (comfy/ldm/minimax/model.py, final lines of _forward).
+#
+# That identity holds in the CONTINUOUS limit. The derivative is the tangent at the
+# start of the step, and the two schedules diverge hard, so on a big step the tangent
+# badly overshoots the chord it is standing in for. On a 4-step shift-12 schedule the
+# video grid ~[1, .973, .923, .8, 0] maps to audio ~[1, .9, .75, .5, 0]; the final step's
+# tangent is 1.56 where the true chord is 0.63 — the audio is driven ~2.5x past its
+# target and comes out distorted. At 20+ steps the two agree to within a percent, which
+# is why this only shows up on distilled / turbo few-step schedules.
+#
+# The fix is to integrate the audio on its own grid: swap the tangent for the chord that
+# actually spans the step. One scalar per step, no extra model evaluation.
+
+_AUDIO_CLOCK_MAX_FACTOR = 16.0
+
+
+def time_shift_sigma(sigma, from_shift, to_shift):
+    """Re-express a sigma from one flow schedule on another. Mirrors the DiT's own."""
+    sigma = float(sigma)
+    from_shift = float(from_shift)
+    to_shift = float(to_shift)
+    denom = from_shift + sigma * (1.0 - from_shift)
+    if abs(denom) < 1e-12:
+        return sigma
+    base = sigma / denom
+    return to_shift * base / (1.0 + (to_shift - 1.0) * base)
+
+
+def time_shift_slope(sigma, from_shift, to_shift):
+    """d(sigma_to)/d(sigma_from) at the same base-grid point. Mirrors the DiT's own."""
+    sigma = float(sigma)
+    from_shift = float(from_shift)
+    to_shift = float(to_shift)
+    denom = from_shift + sigma * (1.0 - from_shift)
+    if abs(denom) < 1e-12 or abs(from_shift) < 1e-12:
+        return 1.0
+    base = sigma / denom
+    lower = from_shift * (1.0 + (to_shift - 1.0) * base) ** 2
+    if abs(lower) < 1e-12:
+        return 1.0
+    return (to_shift * (1.0 + (from_shift - 1.0) * base) ** 2) / lower
+
+
+def audio_clock_factors(sigmas, shift_video=DEFAULT_SHIFT_VIDEO, shift_audio=DEFAULT_SHIFT_AUDIO):
+    """Per-step correction for the audio stream's displacement, one float per step.
+
+    The sampler moves audio by ``slope(sigma_v) * v_a * (sigma_v_next - sigma_v)``.
+    The audio's own schedule wants ``v_a * (sigma_a_next - sigma_a)``. Multiplying the
+    audio part of the step by
+
+        (sigma_a_next - sigma_a) / (slope(sigma_v) * (sigma_v_next - sigma_v))
+
+    turns the first into the second exactly, for any sampler that moves the stream by a
+    velocity times the step. Returns ``len(sigmas) - 1`` factors; 1.0 wherever the
+    correction is undefined (zero-length step, degenerate slope), so it no-ops rather
+    than dividing by ~0.
+
+    Every factor is 1.0 when the two shifts are equal — the schedules coincide and
+    there is nothing to correct.
+    """
+    out = []
+    values = [float(s) for s in sigmas]
+    for i in range(max(0, len(values) - 1)):
+        sv, sv_next = values[i], values[i + 1]
+        dv = sv_next - sv
+        slope = time_shift_slope(sv, shift_video, shift_audio)
+        if abs(dv) < 1e-9 or abs(slope) < 1e-9:
+            out.append(1.0)
+            continue
+        da = (time_shift_sigma(sv_next, shift_video, shift_audio)
+              - time_shift_sigma(sv, shift_video, shift_audio))
+        factor = da / (slope * dv)
+        # With the stock shifts (video 12 > audio 3) the map is convex, the tangent is
+        # taken at the step's high-sigma end, and the factor lands in (0, 1] — it always
+        # SHORTENS the audio step. Shifts the other way round invert that and the factor
+        # exceeds 1, which is correct and must not be clamped away. The bound here is a
+        # numerical sanity rail only, wide enough never to bind on a real schedule.
+        out.append(float(min(_AUDIO_CLOCK_MAX_FACTOR, max(0.0, factor))))
+    return out
+
+
+def resolve_sigma_shifts(model_options):
+    """The (video, audio) flow shifts in force, from a model_options dict.
+
+    MiniMaxH3SigmaShift writes both into transformer_options; without that node the DiT
+    falls back to its own defaults, and so do we.
+    """
+    to = {}
+    if isinstance(model_options, dict):
+        candidate = model_options.get("transformer_options")
+        if isinstance(candidate, dict):
+            to = candidate
+    try:
+        shift_v = float(to.get(SHIFT_VIDEO_OPTION, DEFAULT_SHIFT_VIDEO))
+    except (TypeError, ValueError):
+        shift_v = DEFAULT_SHIFT_VIDEO
+    try:
+        shift_a = float(to.get(SHIFT_AUDIO_OPTION, DEFAULT_SHIFT_AUDIO))
+    except (TypeError, ValueError):
+        shift_a = DEFAULT_SHIFT_AUDIO
+    return shift_v, shift_a
+
+
 # ── detection ────────────────────────────────────────────────────────────────
 # All three of these have to work when the H3 PR is not installed at all, so they
 # only ever read attributes that any comfy object has.
