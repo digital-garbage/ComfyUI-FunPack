@@ -28,6 +28,7 @@ from .backend.timeline import (
     build_generation_scene_segments,
     collapse_generative_units,
     continuity_media_refs,
+    effective_anchor,
     effective_negative_prompt,
     effective_postfix,
     gen_unit_id,
@@ -639,6 +640,32 @@ def _resolve_run_seed(target: Project) -> int:
     if si.get("seed") is not None:
         return int(si["seed"])
     return random.randint(1, 0xFFFFFFFFFFFFFFFF)
+
+
+def _expanded_link_texts(target: Project, prompt: str) -> dict[str, str]:
+    """The project's texts as a node OUTSIDE Studio needs them — shortcut triggers expanded
+    and `$name` variables resolved, in Studio's own order.
+
+    Only linked inputs (Models → Linked inputs) read these. Studio keeps receiving the raw
+    prompt on its own port: it expands per scene, at the point where it also splits the
+    timeline and attributes refinement keys, and pre-expanding for it would flatten that.
+    `prompt` is the combined generation prompt, so it already carries the anchor; the anchor
+    is offered separately for a node that wants to compose the two itself.
+    """
+    variables = list(target.variables or [])
+
+    def ex(text):
+        return bridge.expand_prompt_for_node(text, variables)
+
+    body = ex(prompt)
+    postfix = ex(effective_postfix(target))
+    return {
+        "prompt": body,
+        "anchor": ex(effective_anchor(target)),
+        "postfix": postfix,
+        "negative_prompt": ex(effective_negative_prompt(target)),
+        "full_prompt": " ".join(t for t in (body, postfix) if t),
+    }
 
 
 def _run_sampler_inputs(
@@ -1754,6 +1781,11 @@ if web is not None and PromptServer is not None:
                 # generation prompt stays clean — no injected `scene N` delimiters.
                 "scene_segments": build_generation_scene_segments(target),
                 "sampler_inputs": sampler_inputs,
+                # Text for LINKED node inputs only (Models → Linked inputs). A node that
+                # encodes on its own does none of what Studio does to a prompt, so these are
+                # shortcut-expanded and $variable-resolved here; the built-in path above still
+                # gets the raw text, which Studio expands itself at the right moment.
+                "expanded": _expanded_link_texts(target, prompt),
                 "variables": list(target.variables or []),
                 # Reference media is wired to node inputs now (Media Bin "R" → Models &
                 # Pipeline), so the editor no longer drives Studio's built-in ref2va list.

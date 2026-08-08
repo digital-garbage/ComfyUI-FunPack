@@ -87,6 +87,26 @@ def expand_prompt_fragment(text: str) -> str:
     return " ".join(parts).strip()
 
 
+def expand_prompt_for_node(text: str, variables=None) -> str:
+    """A project text made ready for a node that encodes it ITSELF (a MiniMax H3 fl2va /
+    ref2va prompt field driven by a linked input, say).
+
+    Studio does two things to a prompt before it reaches a text encoder: it expands shortcut
+    triggers, then resolves `$name` variables — in that order, variables dead last. A node
+    outside Studio does neither, so handing it the raw project text would encode the literal
+    `/shortcut` triggers and `$name` tokens. This applies both steps, so what that node
+    encodes is what Studio would have encoded.
+
+    Peeks at the shortcut revolver rather than committing it: the run's own expansion inside
+    Studio is what advances the no-repeat cycle, and doing it twice would skip a slot.
+    """
+    expanded = expand_prompt_fragment(text)
+    if not expanded or not variables:
+        return expanded
+    resolve_variables = _funpack_attr("templates", "resolve_variables")
+    return resolve_variables(expanded, variables)[0]
+
+
 def parse_timeline_raw(prompt: str) -> dict:
     """Split WITHOUT expanding shortcuts — scene texts stay verbatim (shortcuts and
     transition triggers preserved). Used by editing views so the user keeps operating

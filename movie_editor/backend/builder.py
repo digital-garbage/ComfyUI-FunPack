@@ -612,7 +612,12 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     for link in (models_config or {}).get("links") or []:
         if link.get("source") == "editor":
             key = link.get("editor_key")
-            val = params.get(key)
+            # Text keys come pre-expanded (shortcuts + $variables) in params["expanded"]:
+            # the node on the other end of a link encodes the string as-is, so a raw
+            # `/trigger` or `$name` would be encoded literally. Studio's own ports are not
+            # linked inputs — they still receive the raw text and expand it themselves.
+            expanded = params.get("expanded") or {}
+            val = expanded[key] if key in expanded else params.get(key)
             # A latent node driven by "Project · Frames" has to receive the SAME number the
             # sampler is given, or the two disagree about the scene length and the run dies
             # on the mismatch. Same for a fixed-rate family's fps.

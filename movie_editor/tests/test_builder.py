@@ -675,6 +675,31 @@ def test_a_node_widget_can_be_driven_by_the_project_prompt():
     assert graph["slot_r"]["inputs"]["prompt"] == "scene one"
 
 
+def test_a_linked_text_takes_the_expanded_prompt_not_the_raw_one():
+    """The node on the other end encodes the string as it arrives — it does none of what
+    Studio does to a prompt. So a linked text gets the shortcut/$variable-expanded version,
+    while Studio's own port keeps the raw text it expands per scene itself."""
+    models = {"slots": [{"id": "r", "node_class": "MiniMaxH3ReferenceToVideo",
+                         "inputs": {}, "wires": {}}],
+              "links": [{"id": "l1", "source": "editor", "editor_key": "prompt",
+                         "members": [{"slotId": "r", "input": "prompt"}]}]}
+    params = dict(PARAMS, prompt="/greet $hero", expanded={"prompt": "hello Rin"})
+    graph, _ = builder.build(REF_OI, models, params)
+    assert graph["slot_r"]["inputs"]["prompt"] == "hello Rin"
+    assert graph["pos"]["inputs"]["value"] == "/greet $hero"   # Studio still expands its own
+
+
+def test_anchor_and_postfix_are_linkable_texts_of_their_own():
+    """A node encoding on its own has no idea Studio would wrap each scene in these."""
+    models = {"slots": [{"id": "r", "node_class": "MiniMaxH3ReferenceToVideo",
+                         "inputs": {}, "wires": {}}],
+              "links": [{"id": "l1", "source": "editor", "editor_key": "postfix",
+                         "members": [{"slotId": "r", "input": "prompt"}]}]}
+    params = dict(PARAMS, expanded={"postfix": "cinematic lighting"})
+    graph, _ = builder.build(REF_OI, models, params)
+    assert graph["slot_r"]["inputs"]["prompt"] == "cinematic lighting"
+
+
 def test_a_core_combo_value_missing_on_this_machine_falls_back_instead_of_blocking():
     """ComfyUI validates combo values against the LIVE list and rejects the whole prompt if
     one is stale — so a projector/LoRA left selected on a machine that doesn't have the file

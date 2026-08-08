@@ -230,6 +230,54 @@
     return null;
   }
 
+  // Studio has two ways to get its positive conditioning and takes exactly ONE of them:
+  // it encodes the project prompt through the connected CLIP, and only when no CLIP is
+  // connected does it accept a pre-encoded CONDITIONING wired into positive_conditioning.
+  // So a project that wires both loses one of them, silently:
+  //   * no CLIP  -> the wired encoder's OWN prompt widget is what generates. The project
+  //     prompt never reaches the model, and neither do the things that ride on it inside
+  //     Studio: shortcut expansion, $variables, and the per-scene prompt split.
+  //   * CLIP too -> CLIP wins and the wired conditioning is dropped on the floor.
+  // Either way the run looks fine and generates the wrong thing, so say it beforehand.
+  const STUDIO_COND_PORT = "port:FunPackStudio.positive_conditioning";
+  const STUDIO_CLIP_PORT = "port:FunPackStudio.clip";
+
+  function anySlotWiresTo(m, port) {
+    return (m.slots || []).some((s) => Object.values((s && s.wires) || {})
+      .some((t) => (Array.isArray(t) ? t : [t]).includes(port)));
+  }
+
+  function promptSourceIssue(st) {
+    const m = models(st);
+    if (m.disable_core || !usesFunpackStudio(st)) return null;
+    const ov = (m.core_overrides && m.core_overrides.studio) || {};
+    if (!ov.positive_conditioning && !anySlotWiresTo(m, STUDIO_COND_PORT)) return null;
+    // CLIP reaches Studio explicitly, or by auto-wire when exactly one slot can make one
+    // (the roles that output CLIP are the text encoder and a LoRA passing one through).
+    const clipMakers = (m.slots || []).filter((s) => s.role === "clip" || s.role === "lora");
+    const clipReaches = !!ov.clip || anySlotWiresTo(m, STUDIO_CLIP_PORT) || clipMakers.length === 1;
+    if (clipReaches) {
+      return {
+        short: "Wired conditioning is ignored",
+        detail: "Studio has both a CLIP and a pre-encoded CONDITIONING connected. CLIP wins — it "
+          + "encodes the project prompt — so the conditioning you wired into positive_conditioning "
+          + "is dropped. Unwire one of the two so it is clear which prompt is generating.",
+        target: "models",
+      };
+    }
+    return {
+      short: "Your prompt is not being encoded",
+      detail: "Studio has no CLIP connected, so it uses the CONDITIONING wired into "
+        + "positive_conditioning as-is. That conditioning was encoded from the wired node's OWN "
+        + "prompt field — the project prompt never reaches the model, and neither does shortcut "
+        + "expansion, $variables, or the per-scene prompt split, which all happen inside Studio. "
+        + "Either wire a text encoder into Studio · clip and let Studio encode, or link that "
+        + "node's prompt field to Project · Prompt in Models → Linked inputs (it then gets the "
+        + "raw global prompt, one encoding for the whole run).",
+      target: "models",
+    };
+  }
+
   function sourceLabel(type) {
     const map = {
       empty: "Empty · text-to-video",
@@ -259,6 +307,7 @@
     sourceNeedsAnchorMedia,
     isMissingAnchorMedia,
     identityTransferIssue,
+    promptSourceIssue,
     sourceLabel,
   };
 })();

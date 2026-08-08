@@ -361,6 +361,10 @@
       if (w.kind === "combo" && (!w.choices || !w.choices.length)) {
         issues.push({ level: "error", msg: `"${w.name}" has no installed options to pick from.` });
       } else if (v == null || v === "") {
+        // A linked input is FILLED at generate time from a project value, so the stored
+        // blank is the normal state for one — warning about it would train the user to
+        // ignore the warning that matters.
+        if (linkOf(slot.id, w.name)) return;
         // Not blocking: the builder emits a type-appropriate empty for any widget left
         // blank (matching ComfyUI's frontend), so an empty field won't stall generation.
         issues.push({ level: "warn", msg: `"${w.name}" is empty — using its default.` });
@@ -1124,6 +1128,12 @@
     { key: "", label: "Manual value" },
     { key: "prompt", label: "Project · Prompt (global)", kinds: ["string"] },
     { key: "negative_prompt", label: "Project · Negative prompt", kinds: ["string"] },
+    // The texts Studio wraps every scene in. A node encoding on its own knows nothing about
+    // them, so it can take them apart (anchor / postfix) or take the whole thing at once.
+    // The global prompt already carries the anchor — the postfix is the only piece outside it.
+    { key: "anchor", label: "Project · Anchor text (prepended)", kinds: ["string"] },
+    { key: "postfix", label: "Project · Postfix (appended)", kinds: ["string"] },
+    { key: "full_prompt", label: "Project · Prompt + postfix (what Studio encodes)", kinds: ["string"] },
     { key: "seed", label: "Project · Seed", kinds: ["int", "float"] },
     { key: "frame_rate", label: "Project · FPS", kinds: ["int", "float"] },
     { key: "num_frames_per_scene", label: "Project · Frames", kinds: ["int", "float"] },
@@ -1172,7 +1182,9 @@
 
     if (link.source === "editor") {
       const srcLbl = (EDITOR_SOURCES.find((s) => s.key === link.editor_key) || {}).label || link.editor_key;
-      card.append(el("div", "link-bound", `Value comes from ${srcLbl} at generate — the fields below are ignored.`));
+      const isText = ["prompt", "negative_prompt", "anchor", "postfix", "full_prompt"].includes(link.editor_key);
+      card.append(el("div", "link-bound", `Value comes from ${srcLbl} at generate — the fields below are ignored.`
+        + (isText ? " Shortcuts and $variables are expanded first, so the node encodes the same text Studio would." : "")));
     } else {
       const spec = { name: "shared value", kind: link.kind, choices: link.choices, required: false };
       const vf = widgetField(spec, link.value, async (v) => { applyLinkValue(link, v); await persist(); });
