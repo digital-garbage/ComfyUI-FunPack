@@ -1007,9 +1007,23 @@
     });
   }
 
-  // For VAE: need two separate producers (video_vae + audio_vae roles).
-  // For others: at least one producer of the type (regardless of role).
+  // Does this slot SOURCE the type — output it without consuming one? A loader or a
+  // generator does; a patcher that only passes the type through (a LoRA on MODEL/CLIP)
+  // does not, and can't satisfy a requirement on its own.
+  function slotSourcesType(type, slot) {
+    const spec = specFor(slot);
+    if (!(spec?.outputs || []).some((o) => o.type === type)) return false;
+    return !(spec?.connection_inputs || []).some((ci) => ci.type === type);
+  }
+
+  // VAE is asked for twice — video and audio — and only the role tells the two apart, so
+  // those stay role-bound (two separate producers required). Every other requirement is
+  // about whether the pipeline can GET that type from somewhere, so any node that really
+  // sources it counts, whatever role the user filed it under: MiniMax H3's fl2va / ref2va
+  // nodes emit their own AV latent, which is exactly what an Empty AV Latent would provide.
   function requirementSatisfied(req) {
+    if (req.type === "VAE") return slotProducesType(req.type, req.role_hint);
+    if (config.slots.some((s) => slotSourcesType(req.type, s))) return true;
     if (req.role_hint) return slotProducesType(req.type, req.role_hint);
     return slotProducesType(req.type, null);
   }
