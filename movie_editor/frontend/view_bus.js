@@ -144,7 +144,7 @@
       h3Clock: st.project?.sampler_inputs?.h3_audio_clock,
       // ... including the project's frame rate, which the H3 fixed-24-fps chip reads.
       h3Fps: st.project?.frame_rate,
-      // The "your prompt is not being encoded" chip reads the whole models WIRING, which is
+      // The "nothing encodes your prompt" chip reads the whole models WIRING, which is
       // far too big to hash field by field — track the verdict itself instead, so rewiring
       // Studio's clip / positive_conditioning in Models repaints this zone and nothing else
       // about the config does.

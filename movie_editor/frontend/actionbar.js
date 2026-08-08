@@ -100,8 +100,7 @@
     const issues = [];
     const idIssue = window.PipelineCaps?.identityTransferIssue(st);
     if (idIssue) issues.push(idIssue);
-    // Wiring that makes the typed prompt (or a wired encoder) inert — the run succeeds and
-    // generates something else entirely, so this one is worth knowing before pressing.
+    // No conditioning source at all on Studio — no encoder, no pre-encoded conditioning.
     const promptIssue = window.PipelineCaps?.promptSourceIssue(st);
     if (promptIssue) issues.push(promptIssue);
     // On MiniMax H3 several LTX-only sampler settings are switched off by the sampler
