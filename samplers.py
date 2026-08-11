@@ -3713,6 +3713,17 @@ class FunPackLTXAVSceneChainSampler:
             result["samples"] = tensors[0]
         return result, note
 
+    def _latent_spatial_changed(self, state, chunk):
+        """True when `state`'s video stream no longer has `chunk`'s H/W — i.e. a
+        second_pass_op resized it. Everything recorded against the old grid (the i2v
+        pin, guide keyframe token indices) is invalid past this point. Unreadable
+        shapes answer False so a probe failure never drops a guide on its own."""
+        try:
+            return (self._latent_tensors(state)[0].shape[-2:]
+                    != self._latent_tensors(chunk)[0].shape[-2:])
+        except Exception:
+            return False
+
     def _restore_pinned_prefix(self, state, chunk):
         """Put the i2v pin back on a latent that is about to be handed to a second pass.
 
@@ -3729,7 +3740,7 @@ class FunPackLTXAVSceneChainSampler:
             # A resolution-changing second_pass_op (upscale_2x) leaves the chunk's anchor and
             # mask the wrong size. Rescaling them here would be inventing an anchor; the
             # caller reports the lost pin instead.
-            if self._latent_tensors(state)[0].shape[-2:] != self._latent_tensors(chunk)[0].shape[-2:]:
+            if self._latent_spatial_changed(state, chunk):
                 return state
         except Exception:
             return state
@@ -6791,6 +6802,28 @@ class FunPackLTXAVSceneChainSampler:
                             "second_pass NOTE: the i2v anchor could not stay pinned for pass 2 "
                             "because second_pass_op changed the latent resolution — pass 2 runs "
                             "unpinned and may drift from the reference image.")
+                    # Same resolution change, second casualty: guide keyframes are recorded as
+                    # TOKEN indices into the pass-1 grid, and 2x spatial means 4x the tokens per
+                    # latent frame, so those indices now address the wrong tokens entirely.
+                    # Since the LTX-2.5 commit core rejects it outright ("keyframe_idxs holds N
+                    # tokens, which is not a whole number of M-token latent frames") and tells
+                    # you to crop the guides before upscaling; older cores silently mis-placed
+                    # them, which is worse. Drop them for pass 2, exactly as segmented detailing
+                    # does for its crop — and only for pass 2, so pass 1 keeps every guide.
+                    _sp_positive, _sp_negative = scene_positive, scene_negative
+                    if self._latent_spatial_changed(_sp_state, chunk):
+                        try:
+                            from .detailing import has_layout_conds, strip_layout_conds
+                        except ImportError:
+                            from detailing import has_layout_conds, strip_layout_conds
+                        if has_layout_conds(scene_positive) or has_layout_conds(scene_negative):
+                            _sp_positive = strip_layout_conds(scene_positive)
+                            _sp_negative = strip_layout_conds(scene_negative)
+                            run_mechanisms.append(
+                                "second_pass NOTE: mid-scene guides / guide keyframes were "
+                                "dropped for pass 2 because second_pass_op changed the latent "
+                                "resolution — their token positions describe the pass-1 grid. "
+                                "Pass 1 used them in full.")
                     _sp_kw = dict(_sample_kwargs)
                     _sp_kw["step_offset"] = _sample_kwargs["step_offset"] + (int(sigmas.numel()) - 1)
                     # Announced BEFORE it runs: the after-the-fact run_mechanisms line says
@@ -6800,8 +6833,8 @@ class FunPackLTXAVSceneChainSampler:
                           f"{' on ' + _scene_label if _scene_label else ''}: "
                           f"{int(_sp_b.numel()) - 1} steps from sigma {float(_sp_b[0].item()):g}")
                     sampled = self._sample_chunk(
-                        model, sampler, _sp_b, scene_seed + 4242, cfg, scene_positive,
-                        scene_negative, _sp_state, **_sp_kw)
+                        model, sampler, _sp_b, scene_seed + 4242, cfg, _sp_positive,
+                        _sp_negative, _sp_state, **_sp_kw)
                     run_mechanisms.append(
                         f"second_pass({int(sigmas.numel()) - 1} steps + "
                         f"{int(_sp_b.numel()) - 1} steps = "

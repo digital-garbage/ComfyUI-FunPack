@@ -7,6 +7,12 @@
   const S = window.Store;
   const API = window.MovieEditorAPI;
 
+  // Project ids whose legacy Distilled-Flow ALG switch has been folded into the
+  // sampler-wide alg_anchor this session. Module scope, not render scope: every store
+  // write re-renders this pane synchronously, so the guard has to outlive a render or
+  // the migration re-enters itself and recurses until the stack blows.
+  const _ALG_MIGRATED = new Set();
+
   // Easy Gen has no rating UI at all (by design — see easy_gen/frontend/), so every
   // setting that is a no-op without a trained refinement key / rated history is hidden
   // there, not just made harder to find. window.FunPackAppName is the same discriminator
@@ -648,6 +654,36 @@
       else S.unsetSamplerInput("second_pass");
     }
 
+    // ALG used to have two switches: the Distilled Flow panel's own alg_enabled, and the
+    // chain sampler's alg_anchor, which is the same guidance on ANY sampler and already
+    // drove the Distilled Flow one whenever it was on. Two controls for one behaviour, and
+    // which of them won depended on which you had set — so the Editor now shows only
+    // alg_anchor. The node input still exists for hand-built graphs; what moves is the
+    // Editor's control. A project carrying the old switch is migrated once, with its
+    // strength and threshold, rather than left running ALG with nothing on screen to
+    // turn it off.
+    function migrateDistilledAlg(cfg) {
+      const pid = String(S.get()?.project?.id || "");
+      const dc = cfg?.high?.distilled;
+      if (!dc || !dc.alg_enabled) return _ALG_MIGRATED.has(pid);
+      // Mark and clear BEFORE writing anything: each setter notifies the store, which
+      // re-renders this pane synchronously and comes straight back through here.
+      _ALG_MIGRATED.add(pid);
+      const strength = dc.alg_strength;
+      const threshold = dc.alg_sigma_threshold;
+      dc.alg_enabled = false;
+      // Out of the render pass entirely — persisting mid-render is what caused the
+      // recursion above, and a deferred write costs one extra repaint instead.
+      setTimeout(() => {
+        S.setSamplerInputNow("alg_anchor", true);
+        if (strength != null) S.setSamplerInputNow("alg_anchor_strength", Number(strength));
+        if (threshold != null) S.setSamplerInputNow("alg_anchor_sigma_threshold", Number(threshold));
+        persistSamplers(cfg, false);
+      }, 0);
+      return true;
+    }
+    const algMigrated = migrateDistilledAlg(samplers);
+
     try {
       window.SamplerPanel.render(box, samplers,
         (s) => persistSamplers(s, true),
@@ -664,8 +700,17 @@
     // it is never hidden behind a particular choice up there.
     const algG = group(pane, "Anchor blur (ALG)");
     renderKnobList(algG, st, ["alg_anchor", "alg_anchor_strength", "alg_anchor_sigma_threshold"]);
-    algG.append(hintEl("The same blur for guide and JoyAI-memory frames is under Experimental "
-      + "(“Blur i2v guides and JoyAI memory”) — it has its own strength and window."));
+    if (algMigrated) {
+      const moved = hintEl("Moved here from the Distilled Flow panel's own ALG switch — it was "
+        + "the same blur, and this one works on every sampler. Your strength and threshold "
+        + "came with it; nothing changed about how the scene samples.");
+      moved.style.color = "var(--amber)";
+      algG.append(moved);
+    }
+    algG.append(hintEl("This is the only ALG anchor control — on Distilled Flow it runs inside "
+      + "the sampler loop, on every other sampler through a denoiser proxy. The same blur for "
+      + "guide and JoyAI-memory frames is under Experimental (“Blur i2v guides and JoyAI "
+      + "memory”) — it has its own strength and window."));
     // Second pass lives here rather than under Experimental: at its defaults the split is
     // behaviour-neutral (pass 2 resumes from exactly the state pass 1 handed over), so it
     // is a sampler setting, not a gamble. The only control is the schedule field in the
