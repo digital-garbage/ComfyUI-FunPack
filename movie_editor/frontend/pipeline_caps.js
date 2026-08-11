@@ -61,6 +61,28 @@
     return Math.max(min, rounded * g.step + g.base);
   }
 
+  // What a frames INPUT should do while the user is using it. The two families are not
+  // equally strict, and treating them as if they were is what made the field unusable:
+  //   H3  — off-grid is a dead run (its latent node snaps its own length up while the
+  //         sampler expects the number the project asked for), so the field snaps on
+  //         commit and its arrows walk WHOLE grid steps (22 -> 39 -> 56). Before this the
+  //         arrows moved by 1 and the snap put the value straight back.
+  //   LTX — the builder rounds an off-grid length up to 8k+1 by itself, so nothing is at
+  //         risk: the field behaves like a plain number input and only its arrows follow
+  //         the grid (min 1 + step 8 lands them on 9 / 17 / 25 …).
+  // `min` is the arrow BASE as well as the floor, which is what puts the arrows on the grid.
+  function frameInputSpec(st) {
+    const g = frameGrid(st);
+    const hard = isH3(st);
+    return { step: g.step, min: hard ? g.step + g.base : g.base, snap: hard, grid: g };
+  }
+
+  // Snap only where the model actually demands it (H3). On LTX the typed number is kept.
+  function snapFramesIfRequired(n, st, mode) {
+    if (isH3(st)) return snapFramesTo(n, st, mode);
+    return Math.max(1, Math.round(Number(n) || 0));
+  }
+
   // H3 renders at a fixed 24 fps. The project's frame rate still drives the container the
   // clip is muxed into, so anything else plays the generated frames at the wrong speed —
   // the builder pins it, and this is what says so before the run.
@@ -283,6 +305,8 @@
     isH3,
     frameGrid,
     snapFramesTo,
+    frameInputSpec,
+    snapFramesIfRequired,
     frameRateIssue,
     h3InertSettings,
     effectiveSourceType,

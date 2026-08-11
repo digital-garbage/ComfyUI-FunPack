@@ -462,4 +462,7 @@ def test_the_toggle_stays_behind_the_second_pass_sigmas_socket():
     from samplers import FunPackLTXAVSceneChainSampler
 
     names = list(FunPackLTXAVSceneChainSampler.INPUT_TYPES()["optional"])
-    assert names.index("h3_audio_clock") == names.index("second_pass_sigmas") - 1
+    # The socket stays LAST, and the toggle stays behind it — later widgets (alg_anchor and
+    # friends) append between the two, which is exactly where a new widget belongs.
+    assert names[-1] == "second_pass_sigmas"
+    assert names.index("h3_audio_clock") < names.index("second_pass_sigmas")

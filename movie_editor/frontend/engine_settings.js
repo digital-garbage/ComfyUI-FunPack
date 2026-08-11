@@ -237,8 +237,14 @@
       hint: "Carries voice and ambience across shots too, not just the face. This deliberately changes the audio, which nothing else here does. Needs JoyAI-Echo memory on." },
     { name: "v2a_grad_scale",        label: "Video→audio coupling", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.25, dependsOn: "joyai_audio_memory",
       hint: "How much the carried audio follows the new shot's picture. 1.0 is the model's own behaviour and costs nothing; JoyAI uses 2.0; 0 makes audio ignore the video." },
+    { name: "alg_anchor",            label: "Blur the i2v anchor (ALG)", kind: "bool", default: false,
+      hint: "Hides the anchor image's fine detail during the first, noisiest steps so the shot can't shortcut to a near-still that just matches it — the usual fix for an anchored scene that barely moves. Works with whatever sampler you have wired, including a plain KSampler, and does nothing on a scene with no anchor image." },
+    { name: "alg_anchor_strength",   label: "Anchor blur strength", kind: "float", default: 2.0, min: 1.0, max: 4.0, step: 0.1, dependsOn: "alg_anchor",
+      hint: "How blurry the anchor gets while it's blurred. The paper says 2.5; 2.0 held character likeness noticeably better here." },
+    { name: "alg_anchor_sigma_threshold", label: "Anchor blur sigma threshold", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "alg_anchor",
+      hint: "How long the anchor stays blurred before switching to sharp. Higher = a shorter blurred window." },
     { name: "alg_blur_guides",       label: "Blur i2v guides and JoyAI memory", kind: "bool", default: false,
-      hint: "Blurs guide and memory frames during the first, noisiest steps, so they steer composition without pasting their own detail into the shot — which is what makes anchored scenes look static. Needs the FunPack Distilled Flow sampler, and does nothing on a scene with no guide frames." },
+      hint: "The same treatment for guide and memory frames, not just the anchor: blurred during the first, noisiest steps so they steer composition without pasting their own detail into the shot. Works with any sampler, and does nothing on a scene with no guide frames." },
     { name: "alg_guide_blur_strength", label: "Guide blur strength", kind: "float", default: 2.0, min: 1.0, max: 4.0, step: 0.1, dependsOn: "alg_blur_guides",
       hint: "How blurry those frames get while they're blurred. Higher = looser guidance and more freedom to move." },
     { name: "alg_guide_blur_sigma_threshold", label: "Guide blur sigma threshold", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "alg_blur_guides",
@@ -451,7 +457,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "h3_audio_clock", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "h3_audio_clock", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_anchor", "alg_anchor_strength", "alg_anchor_sigma_threshold", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id) {
@@ -626,14 +632,19 @@
       else S.setStudioInputNow("studio_settings", next);
       syncSecondPassFromSchedule(updatedSamplers, quiet);
     }
-    // The second pass is driven by ONE thing: the schedule. Typing one turns it on; clearing
-    // it turns it off. There is no cut and no re-entry point to configure — pass 1 always runs
-    // the main schedule in full and pass 2 always runs this one in full.
+    // The second pass is driven by ONE thing: the schedule. Giving it one turns it on;
+    // taking it away turns it off. There is no cut and no re-entry point to configure —
+    // pass 1 always runs the main schedule in full and pass 2 always runs this one in full.
+    // A schedule is either typed into the low pass's Sigmas field or COMPUTED by picking a
+    // scheduler for it; both must count here, or picking one would be an inert control.
     function syncSecondPassFromSchedule(samplers, quiet) {
       const raw = String(samplers?.low?.sigmas || "").replace(/;/g, ",");
       const vals = raw.split(",").map((v) => parseFloat(v.trim())).filter((v) => !isNaN(v));
+      const sched = String(samplers?.low?.scheduler || "use_user_sigmas");
+      const computed = sched !== "use_user_sigmas" && Number(samplers?.low?.steps || 0) > 0;
       const set = quiet ? S.setSamplerInput : S.setSamplerInputNow;
-      if (vals.length >= 2) set("second_pass", true);       // one number is not a schedule
+      // one number is not a schedule
+      if (computed || vals.length >= 2) set("second_pass", true);
       else S.unsetSamplerInput("second_pass");
     }
 

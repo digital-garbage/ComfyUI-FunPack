@@ -1111,6 +1111,138 @@ def _alg_blur_frames(model, latent_image, kappa, frame_indices=(), tail_count=0)
         return None
 
 
+def _alg_prepare(model, extra_args, anchor_on, anchor_strength, tail_frames, tail_strength):
+    """Precompute the ALG latent variants for this run.
+
+    Returns ``(sharp, latents, anchor_on, tail_on)``. `latents` is keyed by
+    ``(anchor blurred?, tail blurred?)`` — one entry per combination that can occur; the two
+    frame sets are disjoint, so the both-blurred variant just composes the two. Anchor and
+    guide-tail blur are fully independent (own strength, own sigma window), which is why the
+    key is a pair rather than a single flag. Both returned flags are False when ALG cannot
+    run at all: no real anchor (no denoise_mask), no latent_image, or a packed layout
+    `_alg_blur_frames` refuses to guess at.
+
+    Shared by the in-loop version (Distilled Flow) and the denoiser-proxy version that gives
+    every other sampler the same behaviour — one place, so the two can't drift.
+    """
+    tail_frames = max(0, int(tail_frames))
+    anchor_on = bool(anchor_on)
+    tail_on = tail_frames > 0
+    sharp = getattr(model, "latent_image", None) if (anchor_on or tail_on) else None
+    if not (anchor_on or tail_on) or sharp is None or (extra_args or {}).get("denoise_mask") is None:
+        return sharp, {}, False, False
+
+    anchor_blurred = _alg_blur_frames(
+        model, sharp, max(1.0, float(anchor_strength)), frame_indices=(0,),
+    ) if anchor_on else None
+    tail_kappa = max(1.0, float(tail_strength))
+    tail_blurred = _alg_blur_frames(
+        model, sharp, tail_kappa, tail_count=tail_frames,
+    ) if tail_on else None
+    both_blurred = _alg_blur_frames(
+        model, anchor_blurred, tail_kappa, tail_count=tail_frames,
+    ) if (anchor_blurred is not None and tail_blurred is not None) else None
+    anchor_on = anchor_on and anchor_blurred is not None
+    tail_on = tail_on and tail_blurred is not None
+    latents = {
+        (False, False): sharp,
+        (True, False): anchor_blurred,
+        (False, True): tail_blurred,
+        # both → anchor → tail → None. Explicit None checks, NOT `anchor_blurred or
+        # tail_blurred`: `or` calls bool() on the first operand, which is a multi-element
+        # tensor when anchor blur is on but tail blur is off (both_blurred is then None) —
+        # "Boolean value of Tensor is ambiguous". This value is only a defensive fallback:
+        # when (True, True) is actually indexed, anchor_on and tail_on are both True, so
+        # both_blurred is non-None and the chain never reaches the singles.
+        (True, True): (both_blurred if both_blurred is not None
+                       else anchor_blurred if anchor_blurred is not None
+                       else tail_blurred),
+    }
+    return sharp, latents, anchor_on, tail_on
+
+
+class _ALGDenoiser:
+    """Denoiser proxy that runs ALG's blurred/sharp swap for a sampler we can't get inside.
+
+    ALG is a per-step swap of the pinned latent_image, and the swap is decided by ONE thing:
+    the sigma of the step. That sigma is an argument of every model call, so the schedule
+    does not need the sampler's loop at all — it only needed it in the original implementation
+    because that is where the code happened to live. Driving it from here makes ALG work with
+    a stock KSampler (any sampler_name), with Hybrid Euler 2S, and with multi-eval samplers
+    such as heun, where each evaluation gets the anchor its own sigma calls for.
+
+    Transparent for everything else: attribute access forwards to the wrapped denoiser.
+    """
+
+    _OWN = ("_inner", "_latents", "_anchor_on", "_tail_on", "_anchor_thr", "_tail_thr")
+
+    def __init__(self, inner, latents, anchor_on, tail_on, anchor_thr, tail_thr):
+        self._inner = inner
+        self._latents = latents
+        self._anchor_on = anchor_on
+        self._tail_on = tail_on
+        self._anchor_thr = float(anchor_thr)
+        self._tail_thr = float(tail_thr)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def __setattr__(self, name, value):
+        if name in _ALGDenoiser._OWN:
+            object.__setattr__(self, name, value)
+        else:                       # e.g. samplers assigning model.latent_image
+            setattr(self._inner, name, value)
+
+    def __call__(self, x, sigma, **kwargs):
+        try:
+            s = float(sigma.flatten()[0]) if hasattr(sigma, "flatten") else float(sigma)
+            self._inner.latent_image = self._latents[(
+                self._anchor_on and s > self._anchor_thr,
+                self._tail_on and s > self._tail_thr,
+            )]
+        except Exception:
+            pass                    # never cost the step over the guidance
+        return self._inner(x, sigma, **kwargs)
+
+
+def _alg_wrap_sampler(sampler, anchor_on, anchor_strength, anchor_threshold,
+                      tail_frames, tail_strength, tail_threshold):
+    """A SAMPLER equivalent to `sampler` with ALG applied around its model.
+
+    Returns None when the sampler exposes no `sampler_function` to wrap — some SAMPLER
+    producers are not KSAMPLER-shaped, and guessing at their internals is not worth it.
+    """
+    fn = getattr(sampler, "sampler_function", None)
+    if fn is None:
+        return None
+
+    def _wrapped(model, x, sigmas, extra_args=None, callback=None, disable=None, **options):
+        sharp, latents, a_on, t_on = _alg_prepare(
+            model, extra_args, anchor_on, anchor_strength, tail_frames, tail_strength)
+        if not (a_on or t_on):     # no anchor, or a layout we won't guess at — run untouched
+            return fn(model, x, sigmas, extra_args=extra_args, callback=callback,
+                      disable=disable, **options)
+        print(f"[FunPack AV] ALG on (anchor: "
+              f"{f'strength={anchor_strength}, sigma_threshold={anchor_threshold}' if a_on else 'off'}; "
+              f"guide tail: "
+              f"{f'{tail_frames} frame(s), strength={tail_strength}, sigma_threshold={tail_threshold}' if t_on else 'off'}) "
+              f"— driven from outside {getattr(fn, '__name__', 'the sampler')}'s loop, off the "
+              f"sigma of each model call")
+        proxy = _ALGDenoiser(model, latents, a_on, t_on, anchor_threshold, tail_threshold)
+        try:
+            return fn(proxy, x, sigmas, extra_args=extra_args, callback=callback,
+                      disable=disable, **options)
+        finally:
+            model.latent_image = sharp
+
+    _wrapped.__name__ = getattr(fn, "__name__", "sampler") + "_alg"
+    return comfy.samplers.KSAMPLER(
+        _wrapped,
+        extra_options=getattr(sampler, "extra_options", None) or {},
+        inpaint_options=getattr(sampler, "inpaint_options", None) or {},
+    )
+
+
 class _JoyAIMemoryBank:
     """JoyAI-Echo cross-shot memory: a rolling set of clean prior-shot latent frames.
 
@@ -2061,40 +2193,11 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     # latent per (anchor blurred?, tail blurred?) combination that can occur — the frame
     # sets are disjoint, so the both-blurred variant just composes the two.
     alg_guide_tail_frames = max(0, int(alg_guide_tail_frames))
-    alg_anchor_on = bool(alg_enabled)
-    alg_tail_on = alg_guide_tail_frames > 0
-    alg_sharp_latent_image = getattr(model, "latent_image", None) if (alg_anchor_on or alg_tail_on) else None
-    alg_active = ((alg_anchor_on or alg_tail_on) and extra_args.get("denoise_mask") is not None
-                  and alg_sharp_latent_image is not None)
-    alg_latents = {}
-    if alg_active:
-        anchor_blurred = _alg_blur_frames(
-            model, alg_sharp_latent_image, max(1.0, float(alg_strength)), frame_indices=(0,),
-        ) if alg_anchor_on else None
-        tail_kappa = max(1.0, float(alg_guide_blur_strength))
-        tail_blurred = _alg_blur_frames(
-            model, alg_sharp_latent_image, tail_kappa, tail_count=alg_guide_tail_frames,
-        ) if alg_tail_on else None
-        both_blurred = _alg_blur_frames(
-            model, anchor_blurred, tail_kappa, tail_count=alg_guide_tail_frames,
-        ) if (anchor_blurred is not None and tail_blurred is not None) else None
-        alg_anchor_on = alg_anchor_on and anchor_blurred is not None
-        alg_tail_on = alg_tail_on and tail_blurred is not None
-        alg_latents = {
-            (False, False): alg_sharp_latent_image,
-            (True, False): anchor_blurred,
-            (False, True): tail_blurred,
-            # both → anchor → tail → None. Explicit None checks, NOT `anchor_blurred or
-            # tail_blurred`: `or` calls bool() on the first operand, which is a multi-element
-            # tensor when anchor blur is on but tail blur is off (both_blurred is then None) —
-            # "Boolean value of Tensor is ambiguous". This value is only a defensive fallback:
-            # when (True, True) is actually indexed, alg_anchor_on and alg_tail_on are both
-            # True, so both_blurred is non-None and the chain never reaches the singles.
-            (True, True): (both_blurred if both_blurred is not None
-                           else anchor_blurred if anchor_blurred is not None
-                           else tail_blurred),
-        }
-        alg_active = alg_anchor_on or alg_tail_on
+    alg_sharp_latent_image, alg_latents, alg_anchor_on, alg_tail_on = _alg_prepare(
+        model, extra_args, bool(alg_enabled), alg_strength,
+        alg_guide_tail_frames, alg_guide_blur_strength,
+    )
+    alg_active = alg_anchor_on or alg_tail_on
     if alg_active:
         anchor_desc = (f"strength={alg_strength}, sigma_threshold={alg_sigma_threshold}"
                        if alg_anchor_on else "off")
@@ -2601,7 +2704,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "alg_blur_guides": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL: extends ALG (see the sampler's alg_enabled) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. Standalone: works even with the sampler's alg_enabled off (anchor stays sharp), with its own alg_guide_blur_strength / alg_guide_blur_sigma_threshold controls below. Requires the FunPack Distilled Flow sampler; no effect if no guide frames were appended this scene.",
+                    "tooltip": "EXPERIMENTAL: extends ALG (see alg_anchor) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. Standalone: works even with the anchor blur off (anchor stays sharp), with its own alg_guide_blur_strength / alg_guide_blur_sigma_threshold controls below. Works with ANY wired sampler — inside the loop on FunPack Distilled Flow, and through a denoiser proxy (same sigma schedule, same result) on everything else. No effect if no guide frames were appended this scene.",
                 }),
                 "bounded_attention_enabled": ("BOOLEAN", {
                     "default": False,
@@ -2765,6 +2868,18 @@ class FunPackLTXAVSceneChainSampler:
                 "h3_audio_clock": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "EXPERIMENTAL, MiniMax H3 only: integrate the audio stream on its OWN flow schedule. H3 denoises video and audio on two different schedules (the MiniMax H3 Sigma Shift node's shift_video 12 / shift_audio 3), but only one sigma grid reaches a sampler, so the model reconciles them by scaling the audio velocity by the slope between the two schedules at the START of each step. That is exact for infinitesimal steps and increasingly wrong as steps get bigger: on a 4-step schedule the last step drives audio roughly 2.5x past where its own schedule puts it, which is heard as distortion. This replaces that start-of-step slope with the one that actually spans the step, so audio lands where its schedule says. Costs one scalar multiply per step — no extra model call. Aimed at few-step schedules (turbo/distilled LoRAs, 4-8 steps), where nothing else fixes this. NO-OP when shift_video and shift_audio are EQUAL — the streams are then on one schedule and there is nothing to correct (it says so on the console). SAMPLER MATTERS, measured against a perfect predictor so the numbers are pure schedule error (audio error as a % of the stream's full range, 4/8/20 steps): WORKS BEST — FunPack Distilled Flow and Hybrid Euler 2S (runs inside their step loop, exact), and stock `euler` (85/38/14% -> 0/0/0%, exact at every step count). PERFORMS POORLY — the higher-order multistep family (`res_multistep`, `dpmpp_2m`, `gradient_estimation`, `ipndm`, `lms`, `deis`): they already absorb most of this error themselves, so the clock helps them at 4 steps (69% -> 21%) but HURTS at 20 (1% -> 15%); leave it off there. NO EFFECT — two-evals-per-step samplers (`heun`, `dpm_2`, `dpmpp_2s_ancestral`, `dpmpp_sde`, `seeds_2`): a model call cannot be tied to a step from outside their loop, so the wrapper detects that on the first call and switches itself off with a console note rather than guessing. Ancestral/SDE samplers additionally add noise to the audio stream, which this does not address. The clock never touches the video stream directly, though on H3 the two share one attention sequence, so a changed audio latent can still shift the video slightly.",
+                }),
+                "alg_anchor": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: run ALG's i2v anchor blur (arXiv:2506.08456) on WHATEVER sampler is wired — a stock KSampler with any sampler_name, Hybrid Euler 2S, a two-evals-per-step sampler like heun, anything. The blur de-statics an anchored scene by hiding the anchor's high-frequency detail during the near-pure-noise steps, so the model cannot shortcut to a video that just matches the still. It is the same guidance as the FunPack Distilled Flow sampler's own alg_enabled, and this switch drives that one too when Distilled Flow is the wired sampler, so there is one control wherever you are. The swap is decided by the step's sigma alone, which is an argument of every model call, so it does not need to run inside a sampler's loop. No effect on a scene with no i2v anchor.",
+                }),
+                "alg_anchor_strength": ("FLOAT", {
+                    "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
+                    "tooltip": "Downsample factor for the anchor blur (alg_anchor). Paper default is 2.5; 2.0 held character/i2v consistency noticeably better in testing here. Higher = blurrier anchor during the affected steps.",
+                }),
+                "alg_anchor_sigma_threshold": ("FLOAT", {
+                    "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
+                    "tooltip": "The anchor stays blurred while sigma is above this value (the near-pure-noise steps), then swaps to sharp. Higher = narrower blurred window. Independent of the guide-frame window (alg_guide_blur_sigma_threshold).",
                 }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
@@ -3364,6 +3479,8 @@ class FunPackLTXAVSceneChainSampler:
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
+                      alg_anchor=False, alg_anchor_strength=2.0,
+                      alg_anchor_sigma_threshold=0.975,
                       bounded_attention_enabled=False, h3_audio_clock=False):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -3385,10 +3502,19 @@ class FunPackLTXAVSceneChainSampler:
         # right before this call (and always resetting it, even to 0) is safe and chunk-scoped,
         # with no risk of leaking into the next chunk or a differently-configured sampler.
         extra_options = getattr(sampler, "extra_options", None)
-        if isinstance(extra_options, dict) and sampler.sampler_function is sample_funpack_distilled_flow:
+        _wired_fn = getattr(sampler, "sampler_function", None)
+        _alg_in_sampler = _wired_fn is sample_funpack_distilled_flow
+        if isinstance(extra_options, dict) and _alg_in_sampler:
             extra_options["alg_guide_tail_frames"] = int(alg_guide_tail_frames)
             extra_options["alg_guide_blur_strength"] = float(alg_guide_blur_strength)
             extra_options["alg_guide_blur_sigma_threshold"] = float(alg_guide_blur_sigma_threshold)
+            # alg_anchor is the same guidance as this sampler's own alg_enabled, so on
+            # Distilled Flow it drives that rather than a second, competing blur. Only when
+            # ON — off leaves the sampler node's own setting exactly as the user left it.
+            if alg_anchor:
+                extra_options["alg_enabled"] = True
+                extra_options["alg_strength"] = float(alg_anchor_strength)
+                extra_options["alg_sigma_threshold"] = float(alg_anchor_sigma_threshold)
         # h3_audio_clock reaches a FunPack sampler the same way, but it belongs to every one
         # of them that can run on H3 (see _AUDIO_CLOCK_SAMPLERS), not just this one.
         if isinstance(extra_options, dict) and getattr(sampler, "sampler_function", None) in _AUDIO_CLOCK_SAMPLERS:
@@ -3420,6 +3546,27 @@ class FunPackLTXAVSceneChainSampler:
                 print("[FunPackSceneChain] h3_audio_clock is on, but the wired SAMPLER exposes "
                       "no sampler_function to wrap, so the correction cannot be applied to it. "
                       "Sampling continues without it.")
+        # EXPERIMENTAL ALG on a sampler whose loop we cannot get inside. ALG lived in the
+        # Distilled Flow loop only because that is where it was written: the blurred/sharp
+        # swap is decided by the step's sigma, and sigma is an argument of every model call,
+        # so a denoiser proxy can drive it from outside any sampler. That is what makes the
+        # anchor blur (and the guide-tail blur, same mechanism) available with a stock
+        # KSampler, with Hybrid Euler 2S, and with two-evals-per-step samplers. Wrapped LAST
+        # so h3_audio_clock above still sees the real sampler function and takes its exact
+        # in-loop path where it has one.
+        _alg_tail = int(alg_guide_tail_frames)
+        if not _alg_in_sampler and (alg_anchor or _alg_tail > 0):
+            _alg_wrapped = _alg_wrap_sampler(
+                sampler, bool(alg_anchor), alg_anchor_strength, alg_anchor_sigma_threshold,
+                _alg_tail, alg_guide_blur_strength, alg_guide_blur_sigma_threshold,
+            )
+            if _alg_wrapped is not None:
+                sampler = _alg_wrapped
+            elif not self._alg_unreachable_noted:
+                self._alg_unreachable_noted = True
+                print("[FunPackSceneChain] ALG is on, but the wired SAMPLER exposes no "
+                      "sampler_function to wrap, so the anchor/guide blur cannot be applied "
+                      "to it. Sampling continues without it.")
         # EXPERIMENTAL Bounded Attention: model-level attention hooks (sampler-agnostic, unlike
         # the toggles above which only work on Distilled Flow), so install/remove here rather
         # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
@@ -4533,6 +4680,7 @@ class FunPackLTXAVSceneChainSampler:
     _h3_ref_cache: dict = {}
     _h3_mode_noted = False
     _h3_clock_unreachable_noted = False
+    _alg_unreachable_noted = False
 
     def _h3_add_keyframes(self, conditioning, pins, frame_count, aug=None):
         """Merge keyframe pins into a conditioning, keeping any already attached.
@@ -5854,6 +6002,7 @@ class FunPackLTXAVSceneChainSampler:
                output_guidance=False, output_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
+               alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
                phase_scale=1.0, id_strength=1.0, arcface_mode="auto_adjust", debug_log=False,
                carry_overlap_through_anchor=False,
@@ -5902,6 +6051,7 @@ class FunPackLTXAVSceneChainSampler:
         self._h3_ref_cache = {}
         self._h3_mode_noted = False
         self._h3_clock_unreachable_noted = False
+        self._alg_unreachable_noted = False
         if self._is_h3:
             print("[FunPackSceneChain] MiniMax H3 detected — audio stream time axis is the last "
                   "dim, frame grid is 17k+5, conditioning is a single packed self-attention "
@@ -6005,6 +6155,8 @@ class FunPackLTXAVSceneChainSampler:
                 alg_blur_guides=alg_blur_guides,
                 alg_guide_blur_strength=alg_guide_blur_strength,
                 alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
+                alg_anchor=alg_anchor, alg_anchor_strength=alg_anchor_strength,
+                alg_anchor_sigma_threshold=alg_anchor_sigma_threshold,
                 bounded_attention_enabled=bounded_attention_enabled,
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
@@ -6502,6 +6654,9 @@ class FunPackLTXAVSceneChainSampler:
                     alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
                     alg_guide_blur_strength=alg_guide_blur_strength,
                     alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
+                    alg_anchor=alg_anchor,
+                    alg_anchor_strength=alg_anchor_strength,
+                    alg_anchor_sigma_threshold=alg_anchor_sigma_threshold,
                     bounded_attention_enabled=bounded_attention_enabled,
                     h3_audio_clock=h3_audio_clock,
                 )
@@ -7015,6 +7170,8 @@ class FunPackLTXAVSceneChainSampler:
                             output_guidance=False, output_guidance_strength=0.02,
                             dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                             alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
+                            alg_anchor=False, alg_anchor_strength=2.0,
+                            alg_anchor_sigma_threshold=0.975,
                             plateau_cache=False, plateau_cache_threshold=0.975,
                             context_windows=False, context_window_length=145,
                             context_window_overlap=40, context_window_schedule="standard_uniform",
@@ -7071,6 +7228,8 @@ class FunPackLTXAVSceneChainSampler:
                 alg_blur_guides=alg_blur_guides,
                 alg_guide_blur_strength=alg_guide_blur_strength,
                 alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
+                alg_anchor=alg_anchor, alg_anchor_strength=alg_anchor_strength,
+                alg_anchor_sigma_threshold=alg_anchor_sigma_threshold,
                 bounded_attention_enabled=bounded_attention_enabled,
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,

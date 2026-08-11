@@ -58,16 +58,23 @@
       out.append(field("Height", numberInput(p.height, (v) => commit((pr) => pr.height = v), { min: 64, step: 16 })));
       // Frame geometry is per model family: LTX generates on an 8k+1 grid at the project's
       // fps, MiniMax H3 on a 17k+5 grid at a fixed 24 fps. Off-grid lengths fail the run
-      // outright on H3, so the input snaps to the family's grid rather than warning after.
+      // outright on H3, so there the input snaps; on LTX the builder rounds up by itself, so
+      // the typed number is kept and only the arrows follow the grid.
       const grid = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(st)
         : { step: 8, base: 1, fps: null, label: "8k+1" };
-      const snapTo = (v) => (window.PipelineCaps?.snapFramesTo
-        ? window.PipelineCaps.snapFramesTo(v, st, "round")
-        : Math.max(9, Math.round((v - 1) / 8) * 8 + 1));
+      const spec = window.PipelineCaps?.frameInputSpec
+        ? window.PipelineCaps.frameInputSpec(st) : { step: grid.step, min: grid.base, snap: false };
+      const snapTo = (v) => (window.PipelineCaps?.snapFramesIfRequired
+        ? window.PipelineCaps.snapFramesIfRequired(v, st)
+        : Math.max(1, Math.round(Number(v) || 0)));
       out.append(field("Frames",
         numberInput(p.num_frames_per_scene, (v) => commit((pr) => pr.num_frames_per_scene = snapTo(v)),
-                    { min: grid.step + grid.base, step: grid.step }),
-        "Length of the generated clip, in frames — snapped to this model's " + grid.label + " grid."));
+                    { min: spec.min, step: spec.step }),
+        spec.snap
+          ? "Length of the generated clip, in frames — MiniMax H3 only generates on its "
+            + grid.label + " grid, so this snaps to it and the arrows move " + spec.step + " at a time."
+          : "Length of the generated clip, in frames. The arrows walk this model's " + grid.label
+            + " grid; an off-grid number is rounded up to it when the graph is built."));
       out.append(field("Frame rate", numberInput(p.frame_rate, (v) => commit((pr) => pr.frame_rate = v), { min: 1 }),
         grid.fps ? "MiniMax H3 always generates at " + grid.fps + " fps; the render is muxed at that rate." : null));
       wrap.append(out);

@@ -14572,8 +14572,8 @@ class FunPackConditioningAdjust:
         return (new_conditioning, status)
 
 
-# The KSampler pass's schedule dropdown holds ComfyUI's scheduler names plus this one extra
-# entry, which means "don't compute anything, run the sigmas typed in the Sigmas field".
+# A pass's schedule dropdown holds ComfyUI's scheduler names plus this one extra entry,
+# which means "don't compute anything, run the sigmas typed in the Sigmas field".
 # Both frontends offer it under the same string — keep them in sync if it ever changes.
 KSAMPLER_USER_SIGMAS = "use_user_sigmas"
 
@@ -14950,9 +14950,52 @@ class FunPackStudio:
         return None
 
     @classmethod
+    def _pass_schedule(cls, cfg, model, typed_sigmas, sampler_type):
+        """The pass's SIGMAS: either the typed field or a computed schedule.
+
+        Every sampler type takes its schedule from the outside — the FunPack samplers walk
+        whatever sigma list they are handed exactly like a stock KSampler does — so steps +
+        schedule belong to the PASS, not to the KSampler branch that first grew them. The
+        dropdown is the switch between the two sources, deliberately: KSAMPLER_USER_SIGMAS
+        runs the typed Sigmas field, anything else COMPUTES (the way ComfyUI's BasicScheduler
+        does) and the typed list is ignored for this pass — so a hand-written schedule can be
+        parked in the field and switched back to without retyping it.
+
+        `ksampler_scheduler` / `ksampler_steps` are the pre-split key names, still read here
+        so configs saved by an older UI keep their schedule.
+        """
+        scheduler = str(cfg.get("scheduler", cfg.get("ksampler_scheduler", KSAMPLER_USER_SIGMAS))
+                        or KSAMPLER_USER_SIGMAS)
+        if scheduler == KSAMPLER_USER_SIGMAS:
+            return typed_sigmas
+        steps = int(cfg.get("steps", cfg.get("ksampler_steps", 0)) or 0)
+        if model is None or steps <= 0:
+            print(f"[FunPackStudio] {sampler_type}: schedule '{scheduler}' needs steps > 0 "
+                  f"and a model — falling back to the typed sigmas field.")
+            return typed_sigmas
+        try:
+            import comfy.samplers as _cs
+            out = _cs.calculate_sigmas(
+                model.get_model_object("model_sampling"), scheduler, steps
+            ).cpu()
+        except Exception as e:
+            # Keep the sampler: a bad scheduler name should cost the schedule, not the pass.
+            print(f"[FunPackStudio] {sampler_type}: schedule build failed "
+                  f"({scheduler}, {steps} steps): {e}")
+            return typed_sigmas
+        if typed_sigmas is not None:
+            print(f"[FunPackStudio] {sampler_type}: schedule '{scheduler}' ({steps} steps) in "
+                  f"use — the typed sigmas field is ignored until the schedule is set back to "
+                  f"'{KSAMPLER_USER_SIGMAS}'.")
+        return out
+
+    @classmethod
     def _build_one_sampler(cls, cfg, prompt_sig=None, refinement_key="", model=None):
         sampler_type = str(cfg.get("type", "Hybrid Euler 2S") or "Hybrid Euler 2S")
         sigmas_raw = cls._parse_sigmas(cfg.get("sigmas", ""))
+        # steps + schedule are pass-level and apply to every sampler type; the FunPack
+        # samplers then prepare (motion pulses, quality split) whatever list this produces.
+        sigmas_raw = cls._pass_schedule(cfg, model, sigmas_raw, sampler_type)
 
         try:
             if sampler_type == "Distilled Flow":
@@ -14996,38 +15039,11 @@ class FunPackStudio:
             elif sampler_type == "KSampler":
                 import comfy.samplers as _cs
                 sampler_name = str(cfg.get("ksampler_name", "euler") or "euler")
+                # A stock KSampler carries no schedule of its own — the SAMPLER object is
+                # just the step function — so the pass's steps + schedule (built above, and
+                # shared with the FunPack samplers) is the only thing that can supply one.
                 sampler = _cs.sampler_object(sampler_name)
                 out_sigmas = sigmas_raw
-                # A stock KSampler carries no schedule of its own — the SAMPLER object is
-                # just the step function — so with the Sigmas field empty this pass used to
-                # hand the chain sampler nothing at all. steps + schedule build one the way
-                # ComfyUI's BasicScheduler does. The schedule is the switch between the two
-                # sources, deliberately: KSAMPLER_USER_SIGMAS reads the typed Sigmas field,
-                # anything else COMPUTES and the typed list is ignored for this pass — so a
-                # hand-written schedule can be parked in the field and switched back to
-                # without retyping it.
-                steps = int(cfg.get("ksampler_steps", 0) or 0)
-                scheduler = str(cfg.get("ksampler_scheduler", KSAMPLER_USER_SIGMAS)
-                                or KSAMPLER_USER_SIGMAS)
-                if scheduler != KSAMPLER_USER_SIGMAS:
-                    if model is None or steps <= 0:
-                        print(f"[FunPackStudio] KSampler schedule '{scheduler}' needs steps > 0 "
-                              f"and a model — falling back to the typed sigmas field.")
-                    else:
-                        try:
-                            out_sigmas = _cs.calculate_sigmas(
-                                model.get_model_object("model_sampling"), scheduler, steps
-                            ).cpu()
-                            if sigmas_raw is not None:
-                                print(f"[FunPackStudio] KSampler: schedule '{scheduler}' "
-                                      f"({steps} steps) in use — the typed sigmas field is "
-                                      f"ignored until the schedule is set back to "
-                                      f"'{KSAMPLER_USER_SIGMAS}'.")
-                        except Exception as e:
-                            # Keep the sampler: a bad scheduler name should cost the
-                            # schedule, not the whole pass.
-                            print(f"[FunPackStudio] KSampler schedule build failed "
-                                  f"({scheduler}, {steps} steps): {e}")
             else:  # Hybrid Euler 2S (default)
                 try:
                     from .samplers import FunPackHybridEuler2SSampler

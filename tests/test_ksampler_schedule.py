@@ -1,4 +1,4 @@
-"""The KSampler pass builds its own schedule from steps + scheduler.
+"""A pass builds its own schedule from steps + scheduler — for every sampler type.
 
 A SAMPLER object is only the step function — it carries no schedule — so before this the
 KSampler pass handed the chain sampler no SIGMAS at all unless the user typed a sigma list
@@ -135,3 +135,40 @@ def test_missing_model_is_survivable(comfy_sampler_stub):
 
     assert sampler == "SAMPLER::euler"
     assert sigmas is None
+
+
+# The schedule belongs to the PASS, not to the KSampler branch it first grew in: the FunPack
+# samplers walk a sigma list handed in from outside exactly like a stock KSampler does, so
+# steps + scheduler have to reach them too — otherwise the only way to run Distilled Flow or
+# Hybrid Euler 2S on a named schedule is to type its sigmas out by hand.
+@pytest.mark.parametrize("sampler_type", ["Distilled Flow", "Hybrid Euler 2S"])
+def test_funpack_samplers_take_a_computed_schedule(comfy_sampler_stub, sampler_type):
+    sampler, sigmas = FunPackStudio._build_one_sampler(
+        {"type": sampler_type, "steps": 12, "scheduler": "karras"}, model=FakeModel(),
+    )
+
+    assert sampler is not None
+    assert comfy_sampler_stub.sigmas == [("model_sampling::model_sampling", "karras", 12)]
+    assert sigmas is not None and len(sigmas) == 13
+
+
+@pytest.mark.parametrize("sampler_type", ["Distilled Flow", "Hybrid Euler 2S"])
+def test_funpack_samplers_default_to_the_typed_field(comfy_sampler_stub, sampler_type):
+    _, sigmas = FunPackStudio._build_one_sampler(
+        {"type": sampler_type, "sigmas": "0.9, 0.5, 0.0"}, model=FakeModel(),
+    )
+
+    assert comfy_sampler_stub.sigmas == []
+    assert [round(float(v), 3) for v in sigmas] == [0.9, 0.5, 0.0]
+
+
+def test_the_shared_keys_win_over_the_legacy_ksampler_ones(comfy_sampler_stub):
+    """`ksampler_scheduler` / `ksampler_steps` are the pre-split names, still read so a
+    config saved by an older UI keeps its schedule — but the shared keys are authoritative."""
+    FunPackStudio._build_one_sampler(
+        {"type": "KSampler", "steps": 20, "scheduler": "beta",
+         "ksampler_steps": 8, "ksampler_scheduler": "karras"},
+        model=FakeModel(),
+    )
+
+    assert comfy_sampler_stub.sigmas == [("model_sampling::model_sampling", "beta", 20)]

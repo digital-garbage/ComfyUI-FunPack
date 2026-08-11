@@ -222,6 +222,29 @@
 
     const dk = "sp-" + passKey;
 
+    // Steps + schedule belong to the PASS, not to the KSampler branch they first grew in:
+    // every sampler here walks a sigma list handed in from outside, so Distilled Flow and
+    // Hybrid Euler 2S can be driven by a computed schedule exactly like a stock KSampler.
+    // ksampler_* are the pre-split key names — read once so an older project keeps its
+    // schedule, then written under the shared ones.
+    if (cfg.scheduler === undefined) cfg.scheduler = cfg.ksampler_scheduler || KSAMPLER_USER_SIGMAS;
+    if (cfg.steps === undefined) cfg.steps = cfg.ksampler_steps === undefined ? 8 : cfg.ksampler_steps;
+    const scheds = ksamplerSchedulers(saveNow);   // saveNow re-renders once the live list lands
+    const schedCur = cfg.scheduler || KSAMPLER_USER_SIGMAS;
+    row(container, "Schedule",
+      selCtrl(scheds.includes(schedCur) ? scheds : scheds.concat([schedCur]), schedCur, dk + "-sch",
+        (v) => { cfg.scheduler = v; saveNow(); }));
+    hint(container, "'" + KSAMPLER_USER_SIGMAS + "' runs the Sigmas field above exactly as typed; "
+                  + "any other entry COMPUTES the schedule from the step count, the way ComfyUI's "
+                  + "own scheduler does, and the Sigmas field is ignored until you switch back — so "
+                  + "you can leave a hand-written schedule parked there. Works for every sampler "
+                  + "below, not just KSampler.");
+    if (schedCur !== KSAMPLER_USER_SIGMAS) {
+      row(container, "Steps",
+        intCtrl(cfg.steps, 1, 200, dk + "-steps", (v) => { cfg.steps = v; save(); }));
+      hint(container, "8 suits the distilled LTX model; a non-distilled one wants 20-30.");
+    }
+
     if (cfg.type === "Hybrid Euler 2S") {
       const hc = cfg.hybrid;
       sectionTag(container, "Hybrid Euler 2S");
@@ -346,25 +369,8 @@
       row(container, "sampler name",
         selCtrl(names.includes(cur) ? names : names.concat([cur]), cur, dk + "-ks",
           (v) => { cfg.ksampler_name = v; save(); }));
-
-      const scheds = ksamplerSchedulers(saveNow);
-      const schedCur = cfg.ksampler_scheduler || KSAMPLER_USER_SIGMAS;
-      row(container, "schedule",
-        selCtrl(scheds.includes(schedCur) ? scheds : scheds.concat([schedCur]), schedCur, dk + "-kssch",
-          (v) => { cfg.ksampler_scheduler = v; saveNow(); }));
-      hint(container, "A KSampler is only the step function — it carries no schedule. '"
-                    + KSAMPLER_USER_SIGMAS + "' runs the Sigmas field above exactly as typed; any "
-                    + "other entry COMPUTES the schedule from steps, the way ComfyUI's own "
-                    + "scheduler does, and the Sigmas field is ignored until you switch back — so "
-                    + "you can leave your hand-written schedule parked there.");
-
-      if (schedCur !== KSAMPLER_USER_SIGMAS) {
-        const steps = cfg.ksampler_steps === undefined ? 8 : cfg.ksampler_steps;
-        row(container, "steps",
-          intCtrl(steps, 1, 200, dk + "-kss",
-            (v) => { cfg.ksampler_steps = v; save(); }));
-        hint(container, "8 suits the distilled LTX model; a non-distilled one wants 20-30.");
-      }
+      hint(container, "A KSampler is only the step function — it carries no schedule of its own, "
+                    + "so the Schedule / Steps above are the only thing that can give it one.");
     }
   }
 
@@ -423,6 +429,26 @@ hint(container, "Fill this in and each scene is sampled in two passes; leave it 
                     + "nearly pure detail work. The rest of the list sets how many steps it "
                     + "gets. To make pass 1 "
                     + "shorter, shorten the schedule above; nothing here cuts it short.");
+
+    // Pass 2 can be computed instead of typed, same switch as pass 1 — its SIGMAS is the
+    // only thing of the low pass that is wired, so a schedule chosen here IS pass 2.
+    if (s.low.scheduler === undefined) s.low.scheduler = s.low.ksampler_scheduler || KSAMPLER_USER_SIGMAS;
+    if (s.low.steps === undefined) s.low.steps = s.low.ksampler_steps === undefined ? 4 : s.low.ksampler_steps;
+    const spScheds = ksamplerSchedulers(mkSave(false));
+    const spSchedCur = s.low.scheduler || KSAMPLER_USER_SIGMAS;
+    row(container, "Second pass schedule (computed)",
+      selCtrl(spScheds.includes(spSchedCur) ? spScheds : spScheds.concat([spSchedCur]), spSchedCur,
+        "sp-second-sch", (v) => { s.low.scheduler = v; mkSave(false)(); }));
+    hint(container, "Leave on '" + KSAMPLER_USER_SIGMAS + "' to use the typed field above. Pick a "
+                  + "scheduler and pass 2 runs a computed schedule of the step count below instead "
+                  + "— which also TURNS THE SECOND PASS ON, whatever the field above says. A full "
+                  + "computed schedule starts at the model's top sigma, so pass 2 reworks the shot "
+                  + "rather than polishing it; for a polish, type the short low-sigma list above "
+                  + "and leave this alone.");
+    if (spSchedCur !== KSAMPLER_USER_SIGMAS) {
+      row(container, "Second pass steps",
+        intCtrl(s.low.steps, 1, 200, "sp-second-steps", (v) => { s.low.steps = v; mkSave(true)(); }));
+    }
   }
 
   window.SamplerPanel = { render, defaultSamplers, defaultPass };
