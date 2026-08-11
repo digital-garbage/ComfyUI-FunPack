@@ -335,7 +335,7 @@
       sectionTag(container, "ALG (experimental)");
       row(container, "enabled",
         checkCtrl(!!dc.alg_enabled, dk + "-dalge", (v) => { dc.alg_enabled = v; saveNow(); }));
-      hint(container, "Adaptive Low-Pass Guidance (arXiv:2506.08456). Blurs the i2v anchor frame during the earliest steps so the model can't shortcut to a near-static video that just matches it. No effect without an i2v anchor.");
+      hint(container, "Adaptive Low-Pass Guidance (arXiv:2506.08456). Blurs the i2v anchor frame during the earliest steps so the model can't shortcut to a near-static video that just matches it. No effect without an i2v anchor. Same guidance as 'Anchor blur (ALG)' below, which works on every sampler — turning that on drives this one, so you only need one of the two.");
       if (dc.alg_enabled) {
         row(container, "blur strength",
           numCtrl(dc.alg_strength, 1.0, 4, 0.1, dk + "-dalgs",

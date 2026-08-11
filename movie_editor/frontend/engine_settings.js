@@ -457,7 +457,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "h3_audio_clock", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_anchor", "alg_anchor_strength", "alg_anchor_sigma_threshold", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "h3_audio_clock", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id) {
@@ -657,6 +657,15 @@
       err.style.color = "var(--danger)";
       box.append(err);
     }
+    // The anchor blur lives HERE, with the sampler, not under Experimental: it is a
+    // property of how the scene is sampled and the first place anyone looks for it is the
+    // pane where they picked the sampler. It runs on whatever sampler is selected above —
+    // inside the loop on Distilled Flow, through a denoiser proxy on everything else — so
+    // it is never hidden behind a particular choice up there.
+    const algG = group(pane, "Anchor blur (ALG)");
+    renderKnobList(algG, st, ["alg_anchor", "alg_anchor_strength", "alg_anchor_sigma_threshold"]);
+    algG.append(hintEl("The same blur for guide and JoyAI-memory frames is under Experimental "
+      + "(“Blur i2v guides and JoyAI memory”) — it has its own strength and window."));
     // Second pass lives here rather than under Experimental: at its defaults the split is
     // behaviour-neutral (pass 2 resumes from exactly the state pass 1 handed over), so it
     // is a sampler setting, not a gamble. The only control is the schedule field in the
