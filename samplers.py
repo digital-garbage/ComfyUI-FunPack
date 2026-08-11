@@ -2820,7 +2820,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "cut_opening_frames": ("INT", {
                     "default": 0, "min": 0, "max": 512, "step": 8,
-                    "tooltip": "Let the i2v anchor do its work, then cut it out of the clip: generate the scene exactly as normal (anchor pinned at full strength the whole way, nothing weakened, no extra sampling), then drop this many frames off the FRONT of the finished clip. The anchor is a pinned latent frame at position 0 — it transfers identity, style and composition better than anything that softens it on the way in (ALG blurs it and loses character detail; Best-FaceID tokens approximate it and lose some too), but it is also literally the first frame you see, so every i2v scene opens on the exact reference still. Cutting it afterwards keeps the transfer and removes the tell: an i2v generation that reads as t2v. 0 (default) = off. The value is in REAL frames and is converted with the VAE's own time scale; one latent frame (8 real frames at the standard scale) removes just the anchor itself, which is usually NOT enough — the anchor is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening yet, and on a prompt that asks for immediate action that dead time is exactly what you want gone (48 was the value that worked on a 768x768x305@30 i2v chain with a quick-cut prompt — a starting point for this pipeline, not a universal default). NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you asked for, and the audio is cropped to match. That is the trade — every surviving frame was generated as part of one continuous shot, with no invented ending. Needs a pinned i2v anchor; skipped with the reason in the scene report on continuation scenes and on scenes carrying guide frames or JoyAI audio memory. ON MINIMAX H3 the same setting works differently, because H3's anchor is a keyframe condition row rather than a pinned latent frame and its video latent lives on a 5k+2 grid an arbitrary cut cannot land on: the frames are dropped off the front of the DECODED image batch instead (exact to the frame, no rounding), and the latent's audio stream is cropped to match so sound and picture still start together. The LATENT output keeps its full video stream there — take video from IMAGES on a cut H3 run — and only the chain's opening is cut, not each scene's.",
+                    "tooltip": "Let the i2v anchor do its work, then cut it out of the clip: generate the scene exactly as normal (anchor pinned at full strength the whole way, nothing weakened, no extra sampling), then drop this many frames off the FRONT of the finished clip. The anchor is a pinned latent frame at position 0 — it transfers identity, style and composition better than anything that softens it on the way in (ALG blurs it and loses character detail; Best-FaceID tokens approximate it and lose some too), but it is also literally the first frame you see, so every i2v scene opens on the exact reference still. Cutting it afterwards keeps the transfer and removes the tell: an i2v generation that reads as t2v. 0 (default) = off. The value is in REAL frames and is EXACT — N means N, with no rounding to the latent grid. The anchor itself is only the first ~8 real frames, which is usually NOT enough: it is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening yet, and on a prompt that asks for immediate action that dead time is exactly what you want gone (48 was the value that worked on a 768x768x305@30 i2v chain with a quick-cut prompt — a starting point for this pipeline, not a universal default). NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you asked for, and the audio is cropped to match. That is the trade — every surviving frame was generated as part of one continuous shot, with no invented ending. HOW IT IS CUT: on the DECODED frames, never on the latent, on LTX and MiniMax H3 alike. The video VAE is causal — latent frame 0 is the temporal origin — so slicing the front off the latent promoted a continuation frame to position 0 and it decoded with origin handling it was never generated for, which came out as a noisy first frame. Decoding everything first and dropping pixels afterwards leaves every surviving frame in the context it was sampled in. Consequence: the LATENT output keeps its FULL video stream, so take video from the IMAGES output on a cut run (audio from the latent as usual — its audio stream IS cropped, so sound and picture still start together). The IMAGES output must be connected or there is nothing to crop, and the run says so. Needs a pinned i2v anchor; skipped with the reason in the scene report on continuation scenes and on scenes carrying guide frames or JoyAI audio memory. On MiniMax H3 only the chain's opening is cut, not each scene's, because H3's anchor is a keyframe condition row rather than a pinned latent prefix.",
                 }),
                 "context_windows": ("BOOLEAN", {
                     "default": False,
@@ -3780,50 +3780,99 @@ class FunPackLTXAVSceneChainSampler:
         idx[dim] = slice(n - keep, n)
         return tensor[tuple(idx)]
 
-    def _cut_opening_latent(self, latent, drop):
-        """Cut the first `drop` latent frames off a FINISHED scene latent.
+    def _scene_pixel_start(self, latent_start, time_scale):
+        """First DECODED pixel index of a scene that begins at `latent_start` in the chain.
 
-        The i2v anchor is a pinned frame at position 0: it transfers identity, style and
-        composition at full strength all the way down the schedule, and it is also literally
-        the first frame of the clip, so every i2v scene opens on the exact reference still.
-        Cutting it (plus the settling-in stretch behind it, where the shot is still leaving
-        that still) afterwards keeps the transfer and removes the tell.
-
-        Nothing is regrown, so the scene simply comes out `drop` latent frames SHORTER than
-        the length that was asked for. That is the whole trade: every surviving frame was
-        generated as part of one continuous shot, with no invented ending and no joint.
-
-        Nothing downstream constrains the new size: LTXAV's video patchifier has temporal
-        patch size 1 (SymmetricPatchifier(1) -> no divisibility rule on latent frames), the
-        streams reach the transformer as independent tensors with no enforced video:audio
-        ratio, and VAE decode is (f-1)*scale+1 for any f >= 1.
-
-        What DOES matter is proportion. Audio timings come from the audio stream's own index
-        and video's from its own RoPE, so cropping the two by different amounts of TIME
-        desynchronises them silently — no error, just sound that drifts. Each extra stream's
-        kept length is therefore derived from the new VIDEO length directly, never by
-        subtracting a separately-rounded drop.
-
-        Returns (latent, dropped).
+        The causal VAE decodes f latent frames to (f-1)*scale+1 pixels: latent frame 0 is
+        the temporal origin and covers ONE pixel, every later latent frame covers `scale`.
+        So latent frame i starts at pixel (i-1)*scale+1, and only frame 0 starts at 0.
         """
+        i = max(0, int(latent_start))
+        if i == 0:
+            return 0
+        return (i - 1) * max(1, int(time_scale)) + 1
+
+    def _cut_opening_pixel_spans(self, images, spans):
+        """Remove `spans` — (start, count) pixel ranges — from a decoded image batch.
+
+        Cutting the OPENING has to happen here, on pixels, and never on the latent. The LTX
+        VAE is causal: latent frame 0 is the temporal origin, and every later latent frame
+        was generated as a CONTINUATION of the frames before it. Slice the front off the
+        latent and the survivor promoted to position 0 gets decoded with the origin handling
+        it was never generated for, which is what produced the noisy opening frame. Decoding
+        the whole latent first and dropping pixels afterwards leaves the origin intact, so
+        every surviving frame decodes in the context it was sampled in.
+
+        It is also exact. A latent cut could only remove whole latent frames, and because
+        the promoted frame changes from covering 1 pixel to covering `scale`, dropping k
+        latent frames actually shortened the clip by k*scale pixels rather than the
+        (k-1)*scale+1 it spanned — so the count never matched what was asked for either.
+        Here N means N, the way it already does on H3.
+
+        Later spans are removed first so earlier removals cannot shift their indices.
+        """
+        if not isinstance(images, torch.Tensor) or not spans:
+            return images, 0
+        total = int(images.shape[0])
+        keep = torch.ones(total, dtype=torch.bool)
+        for start, count in sorted(spans, key=lambda s: int(s[0]), reverse=True):
+            start = max(0, min(int(start), total))
+            end = max(start, min(start + max(0, int(count)), total))
+            keep[start:end] = False
+        if bool(keep.all()):
+            return images, 0
+        if not bool(keep.any()):
+            # Never hand back an empty batch: a cut that would remove the whole clip is a
+            # misconfiguration, and returning nothing turns it into an obscure downstream
+            # crash instead of a visibly-too-short video.
+            keep[-1] = True
+        return images[keep], total - int(keep.sum())
+
+    def _remove_latent_time_spans(self, latent, pixel_spans, pixel_total):
+        """Remove the same stretches of TIME from every non-video stream of `latent`.
+
+        `pixel_spans` are indices into the decoded VIDEO. Audio runs at its own rate on its
+        own axis (LTXAV puts time on dim 2; MiniMax H3 puts it last), so each span is mapped
+        by PROPORTION of the clip rather than by a frame count — cropping the two streams by
+        different amounts of time desynchronises them with no error, just sound that drifts.
+
+        The video stream is deliberately untouched: it is the thing that must keep its
+        temporal origin, and the caller takes video from the decoded IMAGES instead.
+        """
+        if not pixel_spans or int(pixel_total) <= 0:
+            return latent
         result = self._clone_latent(latent)
         tensors = self._latent_tensors(result)
-        video = tensors[0]
-        frames = self._tensor_frames(video)
-        drop = max(0, min(int(drop), frames - 1))
-        if drop <= 0:
-            return result, 0
-        tensors[0] = video[:, :, drop:]
-        kept = frames - drop
-        for _idx in range(1, len(tensors)):
-            tensors[_idx] = self._crop_stream_head_to(tensors[_idx], _idx, kept, frames)
+        changed = False
+        for idx in range(1, len(tensors)):
+            tensor = tensors[idx]
+            axis = self._time_dims[idx] if idx < len(self._time_dims) else 2
+            try:
+                length = int(tensor.shape[axis])
+            except Exception:
+                continue
+            if length <= 1:
+                continue
+            keep = torch.ones(length, dtype=torch.bool)
+            for start, count in pixel_spans:
+                a = int(round(int(start) / float(pixel_total) * length))
+                b = int(round((int(start) + int(count)) / float(pixel_total) * length))
+                a = max(0, min(a, length))
+                b = max(a, min(b, length))
+                keep[a:b] = False
+            if bool(keep.all()):
+                continue
+            if not bool(keep.any()):
+                keep[-1] = True
+            tensors[idx] = tensor.index_select(axis, torch.nonzero(keep, as_tuple=True)[0].to(tensor.device))
+            changed = True
+        if not changed:
+            return latent
         if self._is_nested(result.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
         else:
             result["samples"] = tensors[0]
-        # The pin belongs to a frame that no longer exists.
-        result.pop("noise_mask", None)
-        return result, drop
+        return result
 
     def _cut_opening_pixels(self, images, latent, pixel_frames):
         """MiniMax H3's cut: drop the opening off the DECODED frames, not off the latent.
@@ -6234,6 +6283,14 @@ class FunPackLTXAVSceneChainSampler:
         carried_guide_frames = 0
         boundary_entries = []
         cumulative_latent_frames = 0
+        # (start_pixel, count) ranges cut_opening_frames will remove from the DECODED video,
+        # collected per eligible scene and applied once after decode. Latents stay whole so
+        # every frame decodes with the temporal origin it was sampled against.
+        _cut_spans = []
+        # Read before the scene loop, not just before the decode: cut_opening_frames is a
+        # crop on the decoded frames now, so scene eligibility depends on knowing whether
+        # anything is being decoded at all.
+        want_image = self._output_connected(prompt, unique_id, 1)
 
         # Load liked direction once for embed_guidance. Source selects which learned direction:
         # 'relative' = this prompt's key; 'absolute' = the global, prompt-agnostic taste store
@@ -6710,8 +6767,10 @@ class FunPackLTXAVSceneChainSampler:
                 # the eligibility below can even be evaluated.
                 _cut_drop = 0
                 if int(cut_opening_frames) > 0 and not self._is_h3:
-                    _cut_drop = self._expected_latent_frames(
-                        int(cut_opening_frames) + 1, time_scale) - 1
+                    # The cut is measured in REAL frames and applied to decoded pixels, so
+                    # there is no rounding to a latent grid any more and no minimum: 1 means
+                    # 1. This is only a "does this scene qualify" flag now.
+                    _cut_drop = 1
                     if carried + soft_carried > 0:
                         _reason = ("continuation scene — the opening is carried frames from the "
                                    "previous scene, not an anchor, and cutting them would break "
@@ -6723,9 +6782,11 @@ class FunPackLTXAVSceneChainSampler:
                                    "which those extra frames would make wrong")
                     elif self._context_scene_latent_frames(chunk) is None:
                         _reason = "scene latent could not be read"
-                    elif _cut_drop <= 0:
-                        _reason = (f"cut_opening_frames={cut_opening_frames} is under one latent "
-                                   f"frame at this VAE time scale")
+                    elif not want_image:
+                        # The cut is a crop on the decoded frames now, so with nothing
+                        # decoding there is nothing to crop — the same rule H3 already has.
+                        _reason = ("the IMAGES output is not connected — the cut is a crop on "
+                                   "the decoded frames, so there is nothing to crop")
                     elif self._anchor_pinned_frames(chunk) <= 0:
                         # No pinned prefix = a genuine t2v scene (no anchor image attached).
                         # Cutting here would throw away real generated frames for nothing —
@@ -6862,24 +6923,33 @@ class FunPackLTXAVSceneChainSampler:
                     else:
                         model.model_options.pop("model_function_wrapper", None)
             if _cut_drop > 0:
-                # The finished clip, minus its opening. Nothing is regrown, so the scene is
-                # now shorter than the length that was asked for — say so in the report
-                # rather than leaving it to be inferred from the output.
-                _before_cut = self._tensor_frames(self._latent_tensors(sampled)[0])
-                sampled, _dropped = self._cut_opening_latent(sampled, _cut_drop)
-                _after_cut = self._tensor_frames(self._latent_tensors(sampled)[0])
+                # Recorded now, applied after decode. The latent itself is deliberately left
+                # whole: cutting it here is what made the opening frame noisy, because the
+                # frame promoted to position 0 gets decoded as a temporal origin it was never
+                # generated as (see _cut_opening_pixel_spans). The scene's position in the
+                # chain is read BEFORE it is appended, so the span is an index into the final
+                # decoded video, and anchor scenes append with zero blend overlap, which is
+                # what makes that index exact.
+                _cut_latent_start = (0 if output is None
+                                     else self._tensor_frames(self._latent_tensors(output)[0]))
+                _cut_spans.append((self._scene_pixel_start(_cut_latent_start, time_scale),
+                                   int(cut_opening_frames)))
                 _pinned_n = self._anchor_pinned_frames(chunk)
+                # What the anchor actually spans in PIXELS, which is what the cut is now
+                # measured in: the pinned prefix is at the scene's origin, so it covers
+                # (pinned - 1) * scale + 1 real frames.
+                _anchor_px = (_pinned_n - 1) * max(1, int(time_scale)) + 1 if _pinned_n > 0 else 0
                 run_mechanisms.append(
-                    f"cut_opening_frames(dropped {_dropped} of {_pinned_n} pinned latent "
-                    f"frames — clip CROPPED to {_after_cut} of {_before_cut} latent frames, "
-                    f"~{int(cut_opening_frames)} real frames shorter)")
-                if _dropped < _pinned_n:
+                    f"cut_opening_frames(scheduled: {int(cut_opening_frames)} real frames off "
+                    f"the front of this scene, cut after decode so the opening frame keeps a "
+                    f"clean origin — the scene is that much SHORTER)")
+                if int(cut_opening_frames) < _anchor_px:
                     # Part of the anchor is still visible — the one outcome this exists to
                     # prevent, so name the fix.
                     run_mechanisms.append(
-                        f"cut_opening_frames WARNING: {_pinned_n - _dropped} anchor latent "
-                        f"frame(s) still in the clip — raise cut_opening_frames to at least "
-                        f"{_pinned_n * max(1, int(time_scale))}")
+                        f"cut_opening_frames WARNING: the pinned anchor spans {_anchor_px} real "
+                        f"frames and only {int(cut_opening_frames)} are being cut — raise "
+                        f"cut_opening_frames to at least {_anchor_px}")
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             if guide_tail > 0:
@@ -6968,7 +7038,7 @@ class FunPackLTXAVSceneChainSampler:
         # RETURN_TYPES slot indices: 0=latent, 1=images, 2=status...
         # Sampling is fully complete. Latent is untouched and returned as-is.
         # IMAGES: decode the whole latent in one pass, then apply transition effects.
-        want_image = self._output_connected(prompt, unique_id, 1)
+        # (want_image was read before the scene loop — cut_opening_frames eligibility needs it.)
 
         images = None
         if want_image:
@@ -6987,6 +7057,35 @@ class FunPackLTXAVSceneChainSampler:
                 decoded = decoded.reshape(b * t, h, w, c)
             images = self._apply_transitions_pixel(decoded, boundary_entries, transition_duration)
             _phase_decode = _time.perf_counter() - _t_dec0
+
+        # cut_opening_frames, LTX path. Applied HERE, after a decode that saw every latent
+        # frame in its sampled context, rather than on the latent inside the loop — a latent
+        # cut promoted a continuation frame to position 0 and the causal VAE decoded it as an
+        # origin, which is what made the first frame noisy. Transitions run first so
+        # boundary_entries still index the uncut video.
+        if _cut_spans and not self._is_h3:
+            _px_total = int(images.shape[0]) if isinstance(images, torch.Tensor) else 0
+            if _px_total > 0:
+                images, _px_dropped = self._cut_opening_pixel_spans(images, _cut_spans)
+                if _px_dropped > 0:
+                    # The audio stream has to lose the same stretches of TIME or the sound
+                    # runs ahead of the picture — silently, with no error, exactly the trap
+                    # _crop_stream_head_to exists for on the carried-frame path.
+                    output = self._remove_latent_time_spans(output, _cut_spans, _px_total)
+                    report_lines.append(
+                        f"cut_opening_frames(dropped {_px_dropped} of {_px_total} decoded "
+                        f"frames across {len(_cut_spans)} scene opening(s) — cut after decode, "
+                        f"so the first surviving frame keeps a clean origin; the audio stream "
+                        f"was cropped by the same amount of time)")
+                    report_lines.append(
+                        "cut_opening_frames NOTE: the LATENT output keeps its FULL video "
+                        "stream (cutting it is what produced a noisy opening frame) — take "
+                        "video from the IMAGES output on a cut run, audio from the latent.")
+                    if transition_duration and boundary_entries:
+                        report_lines.append(
+                            "cut_opening_frames NOTE: transitions were rendered before this "
+                            "cut, so a transition running INTO a cut scene loses the frames "
+                            "that were removed with the anchor.")
 
         # cut_opening_frames, H3 path. The LTX path cut each scene's finished LATENT inside
         # the loop above; H3 has no pinned latent prefix to cut and an off-grid video latent

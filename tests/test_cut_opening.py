@@ -4,15 +4,26 @@ The point of the feature is that the anchor is NOT weakened on the way in (ALG b
 loses character detail; Best-FaceID overlap tokens approximate it and lose some too) — it is
 pinned at full strength for the whole schedule and the opening is then cut off the FINISHED
 clip. Nothing is regrown to replace it (regrowing was tried and the invented ending came out
-with worse or missing movement), so the invariants worth testing are:
+with worse or missing movement).
+
+The cut happens on DECODED PIXELS, never on the latent — on both LTX and H3 now. Cutting the
+latent promoted a continuation frame to position 0, and the causal VAE decoded it with the
+temporal-origin handling it was never generated for, which showed up as a noisy first frame.
+It also could not be exact: a latent cut removed whole latent frames, and since the promoted
+frame went from covering 1 pixel to covering `scale`, the clip shortened by a different
+amount than the span that was removed.
+
+Invariants worth testing:
 
 1. The clip really does get SHORTER — no tail is invented, no joint is blended, and every
    surviving frame is the original untouched one.
-2. Video and audio still describe the same duration. Audio timing comes from the audio
+2. Exactly N frames go, from the right place, including for a mid-chain scene opening, and
+   multiple spans do not shift each other's indices.
+3. Video and audio still describe the same duration. Audio timing comes from the audio
    stream's own index, so cropping the two by different amounts desyncs the clip silently.
-3. The pin goes with the frame it belonged to.
-4. The cut can never consume the whole clip, and never mutates its input.
-5. The t2v guard: no pinned anchor means there is nothing to cut out.
+4. The latent's VIDEO stream is left whole — that is what keeps the origin intact.
+5. The cut can never consume the whole clip, and never mutates its input.
+6. The t2v guard: no pinned anchor means there is nothing to cut out.
 """
 import sys
 import types
@@ -79,80 +90,120 @@ def _av_latent(video_frames=10, audio_frames=20):
     return {"samples": _FakeNested([video, audio]), "noise_mask": torch.zeros_like(video)}
 
 
-# ── the cut ─────────────────────────────────────────────────────────────────
+# ── the cut: pixels, never latents ──────────────────────────────────────────
 
-def test_cut_shortens_the_clip_instead_of_regrowing_a_tail():
-    cut, dropped = _node()._cut_opening_latent(_latent(frames=10), 3)
-    assert dropped == 3
-    # 10 - 3, not 10: nothing is invented at the end, which is the whole point.
-    assert cut["samples"].shape[2] == 7
-    # And what survives is the ORIGINAL frames 3..9, untouched — no blend, no joint.
-    assert [int(v) for v in cut["samples"][0, 0, :, 0, 0]] == [3, 4, 5, 6, 7, 8, 9]
+def test_scene_pixel_start_accounts_for_the_causal_origin():
+    """The VAE decodes f latent frames to (f-1)*scale+1 pixels: latent frame 0 is the
+    temporal origin and covers ONE pixel, every later frame covers `scale`. A scene starting
+    at latent frame i therefore starts at pixel (i-1)*scale+1, not i*scale."""
+    n = _node()
+    assert n._scene_pixel_start(0, 8) == 0
+    assert n._scene_pixel_start(1, 8) == 1
+    assert n._scene_pixel_start(2, 8) == 9
+    assert n._scene_pixel_start(5, 8) == 33
 
 
-def test_cut_drops_the_pin_with_the_frame_it_belonged_to():
-    latent = _latent(frames=10)
-    assert "noise_mask" in latent
-    cut, _ = _node()._cut_opening_latent(latent, 1)
-    assert "noise_mask" not in cut
+def test_cut_removes_exactly_the_requested_pixel_frames():
+    """N means N. The old latent cut could only remove whole latent frames, and because the
+    promoted frame changed from covering 1 pixel to covering `scale`, the clip actually
+    shortened by a different amount than the span it removed."""
+    images = torch.arange(20, dtype=torch.float32).view(20, 1, 1, 1)
+    cut, dropped = _node()._cut_opening_pixel_spans(images, [(0, 6)])
+    assert dropped == 6
+    assert cut.shape[0] == 14
+    # The survivors are the ORIGINAL frames 6..19, untouched — no blend, no joint.
+    assert [int(v) for v in cut[:, 0, 0, 0]] == list(range(6, 20))
+
+
+def test_cut_handles_a_mid_chain_scene_opening():
+    """A hard-cut scene later in the chain has its own anchor to remove, so the cut is a
+    span, not just a head crop."""
+    images = torch.arange(20, dtype=torch.float32).view(20, 1, 1, 1)
+    cut, dropped = _node()._cut_opening_pixel_spans(images, [(10, 4)])
+    assert dropped == 4
+    assert [int(v) for v in cut[:, 0, 0, 0]] == list(range(10)) + list(range(14, 20))
+
+
+def test_multiple_spans_do_not_shift_each_other():
+    """Removing an earlier span first would move every later index — the classic
+    delete-while-iterating bug. Later spans must be removed first."""
+    images = torch.arange(20, dtype=torch.float32).view(20, 1, 1, 1)
+    cut, dropped = _node()._cut_opening_pixel_spans(images, [(0, 3), (10, 2)])
+    assert dropped == 5
+    assert [int(v) for v in cut[:, 0, 0, 0]] == list(range(3, 10)) + list(range(12, 20))
 
 
 def test_cut_never_consumes_the_whole_clip():
-    cut, dropped = _node()._cut_opening_latent(_latent(frames=4), 99)
-    assert dropped == 3  # clamped to frames - 1
-    assert cut["samples"].shape[2] == 1
+    """A cut longer than the clip is a misconfiguration; an empty batch turns it into an
+    obscure downstream crash instead of a visibly-too-short video."""
+    images = torch.arange(5, dtype=torch.float32).view(5, 1, 1, 1)
+    cut, dropped = _node()._cut_opening_pixel_spans(images, [(0, 99)])
+    assert cut.shape[0] == 1
+    assert dropped == 4
 
 
-def test_zero_drop_is_a_no_op():
-    cut, dropped = _node()._cut_opening_latent(_latent(frames=6), 0)
+def test_no_spans_is_a_no_op():
+    images = torch.arange(6, dtype=torch.float32).view(6, 1, 1, 1)
+    cut, dropped = _node()._cut_opening_pixel_spans(images, [])
     assert dropped == 0
-    assert torch.equal(cut["samples"], _latent(frames=6)["samples"])
+    assert cut is images
 
 
-def test_source_latent_is_never_mutated():
-    latent = _latent(frames=8)
-    before = latent["samples"].clone()
-    _node()._cut_opening_latent(latent, 3)
-    assert torch.equal(latent["samples"], before)
+def test_source_images_are_never_mutated():
+    images = torch.arange(8, dtype=torch.float32).view(8, 1, 1, 1)
+    before = images.clone()
+    _node()._cut_opening_pixel_spans(images, [(0, 3)])
+    assert torch.equal(images, before)
 
 
 # ── audio stays in sync ─────────────────────────────────────────────────────
 
-def test_cut_keeps_audio_and_video_describing_the_same_duration(nested_stub):
+def test_audio_loses_the_same_proportion_of_time(nested_stub):
     """Audio timing comes from the audio stream's own index and video's from its own RoPE,
-    so cropping them by different amounts of TIME desyncs the clip silently — no error,
-    just drifting sound. The kept lengths must stay in proportion."""
-    cut, _ = _node()._cut_opening_latent(_av_latent(10, 20), 3)
-    video, audio = cut["samples"].unbind()
-    assert video.shape[2] == 7 and audio.shape[2] == 14      # 7/10 == 14/20
-    # Cropped from the HEAD, matching the video — the tail is what survives.
-    assert [int(v) for v in audio[0, 0]] == list(range(6, 20))
+    so cropping them by different amounts of TIME desyncs the clip silently — no error, just
+    drifting sound. Spans are mapped by proportion, not by frame count."""
+    latent = _av_latent(10, 20)
+    out = _node()._remove_latent_time_spans(latent, [(0, 40)], 100)
+    _v, audio = out["samples"].unbind()
+    assert audio.shape[2] == 12          # 40% of 20 removed from the head
+    assert [int(v) for v in audio[0, 0]] == list(range(8, 20))
 
 
-def test_cut_keeps_proportion_when_the_rate_does_not_divide_evenly(nested_stub):
-    """The rounding trap: deriving audio's KEPT length from the new video length keeps the
-    two in proportion; subtracting a separately-rounded drop can leave them a frame apart."""
-    for v_frames, a_frames, drop in ((10, 15, 3), (9, 14, 4), (13, 7, 5), (10, 21, 7)):
-        cut, _ = _node()._cut_opening_latent(_av_latent(v_frames, a_frames), drop)
-        video, audio = cut["samples"].unbind()
-        assert audio.shape[2] == max(1, round(a_frames * video.shape[2] / v_frames))
-        assert audio.shape[2] >= 1 and video.shape[2] >= 1
+def test_video_stream_is_left_whole(nested_stub):
+    """The video latent must keep its temporal origin — that is the entire point of moving
+    the cut to pixels. Video comes from the decoded IMAGES instead."""
+    latent = _av_latent(10, 20)
+    out = _node()._remove_latent_time_spans(latent, [(0, 40)], 100)
+    video, _a = out["samples"].unbind()
+    assert video.shape[2] == 10
 
 
-def test_cut_uses_each_streams_own_time_axis(nested_stub):
+def test_audio_span_removal_never_empties_the_stream(nested_stub):
+    out = _node()._remove_latent_time_spans(_av_latent(10, 20), [(0, 100)], 100)
+    _v, audio = out["samples"].unbind()
+    assert audio.shape[2] >= 1
+
+
+def test_source_latent_is_never_mutated(nested_stub):
+    latent = _av_latent(10, 20)
+    before = latent["samples"].unbind()[1].clone()
+    _node()._remove_latent_time_spans(latent, [(0, 40)], 100)
+    assert torch.equal(latent["samples"].unbind()[1], before)
+
+
+def test_audio_uses_its_own_time_axis(nested_stub):
     """MiniMax H3 puts the STEREO CHANNEL on dim 2 and time last ([B, 32, 2, T]); LTXAV puts
-    time on dim 2 for both streams. Slicing an H3 audio stream on dim 2 would crop the stereo
-    pair down to mono and leave the duration untouched — silent, and wrong both ways."""
+    time on dim 2. Slicing an H3 audio stream on dim 2 would crop the stereo pair down to
+    mono and leave the duration untouched — silent, and wrong both ways."""
     n = _node()
     video = torch.zeros(1, 4, 10, 2, 2)
     audio = torch.arange(20, dtype=torch.float32).view(1, 1, 1, 20).repeat(1, 32, 2, 1)
     n._time_dims = (2, 3, 3, 3)  # what _set_stream_axes records on H3
-    cut, _ = n._cut_opening_latent(
-        {"samples": _FakeNested([video, audio])}, 3)
-    _v, a = cut["samples"].unbind()
+    out = n._remove_latent_time_spans({"samples": _FakeNested([video, audio])}, [(0, 40)], 100)
+    _v, a = out["samples"].unbind()
     assert a.shape[2] == 2       # both stereo channels survive
-    assert a.shape[3] == 14      # 7/10 of the duration, cropped from the head
-    assert [int(v) for v in a[0, 0, 0]] == list(range(6, 20))
+    assert a.shape[3] == 12      # 40% of the duration, removed from the head
+    assert [int(v) for v in a[0, 0, 0]] == list(range(8, 20))
 
 
 # ── H3: the cut lands on the decoded frames, not the latent ─────────────────
