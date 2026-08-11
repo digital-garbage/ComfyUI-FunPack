@@ -246,6 +246,15 @@
         const git = G ? G.get() : null;
         wrap.append(el("div", "sw-about-mark", "◉"));
         wrap.append(el("div", "sw-about-name", "FunPack"));
+        // Ubuntu-style release codename, carried on the git status alongside the version.
+        // Keyed by major, so it reads "3 “Auspicious Asparagus”". Omitted entirely when the
+        // backend is older than the field or the major has no name yet — an empty quoted
+        // string would look like a bug.
+        if (git?.codename) {
+          const major = String(git.version || "").split(".")[0];
+          wrap.append(el("div", "sw-about-codename",
+            (major ? major + " " : "") + "“" + git.codename + "”"));
+        }
         // window.FunPackAppName lets a different frontend sharing this file (e.g. Easy
         // Gen) relabel the app name without forking the whole section; Editor leaves it
         // unset and keeps "Cutting Room".

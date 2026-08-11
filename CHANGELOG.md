@@ -2,7 +2,73 @@
 
 ## [Unreleased]
 
+## [3.5.1] "Auspicious Asparagus" - 2026-08-11
+
+FunPack picks up release codenames, Ubuntu-style: an adjective and a vegetable sharing an
+initial, one per major version. All of 3.x is **Auspicious Asparagus**.
+
+Otherwise this is a compatibility-and-polish release on top of 3.5.0's second model family.
+LTX-2.5 landed upstream mid-cycle and turned out to need almost nothing — but the two places
+it *would* have broken silently are fixed, and several long-standing rough edges went with
+them.
+
+### Added
+- **Release codenames.** Shown under the name in Settings ▸ About, carried on the same
+  payload as the version. A major with no name yet simply shows nothing.
+- **About reports the machine ComfyUI runs on.** Chip, memory, GPU (name, VRAM and compute
+  capability), free disk, OS, ComfyUI, Python, torch and CUDA — plus which fast-attention
+  backend is actually importable, which answers "is SageAttention really installed on this
+  box" without reading the launch arguments. On a rental the host and the browser are
+  different machines and the host is the interesting one, so the panel says which it means.
+  Every probe degrades to a dash on its own: About is the screen that should still render
+  when the install is broken.
+- **A schedule for every sampler.** Steps and scheduler belong to the pass, not to the
+  KSampler branch, so any sampler can now be given a computed schedule instead of only a
+  hand-typed sigma list. The frames field became usable in the same pass.
+- **ALG on any sampler.** The i2v anchor blur used to be locked to FunPack's Distilled Flow
+  sampler. It now runs on whatever sampler is wired — a stock KSampler, Hybrid Euler 2S, a
+  two-evals-per-step sampler like `heun` — by lifting the guidance out of the sampler loop
+  and onto a denoiser proxy driven by the step's sigma.
+- **H3 audio clock.** MiniMax H3 denoises video and audio on two different flow schedules
+  but hands the sampler one sigma grid, so the DiT reconciles them with a start-of-step
+  slope that badly overshoots on a few-step schedule — heard as distortion. `h3_audio_clock`
+  swaps that for the chord actually spanning the step. One scalar multiply, no extra model
+  call. It works with stock ComfyUI samplers too, and stands itself down with a console note
+  on samplers that evaluate twice per step rather than guessing.
+- **Projects remember your Editor settings**, so a fresh rental does not reset your
+  preferences and shortcut revolver.
+- **Every Engine setting says what it does, what it costs and what it needs**, in one line.
+
 ### Fixed
+- **LTX-2.5 compatibility.** 2.5 reuses the same model classes behind new config flags, so
+  nearly everything binds unchanged — but two places assumed 2.3 specifics and would have
+  failed *silently*. The video/audio conditioning split was a hardcoded width table; from
+  2.5 on ComfyUI reads those widths off the checkpoint, and an unrecognised pair made the
+  split return the full width, steering the audio text context along with the video. The
+  only symptom would have been degraded audio. The split is now measured off the live model,
+  with the table kept as a fallback. Separately, decode-time noise reached only the conv
+  decoder: 2.5's diffusion decoder takes no timestep and seeds itself, but is an `nn.Module`,
+  so the settings were accepted and then ignored — a knob that read as live and did nothing.
+  It is now capability-tested and says so when it cannot apply.
+- **`cut_opening_frames` no longer leaves a noisy first frame.** The cut was made in latent
+  space, and the LTX video VAE is causal: latent frame 0 is the temporal origin, while every
+  later frame was generated as a continuation. Slicing the front off the latent promoted a
+  continuation frame to position 0, which then decoded with origin handling it was never
+  generated for. The cut now happens on decoded pixels, after a decode that saw every frame
+  in the context it was sampled in — the way MiniMax H3 already did it. The count was wrong
+  too: a latent cut could only remove whole latent frames and shortened the clip by a
+  different amount than the span it removed. It is exact now, N means N. Video comes from the
+  IMAGES output on a cut run (the Editor already wires it that way); the latent's audio
+  stream is cropped by the same amount of time so sound and picture still start together.
+- **Guide keyframes are dropped when `second_pass_op` changes the resolution.** They are
+  recorded as token indices into pass 1's grid, so `upscale_2x` left them addressing the
+  wrong tokens — which recent ComfyUI rejects outright and older builds mis-placed silently.
+  Pass 1 still uses every guide; only pass 2 loses them, and the scene report says so.
+- **One ALG control instead of two.** The Distilled Flow panel had its own switch while the
+  chain sampler's anchor blur did the same thing on any sampler and already drove it — two
+  controls for one behaviour, with precedence depending on which you had touched. The Editor
+  now shows one. Projects carrying the old switch are migrated with their strength and
+  threshold, and told so.
 - **H3 image conditioning actually reaches the model.** Two independent breaks, both silent,
   both ending with a generation that ignored the input image entirely and left the prompt to
   carry the whole shot. The Movie Editor always splits a run into per-scene conditionings,
@@ -16,12 +82,26 @@
   because the sampler's positive comes from Studio. New optional **Chain Sampler ·
   h3_keyframes** input (auto-wired for H3 projects) salvages the pins — first frame onto the
   opening scene, last frame re-indexed onto the closing scene's own final frame.
+- **Spare H3 token tags are trimmed, not thrown away.** An image prompt comes back one tag
+  long, and treating the surplus as corruption discarded the whole vector — which on exactly
+  those prompts left the DiT modulating the picture as if it were text.
+- **Projects remember which model family they are for.** Every project on disk had no family
+  recorded while the global default said MiniMax H3, so the builder read them as LTXAV and
+  routed the audio VAE at a node H3's graph never builds. That is the reported "phantom Audio
+  VAE port": one root cause, four separate bugs, all fixed.
+- **A wired `positive_conditioning` satisfies Studio's CLIP requirement**, and an
+  fl2va/ref2va node satisfies H3's AV latent requirement — neither should have been blocking
+  generation.
+- **Warn only when Studio has no conditioning source at all**, rather than whenever one
+  particular input is empty.
 
 ### Changed
 - **Guide strengths span the full 0..1 range.** Mid-scene guide, identity pin, prior-scene
   guide, the per-guide strength field, and the JoyAI memory floor were clamped to 0.25–0.5.
   That band is the measured audio-safe sweet spot, not a physical limit; it stays in the
   tooltips and out of the code.
+- **Project texts reach nodes that encode on their own**, expanded — so a custom encoder in
+  the graph sees the same prompt the pipeline does.
 - The H3 `v2a_grad_scale` warning chip is gone. The knob does nothing without JoyAI audio
   memory on any model, so flagging it as an H3 limitation blamed the wrong thing.
 
