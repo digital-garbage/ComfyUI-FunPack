@@ -22,8 +22,16 @@
     return slot === "funpack";
   }
 
+  // Read the family from whichever config actually carries it. `models()` returns the FIRST
+  // truthy of state.models / project.models, and state.models is {slots: []} both while the
+  // live config is still loading and after a failed fetch — truthy, but with no family — so
+  // taking it from there alone reports LTXAV for an H3 project during that window, and every
+  // family-dependent answer here (frame grid, fps, inert-setting chips) is wrong with it.
   function modelFamily(st) {
-    const f = String(models(st).model_family || "ltxav").toLowerCase();
+    const live = st && st.models;
+    const saved = st && st.project && st.project.models;
+    const raw = (live && live.model_family) || (saved && saved.model_family) || "ltxav";
+    const f = String(raw).toLowerCase();
     return f === "minimax_h3" ? "minimax_h3" : "ltxav";
   }
 
@@ -51,6 +59,28 @@
     const k = (Math.round(Number(n) || 0) - g.base) / g.step;
     const rounded = mode === "floor" ? Math.floor(k) : mode === "ceil" ? Math.ceil(k) : Math.round(k);
     return Math.max(min, rounded * g.step + g.base);
+  }
+
+  // What a frames INPUT should do while the user is using it. The two families are not
+  // equally strict, and treating them as if they were is what made the field unusable:
+  //   H3  — off-grid is a dead run (its latent node snaps its own length up while the
+  //         sampler expects the number the project asked for), so the field snaps on
+  //         commit and its arrows walk WHOLE grid steps (22 -> 39 -> 56). Before this the
+  //         arrows moved by 1 and the snap put the value straight back.
+  //   LTX — the builder rounds an off-grid length up to 8k+1 by itself, so nothing is at
+  //         risk: the field behaves like a plain number input and only its arrows follow
+  //         the grid (min 1 + step 8 lands them on 9 / 17 / 25 …).
+  // `min` is the arrow BASE as well as the floor, which is what puts the arrows on the grid.
+  function frameInputSpec(st) {
+    const g = frameGrid(st);
+    const hard = isH3(st);
+    return { step: g.step, min: hard ? g.step + g.base : g.base, snap: hard, grid: g };
+  }
+
+  // Snap only where the model actually demands it (H3). On LTX the typed number is kept.
+  function snapFramesIfRequired(n, st, mode) {
+    if (isH3(st)) return snapFramesTo(n, st, mode);
+    return Math.max(1, Math.round(Number(n) || 0));
   }
 
   // H3 renders at a fixed 24 fps. The project's frame rate still drives the container the
@@ -106,14 +136,6 @@
   // Same idea for non-boolean knobs whose neutral value means "off".
   function h3DeadValueIssues(si) {
     const out = [];
-    // Only when joyai_audio_memory is on: v2a_grad_scale is that feature's coupling knob and
-    // does nothing without it on ANY model, so flagging a left-over value as an H3 limitation
-    // blames the wrong thing — it would be equally inert on LTX.
-    if (si.joyai_audio_memory && Math.abs(Number(si.v2a_grad_scale ?? 1) - 1) > 1e-6) {
-      out.push(["v2a_grad_scale",
-        "v2a_grad_scale scales LTXAV's video→audio cross-attention module; H3 has no separate "
-        + "video→audio attention, only joint rows."]);
-    }
     if (si.second_pass && si.second_pass_op && si.second_pass_op !== "none") {
       out.push(["second_pass_op",
         "The second pass still runs on H3, but its latent op ('" + si.second_pass_op + "') uses the "
@@ -122,11 +144,30 @@
     return out;
   }
 
+  // The mirror image of H3_DEAD_SAMPLER_INPUTS: settings that only mean something ON H3.
+  // Left on against an LTX pipeline they are just as silently inert, so they get a chip
+  // by the same rule — the user should not have to spend a generation to find out.
+  // key -> why it cannot run off H3.
+  const H3_ONLY_SAMPLER_INPUTS = {
+    h3_audio_clock:
+      "The audio clock corrects for H3 denoising video and audio on two different flow "
+      + "schedules. LTX puts both streams on one schedule, so there is nothing to correct.",
+  };
+
   // Returns [{short, detail}] for settings that are ON but cannot do anything on H3.
   function h3InertSettings(st) {
     const p = st && st.project;
-    if (!p || !isH3(st) || !usesChainSampler(st)) return [];
+    if (!p || !usesChainSampler(st)) return [];
     const si = p.sampler_inputs || {};
+    if (!isH3(st)) {
+      return Object.keys(H3_ONLY_SAMPLER_INPUTS)
+        .filter((key) => si[key])
+        .map((key) => ({
+          short: key.replace(/_/g, " ") + " needs MiniMax H3",
+          detail: H3_ONLY_SAMPLER_INPUTS[key]
+            + " Turn it off in Settings → Engine to stop it showing here.",
+        }));
+    }
     const issues = [];
     Object.keys(H3_DEAD_SAMPLER_INPUTS).forEach((key) => {
       if (si[key]) issues.push([key, H3_DEAD_SAMPLER_INPUTS[key]]);
@@ -211,6 +252,38 @@
     return null;
   }
 
+  // Studio needs ONE positive-conditioning source: a CLIP it encodes the prompt with, or a
+  // finished CONDITIONING wired into positive_conditioning (encoded somewhere else — a
+  // deliberate setup, not a mistake, and nothing to warn about). Only having NEITHER is
+  // broken: there is no way for any prompt to reach the model.
+  const STUDIO_COND_PORT = "port:FunPackStudio.positive_conditioning";
+  const STUDIO_CLIP_PORT = "port:FunPackStudio.clip";
+
+  function anySlotWiresTo(m, port) {
+    return (m.slots || []).some((s) => Object.values((s && s.wires) || {})
+      .some((t) => (Array.isArray(t) ? t : [t]).includes(port)));
+  }
+
+  function promptSourceIssue(st) {
+    const m = models(st);
+    if (m.disable_core || !usesFunpackStudio(st)) return null;
+    const ov = (m.core_overrides && m.core_overrides.studio) || {};
+    if (ov.positive_conditioning || anySlotWiresTo(m, STUDIO_COND_PORT)) return null;
+    if (ov.clip || anySlotWiresTo(m, STUDIO_CLIP_PORT)) return null;
+    // No explicit wire either way: a slot in a CLIP-carrying role still gets one, through
+    // its role default or auto-wire. The roles that carry CLIP are the text encoder and a
+    // LoRA passing one through.
+    if ((m.slots || []).some((s) => s.role === "clip" || s.role === "lora")) return null;
+    return {
+      short: "Nothing encodes your prompt",
+      detail: "Studio has no text encoder on its clip input and no pre-encoded CONDITIONING on "
+        + "positive_conditioning, so nothing turns your prompt into something the model reads. "
+        + "Add a CLIP / Text Encoder in Models, or wire a node that outputs CONDITIONING into "
+        + "Studio · positive_conditioning.",
+      target: "models",
+    };
+  }
+
   function sourceLabel(type) {
     const map = {
       empty: "Empty · text-to-video",
@@ -232,6 +305,8 @@
     isH3,
     frameGrid,
     snapFramesTo,
+    frameInputSpec,
+    snapFramesIfRequired,
     frameRateIssue,
     h3InertSettings,
     effectiveSourceType,
@@ -240,6 +315,7 @@
     sourceNeedsAnchorMedia,
     isMissingAnchorMedia,
     identityTransferIssue,
+    promptSourceIssue,
     sourceLabel,
   };
 })();

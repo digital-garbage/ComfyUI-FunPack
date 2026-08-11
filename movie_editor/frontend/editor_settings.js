@@ -1,6 +1,9 @@
-// Editor settings: per-browser editor preferences (autocomplete, anchor).
-// A section of the unified Settings window. Distinct from Engine settings
-// (which configures Studio / Chain Sampler behavior on the project).
+// Editor settings: how the editor behaves (autocomplete, anchor, shortcut revolver).
+// A section of the unified Settings window. Distinct from Engine settings, which
+// configures Studio / Chain Sampler behavior — these do not affect what is generated.
+// Each one is mirrored into the open project (Store.setEditorSetting) so it survives a
+// move to a freshly rented instance, where localStorage and the server-side revolver
+// sidecar both start empty.
 (function () {
   const { el } = window.dom;
   const S = window.Store;
@@ -148,8 +151,9 @@
     wrap.append(el("div", "es-section-title", "Shortcut revolver"));
     wrap.append(el("div", "es-hint",
       "For shortcuts with several replacements: remember which replacement fired and don’t reuse it "
-      + "until the WHOLE set has fired. Off = seeded random pick (may repeat). Saved with your shortcut "
-      + "library — applies to every browser and to generation."));
+      + "until the WHOLE set has fired. Off = seeded random pick (may repeat). This one is a server "
+      + "setting — it applies to every browser and to generation — but the open project remembers your "
+      + "choice and puts it back, so a fresh instance doesn’t start from off."));
 
     const main = el("label", "chk es-toggle");
     const mainCb = el("input"); mainCb.type = "checkbox"; mainCb.disabled = true;
@@ -167,6 +171,12 @@
       + "option restarts all cycles."));
     wrap.append(sub);
 
+    // Mirror into the open project so the choice survives a move to another instance,
+    // where neither this browser's storage nor the server's revolver sidecar exists.
+    const remember = (s) => {
+      if (!S.get().project) return;
+      S.setEditorSetting("revolver", { enabled: !!(s && s.enabled), random: !!(s && s.random) });
+    };
     const apply = (s) => {
       mainCb.checked = !!(s && s.enabled);
       randCb.checked = !!(s && s.random);
@@ -177,13 +187,15 @@
     const save = () => {
       mainCb.disabled = randCb.disabled = true;
       API.setRevolverSettings({ enabled: mainCb.checked, random: randCb.checked })
-        .then(apply)
+        .then((s) => { apply(s); remember(s); })
         .catch(() => { API.revolverSettings().then(apply).catch(() => {}); });
     };
     mainCb.onchange = save;
     randCb.onchange = save;
 
     sub.style.display = "none";
+    // Opening a project already snapshots the server's current mode into it (see
+    // Store._applyProjectEditorSettings), so nothing to record here on mere display.
     API.revolverSettings().then(apply).catch(() => {
       wrap.append(el("div", "es-hint", "Could not load revolver settings."));
     });
@@ -222,7 +234,7 @@
 
   window.SettingsWindow.register({
     id: "editor", group: "", title: "Editor",
-    subtitle: "Per-browser preferences — they apply to this browser, not the project.",
+    subtitle: "How the editor behaves. The open project remembers these, so they follow it to another machine.",
     keywords: "autocomplete anchor prompt shortcuts ideas suggestions i2v bypass guide preferences revolver random replacements cycle",
     iconBg: "linear-gradient(180deg,#6aa9ff,#3b6fd9)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="6" cy="4.5" r="1.7" fill="#fff" stroke="none"/><circle cx="11" cy="8" r="1.7" fill="#fff" stroke="none"/><circle cx="5" cy="11.5" r="1.7" fill="#fff" stroke="none"/></svg>',

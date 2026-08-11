@@ -1723,11 +1723,24 @@ body.tour-mode { overflow: hidden; }
 .sw-about-mark { font-size: 56px; line-height: 1; color: var(--amber);
   text-shadow: 0 0 24px rgba(243,169,60,.45); margin-bottom: 10px; }
 .sw-about-name { font-family: var(--font-display); font-weight: 700; font-size: 28px; letter-spacing: -.02em; }
+.sw-about-codename { font-family: var(--font-display); font-size: 14px; font-style: italic;
+  color: var(--amber); letter-spacing: .01em; margin-top: 2px; }
 .sw-about-sub { font-size: 13px; color: var(--muted); margin-bottom: 18px; }
-.sw-about-facts { display: flex; flex-direction: column; gap: 4px; margin-bottom: 18px; }
-.sw-about-fact { display: flex; gap: 14px; justify-content: center; font-size: 12.5px; }
-.sw-about-k { color: var(--faint); min-width: 70px; text-align: right; }
-.sw-about-v { color: var(--text); font-family: var(--font-mono); text-align: left; min-width: 70px; }
+/* Two-column grid rather than centred rows: values now run from short ("3.14") to long
+   ("NVIDIA RTX PRO 6000 Blackwell · 95.5 GB · sm_120"), and only a shared column keeps
+   the keys aligned. `display: contents` lets each fact's two spans land in that grid. */
+.sw-about-facts { display: inline-grid; grid-template-columns: auto auto; gap: 4px 14px;
+  align-items: baseline; margin-bottom: 14px; font-size: 12.5px; }
+.sw-about-fact { display: contents; }
+.sw-about-k { color: var(--faint); text-align: right; white-space: nowrap; }
+.sw-about-v { color: var(--text); font-family: var(--font-mono); text-align: left;
+  max-width: 320px; overflow-wrap: anywhere; }
+.sw-about-group { grid-column: 1 / -1; margin-top: 12px; padding-bottom: 3px;
+  border-bottom: 1px solid var(--line, rgba(255,255,255,.08));
+  font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--faint); text-align: left; }
+.sw-about-hint { max-width: 340px; margin: 0 0 16px; font-size: 11px; color: var(--faint);
+  line-height: 1.45; text-wrap: balance; }
 .sw-about-copy { margin-top: 22px; font-size: 11px; color: var(--faint); }
 
 /* ── Models & Pipeline: inner sidebar layout inside the Settings window ── */
@@ -1820,6 +1833,12 @@ body.tour-mode { overflow: hidden; }
 .eng-field.eng-stack { flex-direction: column; align-items: stretch; gap: 8px; }
 .eng-field.eng-stack > .sw-row-main { width: 100%; }
 .eng-empty-row { font-size: 12px; color: var(--faint); }
+/* one-line hint by default; the long explanation waits behind this link */
+.eng-more { margin-top: 3px; padding: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: 11px; color: var(--faint); text-decoration: underline dotted; }
+.eng-more:hover { color: var(--amber); }
+.eng-detail { margin-top: 4px; padding-left: 8px; border-left: 2px solid var(--line);
+  color: var(--faint); max-width: 62ch; }
 .eng-add { align-self: flex-start; margin-top: 2px; }
 .eng-pane .studio-adjust-row { gap: 8px; }
 .eng-pane .studio-adjust-row input[type="text"] { min-width: 0; }

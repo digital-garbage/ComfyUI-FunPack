@@ -44,7 +44,13 @@ Use only `main` if you want the most stable version of FunPack. Bug reports base
 
 From time to time other short-lived branches may appear for the most advanced yet most breaking changes and features (e.g. a large rework in progress). I do not recommend using any non-`main` branch unless it's strictly necessary for your workflow — any sort of stability is not guaranteed, and such branches can be force-pushed or deleted at any time.
 
-## Version 3.0 — Cutting Room and development direction
+## Versions
+
+Since **3.5.1**, each major version carries a release codename — an adjective and a vegetable
+sharing an initial, advancing alphabetically, in the tradition Ubuntu made familiar. All of
+3.x is **"Auspicious Asparagus"**. It is shown in Settings ▸ About.
+
+### Version 3.0 — Cutting Room and development direction
 
 FunPack **3.0** introduces the **Cutting Room** — a dedicated montage editor at `/funpack/movie` inside ComfyUI. It is the primary surface for building multi-scene projects, previewing on a real timeline, and driving FunPack Studio + the LTXAV Scene Chain Sampler without wiring a graph by hand.
 
@@ -81,6 +87,22 @@ cut the reference still out of the finished clip), **context windows** for scene
 the model's comfortable window, and a progress readout that says which scene and which pass is
 running. Context windows, which never actually worked before, are fixed — see the
 [CHANGELOG](CHANGELOG.md) for the full list.
+
+**3.5.0** adds a **second model family**: MiniMax H3 alongside LTX-2 / LTXAV. A project picks a
+family, and everything downstream follows from that choice — which nodes the graph emits, which
+model files the setup asks for, which sampler settings are even applicable, and what counts as a
+valid scene length. Nothing about LTX-2 changes.
+
+**3.5.1 "Auspicious Asparagus"** is the first release with a codename, and a
+compatibility-and-polish pass on top of 3.5.0. **LTX-2.5** works — it reuses the same model
+classes behind new config flags, so almost everything binds unchanged, and the two places that
+would have broken *silently* are fixed. **Settings ▸ About** now reports the machine ComfyUI
+runs on (chip, memory, GPU and VRAM, disk, OS, Python, torch, and which fast-attention backend
+is actually installed), which is the thing you want at a glance on a fresh rental. **ALG** runs
+on any sampler rather than only FunPack's Distilled Flow, and its two duplicate switches became
+one. **`cut_opening_frames`** no longer leaves a noisy first frame — it cuts decoded pixels
+instead of latents, and the count is now exact. See the [CHANGELOG](CHANGELOG.md) for the full
+list.
 
 See [`docs/MovieEditor.md`](docs/MovieEditor.md) for complete Cutting Room documentation.
 

@@ -130,15 +130,25 @@
       sampler: st.project?.sampler_slot,
       // The MiniMax H3 "this setting can't run" chips live in the same zone, so every
       // input they read belongs here too — switching the family or turning one of these
-      // off must clear its chip, not leave it sitting next to Generate.
-      family: st.models?.model_family,
+      // off must clear its chip, not leave it sitting next to Generate. That includes
+      // the models config every chip is gated on, read the same way PipelineCaps reads
+      // it (state.models in the Editor, project.models otherwise).
+      family: (st.models || st.project?.models)?.model_family,
+      core: (st.models || st.project?.models)?.disable_core,
       h3Bounded: st.project?.sampler_inputs?.bounded_attention_enabled,
       h3Detail: st.project?.sampler_inputs?.segmented_detailing,
-      h3V2a: st.project?.sampler_inputs?.v2a_grad_scale,
       h3Pass2: st.project?.sampler_inputs?.second_pass,
       h3Pass2Op: st.project?.sampler_inputs?.second_pass_op,
+      // H3-ONLY settings get a chip when the pipeline is NOT H3, so this belongs here for
+      // exactly the same reason as the ones above — in the mirror direction.
+      h3Clock: st.project?.sampler_inputs?.h3_audio_clock,
       // ... including the project's frame rate, which the H3 fixed-24-fps chip reads.
       h3Fps: st.project?.frame_rate,
+      // The "nothing encodes your prompt" chip reads the whole models WIRING, which is
+      // far too big to hash field by field — track the verdict itself instead, so rewiring
+      // Studio's clip / positive_conditioning in Models repaints this zone and nothing else
+      // about the config does.
+      promptChip: window.PipelineCaps?.promptSourceIssue?.(st)?.short,
     });
   }
 

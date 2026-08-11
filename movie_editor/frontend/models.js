@@ -361,6 +361,10 @@
       if (w.kind === "combo" && (!w.choices || !w.choices.length)) {
         issues.push({ level: "error", msg: `"${w.name}" has no installed options to pick from.` });
       } else if (v == null || v === "") {
+        // A linked input is FILLED at generate time from a project value, so the stored
+        // blank is the normal state for one — warning about it would train the user to
+        // ignore the warning that matters.
+        if (linkOf(slot.id, w.name)) return;
         // Not blocking: the builder emits a type-appropriate empty for any widget left
         // blank (matching ComfyUI's frontend), so an empty field won't stall generation.
         issues.push({ level: "warn", msg: `"${w.name}" is empty — using its default.` });
@@ -1007,9 +1011,23 @@
     });
   }
 
-  // For VAE: need two separate producers (video_vae + audio_vae roles).
-  // For others: at least one producer of the type (regardless of role).
+  // Does this slot SOURCE the type — output it without consuming one? A loader or a
+  // generator does; a patcher that only passes the type through (a LoRA on MODEL/CLIP)
+  // does not, and can't satisfy a requirement on its own.
+  function slotSourcesType(type, slot) {
+    const spec = specFor(slot);
+    if (!(spec?.outputs || []).some((o) => o.type === type)) return false;
+    return !(spec?.connection_inputs || []).some((ci) => ci.type === type);
+  }
+
+  // VAE is asked for twice — video and audio — and only the role tells the two apart, so
+  // those stay role-bound (two separate producers required). Every other requirement is
+  // about whether the pipeline can GET that type from somewhere, so any node that really
+  // sources it counts, whatever role the user filed it under: MiniMax H3's fl2va / ref2va
+  // nodes emit their own AV latent, which is exactly what an Empty AV Latent would provide.
   function requirementSatisfied(req) {
+    if (req.type === "VAE") return slotProducesType(req.type, req.role_hint);
+    if (config.slots.some((s) => slotSourcesType(req.type, s))) return true;
     if (req.role_hint) return slotProducesType(req.type, req.role_hint);
     return slotProducesType(req.type, null);
   }
@@ -1110,6 +1128,12 @@
     { key: "", label: "Manual value" },
     { key: "prompt", label: "Project · Prompt (global)", kinds: ["string"] },
     { key: "negative_prompt", label: "Project · Negative prompt", kinds: ["string"] },
+    // The texts Studio wraps every scene in. A node encoding on its own knows nothing about
+    // them, so it can take them apart (anchor / postfix) or take the whole thing at once.
+    // The global prompt already carries the anchor — the postfix is the only piece outside it.
+    { key: "anchor", label: "Project · Anchor text (prepended)", kinds: ["string"] },
+    { key: "postfix", label: "Project · Postfix (appended)", kinds: ["string"] },
+    { key: "full_prompt", label: "Project · Prompt + postfix (what Studio encodes)", kinds: ["string"] },
     { key: "seed", label: "Project · Seed", kinds: ["int", "float"] },
     { key: "frame_rate", label: "Project · FPS", kinds: ["int", "float"] },
     { key: "num_frames_per_scene", label: "Project · Frames", kinds: ["int", "float"] },
@@ -1158,7 +1182,9 @@
 
     if (link.source === "editor") {
       const srcLbl = (EDITOR_SOURCES.find((s) => s.key === link.editor_key) || {}).label || link.editor_key;
-      card.append(el("div", "link-bound", `Value comes from ${srcLbl} at generate — the fields below are ignored.`));
+      const isText = ["prompt", "negative_prompt", "anchor", "postfix", "full_prompt"].includes(link.editor_key);
+      card.append(el("div", "link-bound", `Value comes from ${srcLbl} at generate — the fields below are ignored.`
+        + (isText ? " Shortcuts and $variables are expanded first, so the node encodes the same text Studio would." : "")));
     } else {
       const spec = { name: "shared value", kind: link.kind, choices: link.choices, required: false };
       const vf = widgetField(spec, link.value, async (v) => { applyLinkValue(link, v); await persist(); });

@@ -386,19 +386,60 @@ FUNPACK_ABSOLUTE_KEY = "__funpack_absolute_global__"
 #   LTXv2  fully-processed context = caption_channels*2 = 7680           → video = 3840
 #   LTXv2.3 fully-processed context = cross_attn_dim + audio_cross_attn_dim = 4096+2048 = 6144 → video = 4096
 # Anything else (single-stream LTXV, unrecognised dim) returns the full width, so callers no-op.
+#
+# The table is only a FALLBACK. From LTX 2.5 on, comfy reads the two projection widths off the
+# text encoder's state dict (comfy/text_encoders/lt.py `sd_detect` -> video_projection_dim /
+# audio_projection_dim) instead of assuming them, so a checkpoint is free to ship a pair this
+# table has never seen. Guessing wrong here is silent and costly: an unrecognised width makes
+# ltxav_video_channels return the FULL width, every steering edit then moves the audio text
+# context too, and the only symptom is degraded audio. So whenever a live model is on hand we
+# read its real widths and register them — see register_ltxav_split_from_model below.
 _FUNPACK_AV_SPLIT_TABLE = {7680: 3840, 6144: 4096}
+_FUNPACK_AV_SPLIT_LEARNED = {}
 _FUNPACK_AV_LOGGED = set()
+
+
+def register_ltxav_split_from_model(model):
+    """Read the real video/audio text-context widths off a live LTX model and register the
+    resulting concat split, so ltxav_video_channels stops depending on the static table.
+
+    `cross_attention_dim` conditions video (self.attn2), `audio_cross_attention_dim` conditions
+    audio (self.audio_attn2), and the conditioning tensor is the two concatenated in that order
+    — the same split `_prepare_context` performs. Silent no-op for single-stream / non-LTX
+    models, which have no audio width to find."""
+    try:
+        dm = model.model.diffusion_model
+    except Exception:
+        return None
+    try:
+        v = int(getattr(dm, "cross_attention_dim", 0) or 0)
+        a = int(getattr(dm, "audio_cross_attention_dim", 0) or 0)
+    except Exception:
+        return None
+    if v <= 0 or a <= 0:
+        return None  # single-stream (video-only) LTXV: nothing to protect
+    total = v + a
+    if _FUNPACK_AV_SPLIT_LEARNED.get(total) == v:
+        return v
+    _FUNPACK_AV_SPLIT_LEARNED[total] = v
+    _FUNPACK_AV_LOGGED.discard(total)  # re-log, now that the split is measured rather than guessed
+    if _FUNPACK_AV_SPLIT_TABLE.get(total, total) != v:
+        print(f"[FunPack AV] model reports video={v} + audio={a} = {total}; this does NOT match "
+              f"the built-in table — using the model's own widths (the table would have "
+              f"{'split at ' + str(_FUNPACK_AV_SPLIT_TABLE[total]) if total in _FUNPACK_AV_SPLIT_TABLE else 'left audio unprotected'}).")
+    return v
 
 
 def ltxav_video_channels(dim):
     """Leading channel count that conditions VIDEO for an LTXAV concat-context of width `dim`.
     Returns `dim` (no audio half) for single-stream / unrecognised layouts."""
     dim = int(dim)
-    v = _FUNPACK_AV_SPLIT_TABLE.get(dim, dim)
+    v = _FUNPACK_AV_SPLIT_LEARNED.get(dim) or _FUNPACK_AV_SPLIT_TABLE.get(dim, dim)
     if dim not in _FUNPACK_AV_LOGGED:
         _FUNPACK_AV_LOGGED.add(dim)
         if v < dim:
-            print(f"[FunPack AV] conditioning dim={dim}: steering confined to video [:{v}], audio [{v}:] protected")
+            src = "measured off the model" if dim in _FUNPACK_AV_SPLIT_LEARNED else "known layout"
+            print(f"[FunPack AV] conditioning dim={dim} ({src}): steering confined to video [:{v}], audio [{v}:] protected")
         else:
             print(f"[FunPack AV] conditioning dim={dim}: single-stream (no audio half); steering applies to all channels")
     return v
@@ -6153,17 +6194,20 @@ def _h3_reconcile_token_tags(conditioning, label=""):
     moves when either the prompt or the resolution changes — which is what made this look
     intermittent.
 
-    Grow the tags when tokens were appended, and drop them when they were removed or
-    replaced: a conditioning with no tags is handled by the DiT, one with WRONG tags is not.
-    Either way say so, because silently losing the tags changes how the DiT modulates the
-    text span. Non-H3 conditioning has no tags and passes straight through.
+    Grow the tags when tokens were appended, trim them when there are more tags than tokens.
+    Both keep position i meaning position i, which is all the DiT asks of them. Trimming
+    matters most on image prompts: the tags are built from the tokenizer's INPUT sequence and
+    the conditioning is what came back, so a vision block normally leaves one tag spare —
+    and dropping the whole vector there would throw away the modality-0 marks that tell the
+    DiT those positions are an image, not text. Say so either way. Non-H3 conditioning has
+    no tags and passes straight through.
     """
     if not isinstance(conditioning, list):
         return conditioning
     try:
-        from .minimax_h3 import extend_token_tags, tags_match, token_tags_length
+        from .minimax_h3 import extend_token_tags, tags_match, token_tags_length, trim_token_tags
     except ImportError:  # loaded as a top-level module (tests, direct import)
-        from minimax_h3 import extend_token_tags, tags_match, token_tags_length
+        from minimax_h3 import extend_token_tags, tags_match, token_tags_length, trim_token_tags
     out = []
     for entry in conditioning:
         if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
@@ -6181,10 +6225,10 @@ def _h3_reconcile_token_tags(conditioning, label=""):
             print(f"[FunPackStudio] MiniMax H3: {label} conditioning grew "
                   f"{have} -> {want} tokens; extended minimax_token_tags to match.")
         else:
-            meta = {k: v for k, v in meta.items() if k != "minimax_token_tags"}
+            meta = trim_token_tags(meta, want)
             print(f"[FunPackStudio] MiniMax H3: {label} conditioning is {want} tokens but "
-                  f"minimax_token_tags describes {have} — dropping the stale tags. The DiT "
-                  f"falls back to its default modulation for the text span.")
+                  f"minimax_token_tags describes {have} — trimmed the {have - want} spare "
+                  f"tag(s) off the tail. Modality marks for the kept positions are unchanged.")
         out.append([cond, meta] + list(entry[2:]))
     return out
 
@@ -6938,13 +6982,37 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             scene_effects.append(effect)
         return scene_texts, scene_effects
 
-    def _v2_transition_scene_conditionings(self, clip, scene_texts, scene_effects=None, encode_cache=None):
+    def _v2_transition_scene_conditionings(self, clip, scene_texts, scene_effects=None, encode_cache=None,
+                                           reference_image=None, h3_references=None):
+        """Per-scene conditionings for the Chain Sampler, one entry per scene.
+
+        These REPLACE the single-entry conditioning built above, so anything that lived on
+        that entry has to be re-established here or it never reaches the sampler. That is
+        why the visual conditioning travels in:
+
+        * ``reference_image`` — the i2v anchor, H3 only. Scene 0 only, matching how the chain
+          reads it (later scenes continue from the previous scene's output unless they carry
+          their own anchor). It has to be re-encoded, not copied: on H3 the anchor is presented
+          to Qwen inside the tokenize call, so a scene encoded without it is textually blind to
+          the image no matter what metadata is attached afterwards. LTX is left alone — there
+          the anchor reaches the model through the latent, and adding Gemma3 vision to scene 0
+          would change what every existing multi-scene LTX project generates.
+        * ``h3_references`` — ref2va reference media. EVERY scene: a reference identity holds
+          across the whole chain, and the ``<Picture i>`` ordinals in a scene's prompt only
+          resolve if that scene's own encode presented them.
+        """
         if clip is None:
             return None
         scene_texts = list(scene_texts or [])
         if not scene_texts:
             return None
         scene_effects = list(scene_effects or [])
+
+        try:
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import minimax_h3 as h3mod
+        anchor_image = reference_image if h3mod.is_h3_clip(clip) else None
 
         conditionings = []
         scene_count = len(scene_texts)
@@ -6953,7 +7021,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             seen_count = seen_texts.get(scene_text, 0)
             seen_texts[scene_text] = seen_count + 1
             encode_text = f"Returning to an earlier scene: {scene_text}" if seen_count > 0 else scene_text
-            cond, meta, _ = self._v2_encode_prompt(clip, encode_text, encode_cache=encode_cache)
+            scene_image = anchor_image if scene_index == 0 else None
+            cond, meta, _ = self._v2_encode_prompt(
+                clip, encode_text, encode_cache=encode_cache,
+                reference_image=scene_image, h3_references=h3_references,
+            )
             if not isinstance(cond, torch.Tensor):
                 return None
             scene_meta = dict(meta) if isinstance(meta, dict) else {"pooled_output": None}
@@ -12866,6 +12938,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if scene_texts:
                     scene_conditionings = self._v2_transition_scene_conditionings(
                         clip, scene_texts, scene_effects=split_scene_effects, encode_cache=encode_cache,
+                        # The per-scene entries replace `output_conditioning` wholesale, so H3's
+                        # visual conditioning has to be re-established here or the anchor image
+                        # and the ref2va references never reach the sampler at all.
+                        reference_image=source_image, h3_references=_h3_references,
                     )
                     if scene_conditionings is not None:
                         output_conditioning = self._v2_apply_scene_seed_metadata(
@@ -14537,8 +14613,8 @@ class FunPackConditioningAdjust:
         return (new_conditioning, status)
 
 
-# The KSampler pass's schedule dropdown holds ComfyUI's scheduler names plus this one extra
-# entry, which means "don't compute anything, run the sigmas typed in the Sigmas field".
+# A pass's schedule dropdown holds ComfyUI's scheduler names plus this one extra entry,
+# which means "don't compute anything, run the sigmas typed in the Sigmas field".
 # Both frontends offer it under the same string — keep them in sync if it ever changes.
 KSAMPLER_USER_SIGMAS = "use_user_sigmas"
 
@@ -14915,9 +14991,52 @@ class FunPackStudio:
         return None
 
     @classmethod
+    def _pass_schedule(cls, cfg, model, typed_sigmas, sampler_type):
+        """The pass's SIGMAS: either the typed field or a computed schedule.
+
+        Every sampler type takes its schedule from the outside — the FunPack samplers walk
+        whatever sigma list they are handed exactly like a stock KSampler does — so steps +
+        schedule belong to the PASS, not to the KSampler branch that first grew them. The
+        dropdown is the switch between the two sources, deliberately: KSAMPLER_USER_SIGMAS
+        runs the typed Sigmas field, anything else COMPUTES (the way ComfyUI's BasicScheduler
+        does) and the typed list is ignored for this pass — so a hand-written schedule can be
+        parked in the field and switched back to without retyping it.
+
+        `ksampler_scheduler` / `ksampler_steps` are the pre-split key names, still read here
+        so configs saved by an older UI keep their schedule.
+        """
+        scheduler = str(cfg.get("scheduler", cfg.get("ksampler_scheduler", KSAMPLER_USER_SIGMAS))
+                        or KSAMPLER_USER_SIGMAS)
+        if scheduler == KSAMPLER_USER_SIGMAS:
+            return typed_sigmas
+        steps = int(cfg.get("steps", cfg.get("ksampler_steps", 0)) or 0)
+        if model is None or steps <= 0:
+            print(f"[FunPackStudio] {sampler_type}: schedule '{scheduler}' needs steps > 0 "
+                  f"and a model — falling back to the typed sigmas field.")
+            return typed_sigmas
+        try:
+            import comfy.samplers as _cs
+            out = _cs.calculate_sigmas(
+                model.get_model_object("model_sampling"), scheduler, steps
+            ).cpu()
+        except Exception as e:
+            # Keep the sampler: a bad scheduler name should cost the schedule, not the pass.
+            print(f"[FunPackStudio] {sampler_type}: schedule build failed "
+                  f"({scheduler}, {steps} steps): {e}")
+            return typed_sigmas
+        if typed_sigmas is not None:
+            print(f"[FunPackStudio] {sampler_type}: schedule '{scheduler}' ({steps} steps) in "
+                  f"use — the typed sigmas field is ignored until the schedule is set back to "
+                  f"'{KSAMPLER_USER_SIGMAS}'.")
+        return out
+
+    @classmethod
     def _build_one_sampler(cls, cfg, prompt_sig=None, refinement_key="", model=None):
         sampler_type = str(cfg.get("type", "Hybrid Euler 2S") or "Hybrid Euler 2S")
         sigmas_raw = cls._parse_sigmas(cfg.get("sigmas", ""))
+        # steps + schedule are pass-level and apply to every sampler type; the FunPack
+        # samplers then prepare (motion pulses, quality split) whatever list this produces.
+        sigmas_raw = cls._pass_schedule(cfg, model, sigmas_raw, sampler_type)
 
         try:
             if sampler_type == "Distilled Flow":
@@ -14961,38 +15080,11 @@ class FunPackStudio:
             elif sampler_type == "KSampler":
                 import comfy.samplers as _cs
                 sampler_name = str(cfg.get("ksampler_name", "euler") or "euler")
+                # A stock KSampler carries no schedule of its own — the SAMPLER object is
+                # just the step function — so the pass's steps + schedule (built above, and
+                # shared with the FunPack samplers) is the only thing that can supply one.
                 sampler = _cs.sampler_object(sampler_name)
                 out_sigmas = sigmas_raw
-                # A stock KSampler carries no schedule of its own — the SAMPLER object is
-                # just the step function — so with the Sigmas field empty this pass used to
-                # hand the chain sampler nothing at all. steps + schedule build one the way
-                # ComfyUI's BasicScheduler does. The schedule is the switch between the two
-                # sources, deliberately: KSAMPLER_USER_SIGMAS reads the typed Sigmas field,
-                # anything else COMPUTES and the typed list is ignored for this pass — so a
-                # hand-written schedule can be parked in the field and switched back to
-                # without retyping it.
-                steps = int(cfg.get("ksampler_steps", 0) or 0)
-                scheduler = str(cfg.get("ksampler_scheduler", KSAMPLER_USER_SIGMAS)
-                                or KSAMPLER_USER_SIGMAS)
-                if scheduler != KSAMPLER_USER_SIGMAS:
-                    if model is None or steps <= 0:
-                        print(f"[FunPackStudio] KSampler schedule '{scheduler}' needs steps > 0 "
-                              f"and a model — falling back to the typed sigmas field.")
-                    else:
-                        try:
-                            out_sigmas = _cs.calculate_sigmas(
-                                model.get_model_object("model_sampling"), scheduler, steps
-                            ).cpu()
-                            if sigmas_raw is not None:
-                                print(f"[FunPackStudio] KSampler: schedule '{scheduler}' "
-                                      f"({steps} steps) in use — the typed sigmas field is "
-                                      f"ignored until the schedule is set back to "
-                                      f"'{KSAMPLER_USER_SIGMAS}'.")
-                        except Exception as e:
-                            # Keep the sampler: a bad scheduler name should cost the
-                            # schedule, not the whole pass.
-                            print(f"[FunPackStudio] KSampler schedule build failed "
-                                  f"({scheduler}, {steps} steps): {e}")
             else:  # Hybrid Euler 2S (default)
                 try:
                     from .samplers import FunPackHybridEuler2SSampler

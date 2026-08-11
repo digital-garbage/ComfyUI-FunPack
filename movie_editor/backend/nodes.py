@@ -194,7 +194,9 @@ ROLES: dict[str, dict] = {
 # Each entry: id, type, label, required, role_hint (role key to suggest adding), hint.
 # MiniMax H3 replaces two of these: its own EmptyMiniMaxH3LatentAV emits the video AND
 # audio streams in one node, so there is no separate audio-latent step and the latent is
-# no longer optional (nothing else produces one). The audio VAE stays required — it decodes
+# no longer optional — Studio does not generate one for this family, so a node has to. It
+# needn't be the Empty node: fl2va / ref2va build their own AV latent alongside their
+# conditioning, and satisfy this the same way. The audio VAE stays required — it decodes
 # the generated audio — and gains a second, optional job on H3 (encoding audio references).
 FAMILY_REQUIREMENTS: dict[str, dict] = {
     "minimax_h3": {
@@ -206,7 +208,9 @@ FAMILY_REQUIREMENTS: dict[str, dict] = {
             "clip": {"hint": "Add the MiniMax H3 text encoder (Qwen3-VL-32B, truncated to 50 layers)."},
             "init_latent": {"required": True, "label": "AV latent",
                             "hint": "Add Empty MiniMax H3 AV Latent — it makes the video and audio "
-                                    "streams together and feeds the Chain Sampler directly."},
+                                    "streams together and feeds the Chain Sampler directly. A "
+                                    "MiniMax H3 Image to Video (fl2va) or Reference to Video "
+                                    "(ref2va) node covers this too: each builds its own AV latent."},
         },
     },
 }

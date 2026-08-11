@@ -334,12 +334,28 @@ def find_tube(heat, latent_h, latent_w, threshold=DEFAULT_THRESHOLD,
 # Refine
 # ---------------------------------------------------------------------------
 
-def _strip_layout_conds(conds):
+def has_layout_conds(conds):
+    """True when any entry carries a full-frame layout key — i.e. when
+    strip_layout_conds() would actually drop something. Callers use this to
+    report the loss instead of silently discarding an anchor or a guide.
+    """
+    for entry in conds or []:
+        if isinstance(entry, (list, tuple)) and len(entry) == 2 and isinstance(entry[1], dict):
+            if any(k in entry[1] for k in _LAYOUT_COND_KEYS):
+                return True
+    return False
+
+
+def strip_layout_conds(conds):
     """Copy conditioning minus full-frame layout keys (anchors/guides).
 
     The crop refine is its own small denoise: text still applies, but keyframe
     indices and guide latents describe positions in the full-frame latent and
     would fight (or crash) the crop-sized pass.
+
+    Public because the Scene Chain sampler needs the same treatment for a
+    resolution-changing second_pass_op — any pass run on a differently-sized
+    latent than the one these keys were recorded against has the same problem.
     """
     out = []
     for entry in conds or []:
@@ -508,7 +524,7 @@ def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
         tail_sigmas = torch.tensor(stage2_sigmas(renoise_sigma), dtype=torch.float32)
         refined = chain._sample_chunk(
             model, sampler, tail_sigmas, int(seed) + 7777, cfg,
-            _strip_layout_conds(positive), _strip_layout_conds(negative), crop_latent)
+            strip_layout_conds(positive), strip_layout_conds(negative), crop_latent)
         refined_crop = chain._latent_tensors(refined)[0]
         cost_note = f"repair: renoise={renoise_sigma:.2f}"
 

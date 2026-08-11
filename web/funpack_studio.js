@@ -1266,6 +1266,31 @@ function openPanel(node) {
       body.append(el("div", "funpack-studio-hint",
         "Comma-separated floats. Leave empty to let the sampler decide (pass in sigmas externally)."));
 
+      // Steps + schedule belong to the PASS, not to the KSampler branch they first grew in:
+      // every sampler here walks a sigma list handed in from outside, so Distilled Flow and
+      // Hybrid Euler 2S can be driven by a computed schedule exactly like a stock KSampler.
+      // ksampler_scheduler / ksampler_steps are the pre-split key names, read once so an
+      // existing node keeps its schedule and then written under the shared ones.
+      if (cfg.scheduler === undefined) cfg.scheduler = cfg.ksampler_scheduler || KSAMPLER_USER_SIGMAS;
+      if (cfg.steps === undefined) cfg.steps = cfg.ksampler_steps === undefined ? 8 : cfg.ksampler_steps;
+      const _schedCur = cfg.scheduler || KSAMPLER_USER_SIGMAS;
+      const schedSelect = selectEl(
+        KSAMPLER_SCHEDULERS.includes(_schedCur) ? KSAMPLER_SCHEDULERS : KSAMPLER_SCHEDULERS.concat([_schedCur]), _schedCur);
+      schedSelect.addEventListener("change", () => { cfg.scheduler = schedSelect.value; renderSampler(); });
+      body.append(row("schedule", schedSelect));
+      body.append(el("div", "funpack-studio-hint",
+        "'" + KSAMPLER_USER_SIGMAS + "' runs the Sigmas field above exactly as typed; any other entry "
+        + "COMPUTES the schedule from the step count, the way ComfyUI's own scheduler does, and the "
+        + "Sigmas field is ignored until you switch back — so you can leave a hand-written schedule "
+        + "parked there. Applies to every sampler type, not just KSampler."));
+      if (_schedCur !== KSAMPLER_USER_SIGMAS) {
+        const stepsInput = numInput(cfg.steps, 1, 200, 1);
+        stepsInput.addEventListener("input", () => { cfg.steps = parseInt(stepsInput.value) || 0; });
+        body.append(row("steps", stepsInput));
+        body.append(el("div", "funpack-studio-hint",
+          "8 suits the distilled LTX model; a non-distilled one wants 20-30."));
+      }
+
       if (cfg.type === "Hybrid Euler 2S") {
         const hc = cfg.hybrid;
         body.append(sectionTitle("Hybrid Euler 2S settings"));
@@ -1462,25 +1487,9 @@ function openPanel(node) {
           KSAMPLER_NAMES.includes(_ksCur) ? KSAMPLER_NAMES : KSAMPLER_NAMES.concat([_ksCur]), _ksCur);
         ksSelect.addEventListener("change", () => { cfg.ksampler_name = ksSelect.value; });
         body.append(row("sampler name", ksSelect));
-
-        if (cfg.ksampler_scheduler === undefined) cfg.ksampler_scheduler = KSAMPLER_USER_SIGMAS;
-        const _schedCur = cfg.ksampler_scheduler || KSAMPLER_USER_SIGMAS;
-        const ksSched = selectEl(
-          KSAMPLER_SCHEDULERS.includes(_schedCur) ? KSAMPLER_SCHEDULERS : KSAMPLER_SCHEDULERS.concat([_schedCur]), _schedCur);
-        ksSched.addEventListener("change", () => { cfg.ksampler_scheduler = ksSched.value; renderSampler(); });
-        body.append(row("schedule", ksSched));
         body.append(el("div", "funpack-studio-hint",
-          "A KSampler is only the step function — it carries no schedule. '" + KSAMPLER_USER_SIGMAS
-          + "' runs the Sigmas field above exactly as typed; any other entry COMPUTES the schedule from steps, the way ComfyUI's own scheduler does, and the Sigmas field is ignored until you switch back — so you can leave your hand-written schedule parked there."));
-
-        if (_schedCur !== KSAMPLER_USER_SIGMAS) {
-          if (cfg.ksampler_steps === undefined) cfg.ksampler_steps = 8;
-          const ksSteps = numInput(cfg.ksampler_steps, 1, 200, 1);
-          ksSteps.addEventListener("input", () => { cfg.ksampler_steps = parseInt(ksSteps.value) || 0; });
-          body.append(row("steps", ksSteps));
-          body.append(el("div", "funpack-studio-hint",
-            "8 suits the distilled LTX model; a non-distilled one wants 20-30."));
-        }
+          "A KSampler is only the step function — it carries no schedule of its own, so the "
+          + "schedule / steps above are the only thing that can give it one."));
       }
     }
 

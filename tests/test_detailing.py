@@ -220,13 +220,13 @@ def test_resolve_download_failure_raises_actionable_error(monkeypatch, tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# _strip_layout_conds / _downscale_to
+# strip_layout_conds / _downscale_to
 # ---------------------------------------------------------------------------
 
 def test_strip_layout_conds_removes_guide_keys_only():
     cond = [[torch.zeros(1, 4), {"keyframe_idxs": "kf", "guiding_latent": "g",
                                  "pooled_output": "keep"}]]
-    out = detailing._strip_layout_conds(cond)
+    out = detailing.strip_layout_conds(cond)
     assert out[0][1] == {"pooled_output": "keep"}
     # Original untouched (the scene's own conds must not lose their guides).
     assert "keyframe_idxs" in cond[0][1]

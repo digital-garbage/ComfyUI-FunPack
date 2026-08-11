@@ -103,6 +103,10 @@ PORT_TO_OPEN_CORE: dict[str, tuple[str, str]] = {
 #
 # Everything not listed is inherited, so a rule added for LTXAV reaches H3 too.
 _H3_LATENT_PORT = "FunPackLTXAVSceneChainSampler.latent_template"
+# A MiniMax H3 Image to Video node in the latent role also emits CONDITIONING carrying its
+# first_frame / last_frame pins. Studio owns the sampler's positive, so that conditioning has
+# nowhere to go and the image is silently lost; this port is where the pins are salvaged.
+_H3_KEYFRAME_PORT = "FunPackLTXAVSceneChainSampler.h3_keyframes"
 
 FAMILY_WIRING: dict[str, dict] = {
     "ltxav": {},
@@ -111,19 +115,27 @@ FAMILY_WIRING: dict[str, dict] = {
             "audio_vae": [("VAE", None, "VAEDecodeAudio.vae"),
                           ("VAE", None, "FunPackLTXAVSceneChainSampler.audio_vae")],
             "audio_encoder": [],
-            "empty_latent": [("LATENT", None, _H3_LATENT_PORT)],
-            "video_latent": [("LATENT", None, _H3_LATENT_PORT)],
+            "empty_latent": [("LATENT", None, _H3_LATENT_PORT),
+                             ("CONDITIONING", None, _H3_KEYFRAME_PORT)],
+            "video_latent": [("LATENT", None, _H3_LATENT_PORT),
+                             ("CONDITIONING", None, _H3_KEYFRAME_PORT)],
             "image_processing": [("IMAGE", None, "FunPackStudio.source_image")],
         },
-        "type_chain_terminals": {"LATENT": [_H3_LATENT_PORT]},
+        "type_chain_terminals": {"LATENT": [_H3_LATENT_PORT],
+                                 "CONDITIONING": [_H3_KEYFRAME_PORT]},
         "default_wires": {
             "audio_vae": {"VAE": "port:VAEDecodeAudio.vae"},
             "audio_encoder": {},
-            "empty_latent": {"LATENT": "port:" + _H3_LATENT_PORT},
-            "video_latent": {"LATENT": "port:" + _H3_LATENT_PORT},
+            # both outputs of the H3 latent node are wired by default: the AV latent, and the
+            # keyframe pins that come with it when the node has a first/last frame image
+            "empty_latent": {"LATENT": "port:" + _H3_LATENT_PORT,
+                             "CONDITIONING": "port:" + _H3_KEYFRAME_PORT},
+            "video_latent": {"LATENT": "port:" + _H3_LATENT_PORT,
+                             "CONDITIONING": "port:" + _H3_KEYFRAME_PORT},
         },
         "port_labels": {
             _H3_LATENT_PORT: "Chain Sampler · latent_template (H3 AV latent)",
+            _H3_KEYFRAME_PORT: "Chain Sampler · h3_keyframes (first/last frame pins)",
             "VAEDecodeAudio.vae": "VAE Decode Audio · vae",
             "FunPackLTXAVSceneChainSampler.audio_vae": "Chain Sampler · audio_vae (ref2va audio)",
         },
@@ -134,6 +146,7 @@ FAMILY_WIRING: dict[str, dict] = {
             "FunPackStudio.source_image": ("studio", "source_image"),
             "FunPackLTXAVSceneChainSampler.vae": ("sampler", "vae"),
             _H3_LATENT_PORT: ("sampler", "latent_template"),
+            _H3_KEYFRAME_PORT: ("sampler", "h3_keyframes"),
             "FunPackLTXAVSceneChainSampler.audio_vae": ("sampler", "audio_vae"),
             "VAEDecodeAudio.vae": ("audiodec", "vae"),
         },
@@ -148,10 +161,37 @@ def family_of(models: Any) -> str:
     return fam if fam in FAMILY_WIRING else DEFAULT_FAMILY
 
 
+def _family_core_classes(family: str) -> frozenset:
+    """The node classes this family's fixed core actually contains.
+
+    Imported lazily: builder imports THIS module, so a module-level import would be a cycle.
+    """
+    try:
+        from .builder import family_core
+        core, _links, _ports = family_core(family)
+        return frozenset(core.values())
+    except Exception:
+        return frozenset()
+
+
+def _port_exists_in_core(port: str, core_classes: frozenset) -> bool:
+    """Is `NodeClass.input` a port on a node this family's core has? Unknown -> allow."""
+    if not core_classes or "." not in str(port):
+        return True
+    return str(port).split(".", 1)[0] in core_classes
+
+
 def _role_targets(family: str) -> dict:
     out = {k: list(v) for k, v in ROLE_WIRE_TARGETS.items()}
     out.update({k: list(v) for k, v in (FAMILY_WIRING.get(family, {}).get("role_targets") or {}).items()})
-    return out
+    # Drop targets on nodes this family's core does not build. The inherited LTXAV rules
+    # point audio_vae at LTXVAudioVAEDecode, which H3 drops entirely — so a project whose
+    # family was read wrongly (or a family that simply forgets to override a role) offered a
+    # wire to a node that is not in the graph. Filtering here makes that impossible rather
+    # than merely fixed: a role can only ever target a port that exists.
+    core_classes = _family_core_classes(family)
+    return {role: [t for t in targets if _port_exists_in_core(t[2], core_classes)]
+            for role, targets in out.items()}
 
 
 def _chain_terminals(family: str) -> dict:
@@ -163,7 +203,16 @@ def _chain_terminals(family: str) -> dict:
 def _default_wires(family: str) -> dict:
     out = {k: dict(v) for k, v in DEFAULT_WIRES_BY_ROLE.items()}
     out.update({k: dict(v) for k, v in (FAMILY_WIRING.get(family, {}).get("default_wires") or {}).items()})
-    return out
+    # Same guard as _role_targets: never auto-wire a new loader to a port on a node this
+    # family does not build. A default wire is applied without the user asking, so a stale
+    # one is the most likely way a phantom port reaches a saved project.
+    core_classes = _family_core_classes(family)
+    return {
+        role: {t: w for t, w in wires.items()
+               if not (isinstance(w, str) and w.startswith("port:"))
+               or _port_exists_in_core(w[len("port:"):], core_classes)}
+        for role, wires in out.items()
+    }
 
 
 def _port_labels(family: str) -> dict:

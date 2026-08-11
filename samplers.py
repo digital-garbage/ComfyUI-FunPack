@@ -805,6 +805,198 @@ def _video_only(x_new, x_old, mask):
         return x_new
 
 
+def _audio_clock_setup(model, x, sigmas, enabled):
+    """Build the per-step audio-clock correction for a MiniMax H3 run, or None.
+
+    Returns (factors, mask) where `factors[i]` scales the audio stream's displacement on
+    step i and `mask` is the packed video mask. None whenever the correction cannot be
+    made — not H3, no readable packed layout, or shifts that make it a no-op — so callers
+    just fall through to comfy's own tangent approximation.
+    """
+    if not enabled:
+        return None
+    try:
+        try:
+            from .minimax_h3 import audio_clock_factors, is_h3_model, resolve_sigma_shifts
+        except ImportError:
+            from minimax_h3 import audio_clock_factors, is_h3_model, resolve_sigma_shifts
+        patcher = getattr(getattr(model, "inner_model", None), "model_patcher", None)
+        if not is_h3_model(patcher):
+            print("[FunPack AV] h3_audio_clock is on but this is not a MiniMax H3 model — "
+                  "the two-schedule correction it applies exists only on H3. Not running.")
+            return None
+        mask = _packed_video_mask(model, x)
+        if mask is None:
+            print("[FunPack AV] h3_audio_clock is on but the packed video+audio latent layout "
+                  "could not be read, so the audio stream cannot be located. Not running.")
+            return None
+        shift_v, shift_a = resolve_sigma_shifts(getattr(patcher, "model_options", None))
+        factors = audio_clock_factors(sigmas, shift_v, shift_a)
+        if not factors or all(abs(f - 1.0) < 1e-6 for f in factors):
+            print(f"[FunPack AV] h3_audio_clock is on but shift_video ({shift_v:g}) and "
+                  f"shift_audio ({shift_a:g}) put both streams on the same schedule — "
+                  f"nothing to correct. Not running.")
+            return None
+        worst = min(factors)
+        print(f"[FunPack AV] h3_audio_clock on (shift_video={shift_v:g}, shift_audio={shift_a:g}) "
+              f"— audio integrated on its own schedule over {len(factors)} step(s); the most "
+              f"corrected step moves audio to {worst * 100.0:.0f}% of what the video grid alone "
+              f"would have moved it.")
+        return factors, mask
+    except Exception as error:
+        print(f"[FunPack AV] h3_audio_clock could not be set up ({error}) — not running.")
+        return None
+
+
+def _audio_clock_step(x_new, x_old, clock, i):
+    """Re-scale the audio stream's displacement over one step onto its own schedule.
+
+    Video keeps `x_new` untouched. Audio keeps the same direction but the length the
+    audio schedule actually calls for. Confining it to the displacement means any
+    ancestral noise or steering the caller already restricted to video rides through
+    unchanged. No-op without a clock, or past the end of the factor list.
+    """
+    if clock is None:
+        return x_new
+    try:
+        factors, mask = clock
+        if i >= len(factors):
+            return x_new
+        factor = factors[i]
+        # video region -> multiplier 1, audio region -> multiplier `factor`
+        scale = mask + (1.0 - mask) * factor
+        return x_old + (x_new - x_old) * scale
+    except Exception:
+        return x_new
+
+
+# ── the audio clock on a sampler we do not own ───────────────────────────────
+# FunPack's own samplers apply the clock inside their step loop, where the step's start
+# and end sigma are both in hand. A stock comfy sampler has no such hook, so the only way
+# in is the denoised value it asks for. That works because the correction can be moved
+# from the step to the prediction: scaling the audio part of (x - denoised) by the same
+# factor makes the sampler's own euler update land the audio exactly where its schedule
+# says, since that update is x*r + denoised*(1-r) with r = sigma_next/sigma.
+#
+# The catch is knowing WHICH step a given call belongs to. A sampler that evaluates the
+# model once per step makes call index == step index, and that covers euler, res_multistep,
+# er_sde, dpmpp_2m and the rest of the multistep family — including the samplers ComfyUI's
+# own H3 template uses. A sampler that evaluates more than once per step (heun, dpm_2,
+# dpmpp_2s/sde) does not, and cannot be disambiguated from out here: its corrector call
+# lands on the same (sigma, step count) signature as the next step's predictor.
+#
+# So the wrapper checks its assumption on every call — the sigma it is handed must be the
+# one this step's single evaluation would use — and switches itself off, loudly, the moment
+# that stops holding. It never guesses.
+_AUDIO_CLOCK_SIGMA_TOL = 1e-4
+
+# Measured against comfy's real samplers with a PERFECT rectified-flow predictor, so every
+# number is pure schedule error (scratch harness, 2026-08-06; shift 12/3, audio error as a
+# % of the stream's full noise->signal span):
+#
+#   sampler          4 steps      8 steps     20 steps
+#   euler          85.4 -> 0.0  38.4 -> 0.0  13.5 -> 0.0     exact, at every step count
+#   res_multistep  68.7 -> 20.7 17.5 -> 23.0  1.0 -> 14.8    already self-corrects; clock hurts
+#   dpmpp_2m       69.0 -> 20.2 18.2 -> 22.3  0.4 -> 14.2    same
+#   heun/dpm_2     unchanged — two evals per step, the proxy stands down
+#
+# The lesson: this is a FIRST-ORDER integration error, so a higher-order sampler already
+# absorbs most of it once the schedule is fine enough — which is why res_multistep and
+# er_sde behaved well on H3 at 20 steps and plain-euler paths did not. At 4 steps NOTHING
+# absorbs it (everything sits at 68-85%) and only the clock fixes it, which is exactly the
+# regime turbo LoRAs put you in.
+#
+# We do not gate on this — the user picks the sampler and these are the facts they need.
+_AUDIO_CLOCK_EXACT_ON = ("sample_euler",)
+_AUDIO_CLOCK_HARMED = ("sample_res_multistep", "sample_dpmpp_2m", "sample_gradient_estimation",
+                       "sample_ipndm", "sample_ipndm_v", "sample_lms", "sample_deis")
+
+
+class _AudioClockDenoiser:
+    """Denoiser proxy that applies the audio clock to what a foreign sampler asks for.
+
+    Transparent for everything else: samplers reach through to `inner_model`,
+    `latent_image` and friends, so attribute access forwards to the wrapped object.
+    """
+
+    def __init__(self, inner, clock, sigmas):
+        self._inner = inner
+        self._clock = clock
+        self._sigmas = sigmas
+        self._step = 0
+        self._live = True
+
+    def __getattr__(self, name):
+        # only reached for names not on the proxy itself
+        return getattr(self._inner, name)
+
+    def __setattr__(self, name, value):
+        if name in ("_inner", "_clock", "_sigmas", "_step", "_live"):
+            object.__setattr__(self, name, value)
+        else:                       # e.g. samplers assigning model.latent_image
+            setattr(self._inner, name, value)
+
+    def _step_for(self, sigma):
+        """The step this call belongs to, or None if the one-eval-per-step assumption broke."""
+        i = self._step
+        if i >= len(self._sigmas) - 1:
+            return None
+        try:
+            want = float(self._sigmas[i])
+            got = float(sigma.flatten()[0]) if hasattr(sigma, "flatten") else float(sigma)
+        except Exception:
+            return None
+        if abs(got - want) > _AUDIO_CLOCK_SIGMA_TOL * max(1.0, abs(want)):
+            return None
+        return i
+
+    def __call__(self, x, sigma, **kwargs):
+        denoised = self._inner(x, sigma, **kwargs)
+        if not self._live:
+            return denoised
+        i = self._step_for(sigma)
+        if i is None:
+            self._live = False
+            print("[FunPack AV] h3_audio_clock: this sampler does not evaluate the model once "
+                  "per step at the scheduled sigma, so a model call cannot be tied to a step "
+                  "from outside its loop. Correction switched OFF for the rest of this run — "
+                  "the audio is being integrated the way it was before. Use FunPack Distilled "
+                  "Flow / Hybrid Euler 2S (the clock runs inside their loop and handles this), "
+                  "or a one-eval-per-step sampler such as euler, res_multistep or er_sde.")
+            return denoised
+        self._step += 1
+        # (x - denoised) is the step's direction; scaling its audio part is the same
+        # correction the in-loop version applies to the displacement.
+        return _audio_clock_step(denoised, x, self._clock, i)
+
+
+def _audio_clock_wrap_sampler(sampler):
+    """A SAMPLER equivalent to `sampler` with the audio clock applied around its model.
+
+    Returns None when the sampler exposes no `sampler_function` to wrap — some SAMPLER
+    producers are not KSAMPLER-shaped, and guessing at their internals is not worth it.
+    """
+    fn = getattr(sampler, "sampler_function", None)
+    if fn is None:
+        return None
+
+    def _wrapped(model, x, sigmas, extra_args=None, callback=None, disable=None, **options):
+        clock = _audio_clock_setup(model, x, sigmas, True)
+        if clock is None:      # not H3, unreadable layout, or coincident schedules
+            return fn(model, x, sigmas, extra_args=extra_args, callback=callback,
+                      disable=disable, **options)
+        proxy = _AudioClockDenoiser(model, clock, sigmas)
+        return fn(proxy, x, sigmas, extra_args=extra_args, callback=callback,
+                  disable=disable, **options)
+
+    _wrapped.__name__ = getattr(fn, "__name__", "sampler") + "_h3_audio_clock"
+    return comfy.samplers.KSAMPLER(
+        _wrapped,
+        extra_options=getattr(sampler, "extra_options", None) or {},
+        inpaint_options=getattr(sampler, "inpaint_options", None) or {},
+    )
+
+
 def _video_span(model, x):
     """(offset, size, stream_shape) of the video stream inside a packed AV latent
     [B,1,N], or None when the layout can't be verified (same guards and stream
@@ -917,6 +1109,138 @@ def _alg_blur_frames(model, latent_image, kappa, frame_indices=(), tail_count=0)
         return out
     except Exception:
         return None
+
+
+def _alg_prepare(model, extra_args, anchor_on, anchor_strength, tail_frames, tail_strength):
+    """Precompute the ALG latent variants for this run.
+
+    Returns ``(sharp, latents, anchor_on, tail_on)``. `latents` is keyed by
+    ``(anchor blurred?, tail blurred?)`` — one entry per combination that can occur; the two
+    frame sets are disjoint, so the both-blurred variant just composes the two. Anchor and
+    guide-tail blur are fully independent (own strength, own sigma window), which is why the
+    key is a pair rather than a single flag. Both returned flags are False when ALG cannot
+    run at all: no real anchor (no denoise_mask), no latent_image, or a packed layout
+    `_alg_blur_frames` refuses to guess at.
+
+    Shared by the in-loop version (Distilled Flow) and the denoiser-proxy version that gives
+    every other sampler the same behaviour — one place, so the two can't drift.
+    """
+    tail_frames = max(0, int(tail_frames))
+    anchor_on = bool(anchor_on)
+    tail_on = tail_frames > 0
+    sharp = getattr(model, "latent_image", None) if (anchor_on or tail_on) else None
+    if not (anchor_on or tail_on) or sharp is None or (extra_args or {}).get("denoise_mask") is None:
+        return sharp, {}, False, False
+
+    anchor_blurred = _alg_blur_frames(
+        model, sharp, max(1.0, float(anchor_strength)), frame_indices=(0,),
+    ) if anchor_on else None
+    tail_kappa = max(1.0, float(tail_strength))
+    tail_blurred = _alg_blur_frames(
+        model, sharp, tail_kappa, tail_count=tail_frames,
+    ) if tail_on else None
+    both_blurred = _alg_blur_frames(
+        model, anchor_blurred, tail_kappa, tail_count=tail_frames,
+    ) if (anchor_blurred is not None and tail_blurred is not None) else None
+    anchor_on = anchor_on and anchor_blurred is not None
+    tail_on = tail_on and tail_blurred is not None
+    latents = {
+        (False, False): sharp,
+        (True, False): anchor_blurred,
+        (False, True): tail_blurred,
+        # both → anchor → tail → None. Explicit None checks, NOT `anchor_blurred or
+        # tail_blurred`: `or` calls bool() on the first operand, which is a multi-element
+        # tensor when anchor blur is on but tail blur is off (both_blurred is then None) —
+        # "Boolean value of Tensor is ambiguous". This value is only a defensive fallback:
+        # when (True, True) is actually indexed, anchor_on and tail_on are both True, so
+        # both_blurred is non-None and the chain never reaches the singles.
+        (True, True): (both_blurred if both_blurred is not None
+                       else anchor_blurred if anchor_blurred is not None
+                       else tail_blurred),
+    }
+    return sharp, latents, anchor_on, tail_on
+
+
+class _ALGDenoiser:
+    """Denoiser proxy that runs ALG's blurred/sharp swap for a sampler we can't get inside.
+
+    ALG is a per-step swap of the pinned latent_image, and the swap is decided by ONE thing:
+    the sigma of the step. That sigma is an argument of every model call, so the schedule
+    does not need the sampler's loop at all — it only needed it in the original implementation
+    because that is where the code happened to live. Driving it from here makes ALG work with
+    a stock KSampler (any sampler_name), with Hybrid Euler 2S, and with multi-eval samplers
+    such as heun, where each evaluation gets the anchor its own sigma calls for.
+
+    Transparent for everything else: attribute access forwards to the wrapped denoiser.
+    """
+
+    _OWN = ("_inner", "_latents", "_anchor_on", "_tail_on", "_anchor_thr", "_tail_thr")
+
+    def __init__(self, inner, latents, anchor_on, tail_on, anchor_thr, tail_thr):
+        self._inner = inner
+        self._latents = latents
+        self._anchor_on = anchor_on
+        self._tail_on = tail_on
+        self._anchor_thr = float(anchor_thr)
+        self._tail_thr = float(tail_thr)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def __setattr__(self, name, value):
+        if name in _ALGDenoiser._OWN:
+            object.__setattr__(self, name, value)
+        else:                       # e.g. samplers assigning model.latent_image
+            setattr(self._inner, name, value)
+
+    def __call__(self, x, sigma, **kwargs):
+        try:
+            s = float(sigma.flatten()[0]) if hasattr(sigma, "flatten") else float(sigma)
+            self._inner.latent_image = self._latents[(
+                self._anchor_on and s > self._anchor_thr,
+                self._tail_on and s > self._tail_thr,
+            )]
+        except Exception:
+            pass                    # never cost the step over the guidance
+        return self._inner(x, sigma, **kwargs)
+
+
+def _alg_wrap_sampler(sampler, anchor_on, anchor_strength, anchor_threshold,
+                      tail_frames, tail_strength, tail_threshold):
+    """A SAMPLER equivalent to `sampler` with ALG applied around its model.
+
+    Returns None when the sampler exposes no `sampler_function` to wrap — some SAMPLER
+    producers are not KSAMPLER-shaped, and guessing at their internals is not worth it.
+    """
+    fn = getattr(sampler, "sampler_function", None)
+    if fn is None:
+        return None
+
+    def _wrapped(model, x, sigmas, extra_args=None, callback=None, disable=None, **options):
+        sharp, latents, a_on, t_on = _alg_prepare(
+            model, extra_args, anchor_on, anchor_strength, tail_frames, tail_strength)
+        if not (a_on or t_on):     # no anchor, or a layout we won't guess at — run untouched
+            return fn(model, x, sigmas, extra_args=extra_args, callback=callback,
+                      disable=disable, **options)
+        print(f"[FunPack AV] ALG on (anchor: "
+              f"{f'strength={anchor_strength}, sigma_threshold={anchor_threshold}' if a_on else 'off'}; "
+              f"guide tail: "
+              f"{f'{tail_frames} frame(s), strength={tail_strength}, sigma_threshold={tail_threshold}' if t_on else 'off'}) "
+              f"— driven from outside {getattr(fn, '__name__', 'the sampler')}'s loop, off the "
+              f"sigma of each model call")
+        proxy = _ALGDenoiser(model, latents, a_on, t_on, anchor_threshold, tail_threshold)
+        try:
+            return fn(proxy, x, sigmas, extra_args=extra_args, callback=callback,
+                      disable=disable, **options)
+        finally:
+            model.latent_image = sharp
+
+    _wrapped.__name__ = getattr(fn, "__name__", "sampler") + "_alg"
+    return comfy.samplers.KSAMPLER(
+        _wrapped,
+        extra_options=getattr(sampler, "extra_options", None) or {},
+        inpaint_options=getattr(sampler, "inpaint_options", None) or {},
+    )
 
 
 class _JoyAIMemoryBank:
@@ -1109,7 +1433,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                           velocity_refinement_key,
                           rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
                           quality_sharpness=0.0, velocity_bias_source="mean",
-                          normalize_strength=0.0, normalize_start_sigma=0.9):
+                          normalize_strength=0.0, normalize_start_sigma=0.9,
+                          h3_audio_clock=False):
     """Full-feature rectified-flow sampler for CONST models (LTXAV).
 
     Rectified-flow-correct port of the hybrid sampler so its features actually run on
@@ -1176,6 +1501,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         print(f"[FunPack AV] latent normalization on (strength={normalize_strength}, "
               f"start_sigma={normalize_start_sigma}, video-only)")
 
+    audio_clock = _audio_clock_setup(model, x, sigmas, h3_audio_clock)
+
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
@@ -1235,7 +1562,9 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         prev_h = h
 
         if sigma_next == 0:
-            x = denoised_eff
+            # Identical displacement to the euler-RF step below at sigma_next = 0, so the
+            # audio clock corrects this final step like any other.
+            x = _audio_clock_step(denoised_eff, x, audio_clock, i)
             continue
 
         if in_quality:
@@ -1251,7 +1580,10 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
             dt = sigma_next - sigma
             d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
             if effective_blend > 0.0:
-                x_pred = x + d1 * dt
+                # Audio in the predicted state gets the clock too: the corrector's audio
+                # output is discarded, but video and audio share one packed sequence, so
+                # an over-stepped audio half skews the video correction via joint attention.
+                x_pred = _audio_clock_step(x + d1 * dt, x, audio_clock, i)
                 denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
                 d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
                 d_use = d1 + effective_blend * ((d1 + d2) * 0.5 - d1)
@@ -1259,7 +1591,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                 d_use = d1
             # Audio rides the plain euler direction (d1); only video gets the Heun correction.
             d_use = _video_only(d_use, d1, video_mask)
-            x = x + d_use * dt
+            x = _audio_clock_step(x + d_use * dt, x, audio_clock, i)
             # Heun changed x with a corrected direction; invalidate AB2 history.
             prev_denoised = None
             prev_h = None
@@ -1282,9 +1614,12 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                 renoise_coeff = (sigma_next ** 2 - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
                 x_anc = (alpha_ip1 / alpha_down) * x_anc + noise_sampler(sigma, sigma_next) * s_noise * renoise_coeff
                 # Video gets full ancestral noise; audio stays on the deterministic step.
-                x = _video_only(x_anc, x_det, video_mask)
+                # The clock is applied to the combined result: its audio half is exactly
+                # x_det's (the noise above is video-only), so it scales the deterministic
+                # audio displacement and leaves the noised video untouched.
+                x = _audio_clock_step(_video_only(x_anc, x_det, video_mask), x, audio_clock, i)
             else:
-                x = x_det
+                x = _audio_clock_step(x_det, x, audio_clock, i)
 
     return x
 
@@ -1311,7 +1646,8 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    rescue_prompt_sig=None,
                                    eta_final=1.0,
                                    normalize_strength=0.0,
-                                   normalize_start_sigma=0.9):
+                                   normalize_start_sigma=0.9,
+                                   h3_audio_clock=False):
     """
     Hybrid sampler:
     - Early schedule: Euler ancestral with order-2 denoised extrapolation for
@@ -1388,8 +1724,11 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             velocity_bias_source=velocity_bias_source,
             normalize_strength=normalize_strength,
             normalize_start_sigma=normalize_start_sigma,
+            h3_audio_clock=h3_audio_clock,
         )
 
+    # Below here is the eps-parameterised loop, which MiniMax H3 (CONST) never reaches —
+    # h3_audio_clock is deliberately not wired into it rather than added as dead code.
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = k_diffusion_sampling.default_noise_sampler(x, seed=seed)
@@ -1759,7 +2098,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    alg_guide_tail_frames=0,
                                    alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975,
-                                   quality_sharpness=0.0):
+                                   quality_sharpness=0.0, h3_audio_clock=False):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1800,6 +2139,10 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     - Optional quality_sharpness: temporal-average unsharp on the x0 prediction, applied only
       during the final Heun-correction steps (same mechanism as the Hybrid Euler 2S sampler's
       quality-phase sharpening, ported here). Free (no extra model eval), video-only.
+    - Optional h3_audio_clock: on MiniMax H3, integrate the audio stream on its own flow
+      schedule instead of the tangent approximation the DiT hands the sampler. Matters most
+      here — this sampler exists for the few-step schedules where that tangent is worst.
+      Free (a scalar per step), no-op off H3.
     """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
@@ -1833,6 +2176,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     if normalize_strength > 0.0:
         print(f"[FunPack AV] latent normalization on (strength={normalize_strength}, "
               f"start_sigma={normalize_start_sigma}, video-only)")
+    audio_clock = _audio_clock_setup(model, x, sigmas, h3_audio_clock)
     s_in = x.new_ones([x.shape[0]])
     prev_denoised = None
     prev_h = None
@@ -1849,40 +2193,11 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     # latent per (anchor blurred?, tail blurred?) combination that can occur — the frame
     # sets are disjoint, so the both-blurred variant just composes the two.
     alg_guide_tail_frames = max(0, int(alg_guide_tail_frames))
-    alg_anchor_on = bool(alg_enabled)
-    alg_tail_on = alg_guide_tail_frames > 0
-    alg_sharp_latent_image = getattr(model, "latent_image", None) if (alg_anchor_on or alg_tail_on) else None
-    alg_active = ((alg_anchor_on or alg_tail_on) and extra_args.get("denoise_mask") is not None
-                  and alg_sharp_latent_image is not None)
-    alg_latents = {}
-    if alg_active:
-        anchor_blurred = _alg_blur_frames(
-            model, alg_sharp_latent_image, max(1.0, float(alg_strength)), frame_indices=(0,),
-        ) if alg_anchor_on else None
-        tail_kappa = max(1.0, float(alg_guide_blur_strength))
-        tail_blurred = _alg_blur_frames(
-            model, alg_sharp_latent_image, tail_kappa, tail_count=alg_guide_tail_frames,
-        ) if alg_tail_on else None
-        both_blurred = _alg_blur_frames(
-            model, anchor_blurred, tail_kappa, tail_count=alg_guide_tail_frames,
-        ) if (anchor_blurred is not None and tail_blurred is not None) else None
-        alg_anchor_on = alg_anchor_on and anchor_blurred is not None
-        alg_tail_on = alg_tail_on and tail_blurred is not None
-        alg_latents = {
-            (False, False): alg_sharp_latent_image,
-            (True, False): anchor_blurred,
-            (False, True): tail_blurred,
-            # both → anchor → tail → None. Explicit None checks, NOT `anchor_blurred or
-            # tail_blurred`: `or` calls bool() on the first operand, which is a multi-element
-            # tensor when anchor blur is on but tail blur is off (both_blurred is then None) —
-            # "Boolean value of Tensor is ambiguous". This value is only a defensive fallback:
-            # when (True, True) is actually indexed, alg_anchor_on and alg_tail_on are both
-            # True, so both_blurred is non-None and the chain never reaches the singles.
-            (True, True): (both_blurred if both_blurred is not None
-                           else anchor_blurred if anchor_blurred is not None
-                           else tail_blurred),
-        }
-        alg_active = alg_anchor_on or alg_tail_on
+    alg_sharp_latent_image, alg_latents, alg_anchor_on, alg_tail_on = _alg_prepare(
+        model, extra_args, bool(alg_enabled), alg_strength,
+        alg_guide_tail_frames, alg_guide_blur_strength,
+    )
+    alg_active = alg_anchor_on or alg_tail_on
     if alg_active:
         anchor_desc = (f"strength={alg_strength}, sigma_threshold={alg_sigma_threshold}"
                        if alg_anchor_on else "off")
@@ -1993,7 +2308,9 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             prev_h = h
 
             if sigma_next == 0:
-                x = denoised_eff
+                # Same displacement the euler branch below would produce at dt = -sigma,
+                # so the audio clock corrects this final step like any other.
+                x = _audio_clock_step(denoised_eff, x, audio_clock, i)
                 continue
 
             dt = sigma_next - sigma  # negative: sigmas decrease
@@ -2002,21 +2319,25 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                 # Heun predictor-corrector.
                 # Predictor: Euler step using the (multistep-corrected) denoised.
                 d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
-                x_pred = x + d1 * dt
+                # The corrector's own audio output is discarded (audio rides d1), but the
+                # state it is evaluated at is shared: audio and video are one packed
+                # sequence, so an over-stepped audio half would skew the VIDEO correction
+                # through joint attention. Predict the audio where the clock says it lands.
+                x_pred = _audio_clock_step(x + d1 * dt, x, audio_clock, i)
                 # Corrector: evaluate model at the predicted x and sigma_next.
                 denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
                 d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
                 # Audio rides the plain euler direction (d1); only video gets the Heun correction.
                 d_use = _video_only((d1 + d2) / 2.0, d1, video_mask)
                 d_use = _mg_step(d_use, video_mask)
-                x = x + d_use * dt
+                x = _audio_clock_step(x + d_use * dt, x, audio_clock, i)
                 # Heun updates x differently; invalidate multistep history.
                 prev_denoised = None
                 prev_h = None
             else:
                 d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
                 d = _mg_step(d, video_mask)
-                x = x + d * dt
+                x = _audio_clock_step(x + d * dt, x, audio_clock, i)
                 if s_noise > 0.0:
                     sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
                     if sigma_up > 0.0:
@@ -2027,6 +2348,12 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             model.latent_image = alg_sharp_latent_image
 
     return x
+
+
+# FunPack sampler functions that accept h3_audio_clock. The hybrid entry point is here
+# because on a CONST model (which MiniMax H3 is) it delegates to _sample_const_rf_full,
+# which carries the correction; its own eps loop is unreachable on H3.
+_AUDIO_CLOCK_SAMPLERS = (sample_funpack_distilled_flow, sample_funpack_hybrid_euler_2s)
 
 
 class FunPackDistilledFlowSampler:
@@ -2270,8 +2597,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "Experimental: append the middle frame of the previous scene as a guide for the current scene via LTX guide attention. Helps maintain character positioning across scenes.",
                 }),
                 "mid_scene_guide_strength": ("FLOAT", {
-                    "default": 0.25, "min": 0.25, "max": 0.5, "step": 0.05,
-                    "tooltip": "Guide attention strength for mid-scene anchor. 0.25 is the minimum — below that audio degrades and character appearance drifts. Above 0.35 causes spatial conflicts when scene composition shifts.",
+                    "default": 0.25, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Guide attention strength for mid-scene anchor. Full 0..1 range. 0.25-0.35 is the measured sweet spot: below 0.25 audio degrades and character appearance drifts, above 0.35 spatial conflicts appear when scene composition shifts. Outside that band is yours to explore — 0 disables the guide's pull entirely.",
                 }),
                 "embed_guidance": ("BOOLEAN", {
                     "default": False,
@@ -2351,6 +2678,9 @@ class FunPackLTXAVSceneChainSampler:
                 "audio_vae": ("VAE", {
                     "tooltip": "MiniMax H3 only: the audio VAE, needed to encode AUDIO reference media for ref2va (a voice or ambience clip the generation should sound like). Studio lists the references and bakes their <Audio j> labels into the prompt; this VAE turns them into the latent blocks the DiT packs. Image references need only the main vae and work without this. Ignored entirely on LTX.",
                 }),
+                "h3_keyframes": ("CONDITIONING", {
+                    "tooltip": "MiniMax H3 only: the CONDITIONING output of a MiniMax H3 Image to Video node, wired here purely so its first_frame / last_frame pins survive. That node's conditioning is otherwise discarded (the sampler's positive comes from Studio), which silently drops the image. Only the keyframe pins are read — the prompt encoded by that node is ignored, so write your prompt in Studio as usual. A first-frame pin lands on scene 1, a last-frame pin on the last scene's final frame. Ignored entirely on LTX.",
+                }),
                 "refinement_key_input": ("STRING", {
                     "default": "",
                     "multiline": False,
@@ -2374,7 +2704,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "alg_blur_guides": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL: extends ALG (see the sampler's alg_enabled) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. Standalone: works even with the sampler's alg_enabled off (anchor stays sharp), with its own alg_guide_blur_strength / alg_guide_blur_sigma_threshold controls below. Requires the FunPack Distilled Flow sampler; no effect if no guide frames were appended this scene.",
+                    "tooltip": "EXPERIMENTAL: extends ALG (see alg_anchor) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. Standalone: works even with the anchor blur off (anchor stays sharp), with its own alg_guide_blur_strength / alg_guide_blur_sigma_threshold controls below. Works with ANY wired sampler — inside the loop on FunPack Distilled Flow, and through a denoiser proxy (same sigma schedule, same result) on everything else. No effect if no guide frames were appended this scene.",
                 }),
                 "bounded_attention_enabled": ("BOOLEAN", {
                     "default": False,
@@ -2490,7 +2820,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "cut_opening_frames": ("INT", {
                     "default": 0, "min": 0, "max": 512, "step": 8,
-                    "tooltip": "Let the i2v anchor do its work, then cut it out of the clip: generate the scene exactly as normal (anchor pinned at full strength the whole way, nothing weakened, no extra sampling), then drop this many frames off the FRONT of the finished clip. The anchor is a pinned latent frame at position 0 — it transfers identity, style and composition better than anything that softens it on the way in (ALG blurs it and loses character detail; Best-FaceID tokens approximate it and lose some too), but it is also literally the first frame you see, so every i2v scene opens on the exact reference still. Cutting it afterwards keeps the transfer and removes the tell: an i2v generation that reads as t2v. 0 (default) = off. The value is in REAL frames and is converted with the VAE's own time scale; one latent frame (8 real frames at the standard scale) removes just the anchor itself, which is usually NOT enough — the anchor is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening yet, and on a prompt that asks for immediate action that dead time is exactly what you want gone (48 was the value that worked on a 768x768x305@30 i2v chain with a quick-cut prompt — a starting point for this pipeline, not a universal default). NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you asked for, and the audio is cropped to match. That is the trade — every surviving frame was generated as part of one continuous shot, with no invented ending. Needs a pinned i2v anchor; skipped with the reason in the scene report on continuation scenes and on scenes carrying guide frames or JoyAI audio memory.",
+                    "tooltip": "Let the i2v anchor do its work, then cut it out of the clip: generate the scene exactly as normal (anchor pinned at full strength the whole way, nothing weakened, no extra sampling), then drop this many frames off the FRONT of the finished clip. The anchor is a pinned latent frame at position 0 — it transfers identity, style and composition better than anything that softens it on the way in (ALG blurs it and loses character detail; Best-FaceID tokens approximate it and lose some too), but it is also literally the first frame you see, so every i2v scene opens on the exact reference still. Cutting it afterwards keeps the transfer and removes the tell: an i2v generation that reads as t2v. 0 (default) = off. The value is in REAL frames and is EXACT — N means N, with no rounding to the latent grid. The anchor itself is only the first ~8 real frames, which is usually NOT enough: it is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening yet, and on a prompt that asks for immediate action that dead time is exactly what you want gone (48 was the value that worked on a 768x768x305@30 i2v chain with a quick-cut prompt — a starting point for this pipeline, not a universal default). NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you asked for, and the audio is cropped to match. That is the trade — every surviving frame was generated as part of one continuous shot, with no invented ending. HOW IT IS CUT: on the DECODED frames, never on the latent, on LTX and MiniMax H3 alike. The video VAE is causal — latent frame 0 is the temporal origin — so slicing the front off the latent promoted a continuation frame to position 0 and it decoded with origin handling it was never generated for, which came out as a noisy first frame. Decoding everything first and dropping pixels afterwards leaves every surviving frame in the context it was sampled in. Consequence: the LATENT output keeps its FULL video stream, so take video from the IMAGES output on a cut run (audio from the latent as usual — its audio stream IS cropped, so sound and picture still start together). The IMAGES output must be connected or there is nothing to crop, and the run says so. Needs a pinned i2v anchor; skipped with the reason in the scene report on continuation scenes and on scenes carrying guide frames or JoyAI audio memory. On MiniMax H3 only the chain's opening is cut, not each scene's, because H3's anchor is a keyframe condition row rather than a pinned latent prefix.",
                 }),
                 "context_windows": ("BOOLEAN", {
                     "default": False,
@@ -2534,6 +2864,22 @@ class FunPackLTXAVSceneChainSampler:
                 "second_pass_op": (["none", "sharpen", "upscale_2x"], {
                     "default": "none",
                     "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor) — the scene report says so when it happens. Both use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official one on first use). Video stream only; audio is never reshaped.",
+                }),
+                "h3_audio_clock": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only: integrate the audio stream on its OWN flow schedule. H3 denoises video and audio on two different schedules (the MiniMax H3 Sigma Shift node's shift_video 12 / shift_audio 3), but only one sigma grid reaches a sampler, so the model reconciles them by scaling the audio velocity by the slope between the two schedules at the START of each step. That is exact for infinitesimal steps and increasingly wrong as steps get bigger: on a 4-step schedule the last step drives audio roughly 2.5x past where its own schedule puts it, which is heard as distortion. This replaces that start-of-step slope with the one that actually spans the step, so audio lands where its schedule says. Costs one scalar multiply per step — no extra model call. Aimed at few-step schedules (turbo/distilled LoRAs, 4-8 steps), where nothing else fixes this. NO-OP when shift_video and shift_audio are EQUAL — the streams are then on one schedule and there is nothing to correct (it says so on the console). SAMPLER MATTERS, measured against a perfect predictor so the numbers are pure schedule error (audio error as a % of the stream's full range, 4/8/20 steps): WORKS BEST — FunPack Distilled Flow and Hybrid Euler 2S (runs inside their step loop, exact), and stock `euler` (85/38/14% -> 0/0/0%, exact at every step count). PERFORMS POORLY — the higher-order multistep family (`res_multistep`, `dpmpp_2m`, `gradient_estimation`, `ipndm`, `lms`, `deis`): they already absorb most of this error themselves, so the clock helps them at 4 steps (69% -> 21%) but HURTS at 20 (1% -> 15%); leave it off there. NO EFFECT — two-evals-per-step samplers (`heun`, `dpm_2`, `dpmpp_2s_ancestral`, `dpmpp_sde`, `seeds_2`): a model call cannot be tied to a step from outside their loop, so the wrapper detects that on the first call and switches itself off with a console note rather than guessing. Ancestral/SDE samplers additionally add noise to the audio stream, which this does not address. The clock never touches the video stream directly, though on H3 the two share one attention sequence, so a changed audio latent can still shift the video slightly.",
+                }),
+                "alg_anchor": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: run ALG's i2v anchor blur (arXiv:2506.08456) on WHATEVER sampler is wired — a stock KSampler with any sampler_name, Hybrid Euler 2S, a two-evals-per-step sampler like heun, anything. The blur de-statics an anchored scene by hiding the anchor's high-frequency detail during the near-pure-noise steps, so the model cannot shortcut to a video that just matches the still. It is the same guidance as the FunPack Distilled Flow sampler's own alg_enabled, and this switch drives that one too when Distilled Flow is the wired sampler, so there is one control wherever you are. The swap is decided by the step's sigma alone, which is an argument of every model call, so it does not need to run inside a sampler's loop. No effect on a scene with no i2v anchor.",
+                }),
+                "alg_anchor_strength": ("FLOAT", {
+                    "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
+                    "tooltip": "Downsample factor for the anchor blur (alg_anchor). Paper default is 2.5; 2.0 held character/i2v consistency noticeably better in testing here. Higher = blurrier anchor during the affected steps.",
+                }),
+                "alg_anchor_sigma_threshold": ("FLOAT", {
+                    "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
+                    "tooltip": "The anchor stays blurred while sigma is above this value (the near-pure-noise steps), then swaps to sharp. Higher = narrower blurred window. Independent of the guide-frame window (alg_guide_blur_sigma_threshold).",
                 }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
@@ -2611,6 +2957,18 @@ class FunPackLTXAVSceneChainSampler:
             from minimax_h3 import is_h3_model, stream_time_dims
         h3 = bool(is_h3_model(model))
         self._time_dims = tuple(stream_time_dims(4, h3))
+        if not h3:
+            # Teach the conditioning module this model's real video/audio text-context split
+            # instead of letting it guess from a static width table. From LTX 2.5 on the widths
+            # come out of the checkpoint, so an unseen pair would silently drop audio protection.
+            try:
+                from .conditioning import register_ltxav_split_from_model
+            except ImportError:
+                from conditioning import register_ltxav_split_from_model
+            try:
+                register_ltxav_split_from_model(model)
+            except Exception:
+                pass
         return h3
 
     def _tensor_frames(self, tensor, stream=0):
@@ -3133,7 +3491,9 @@ class FunPackLTXAVSceneChainSampler:
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
-                      bounded_attention_enabled=False):
+                      alg_anchor=False, alg_anchor_strength=2.0,
+                      alg_anchor_sigma_threshold=0.975,
+                      bounded_attention_enabled=False, h3_audio_clock=False):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
@@ -3154,10 +3514,71 @@ class FunPackLTXAVSceneChainSampler:
         # right before this call (and always resetting it, even to 0) is safe and chunk-scoped,
         # with no risk of leaking into the next chunk or a differently-configured sampler.
         extra_options = getattr(sampler, "extra_options", None)
-        if isinstance(extra_options, dict) and sampler.sampler_function is sample_funpack_distilled_flow:
+        _wired_fn = getattr(sampler, "sampler_function", None)
+        _alg_in_sampler = _wired_fn is sample_funpack_distilled_flow
+        if isinstance(extra_options, dict) and _alg_in_sampler:
             extra_options["alg_guide_tail_frames"] = int(alg_guide_tail_frames)
             extra_options["alg_guide_blur_strength"] = float(alg_guide_blur_strength)
             extra_options["alg_guide_blur_sigma_threshold"] = float(alg_guide_blur_sigma_threshold)
+            # alg_anchor is the same guidance as this sampler's own alg_enabled, so on
+            # Distilled Flow it drives that rather than a second, competing blur. Only when
+            # ON — off leaves the sampler node's own setting exactly as the user left it.
+            if alg_anchor:
+                extra_options["alg_enabled"] = True
+                extra_options["alg_strength"] = float(alg_anchor_strength)
+                extra_options["alg_sigma_threshold"] = float(alg_anchor_sigma_threshold)
+        # h3_audio_clock reaches a FunPack sampler the same way, but it belongs to every one
+        # of them that can run on H3 (see _AUDIO_CLOCK_SAMPLERS), not just this one.
+        if isinstance(extra_options, dict) and getattr(sampler, "sampler_function", None) in _AUDIO_CLOCK_SAMPLERS:
+            extra_options["h3_audio_clock"] = bool(h3_audio_clock)
+        elif h3_audio_clock:
+            # A stock comfy sampler has no such option, so wrap its model instead. The wrapper
+            # verifies per call that this sampler evaluates once per step and stands down if
+            # not, so handing it an unsuitable sampler costs the correction, never the run.
+            wrapped = _audio_clock_wrap_sampler(sampler)
+            if wrapped is not None:
+                if not self._h3_clock_unreachable_noted:
+                    self._h3_clock_unreachable_noted = True
+                    _fn_name = getattr(getattr(sampler, "sampler_function", None), "__name__", "")
+                    if _fn_name in _AUDIO_CLOCK_HARMED:
+                        print(f"[FunPackSceneChain] h3_audio_clock is on with {_fn_name} — a "
+                              f"higher-order sampler, which already absorbs most of this error "
+                              f"on its own once the schedule is fine. Measured: it HELPS at ~4 "
+                              f"steps (69% -> 20% audio error) but HURTS at ~20 (1% -> 15%). "
+                              f"At 20 steps leave the clock off with this sampler; for few-step "
+                              f"turbo runs prefer euler, where the clock is exact.")
+                    elif _fn_name not in _AUDIO_CLOCK_EXACT_ON:
+                        print(f"[FunPackSceneChain] h3_audio_clock is on with {_fn_name}. Only "
+                              f"euler (and FunPack's own samplers) are exactly corrected; this "
+                              f"one is unmeasured, and ancestral/SDE samplers also add noise to "
+                              f"the audio stream, which the clock does not address.")
+                sampler = wrapped
+            elif not self._h3_clock_unreachable_noted:
+                self._h3_clock_unreachable_noted = True
+                print("[FunPackSceneChain] h3_audio_clock is on, but the wired SAMPLER exposes "
+                      "no sampler_function to wrap, so the correction cannot be applied to it. "
+                      "Sampling continues without it.")
+        # EXPERIMENTAL ALG on a sampler whose loop we cannot get inside. ALG lived in the
+        # Distilled Flow loop only because that is where it was written: the blurred/sharp
+        # swap is decided by the step's sigma, and sigma is an argument of every model call,
+        # so a denoiser proxy can drive it from outside any sampler. That is what makes the
+        # anchor blur (and the guide-tail blur, same mechanism) available with a stock
+        # KSampler, with Hybrid Euler 2S, and with two-evals-per-step samplers. Wrapped LAST
+        # so h3_audio_clock above still sees the real sampler function and takes its exact
+        # in-loop path where it has one.
+        _alg_tail = int(alg_guide_tail_frames)
+        if not _alg_in_sampler and (alg_anchor or _alg_tail > 0):
+            _alg_wrapped = _alg_wrap_sampler(
+                sampler, bool(alg_anchor), alg_anchor_strength, alg_anchor_sigma_threshold,
+                _alg_tail, alg_guide_blur_strength, alg_guide_blur_sigma_threshold,
+            )
+            if _alg_wrapped is not None:
+                sampler = _alg_wrapped
+            elif not self._alg_unreachable_noted:
+                self._alg_unreachable_noted = True
+                print("[FunPackSceneChain] ALG is on, but the wired SAMPLER exposes no "
+                      "sampler_function to wrap, so the anchor/guide blur cannot be applied "
+                      "to it. Sampling continues without it.")
         # EXPERIMENTAL Bounded Attention: model-level attention hooks (sampler-agnostic, unlike
         # the toggles above which only work on Distilled Flow), so install/remove here rather
         # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
@@ -3292,6 +3713,17 @@ class FunPackLTXAVSceneChainSampler:
             result["samples"] = tensors[0]
         return result, note
 
+    def _latent_spatial_changed(self, state, chunk):
+        """True when `state`'s video stream no longer has `chunk`'s H/W — i.e. a
+        second_pass_op resized it. Everything recorded against the old grid (the i2v
+        pin, guide keyframe token indices) is invalid past this point. Unreadable
+        shapes answer False so a probe failure never drops a guide on its own."""
+        try:
+            return (self._latent_tensors(state)[0].shape[-2:]
+                    != self._latent_tensors(chunk)[0].shape[-2:])
+        except Exception:
+            return False
+
     def _restore_pinned_prefix(self, state, chunk):
         """Put the i2v pin back on a latent that is about to be handed to a second pass.
 
@@ -3308,7 +3740,7 @@ class FunPackLTXAVSceneChainSampler:
             # A resolution-changing second_pass_op (upscale_2x) leaves the chunk's anchor and
             # mask the wrong size. Rescaling them here would be inventing an anchor; the
             # caller reports the lost pin instead.
-            if self._latent_tensors(state)[0].shape[-2:] != self._latent_tensors(chunk)[0].shape[-2:]:
+            if self._latent_spatial_changed(state, chunk):
                 return state
         except Exception:
             return state
@@ -3328,56 +3760,166 @@ class FunPackLTXAVSceneChainSampler:
         result["noise_mask"] = self._clone_value(mask)
         return result
 
-    def _cut_opening_latent(self, latent, drop):
-        """Cut the first `drop` latent frames off a FINISHED scene latent.
+    def _crop_stream_head_to(self, tensor, stream, kept, total):
+        """Crop a non-video stream's HEAD so it keeps `kept/total` of its own time.
 
-        The i2v anchor is a pinned frame at position 0: it transfers identity, style and
-        composition at full strength all the way down the schedule, and it is also literally
-        the first frame of the clip, so every i2v scene opens on the exact reference still.
-        Cutting it (plus the settling-in stretch behind it, where the shot is still leaving
-        that still) afterwards keeps the transfer and removes the tell.
-
-        Nothing is regrown, so the scene simply comes out `drop` latent frames SHORTER than
-        the length that was asked for. That is the whole trade: every surviving frame was
-        generated as part of one continuous shot, with no invented ending and no joint.
-
-        Nothing downstream constrains the new size: LTXAV's video patchifier has temporal
-        patch size 1 (SymmetricPatchifier(1) -> no divisibility rule on latent frames), the
-        streams reach the transformer as independent tensors with no enforced video:audio
-        ratio, and VAE decode is (f-1)*scale+1 for any f >= 1.
-
-        What DOES matter is proportion. Audio timings come from the audio stream's own index
-        and video's from its own RoPE, so cropping the two by different amounts of TIME
-        desynchronises them silently — no error, just sound that drifts. Each extra stream's
-        kept length is therefore derived from the new VIDEO length directly, never by
-        subtracting a separately-rounded drop.
-
-        Returns (latent, dropped).
+        Each extra stream (audio) has its own rate and its own time AXIS: LTXAV puts time on
+        dim 2 for every stream, MiniMax H3 puts the stereo channel there and time last. The
+        kept length is derived from the VIDEO proportion rather than from a separately rounded
+        drop, because audio timing comes from the audio stream's own index — cropping the two
+        by different amounts of TIME desyncs the clip silently, with no error.
         """
+        if not isinstance(tensor, torch.Tensor):
+            return tensor
+        dim = self._stream_dim(stream)
+        n = int(tensor.shape[dim])
+        keep = max(1, min(n, int(round(n * max(0, kept) / max(1, total)))))
+        if keep >= n:
+            return tensor
+        idx = [slice(None)] * tensor.dim()
+        idx[dim] = slice(n - keep, n)
+        return tensor[tuple(idx)]
+
+    def _scene_pixel_start(self, latent_start, time_scale):
+        """First DECODED pixel index of a scene that begins at `latent_start` in the chain.
+
+        The causal VAE decodes f latent frames to (f-1)*scale+1 pixels: latent frame 0 is
+        the temporal origin and covers ONE pixel, every later latent frame covers `scale`.
+        So latent frame i starts at pixel (i-1)*scale+1, and only frame 0 starts at 0.
+        """
+        i = max(0, int(latent_start))
+        if i == 0:
+            return 0
+        return (i - 1) * max(1, int(time_scale)) + 1
+
+    def _cut_opening_pixel_spans(self, images, spans):
+        """Remove `spans` — (start, count) pixel ranges — from a decoded image batch.
+
+        Cutting the OPENING has to happen here, on pixels, and never on the latent. The LTX
+        VAE is causal: latent frame 0 is the temporal origin, and every later latent frame
+        was generated as a CONTINUATION of the frames before it. Slice the front off the
+        latent and the survivor promoted to position 0 gets decoded with the origin handling
+        it was never generated for, which is what produced the noisy opening frame. Decoding
+        the whole latent first and dropping pixels afterwards leaves the origin intact, so
+        every surviving frame decodes in the context it was sampled in.
+
+        It is also exact. A latent cut could only remove whole latent frames, and because
+        the promoted frame changes from covering 1 pixel to covering `scale`, dropping k
+        latent frames actually shortened the clip by k*scale pixels rather than the
+        (k-1)*scale+1 it spanned — so the count never matched what was asked for either.
+        Here N means N, the way it already does on H3.
+
+        Later spans are removed first so earlier removals cannot shift their indices.
+        """
+        if not isinstance(images, torch.Tensor) or not spans:
+            return images, 0
+        total = int(images.shape[0])
+        keep = torch.ones(total, dtype=torch.bool)
+        for start, count in sorted(spans, key=lambda s: int(s[0]), reverse=True):
+            start = max(0, min(int(start), total))
+            end = max(start, min(start + max(0, int(count)), total))
+            keep[start:end] = False
+        if bool(keep.all()):
+            return images, 0
+        if not bool(keep.any()):
+            # Never hand back an empty batch: a cut that would remove the whole clip is a
+            # misconfiguration, and returning nothing turns it into an obscure downstream
+            # crash instead of a visibly-too-short video.
+            keep[-1] = True
+        return images[keep], total - int(keep.sum())
+
+    def _remove_latent_time_spans(self, latent, pixel_spans, pixel_total):
+        """Remove the same stretches of TIME from every non-video stream of `latent`.
+
+        `pixel_spans` are indices into the decoded VIDEO. Audio runs at its own rate on its
+        own axis (LTXAV puts time on dim 2; MiniMax H3 puts it last), so each span is mapped
+        by PROPORTION of the clip rather than by a frame count — cropping the two streams by
+        different amounts of time desynchronises them with no error, just sound that drifts.
+
+        The video stream is deliberately untouched: it is the thing that must keep its
+        temporal origin, and the caller takes video from the decoded IMAGES instead.
+        """
+        if not pixel_spans or int(pixel_total) <= 0:
+            return latent
         result = self._clone_latent(latent)
         tensors = self._latent_tensors(result)
-        video = tensors[0]
-        frames = self._tensor_frames(video)
-        drop = max(0, min(int(drop), frames - 1))
-        if drop <= 0:
-            return result, 0
-        tensors[0] = video[:, :, drop:]
-        kept = frames - drop
-        for _idx in range(1, len(tensors)):
-            _t = tensors[_idx]
-            if _t is None:
+        changed = False
+        for idx in range(1, len(tensors)):
+            tensor = tensors[idx]
+            axis = self._time_dims[idx] if idx < len(self._time_dims) else 2
+            try:
+                length = int(tensor.shape[axis])
+            except Exception:
                 continue
-            _n = self._tensor_frames(_t)
-            _keep = max(1, min(_n, int(round(_n * kept / max(1, frames)))))
-            if _keep < _n:
-                tensors[_idx] = _t[:, :, _n - _keep:]
+            if length <= 1:
+                continue
+            keep = torch.ones(length, dtype=torch.bool)
+            for start, count in pixel_spans:
+                a = int(round(int(start) / float(pixel_total) * length))
+                b = int(round((int(start) + int(count)) / float(pixel_total) * length))
+                a = max(0, min(a, length))
+                b = max(a, min(b, length))
+                keep[a:b] = False
+            if bool(keep.all()):
+                continue
+            if not bool(keep.any()):
+                keep[-1] = True
+            tensors[idx] = tensor.index_select(axis, torch.nonzero(keep, as_tuple=True)[0].to(tensor.device))
+            changed = True
+        if not changed:
+            return latent
         if self._is_nested(result.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
         else:
             result["samples"] = tensors[0]
-        # The pin belongs to a frame that no longer exists.
+        return result
+
+    def _cut_opening_pixels(self, images, latent, pixel_frames):
+        """MiniMax H3's cut: drop the opening off the DECODED frames, not off the latent.
+
+        Same user intent as the LTX path above — let the anchor condition the shot at full
+        strength, then remove the frames that are still visibly the reference still — but H3
+        cannot express it in latent space. Two reasons, both structural:
+
+        * H3's anchor is not a pinned latent frame at all. It is a keyframe CONDITION row
+          packed beside the text (see _apply_h3_anchor), never denoised and never rendered,
+          so there is no pinned prefix to slice off and no mask to read a length from.
+        * H3's video latent lives on a 5k+2 grid (17k+5 pixel frames). Cutting an arbitrary
+          number of latent frames leaves a count the VAE has no defined decode for, where
+          LTXAV decodes any f >= 1 as (f-1)*scale+1.
+
+        Cutting the decoded IMAGE batch has neither problem and is exact to the frame: N means
+        N. The AUDIO stream still has to move with it — audio decodes from this node's LATENT
+        output (VAEDecodeAudio on H3), so leaving it alone would start the sound N frames
+        before the picture. Its head is cropped by the same PROPORTION of time, on its own
+        axis (H3 puts audio time last).
+
+        The latent's VIDEO stream is deliberately left at full length: it is off-grid the
+        moment it is cut. So the latent comes back with a full video stream beside a cropped
+        audio one, and the caller says so — video must come from the IMAGES output on a cut
+        H3 run.
+
+        Returns (images, latent, dropped).
+        """
+        drop = int(pixel_frames)
+        if not isinstance(images, torch.Tensor) or images.dim() < 1 or drop <= 0:
+            return images, latent, 0
+        total = int(images.shape[0])
+        drop = max(0, min(drop, total - 1))
+        if drop <= 0:
+            return images, latent, 0
+        images = images[drop:]
+        kept = total - drop
+        result = self._clone_latent(latent)
+        tensors = self._latent_tensors(result)
+        for _idx in range(1, len(tensors)):
+            tensors[_idx] = self._crop_stream_head_to(tensors[_idx], _idx, kept, total)
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+        else:
+            result["samples"] = tensors[0]
         result.pop("noise_mask", None)
-        return result, drop
+        return images, result, drop
 
     def _output_connected(self, prompt, unique_id, output_index):
         """Return True if the given output slot index is wired to any downstream node."""
@@ -4209,6 +4751,8 @@ class FunPackLTXAVSceneChainSampler:
     _is_h3 = False
     _h3_ref_cache: dict = {}
     _h3_mode_noted = False
+    _h3_clock_unreachable_noted = False
+    _alg_unreachable_noted = False
 
     def _h3_add_keyframes(self, conditioning, pins, frame_count, aug=None):
         """Merge keyframe pins into a conditioning, keeping any already attached.
@@ -4266,6 +4810,59 @@ class FunPackLTXAVSceneChainSampler:
         positive = self._h3_add_keyframes(positive, [pin], self._h3_frame_count,
                                           aug=None if aug >= 1.0 else aug)
         return positive, True
+
+    def _h3_external_pins(self, conditioning):
+        """Rescue the keyframe pins from a MiniMax H3 Image to Video node's conditioning.
+
+        That node encodes first_frame/last_frame into `minimax_keyframes` and hands them out
+        on its CONDITIONING output — which this pipeline drops, because the sampler's positive
+        comes from Studio. Wiring the node's conditioning into `h3_keyframes` lets the pins
+        travel anyway. Only the pins are taken; the node's own prompt encode is not used.
+
+        Returns ``{"first": [...], "last": [...], "aug": float|None}``. The node writes a
+        first_frame at index 0 and a last_frame at ITS frame_count - 1, which is a per-node
+        length that need not match this run's scene length — so pins are classified here and
+        re-indexed against the scene they land on, never trusted as absolute positions.
+        """
+        pins = self._conditioning_value(conditioning, "minimax_keyframes") or []
+        if not pins:
+            return None
+        source_count = self._conditioning_value(conditioning, "minimax_frame_count")
+        first, last = [], []
+        for pin in pins:
+            try:
+                index = int(pin["resolved_frame_index"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            (first if index == 0 else last).append(pin)
+        if not first and not last:
+            return None
+        aug = self._conditioning_value(conditioning, "minimax_visual_cond_noise_aug")
+        return {
+            "first": first,
+            "last": last,
+            "aug": float(aug) if aug is not None else None,
+            "source_count": int(source_count) if source_count else None,
+        }
+
+    def _apply_h3_external_pins(self, positive, pins, scene_index, scene_count):
+        """Place rescued pins on the scene they belong to: first on the opening scene, last
+        on the closing one. A one-scene run gets both, which is the plain single-clip case.
+
+        Returns (positive, applied_labels)."""
+        frame_count = max(1, int(self._h3_frame_count))
+        placed, labels = [], []
+        if scene_index == 0 and pins["first"]:
+            placed.extend({**p, "resolved_frame_index": 0} for p in pins["first"])
+            labels.append("first")
+        if scene_index == scene_count - 1 and pins["last"]:
+            # re-indexed onto THIS scene's last frame — the source node's frame_count is its
+            # own, and a pin at a stale index would land mid-clip, where the layout refuses it
+            placed.extend({**p, "resolved_frame_index": frame_count - 1} for p in pins["last"])
+            labels.append("last")
+        if not placed:
+            return positive, []
+        return self._h3_add_keyframes(positive, placed, frame_count, aug=pins["aug"]), labels
 
     def _append_h3_keyframe(self, guide_frame, apply_at, strength, positive, negative):
         """H3's equivalent of an LTX guide: a keyframe pin carried on the conditioning.
@@ -4818,7 +5415,7 @@ class FunPackLTXAVSceneChainSampler:
         if not chunk_tensors:
             return chunk, positive, negative, 0
         F_chunk = self._tensor_frames(chunk_tensors[0])
-        s = max(0.25, float(strength))  # same audio-safe floor as mid_scene_guide
+        s = max(0.0, float(strength))  # the user's value stands; 0.25-0.35 is the audio-safe band
         tail = 0
         for i, gf in enumerate(frames):
             apply_at = min(max(0, F_chunk - 1), i)  # prefix context: distinct early positions
@@ -5441,12 +6038,28 @@ class FunPackLTXAVSceneChainSampler:
     def _vae_with_decode_noise(self, vae, timestep, scale, seed):
         """Return a shallow copy of the VAE stamped with LTX decode-time noise settings so its
         internal decoder restores fine detail/grain. Never mutates the shared input VAE. Mirrors
-        LTXV's 'Set VAE Decoder Noise', but owned by the Chain Sampler (it does the decode)."""
+        LTXV's 'Set VAE Decoder Noise', but owned by the Chain Sampler (it does the decode).
+
+        Only the conv decoder honours this. LTX 2.5's diffusion decoder (CausalDiffusionVAE)
+        takes no timestep and hard-codes its own generator seed, and because it is an nn.Module
+        the two assignments below would SUCCEED and then be ignored — a knob that reads as live
+        and does nothing. So the capability is tested first and reported when it is missing."""
+        fsm = getattr(vae, "first_stage_model", None)
+        # The consumer is VideoVAE.decode, which reads self.decode_timestep / decode_noise_scale.
+        # A decoder that never had the attribute is one that never reads it — this tests the
+        # actual contract rather than the class name, so it survives an upstream rename.
+        if fsm is not None and not hasattr(fsm, "decode_timestep"):
+            print(f"[FunPackSceneChain] decode_noise_scale={scale} / decode_timestep={timestep} "
+                  f"IGNORED: this VAE's decoder ({type(fsm).__name__}) does not take decode-time "
+                  f"noise — LTX 2.5's diffusion decoder generates its own detail from a fixed "
+                  f"internal seed. Decoding without it. Load the conv VAE "
+                  f"(ltx-2.5-video-vae-conv-*.safetensors) if you want this knob back.")
+            return vae
         try:
             result = copy.copy(vae)
         except Exception:
             return vae
-        if hasattr(result, "first_stage_model"):
+        if fsm is not None:
             try:
                 result.first_stage_model.decode_timestep = timestep
                 result.first_stage_model.decode_noise_scale = scale
@@ -5477,6 +6090,7 @@ class FunPackLTXAVSceneChainSampler:
                output_guidance=False, output_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
+               alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
                phase_scale=1.0, id_strength=1.0, arcface_mode="auto_adjust", debug_log=False,
                carry_overlap_through_anchor=False,
@@ -5490,7 +6104,8 @@ class FunPackLTXAVSceneChainSampler:
                context_window_freenoise=True, context_window_retain_first=False,
                cut_opening_frames=0,
                second_pass=False, second_pass_op="none", second_pass_sigmas=None,
-               audio_vae=None,
+               h3_audio_clock=False,
+               audio_vae=None, h3_keyframes=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -5523,6 +6138,8 @@ class FunPackLTXAVSceneChainSampler:
         # live in THIS request (see [[feedback_no_persistent_state_caches]]).
         self._h3_ref_cache = {}
         self._h3_mode_noted = False
+        self._h3_clock_unreachable_noted = False
+        self._alg_unreachable_noted = False
         if self._is_h3:
             print("[FunPackSceneChain] MiniMax H3 detected — audio stream time axis is the last "
                   "dim, frame grid is 17k+5, conditioning is a single packed self-attention "
@@ -5626,6 +6243,8 @@ class FunPackLTXAVSceneChainSampler:
                 alg_blur_guides=alg_blur_guides,
                 alg_guide_blur_strength=alg_guide_blur_strength,
                 alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
+                alg_anchor=alg_anchor, alg_anchor_strength=alg_anchor_strength,
+                alg_anchor_sigma_threshold=alg_anchor_sigma_threshold,
                 bounded_attention_enabled=bounded_attention_enabled,
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
@@ -5640,11 +6259,21 @@ class FunPackLTXAVSceneChainSampler:
                 cut_opening_frames=cut_opening_frames,
                 second_pass=second_pass, second_pass_op=second_pass_op,
                 second_pass_sigmas=second_pass_sigmas,
+                h3_audio_clock=h3_audio_clock,
             )
 
         max_scene_count = max(1, int(max_scenes))
         scene_conditionings = positive[:max_scene_count]
         scene_count = len(scene_conditionings)
+        # Keyframe pins wired in from a MiniMax H3 Image to Video node, read once for the run.
+        _h3_wired_pins = self._h3_external_pins(h3_keyframes) if self._is_h3 else None
+        # Did the opening scene get an anchor pin? cut_opening_frames' H3 path needs it.
+        _h3_opening_anchored = False
+        if h3_keyframes and not self._is_h3:
+            print("[FunPackSceneChain] h3_keyframes is wired but this model is not MiniMax H3 — ignored.")
+        elif h3_keyframes and _h3_wired_pins is None:
+            print("[FunPackSceneChain] h3_keyframes is wired but carries no keyframe pins — the "
+                  "source node had no first_frame/last_frame image.")
         time_scale = self._time_scale(vae)
         video_frames = self._validate_template_length(latent_template, num_frames_per_scene, time_scale, vae=vae)
         video_overlap = self._overlap_frames(latent_template, frame_overlap, time_scale, vae=vae)
@@ -5654,6 +6283,14 @@ class FunPackLTXAVSceneChainSampler:
         carried_guide_frames = 0
         boundary_entries = []
         cumulative_latent_frames = 0
+        # (start_pixel, count) ranges cut_opening_frames will remove from the DECODED video,
+        # collected per eligible scene and applied once after decode. Latents stay whole so
+        # every frame decodes with the temporal origin it was sampled against.
+        _cut_spans = []
+        # Read before the scene loop, not just before the decode: cut_opening_frames is a
+        # crop on the decoded frames now, so scene eligibility depends on knowing whether
+        # anything is being decoded at all.
+        want_image = self._output_connected(prompt, unique_id, 1)
 
         # Load liked direction once for embed_guidance. Source selects which learned direction:
         # 'relative' = this prompt's key; 'absolute' = the global, prompt-agnostic taste store
@@ -5916,6 +6553,22 @@ class FunPackLTXAVSceneChainSampler:
                         scene_positive, chunk, vae, _anchor_image, _anchor_strength)
                     if _pinned:
                         run_mechanisms.append(f"h3_keyframe_anchor(strength={_anchor_strength:g})")
+                        # cut_opening_frames cuts the front of the FINISHED clip, so what it
+                        # needs to know is whether the clip OPENS on an anchor — i.e. whether
+                        # the first scene got one. A later scene's anchor sits in the middle
+                        # of the batch, where a head crop would never reach it.
+                        if scene_index == 0:
+                            _h3_opening_anchored = True
+                # Pins rescued from a wired MiniMax H3 Image to Video node. Applied AFTER the
+                # anchor so an explicitly wired first_frame wins the frame-0 slot — the user
+                # drew that wire, the anchor is inferred from the timeline.
+                if _h3_wired_pins:
+                    scene_positive, _pin_labels = self._apply_h3_external_pins(
+                        scene_positive, _h3_wired_pins, scene_index, scene_count)
+                    if _pin_labels:
+                        run_mechanisms.append(f"h3_wired_keyframes({'+'.join(_pin_labels)})")
+                    if "first" in _pin_labels:
+                        _h3_opening_anchored = True
 
             # ref2va reference blocks. Applied after the chunk is final because the blocks are
             # sized against this scene's canvas, and to every scene branch (fresh / anchored /
@@ -6097,7 +6750,11 @@ class FunPackLTXAVSceneChainSampler:
                     alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
                     alg_guide_blur_strength=alg_guide_blur_strength,
                     alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
+                    alg_anchor=alg_anchor,
+                    alg_anchor_strength=alg_anchor_strength,
+                    alg_anchor_sigma_threshold=alg_anchor_sigma_threshold,
                     bounded_attention_enabled=bounded_attention_enabled,
+                    h3_audio_clock=h3_audio_clock,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene
                 # at full strength, then cut it out of the finished clip instead of weakening
@@ -6105,10 +6762,15 @@ class FunPackLTXAVSceneChainSampler:
                 # tokens approximate it and lose some too). Eligibility is decided here, while
                 # the pre-sampling chunk is still around; the cut itself is a post-process on
                 # the finished latent, below, and costs no sampling at all.
+                # H3 takes the other path entirely (_cut_opening_pixels, after decode): its
+                # anchor is a keyframe condition row, not a pinned latent prefix, so none of
+                # the eligibility below can even be evaluated.
                 _cut_drop = 0
-                if int(cut_opening_frames) > 0:
-                    _cut_drop = self._expected_latent_frames(
-                        int(cut_opening_frames) + 1, time_scale) - 1
+                if int(cut_opening_frames) > 0 and not self._is_h3:
+                    # The cut is measured in REAL frames and applied to decoded pixels, so
+                    # there is no rounding to a latent grid any more and no minimum: 1 means
+                    # 1. This is only a "does this scene qualify" flag now.
+                    _cut_drop = 1
                     if carried + soft_carried > 0:
                         _reason = ("continuation scene — the opening is carried frames from the "
                                    "previous scene, not an anchor, and cutting them would break "
@@ -6120,9 +6782,11 @@ class FunPackLTXAVSceneChainSampler:
                                    "which those extra frames would make wrong")
                     elif self._context_scene_latent_frames(chunk) is None:
                         _reason = "scene latent could not be read"
-                    elif _cut_drop <= 0:
-                        _reason = (f"cut_opening_frames={cut_opening_frames} is under one latent "
-                                   f"frame at this VAE time scale")
+                    elif not want_image:
+                        # The cut is a crop on the decoded frames now, so with nothing
+                        # decoding there is nothing to crop — the same rule H3 already has.
+                        _reason = ("the IMAGES output is not connected — the cut is a crop on "
+                                   "the decoded frames, so there is nothing to crop")
                     elif self._anchor_pinned_frames(chunk) <= 0:
                         # No pinned prefix = a genuine t2v scene (no anchor image attached).
                         # Cutting here would throw away real generated frames for nothing —
@@ -6199,6 +6863,28 @@ class FunPackLTXAVSceneChainSampler:
                             "second_pass NOTE: the i2v anchor could not stay pinned for pass 2 "
                             "because second_pass_op changed the latent resolution — pass 2 runs "
                             "unpinned and may drift from the reference image.")
+                    # Same resolution change, second casualty: guide keyframes are recorded as
+                    # TOKEN indices into the pass-1 grid, and 2x spatial means 4x the tokens per
+                    # latent frame, so those indices now address the wrong tokens entirely.
+                    # Since the LTX-2.5 commit core rejects it outright ("keyframe_idxs holds N
+                    # tokens, which is not a whole number of M-token latent frames") and tells
+                    # you to crop the guides before upscaling; older cores silently mis-placed
+                    # them, which is worse. Drop them for pass 2, exactly as segmented detailing
+                    # does for its crop — and only for pass 2, so pass 1 keeps every guide.
+                    _sp_positive, _sp_negative = scene_positive, scene_negative
+                    if self._latent_spatial_changed(_sp_state, chunk):
+                        try:
+                            from .detailing import has_layout_conds, strip_layout_conds
+                        except ImportError:
+                            from detailing import has_layout_conds, strip_layout_conds
+                        if has_layout_conds(scene_positive) or has_layout_conds(scene_negative):
+                            _sp_positive = strip_layout_conds(scene_positive)
+                            _sp_negative = strip_layout_conds(scene_negative)
+                            run_mechanisms.append(
+                                "second_pass NOTE: mid-scene guides / guide keyframes were "
+                                "dropped for pass 2 because second_pass_op changed the latent "
+                                "resolution — their token positions describe the pass-1 grid. "
+                                "Pass 1 used them in full.")
                     _sp_kw = dict(_sample_kwargs)
                     _sp_kw["step_offset"] = _sample_kwargs["step_offset"] + (int(sigmas.numel()) - 1)
                     # Announced BEFORE it runs: the after-the-fact run_mechanisms line says
@@ -6208,8 +6894,8 @@ class FunPackLTXAVSceneChainSampler:
                           f"{' on ' + _scene_label if _scene_label else ''}: "
                           f"{int(_sp_b.numel()) - 1} steps from sigma {float(_sp_b[0].item()):g}")
                     sampled = self._sample_chunk(
-                        model, sampler, _sp_b, scene_seed + 4242, cfg, scene_positive,
-                        scene_negative, _sp_state, **_sp_kw)
+                        model, sampler, _sp_b, scene_seed + 4242, cfg, _sp_positive,
+                        _sp_negative, _sp_state, **_sp_kw)
                     run_mechanisms.append(
                         f"second_pass({int(sigmas.numel()) - 1} steps + "
                         f"{int(_sp_b.numel()) - 1} steps = "
@@ -6237,24 +6923,33 @@ class FunPackLTXAVSceneChainSampler:
                     else:
                         model.model_options.pop("model_function_wrapper", None)
             if _cut_drop > 0:
-                # The finished clip, minus its opening. Nothing is regrown, so the scene is
-                # now shorter than the length that was asked for — say so in the report
-                # rather than leaving it to be inferred from the output.
-                _before_cut = self._tensor_frames(self._latent_tensors(sampled)[0])
-                sampled, _dropped = self._cut_opening_latent(sampled, _cut_drop)
-                _after_cut = self._tensor_frames(self._latent_tensors(sampled)[0])
+                # Recorded now, applied after decode. The latent itself is deliberately left
+                # whole: cutting it here is what made the opening frame noisy, because the
+                # frame promoted to position 0 gets decoded as a temporal origin it was never
+                # generated as (see _cut_opening_pixel_spans). The scene's position in the
+                # chain is read BEFORE it is appended, so the span is an index into the final
+                # decoded video, and anchor scenes append with zero blend overlap, which is
+                # what makes that index exact.
+                _cut_latent_start = (0 if output is None
+                                     else self._tensor_frames(self._latent_tensors(output)[0]))
+                _cut_spans.append((self._scene_pixel_start(_cut_latent_start, time_scale),
+                                   int(cut_opening_frames)))
                 _pinned_n = self._anchor_pinned_frames(chunk)
+                # What the anchor actually spans in PIXELS, which is what the cut is now
+                # measured in: the pinned prefix is at the scene's origin, so it covers
+                # (pinned - 1) * scale + 1 real frames.
+                _anchor_px = (_pinned_n - 1) * max(1, int(time_scale)) + 1 if _pinned_n > 0 else 0
                 run_mechanisms.append(
-                    f"cut_opening_frames(dropped {_dropped} of {_pinned_n} pinned latent "
-                    f"frames — clip CROPPED to {_after_cut} of {_before_cut} latent frames, "
-                    f"~{int(cut_opening_frames)} real frames shorter)")
-                if _dropped < _pinned_n:
+                    f"cut_opening_frames(scheduled: {int(cut_opening_frames)} real frames off "
+                    f"the front of this scene, cut after decode so the opening frame keeps a "
+                    f"clean origin — the scene is that much SHORTER)")
+                if int(cut_opening_frames) < _anchor_px:
                     # Part of the anchor is still visible — the one outcome this exists to
                     # prevent, so name the fix.
                     run_mechanisms.append(
-                        f"cut_opening_frames WARNING: {_pinned_n - _dropped} anchor latent "
-                        f"frame(s) still in the clip — raise cut_opening_frames to at least "
-                        f"{_pinned_n * max(1, int(time_scale))}")
+                        f"cut_opening_frames WARNING: the pinned anchor spans {_anchor_px} real "
+                        f"frames and only {int(cut_opening_frames)} are being cut — raise "
+                        f"cut_opening_frames to at least {_anchor_px}")
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             if guide_tail > 0:
@@ -6343,7 +7038,7 @@ class FunPackLTXAVSceneChainSampler:
         # RETURN_TYPES slot indices: 0=latent, 1=images, 2=status...
         # Sampling is fully complete. Latent is untouched and returned as-is.
         # IMAGES: decode the whole latent in one pass, then apply transition effects.
-        want_image = self._output_connected(prompt, unique_id, 1)
+        # (want_image was read before the scene loop — cut_opening_frames eligibility needs it.)
 
         images = None
         if want_image:
@@ -6362,6 +7057,70 @@ class FunPackLTXAVSceneChainSampler:
                 decoded = decoded.reshape(b * t, h, w, c)
             images = self._apply_transitions_pixel(decoded, boundary_entries, transition_duration)
             _phase_decode = _time.perf_counter() - _t_dec0
+
+        # cut_opening_frames, LTX path. Applied HERE, after a decode that saw every latent
+        # frame in its sampled context, rather than on the latent inside the loop — a latent
+        # cut promoted a continuation frame to position 0 and the causal VAE decoded it as an
+        # origin, which is what made the first frame noisy. Transitions run first so
+        # boundary_entries still index the uncut video.
+        if _cut_spans and not self._is_h3:
+            _px_total = int(images.shape[0]) if isinstance(images, torch.Tensor) else 0
+            if _px_total > 0:
+                images, _px_dropped = self._cut_opening_pixel_spans(images, _cut_spans)
+                if _px_dropped > 0:
+                    # The audio stream has to lose the same stretches of TIME or the sound
+                    # runs ahead of the picture — silently, with no error, exactly the trap
+                    # _crop_stream_head_to exists for on the carried-frame path.
+                    output = self._remove_latent_time_spans(output, _cut_spans, _px_total)
+                    report_lines.append(
+                        f"cut_opening_frames(dropped {_px_dropped} of {_px_total} decoded "
+                        f"frames across {len(_cut_spans)} scene opening(s) — cut after decode, "
+                        f"so the first surviving frame keeps a clean origin; the audio stream "
+                        f"was cropped by the same amount of time)")
+                    report_lines.append(
+                        "cut_opening_frames NOTE: the LATENT output keeps its FULL video "
+                        "stream (cutting it is what produced a noisy opening frame) — take "
+                        "video from the IMAGES output on a cut run, audio from the latent.")
+                    if transition_duration and boundary_entries:
+                        report_lines.append(
+                            "cut_opening_frames NOTE: transitions were rendered before this "
+                            "cut, so a transition running INTO a cut scene loses the frames "
+                            "that were removed with the anchor.")
+
+        # cut_opening_frames, H3 path. The LTX path cut each scene's finished LATENT inside
+        # the loop above; H3 has no pinned latent prefix to cut and an off-grid video latent
+        # cannot be decoded, so the cut lands here instead — exactly N frames off the head of
+        # the decoded batch, with the audio stream moved to match. Every skip is stated: the
+        # toggle is on, so silence would read as "it ran".
+        if self._is_h3 and int(cut_opening_frames) > 0:
+            _h3_cut_reason = None
+            if not _h3_opening_anchored:
+                _h3_cut_reason = ("the opening scene has no anchor image (t2v) — the cut exists "
+                                  "to hide an anchor, and here it would just throw away real "
+                                  "generated frames")
+            elif not want_image:
+                _h3_cut_reason = ("the IMAGES output is not connected — on H3 the cut is a crop "
+                                  "on the decoded frames, so there is nothing to crop")
+            if _h3_cut_reason is not None:
+                report_lines.append(f"cut_opening_frames(SKIPPED: {_h3_cut_reason})")
+            else:
+                _before = int(images.shape[0])
+                images, output, _dropped = self._cut_opening_pixels(
+                    images, output, int(cut_opening_frames))
+                report_lines.append(
+                    f"cut_opening_frames(H3: dropped {_dropped} of {_before} decoded frames "
+                    f"from the front — the clip is {_dropped} frames SHORTER and the audio "
+                    f"stream was cropped to match)")
+                # Said plainly because the two outputs genuinely disagree after this, and the
+                # disagreement is silent in a graph that decodes video from the latent.
+                report_lines.append(
+                    "cut_opening_frames NOTE: the LATENT output keeps its FULL video stream "
+                    "(H3's 5k+2 latent grid cannot express the cut) — take video from the "
+                    "IMAGES output on a cut run, audio from the latent as usual.")
+                if scene_count > 1:
+                    report_lines.append(
+                        "cut_opening_frames NOTE: only the chain's opening is cut. A later "
+                        "scene's own anchor sits mid-batch, where a head crop cannot reach it.")
 
         if images is None:
             images = torch.zeros(1, 8, 8, 3)
@@ -6571,6 +7330,8 @@ class FunPackLTXAVSceneChainSampler:
                             output_guidance=False, output_guidance_strength=0.02,
                             dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                             alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
+                            alg_anchor=False, alg_anchor_strength=2.0,
+                            alg_anchor_sigma_threshold=0.975,
                             plateau_cache=False, plateau_cache_threshold=0.975,
                             context_windows=False, context_window_length=145,
                             context_window_overlap=40, context_window_schedule="standard_uniform",
@@ -6578,7 +7339,7 @@ class FunPackLTXAVSceneChainSampler:
                             context_window_retain_first=False,
                             cut_opening_frames=0,
                             second_pass=False, second_pass_op="none",
-                            second_pass_sigmas=None):
+                            second_pass_sigmas=None, h3_audio_clock=False):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -6627,6 +7388,8 @@ class FunPackLTXAVSceneChainSampler:
                 alg_blur_guides=alg_blur_guides,
                 alg_guide_blur_strength=alg_guide_blur_strength,
                 alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
+                alg_anchor=alg_anchor, alg_anchor_strength=alg_anchor_strength,
+                alg_anchor_sigma_threshold=alg_anchor_sigma_threshold,
                 bounded_attention_enabled=bounded_attention_enabled,
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
@@ -6641,6 +7404,7 @@ class FunPackLTXAVSceneChainSampler:
                 cut_opening_frames=cut_opening_frames,
                 second_pass=second_pass, second_pass_op=second_pass_op,
                 second_pass_sigmas=second_pass_sigmas,
+                h3_audio_clock=h3_audio_clock,
                 unique_id=None, prompt=None,
             )
             last = out

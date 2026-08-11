@@ -117,7 +117,9 @@
     allNodes: () => j("GET", API("/all-nodes")),
     nodeSpec: (cls) => j("GET", API(`/node/${encodeURIComponent(cls)}`)),
     pipelinePorts: () => j("GET", API("/pipeline-ports")),
-    pipelineDeps: () => j("GET", API("/pipeline-deps")),
+    // pid is optional but should be passed whenever a project is open: without it the answer
+    // describes the GLOBAL default, which is not necessarily this project's family.
+    pipelineDeps: (pid) => j("GET", API("/pipeline-deps" + (pid ? "?pid=" + encodeURIComponent(pid) : ""))),
     pipelineDepsInstall: (packIds) => j("POST", API("/pipeline-deps/install"), { pack_ids: packIds }),
     pipelineDepsInstallManager: () => j("POST", API("/pipeline-deps/install"), { install_manager: true }),
     pipelineDepsInstallStatus: (jobId) => j("GET", API(`/pipeline-deps/install/${encodeURIComponent(jobId)}`)),
@@ -133,6 +135,7 @@
     applyWorkflow: (pid, workflow, bindings) =>
       j("POST", API(`/projects/${pid}/workflow/apply`), { workflow, bindings }),
     restart: () => j("POST", API("/restart")),
+    systemInfo: () => j("GET", API("/system/info")),
     gitStatus: () => j("GET", API("/git/status")),
     gitUpdate: (branch) => j("POST", API("/git/update"), branch ? { branch } : {}),
     gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),

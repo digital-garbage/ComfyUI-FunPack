@@ -111,7 +111,13 @@
 
   // Per-scene length / fps with a 3-way mode (project | timeline | custom).
   const LEN_META = {
-    frames: { label: "Frames", projKey: "num_frames_per_scene", snap: (v) => S.snapFrames(v) },
+    // Same rule as the project's Frames field: snap only on H3, where an off-grid length is
+    // a dead run. On LTX the builder rounds up on its own, so the typed number survives.
+    frames: {
+      label: "Frames", projKey: "num_frames_per_scene",
+      snap: (v) => (window.PipelineCaps?.snapFramesIfRequired
+        ? window.PipelineCaps.snapFramesIfRequired(v, S.get()) : S.snapFrames(v)),
+    },
     fps:    { label: "FPS",    projKey: "frame_rate",          snap: (v) => Math.max(1, v) },
   };
   const LEN_DEFAULT_MODE = { frames: "project", fps: "project" };
@@ -143,6 +149,12 @@
 
     if (mode === "custom") {
       const i = el("input"); i.type = "number"; i.value = effOf(scene, kind); i.dataset.k = "sc-" + kind;
+      if (kind === "frames" && window.PipelineCaps?.frameInputSpec) {
+        // arrows walk the model's frame grid instead of moving by 1 into a value the snap
+        // (H3) or the builder (LTX) will not keep
+        const sp = window.PipelineCaps.frameInputSpec(S.get());
+        i.step = String(sp.step); i.min = String(sp.min);
+      }
       i.oninput = () => S.patchSceneQuiet(scene.id, { [kind]: m.snap(parseInt(i.value || "0", 10)) });
       // Stored value is snapped (frames → 9/17/25…, fps → ≥1); reflect that back on commit
       // so the field doesn't keep showing an unsnapped number the engine won't actually use.
@@ -423,20 +435,33 @@
     name.oninput = () => S.patchProjectQuiet({ name: name.value });
     body.append(field("Project name", name));
 
-    // Frames snap to the model family's grid on blur (LTX 8k+1, MiniMax H3 17k+5). Typing is
-    // left alone — snapping mid-keystroke fights the user — but the value that reaches the
-    // project is always one the model can actually generate.
+    // Frames only SNAP where the model makes them: MiniMax H3 refuses an off-grid length,
+    // so there the field snaps on blur and its arrows step 17 at a time. On LTX the builder
+    // rounds up by itself, so the number is left exactly as typed and only the arrows follow
+    // the 8k+1 grid — an arrow that adds 1 and then springs back is not a control.
     const grid = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(st) : null;
+    const spec = window.PipelineCaps?.frameInputSpec
+      ? window.PipelineCaps.frameInputSpec(st) : null;
     const row1 = el("div", "fields-row");
     const framesField = numberField("Frames / scene", p.num_frames_per_scene,
       (v) => S.patchProjectQuiet({ num_frames_per_scene: v }), "pj-frames");
     const framesInput = framesField.querySelector("input");
     if (framesInput) {
-      if (grid) framesInput.title = "Snaps to the model's " + grid.label + " frame grid.";
+      if (spec) {
+        framesInput.step = String(spec.step);
+        framesInput.min = String(spec.min);
+        framesInput.title = spec.snap
+          ? "MiniMax H3 only generates on its " + grid.label + " frame grid, so this snaps to it "
+            + "— the arrows move a whole " + spec.step + " frames."
+          : "Any length works; the arrows walk this model's " + grid.label + " grid, and an "
+            + "off-grid number is rounded up to it when the graph is built.";
+      }
       framesInput.onchange = () => {
-        const snapped = S.snapFrames(parseInt(framesInput.value || "0", 10));
-        framesInput.value = snapped;
-        S.patchProjectQuiet({ num_frames_per_scene: snapped });
+        const typed = parseInt(framesInput.value || "0", 10);
+        const val = window.PipelineCaps?.snapFramesIfRequired
+          ? window.PipelineCaps.snapFramesIfRequired(typed, st) : S.snapFrames(typed);
+        framesInput.value = val;
+        S.patchProjectQuiet({ num_frames_per_scene: val });
       };
     }
     row1.append(framesField);
@@ -546,7 +571,7 @@
       const ai = el("input"); ai.type = "number"; ai.value = g.apply_at != null ? g.apply_at : 0; ai.title = "apply_at";
       ai.dataset.k = `guide-${idx}-apply`;
       ai.oninput = () => { guides[idx] = { ...g, apply_at: parseInt(ai.value || "0", 10) }; persist(guides, true); };
-      const si = el("input"); si.type = "number"; si.min = "0.25"; si.max = "0.5"; si.step = "0.05";
+      const si = el("input"); si.type = "number"; si.min = "0"; si.max = "1"; si.step = "0.05";
       si.value = g.strength != null ? g.strength : 0.35; si.title = "Strength";
       si.dataset.k = `guide-${idx}-strength`;
       si.oninput = () => { guides[idx] = { ...g, strength: parseFloat(si.value || "0.35") }; persist(guides, true); };

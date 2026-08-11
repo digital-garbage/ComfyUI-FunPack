@@ -100,20 +100,25 @@
     const issues = [];
     const idIssue = window.PipelineCaps?.identityTransferIssue(st);
     if (idIssue) issues.push(idIssue);
+    // No conditioning source at all on Studio — no encoder, no pre-encoded conditioning.
+    const promptIssue = window.PipelineCaps?.promptSourceIssue(st);
+    if (promptIssue) issues.push(promptIssue);
     // On MiniMax H3 several LTX-only sampler settings are switched off by the sampler
     // itself. It says so on the console, but only once the run has already started —
     // here it costs nothing to know beforehand.
     issues.push(...(window.PipelineCaps?.h3InertSettings(st) || []));
     issues.forEach((issue) => {
       const chip = el("button", "btn ghost compact action-warn", "⚠ " + issue.short);
-      // most of these are engine settings; a few (frame rate) are project fields, and
-      // sending the user to the Engine window for those would be a dead end
-      const toProject = issue.target === "project";
-      chip.title = issue.detail + (toProject
-        ? "\n\nClick to open the project settings."
-        : "\n\nClick to open Engine settings.");
-      chip.onclick = toProject
-        ? () => S.selectScene(null)
+      // most of these are engine settings; a few are project fields (frame rate) or live
+      // in Models (wiring), and sending those to the Engine window would be a dead end
+      const where = issue.target || "engine";
+      chip.title = issue.detail + {
+        project: "\n\nClick to open the project settings.",
+        models: "\n\nClick to open Models & Pipeline.",
+        engine: "\n\nClick to open Engine settings.",
+      }[where];
+      chip.onclick = where === "project" ? () => S.selectScene(null)
+        : where === "models" ? () => window.ModelsModal?.open()
         : () => window.SettingsWindow?.open("engine");
       mount.append(chip);
     });

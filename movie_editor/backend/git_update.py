@@ -39,6 +39,25 @@ def funpack_version() -> str:
     return m.group(1) if m else ""
 
 
+# Release codenames, the way Ubuntu does it: an adjective and a vegetable sharing an
+# initial, advancing alphabetically. Keyed by MAJOR version, so every 3.x release ships
+# under the same name and only a new major earns a new letter.
+CODENAMES = {
+    "3": "Auspicious Asparagus",
+}
+
+
+def funpack_codename(version: str = "") -> str:
+    """Codename for `version` (default: the installed one), or "" when its major has none.
+
+    Kept beside funpack_version because they are read together and shipped together; a
+    major with no entry simply has no codename yet, which the UI renders as absence rather
+    than as a blank line.
+    """
+    major = (version or funpack_version()).split(".", 1)[0].strip()
+    return CODENAMES.get(major, "")
+
+
 def _current_branch() -> str:
     proc = _run_git("rev-parse", "--abbrev-ref", "HEAD")
     if proc.returncode != 0:
@@ -115,6 +134,7 @@ def status() -> dict:
         return {
             "ok": True,
             "version": funpack_version(),
+            "codename": funpack_codename(),
             "branch": branch,
             "commit": commit,
             "dirty": dirty,
@@ -125,7 +145,8 @@ def status() -> dict:
             "repo": str(REPO_ROOT),
         }
     except GitUpdateError as e:
-        return {"ok": False, "version": funpack_version(), "detail": str(e)}
+        return {"ok": False, "version": funpack_version(),
+                "codename": funpack_codename(), "detail": str(e)}
 
 
 def pull(branch: str | None = None) -> dict:

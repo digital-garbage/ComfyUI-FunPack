@@ -7,6 +7,12 @@
   const S = window.Store;
   const API = window.MovieEditorAPI;
 
+  // Project ids whose legacy Distilled-Flow ALG switch has been folded into the
+  // sampler-wide alg_anchor this session. Module scope, not render scope: every store
+  // write re-renders this pane synchronously, so the guard has to outlive a render or
+  // the migration re-enters itself and recurses until the stack blows.
+  const _ALG_MIGRATED = new Set();
+
   // Easy Gen has no rating UI at all (by design — see easy_gen/frontend/), so every
   // setting that is a no-op without a trained refinement key / rated history is hidden
   // there, not just made harder to find. window.FunPackAppName is the same discriminator
@@ -28,11 +34,26 @@
   function setView(v) { view = v; render(); }
 
   // macOS-style row: title on the left, control on the right. Append into a .sw-rows group.
-  function field(labelText, control, hint) {
+  // `hint` is ONE short sentence saying what the setting does — that is all most rows ever
+  // show. Everything else (cost figures, sampler caveats, failure modes) goes in `detail`,
+  // which stays collapsed behind a Details link: nobody reads a paragraph per checkbox, but
+  // the paragraph is still the only place some of those numbers exist.
+  function field(labelText, control, hint, detail) {
     const row = el("div", "sw-row eng-field");
     const main = el("div", "sw-row-main");
     main.append(el("div", "sw-row-title", labelText));
     if (hint) main.append(el("div", "sw-row-hint", hint));
+    if (detail) {
+      const body = el("div", "sw-row-hint eng-detail", detail);
+      body.hidden = true;
+      const more = el("button", "eng-more", "Details");
+      more.type = "button";
+      more.onclick = () => {
+        body.hidden = !body.hidden;
+        more.textContent = body.hidden ? "Details" : "Hide details";
+      };
+      main.append(more, body);
+    }
     row.append(main, control);
     return row;
   }
@@ -63,18 +84,25 @@
 
   // ── FunPack Studio: refiner fields ─────────────────────────────────────────
   const STUDIO_REFINER_ESSENTIALS = [
-    { name: "vision_conditioning", label: "Vision conditioning", default: true },
-    { name: "reference_injection", label: "Reference injection", default: false },
+    { name: "vision_conditioning", label: "Vision conditioning", default: true,
+      hint: "Lets Studio look at your anchor image and write what it sees into the prompt. Turn it off if the prompt should stand on its own." },
+    { name: "reference_injection", label: "Reference injection", default: false,
+      hint: "Pushes the reference image's own attention into the identity blocks while sampling, so the face holds harder. Only does something on i2v scenes that have a source image." },
   ];
   const STUDIO_REFINER_ADVANCED = [
-    { name: "value_guidance", label: "Value guidance", kind: "bool", default: true },
-    { name: "steer_mode", label: "Steer mode", kind: "combo", choices: ["relative", "absolute", "both"], default: "relative" },
+    { name: "value_guidance", label: "Value guidance", kind: "bool", default: true,
+      hint: "Moves the prompt toward what your ratings say you like, before sampling starts. Learning happens either way — this only decides whether it gets applied." },
+    { name: "steer_mode", label: "Steer mode", kind: "combo", choices: ["relative", "absolute", "both"], default: "relative",
+      hint: "'relative' finds the best conditioning for THIS prompt; 'absolute' pulls toward your global taste whatever the prompt says; 'both' layers them." },
     { name: "absolute_strength", label: "Absolute strength", kind: "float", default: 0.6, min: 0, max: 1, step: 0.05,
-      dependsOn: "steer_mode", dependsVals: ["absolute", "both"] },
+      dependsOn: "steer_mode", dependsVals: ["absolute", "both"],
+      hint: "How hard Absolute mode pulls toward your global taste. 0.6 is visible without overriding the prompt; higher overrides it more." },
     { name: "temporal_style", label: "Temporal style", kind: "combo",
-      choices: ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse", "rapid_start", "rapid_end", "rapid_start_end"], default: "natural" },
+      choices: ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse", "rapid_start", "rapid_end", "rapid_start_end"], default: "natural",
+      hint: "Lies to the model about the frame rate to change how motion feels — faster, heavier, looping, frozen. Free. 'auto' and 'pulse' pick per scene and need the Chain Sampler." },
     { name: "split_transition_placement", label: "Transition placement", kind: "combo",
-      choices: ["start", "end", "silent"], default: "start" },
+      choices: ["start", "end", "silent"], default: "start",
+      hint: "Where a transition sentence lands when a prompt is split into scenes: the start of the next scene, the end of the previous one, or neither." },
   ];
 
   function parseStudioSettings(p) {
@@ -133,7 +161,7 @@
     const ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!cur;
     ctrl.dataset.k = "rf-" + f.name;
     ctrl.onchange = () => persistStudioRefiner({ [f.name]: ctrl.checked }, true);
-    parentGroup.append(toggleField(f.label, ctrl));
+    parentGroup.append(toggleField(f.label, ctrl, f.hint));
   }
 
   function renderStudioRefinerField(parentGroup, rf, f) {
@@ -159,92 +187,153 @@
       ctrl.value = val; ctrl.dataset.k = "rf-" + f.name;
       ctrl.oninput = () => persistStudioRefiner({ [f.name]: parseFloat(ctrl.value || "0") }, false);
     }
-    parentGroup.append(field(f.label, ctrl));
+    parentGroup.append(field(f.label, ctrl, f.hint, f.detail));
   }
 
   // ── Chain Sampler knobs ────────────────────────────────────────────────────
   const SAMPLER_KNOBS = [
-    { name: "frame_overlap",         label: "Frame overlap",         kind: "int",   default: 16,    min: 0, max: 512, step: 8 },
-    { name: "transition_duration",   label: "Transition duration",   kind: "int",   default: 16,    min: 0, max: 128, step: 2 },
-    { name: "use_same_seed",         label: "Same seed per scene",   kind: "bool",  default: false },
-    { name: "carry_i2v_guides",      label: "Carry i2v guides",      kind: "bool",  default: false, lockMulti: true },
-    { name: "cfg",                   label: "CFG",                   kind: "float", default: 1.0,   min: 0, max: 20,  step: 0.1 },
-    { name: "embed_guidance",        label: "Embed guidance",        kind: "bool",  default: false },
-    { name: "embed_guidance_source", label: "Embed mode",            kind: "combo", choices: ["relative", "absolute"], default: "relative", dependsOn: "embed_guidance" },
-    { name: "embed_guidance_strength", label: "Embed strength",      kind: "float", default: 0.02,  min: 0.005, max: 0.1, step: 0.005, dependsOn: "embed_guidance" },
-    { name: "score_slider",          label: "Score slider",          kind: "bool",  default: false },
-    { name: "score_slider_strength", label: "Slider strength (eta)", kind: "float", default: 1.0,   min: 0, max: 3, step: 0.25, dependsOn: "score_slider" },
+    { name: "frame_overlap",         label: "Frame overlap",         kind: "int",   default: 16,    min: 0, max: 512, step: 8,
+      hint: "Copies this many frames from the previous scene into the next one so the join doesn't show. 0 turns blending off, which is known to look bad together with Carry i2v guides." },
+    { name: "transition_duration",   label: "Transition duration",   kind: "int",   default: 16,    min: 0, max: 128, step: 2,
+      hint: "Adds this much extra fade on each side of a scene boundary. 0 turns every transition effect off." },
+    { name: "use_same_seed",         label: "Same seed per scene",   kind: "bool",  default: false,
+      hint: "Gives every scene the same seed instead of one each. Makes scenes resemble each other more, and makes the run repeatable when you also set a fixed seed below." },
+    { name: "carry_i2v_guides",      label: "Carry i2v guides",      kind: "bool",  default: false, lockMulti: true,
+      hint: "Shows each scene the protected frames of the one before it, so the look carries down the chain. Costs guide tokens (slightly slower scenes)." },
+    { name: "cfg",                   label: "CFG",                   kind: "float", default: 1.0,   min: 0, max: 20,  step: 0.1,
+      hint: "How hard the model is pushed toward the prompt. LTX and H3 are distilled and want 1.0 — raising it burns the image instead of improving prompt-following." },
+    { name: "embed_guidance",        label: "Embed guidance",        kind: "bool",  default: false,
+      hint: "Nudges every step toward what your ratings say you like. Costs 20-30% more time, and only does something with a refinement key and enough liked generations to have learned a direction." },
+    { name: "embed_guidance_source", label: "Embed mode",            kind: "combo", choices: ["relative", "absolute"], default: "relative", dependsOn: "embed_guidance",
+      hint: "Which learned direction to use: 'relative' is what worked for prompts like this one, 'absolute' is your overall taste regardless of prompt." },
+    { name: "embed_guidance_strength", label: "Embed strength",      kind: "float", default: 0.02,  min: 0.005, max: 0.1, step: 0.005, dependsOn: "embed_guidance",
+      hint: "How hard each step is nudged. It applies at every step so it compounds — 0.01-0.03 is the usable band, above that the prompt starts losing." },
+    { name: "score_slider",          label: "Score slider",          kind: "bool",  default: false,
+      hint: "A stronger version of Embed guidance that steers the prediction itself instead of the prompt. Doubles the cost of the late steps, needs 3+ liked generations, and affects video only." },
+    { name: "score_slider_strength", label: "Slider strength (eta)", kind: "float", default: 1.0,   min: 0, max: 3, step: 0.25, dependsOn: "score_slider",
+      hint: "How hard to push along the learned taste axis. 1.0 is a clear, safe push; up to 3.0 pushes harder; 0 is off." },
     { name: "taste_nearest_prompt",  label: "Per-prompt taste direction", kind: "bool", default: false,
-      hint: "EXPERIMENTAL: source Embed guidance / Score slider from the taste direction learned on the prompts NEAREST this scene's prompt, instead of one global liked-direction average. Each liked rating records (prompt → its liked direction); this retrieves the closest matches per scene (a forest prompt pulls what worked on forests). No extra model pass — a cosine lookup + vector mean. Falls back to the global direction when nothing rated is close. Needs Embed guidance or Score slider on. UNVALIDATED LIVE." },
-    { name: "output_guidance",       label: "Output guidance",       kind: "bool",  default: false },
-    { name: "output_guidance_strength", label: "Output guidance strength", kind: "float", default: 0.02, min: 0.005, max: 0.1, step: 0.005, dependsOn: "output_guidance" },
-    { name: "decode_noise_scale",    label: "Decode noise scale",    kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01 },
-    { name: "decode_timestep",       label: "Decode timestep",       kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01 },
-    { name: "decode_tile_size",      label: "Decode tile size",      kind: "int",   default: 0,     min: 0, max: 4096, step: 64 },
-    { name: "mid_scene_guide",       label: "Mid-scene guide",       kind: "bool",  default: false },
-    { name: "mid_scene_guide_strength", label: "Guide strength",   kind: "float", default: 0.25,  min: 0.25, max: 0.5, step: 0.05, dependsOn: "mid_scene_guide" },
-    { name: "joyai_memory",          label: "JoyAI-Echo memory",     kind: "bool",  default: false },
-    { name: "joyai_memory_size",     label: "Memory size",           kind: "int",   default: 7,     min: 1, max: 32, step: 1, dependsOn: "joyai_memory" },
-    { name: "joyai_fix_frames",      label: "Pinned anchors",        kind: "int",   default: 3,     min: 0, max: 16, step: 1, dependsOn: "joyai_memory" },
-    { name: "joyai_frame_select",    label: "Frame select",          kind: "combo", choices: ["center", "first", "random"], default: "center", dependsOn: "joyai_memory" },
-    { name: "joyai_memory_strength", label: "Memory strength",       kind: "float", default: 0.3,   min: 0.25, max: 10.0, step: 0.05, dependsOn: "joyai_memory" },
-    { name: "joyai_audio_memory",    label: "Paired audio memory",   kind: "bool",  default: false, dependsOn: "joyai_memory" },
-    { name: "v2a_grad_scale",        label: "Video→audio coupling", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.25, dependsOn: "joyai_audio_memory" },
-    { name: "alg_blur_guides",       label: "Blur i2v guides and JoyAI memory", kind: "bool", default: false },
-    { name: "alg_guide_blur_strength", label: "Guide blur strength", kind: "float", default: 2.0, min: 1.0, max: 4.0, step: 0.1, dependsOn: "alg_blur_guides" },
-    { name: "alg_guide_blur_sigma_threshold", label: "Guide blur sigma threshold", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "alg_blur_guides" },
-    { name: "bounded_attention_enabled", label: "Bounded attention (multi-subject)", kind: "bool", default: false },
-    { name: "dynashift",             label: "DynaShift (steer off bad gens)", kind: "bool", default: false },
-    { name: "dynashift_strength",    label: "DynaShift strength",    kind: "float", default: 0.3, min: 0.05, max: 1.0, step: 0.05, dependsOn: "dynashift" },
-    { name: "dynashift_threshold",   label: "DynaShift match threshold", kind: "float", default: 0.6, min: 0.3, max: 0.95, step: 0.05, dependsOn: "dynashift" },
+      hint: "Steers each scene toward what you liked on SIMILAR prompts, instead of one global average.",
+      detail: "EXPERIMENTAL: source Embed guidance / Score slider from the taste direction learned on the prompts NEAREST this scene's prompt, instead of one global liked-direction average. Each liked rating records (prompt → its liked direction); this retrieves the closest matches per scene (a forest prompt pulls what worked on forests). No extra model pass — a cosine lookup + vector mean. Falls back to the global direction when nothing rated is close. Needs Embed guidance or Score slider on. UNVALIDATED LIVE." },
+    { name: "output_guidance",       label: "Output guidance",       kind: "bool",  default: false,
+      hint: "Applies your learned taste to what the model predicts instead of to the prompt. Almost free, but it trains a separate memory and needs its own 10+ rated generations before it does anything." },
+    { name: "output_guidance_strength", label: "Output guidance strength", kind: "float", default: 0.02, min: 0.005, max: 0.1, step: 0.005, dependsOn: "output_guidance",
+      hint: "How hard the prediction is corrected each step. Same scale as Embed strength — start there and adjust." },
+    { name: "decode_noise_scale",    label: "Decode noise scale",    kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01,
+      hint: "Adds fine detail and grain back while decoding. 0 is a clean decode, ~0.025 is a gentle restore. Free, and affects the video only — not the latent." },
+    { name: "decode_timestep",       label: "Decode timestep",       kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01,
+      hint: "How much freedom the decoder gets while adding that detail. Higher looks more detailed but drifts further from what was actually generated. Only used when Decode noise scale is above 0." },
+    { name: "decode_tile_size",      label: "Decode tile size",      kind: "int",   default: 0,     min: 0, max: 4096, step: 64,
+      hint: "Decodes the video in tiles instead of all at once, to fit in less VRAM. 0 is off — set it to 512 if decoding runs out of memory." },
+    { name: "mid_scene_guide",       label: "Mid-scene guide",       kind: "bool",  default: false,
+      hint: "Shows each scene the middle frame of the one before it, so people and layout stay put across a cut. Costs about 45% more time per scene, and JoyAI-Echo memory replaces it when that's on." },
+    { name: "mid_scene_guide_strength", label: "Guide strength",   kind: "float", default: 0.25,  min: 0.0, max: 1.0, step: 0.05, dependsOn: "mid_scene_guide",
+      hint: "How hard that frame pulls. 0.25-0.35 is the measured band: below it the audio degrades and appearance drifts, above it the guide fights any real change of composition." },
+    { name: "joyai_memory",          label: "JoyAI-Echo memory",     kind: "bool",  default: false,
+      hint: "Keeps a bank of frames from earlier shots and shows them to every new scene, so a character stays the same across the whole video. Costs guide tokens (slower scenes), and takes over from Mid-scene guide." },
+    { name: "joyai_memory_size",     label: "Memory size",           kind: "int",   default: 7,     min: 1, max: 32, step: 1, dependsOn: "joyai_memory",
+      hint: "How many remembered frames each scene gets. More holds identity better over a long video and makes every scene slower." },
+    { name: "joyai_fix_frames",      label: "Pinned anchors",        kind: "int",   default: 3,     min: 0, max: 16, step: 1, dependsOn: "joyai_memory",
+      hint: "How many opening scenes stay in the bank forever as a fixed anchor. Everything past them is a rolling window of the most recent shots." },
+    { name: "joyai_frame_select",    label: "Frame select",          kind: "combo", choices: ["center", "first", "random"], default: "center", dependsOn: "joyai_memory",
+      hint: "Which frame of a finished scene gets remembered — its middle, its first, or a random one." },
+    { name: "joyai_memory_strength", label: "Memory strength",       kind: "float", default: 0.3,   min: 0.25, max: 10.0, step: 0.05, dependsOn: "joyai_memory",
+      hint: "How hard remembered frames pull. 0.25-0.5 is the audio-safe band; higher holds the character harder but can degrade audio and stiffen motion." },
+    { name: "joyai_audio_memory",    label: "Paired audio memory",   kind: "bool",  default: false, dependsOn: "joyai_memory",
+      hint: "Carries voice and ambience across shots too, not just the face. This deliberately changes the audio, which nothing else here does. Needs JoyAI-Echo memory on." },
+    { name: "v2a_grad_scale",        label: "Video→audio coupling", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.25, dependsOn: "joyai_audio_memory",
+      hint: "How much the carried audio follows the new shot's picture. 1.0 is the model's own behaviour and costs nothing; JoyAI uses 2.0; 0 makes audio ignore the video." },
+    { name: "alg_anchor",            label: "Blur the i2v anchor (ALG)", kind: "bool", default: false,
+      hint: "Hides the anchor image's fine detail during the first, noisiest steps so the shot can't shortcut to a near-still that just matches it — the usual fix for an anchored scene that barely moves. Works with whatever sampler you have wired, including a plain KSampler, and does nothing on a scene with no anchor image." },
+    { name: "alg_anchor_strength",   label: "Anchor blur strength", kind: "float", default: 2.0, min: 1.0, max: 4.0, step: 0.1, dependsOn: "alg_anchor",
+      hint: "How blurry the anchor gets while it's blurred. The paper says 2.5; 2.0 held character likeness noticeably better here." },
+    { name: "alg_anchor_sigma_threshold", label: "Anchor blur sigma threshold", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "alg_anchor",
+      hint: "How long the anchor stays blurred before switching to sharp. Higher = a shorter blurred window." },
+    { name: "alg_blur_guides",       label: "Blur i2v guides and JoyAI memory", kind: "bool", default: false,
+      hint: "The same treatment for guide and memory frames, not just the anchor: blurred during the first, noisiest steps so they steer composition without pasting their own detail into the shot. Works with any sampler, and does nothing on a scene with no guide frames." },
+    { name: "alg_guide_blur_strength", label: "Guide blur strength", kind: "float", default: 2.0, min: 1.0, max: 4.0, step: 0.1, dependsOn: "alg_blur_guides",
+      hint: "How blurry those frames get while they're blurred. Higher = looser guidance and more freedom to move." },
+    { name: "alg_guide_blur_sigma_threshold", label: "Guide blur sigma threshold", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "alg_blur_guides",
+      hint: "How long they stay blurred before switching to sharp. Higher = a shorter blurred window." },
+    { name: "bounded_attention_enabled", label: "Bounded attention (multi-subject)", kind: "bool", default: false,
+      hint: "Stops two people in one frame swapping each other's features, by letting each half of the frame see only its own sentence. Nearly free, and does nothing unless the scene prompt has two sentences describing two subjects." },
+    { name: "dynashift",             label: "DynaShift (steer off bad gens)", kind: "bool", default: false,
+      hint: "Steers away from generations you rated bad — a negative prompt built from your ratings instead of from text. Nearly free, and needs a refinement key plus some bad ratings already banked." },
+    { name: "dynashift_strength",    label: "DynaShift strength",    kind: "float", default: 0.3, min: 0.05, max: 1.0, step: 0.05, dependsOn: "dynashift",
+      hint: "How much of the matched bad direction is removed per step. 0.3 is a gentle nudge; 1.0 removes it outright each step." },
+    { name: "dynashift_threshold",   label: "DynaShift match threshold", kind: "float", default: 0.6, min: 0.3, max: 0.95, step: 0.05, dependsOn: "dynashift",
+      hint: "How closely a frame must resemble a banked bad one before steering starts. Lower is more aggressive and more likely to push away from content that was actually fine." },
     { name: "identity_transfer_enabled", label: "Best-FaceID compatibility", kind: "bool", default: false,
-      hint: "Full native port of the overlap+source_phase+ArcFace conditioning Best-FaceID-style identity LoRAs were trained on. Replaces Continuity's Identity pin guide (Engine → Continuity) with separate, non-rendered reference tokens plus an optional ArcFace projector below. Load the LoRA itself the normal way — Models → add a LoRA loader onto the model path. No effect without an Identity pin image set." },
+      hint: "Feeds the identity pin image the way Best-FaceID identity LoRAs expect it. Needs an Identity pin set.",
+      detail: "Full native port of the overlap+source_phase+ArcFace conditioning Best-FaceID-style identity LoRAs were trained on. Replaces Continuity's Identity pin guide (Engine → Continuity) with separate, non-rendered reference tokens plus an optional ArcFace projector below. Load the LoRA itself the normal way — Models → add a LoRA loader onto the model path. No effect without an Identity pin image set." },
     { name: "source_id", label: "Source-phase id", kind: "float", default: 2.0, min: 0.0, max: 8.0, step: 1.0, dependsOn: "identity_transfer_enabled",
-      hint: "Matches the LoRA's training convention (ltx-trainer used 2). 0 disables the RoPE rotation." },
-    { name: "phase_scale", label: "Phase scale", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.1, dependsOn: "identity_transfer_enabled" },
+      hint: "Matches the LoRA's training convention (ltx-trainer used 2). 0 disables the rotation." },
+    { name: "phase_scale", label: "Phase scale", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.1, dependsOn: "identity_transfer_enabled",
+      hint: "Multiplies Source-phase id before the rotation is applied. Leave it at 1.0 unless you are matching a LoRA trained with an unusual convention." },
     { name: "id_strength", label: "ArcFace token strength", kind: "float", default: 1.0, min: 0.0, max: 50.0, step: 0.5, dependsOn: "identity_transfer_enabled",
-      hint: "Only applies when an ArcFace projector is selected below — weak channel, push high (5-20) to test." },
-    { name: "arcface_mode", label: "ArcFace detection mode", kind: "combo", choices: ["auto_adjust", "as_is", "disable"], default: "auto_adjust", dependsOn: "identity_transfer_enabled" },
+      hint: "Only used when an ArcFace projector is set below. Weak channel — push high (5-20) to test." },
+    { name: "arcface_mode", label: "ArcFace detection mode", kind: "combo", choices: ["auto_adjust", "as_is", "disable"], default: "auto_adjust", dependsOn: "identity_transfer_enabled",
+      hint: "What to do when the face detector can't get a clean crop of the pin image: 'auto_adjust' fixes the crop, 'as_is' uses it anyway, 'disable' skips the ArcFace channel entirely." },
     { name: "debug_log", label: "Debug log", kind: "bool", default: false, dependsOn: "identity_transfer_enabled",
       hint: "Print per-scene identity-transfer shape/status logs to the ComfyUI console." },
     { name: "plateau_cache", label: "Plateau step-cache (speed)", kind: "bool", default: false,
-      hint: "Ignored while Context windows is on — the cache can't tell one window from another within a step, so it's skipped with a note in the scene report. EXPERIMENTAL speed: the near-pure-noise early steps carry almost no signal, so the transformer output barely changes across them. Computes it once at the top of the plateau and reuses it for the rest, skipping ~3-4 of 8 transformer passes. Deterministic given seed (safe in Batch Training) but an approximation — A/B it before trusting on finals. Much of wall-clock time is outside the sampler, so total speedup is smaller than the forward count suggests. UNVALIDATED LIVE." },
+      hint: "Speeds up generation by reusing the earliest, near-noise steps, at some loss of exactness.",
+      detail: "Ignored while Context windows is on — the cache can't tell one window from another within a step, so it's skipped with a note in the scene report. EXPERIMENTAL speed: the near-pure-noise early steps carry almost no signal, so the transformer output barely changes across them. Computes it once at the top of the plateau and reuses it for the rest, skipping ~3-4 of 8 transformer passes. Deterministic given seed (safe in Batch Training) but an approximation — A/B it before trusting on finals. Much of wall-clock time is outside the sampler, so total speedup is smaller than the forward count suggests. UNVALIDATED LIVE." },
     { name: "plateau_cache_threshold", label: "Plateau threshold (sigma)", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "plateau_cache",
-      hint: "Steps with sigma at or above this count as the reusable plateau. Higher = fewer steps cached (safer); lower = more cached (faster, more approximation). 0.975 catches the documented noise plateau while leaving structure formation fully computed." },
+      hint: "Higher = fewer steps reused (safer); lower = more reused (faster, rougher).",
+      detail: "Steps with sigma at or above this count as the reusable plateau. 0.975 catches the documented noise plateau while leaving structure formation fully computed." },
+    { name: "h3_audio_clock", label: "H3 audio clock (few-step audio)", kind: "bool", default: false,
+      hint: "MiniMax H3 only: removes audio distortion on few-step turbo schedules. Free.",
+      detail: "Only worth it on few-step schedules. H3 denoises video and audio on two different flow schedules (shift 12 / shift 3), but only one sigma grid reaches the sampler, so the model reconciles them using the slope between the two schedules measured at the START of each step. That is exact for small steps and increasingly wrong as they grow: on a 4-step schedule the last step drives the audio about 2.5x past where its own schedule puts it, which comes out as distortion. This swaps that start-of-step slope for the one that actually spans the step, so audio lands where it belongs. Costs one multiply per step — no extra model call, no extra memory. Aimed at turbo / distilled LoRAs (4-8 steps), where nothing else fixes this. NOTE: it does nothing at all when Sigma shift video and audio are set to the SAME value — the streams are then on one schedule and there is nothing to correct. WHICH SAMPLER YOU PICK MATTERS (measured against a perfect predictor, so these are pure schedule error — audio error as a % of the stream's range at 4/8/20 steps): works best with FunPack Distilled Flow and Hybrid Euler 2S (exact, applied inside their step loop) and with stock euler (85/38/14% → 0/0/0%, exact everywhere). Performs poorly with the higher-order multistep family — res_multistep, dpmpp_2m, gradient_estimation, ipndm, lms, deis — which already absorb most of this error themselves: the clock helps them at 4 steps (69% → 21%) but hurts at 20 (1% → 15%), so leave it off there. No effect at all with two-evals-per-step samplers (heun, dpm_2, dpmpp_2s_ancestral, dpmpp_sde, seeds_2) — it detects them and switches itself off with a console note. Ancestral/SDE samplers also add noise to the audio stream, which this doesn't address. UNVALIDATED LIVE." },
     { name: "segmented_detailing", label: "Segmented detailing (region refine)", kind: "bool", default: false,
-      hint: "EXPERIMENTAL ADetailer-for-video: after each scene renders, CLIPSeg finds the regions named below (hands, feet, …), cuts them out of the latent as a tube, refines them at 2× working resolution through Lightricks' latent upsampler (3 extra steps on the crop only), and pastes them back through a feathered silhouette. Final resolution never changes. Cost ≈ 4 × region area × 3 steps (hands ~+15%); regions over 35% of the frame are refused. The upsampler model below is found — or downloaded (~1 GB, once) — automatically; skips are reported in the scene report. UNVALIDATED LIVE." },
+      hint: "Re-renders small regions like hands at higher detail after each scene. Costs about 15%.",
+      detail: "EXPERIMENTAL ADetailer-for-video: after each scene renders, CLIPSeg finds the regions named below (hands, feet, …), cuts them out of the latent as a tube, refines them at 2× working resolution through Lightricks' latent upsampler (3 extra steps on the crop only), and pastes them back through a feathered silhouette. Final resolution never changes. Cost ≈ 4 × region area × 3 steps (hands ~+15%); regions over 35% of the frame are refused. The upsampler model below is found — or downloaded (~1 GB, once) — automatically; skips are reported in the scene report. UNVALIDATED LIVE." },
     { name: "detail_targets", label: "Detail targets", kind: "text", default: "hands", dependsOn: "segmented_detailing", placeholder: "hands, feet",
-      hint: "Comma-separated regions to detail, in plain words. Each becomes a CLIPSeg text query — malformed anatomy still matches its name. Also editable from Composer ▸ Compose while detailing is on." },
+      hint: "Which regions to detail, in plain words, comma-separated.",
+      detail: "Each becomes a CLIPSeg text query — malformed anatomy still matches its name. Also editable from Composer ▸ Compose while detailing is on." },
     { name: "detail_strength", label: "Detail strength", kind: "float", default: 1.0, min: 0, max: 1, step: 0.05, dependsOn: "segmented_detailing",
-      hint: "Blend of the refined region at paste-back. 1.0 = full replacement inside the silhouette; 0 disables the pass." },
+      hint: "How strongly the refined region replaces the original. 0 disables the pass." },
     { name: "detail_threshold", label: "Detail match threshold", kind: "float", default: 0.35, min: 0.05, max: 0.9, step: 0.05, dependsOn: "segmented_detailing",
-      hint: "CLIPSeg match confidence required before a region counts as found. Its raw score for a real region is often well under 0.5 — if the scene report shows 'no match: max CLIPSeg score X < threshold', lower this toward X rather than assuming nothing is there." },
+      hint: "How sure the region match must be. Lower it when the scene report says 'no match'.",
+      detail: "CLIPSeg's raw score for a real region is often well under 0.5 — if the scene report shows 'no match: max CLIPSeg score X < threshold', lower this toward X rather than assuming nothing is there." },
     { name: "detail_max_area", label: "Detail max area", kind: "float", default: 0.35, min: 0.05, max: 1.0, step: 0.05, dependsOn: "segmented_detailing",
-      hint: "Ceiling on how much of the frame the region may cover before it's refused, as a fraction of the frame. Cost-only guardrail (a bigger region costs more, roughly 4× its area × 3 steps) — never a judgment call about whether it's worth detailing. If the scene report shows a region refused at some %, raise this above that % to detail it anyway. 1.0 = no cap." },
+      hint: "Regions covering more of the frame than this are skipped, to cap cost. 1.0 = no cap.",
+      detail: "Cost-only guardrail (a bigger region costs more, roughly 4× its area × 3 steps) — never a judgment call about whether it's worth detailing. If the scene report shows a region refused at some %, raise this above that % to detail it anyway." },
     { name: "detail_mode", label: "Detail mode", kind: "combo", choices: ["repair", "sharpen"], default: "repair", dependsOn: "segmented_detailing",
-      hint: "'repair' (default): upsamples the crop, then re-denoises it through the video model — can genuinely fix wrong structure (bad anatomy) but costs real compute (~4× region area × 3 steps). 'sharpen': stops after the upsampler's own pass — no video-model calls at all, close to free — good for a region that's blurry/under-resolved but already correctly shaped; it cannot fix wrong structure (an extra finger stays an extra finger, just sharper)." },
+      hint: "'repair' re-renders the region and can fix bad anatomy; 'sharpen' only upscales it — near-free, but structure stays wrong.",
+      detail: "'repair' (default): upsamples the crop, then re-denoises it through the video model — costs real compute (~4× region area × 3 steps). 'sharpen': stops after the upsampler's own pass — no video-model calls at all — good for a region that's blurry/under-resolved but already correctly shaped; an extra finger stays an extra finger, just sharper." },
     { name: "detail_denoise", label: "Detail re-noise strength", kind: "float", default: 0.85, min: 0.3, max: 0.99, step: 0.05,
       deps: [{ name: "segmented_detailing" }, { name: "detail_mode", value: "repair" }],
-      hint: "How much noise the crop gets re-noised to before its 3-step refine (0.85 is the official LTX 2.3 recipe's own value). Higher = more freedom to genuinely reconstruct the region (fix bad anatomy), risking drift from the surrounding frame; lower = closer to a plain upscale — looks 'detailed' as interpolation but doesn't actually repair it. If the result looks upscaled but not corrected, raise this. Only used in 'repair' mode." },
+      hint: "Higher = more freedom to actually rebuild the region; lower = closer to a plain upscale.",
+      detail: "How much noise the crop gets re-noised to before its 3-step refine (0.85 is the official LTX 2.3 recipe's own value). Higher risks drift from the surrounding frame; lower looks 'detailed' as interpolation but doesn't actually repair it. If the result looks upscaled but not corrected, raise this. Only used in 'repair' mode." },
     { name: "cut_opening_frames", label: "Cut the opening (frames)", kind: "int", default: 0, min: 0, max: 512, step: 8,
-      hint: "Let the i2v anchor do its work, then cut it out of the clip. The anchor is a pinned frame at position 0, so it carries character detail, style and composition better than anything that weakens it on the way in (ALG blurs it and loses detail; Best-FaceID tokens approximate it and lose some too) — but it is also literally the first frame you see. The scene is generated exactly as normal, with the anchor pinned at full strength the whole way and no extra sampling, and this many frames are then dropped off the FRONT of the finished clip: an i2v generation that reads as t2v. 0 = off. 8 (one latent frame) removes just the anchor itself, which is usually not enough — the anchor is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening, and on a prompt asking for immediate action that dead time is exactly what you want gone. 48 was the value that worked on a 768×768×305@30 chain with a quick-cut prompt; treat it as a starting point for this pipeline, not a universal default. NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you set, and the audio is cropped to match — every surviving frame was generated as part of one continuous shot, with no invented ending. Needs an anchor image; skipped (with the reason in the scene report) on continuation scenes and on scenes carrying guide frames or JoyAI audio memory." },
+      hint: "Trims this many frames off the FRONT of the finished clip, so an i2v render reads as t2v. The scene comes out shorter.",
+      detail: "Let the i2v anchor do its work, then cut it out of the clip. The anchor is a pinned frame at position 0, so it carries character detail, style and composition better than anything that weakens it on the way in (ALG blurs it and loses detail; Best-FaceID tokens approximate it and lose some too) — but it is also literally the first frame you see. The scene is generated exactly as normal, with the anchor pinned at full strength the whole way and no extra sampling, and this many frames are then dropped off the FRONT of the finished clip: an i2v generation that reads as t2v. 0 = off. 8 (one latent frame) removes just the anchor itself, which is usually not enough — the anchor is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening, and on a prompt asking for immediate action that dead time is exactly what you want gone. 48 was the value that worked on a 768×768×305@30 chain with a quick-cut prompt; treat it as a starting point for this pipeline, not a universal default. NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you set, and the audio is cropped to match — every surviving frame was generated as part of one continuous shot, with no invented ending. Needs an anchor image; skipped (with the reason in the scene report) on continuation scenes and on scenes carrying guide frames or JoyAI audio memory. On MiniMax H3 the cut happens on the decoded frames instead of the latent (H3's anchor is a keyframe pin, and its latent grid can't express an arbitrary cut) — exact to the frame, audio cropped to match, and only the chain's opening is cut rather than each scene's." },
     { name: "second_pass_op", label: "Between-pass operation", kind: "combo", choices: ["none", "sharpen", "upscale_2x"], default: "none",
-      hint: "OPTIONAL operation applied to the latent between the two passes — 'none' by default, nothing runs unless you pick one. Both operations need the LTX 2.3 spatial upsampler in models/latent_upscale_models — the same ~1 GB file segmented detailing uses, found automatically or downloaded once on first use (watch the ComfyUI console). If it can't be obtained the second pass still runs, with the operation skipped and the reason in the scene report. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what's already there and CANNOT fix wrong structure (an extra finger stays an extra finger, just sharper). 'upscale_2x': the same upsampler, but kept at 2x — pass 2 runs at four times the pixels and the scene decodes at double resolution. That's 3-5x the cost of the second half, and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor), so the scene can drift from the reference image; the scene report says when that happens. Both use the same upsampler file as segmented detailing. Video only — audio is never reshaped." },
+      hint: "'sharpen' adds detail almost free; 'upscale_2x' doubles the output resolution at 3-5x the cost of pass 2.",
+      detail: "OPTIONAL operation applied to the latent between the two passes — 'none' by default, nothing runs unless you pick one. Both operations need the LTX 2.3 spatial upsampler in models/latent_upscale_models — the same ~1 GB file segmented detailing uses, found automatically or downloaded once on first use (watch the ComfyUI console). If it can't be obtained the second pass still runs, with the operation skipped and the reason in the scene report. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what's already there and CANNOT fix wrong structure (an extra finger stays an extra finger, just sharper). 'upscale_2x': the same upsampler, but kept at 2x — pass 2 runs at four times the pixels and the scene decodes at double resolution. That's 3-5x the cost of the second half, and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor), so the scene can drift from the reference image; the scene report says when that happens. Both use the same upsampler file as segmented detailing. Video only — audio is never reshaped." },
     { name: "context_windows", label: "Context windows (long scenes)", kind: "bool", default: false,
-      hint: "EXPERIMENTAL: denoise a scene that's LONGER than the model's comfortable window as overlapping windows instead of one giant pass — ComfyUI core's own mechanism, audio-aware on LTX (it maps each video window to its audio window and re-slices anchors, guides and JoyAI memory per window). Engages only on scenes longer than the window length below; shorter scenes are untouched and pay nothing. Cost at the defaults (145/40) is about 1.45× the per-frame work, since each window re-does its 40-frame overlap — offset by attention getting cheaper the longer the scene is (quadratic in one pass, near-flat when windowed). Roughly break-even around 200 frames, a net win past ~300. Needs ComfyUI v0.29.0 or newer; on older builds it's skipped with a note in the scene report. UNVALIDATED LIVE." },
+      hint: "Renders very long scenes as overlapping windows instead of one pass. Slower short, faster past ~300 frames.",
+      detail: "EXPERIMENTAL: denoise a scene that's LONGER than the model's comfortable window as overlapping windows instead of one giant pass — ComfyUI core's own mechanism, audio-aware on LTX (it maps each video window to its audio window and re-slices anchors, guides and JoyAI memory per window). Engages only on scenes longer than the window length below; shorter scenes are untouched and pay nothing. Cost at the defaults (145/40) is about 1.45× the per-frame work, since each window re-does its 40-frame overlap — offset by attention getting cheaper the longer the scene is (quadratic in one pass, near-flat when windowed). Roughly break-even around 200 frames, a net win past ~300. Needs ComfyUI v0.29.0 or newer; on older builds it's skipped with a note in the scene report. UNVALIDATED LIVE." },
     { name: "context_window_length", label: "Window length (frames)", kind: "int", default: 145, min: 9, max: 2049, step: 8, dependsOn: "context_windows",
-      hint: "Window size in real frames. A scene at or below this length skips windowing entirely, so this doubles as the engage threshold. Keep it at or under the length the model already generates well in one pass — the point is to stay inside that range while the scene as a whole goes past it." },
+      hint: "Window size in frames — and the threshold: shorter scenes skip windowing entirely.",
+      detail: "Keep it at or under the length the model already generates well in one pass — the point is to stay inside that range while the scene as a whole goes past it." },
     { name: "context_window_overlap", label: "Window overlap (frames)", kind: "int", default: 40, min: 0, max: 512, step: 8, dependsOn: "context_windows",
-      hint: "How many frames consecutive windows share. This is the only thing carrying motion and appearance across a window boundary, and also the only extra compute this costs. Too low shows as a seam or a motion hitch at the boundary; too high pays for frames you already have." },
+      hint: "Frames shared between windows: too low shows a seam, too high wastes compute.",
+      detail: "This is the only thing carrying motion and appearance across a window boundary, and also the only extra compute windowing costs." },
     { name: "context_window_schedule", label: "Window schedule", kind: "combo", choices: ["standard_uniform", "standard_static", "looped_uniform", "batched"], default: "standard_uniform", dependsOn: "context_windows",
       legacy: { uniform_standard: "standard_uniform", static_standard: "standard_static", uniform_looped: "looped_uniform" },
-      hint: "How windows are laid out each step (ComfyUI core's own schedule names). 'standard_uniform' (default) shifts the grid between steps so boundaries never bake in — safest. 'standard_static' keeps fixed cut points (cheapest, but a bad boundary stays bad). 'looped_uniform' wraps the end into the start for looping content. 'batched' uses disjoint chunks with no overlap logic (fastest, weakest continuity)." },
+      hint: "Where the window cut points fall each step. The default is the safest.",
+      detail: "ComfyUI core's own schedule names. 'standard_uniform' (default) shifts the grid between steps so boundaries never bake in — safest. 'standard_static' keeps fixed cut points (cheapest, but a bad boundary stays bad). 'looped_uniform' wraps the end into the start for looping content. 'batched' uses disjoint chunks with no overlap logic (fastest, weakest continuity)." },
     { name: "context_window_fuse", label: "Window blend", kind: "combo", choices: ["pyramid", "relative", "flat", "overlap-linear"], default: "pyramid", dependsOn: "context_windows",
-      hint: "How overlapping windows are weighted when merged. 'pyramid' (default) fades each window toward its edges so seams go soft. 'flat' averages equally (can smear). Change this if boundaries look ghosted rather than merely misaligned." },
+      hint: "How overlapping windows are blended. Change it if boundaries look ghosted.",
+      detail: "'pyramid' (default) fades each window toward its edges so seams go soft. 'flat' averages equally (can smear). Not the setting for boundaries that look merely misaligned." },
     { name: "context_window_freenoise", label: "FreeNoise blending", kind: "bool", default: true, dependsOn: "context_windows",
-      hint: "Shuffle rather than redraw the starting noise between windows, so overlapping regions begin from correlated noise. Free (a one-time permutation) and core's own default because it measurably improves how windows blend. Turn off only to A/B whether it's helping." },
+      hint: "Makes windows blend better by correlating their starting noise. Free — leave it on.",
+      detail: "Shuffles rather than redraws the starting noise between windows, so overlapping regions begin from correlated noise. A one-time permutation, and core's own default because it measurably improves how windows blend. Turn off only to A/B whether it's helping." },
     { name: "context_window_retain_first", label: "Pin anchor in every window", kind: "bool", default: false, dependsOn: "context_windows",
-      hint: "Keep latent frame 0 (the i2v anchor) inside every window instead of just the first. Turn on if later windows drift away from the reference image. Off by default because on a continuation scene frame 0 is the carried tail of the previous scene, not the anchor — pinning it everywhere can make the scene read as static. Turn it off again if motion stalls." },
+      hint: "Keeps the anchor frame in every window. Turn on if later windows drift; off again if motion stalls.",
+      detail: "Keeps latent frame 0 inside every window instead of just the first. Off by default because on a continuation scene frame 0 is the carried tail of the previous scene, not the anchor — pinning it everywhere can make the scene read as static." },
   ];
   const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 
@@ -356,7 +445,7 @@
         S.setSamplerInput(k.name, v);
       };
     }
-    parentGroup.append(field(k.label + (forced ? " (auto)" : ""), ctrl, k.hint));
+    parentGroup.append(field(k.label + (forced ? " (auto)" : ""), ctrl, k.hint, k.detail));
   }
 
   function renderKnobList(parentGroup, st, names) {
@@ -374,7 +463,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "h3_audio_clock", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id) {
@@ -448,12 +537,14 @@
     [["funpack", "FunPack Studio"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
       .forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.conditioning_slot || "funpack") === v) o.selected = true; condSel.append(o); });
     condSel.onchange = () => S.setConditioningSlot(condSel.value);
-    g.append(field("Conditioning", condSel));
+    g.append(field("Conditioning", condSel,
+      "Which node turns your prompt into conditioning. Picking anything but FunPack Studio hides the Studio settings below."));
     const sampSel = el("select"); sampSel.dataset.k = "pj-samp";
     [["funpack", "FunPack Chain Sampler"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
       .forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.sampler_slot || "funpack") === v) o.selected = true; sampSel.append(o); });
     sampSel.onchange = () => S.setSamplerSlot(sampSel.value);
-    g.append(field("Sampler", sampSel));
+    g.append(field("Sampler", sampSel,
+      "Which node does the actual sampling. Picking anything but the FunPack Chain Sampler hides the Chain Sampler settings below."));
 
     if (!studioOn) pane.append(hintEl("Custom conditioning node — wire and tune it in Models & Pipeline. FunPack Studio categories are hidden."));
     if (!chainOn) pane.append(hintEl("Custom sampler node — wire and tune it in Models & Pipeline. Chain Sampler categories are hidden."));
@@ -479,7 +570,8 @@
       const keyCtrl = el("input"); keyCtrl.type = "text"; keyCtrl.dataset.k = "refinement_key";
       keyCtrl.placeholder = "default"; keyCtrl.value = p.refinement_key || "default";
       keyCtrl.onchange = () => S.patchProject({ refinement_key: (keyCtrl.value || "").trim() || "default" });
-      gKey.append(field("Refinement key", keyCtrl, "Named learning session — \"default\" is the keyless store."));
+      gKey.append(field("Refinement key", keyCtrl,
+        "Names the learning session your ratings train. Everything rating-driven below reads from it; \"default\" is the shared one."));
     }
 
     const gEss = group(pane, "Essentials");
@@ -492,11 +584,9 @@
 
     if (EASY) {
       pane.append(hintEl(
-        "Studio runs in Prompt-only mode from Easy Gen — it shapes and splits the prompt "
-        + "and passes conditioning through unchanged. Rating-dependent controls (refinement "
-        + "key, value guidance, steer mode, reference injection) aren't shown here since "
-        + "there's no rating UI in Easy Gen to feed them. For the full learned refiner, use "
-        + "the Cutting Room (Movie Editor) or the ComfyUI node graph directly."));
+        "Studio runs in Prompt-only mode here: it shapes and splits the prompt, nothing more. "
+        + "Rating-dependent controls are hidden — Easy Gen has no rating UI to feed them. "
+        + "Use the Cutting Room for the full learned refiner."));
     } else {
       pane.append(hintEl("Scene text and transitions come from the timeline. Advisor, LoRA, and batch training remain in the ComfyUI Studio popup on the graph."));
     }
@@ -504,8 +594,7 @@
 
   function renderStudioAdjust(pane, st) {
     pane.append(hintEl(
-      "Universal per-phrase steering: each phrase is encoded by CLIP and shifts conditioning "
-      + "toward (+) or away (−) from it on every generation, regardless of the prompt. "
+      "Pulls every generation toward (+) or away from (−) a phrase, whatever the prompt says. "
       + "Typical range −0.3 to +0.3."));
     const items = parseAdjustments(st.project);
     const g = group(pane, "Phrases");
@@ -549,16 +638,51 @@
       else S.setStudioInputNow("studio_settings", next);
       syncSecondPassFromSchedule(updatedSamplers, quiet);
     }
-    // The second pass is driven by ONE thing: the schedule. Typing one turns it on; clearing
-    // it turns it off. There is no cut and no re-entry point to configure — pass 1 always runs
-    // the main schedule in full and pass 2 always runs this one in full.
+    // The second pass is driven by ONE thing: the schedule. Giving it one turns it on;
+    // taking it away turns it off. There is no cut and no re-entry point to configure —
+    // pass 1 always runs the main schedule in full and pass 2 always runs this one in full.
+    // A schedule is either typed into the low pass's Sigmas field or COMPUTED by picking a
+    // scheduler for it; both must count here, or picking one would be an inert control.
     function syncSecondPassFromSchedule(samplers, quiet) {
       const raw = String(samplers?.low?.sigmas || "").replace(/;/g, ",");
       const vals = raw.split(",").map((v) => parseFloat(v.trim())).filter((v) => !isNaN(v));
+      const sched = String(samplers?.low?.scheduler || "use_user_sigmas");
+      const computed = sched !== "use_user_sigmas" && Number(samplers?.low?.steps || 0) > 0;
       const set = quiet ? S.setSamplerInput : S.setSamplerInputNow;
-      if (vals.length >= 2) set("second_pass", true);       // one number is not a schedule
+      // one number is not a schedule
+      if (computed || vals.length >= 2) set("second_pass", true);
       else S.unsetSamplerInput("second_pass");
     }
+
+    // ALG used to have two switches: the Distilled Flow panel's own alg_enabled, and the
+    // chain sampler's alg_anchor, which is the same guidance on ANY sampler and already
+    // drove the Distilled Flow one whenever it was on. Two controls for one behaviour, and
+    // which of them won depended on which you had set — so the Editor now shows only
+    // alg_anchor. The node input still exists for hand-built graphs; what moves is the
+    // Editor's control. A project carrying the old switch is migrated once, with its
+    // strength and threshold, rather than left running ALG with nothing on screen to
+    // turn it off.
+    function migrateDistilledAlg(cfg) {
+      const pid = String(S.get()?.project?.id || "");
+      const dc = cfg?.high?.distilled;
+      if (!dc || !dc.alg_enabled) return _ALG_MIGRATED.has(pid);
+      // Mark and clear BEFORE writing anything: each setter notifies the store, which
+      // re-renders this pane synchronously and comes straight back through here.
+      _ALG_MIGRATED.add(pid);
+      const strength = dc.alg_strength;
+      const threshold = dc.alg_sigma_threshold;
+      dc.alg_enabled = false;
+      // Out of the render pass entirely — persisting mid-render is what caused the
+      // recursion above, and a deferred write costs one extra repaint instead.
+      setTimeout(() => {
+        S.setSamplerInputNow("alg_anchor", true);
+        if (strength != null) S.setSamplerInputNow("alg_anchor_strength", Number(strength));
+        if (threshold != null) S.setSamplerInputNow("alg_anchor_sigma_threshold", Number(threshold));
+        persistSamplers(cfg, false);
+      }, 0);
+      return true;
+    }
+    const algMigrated = migrateDistilledAlg(samplers);
 
     try {
       window.SamplerPanel.render(box, samplers,
@@ -569,6 +693,24 @@
       err.style.color = "var(--danger)";
       box.append(err);
     }
+    // The anchor blur lives HERE, with the sampler, not under Experimental: it is a
+    // property of how the scene is sampled and the first place anyone looks for it is the
+    // pane where they picked the sampler. It runs on whatever sampler is selected above —
+    // inside the loop on Distilled Flow, through a denoiser proxy on everything else — so
+    // it is never hidden behind a particular choice up there.
+    const algG = group(pane, "Anchor blur (ALG)");
+    renderKnobList(algG, st, ["alg_anchor", "alg_anchor_strength", "alg_anchor_sigma_threshold"]);
+    if (algMigrated) {
+      const moved = hintEl("Moved here from the Distilled Flow panel's own ALG switch — it was "
+        + "the same blur, and this one works on every sampler. Your strength and threshold "
+        + "came with it; nothing changed about how the scene samples.");
+      moved.style.color = "var(--amber)";
+      algG.append(moved);
+    }
+    algG.append(hintEl("This is the only ALG anchor control — on Distilled Flow it runs inside "
+      + "the sampler loop, on every other sampler through a denoiser proxy. The same blur for "
+      + "guide and JoyAI-memory frames is under Experimental (“Blur i2v guides and JoyAI "
+      + "memory”) — it has its own strength and window."));
     // Second pass lives here rather than under Experimental: at its defaults the split is
     // behaviour-neutral (pass 2 resumes from exactly the state pass 1 handed over), so it
     // is a sampler setting, not a gamble. The only control is the schedule field in the
@@ -594,18 +736,21 @@
     pane.append(hintEl(cs.auto_enabled
       ? (gs.stack_enabled
         ? "Auto continuity: mid-scene guide only — custom guide stack overrides auto guide lists."
-        : "Auto continuity builds hidden guides per run: identity pin (all modes), prior-scene guides on carry chains and solo mixed runs, mid-scene anchor on multi-scene carry. Image / empty / generated_frame solo runs use their anchor only.")
+        : "Auto continuity builds the guides for you each run — identity pin, prior-scene guides, mid-scene anchor — based on how the scenes are chained.")
       : "Auto continuity off — use manual Chain Sampler knobs and optional custom guide stack below."));
 
     const g = group(pane, "Auto continuity");
     const autoCb = el("input"); autoCb.type = "checkbox"; autoCb.checked = cs.auto_enabled;
     autoCb.dataset.k = "cs-auto";
     autoCb.onchange = () => patchContinuitySettings({ auto_enabled: autoCb.checked });
-    g.append(toggleField("Auto continuity (recommended)", autoCb));
+    g.append(toggleField("Auto continuity (recommended)", autoCb,
+      "Builds the guides for every run itself, so characters and places hold across scenes. Turn it off only to drive the guide stack by hand."));
 
     const pinRow = el("div", "sw-row eng-field eng-stack");
     const pinMain = el("div", "sw-row-main");
     pinMain.append(el("div", "sw-row-title", "Identity pin (all scenes)"));
+    pinMain.append(el("div", "sw-row-hint",
+      "One image every scene is pulled toward, so the same face carries the whole video."));
     pinRow.append(pinMain);
     const pin = window.MediaPicker.create({
       value: cs.identity_pin_ref,
@@ -625,21 +770,27 @@
       cb.onchange = () => patchContinuitySettings({ [key]: cb.checked });
       gAdv.append(toggleField(label, cb, opts.hint));
     };
-    mk("Borrow prior-scene guides", cs.prior_scene_guides, "prior_scene_guides");
+    mk("Borrow prior-scene guides", cs.prior_scene_guides, "prior_scene_guides",
+      { hint: "Lets each scene look at frames from the one before it, so the look carries down the chain." });
     mk("Prior guides on solo mixed runs", cs.solo_scene_guides, "solo_scene_guides",
-      { hint: "Mixed mode only — image/empty/generated_frame solo runs use their anchor only" });
+      { hint: "Does the same when you render a single scene out of a mixed timeline. Off, that scene uses only its own anchor." });
     mk("Mid-scene layout guide (carry chains)", cs.mid_scene_guide, "mid_scene_guide",
-      { disabled: !multiScene, title: multiScene ? "" : "Only applies to multi-scene carry chains" });
-    const num = (label, val, key, min, max, step) => {
+      { disabled: !multiScene, title: multiScene ? "" : "Only applies to multi-scene carry chains",
+        hint: "Shows each scene the middle frame of the one before it, so people stay where they were. Only applies to multi-scene carry chains." });
+    const num = (label, val, key, min, max, step, hint) => {
       const i = el("input"); i.type = "number"; i.min = String(min); i.max = String(max); i.step = String(step);
       i.value = val; i.disabled = !cs.auto_enabled; i.dataset.k = "cs-" + key;
       i.oninput = () => patchContinuitySettings({ [key]: parseFloat(i.value || "0") });
-      gAdv.append(field(label, i));
+      gAdv.append(field(label, i, hint));
     };
-    num("Pin strength", cs.identity_pin_strength, "identity_pin_strength", 0.25, 0.5, 0.05);
-    num("Prior guide strength", cs.prior_scene_strength, "prior_scene_strength", 0.25, 0.5, 0.05);
-    num("Mid-scene strength", cs.mid_scene_guide_strength, "mid_scene_guide_strength", 0.25, 0.5, 0.05);
-    num("Guide decay / scene", cs.guide_decay, "guide_decay", 0.5, 1, 0.05);
+    num("Pin strength", cs.identity_pin_strength, "identity_pin_strength", 0.0, 1.0, 0.05,
+      "How hard the identity pin pulls. Higher holds the face better and follows the prompt less.");
+    num("Prior guide strength", cs.prior_scene_strength, "prior_scene_strength", 0.0, 1.0, 0.05,
+      "How hard borrowed frames from earlier scenes pull. Higher keeps the look, lower lets each scene be its own shot.");
+    num("Mid-scene strength", cs.mid_scene_guide_strength, "mid_scene_guide_strength", 0.0, 1.0, 0.05,
+      "How hard the mid-scene layout frame pulls. 0.25-0.35 is the safe band — below it the audio degrades, above it the guide fights real changes of composition.");
+    num("Guide decay / scene", cs.guide_decay, "guide_decay", 0.5, 1, 0.05,
+      "How much weaker guides get with each scene further down the chain. 1.0 keeps them at full strength the whole way.");
 
     const gMan = group(pane, "Manual");
     renderKnobList(gMan, st, CHAIN_VIEW_KNOBS.chain_continuity);
@@ -647,17 +798,18 @@
     stackCb.dataset.k = "gs-stack";
     stackCb.onchange = () => patchGuideSettings({ stack_enabled: stackCb.checked });
     gMan.append(toggleField("Custom guide stack", stackCb,
-      gs.stack_enabled
-        ? "Per-scene lists in the Scene inspector. Scenes without entries use the Studio default (scene 1 template · frame 0 · apply 0)."
+      "Lets you choose each scene's guide frames yourself, in the Scene inspector, instead of having them built for you. "
+      + (gs.stack_enabled
+        ? "Scenes you leave empty fall back to scene 1's first frame."
         : (cs.auto_enabled
-          ? "Auto continuity supplies guides at generation time."
-          : "Studio default: one i2v guide from scene 1's template on multi-scene carry runs.")));
+          ? "Auto continuity is supplying them right now."
+          : "Without it, multi-scene carry runs get one guide from scene 1."))));
     if (gs.stack_enabled) {
       const accCb = el("input"); accCb.type = "checkbox"; accCb.checked = gs.accumulate_prior;
       accCb.dataset.k = "gs-accum";
       accCb.onchange = () => patchGuideSettings({ accumulate_prior: accCb.checked });
       gMan.append(toggleField("Stack guides from all prior scenes", accCb,
-        "Negative frame_idx / apply_at count from the end (e.g. −1 = last frame)."));
+        "Gives each scene the guides of every scene before it, not just its own. Holds the look harder and makes later scenes slower."));
     } else if (multiScene) {
       pane.append(hintEl("Carry i2v guides is auto-enabled for multi-scene runs."));
     }
@@ -728,7 +880,8 @@
     });
     sel.onchange = () => S.setSamplerInputNow("detail_upsampler", sel.value);
     g.append(field("Latent upsampler", sel,
-      "The LTX 2.3 spatial upsampler from models/latent_upscale_models (the official two-stage workflows use the same file). 'auto' picks the newest installed spatial upscaler — or downloads the official one (~1 GB, once) when the folder is empty."));
+      "'auto' picks the newest installed one, or downloads the official file (~1 GB, once).",
+      "The LTX 2.3 spatial upsampler from models/latent_upscale_models — the official two-stage workflows use the same file."));
     if (_detailUpsamplerChoices.length <= 1) {
       g.append(hintEl("Nothing installed in models/latent_upscale_models yet — the first detailed run downloads the official upsampler automatically (watch the ComfyUI console)."));
     }
@@ -777,7 +930,7 @@
     });
     sel.onchange = () => S.setSamplerInputNow("identity_projector", sel.value);
     g.append(field("ArcFace projector", sel,
-      "Optional secondary identity channel — the overlap reference tokens above carry the bulk of identity even with this set to None."));
+      "Optional second identity channel — the reference tokens above carry most of it even at None."));
   }
 
   function renderPane(pane, st) {

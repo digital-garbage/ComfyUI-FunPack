@@ -479,3 +479,80 @@ def test_mixing_pins_and_references_is_called_out(capsys):
     }]])
     out = capsys.readouterr().out
     assert "BOTH" in out and "fl2va" in out and "ref2va" in out
+
+
+# ── pins rescued from a wired MiniMax H3 Image to Video node ─────────────────
+# That node hands its first_frame/last_frame pins out on its CONDITIONING output, which this
+# pipeline drops (Studio owns the sampler's positive). Wiring it into h3_keyframes is the
+# difference between the image conditioning the generation and being silently discarded.
+
+def _wired_conditioning(indices, frame_count=124, aug=None):
+    pins = [{"resolved_frame_index": i, "latent": torch.full((1, 24, 1, 48, 84), float(i))}
+            for i in indices]
+    meta = {"minimax_keyframes": pins, "minimax_frame_count": frame_count}
+    if aug is not None:
+        meta["minimax_visual_cond_noise_aug"] = aug
+    return [[torch.zeros(1, 12, 5120), meta]]
+
+
+def test_wired_pins_are_split_into_first_and_last():
+    node = h3_node()
+    pins = node._h3_external_pins(_wired_conditioning([0, 123], aug=0.8))
+    assert [p["resolved_frame_index"] for p in pins["first"]] == [0]
+    assert [p["resolved_frame_index"] for p in pins["last"]] == [123]
+    assert pins["aug"] == pytest.approx(0.8)
+    assert pins["source_count"] == 124
+
+
+def test_conditioning_without_pins_is_reported_as_nothing_to_rescue():
+    node = h3_node()
+    assert node._h3_external_pins([[torch.zeros(1, 12, 5120), {}]]) is None
+    assert node._h3_external_pins(None) is None
+
+
+def test_a_first_frame_pin_lands_on_the_opening_scene_only():
+    node = h3_node(frame_count=124)
+    pins = node._h3_external_pins(_wired_conditioning([0]))
+    positive = [[torch.zeros(1, 12, 5120), {}]]
+
+    out, labels = node._apply_h3_external_pins(positive, pins, scene_index=0, scene_count=3)
+    assert labels == ["first"]
+    assert [kf["resolved_frame_index"] for kf in out[0][1]["minimax_keyframes"]] == [0]
+
+    out, labels = node._apply_h3_external_pins(positive, pins, scene_index=1, scene_count=3)
+    assert labels == [] and out is positive        # untouched mid-chain
+
+
+def test_a_last_frame_pin_is_reindexed_onto_the_closing_scenes_own_length():
+    """The source node's frame_count is its own — a stale index would land mid-clip, where
+    PackedLayout refuses it."""
+    node = h3_node(frame_count=209)
+    pins = node._h3_external_pins(_wired_conditioning([0, 123], frame_count=124))
+
+    out, labels = node._apply_h3_external_pins(
+        [[torch.zeros(1, 12, 5120), {}]], pins, scene_index=2, scene_count=3)
+    assert labels == ["last"]
+    assert [kf["resolved_frame_index"] for kf in out[0][1]["minimax_keyframes"]] == [208]
+
+
+def test_a_single_scene_run_gets_both_pins():
+    node = h3_node(frame_count=124)
+    pins = node._h3_external_pins(_wired_conditioning([0, 123]))
+    out, labels = node._apply_h3_external_pins(
+        [[torch.zeros(1, 12, 5120), {}]], pins, scene_index=0, scene_count=1)
+    assert labels == ["first", "last"]
+    assert [kf["resolved_frame_index"] for kf in out[0][1]["minimax_keyframes"]] == [0, 123]
+
+
+def test_a_wired_first_frame_overrides_the_timeline_anchor_on_frame_zero():
+    """Both target frame 0; the explicit wire is the one the user drew."""
+    node = h3_node(frame_count=124)
+    anchor = torch.zeros(1, 24, 1, 48, 84)
+    positive = node._h3_add_keyframes(
+        [[torch.zeros(1, 12, 5120), {}]],
+        [{"resolved_frame_index": 0, "latent": anchor}], 124)
+
+    pins = node._h3_external_pins(_wired_conditioning([0]))
+    out, _labels = node._apply_h3_external_pins(positive, pins, scene_index=0, scene_count=1)
+    kfs = out[0][1]["minimax_keyframes"]
+    assert len(kfs) == 1 and kfs[0]["latent"] is not anchor

@@ -524,11 +524,14 @@ def test_h3_token_tags_are_reconciled_before_studio_returns():
     assert tags.shape[0] == 12
     assert int(tags[-1]) == 1 and int(tags[0]) == 0
 
-    # shrunk: tags would describe positions that no longer exist -> drop them entirely,
-    # because WRONG tags crash where absent tags are handled
-    shrunk = [[torch.zeros(1, 6, 8), {"minimax_token_tags": torch.zeros(10, dtype=torch.long)}]]
+    # more tags than tokens: trim the tail. Position i still means position i, so the kept
+    # marks stay correct — and on an image prompt they are the vision span's modality-0 marks,
+    # which dropping the vector would hand to the DiT as ordinary text.
+    tags_in = torch.tensor([0, 0, 0, 1, 1, 1, 1, 1, 1, 1], dtype=torch.long)
+    shrunk = [[torch.zeros(1, 6, 8), {"minimax_token_tags": tags_in}]]
     out = _h3_reconcile_token_tags(shrunk, "positive")
-    assert "minimax_token_tags" not in out[0][1]
+    trimmed = out[0][1]["minimax_token_tags"].reshape(-1)
+    assert trimmed.tolist() == [0, 0, 0, 1, 1, 1]
 
     # already aligned -> untouched, same object
     ok_meta = {"minimax_token_tags": torch.zeros(9, dtype=torch.long)}

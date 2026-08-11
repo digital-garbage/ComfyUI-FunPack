@@ -176,3 +176,142 @@ def test_alg_blur_is_deterministic():
     out1 = samplers._alg_blur_frames(model, latent_image, 2.5, frame_indices=(0,), tail_count=1)
     out2 = samplers._alg_blur_frames(model, latent_image, 2.5, frame_indices=(0,), tail_count=1)
     assert torch.equal(out1, out2)
+
+
+# --- ALG outside a FunPack sampler's loop --------------------------------------------
+#
+# ALG's blurred/sharp swap is decided by ONE thing: the sigma of the step. Sigma is an
+# argument of every model call, so the swap does not need the sampler's loop — it only
+# lived there because that is where the code was written. These cover the proxy that gives
+# the same behaviour to a stock KSampler (any sampler_name), to Hybrid Euler 2S, and to
+# multi-eval samplers, where each evaluation gets the anchor its own sigma calls for.
+
+
+class _RecordingDenoiser:
+    """Stands in for comfy's CFGGuider denoiser: has latent_image, records what it saw."""
+
+    def __init__(self, latent_image):
+        self.latent_image = latent_image
+        self.seen = []
+
+    def __call__(self, x, sigma, **kwargs):
+        self.seen.append((float(sigma), self.latent_image))
+        return x
+
+
+def _alg_model():
+    m = _RecordingDenoiser(_packed_latent_image())
+    m.inner_model = _fake_model().inner_model
+    return m
+
+
+def test_alg_prepare_is_a_no_op_without_a_denoise_mask():
+    """No mask = no pinned anchor to blur; ALG must stand down rather than blur a frame the
+    model is generating from scratch."""
+    m = _alg_model()
+    _, _, anchor_on, tail_on = samplers._alg_prepare(m, {}, True, 2.0, 0, 2.0)
+    assert (anchor_on, tail_on) == (False, False)
+
+
+def test_alg_prepare_reports_both_halves_independently():
+    m = _alg_model()
+    sharp, latents, anchor_on, tail_on = samplers._alg_prepare(
+        m, {"denoise_mask": torch.ones(1)}, True, 2.0, 1, 2.0)
+    assert (anchor_on, tail_on) == (True, True)
+    assert torch.equal(latents[(False, False)], sharp)
+    for key in ((True, False), (False, True), (True, True)):
+        assert not torch.equal(latents[key], sharp)
+
+
+def test_alg_proxy_swaps_the_anchor_on_the_sigma_of_each_call():
+    m = _alg_model()
+    sharp = m.latent_image
+    _, latents, anchor_on, tail_on = samplers._alg_prepare(
+        m, {"denoise_mask": torch.ones(1)}, True, 2.0, 0, 2.0)
+    proxy = samplers._ALGDenoiser(m, latents, anchor_on, tail_on, 0.9, 0.9)
+    x = torch.zeros(1)
+    proxy(x, torch.tensor(0.95))    # above the threshold -> blurred
+    proxy(x, torch.tensor(0.5))     # below -> sharp again
+    assert not torch.equal(m.seen[0][1], sharp)
+    assert torch.equal(m.seen[1][1], sharp)
+
+
+def test_alg_proxy_forwards_unknown_attributes_and_assignments():
+    m = _alg_model()
+    m.inner_model = "INNER"
+    proxy = samplers._ALGDenoiser(m, {}, False, False, 0.9, 0.9)
+    assert proxy.inner_model == "INNER"
+    proxy.latent_image = "REPLACED"       # samplers assign this; it must reach the real model
+    assert m.latent_image == "REPLACED"
+
+
+# --- reaching the sampler from the Chain Sampler node ---------------------------------
+
+
+def _chain_node():
+    """The Chain Sampler with just enough comfy surface stubbed for _sample_chunk."""
+    sys.modules["comfy.sample"].prepare_noise = lambda samples, seed: torch.zeros_like(samples)
+    sys.modules["comfy.samplers"].KSAMPLER = lambda fn, extra_options=None, inpaint_options=None: (
+        types.SimpleNamespace(sampler_function=fn, extra_options=extra_options or {},
+                              inpaint_options=inpaint_options or {}))
+    return samplers.FunPackLTXAVSceneChainSampler()
+
+
+def _fake_sampler(fn):
+    return types.SimpleNamespace(sampler_function=fn, extra_options={}, inpaint_options={})
+
+
+def _run_chunk(sampler, **kw):
+    """Run _sample_chunk against a stubbed sample_custom; return the sampler it was handed."""
+    seen = {}
+
+    def _sample_custom(model, noise, cfg, smp, sigmas, positive, negative, samples, **kwargs):
+        seen["sampler"] = smp
+        return samples
+
+    sys.modules["comfy.sample"].sample_custom = _sample_custom
+    latent = {"samples": torch.zeros(1, 2, 2, 2, 2)}
+    _chain_node()._sample_chunk(object(), sampler, torch.tensor([1.0, 0.0]), 0, 1.0,
+                                [], [], latent, **kw)
+    return seen["sampler"]
+
+
+def test_a_stock_ksampler_gets_alg_through_the_wrapper():
+    """The point of the proxy: ALG used to be unreachable with anything but Distilled Flow,
+    because it lived inside that sampler's loop."""
+    def euler(model, x, sigmas, **kw):
+        return x
+
+    out = _run_chunk(_fake_sampler(euler), alg_anchor=True)
+    assert out.sampler_function is not euler
+    assert out.sampler_function.__name__ == "euler_alg"
+
+
+def test_the_wrapper_is_not_installed_when_alg_is_off():
+    """Off means untouched — no proxy, no per-call work, same sampler object."""
+    def euler(model, x, sigmas, **kw):
+        return x
+
+    sampler = _fake_sampler(euler)
+    assert _run_chunk(sampler, alg_anchor=False) is sampler
+
+
+def test_distilled_flow_drives_its_own_in_loop_alg_instead_of_being_wrapped():
+    """One control, two routes: on the sampler that already implements ALG the toggle sets
+    its option rather than stacking a second blur on top of it."""
+    sampler = _fake_sampler(samplers.sample_funpack_distilled_flow)
+    out = _run_chunk(sampler, alg_anchor=True, alg_anchor_strength=3.0,
+                     alg_anchor_sigma_threshold=0.9)
+    assert out is sampler
+    assert sampler.extra_options["alg_enabled"] is True
+    assert sampler.extra_options["alg_strength"] == 3.0
+    assert sampler.extra_options["alg_sigma_threshold"] == 0.9
+
+
+def test_the_guide_tail_alone_also_wraps_a_foreign_sampler():
+    """alg_blur_guides used to say 'requires Distilled Flow'; it no longer does."""
+    def euler(model, x, sigmas, **kw):
+        return x
+
+    out = _run_chunk(_fake_sampler(euler), alg_guide_tail_frames=2)
+    assert out.sampler_function.__name__ == "euler_alg"

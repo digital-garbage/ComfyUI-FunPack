@@ -149,3 +149,51 @@ def test_family_lookup_falls_back_instead_of_raising():
     from movie_editor.backend import pipeline_deps as pd
     assert pd.family_setup("hailuo-9000")["label"] == pd.family_setup("ltxav")["label"]
     assert pd.family_setup(None)["label"] == pd.family_setup("ltxav")["label"]
+
+
+# ── no role may target a node its family does not build ─────────────────────
+# The reported symptom ("another Audio VAE output to a node that isn't there") came from
+# LTXAV's inherited rules pointing audio_vae at LTXVAudioVAEDecode, which H3's core drops.
+# Fixing the family fixed the cause; these make the shape of the bug impossible.
+
+def test_no_role_target_points_at_a_node_outside_its_family_core():
+    from movie_editor.backend import builder, pipeline_wiring as pw
+
+    for family in ("ltxav", "minimax_h3"):
+        core, _links, _ports = builder.family_core(family)
+        classes = set(core.values())
+        for role, targets in pw._role_targets(family).items():
+            for _type, _out, port in targets:
+                assert port.split(".", 1)[0] in classes, f"{family}/{role} -> {port}"
+
+
+def test_no_default_wire_points_at_a_node_outside_its_family_core():
+    """Default wires are applied without the user asking, so a stale one is the likeliest
+    way a phantom port gets written into a saved project."""
+    from movie_editor.backend import builder, pipeline_wiring as pw
+
+    for family in ("ltxav", "minimax_h3"):
+        core, _links, _ports = builder.family_core(family)
+        classes = set(core.values())
+        for role, wires in pw._default_wires(family).items():
+            for _type, wire in wires.items():
+                if isinstance(wire, str) and wire.startswith("port:"):
+                    cls = wire[len("port:"):].split(".", 1)[0]
+                    assert cls in classes, f"{family}/{role} -> {wire}"
+
+
+def test_h3_routes_the_audio_vae_to_its_own_decoder():
+    """The positive half: H3 must still get the two real targets it needs."""
+    from movie_editor.backend import pipeline_wiring as pw
+
+    ports = [t[2] for t in pw._role_targets("minimax_h3")["audio_vae"]]
+    assert "VAEDecodeAudio.vae" in ports
+    assert "FunPackLTXAVSceneChainSampler.audio_vae" in ports
+    assert not any(p.startswith("LTXVAudioVAEDecode") for p in ports)
+
+
+def test_ltxav_is_unchanged_by_the_guard():
+    from movie_editor.backend import pipeline_wiring as pw
+
+    assert [t[2] for t in pw._role_targets("ltxav")["audio_vae"]] == ["LTXVAudioVAEDecode.audio_vae"]
+    assert pw._default_wires("ltxav")["audio_vae"] == {"VAE": "port:LTXVAudioVAEDecode.audio_vae"}

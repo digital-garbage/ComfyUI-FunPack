@@ -13,7 +13,7 @@ OI = {
                                "studio_settings": ["STRING", {"default": "{}"}],
                                "adjustments": ["STRING", {"default": "[]"}]},
                   "optional": {"model": ["MODEL"], "clip": ["CLIP"], "source_image": ["IMAGE"],
-                               "latent": ["LATENT"],
+                               "latent": ["LATENT"], "positive_conditioning": ["CONDITIONING"],
                                "positive_prompt": ["STRING", {"forceInput": True}],
                                "negative_prompt": ["STRING", {"forceInput": True}],
                                "refinement_key_input": ["STRING", {"forceInput": True}]}},
@@ -52,6 +52,7 @@ OI = {
     "UnetLoader": {"input": {"required": {"unet_name": [["m.safetensors"]]}}, "output": ["MODEL"]},
     "ClipLoader": {"input": {"required": {"clip_name": [["c.safetensors"]]}}, "output": ["CLIP"]},
     "VaeLoader": {"input": {"required": {"vae_name": [["v.safetensors"]]}}, "output": ["VAE"]},
+    "CondLoader": {"input": {"required": {"cond_name": [["c.json"]]}}, "output": ["CONDITIONING"]},
     "LoadImage": {"input": {"required": {"image": [["a.png"]]}}, "output": ["IMAGE", "MASK"]},
     "ImgProc": {"input": {"required": {"length": ["INT", {"default": 97}], "vae": ["VAE"], "image": ["IMAGE"]}},
                 "output": ["LATENT", "LATENT", "IMAGE"], "output_name": ["latent", "Latent", "output_image"]},
@@ -143,6 +144,44 @@ def test_explicit_wires_and_autowire():
     # a complete config has nothing unsatisfied / ambiguous
     assert report["unsatisfied"] == []
     assert report["ambiguous"] == []
+
+
+def test_wired_positive_conditioning_replaces_the_clip_requirement():
+    # Studio can run off a pre-encoded CONDITIONING. With two text encoders installed, CLIP
+    # is ambiguous — that must not block generation once positive_conditioning is wired, and
+    # the ambiguous CLIP must be left alone rather than auto-wired over the user's own
+    # conditioning (Studio prefers CLIP whenever it's connected).
+    models = {"full_control": True, "slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {"MODEL": "port:FunPackStudio.model"}},
+        {"id": "c1", "node_class": "ClipLoader", "inputs": {}, "wires": {}},
+        {"id": "c2", "node_class": "ClipLoader", "inputs": {}, "wires": {}},
+        {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {}},
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {"IMAGE": "node:ip:image"}},
+        {"id": "ip", "node_class": "ImgProc", "inputs": {},
+         "wires": {"Latent": "port:LTXVConcatAVLatent.audio_latent"}},
+        {"id": "cd", "node_class": "CondLoader", "inputs": {},
+         "wires": {"CONDITIONING": "port:FunPackStudio.positive_conditioning"}},
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    assert graph["studio"]["inputs"]["positive_conditioning"] == ["slot_cd", 0]
+    assert "clip" not in graph["studio"]["inputs"]
+    assert report["blocking"] == []
+    assert not any(".clip" in m for m in report["ambiguous"])
+
+
+def test_clip_still_blocks_when_nothing_else_feeds_studio():
+    # Without the conditioning wire, an ambiguous CLIP is still a hard stop.
+    models = {"full_control": True, "slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {"MODEL": "port:FunPackStudio.model"}},
+        {"id": "c1", "node_class": "ClipLoader", "inputs": {}, "wires": {}},
+        {"id": "c2", "node_class": "ClipLoader", "inputs": {}, "wires": {}},
+        {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {}},
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {"IMAGE": "node:ip:image"}},
+        {"id": "ip", "node_class": "ImgProc", "inputs": {},
+         "wires": {"Latent": "port:LTXVConcatAVLatent.audio_latent"}},
+    ]}
+    _, report = builder.build(OI, models, PARAMS)
+    assert any(".clip" in m for m in report["blocking"])
 
 
 def test_stale_combo_value_coerced_to_live_choice():
@@ -634,6 +673,31 @@ def test_a_node_widget_can_be_driven_by_the_project_prompt():
                          "members": [{"slotId": "r", "input": "prompt"}]}]}
     graph, _ = builder.build(REF_OI, models, PARAMS)
     assert graph["slot_r"]["inputs"]["prompt"] == "scene one"
+
+
+def test_a_linked_text_takes_the_expanded_prompt_not_the_raw_one():
+    """The node on the other end encodes the string as it arrives — it does none of what
+    Studio does to a prompt. So a linked text gets the shortcut/$variable-expanded version,
+    while Studio's own port keeps the raw text it expands per scene itself."""
+    models = {"slots": [{"id": "r", "node_class": "MiniMaxH3ReferenceToVideo",
+                         "inputs": {}, "wires": {}}],
+              "links": [{"id": "l1", "source": "editor", "editor_key": "prompt",
+                         "members": [{"slotId": "r", "input": "prompt"}]}]}
+    params = dict(PARAMS, prompt="/greet $hero", expanded={"prompt": "hello Rin"})
+    graph, _ = builder.build(REF_OI, models, params)
+    assert graph["slot_r"]["inputs"]["prompt"] == "hello Rin"
+    assert graph["pos"]["inputs"]["value"] == "/greet $hero"   # Studio still expands its own
+
+
+def test_anchor_and_postfix_are_linkable_texts_of_their_own():
+    """A node encoding on its own has no idea Studio would wrap each scene in these."""
+    models = {"slots": [{"id": "r", "node_class": "MiniMaxH3ReferenceToVideo",
+                         "inputs": {}, "wires": {}}],
+              "links": [{"id": "l1", "source": "editor", "editor_key": "postfix",
+                         "members": [{"slotId": "r", "input": "prompt"}]}]}
+    params = dict(PARAMS, expanded={"postfix": "cinematic lighting"})
+    graph, _ = builder.build(REF_OI, models, params)
+    assert graph["slot_r"]["inputs"]["prompt"] == "cinematic lighting"
 
 
 def test_a_core_combo_value_missing_on_this_machine_falls_back_instead_of_blocking():

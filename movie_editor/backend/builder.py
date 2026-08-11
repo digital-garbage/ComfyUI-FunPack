@@ -86,6 +86,17 @@ OPEN_PORTS: list[tuple[str, str, str, bool]] = [   # (core_id, input, type, requ
     ("audiodec", "audio_vae", "VAE", True),
 ]
 
+# A required port another input can stand in for: {(core_id, input): (alternative inputs…)}.
+# Studio encodes the prompt through `clip`, but a pre-encoded CONDITIONING wired into
+# positive_conditioning replaces that path entirely (_v2_conditioning_source takes whichever
+# is present, CLIP first). So a project that brings its own conditioning must not be blocked
+# for leaving CLIP unwired — or, with several text encoders installed, for its CLIP being
+# ambiguous. The port stays in OPEN_PORTS: it still auto-wires when there IS a single
+# obvious encoder, it just no longer holds up generation when the alternative is satisfied.
+PORT_ALTERNATIVES: dict[tuple[str, str], tuple[str, ...]] = {
+    ("studio", "clip"): ("positive_conditioning",),
+}
+
 # core outputs offered as auto-wire producers for slot inputs (image-proc etc.).
 CORE_PRODUCERS: list[tuple[str, int, str]] = [  # (core_id, output_index, type)
     ("frames", 0, "INT"),
@@ -136,6 +147,10 @@ FAMILIES: dict[str, dict] = {
                 ("audiodec", "vae", "VAE", True),
                 # optional: only needed to encode AUDIO ref2va references
                 ("sampler", "audio_vae", "VAE", False),
+                # optional: a MiniMax H3 Image to Video node emits its first/last frame pins
+                # on its CONDITIONING output, which this pipeline otherwise drops (the
+                # sampler's positive comes from Studio). Wiring it here keeps the pins.
+                ("sampler", "h3_keyframes", "CONDITIONING", False),
             ),
         },
     },
@@ -597,7 +612,12 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     for link in (models_config or {}).get("links") or []:
         if link.get("source") == "editor":
             key = link.get("editor_key")
-            val = params.get(key)
+            # Text keys come pre-expanded (shortcuts + $variables) in params["expanded"]:
+            # the node on the other end of a link encodes the string as-is, so a raw
+            # `/trigger` or `$name` would be encoded literally. Studio's own ports are not
+            # linked inputs — they still receive the raw text and expand it themselves.
+            expanded = params.get("expanded") or {}
+            val = expanded[key] if key in expanded else params.get(key)
             # A latent node driven by "Project · Frames" has to receive the SAME number the
             # sampler is given, or the two disagree about the scene length and the run dies
             # on the mismatch. Same for a fixed-rate family's fps.
@@ -1107,6 +1127,15 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
             continue
         if isinstance(node["inputs"].get(inp), list):
             continue  # already wired (explicit/core)
+        alt_wired = next((alt for alt in PORT_ALTERNATIVES.get((node_id, inp), ())
+                          if isinstance(node["inputs"].get(alt), list)), None)
+        if alt_wired:
+            # Left deliberately unwired: the alternative the user wired IS the source now, and
+            # auto-wiring this port would take precedence over it and silently win.
+            report["auto_wired"].append(
+                f"{L(node_id)}.{inp} ({t}) left unwired — {L(node_id)}.{alt_wired} is wired and "
+                f"takes over. Not required.")
+            continue
         raw = [p for p in _matching_producers(producers, t) if p[0] != node_id]
         # Never auto-wire a source that already depends on this node — that closes a loop and
         # ComfyUI rejects the whole graph. Drop such candidates so auto-wire stays acyclic.
