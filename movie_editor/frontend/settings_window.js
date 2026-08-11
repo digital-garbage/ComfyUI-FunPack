@@ -184,13 +184,62 @@
   register({
     id: "about", group: "", order: 0, title: "About FunPack",
     subtitle: "",
-    keywords: "about version commit branch copyright info funpack cutting room",
+    keywords: "about version commit branch copyright info funpack cutting room "
+      + "cpu chip memory ram gpu graphics vram disk storage system os python torch cuda specs hardware",
     iconBg: "linear-gradient(180deg,#ffc36b,#e0891f)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="8" cy="8" r="6.2"/><circle cx="8" cy="8" r="2.4" fill="#fff" stroke="none"/></svg>',
     mount(body, ctx) {
       const G = window.FunPackGit;
       const wrap = el("div", "sw-about");
       body.append(wrap);
+
+      // Host facts describe the machine ComfyUI runs on, which on a rental is NOT the
+      // machine showing this window. Fetched once per mount; nothing here changes while
+      // the window is open. Null until it arrives (or forever, if the backend is older).
+      let sys = null;
+
+      const gb = (n) => (n == null ? null : `${n} GB`);
+
+      function hardwareFacts(fact) {
+        if (!sys) return;
+        const cpu = sys.cpu || {};
+        const cores = cpu.cores && cpu.threads && cpu.cores !== cpu.threads
+          ? `${cpu.cores}C/${cpu.threads}T`
+          : (cpu.threads ? `${cpu.threads}C` : null);
+        fact("Chip", [cpu.name, cores].filter(Boolean).join(" · ") || cpu.arch);
+
+        const mem = sys.memory || {};
+        fact("Memory", mem.available_gb != null && mem.total_gb != null
+          ? `${mem.available_gb} GB free of ${mem.total_gb} GB`
+          : gb(mem.total_gb));
+
+        const gpus = sys.gpus || [];
+        if (gpus.length) {
+          gpus.forEach((g, i) => {
+            const label = gpus.length > 1 ? `Graphics ${i}` : "Graphics";
+            fact(label, [g.name, gb(g.vram_gb), g.capability].filter(Boolean).join(" · "));
+          });
+        } else {
+          // No CUDA device: say which kind of nothing, since "—" reads like a bug.
+          fact("Graphics", sys.mps ? "Apple GPU (MPS)" : "CPU only (no CUDA device)");
+        }
+
+        const disk = sys.disk || {};
+        fact("Storage", disk.free_gb != null && disk.total_gb != null
+          ? `${disk.free_gb} GB available of ${disk.total_gb} GB`
+          : gb(disk.total_gb));
+      }
+
+      function softwareFacts(fact) {
+        if (!sys) return;
+        fact("System", sys.os);
+        fact("ComfyUI", sys.comfyui);
+        fact("Python", sys.python);
+        const t = sys.torch || {};
+        fact("Torch", [t.version, t.cuda ? `CUDA ${t.cuda}` : null].filter(Boolean).join(" · "));
+        if (t.attention) fact("Attention", t.attention);
+        if (sys.host) fact("Host", sys.host);
+      }
 
       function render() {
         clear(wrap);
@@ -208,10 +257,24 @@
           r.append(el("span", "sw-about-k", k), el("span", "sw-about-v", v || "—"));
           facts.append(r);
         };
+        const group = (label) => facts.append(el("div", "sw-about-group", label));
+
         fact("Version", git?.version);
         fact("Commit", git?.ok ? git.commit + (git.dirty ? " (local changes)" : "") : null);
         fact("Branch", git?.ok ? git.branch : null);
+
+        if (sys) {
+          group("Hardware");
+          hardwareFacts(fact);
+          group("Software");
+          softwareFacts(fact);
+        }
         wrap.append(facts);
+
+        if (sys) {
+          wrap.append(el("div", "sw-about-hint",
+            "The machine ComfyUI runs on — not this browser."));
+        }
 
         const upd = el("button", "btn ghost tiny", "Software Update…");
         upd.onclick = () => ctx.openSection("system");
@@ -222,6 +285,11 @@
 
       render();
       if (G?.refresh) G.refresh().then(() => { if (wrap.isConnected) render(); }).catch(() => {});
+      // Optional-chained: a frontend sharing this file without the endpoint (or an older
+      // backend) simply keeps the version-only About instead of erroring.
+      window.MovieEditorAPI?.systemInfo?.()
+        .then((info) => { sys = info; if (wrap.isConnected) render(); })
+        .catch(() => {});
     },
   });
 

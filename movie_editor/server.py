@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, workflow_import
+from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, sysinfo, workflow_import
 from .backend.nle_effects import zoompan_z_expr
 from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_export
 from .backend.timeline import (
@@ -2426,6 +2426,12 @@ if web is not None and PromptServer is not None:
         if spec is None:
             raise web.HTTPNotFound(reason="Unknown node class")
         return web.json_response(spec)
+
+    @routes.get(UI_PREFIX + "/api/system/info")
+    async def _system_info(_req):
+        # Describes the ComfyUI host, not the browser — on a rental those are different
+        # machines and the host is the one worth looking at.
+        return web.json_response(sysinfo.collect())
 
     @routes.get(UI_PREFIX + "/api/git/status")
     async def _git_status(_req):

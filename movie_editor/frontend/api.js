@@ -135,6 +135,7 @@
     applyWorkflow: (pid, workflow, bindings) =>
       j("POST", API(`/projects/${pid}/workflow/apply`), { workflow, bindings }),
     restart: () => j("POST", API("/restart")),
+    systemInfo: () => j("GET", API("/system/info")),
     gitStatus: () => j("GET", API("/git/status")),
     gitUpdate: (branch) => j("POST", API("/git/update"), branch ? { branch } : {}),
     gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),
