@@ -2957,6 +2957,18 @@ class FunPackLTXAVSceneChainSampler:
             from minimax_h3 import is_h3_model, stream_time_dims
         h3 = bool(is_h3_model(model))
         self._time_dims = tuple(stream_time_dims(4, h3))
+        if not h3:
+            # Teach the conditioning module this model's real video/audio text-context split
+            # instead of letting it guess from a static width table. From LTX 2.5 on the widths
+            # come out of the checkpoint, so an unseen pair would silently drop audio protection.
+            try:
+                from .conditioning import register_ltxav_split_from_model
+            except ImportError:
+                from conditioning import register_ltxav_split_from_model
+            try:
+                register_ltxav_split_from_model(model)
+            except Exception:
+                pass
         return h3
 
     def _tensor_frames(self, tensor, stream=0):
@@ -5966,12 +5978,28 @@ class FunPackLTXAVSceneChainSampler:
     def _vae_with_decode_noise(self, vae, timestep, scale, seed):
         """Return a shallow copy of the VAE stamped with LTX decode-time noise settings so its
         internal decoder restores fine detail/grain. Never mutates the shared input VAE. Mirrors
-        LTXV's 'Set VAE Decoder Noise', but owned by the Chain Sampler (it does the decode)."""
+        LTXV's 'Set VAE Decoder Noise', but owned by the Chain Sampler (it does the decode).
+
+        Only the conv decoder honours this. LTX 2.5's diffusion decoder (CausalDiffusionVAE)
+        takes no timestep and hard-codes its own generator seed, and because it is an nn.Module
+        the two assignments below would SUCCEED and then be ignored — a knob that reads as live
+        and does nothing. So the capability is tested first and reported when it is missing."""
+        fsm = getattr(vae, "first_stage_model", None)
+        # The consumer is VideoVAE.decode, which reads self.decode_timestep / decode_noise_scale.
+        # A decoder that never had the attribute is one that never reads it — this tests the
+        # actual contract rather than the class name, so it survives an upstream rename.
+        if fsm is not None and not hasattr(fsm, "decode_timestep"):
+            print(f"[FunPackSceneChain] decode_noise_scale={scale} / decode_timestep={timestep} "
+                  f"IGNORED: this VAE's decoder ({type(fsm).__name__}) does not take decode-time "
+                  f"noise — LTX 2.5's diffusion decoder generates its own detail from a fixed "
+                  f"internal seed. Decoding without it. Load the conv VAE "
+                  f"(ltx-2.5-video-vae-conv-*.safetensors) if you want this knob back.")
+            return vae
         try:
             result = copy.copy(vae)
         except Exception:
             return vae
-        if hasattr(result, "first_stage_model"):
+        if fsm is not None:
             try:
                 result.first_stage_model.decode_timestep = timestep
                 result.first_stage_model.decode_noise_scale = scale

@@ -386,19 +386,60 @@ FUNPACK_ABSOLUTE_KEY = "__funpack_absolute_global__"
 #   LTXv2  fully-processed context = caption_channels*2 = 7680           → video = 3840
 #   LTXv2.3 fully-processed context = cross_attn_dim + audio_cross_attn_dim = 4096+2048 = 6144 → video = 4096
 # Anything else (single-stream LTXV, unrecognised dim) returns the full width, so callers no-op.
+#
+# The table is only a FALLBACK. From LTX 2.5 on, comfy reads the two projection widths off the
+# text encoder's state dict (comfy/text_encoders/lt.py `sd_detect` -> video_projection_dim /
+# audio_projection_dim) instead of assuming them, so a checkpoint is free to ship a pair this
+# table has never seen. Guessing wrong here is silent and costly: an unrecognised width makes
+# ltxav_video_channels return the FULL width, every steering edit then moves the audio text
+# context too, and the only symptom is degraded audio. So whenever a live model is on hand we
+# read its real widths and register them — see register_ltxav_split_from_model below.
 _FUNPACK_AV_SPLIT_TABLE = {7680: 3840, 6144: 4096}
+_FUNPACK_AV_SPLIT_LEARNED = {}
 _FUNPACK_AV_LOGGED = set()
+
+
+def register_ltxav_split_from_model(model):
+    """Read the real video/audio text-context widths off a live LTX model and register the
+    resulting concat split, so ltxav_video_channels stops depending on the static table.
+
+    `cross_attention_dim` conditions video (self.attn2), `audio_cross_attention_dim` conditions
+    audio (self.audio_attn2), and the conditioning tensor is the two concatenated in that order
+    — the same split `_prepare_context` performs. Silent no-op for single-stream / non-LTX
+    models, which have no audio width to find."""
+    try:
+        dm = model.model.diffusion_model
+    except Exception:
+        return None
+    try:
+        v = int(getattr(dm, "cross_attention_dim", 0) or 0)
+        a = int(getattr(dm, "audio_cross_attention_dim", 0) or 0)
+    except Exception:
+        return None
+    if v <= 0 or a <= 0:
+        return None  # single-stream (video-only) LTXV: nothing to protect
+    total = v + a
+    if _FUNPACK_AV_SPLIT_LEARNED.get(total) == v:
+        return v
+    _FUNPACK_AV_SPLIT_LEARNED[total] = v
+    _FUNPACK_AV_LOGGED.discard(total)  # re-log, now that the split is measured rather than guessed
+    if _FUNPACK_AV_SPLIT_TABLE.get(total, total) != v:
+        print(f"[FunPack AV] model reports video={v} + audio={a} = {total}; this does NOT match "
+              f"the built-in table — using the model's own widths (the table would have "
+              f"{'split at ' + str(_FUNPACK_AV_SPLIT_TABLE[total]) if total in _FUNPACK_AV_SPLIT_TABLE else 'left audio unprotected'}).")
+    return v
 
 
 def ltxav_video_channels(dim):
     """Leading channel count that conditions VIDEO for an LTXAV concat-context of width `dim`.
     Returns `dim` (no audio half) for single-stream / unrecognised layouts."""
     dim = int(dim)
-    v = _FUNPACK_AV_SPLIT_TABLE.get(dim, dim)
+    v = _FUNPACK_AV_SPLIT_LEARNED.get(dim) or _FUNPACK_AV_SPLIT_TABLE.get(dim, dim)
     if dim not in _FUNPACK_AV_LOGGED:
         _FUNPACK_AV_LOGGED.add(dim)
         if v < dim:
-            print(f"[FunPack AV] conditioning dim={dim}: steering confined to video [:{v}], audio [{v}:] protected")
+            src = "measured off the model" if dim in _FUNPACK_AV_SPLIT_LEARNED else "known layout"
+            print(f"[FunPack AV] conditioning dim={dim} ({src}): steering confined to video [:{v}], audio [{v}:] protected")
         else:
             print(f"[FunPack AV] conditioning dim={dim}: single-stream (no audio half); steering applies to all channels")
     return v
