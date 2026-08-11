@@ -2863,7 +2863,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "second_pass_op": (["none", "sharpen", "upscale_2x"], {
                     "default": "none",
-                    "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor) — the scene report says so when it happens. Both use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official one on first use). Video stream only; audio is never reshaped.",
+                    "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor) — the scene report says so when it happens. MULTI-SCENE works with it: a scene finishes at 2x while every later scene is still built from the latent template at the original size, so everything that crosses a scene boundary (carried overlap frames, the anchor's continuation, the soft join, JoyAI memory, per-scene guide sources) is brought back to the template's grid on the way. Each scene still samples and OUTPUTS at 2x — only the carried material is resampled, and only downwards, which is the direction that survives it: those frames exist to say 'continue from here', which a resample preserves far better than invented detail would. Both ops use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official one on first use). Video stream only; audio is never reshaped.",
                 }),
                 "h3_audio_clock": ("BOOLEAN", {
                     "default": False,
@@ -3134,6 +3134,68 @@ class FunPackLTXAVSceneChainSampler:
                 break
             count += 1
         return count
+
+    def _match_template_resolution(self, latent, template):
+        """Resample a finished scene's VIDEO stream back onto `template`'s spatial grid.
+
+        This is what makes multi-scene work with a second pass. A resolution-changing
+        second_pass_op (upscale_2x) hands back a scene at twice the size, but every LATER
+        scene is still built from `latent_template` at the original size — so the carried
+        overlap frames, the anchor's continuation and the JoyAI memory frame no longer fit
+        the chunk they are spliced into, and the chain died on the shape mismatch. Bringing
+        the carried material back to the template's grid is the whole fix: each scene still
+        SAMPLES and OUTPUTS at the upscaled size, only what crosses a scene boundary is
+        brought back.
+
+        Downscaling is the right direction to lose information in: the carried frames exist
+        to say "continue from here", and that survives a resample far better than the detail
+        the second pass added would survive being invented at the wrong scale.
+
+        Audio has no spatial axes and is never touched. Returns the input object unchanged
+        when the grids already agree, so any run without a resolution-changing op is
+        bit-identical.
+        """
+        try:
+            tensors = self._latent_tensors(latent)
+            video = tensors[0]
+            th, tw = self._latent_tensors(template)[0].shape[-2:]
+        except Exception:
+            return latent
+        if video.shape[-2:] == (th, tw):
+            return latent
+        try:
+            try:
+                from .detailing import _downscale_to
+            except ImportError:
+                from detailing import _downscale_to
+            if video.shape[-2] >= th and video.shape[-1] >= tw:
+                resized = _downscale_to(video, int(th), int(tw))
+            else:
+                # Not reachable from any current op (upscale_2x only grows), but a scene
+                # SMALLER than the template would corrupt the splice just as surely, so
+                # handle it rather than pass a wrong shape through. Antialiasing is a
+                # downscale-only concept, hence the separate call.
+                b, c, f, _h, _w = video.shape
+                resized = torch.nn.functional.interpolate(
+                    video.permute(0, 2, 1, 3, 4).reshape(b * f, c, _h, _w),
+                    size=(int(th), int(tw)), mode="bicubic", align_corners=False,
+                ).reshape(b, f, c, int(th), int(tw)).permute(0, 2, 1, 3, 4)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[FunPackSceneChain] could not bring the previous scene back to the "
+                  f"template's {th}x{tw} grid ({type(exc).__name__}: {exc}) — this scene's "
+                  f"continuity (carried frames / anchor overlap / JoyAI memory) will fail.")
+            return latent
+        result = self._clone_latent(latent)
+        out = self._latent_tensors(result)
+        out[0] = resized.to(device=video.device, dtype=video.dtype)
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(out)
+        else:
+            result["samples"] = out[0]
+        # A mask describes the OLD grid; the caller rebuilds one for the chunk it is
+        # splicing into, and a stale one here would be applied at the wrong scale.
+        result.pop("noise_mask", None)
+        return result
 
     def _build_continuation_chunk(self, template, previous, video_overlap):
         chunk = self._clone_latent(template)
@@ -6438,6 +6500,17 @@ class FunPackLTXAVSceneChainSampler:
             identity_ref_filename = None
             run_mechanisms: list = []
             anchor_meta = (scene_anchors or {}).get(str(scene_index))
+            # Everything that crosses a scene boundary (carried overlap, the anchor's
+            # continuation, the soft join) comes off the finished chain, which a
+            # resolution-changing second_pass_op leaves on a different grid than the
+            # template this scene is built from. Bring it back once, here, rather than at
+            # each splice — identical object when no op resized anything.
+            _carry_source = output if output is None else self._match_template_resolution(
+                output, latent_template)
+            if _carry_source is not output:
+                run_mechanisms.append(
+                    "second_pass_op resized the previous scene — its carried frames were "
+                    "brought back to the template grid for this scene's continuity")
             if output is None:
                 chunk = self._clone_latent(latent_template)
                 custom_guides = None
@@ -6463,7 +6536,7 @@ class FunPackLTXAVSceneChainSampler:
                     "effect": effect if effect and transition_duration > 0 else None,
                 })
                 chunk = self._build_mixed_anchor_chunk(
-                    vae, anchor_meta, latent_template, output, video_overlap,
+                    vae, anchor_meta, latent_template, _carry_source, video_overlap,
                     carry_overlap=carry_overlap_through_anchor,
                 )
                 if carry_overlap_through_anchor and video_overlap > 0:
@@ -6488,9 +6561,9 @@ class FunPackLTXAVSceneChainSampler:
                     "pixel_frame": max(0, boundary_pixel),
                     "effect": effect if effect and transition_duration > 0 else None,
                 })
-                chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
+                chunk = self._build_continuation_chunk(latent_template, _carry_source, video_overlap)
                 if video_overlap == 0:
-                    chunk, soft_carried = self._prepend_soft_continuation(chunk, output)
+                    chunk, soft_carried = self._prepend_soft_continuation(chunk, _carry_source)
                     if soft_carried > 0:
                         run_mechanisms.append(f"soft_continuation({soft_carried})")
                 elif video_overlap > 0:
@@ -6998,16 +7071,26 @@ class FunPackLTXAVSceneChainSampler:
                 # Harvest from the clean, fully-cropped scene so injected memory tails never re-enter
                 # the bank. Scene 0 seeds the pinned anchor (num_fix); later scenes roll in. The audio
                 # half is harvested only when audio memory is on, else stored as None (video-only).
-                v_frame = self._harvest_joyai_frame(sampled, joyai_frame_select)
-                a_frame = self._harvest_joyai_audio(sampled, joyai_frame_select) if joyai_audio_memory else None
+                # The bank is injected into LATER scenes, which are built from the template,
+                # so a scene left upscaled by second_pass_op must be brought back first —
+                # otherwise the memory frame is the one thing in the chunk on the wrong grid.
+                _joyai_src = self._match_template_resolution(sampled, latent_template)
+                v_frame = self._harvest_joyai_frame(_joyai_src, joyai_frame_select)
+                a_frame = self._harvest_joyai_audio(_joyai_src, joyai_frame_select) if joyai_audio_memory else None
                 joyai_bank.add(v_frame, a_frame)
-            scene_outputs.append(self._clone_latent(sampled))
+            # Kept on the TEMPLATE's grid: this list exists to be spliced back in as guide
+            # frames for later scenes, and those chunks are built from the template.
+            scene_outputs.append(self._clone_latent(
+                self._match_template_resolution(sampled, latent_template)))
             # Stays 0 for anchor scenes even with carry_overlap_through_anchor on: the post-sample
             # slerp blend would reach into the anchor image's own leading frame (position 0 of
             # `sampled`) and fade it against the previous scene's tail, undermining the hard cut.
             # The carried frames beyond it are already seeded pre-sample (see
             # _build_mixed_anchor_chunk), so no post-hoc smoothing is needed there.
             blend_overlap = 0 if anchor_meta else video_overlap
+            # No grid guard here on purpose: second_pass and second_pass_op are run-level
+            # settings applied to every scene, so the chain cannot end up holding two
+            # resolutions. Every scene is upscaled or none is.
             output = sampled if output is None else self._blend_latents(output, sampled, blend_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             scene_meta = self._scene_meta(scene_cond, scene_index)

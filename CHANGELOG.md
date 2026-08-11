@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Multi-scene chains work with a second pass again.** `second_pass_op="upscale_2x"` hands
+  back a scene at twice the latent size, but every later scene is still built from the latent
+  template at the original size — so the carried overlap frames, the anchor's continuation,
+  the soft join, the JoyAI memory frame and per-scene guide sources were all being spliced
+  into a chunk on a different grid, and the second scene died on the shape mismatch. Anything
+  crossing a scene boundary is now brought back to the template's grid on the way. Each scene
+  still samples and outputs at 2x; only the carried material is resampled, and only downwards
+  — the direction that survives it, since those frames exist to say "continue from here"
+  rather than to carry detail. Runs with no resolution-changing op are bit-identical.
+- The About panel reads **FunPack 3 "Auspicious Asparagus"** rather than putting the major
+  on the codename line.
+
+
 ## [3.5.1] "Auspicious Asparagus" - 2026-08-11
 
 FunPack picks up release codenames, Ubuntu-style: an adjective and a vegetable sharing an
