@@ -91,6 +91,13 @@ _PAGE = """<!DOCTYPE html>
   .btn.ghost { background: transparent; color: var(--muted); }
   .btn.ghost:hover:not(:disabled) { color: var(--accent-hi); background: var(--ink-3); }
   .update-hint { color: var(--faint); font-size: 12px; }
+  .branch-select {
+    background: var(--ink-2); border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px;
+    font-size: 13px; color: var(--text); font-family: "IBM Plex Mono", ui-monospace, monospace;
+    cursor: pointer; max-width: 220px;
+  }
+  .branch-select:hover:not(:disabled) { border-color: var(--accent); }
+  .branch-select:disabled { opacity: .45; cursor: default; }
 
   .cards { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
   a.card {
@@ -183,6 +190,24 @@ _PAGE = """<!DOCTYPE html>
     updateBtn.onclick = doUpdate;
     updateEl.appendChild(updateBtn);
 
+    // A <select> rather than a button: /git/status already carries the branch list,
+    // so the choice and the current branch fit in one control instead of two.
+    const branches = git.branches || [];
+    if (branches.length) {
+      const sel = document.createElement("select");
+      sel.className = "branch-select";
+      sel.title = "Switch the FunPack branch and restart ComfyUI";
+      sel.disabled = !!git.dirty;
+      branches.forEach((b) => {
+        const o = document.createElement("option");
+        o.value = b; o.textContent = b === git.branch ? b + "  (current)" : b;
+        if (b === git.branch) o.selected = true;
+        sel.appendChild(o);
+      });
+      sel.onchange = () => doSwitch(sel, git.branch);
+      updateEl.appendChild(sel);
+    }
+
     const restartBtn = document.createElement("button");
     restartBtn.className = "btn ghost";
     restartBtn.textContent = "⟳ Restart ComfyUI";
@@ -236,6 +261,28 @@ _PAGE = """<!DOCTYPE html>
     } catch (e) {
       document.querySelector(".restart-overlay")?.remove();
       alert("Update failed: " + e.message);
+      return;
+    }
+    waitForReload(msg, Date.now());
+  }
+
+  async function doSwitch(sel, current) {
+    const branch = sel.value;
+    if (branch === current) return;
+    if (!confirm(`Switch to "${branch}", pull from origin, and restart ComfyUI?\n\nAny running generation will be lost.`)) {
+      sel.value = current;
+      return;
+    }
+    const msg = showOverlay(`Switching to ${branch}…\nComfyUI will restart when ready.`);
+    try {
+      const res = await j("POST", API("/git/checkout"), { branch });
+      msg.textContent = res.updated
+        ? `Switched to ${branch} (${res.before} → ${res.after}).\nRestarting ComfyUI…`
+        : `On ${branch}, already up to date.\nRestarting ComfyUI…`;
+    } catch (e) {
+      document.querySelector(".restart-overlay")?.remove();
+      sel.value = current;
+      alert("Branch switch failed: " + e.message);
       return;
     }
     waitForReload(msg, Date.now());

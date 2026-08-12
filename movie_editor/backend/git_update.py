@@ -97,14 +97,24 @@ def _unique_local_commits(branch: str) -> list[str]:
     return [ln[2:].strip() for ln in (proc.stdout or "").splitlines() if ln.startswith("+")]
 
 
+def _remote_names() -> set[str]:
+    proc = _run_git("remote")
+    if proc.returncode != 0:
+        return set()
+    return {ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()}
+
+
 def _list_branches() -> list[str]:
     proc = _run_git("branch", "-a", "--format=%(refname:short)")
     if proc.returncode != 0:
         raise GitUpdateError((proc.stderr or "git branch failed").strip())
+    # refs/remotes/origin/HEAD shortens to a bare "origin", which is not a branch and
+    # fails on checkout — drop anything that is just a remote's name.
+    remotes = _remote_names()
     names: set[str] = set()
     for raw in (proc.stdout or "").splitlines():
         line = raw.strip()
-        if not line or line == "HEAD" or line.endswith("/HEAD"):
+        if not line or line == "HEAD" or line.endswith("/HEAD") or line in remotes:
             continue
         if line.startswith("origin/"):
             names.add(line[7:])

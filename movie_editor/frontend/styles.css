@@ -2115,3 +2115,20 @@ body.tour-mode { overflow: hidden; }
 /* The film grain is a dark-theme effect: `overlay` blending over a light surface
    reads as dirt, not as film stock. */
 :root[data-theme="light"] .grain { opacity: .015; mix-blend-mode: multiply; }
+
+/* ── maintenance row (Update / Switch branch / Restart) ───────────────────
+   On every splash screen, because these are the actions you need BEFORE
+   opening a project. */
+.maint-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.maint-row.welcome-maint { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.maint-btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left;
+  padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line);
+  background: transparent; color: var(--text); cursor: pointer; opacity: .88;
+  transition: border-color .12s, background .12s, opacity .12s;
+}
+.maint-btn:hover { opacity: 1; border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--ink-2); }
+.maint-btn.disabled { opacity: .4; pointer-events: none; }
+.maint-btn-label { font-weight: 600; font-size: 13px; }
+.maint-btn-hint { font-size: 11px; color: var(--faint); line-height: 1.35; }
+@media (max-width: 620px) { .maint-row { grid-template-columns: 1fr; } }

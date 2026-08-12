@@ -97,32 +97,9 @@
     );
     card.append(actions);
 
-    // Maintenance: switch branch / update FunPack without first loading a project, so a
-    // branch swap doesn't mean racing the welcome screen or opening a montage you don't want.
-    const maint = el("div", "welcome-actions welcome-maint");
-    const switchBtn = mkBtn("Switch Branch", "ghost", "Pick a git branch and restart", false,
-      () => window.FunPackGit.switchBranch());
-    const updateBtn = mkBtn("Update FunPack", "ghost", "Pull latest and restart", false,
-      () => window.FunPackGit.update());
-    maint.append(switchBtn, updateBtn);
-    card.append(maint);
-
-    // Enrich the hints with live git state once it loads (current branch / N commits behind).
-    window.FunPackGit.refresh().then((gs) => {
-      if (!overlay) return;
-      const hint = (b) => b.querySelector(".welcome-btn-hint");
-      if (gs?.ok) {
-        hint(switchBtn).textContent = gs.dirty
-          ? `On ${gs.branch} · local changes — commit first`
-          : `On ${gs.branch} · pick another`;
-        hint(updateBtn).textContent = gs.dirty
-          ? "Local changes — commit first"
-          : (gs.behind > 0 ? `${gs.behind} commit(s) behind origin/${gs.branch}` : `origin/${gs.branch} up to date`);
-      } else {
-        hint(switchBtn).textContent = "Git unavailable for this install";
-        hint(updateBtn).textContent = "Git unavailable for this install";
-      }
-    });
+    // Update / Switch branch / Restart, reachable without first loading a project — a
+    // branch swap shouldn't mean opening a montage you didn't want just to reach the menu.
+    card.append(window.FunPackGit.maintenanceRow("welcome-maint"));
 
     overlay.append(card);
     document.body.append(overlay);

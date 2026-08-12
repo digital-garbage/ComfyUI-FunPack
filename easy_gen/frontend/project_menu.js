@@ -69,6 +69,11 @@
     );
     content.append(actions);
 
+    // Same three maintenance actions as the Editor's splash — an Easy Gen user on a
+    // rental had no way to switch branch or restart without opening the other UI.
+    content.append(el("div", "sw-rows-label", "Maintenance"));
+    content.append(window.FunPackGit.maintenanceRow());
+
     content.append(el("div", "sw-rows-label", "Recent"));
     const recentWrap = el("div", "sw-rows");
     content.append(recentWrap);
