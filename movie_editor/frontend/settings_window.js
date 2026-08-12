@@ -84,9 +84,14 @@
   }
 
   function close() {
+    const wasOpen = !!overlay;
     teardownSection();
     if (overlay) overlay.remove();
     overlay = null; activeId = null;
+    // One save for the whole session, on the way out, with the values that are on screen.
+    // Nothing in here is worth a network round-trip per keystroke, and a save landing
+    // mid-edit used to come back and overwrite the knob still under the cursor.
+    if (wasOpen) window.Store?.resumeSave?.();
   }
 
   function open(id) {
@@ -95,6 +100,9 @@
     if (overlay && !overlay.isConnected) { close(); }
     if (overlay) { show(id || activeId); return; }
     query = "";
+    // Held until close() — see the note there. Paired strictly with the overlay's
+    // lifetime, and only on the branch that actually creates one.
+    window.Store?.suspendSave?.();
 
     overlay = el("div", "modal-overlay sw-overlay");
     const win = el("div", "settings-win");

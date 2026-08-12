@@ -33,6 +33,13 @@
     window.FunPackRestart?.waitForReload?.(msgEl, startMs);
   }
 
+  // All three actions below end in a server restart and a page reload, so anything the
+  // store is still holding — a debounced field, or a whole settings session waiting on its
+  // close — has to reach disk first. flushSave() ignores the suspension for exactly this.
+  async function _flushPendingEdits() {
+    try { await window.Store?.flushSave?.(); } catch (_) {}
+  }
+
   async function update() {
     const gs = await _ensureStatus();
     if (!gs) return;
@@ -43,6 +50,7 @@
     const branch = gs.branch || "dev";
     const behind = gs.behind > 0 ? `\n\n${gs.behind} commit(s) available on origin/${branch}.` : "";
     if (!confirm(`Pull latest "${branch}" from origin and restart ComfyUI?\n\nAny running generation will be lost.${behind}`)) return;
+    await _flushPendingEdits();
     const msg = _restartOverlay(`Pulling origin/${branch}…\nComfyUI will restart when the pull finishes.`);
     try {
       const res = await API().gitUpdate(branch);
@@ -74,6 +82,7 @@
       onPick: async (branch) => {
         if (branch === cur) return;
         if (!confirm(`Switch to "${branch}", pull from origin, and restart ComfyUI?\n\nAny running generation will be lost.`)) return;
+        await _flushPendingEdits();
         const msg = _restartOverlay(`Switching to ${branch}…\nComfyUI will restart when ready.`);
         try {
           const res = await API().gitCheckout(branch);
@@ -95,6 +104,7 @@
       "Restart ComfyUI now?\n\nThe server will be down for ~10-40s and any running generation "
       + "will be lost. This page reloads automatically when it's back."
     )) return;
+    await _flushPendingEdits();
     const msg = _restartOverlay("Restarting ComfyUI…\nThis page will reload when it's back.");
     if (!msg) return;
     try { await API().restart(); } catch (_) { /* the connection drops as it execv's */ }

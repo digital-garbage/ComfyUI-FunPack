@@ -160,6 +160,16 @@
   let _selectionAnchorId = null;  // shift-click range anchor
   let _modelsSaveTimer = null;    // debounce exposed-control (node input) saves
   let _modelsSaveDirty = false;
+  // Autosave suspension, held while a settings surface is open (see suspendSave). Every
+  // knob in there writes through the store, so a debounce that fires mid-session sends a
+  // half-edited value AND comes back with a server copy that replaces state.project — the
+  // race behind "I set 0.5 and it went back to 1.0". Counted, not a flag: sections nest.
+  let _saveSuspended = 0;
+  // In-flight reload of state.models (fired by funpack-models-changed). commit() copies
+  // state.models into project.models, so committing while this is pending would write the
+  // PRE-edit node list — the same stale-copy problem the sync exists to prevent, just from
+  // the other side. Closing Settings commits immediately, so the window is real.
+  let _modelsLoad = null;
 
   function notify() { listeners.forEach((fn) => { try { fn(state); } catch (e) { console.error(e); } }); }
   function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -185,6 +195,7 @@
 
   function scheduleSaveFromHistory() {
     _localDirty = true;
+    if (_saveSuspended) { _notifySaveChip(); return; }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { saveTimer = null; commit(); }, SAVE_DEBOUNCE_MS);
     _notifySaveChip();
@@ -903,6 +914,7 @@
   // edits something visible, or when prompt preview actually needs refreshing.
   function scheduleSave() {
     _localDirty = true;
+    if (_saveSuspended) { _notifySaveChip(); return; }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { saveTimer = null; commit(); }, SAVE_DEBOUNCE_MS);
     _notifySaveChip();
@@ -911,9 +923,30 @@
   // For free-text / number fields: queue a save without re-rendering; blur/generate flush.
   function scheduleSaveSilent() {
     _localDirty = true;
+    if (_saveSuspended) { _notifySaveChip(); return; }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { saveTimer = null; commit(); }, SAVE_SILENT_DEBOUNCE_MS);
     _notifySaveChip();
+  }
+
+  // Hold every scheduled save until the matching resumeSave(). Edits still land in local
+  // state and still mark the project unsaved — only the network write waits, so a pane full
+  // of knobs saves once, on close, with the values that are actually on screen.
+  //
+  // An EXPLICIT flush still goes through: Generate, and anything else calling flushSave(),
+  // must not be able to build a graph from a project the server hasn't seen.
+  function suspendSave() {
+    _saveSuspended++;
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+
+  // Balanced with suspendSave(). Returns the commit promise if this released the last hold
+  // and there was something to write, else null.
+  function resumeSave() {
+    if (_saveSuspended > 0) _saveSuspended--;
+    if (_saveSuspended > 0) return null;
+    return flushSave();
   }
 
   // Commit any pending save immediately (field blur / before generate). Returns the
@@ -930,6 +963,7 @@
     if (_commitPromise) { _commitQueued = true; return _commitPromise; }
     const skipPreviewRefresh = !!opts.skipPreviewRefresh;
     _commitPromise = (async () => {
+      if (_modelsLoad) { try { await _modelsLoad; } catch (_) {} }
       // Sync BEFORE snapshotting: the snapshot is what gets uploaded, and a snapshot taken
       // first carries the models config (and renders/ghosts) from the PREVIOUS sync — every
       // autosave then silently reverted exposed-control edits (bypass/input/link changes
@@ -3988,7 +4022,12 @@
 
   // ── pluggable models / exposed controls ──────────────────────────────────────
   async function loadModels() {
-    try { state.models = await API.getModels(state.project?.id); } catch (_) { state.models = { slots: [] }; }
+    const p = (async () => {
+      try { state.models = await API.getModels(state.project?.id); } catch (_) { state.models = { slots: [] }; }
+    })();
+    _modelsLoad = p;
+    await p;
+    if (_modelsLoad === p) _modelsLoad = null;
     if (state.project) {
       state.project.models = JSON.parse(JSON.stringify(state.models || { slots: [] }));
     }
@@ -4017,8 +4056,14 @@
   async function flushModelsSave() {
     if (!_modelsSaveTimer && !_modelsSaveDirty) return;
     clearTimeout(_modelsSaveTimer); _modelsSaveTimer = null; _modelsSaveDirty = false;
-    try { state.models = await API.saveModels(state.project?.id, state.models); notify(); }
-    catch (e) { console.error("saveModels failed", e); }
+    try {
+      const saved = await API.saveModels(state.project?.id, state.models);
+      // Same guard commit() has: an edit made while this write was in flight is NEWER than
+      // the copy the server just echoed back, and adopting the echo would roll it back —
+      // then send the rolled-back value on the next save. Keep local; the queued save wins.
+      if (!_modelsSaveDirty) state.models = saved;
+      notify();
+    } catch (e) { console.error("saveModels failed", e); }
   }
 
   // Edit a configured node input from the main editor (an "exposed" control) and persist.
@@ -4310,11 +4355,18 @@
     if (window.WelcomePage) window.WelcomePage.open();
   }
 
+  // Backstop for a suspended save the user walks away from: leaving the tab is the last
+  // moment we reliably get. Safe to do unconditionally — nobody is mid-edit in a tab that
+  // just went to the background, which is the only thing suspension exists to protect.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") { try { flushSave(); } catch (_) {} }
+  });
+
   window.Store = {
     get, set, subscribe, notify, init,
     scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, removeFromPlan, restoreToPlan, dismissGhost, moveScene, moveSceneTo, moveTimelineClip, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, suspendSave, resumeSave, selectScene, addScene, removeScene, removeSelectedScenes, removeFromPlan, restoreToPlan, dismissGhost, moveScene, moveSceneTo, moveTimelineClip, scene,
     addVideoClip, addImageClip, convertToVideo, convertToScene, isVideoClip, isGenerativeScene,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
