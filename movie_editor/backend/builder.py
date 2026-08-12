@@ -116,6 +116,9 @@ CORE_PRODUCERS: list[tuple[str, int, str]] = [  # (core_id, output_index, type)
 #     concat and the latent slot feeds the sampler directly.
 #   * LTXVAudioVAEDecode reads `audio_vae.first_stage_model.output_sample_rate`, which
 #     H3's audio VAE does not define — it would raise. Core's VAEDecodeAudio is generic.
+#   * LTXFloatToInt only exists to offer an INT copy of the project's frame rate to user
+#     slots. H3's frame rate is fixed at 24 by the model, so there is nothing to convert —
+#     and keeping it made an LTX node pack a hard requirement of a non-LTX pipeline.
 #
 # Anything not listed here is shared, so a fix to the core graph reaches both families.
 DEFAULT_FAMILY = "ltxav"
@@ -124,7 +127,7 @@ FAMILIES: dict[str, dict] = {
     "ltxav": {"label": "LTX-2 / LTXAV"},
     "minimax_h3": {
         "label": "MiniMax H3 (Hailuo)",
-        "drop": ("cond", "concat"),
+        "drop": ("cond", "concat", "f2i"),
         "core": {"audiodec": "VAEDecodeAudio"},
         "links": {
             # positive/negative come straight from Studio, with no LTXVConditioning between
@@ -976,7 +979,11 @@ def _resolve_target(target: str, port_to_core, slot_node_id) -> Optional[tuple[s
 def _producers(graph, slots, slot_node_id, slot_def, object_info):
     """type -> list of (node_id, output_index). Slots + core producers."""
     out: dict[str, list] = {}
+    # Only what this family's core actually built — offering a producer the graph dropped
+    # would auto-wire a slot to a node that is not there.
     for cid, oidx, t in CORE_PRODUCERS:
+        if cid not in graph:
+            continue
         out.setdefault(t, []).append((cid, oidx))
     for s in slots:
         nd = slot_def[s["id"]]

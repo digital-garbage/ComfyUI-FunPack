@@ -345,7 +345,7 @@
           splits: {
             title: "Prompt splits",
             sub: "Markers that cut one written prompt into separate scenes.",
-            open: () => window.Composer?.open?.(),
+            open: () => { if (!window.Composer?.isOpen?.()) window.Composer?.toggle?.(); },
           },
         };
         const list = el("div", "oo-rows");
@@ -359,7 +359,10 @@
           row.append(main);
           const b = el("button", "oo-btn oo-btn-small", "Set up");
           b.type = "button";
-          b.onclick = () => { save(); close(); r.open(); };
+          // The pane opens OVER the wizard; closing it puts you back on this step with
+          // Skip/Continue still there. Closing the wizard here dropped you into the
+          // editor half-set-up.
+          b.onclick = () => { save(); r.open(); };
           row.append(b);
           list.append(row);
         });

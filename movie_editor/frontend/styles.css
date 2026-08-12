@@ -293,6 +293,9 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 .brand { font-family: var(--font-display); font-weight: 800; letter-spacing: .2px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
 .brand-mark { color: var(--accent); font-size: 12px; transform: translateY(-1px); filter: drop-shadow(0 0 6px var(--accent-soft)); }
 .brand-sub { color: var(--faint); font-weight: 500; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; }
+/* The brand is a link back to the hub in both frontends. */
+a.brand { text-decoration: none; color: inherit; }
+a.brand:hover .brand-sub { color: var(--accent-hi); }
 
 .menus { display: flex; gap: 2px; }
 .menu { position: relative; }
@@ -2153,7 +2156,11 @@ body.tour-mode { overflow: hidden; }
 }
 
 .oo-root {
-  position: fixed; inset: 0; z-index: 800;
+  /* Below .modal-overlay (500) and .fw (4000) on purpose: Models, Settings and the
+     Composer open OVER the wizard the same way they open over the editor, and closing
+     one puts you back on the step you left. Above the menubar (200/300) so the editor
+     chrome behind stays covered. */
+  position: fixed; inset: 0; z-index: 400;
   display: flex; align-items: center; justify-content: center;
   padding: 72px 32px;
   background:

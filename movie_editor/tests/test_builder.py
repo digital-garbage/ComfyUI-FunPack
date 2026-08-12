@@ -493,9 +493,27 @@ def test_h3_family_drops_the_ltx_only_core_nodes():
     # LTXVAudioVAEDecode reads an output_sample_rate H3's audio VAE does not define
     assert "LTXVAudioVAEDecode" not in classes
     assert "VAEDecodeAudio" in classes
+    # LTXFloatToInt only converted the project's frame rate for user slots. H3's rate is
+    # fixed at 24 by the model, so keeping it made an LTX pack a hard requirement of a
+    # pipeline that has no use for it.
+    assert "LTXFloatToInt" not in classes
     # the shared half is untouched
     assert {"FunPackStudio", "FunPackLTXAVSceneChainSampler", "LTXVSeparateAVLatent"} <= classes
     assert not report["blocking"], report["blocking"]
+
+
+def test_h3_does_not_offer_the_dropped_frame_rate_converter_as_a_producer():
+    """A dropped core node must not be auto-wired into a slot that wants an INT."""
+    models = dict(H3_MODELS)
+    models["slots"] = H3_MODELS["slots"] + [
+        {"id": "ip", "role": "image_processing", "node_class": "IntEater", "label": "eats an int"},
+    ]
+    oi = dict(H3_OI)
+    oi["IntEater"] = {"input": {"required": {"n": ["INT", {"default": 0}]}}, "output": ["IMAGE"]}
+    graph, _report = builder.build(oi, models, {"prompt": "a shot"})
+    for node in graph.values():
+        for value in node["inputs"].values():
+            assert not (isinstance(value, list) and value and value[0] == "f2i"), value
 
 
 def test_h3_wires_studio_conditioning_straight_to_the_sampler():
