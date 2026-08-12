@@ -34,12 +34,9 @@
       meta.append(el("div", "theme-card-title", title));
       meta.append(el("div", "theme-card-hint", hint));
       c.append(meta);
-      // Hovering paints the whole app in that theme; leaving puts back whatever is
-      // actually chosen, so the preview can never strand you in an unpicked theme.
-      c.onmouseenter = () => T.preview(key);
-      c.onmouseleave = () => T.preview(T.get());
-      c.onfocus = () => T.preview(key);
-      c.onblur = () => T.preview(T.get());
+      // Click only — no hover preview. Repainting the whole app on a mouse-over made the
+      // theme feel like it was changing on its own, and left the picker guessing which
+      // choice was the real one.
       c.onclick = () => { T.apply(key); paint(key); onPick && onPick(key); };
       cards[key] = c;
       grid.append(c);

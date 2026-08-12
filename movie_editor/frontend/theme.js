@@ -31,6 +31,9 @@
     return choice === "auto" ? (systemIsLight() ? "light" : "dark") : choice;
   }
 
+  // data-theme is what the stylesheet reads; data-theme-pref is the choice behind it
+  // ("auto" resolves to one of the other two). The theme changes on an explicit click
+  // and nothing else, so these two always move together.
   function stamp(choice) {
     const resolved = resolve(choice);
     document.documentElement.setAttribute("data-theme", resolved);
@@ -70,12 +73,6 @@
     return res;
   }
 
-  // Preview without committing — the wizard's theme step paints the whole screen
-  // as you hover a card, and must be able to put it back if you pick another.
-  function preview(choice) {
-    return apply(choice, { persist: false });
-  }
-
   function onChange(fn) {
     listeners.add(fn);
     return () => listeners.delete(fn);
@@ -83,5 +80,5 @@
 
   apply(stored(), { persist: false });
 
-  window.FunPackTheme = { get, resolved, apply, preview, onChange, CHOICES };
+  window.FunPackTheme = { get, resolved, apply, onChange, CHOICES };
 })();
