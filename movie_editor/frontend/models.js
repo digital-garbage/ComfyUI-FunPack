@@ -257,12 +257,61 @@
     if (refreshExposedChoices()) { try { await persist(); } catch (_) {} }
   }
 
-  async function persist() {
+  async function persistNow() {
     // Keep the SAME `config` object — every wire/widget handler closes over it, so
     // reassigning it to the server's returned object detaches those closures and the
     // next edit wouldn't persist until the node is re-rendered. Save in place instead.
     try { await API.saveModels(window.Store?.get().project?.id, config); window.dispatchEvent(new Event("funpack-models-changed")); }
     catch (e) { console.error(e); }
+  }
+
+  // ── deferred saving while a node is open ─────────────────────────────────────
+  // Editing a node used to save on every change. A save fired between two keystrokes
+  // stores what was on screen at that instant — start on 1.0, type 0.5, and the value
+  // that reaches disk can be 0.58. Nothing about that is recoverable, because the
+  // half-typed number is now the saved number.
+  //
+  // So the node editor buffers instead: `config` is still mutated in place (wiring edits
+  // legitimately touch OTHER slots' wires, so a single-slot draft could not hold them),
+  // but persist() is a no-op until Save. Cancel restores the snapshot taken on open.
+  let deferSave = false;
+  let deferDirty = false;
+  let baseline = null;      // config as it was when the node page opened
+  let footerEls = null;     // {save, hint} — updated without a re-render while typing
+
+  async function persist() {
+    if (deferSave) { deferDirty = true; paintFooter(); return; }
+    return persistNow();
+  }
+
+  function beginEdit() {
+    baseline = JSON.parse(JSON.stringify(config));
+    deferSave = true;
+    deferDirty = false;
+  }
+
+  function endEdit() {
+    deferSave = false;
+    deferDirty = false;
+    baseline = null;
+    footerEls = null;
+  }
+
+  function restoreBaseline() {
+    if (!baseline) return;
+    // In place, for the same reason persistNow() saves in place: the open page's
+    // handlers all close over this object.
+    Object.keys(config).forEach((k) => delete config[k]);
+    Object.assign(config, JSON.parse(JSON.stringify(baseline)));
+  }
+
+  function paintFooter() {
+    if (!footerEls) return;
+    footerEls.save.classList.toggle("disabled", !deferDirty);
+    footerEls.save.disabled = !deferDirty;
+    footerEls.hint.textContent = deferDirty
+      ? "Unsaved changes — nothing is written until you press Save."
+      : "No changes yet.";
   }
 
   // ── "expose to main editor" (eye toggle) ─────────────────────────────────────
@@ -454,6 +503,10 @@
     else if (warns) card.classList.add("slot-warn");
 
     const head = el("div", "slot-head node-page-head");
+    const back = el("button", "ic-btn node-back", "‹");
+    back.title = "Back to the pipeline";
+    back.onclick = () => setView("pipeline");
+    head.append(back);
     const roleSpan = el("span", "slot-role", slotDisplayLabel(slot));
     head.append(roleSpan);
     const ren = el("button", "ic-btn", "✎"); ren.title = "Rename node label";
@@ -476,8 +529,12 @@
     rm.onclick = async (e) => {
       e.stopPropagation();
       if (!confirm(`Remove "${slotDisplayLabel(slot)}" (${slotName(slot)}) from the pipeline?`)) return;
+      // Removal is its own confirmed decision, not part of the edit buffer — and there
+      // would be nothing left to press Save on.
       config.slots = config.slots.filter((s) => s.id !== slot.id);
-      await persist(); setView("pipeline");
+      deferSave = false;
+      await persistNow();
+      _setView("pipeline");
     };
     acts.append(rm);
     head.append(acts);
@@ -576,7 +633,39 @@
       card.append(wbox);
     }
 
+    card.append(editFooter());
     return card;
+  }
+
+  // Nothing on the node page is written until Save. See the deferSave block above for why.
+  function editFooter() {
+    const foot = el("div", "node-foot");
+    const hint = el("div", "node-foot-hint");
+    const acts = el("div", "node-foot-acts");
+
+    const cancel = el("button", "btn ghost", "Cancel");
+    cancel.type = "button";
+    cancel.onclick = () => {
+      if (deferDirty && !confirm("Discard the changes to this node?")) return;
+      restoreBaseline();
+      _setView("pipeline");
+    };
+
+    const save = el("button", "btn primary", "Save");
+    save.type = "button";
+    save.onclick = async () => {
+      save.disabled = true;
+      deferSave = false;
+      await persistNow();
+      endEdit();
+      _setView("pipeline");
+    };
+
+    acts.append(cancel, save);
+    foot.append(hint, acts);
+    footerEls = { save, hint };
+    paintFooter();
+    return foot;
   }
 
   const _KIND2T = { int: "INT", float: "FLOAT", string: "STRING", boolean: "BOOLEAN" };
@@ -1460,7 +1549,24 @@
 
   // ── shell: inner sidebar (Links · Pipeline · + New node · nodes) + content pane ──
   let view = "pipeline"; // "pipeline" | "links" | "node:<slotId>"
-  function setView(v) { view = v; render(); }
+
+  // Internal: no unsaved-changes check. Used by Cancel/Save, which have already dealt
+  // with the buffer, and by paths that removed the node they were editing.
+  function _setView(v) {
+    if (view.startsWith("node:")) endEdit();
+    view = v;
+    if (view.startsWith("node:")) beginEdit();
+    render();
+  }
+
+  function setView(v) {
+    if (v === view) return;
+    if (deferDirty && !confirm(
+      "This node has unsaved changes.\n\nLeaving now discards them. Continue?"
+    )) return;
+    if (deferDirty) restoreBaseline();
+    _setView(v);
+  }
 
   const mnItem = (opts) => window.SettingsWindow.navItem(opts);
 
@@ -1479,28 +1585,59 @@
       active: view === "pipeline", onClick: () => setView("pipeline"),
     }));
 
-    side.append(el("div", "mn-sep"));
-
-    const add = el("button", "mn-new", "＋ New node");
-    add.onclick = (e) => openRoleMenu(e.currentTarget);
-    side.append(add);
-
-    config.slots.forEach((slot) => {
-      const issues = v.perSlot[slot.id] || [];
-      const errs = issues.some((i) => i.level === "error");
-      const warns = issues.some((i) => i.level === "warn");
-      const it = mnItem({
-        dot: errs ? "bad" : (warns || slot.bypassed ? "warn" : "ok"),
-        label: slotDisplayLabel(slot), sub: slotName(slot),
-        active: view === "node:" + slot.id, onClick: () => setView("node:" + slot.id),
-      });
-      const pen = el("button", "mn-pencil", "✎"); pen.title = "Rename";
-      pen.onclick = (e) => { e.stopPropagation(); renameSlot(slot); };
-      it.append(pen);
-      side.append(it);
-    });
-    if (!config.slots.length) side.append(el("div", "mn-empty", "No nodes yet."));
+    // Nodes themselves live in the Pipeline grid, not here — the sidebar is for the two
+    // places you can be, the way the reference app splits categories from the shelf.
     return side;
+  }
+
+  // ── the node shelf ───────────────────────────────────────────────────────────
+  function nodeCard(slot, issues) {
+    const errs = (issues || []).filter((i) => i.level === "error").length;
+    const warns = (issues || []).filter((i) => i.level === "warn").length;
+    const card = el("button", "node-card");
+    card.type = "button";
+    if (errs) card.classList.add("bad");
+    else if (warns || slot.bypassed) card.classList.add("warn");
+    card.onclick = () => setView("node:" + slot.id);
+
+    const art = el("div", "node-card-art");
+    // The class name IS the art here — an initials monogram would only repeat the
+    // subtitle, and two LoRAs would look identical.
+    art.append(el("span", "node-card-mark", slotName(slot) || "?"));
+    const flags = el("div", "node-card-flags");
+    if (slot.bypassed) flags.append(el("span", "node-flag warn", "bypassed"));
+    const nExp = (slot.exposed || []).length;
+    if (nExp) flags.append(el("span", "node-flag exposed", `◉ ${nExp}`));
+    if (errs) flags.append(el("span", "node-flag bad", errs + (errs > 1 ? " errors" : " error")));
+    else if (warns) flags.append(el("span", "node-flag warn", warns + (warns > 1 ? " warnings" : " warning")));
+    art.append(flags);
+    card.append(art);
+
+    const meta = el("div", "node-card-meta");
+    meta.append(el("div", "node-card-title", slotDisplayLabel(slot)));
+    meta.append(el("div", "node-card-sub", slotName(slot)));
+    card.append(meta);
+    return card;
+  }
+
+  function nodeGrid(v) {
+    const wrap = el("div", "node-grid");
+
+    const add = el("button", "node-card node-card-add");
+    add.type = "button";
+    add.title = "Add a loader or custom node to the pipeline";
+    const addArt = el("div", "node-card-art");
+    addArt.append(el("span", "node-card-plus", "+"));
+    add.append(addArt);
+    const addMeta = el("div", "node-card-meta");
+    addMeta.append(el("div", "node-card-title", "New node"));
+    addMeta.append(el("div", "node-card-sub", "loader or custom"));
+    add.append(addMeta);
+    add.onclick = (e) => openRoleMenu(e.currentTarget);
+    wrap.append(add);
+
+    config.slots.forEach((slot) => wrap.append(nodeCard(slot, v.perSlot[slot.id] || [])));
+    return wrap;
   }
 
   function paneContent(v) {
@@ -1517,10 +1654,9 @@
       pane.append(banner);
     }
     pane.append(familySection());
+    pane.append(nodeGrid(v));
     pane.append(requirementsPanel());
     pane.append(coreSection());
-    if (!config.slots.length)
-      pane.append(el("div", "empty-stage", "No models configured yet — use ＋ New node in the sidebar to add loaders."));
     return pane;
   }
 

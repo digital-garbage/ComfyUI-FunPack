@@ -2341,3 +2341,81 @@ body.tour-mode { overflow: hidden; }
   .oo-title { font-size: 27px; line-height: 33px; }
   .oo-cards { grid-template-columns: 1fr; }
 }
+
+/* ── Models: the node shelf ───────────────────────────────────────────────
+   A grid of node cards; clicking one opens that node's editor. Leading card
+   is "+ New node", so adding lives where the nodes are rather than in a
+   sidebar you have to know about. */
+.node-grid {
+  display: grid; gap: 14px; margin: 4px 0 22px;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+}
+.node-card {
+  display: flex; flex-direction: column; gap: 8px; padding: 0;
+  background: transparent; border: 0; cursor: pointer; text-align: left;
+  font-family: inherit; color: var(--text);
+}
+.node-card-art {
+  position: relative; aspect-ratio: 3 / 4; border-radius: 10px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(160deg, var(--ink-3), var(--ink-1));
+  border: 1px solid var(--line);
+  transition: border-color .12s, box-shadow .12s, transform .1s;
+}
+.node-card:hover .node-card-art {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  box-shadow: 0 12px 26px -16px var(--shadow-ink);
+}
+.node-card.warn .node-card-art { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.node-card.bad .node-card-art { border-color: color-mix(in srgb, var(--danger) 60%, var(--line)); }
+
+.node-card-mark {
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.4; font-weight: 500;
+  color: var(--muted); text-align: center; padding: 10px 12px;
+  overflow-wrap: anywhere; hyphens: auto;
+  display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
+}
+.node-card:hover .node-card-mark { color: var(--text); }
+.node-card-plus { font-size: 40px; line-height: 1; color: var(--accent); font-weight: 300; }
+.node-card-add .node-card-art {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--accent) 6%, var(--ink-1));
+}
+
+.node-card-flags {
+  position: absolute; left: 6px; right: 6px; bottom: 6px;
+  display: flex; flex-wrap: wrap; gap: 4px;
+}
+.node-flag {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: .3px;
+  padding: 2px 6px; border-radius: 20px;
+  /* Not --scrim-media: the card art is light in the light theme, so a dark chip with
+     dark text vanished. This tracks the surface instead. */
+  background: color-mix(in srgb, var(--ink-0) 84%, transparent);
+  color: var(--muted); border: 1px solid var(--line);
+}
+.node-flag.warn { color: var(--accent-hi); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.node-flag.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.node-flag.exposed { color: var(--teal); border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
+
+.node-card-meta { min-width: 0; }
+.node-card-title {
+  font-size: 12.5px; font-weight: 600; line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.node-card-sub {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); line-height: 1.35;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── node editor footer: nothing is saved until Save ──────────────────────── */
+.node-back { font-size: 20px; line-height: 1; padding: 0 6px 3px; }
+.node-foot {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);
+  position: sticky; bottom: 0; background: var(--ink-1);
+}
+.node-foot-hint { flex: 1; min-width: 160px; font-size: 11.5px; color: var(--faint); }
+.node-foot-acts { display: flex; gap: 8px; }
+.node-foot .btn.primary.disabled, .node-foot .btn.primary:disabled { opacity: .4; cursor: default; }
