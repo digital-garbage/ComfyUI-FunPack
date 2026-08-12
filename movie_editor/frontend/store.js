@@ -4303,7 +4303,11 @@
       }
     } catch (_) { /* queue unreachable — boot normally */ }
     notify();
-    if (!resumed && window.WelcomePage) window.WelcomePage.open();
+    // First run (or a wizard interrupted by an install restart) gets the setup flow;
+    // everyone else gets the project picker they already know.
+    if (resumed) return;
+    if (window.Onboarding?.maybeOpen()) return;
+    if (window.WelcomePage) window.WelcomePage.open();
   }
 
   window.Store = {

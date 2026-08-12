@@ -31,12 +31,23 @@
     return !m.disable_core;
   }
 
+  // The Editor keeps the live model config at state.models and reloads it from the
+  // server; Easy Gen has neither, and reads it off state.project.models (see
+  // PipelineCaps.models). Write back to whichever this host actually has.
+  async function refreshModels(saved) {
+    if (typeof S.loadModels === "function") { await S.loadModels(); return; }
+    const p = S.get().project;
+    if (p) p.models = JSON.parse(JSON.stringify(saved));
+    if (typeof S.notify === "function") S.notify();
+    else S.set?.({});   // Easy Gen's store notifies through set()
+  }
+
   async function useOwnPipeline() {
     if (!S.get().project) return;
-    const models = JSON.parse(JSON.stringify(S.get().models || { slots: [] }));
+    const models = JSON.parse(JSON.stringify(S.get().models || S.get().project?.models || { slots: [] }));
     models.disable_core = true;
     await API.saveModels(S.get().project.id, models);
-    await S.loadModels();
+    await refreshModels(models);
     setDismissed();
     closeModal();
   }
@@ -183,12 +194,16 @@
 
   // The family decides which nodes and which model files the project needs, so it is the
   // FIRST question — asking it after an install would have installed the wrong thing.
-  async function chooseFamily(key) {
-    if (!S.get().project) return;
-    const models = JSON.parse(JSON.stringify(S.get().models || { slots: [] }));
+  // Persist the family and bring the project onto its frame geometry. Split out from
+  // chooseFamily so the onboarding wizard can pick a family without the modal reopening
+  // itself on top of the wizard.
+  async function applyFamily(key) {
+    if (!S.get().project) return "";
+    geometryNote = "";   // otherwise a previous pick's note is returned again
+    const models = JSON.parse(JSON.stringify(S.get().models || S.get().project?.models || { slots: [] }));
     models.model_family = key;
     await API.saveModels(S.get().project.id, models);
-    await S.loadModels();
+    await refreshModels(models);
     // Frame geometry belongs to the model, not to taste: the new family may generate on a
     // different frame grid (LTX 8k+1 / H3 17k+5) and at a fixed rate (H3 is always 24 fps).
     // Bring the project onto them now, while the user is looking at the choice that caused
@@ -211,6 +226,12 @@
           + " (grid " + grid.label + ").";
       }
     }
+    return geometryNote;
+  }
+
+  async function chooseFamily(key) {
+    if (!S.get().project) return;
+    await applyFamily(key);
     let deps;
     try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { closeModal(); return; }
     if (!deps?.needs_setup) { closeModal(); return; }
@@ -365,8 +386,16 @@
     document.body.append(overlay);
   }
 
+  // The onboarding wizard asks the same questions in its own chrome, so this modal must
+  // not open behind it — or, worse, on top of the editor the moment the wizard finishes.
+  function markHandled() {
+    setDismissed();
+    closeModal();
+  }
+
   async function maybePrompt() {
     if (window.__FUNPACK_TOUR__) return;
+    if (window.Onboarding?.isOpen?.()) return;
     if (dismissed()) return;
     const st = S.get();
     if (!st.project || !builtInPipelineActive(st)) return;
@@ -385,5 +414,14 @@
     openModal(deps);
   }
 
-  window.PipelineSetup = { maybePrompt, open, close: closeModal };
+  window.PipelineSetup = {
+    maybePrompt, open, close: closeModal,
+    // Exposed for the onboarding wizard, which renders the prerequisite step in its
+    // own full-screen chrome but must not re-implement the install/poll/restart
+    // machinery below.
+    applyFamily, useOwnPipeline, markHandled,
+    installPacks: startInstall,
+    installManager: startManagerInstall,
+    restartComfy: restartComfyOnly,
+  };
 })();

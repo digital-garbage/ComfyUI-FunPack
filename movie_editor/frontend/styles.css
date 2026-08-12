@@ -2132,3 +2132,205 @@ body.tour-mode { overflow: hidden; }
 .maint-btn-label { font-weight: 600; font-size: 13px; }
 .maint-btn-hint { font-size: 11px; color: var(--faint); line-height: 1.35; }
 @media (max-width: 620px) { .maint-row { grid-template-columns: 1fr; } }
+
+/* ════════════════════════════════════════════════════════════════════════
+   ONBOARDING WIZARD — macOS Setup Assistant shape
+   Full screen, no chrome. One centred column per step: glyph, headline,
+   short paragraph, controls, and an action bar pinned to the bottom so the
+   primary button never moves between steps.
+
+   Type follows Apple's macOS text styles (HIG "Specifications"): Body 13/16,
+   Callout 12/15, Title 3 15/20, Title 1 22/26, Large Title 26/32 — with a
+   display scale above them, because Setup Assistant is a full-screen context
+   and not an inspector. --font-system resolves to SF Pro on a Mac and falls
+   back to the platform UI face everywhere else.
+   ════════════════════════════════════════════════════════════════════════ */
+:root {
+  --font-system: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+                 system-ui, "Helvetica Neue", sans-serif;
+  --oo-col: 560px;          /* the centred content column */
+  --oo-col-wide: 760px;     /* steps that hold cards or lists */
+}
+
+.oo-root {
+  position: fixed; inset: 0; z-index: 800;
+  display: flex; align-items: center; justify-content: center;
+  padding: 72px 32px;
+  background:
+    radial-gradient(1100px 700px at 50% -15%, color-mix(in srgb, var(--accent) 9%, transparent) 0%, transparent 62%),
+    var(--ink-0);
+  font-family: var(--font-system);
+  -webkit-font-smoothing: antialiased;
+  overflow-y: auto;
+}
+
+/* Back is a chevron in the top-left corner, the way the Setup Assistant does it —
+   never a button in the action bar, where it would compete with Continue. */
+.oo-back {
+  position: absolute; top: 22px; left: 26px; z-index: 2;
+  width: 32px; height: 32px; padding: 0 0 3px;
+  border: 0; border-radius: 50%; background: transparent;
+  color: var(--muted); font-size: 26px; line-height: 1; cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.oo-back:hover { background: var(--ink-2); color: var(--text); }
+.oo-back[hidden] { display: none; }
+
+/* Only steps that carry an action bar reserve room for it; the splash has none. */
+.oo-root.oo-has-actions { padding-bottom: 140px; }
+.oo-stage { width: 100%; display: flex; justify-content: center; }
+.oo-stage.oo-in .oo-step, .oo-stage.oo-in .oo-splash { animation: oo-rise .34s cubic-bezier(.22,.61,.36,1) both; }
+@keyframes oo-rise { from { opacity: 0; transform: translateY(10px); } }
+
+.oo-step {
+  width: 100%; max-width: var(--oo-col);
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+}
+.oo-step-wide { max-width: var(--oo-col-wide); }
+
+/* ── head: glyph, headline, one short paragraph ─────────────────────────── */
+.oo-head { display: flex; flex-direction: column; align-items: center; margin-bottom: 34px; }
+.oo-glyph { width: 76px; height: 76px; color: var(--accent); margin-bottom: 22px; }
+.oo-title {
+  margin: 0; font-size: 34px; line-height: 40px; font-weight: 700;
+  letter-spacing: -.4px; color: var(--text);
+}
+.oo-sub {
+  margin: 12px 0 0; max-width: 46ch;
+  font-size: 15px; line-height: 21px; color: var(--muted);
+}
+.oo-body { margin: 0 0 18px; font-size: 13px; line-height: 16px; color: var(--muted); }
+
+/* ── action bar, pinned ─────────────────────────────────────────────────── */
+.oo-actions {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 3;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 22px 32px 30px;
+  background: linear-gradient(to top, var(--ink-0) 62%, transparent);
+  pointer-events: none;
+}
+.oo-actions > * { pointer-events: auto; }
+
+.oo-btn {
+  font-family: var(--font-system); font-size: 13px; line-height: 16px; font-weight: 500;
+  border-radius: 8px; border: 1px solid transparent; cursor: pointer;
+  padding: 8px 18px; background: transparent; color: var(--text);
+  transition: background .12s, border-color .12s, opacity .12s, transform .06s;
+}
+.oo-btn:active:not(.disabled) { transform: scale(.985); }
+.oo-btn-primary {
+  min-width: 220px; padding: 11px 26px;
+  font-size: 14px; font-weight: 600;
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow-ink) 30%, transparent);
+}
+.oo-btn-primary:hover:not(.disabled) { background: var(--accent-hi); border-color: var(--accent-hi); }
+.oo-btn-primary.disabled { opacity: .38; cursor: default; }
+.oo-btn-hero { min-width: 260px; padding: 13px 30px; font-size: 15px; margin-top: 8px; }
+.oo-btn-quiet { color: var(--accent); background: transparent; }
+.oo-btn-quiet:hover { background: var(--accent-soft); }
+.oo-btn-small { padding: 5px 13px; border-color: var(--line); background: var(--ink-1); }
+.oo-btn-small:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+
+.oo-busy { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.oo-spinner {
+  width: 15px; height: 15px; border-radius: 50%; flex: none;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+  animation: oo-spin .8s linear infinite;
+}
+@keyframes oo-spin { to { transform: rotate(360deg); } }
+.oo-error { font-size: 13px; line-height: 17px; color: var(--danger); max-width: 46ch; text-align: center; }
+
+/* ── splash ─────────────────────────────────────────────────────────────── */
+.oo-splash {
+  width: 100%; max-width: 620px;
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+}
+.oo-splash-mark {
+  font-size: 34px; color: var(--accent); margin-bottom: 26px;
+  filter: drop-shadow(0 0 22px var(--accent-soft));
+}
+.oo-splash-title {
+  margin: 0; font-size: 56px; line-height: 62px; font-weight: 700;
+  letter-spacing: -1.4px; color: var(--text);
+}
+.oo-splash-lead { margin: 14px 0 40px; font-size: 17px; line-height: 22px; color: var(--muted); }
+.oo-splash .oo-btn-quiet { margin-top: 4px; }
+.oo-maint { margin-top: 48px; width: 100%; max-width: var(--oo-col-wide); }
+
+/* ── fields ─────────────────────────────────────────────────────────────── */
+.oo-field { width: 100%; max-width: 420px; text-align: left; margin-bottom: 30px; }
+.oo-label {
+  display: block; margin-bottom: 6px;
+  font-size: 12px; line-height: 15px; font-weight: 500; color: var(--muted);
+}
+.oo-input {
+  width: 100%; padding: 9px 12px;
+  font-family: var(--font-system); font-size: 14px; line-height: 18px; color: var(--text);
+  background: var(--ink-1); border: 1px solid var(--line); border-radius: 8px;
+}
+.oo-input:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ── choice cards ───────────────────────────────────────────────────────── */
+.oo-cards {
+  width: 100%; display: grid; gap: 12px; margin-bottom: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.oo-cards-2 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.oo-card {
+  display: flex; flex-direction: column; gap: 6px; text-align: left;
+  padding: 16px 17px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--ink-1);
+  font-family: var(--font-system); cursor: pointer;
+  transition: border-color .12s, box-shadow .12s, transform .08s, background .12s;
+}
+.oo-card:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); transform: translateY(-1px); }
+.oo-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 10px 26px -18px var(--shadow-ink);
+  background: color-mix(in srgb, var(--accent) 5%, var(--ink-1));
+}
+.oo-card-title { font-size: 15px; line-height: 20px; font-weight: 600; color: var(--text); }
+.oo-card-note {
+  margin-left: 8px; padding: 1px 7px; border-radius: 20px; vertical-align: 2px;
+  font-size: 10px; line-height: 15px; font-weight: 500;
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+.oo-card-sub { font-size: 12px; line-height: 16px; color: var(--muted); }
+
+.oo-theme-cards { width: 100%; margin-bottom: 8px; }
+
+/* ── panels and lists ───────────────────────────────────────────────────── */
+.oo-panel {
+  width: 100%; text-align: left; padding: 18px 20px; margin-bottom: 8px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--ink-1);
+}
+.oo-note { margin: 0 0 12px; font-size: 13px; line-height: 18px; color: var(--text); }
+.oo-link { font-size: 12px; line-height: 16px; color: var(--accent); }
+.oo-list-label {
+  margin: 16px 0 7px; font-size: 11px; line-height: 14px; font-weight: 600;
+  letter-spacing: .4px; text-transform: uppercase; color: var(--faint);
+}
+.oo-panel > .oo-list-label:first-child { margin-top: 0; }
+.oo-list { margin: 0; padding-left: 18px; }
+.oo-list li { font-size: 13px; line-height: 18px; color: var(--text); margin-bottom: 5px; }
+.oo-list-sub { display: block; font-size: 11px; line-height: 15px; color: var(--faint); font-family: var(--font-mono); }
+
+.oo-rows { width: 100%; display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.oo-row {
+  display: flex; align-items: center; gap: 16px; text-align: left;
+  padding: 13px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-1);
+}
+.oo-row-main { flex: 1; min-width: 0; }
+.oo-row-title { font-size: 13.5px; line-height: 18px; font-weight: 600; color: var(--text); }
+.oo-row-sub { font-size: 12px; line-height: 16px; color: var(--muted); margin-top: 2px; }
+
+@media (max-width: 700px) {
+  .oo-root { padding: 60px 20px 128px; }
+  .oo-splash-title { font-size: 40px; line-height: 46px; letter-spacing: -.8px; }
+  .oo-title { font-size: 27px; line-height: 33px; }
+  .oo-cards { grid-template-columns: 1fr; }
+}
