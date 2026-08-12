@@ -487,6 +487,37 @@
     if (ib) card.append(ib);
 
     const cand = specFor(slot);
+
+    // Card reads top-down in signal order: what comes IN, what the node is set to,
+    // then what goes OUT.
+    // Input sources: explicitly choose where each connection input comes from.
+    if (cand && (cand.connection_inputs || []).length) {
+      slot.input_sources = slot.input_sources || {};
+      const sbox = el("div", "wire-box");
+      sbox.append(el("div", "wire-title", "Input sources"));
+      visibleConnectionInputs(slot, cand.connection_inputs).forEach((ci) => {
+        const row = el("div", "wire-row");
+        const lbl = el("span", "wire-out", `${ci.display || ci.name} (${ci.type})`);
+        if (ci.autogrow)
+          lbl.title = `Entry ${ci.autogrow.index + 1} of the node's "${ci.autogrow.parent}" list — fill one and the next appears.`;
+        row.append(lbl);
+        row.append(el("span", "wire-arrow", "←"));
+        const srcs = allowedSources(slot, ci);
+        const sel = el("select", "wire-select");
+        const cur = slot.input_sources[ci.name] || "";
+        srcs.forEach((s) => { const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o); });
+        if (cur && !srcs.some((s) => s.value === cur)) { const o = el("option", null, cur + " (missing)"); o.value = cur; o.selected = true; sel.append(o); }
+        if (pipelineLocked() && slot.role === "image_processing" && ci.name === "image" && !cur) {
+          slot.input_sources[ci.name] = "timeline";
+          sel.value = "timeline";
+        }
+        sel.onchange = async () => { _setInputSource(slot, ci.name, sel.value); await persist(); render(); };
+        row.append(sel);
+        sbox.append(row);
+      });
+      card.append(sbox);
+    }
+
     if (cand && cand.inputs.length) {
       const grid = el("div", "slot-fields");
       cand.inputs.forEach((spec) => {
@@ -543,34 +574,6 @@
         wbox.append(row);
       });
       card.append(wbox);
-    }
-
-    // Input sources: explicitly choose where each connection input comes from.
-    if (cand && (cand.connection_inputs || []).length) {
-      slot.input_sources = slot.input_sources || {};
-      const sbox = el("div", "wire-box");
-      sbox.append(el("div", "wire-title", "Input sources"));
-      visibleConnectionInputs(slot, cand.connection_inputs).forEach((ci) => {
-        const row = el("div", "wire-row");
-        const lbl = el("span", "wire-out", `${ci.display || ci.name} (${ci.type})`);
-        if (ci.autogrow)
-          lbl.title = `Entry ${ci.autogrow.index + 1} of the node's "${ci.autogrow.parent}" list — fill one and the next appears.`;
-        row.append(lbl);
-        row.append(el("span", "wire-arrow", "←"));
-        const srcs = allowedSources(slot, ci);
-        const sel = el("select", "wire-select");
-        const cur = slot.input_sources[ci.name] || "";
-        srcs.forEach((s) => { const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o); });
-        if (cur && !srcs.some((s) => s.value === cur)) { const o = el("option", null, cur + " (missing)"); o.value = cur; o.selected = true; sel.append(o); }
-        if (pipelineLocked() && slot.role === "image_processing" && ci.name === "image" && !cur) {
-          slot.input_sources[ci.name] = "timeline";
-          sel.value = "timeline";
-        }
-        sel.onchange = async () => { _setInputSource(slot, ci.name, sel.value); await persist(); render(); };
-        row.append(sel);
-        sbox.append(row);
-      });
-      card.append(sbox);
     }
 
     return card;
@@ -917,6 +920,29 @@
       // Shares the draft's input_sources so a filled autogrow entry reveals the next one.
       const draftSlot = { id: "__draft__", role: roleFinal, wires: {}, input_sources: draft.input_sources };
 
+      // Same top-down signal order as the node card: sources in, values, wires out.
+      if ((curCand.connection_inputs || []).length) {
+        const sbox = el("div", "wire-box");
+        sbox.append(el("div", "wire-title", "Input sources"));
+        visibleConnectionInputs(draftSlot, curCand.connection_inputs).forEach((ci) => {
+          const row = el("div", "wire-row");
+          row.append(el("span", "wire-out", `${ci.display || ci.name} (${ci.type})`));
+          row.append(el("span", "wire-arrow", "←"));
+          const sel = el("select", "wire-select");
+          const cur = draft.input_sources[ci.name] || "";
+          allowedSources(draftSlot, ci).forEach((s) => {
+            const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o);
+          });
+          sel.onchange = () => {
+            if (sel.value) draft.input_sources[ci.name] = sel.value; else delete draft.input_sources[ci.name];
+            if (ci.autogrow) renderDetail();  // filling a list entry reveals the next one
+          };
+          row.append(sel);
+          sbox.append(row);
+        });
+        detail.append(sbox);
+      }
+
       if ((curCand.inputs || []).length) {
         detail.append(el("div", "wire-title", "Values"));
         const grid = el("div", "slot-fields");
@@ -943,28 +969,6 @@
         });
         wbox.append(el("div", "links-hint", "One wire per output here — add more on the node's page after adding."));
         detail.append(wbox);
-      }
-
-      if ((curCand.connection_inputs || []).length) {
-        const sbox = el("div", "wire-box");
-        sbox.append(el("div", "wire-title", "Input sources"));
-        visibleConnectionInputs(draftSlot, curCand.connection_inputs).forEach((ci) => {
-          const row = el("div", "wire-row");
-          row.append(el("span", "wire-out", `${ci.display || ci.name} (${ci.type})`));
-          row.append(el("span", "wire-arrow", "←"));
-          const sel = el("select", "wire-select");
-          const cur = draft.input_sources[ci.name] || "";
-          allowedSources(draftSlot, ci).forEach((s) => {
-            const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o);
-          });
-          sel.onchange = () => {
-            if (sel.value) draft.input_sources[ci.name] = sel.value; else delete draft.input_sources[ci.name];
-            if (ci.autogrow) renderDetail();  // filling a list entry reveals the next one
-          };
-          row.append(sel);
-          sbox.append(row);
-        });
-        detail.append(sbox);
       }
 
       const foot = el("div", "ns-foot");
