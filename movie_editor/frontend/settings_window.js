@@ -157,7 +157,26 @@
     return it;
   }
 
-  window.SettingsWindow = { open, close, register, navItem };
+  // Mount ONE registered section into an arbitrary container, with no sidebar, no search
+  // and no window chrome. The setup wizard shows Models (and, on Easy Gen, Shortcuts) as
+  // full screens of its own — asking someone to set up models should not drop the whole
+  // Settings window on top of the flow they are halfway through.
+  //
+  // Returns { spec, cleanup } or null when nothing has registered that id.
+  function mountSection(id, host, opts = {}) {
+    const spec = registry.find((s) => s.id === id);
+    if (!spec) return null;
+    host.classList.toggle("sw-flush", !!spec.flush);
+    const cleanup = spec.mount(host, {
+      setActions: opts.setActions || (() => {}),
+      openSection: opts.openSection || (() => {}),
+    });
+    return { spec, cleanup: () => { if (typeof cleanup === "function") { try { cleanup(); } catch (_) {} } } };
+  }
+
+  function hasSection(id) { return registry.some((s) => s.id === id); }
+
+  window.SettingsWindow = { open, close, register, navItem, mountSection, hasSection };
 
   // ── shared row builders for settings panels ────────────────────────────
   function actionRow(title, hint, btnLabel, onClick, opts = {}) {

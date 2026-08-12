@@ -883,9 +883,30 @@
   function _syncButton() { if (_btn) _btn.classList.toggle("on", isOpen()); }
 
   // Re-render on relevant store changes (shortcuts / splits / project switch).
+  // ── panes hosted somewhere other than the Composer window ──────────────────
+  // The setup wizard shows Shortcuts and Splits as full screens of its own, so the flow
+  // stays one continuous surface instead of spawning a floating Composer over it. Same
+  // builders, same editors, same store — only the container differs.
+  const PANE_BUILDERS = { shortcuts: shortcutsTab, splits: splitMarkersTab };
+  const _panes = new Set();   // { kind, host }
+
+  function mountPane(kind, host) {
+    const build = PANE_BUILDERS[kind];
+    if (!build) return () => {};
+    const entry = { kind, host };
+    _panes.add(entry);
+    paintPane(entry);
+    return () => { _panes.delete(entry); closeModal(); };
+  }
+
+  function paintPane(entry) {
+    clear(entry.host);
+    entry.host.append(PANE_BUILDERS[entry.kind](S.get()));
+  }
+
   let lastFp = null;
   S.subscribe((st) => {
-    if (!isOpen()) return;
+    if (!isOpen() && !_panes.size) return;
     const fp = JSON.stringify({
       s: st.shortcuts?.length, t: st.transitions?.length, pid: st.project?.id,
       c: (st.shortcutCategories || []).reduce((n, x) => n + 1 + (x.sub_categories?.length || 0), 0),
@@ -898,7 +919,8 @@
     });
     if (fp === lastFp) return;
     lastFp = fp;
-    render();
+    if (isOpen()) render();
+    _panes.forEach(paintPane);
   });
 
   // Keep the Compose textarea in sync with timeline-driven global-prompt changes,
@@ -913,7 +935,7 @@
     composeTextarea.value = (e.detail && e.detail.text) || "";
   });
 
-  window.Composer = { toggle, isOpen, registerButton };
+  window.Composer = { toggle, isOpen, registerButton, mountPane };
 
   // Self-wire the header button (present in index.html before this script runs).
   const headerBtn = document.getElementById("composer-btn");

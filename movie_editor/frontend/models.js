@@ -1482,7 +1482,7 @@
   // from a checkpoint filename — a wrong guess fails deep inside ComfyUI at generate time
   // instead of here, where it can be fixed.
   const FAMILIES = [
-    { key: "ltxav", label: "LTX-2 / LTXAV",
+    { key: "ltxav", label: "LTX2 / LTX2.3 / LTX2.5",
       sub: "Gemma3 text encoder · 8k+1 frames · separate video and audio latents" },
     { key: "minimax_h3", label: "MiniMax H3 (Hailuo)",
       sub: "Qwen3-VL text encoder · 17k+5 frames at 24 fps · one AV latent node · ref2va references" },

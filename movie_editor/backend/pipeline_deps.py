@@ -61,9 +61,9 @@ _ALL_MAPPED = frozenset().union(*(p["classes"] for p in PIPELINE_PACKS))
 # `models` are files the user has to download; `folder` is the ComfyUI models/ subdirectory.
 FAMILY_SETUP: dict[str, dict[str, Any]] = {
     "ltxav": {
-        "label": "LTX-2 / LTXAV",
+        "label": "LTX2 / LTX2.3 / LTX2.5",
         "released": True,
-        "summary": "Lightricks LTX-2 / LTXAV. Gemma3 text encoder, separate video and audio latents.",
+        "summary": "Lightricks LTX-2, every point release. Gemma3 text encoder, separate video and audio latents.",
         "nodes": [],
         "models": [
             {"role": "unet", "label": "LTX-2 diffusion model", "folder": "diffusion_models"},

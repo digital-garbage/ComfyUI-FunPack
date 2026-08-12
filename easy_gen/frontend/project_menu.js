@@ -66,6 +66,10 @@
         close();
       }),
       mkBtn("Load Project File…", "", "Import a .funpack_project.json", () => loadFileInput.click()),
+      // The Editor puts this in File; Easy Gen has no menubar, and this menu is the
+      // equivalent front door.
+      mkBtn("Setup Wizard…", "", "Theme, model family, prerequisites, models",
+        () => { close(); window.Onboarding?.reopen?.(); }),
     );
     content.append(actions);
 

@@ -14,12 +14,15 @@
   const S = () => window.Store;
   const API = () => window.MovieEditorAPI;
   const LS_DONE = "funpack_onboarded";
+  const LS_RUN = "funpack_wizard";       // an unfinished run (see save())
+  const SS_SKIP = "funpack_wizard_skip"; // this tab session declined it
 
   let root = null;       // the full-screen overlay
   let stage = null;      // the animated content column
   let idx = 0;
   let steps = [];
   let ctx = null;        // per-run state: project, family, deps, generation type
+  let panel = null;      // { kind, cleanup } while a hosted pane is on screen
 
   const isEasyGen = () => window.FunPackAppName === "Easy Gen";
 
@@ -27,11 +30,13 @@
     editor: {
       product: "Cutting Room",
       lead: "Multi-scene video on a real timeline.",
-      steps: ["theme", "project", "prereqs", "gentype", "models", "extras", "done"],
+      steps: ["theme", "project", "prereqs", "gentype", "models", "extras", "tour", "done"],
       extras: ["links", "shortcuts", "splits"],
       newProject: (name) => S().newProject(name),
     },
     easy: {
+      // No guided tour here: the tour drives a timeline, a Composer and an inspector that
+      // Easy Gen does not have. Its own screen is the whole product.
       product: "Easy Gen",
       lead: "One prompt, one button, one video.",
       steps: ["theme", "project", "prereqs", "gentype", "models", "extras", "done"],
@@ -66,6 +71,8 @@
       + '<path d="M6 15l18 10 18-10M24 25v18" fill="none" stroke="currentColor" stroke-width="2.4"/>',
     extras: '<circle cx="24" cy="24" r="5" fill="currentColor"/>'
       + '<path d="M24 4v8M24 36v8M4 24h8M36 24h8M10 10l6 6M32 32l6 6M38 10l-6 6M16 32l-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+    tour: '<circle cx="24" cy="24" r="17" fill="none" stroke="currentColor" stroke-width="2.4"/>'
+      + '<path d="M20 16.5l12 7.5-12 7.5z" fill="currentColor"/>',
     done: '<circle cx="24" cy="24" r="17" fill="none" stroke="currentColor" stroke-width="2.4"/>'
       + '<path d="M15 24.5l6.5 6.5L33 19" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>',
   };
@@ -100,6 +107,76 @@
     b.append(el("span", "oo-spinner"));
     b.append(el("span", null, text));
     return b;
+  }
+
+  // ── hosted panes ──────────────────────────────────────────────────────────
+  // Setting up models, links, shortcuts or splits used to hand you off to the Settings
+  // window or a floating Composer, dropped on top of a half-finished wizard. The wizard
+  // hosts those panes itself instead: same builders, same editors, same store, but on a
+  // full screen of the flow, with one Done button back to where you were. Panes are NOT
+  // steps — they open over the current step and return to it, so Back stays symmetrical
+  // and skipping one never shifts the step count.
+  const PANES = {
+    models: {
+      title: "Models & pipeline",
+      sub: "Point each loader at a file you have. Nothing is saved until you press Save on a node.",
+      mount: (body, setActions) => window.SettingsWindow.mountSection("models", body, { setActions }),
+    },
+    links: {
+      title: "Pipeline links",
+      sub: "Drive several node inputs from one control, or tie an input to a project value.",
+      mount: (body, setActions) => window.SettingsWindow.mountSection("models", body, { setActions }),
+    },
+    shortcuts: {
+      title: "Prompt shortcuts",
+      sub: "Short triggers that expand into full phrases while you type.",
+      // The Editor keeps shortcuts in the Composer; Easy Gen registers a settings section
+      // for the same library. Whichever this build has.
+      mount: (body) => (window.Composer?.mountPane
+        ? { cleanup: window.Composer.mountPane("shortcuts", body) }
+        : window.SettingsWindow.mountSection("shortcuts", body)),
+    },
+    splits: {
+      title: "Prompt splits",
+      sub: "Markers that cut one written prompt into separate scenes.",
+      mount: (body) => ({ cleanup: window.Composer.mountPane("splits", body) }),
+    },
+  };
+
+  function openPane(kind) {
+    const spec = PANES[kind];
+    if (!spec) return;
+    closePane();
+    const box = el("div", "oo-pane");
+    const head = el("div", "oo-pane-head");
+    const ht = el("div", "oo-pane-head-text");
+    ht.append(el("h2", "oo-pane-title", spec.title));
+    ht.append(el("p", "oo-pane-sub", spec.sub));
+    const tools = el("div", "oo-pane-tools");
+    head.append(ht, tools);
+    box.append(head);
+    const body = el("div", "oo-pane-body");
+    box.append(body);
+
+    const mounted = spec.mount(body, (nodes) => {
+      clear(tools);
+      (nodes || []).forEach((n) => tools.append(n));
+    });
+    if (!mounted) {
+      body.append(el("p", "oo-body", "This part of the setup isn't available in this build."));
+    }
+
+    panel = { kind, cleanup: mounted?.cleanup || null };
+    paint(box, "pane:" + kind, { pane: true });
+    root.append(actions({ primary: "Done", onPrimary: closePane }));
+    root.classList.add("oo-has-actions");
+  }
+
+  function closePane() {
+    if (!panel) return;
+    try { panel.cleanup?.(); } catch (_) {}
+    panel = null;
+    if (root) renderStep();
   }
 
   // ── step registry ─────────────────────────────────────────────────────────
@@ -240,15 +317,15 @@
         let primary = "Continue", onPrimary = next, secondary = null, onSecondary = null;
         if (packs.length && d.needs_manager_install) {
           primary = "Install ComfyUI-Manager";
-          onPrimary = () => { save(); window.PipelineSetup.installManager(); };
+          onPrimary = () => { saveForRestart(); window.PipelineSetup.installManager(); };
           secondary = "Skip for now";
         } else if (packs.length && d.needs_manager_restart) {
           primary = "Restart ComfyUI";
-          onPrimary = () => { save(); window.PipelineSetup.restartComfy(); };
+          onPrimary = () => { saveForRestart(); window.PipelineSetup.restartComfy(); };
           secondary = "Skip for now";
         } else if (packs.length && d.manager_available) {
           primary = "Install missing nodes";
-          onPrimary = () => { save(); window.PipelineSetup.installPacks(d); };
+          onPrimary = () => { saveForRestart(); window.PipelineSetup.installPacks(d); };
           secondary = "Skip for now";
         }
         box.append(actions({ primary, onPrimary, secondary, onSecondary }));
@@ -305,7 +382,7 @@
         box.append(head("models", own ? "Wire your pipeline" : "Point it at your models",
           own
             ? "Nothing is generated until a final IMAGE reaches the global video output."
-            : "Pick the checkpoint, text encoder and VAE files this model uses. Models opens over this screen."));
+            : "Pick the checkpoint, text encoder and VAE files this model uses."));
 
         const p = el("p", "oo-body");
         p.textContent = ctx.genType === "t2v"
@@ -314,8 +391,8 @@
         box.append(p);
 
         box.append(actions({
-          primary: "Open Models…",
-          onPrimary: () => window.ModelsModal.open(),
+          primary: "Set up models…",
+          onPrimary: () => openPane("models"),
           secondary: "Continue",
           onSecondary: next,
         }));
@@ -331,26 +408,9 @@
         box.append(head("extras", "Optional, and easy to add later",
           "None of this is needed to generate. Skip it and come back when you want it."));
 
-        const ROWS = {
-          links: {
-            title: "Pipeline links",
-            sub: "Drive several node inputs from one control, or tie an input to a project value.",
-            open: () => window.SettingsWindow.open("models"),
-          },
-          shortcuts: {
-            title: "Prompt shortcuts",
-            sub: "Short triggers that expand into full phrases while you type.",
-            open: () => window.SettingsWindow.open("shortcuts"),
-          },
-          splits: {
-            title: "Prompt splits",
-            sub: "Markers that cut one written prompt into separate scenes.",
-            open: () => { if (!window.Composer?.isOpen?.()) window.Composer?.toggle?.(); },
-          },
-        };
         const list = el("div", "oo-rows");
         wanted.forEach((k) => {
-          const r = ROWS[k];
+          const r = PANES[k];
           if (!r) return;
           const row = el("div", "oo-row");
           const main = el("div", "oo-row-main");
@@ -359,10 +419,9 @@
           row.append(main);
           const b = el("button", "oo-btn oo-btn-small", "Set up");
           b.type = "button";
-          // The pane opens OVER the wizard; closing it puts you back on this step with
-          // Skip/Continue still there. Closing the wizard here dropped you into the
-          // editor half-set-up.
-          b.onclick = () => { save(); r.open(); };
+          // Opens as a screen of the wizard, not as a window over it — Done comes straight
+          // back here with Skip/Continue still where you left them.
+          b.onclick = () => openPane(k);
           row.append(b);
           list.append(row);
         });
@@ -372,15 +431,41 @@
       },
     },
 
+    // ── guided tour ─────────────────────────────────────────────────────────
+    tour: {
+      // The tour runs against a throwaway sandbox project in its own page mode, so it
+      // cannot start on top of the wizard — the choice is recorded here and acted on by
+      // finish(). Saying so on the screen is the whole point of the hint below.
+      render() {
+        const box = el("div", "oo-step");
+        box.append(head("tour", "Want the guided tour?",
+          "A walk through the timeline, the Composer and Generate, on a sandbox project. "
+          + "Nothing you do in it touches your own work."));
+        const p = el("p", "oo-body",
+          "Choosing to watch it starts the tour as soon as you finish setup. You can run it "
+          + "again at any time from Help ▸ Welcome tour.");
+        box.append(p);
+        box.append(actions({
+          primary: "Watch tour",
+          onPrimary: () => { ctx.wantTour = true; next(); },
+          secondary: "Skip the tour",
+          onSecondary: () => { ctx.wantTour = false; next(); },
+        }));
+        return box;
+      },
+    },
+
     // ── done ────────────────────────────────────────────────────────────────
     done: {
       render() {
         const box = el("div", "oo-step");
         box.append(head("done", "You're ready to generate",
-          isEasyGen()
-            ? "Write a prompt at the bottom and press Generate."
-            : "Write in the Composer, then press Generate in the timeline header."));
-        box.append(actions({ primary: "Let's go", onPrimary: finish }));
+          ctx.wantTour
+            ? "The guided tour starts as soon as you press the button."
+            : isEasyGen()
+              ? "Write a prompt at the bottom and press Generate."
+              : "Write in the Composer, then press Generate in the timeline header."));
+        box.append(actions({ primary: ctx.wantTour ? "Start the tour" : "Let's go", onPrimary: finish }));
         return box;
       },
     },
@@ -425,6 +510,16 @@
   async function createProject() {
     const name = (ctx.name || "").trim() || (isEasyGen() ? "Untitled" : "Untitled montage");
     const bar = root.querySelector(".oo-actions");
+    // An abandoned run left a project behind: adopt it rather than making a second one.
+    // Failing to load it (deleted since) just falls through to creating a fresh project.
+    if (!ctx.project && ctx.carryProjectId) {
+      if (bar) clear(bar).append(busy("Picking up where you left off…"));
+      try {
+        await S().loadProject(ctx.carryProjectId);
+        if (S().get().project?.id === ctx.carryProjectId) ctx.project = S().get().project;
+      } catch (_) {}
+      ctx.carryProjectId = null;
+    }
     const again = !!ctx.project;   // stepped Back to this screen and pressed Continue again
     if (bar) clear(bar).append(busy(again ? "Saving…" : "Creating project…"));
     try {
@@ -449,7 +544,11 @@
     next();
   }
 
+  // Loading a project IS an answer to the wizard's question, so it stops asking for the
+  // rest of this session — including the tour, which would only get in the way of work
+  // that is already under way.
   function openExisting() {
+    suppressSession();
     close();
     if (isEasyGen()) window.ProjectMenu.open({ dismissable: true });
     else window.WelcomePage.open();
@@ -477,7 +576,7 @@
     const name = steps[idx];
     const st = STEPS[name];
     paint(st.render(), name);
-    save();
+    save(false);
   }
 
   function paint(node, name) {
@@ -498,70 +597,117 @@
     void stage.offsetWidth;
     stage.classList.add("oo-in");
     const backBtn = root.querySelector(".oo-back");
-    backBtn.hidden = !name || idx <= 0;
+    // On a hosted pane the chevron closes the pane rather than stepping back — the pane
+    // is not a step, and leaving it is the only "back" that means anything there.
+    backBtn.hidden = !name || (!panel && idx <= 0);
+    root.classList.toggle("oo-pane-mode", !!panel);
   }
 
-  // ── persistence: an install restarts ComfyUI and reloads the page ─────────
-
-  function save() {
+  // ── persistence ───────────────────────────────────────────────────────────
+  // Two different things are recorded here, and conflating them was the bug:
+  //
+  //   resumable — the wizard ITSELF restarted ComfyUI (installing node packs) and the
+  //     page is about to reload underneath it. Only then does it come back mid-flow.
+  //
+  //   everything else — a refresh, a closed tab, a reset. Setup was never finished, so
+  //     it starts again from the top rather than dropping you into the middle of a flow
+  //     you have no memory of. The project it had already created comes along, so a
+  //     second run renames that one instead of leaving an orphan behind.
+  //
+  // The record is cleared only by finish(), so an unfinished wizard is always detectable.
+  function save(resumable) {
     try {
-      localStorage.setItem("funpack_wizard", JSON.stringify({
-        idx, ctx: { name: ctx.name, family: ctx.family, genType: ctx.genType, projectId: ctx.project?.id || null },
+      localStorage.setItem(LS_RUN, JSON.stringify({
+        idx: resumable ? idx : 0,
+        resumable: !!resumable,
+        ctx: { name: ctx.name, family: ctx.family, genType: ctx.genType,
+               wantTour: ctx.wantTour, projectId: ctx.project?.id || null },
       }));
     } catch (_) {}
   }
 
+  // Called at the three points that hand off to a ComfyUI restart, and nowhere else.
+  const saveForRestart = () => save(true);
+
   function restore() {
     try {
-      const raw = localStorage.getItem("funpack_wizard");
+      const raw = localStorage.getItem(LS_RUN);
       if (!raw) return null;
       return JSON.parse(raw);
     } catch (_) { return null; }
   }
 
   function clearSaved() {
-    try { localStorage.removeItem("funpack_wizard"); } catch (_) {}
+    try { localStorage.removeItem(LS_RUN); } catch (_) {}
+  }
+
+  // Suppressed for the rest of this tab's session: the user answered the wizard's own
+  // question by loading a project instead. sessionStorage, not localStorage — next time
+  // they open the app fresh, an unfinished setup is worth offering again.
+  function suppressSession() {
+    try { sessionStorage.setItem(SS_SKIP, "1"); } catch (_) {}
+  }
+  function sessionSuppressed() {
+    try { return sessionStorage.getItem(SS_SKIP) === "1"; } catch (_) { return false; }
+  }
+
+  // The tour lives in its own page mode against a sandbox project, so it cannot start
+  // over the editor — finishing navigates there.
+  function startTour() {
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.set("mode", "tour");
+      window.location.href = u.pathname + u.search;
+      return true;
+    } catch (_) { return false; }
   }
 
   function finish() {
     try { localStorage.setItem(LS_DONE, "1"); } catch (_) {}
     clearSaved();
+    suppressSession();
     // The wizard IS the pipeline setup — without this its modal reopens over the editor
     // and asks for the family and the node packs all over again.
     window.PipelineSetup?.markHandled?.();
+    const tour = !!ctx.wantTour;
     close();
+    if (tour) startTour();
   }
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
 
   function close() {
+    if (panel) { try { panel.cleanup?.(); } catch (_) {} panel = null; }
     if (stage?._child?._cleanup) stage._child._cleanup();
     root?.remove();
     root = null;
     stage = null;
   }
 
-  function open({ resume } = {}) {
+  // `resume` picks up mid-flow after the wizard's own ComfyUI restart. `carry` is an
+  // abandoned run's leftovers — its project comes back so a second attempt renames that
+  // one instead of leaving it behind, but the flow itself starts at the splash.
+  function open({ resume, carry } = {}) {
     close();
     steps = host().steps;
     // project stays null until the wizard creates one: seeding it from whatever happens
     // to be open would make the project step rename that project instead of making a new one.
-    ctx = { name: "", family: null, genType: null, project: null, deps: null };
+    ctx = { name: "", family: null, genType: null, wantTour: false, project: null, deps: null };
 
     root = el("div", "oo-root");
     const backBtn = el("button", "oo-back", "‹");
     backBtn.type = "button";
     backBtn.title = "Back";
     backBtn.hidden = true;
-    backBtn.onclick = back;
+    backBtn.onclick = () => (panel ? closePane() : back());
     root.append(backBtn);
 
     stage = el("div", "oo-stage");
     root.append(stage);
     document.body.append(root);
 
-    const saved = resume ? restore() : null;
-    if (saved) {
+    const saved = (resume || carry) ? restore() : null;
+    if (saved && resume && saved.resumable) {
       Object.assign(ctx, saved.ctx || {});
       idx = Math.min(Math.max(saved.idx || 0, 0), steps.length - 1);
       // The project survived the restart; the in-memory handle did not.
@@ -571,6 +717,13 @@
       return;
     }
     idx = 0;
+    if (saved && carry) {
+      // Name and family are offered again as defaults; nothing is applied until the
+      // project step is completed a second time.
+      ctx.name = saved.ctx?.name || "";
+      ctx.family = saved.ctx?.family || null;
+      ctx.carryProjectId = saved.ctx?.projectId || null;
+    }
     paint(splash(), null);
   }
 
@@ -581,11 +734,25 @@
   // Called by each host's boot instead of its old welcome screen.
   function maybeOpen() {
     if (window.__FUNPACK_TOUR__) return false;
-    if (restore()) { open({ resume: true }); return true; }
+    if (sessionSuppressed()) return false;
+    // Something is already open — a resumed generation, a restored project. Setup is not
+    // the screen anyone wants in front of work that is already there.
+    if (S()?.get?.().project) return false;
+    const saved = restore();
+    if (saved?.resumable) { open({ resume: true }); return true; }
+    // An unfinished run that did NOT end in a deliberate restart: start over.
+    if (saved) { open({ carry: true }); return true; }
     if (done()) return false;
     open();
     return true;
   }
 
-  window.Onboarding = { open, close, maybeOpen, done, isOpen: () => !!root };
+  // Menu entry: run setup again on demand, whatever state the app is in.
+  function reopen() {
+    try { sessionStorage.removeItem(SS_SKIP); } catch (_) {}
+    clearSaved();
+    open();
+  }
+
+  window.Onboarding = { open, reopen, close, maybeOpen, done, isOpen: () => !!root };
 })();

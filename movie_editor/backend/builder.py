@@ -124,7 +124,7 @@ CORE_PRODUCERS: list[tuple[str, int, str]] = [  # (core_id, output_index, type)
 DEFAULT_FAMILY = "ltxav"
 
 FAMILIES: dict[str, dict] = {
-    "ltxav": {"label": "LTX-2 / LTXAV"},
+    "ltxav": {"label": "LTX2 / LTX2.3 / LTX2.5"},
     "minimax_h3": {
         "label": "MiniMax H3 (Hailuo)",
         "drop": ("cond", "concat", "f2i"),

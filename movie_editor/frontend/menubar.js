@@ -164,6 +164,8 @@
     return {
       File: [
         { label: "New Project", hint: "⌘N", action: promptNewProject },
+        { label: "Project Setup Wizard…", hint: "theme · model · tour",
+          action: () => window.Onboarding?.reopen?.() },
         { sep: true },
         { menulabel: "Open recent" },
         ...(recent.length ? recent : [{ label: "No projects", disabled: true }]),
