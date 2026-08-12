@@ -704,7 +704,7 @@
       const moved = hintEl("Moved here from the Distilled Flow panel's own ALG switch — it was "
         + "the same blur, and this one works on every sampler. Your strength and threshold "
         + "came with it; nothing changed about how the scene samples.");
-      moved.style.color = "var(--amber)";
+      moved.style.color = "var(--accent)";
       algG.append(moved);
     }
     algG.append(hintEl("This is the only ALG anchor control — on Distilled Flow it runs inside "

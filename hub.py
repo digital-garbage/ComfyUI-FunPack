@@ -26,13 +26,36 @@ _PAGE = """<!DOCTYPE html>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>FunPack</title>
+<script>
+  (function () {
+    var v; try { v = localStorage.getItem("funpack_theme"); } catch (e) {}
+    if (["dark", "light", "auto"].indexOf(v) < 0) v = "dark";
+    var res = v === "auto"
+      ? (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+      : v;
+    document.documentElement.setAttribute("data-theme", res);
+  })();
+</script>
 <style>
-  :root {
-    --ink-0: #0c0b09; --ink-1: #131210; --ink-2: #1a1814; --line: #2a261e;
+  /* Same token vocabulary and the same funpack_theme key as the two apps, so the
+     door you come in through is not the one page that ignores your choice. */
+  :root, :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ink-0: #0c0b09; --ink-1: #131210; --ink-2: #1a1814; --ink-3: #221f19; --line: #2a261e;
     --text: #ece7db; --muted: #918a7a; --faint: #645e51;
-    --amber: #f3a93c; --amber-2: #ffc36b; --teal: #57d0c6; --danger: #e8607a; --good: #79c479;
-    --radius: 12px; --shadow: 0 10px 30px -12px rgba(0,0,0,.7);
+    --accent: #f3a93c; --accent-hi: #ffc36b; --accent-lo: #e0972a; --on-accent: #1a1206;
+    --teal: #57d0c6; --danger: #e8607a; --good: #79c479;
+    --surface-modal: #16140f; --backdrop: rgba(6,5,4,.75); --shadow-ink: rgba(0,0,0,.7);
   }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --ink-0: #f5f7fa; --ink-1: #ffffff; --ink-2: #eef1f6; --ink-3: #e1e7ef; --line: #d3dae3;
+    --text: #16202c; --muted: #59677a; --faint: #8d9aab;
+    --accent: #2f7fd4; --accent-hi: #5aa4ec; --accent-lo: #2668b0; --on-accent: #ffffff;
+    --teal: #12857c; --danger: #c62a48; --good: #2f8f4e;
+    --surface-modal: #ffffff; --backdrop: rgba(24,34,48,.34); --shadow-ink: rgba(24,34,48,.30);
+  }
+  :root { --radius: 12px; --shadow: 0 10px 30px -12px var(--shadow-ink); }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; min-height: 100%; background: var(--ink-0); color: var(--text);
@@ -41,7 +64,7 @@ _PAGE = """<!DOCTYPE html>
   }
   .hub { text-align: center; max-width: 640px; width: 100%; }
   .brand { font-weight: 800; font-size: 28px; letter-spacing: .2px; margin-bottom: 6px; }
-  .brand-mark { color: var(--amber); margin-right: 8px; }
+  .brand-mark { color: var(--accent); margin-right: 8px; }
   .lead { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
 
   .about {
@@ -61,12 +84,12 @@ _PAGE = """<!DOCTYPE html>
     background: var(--ink-2); border: 1px solid var(--line); border-radius: 7px; padding: 7px 14px;
     cursor: pointer; font-size: 13px; color: var(--text); transition: border-color .12s, background .12s;
   }
-  .btn:hover:not(:disabled) { border-color: var(--amber); }
+  .btn:hover:not(:disabled) { border-color: var(--accent); }
   .btn:disabled { opacity: .45; cursor: default; }
-  .btn.primary { background: linear-gradient(#f3a93c, #e0972a); color: #1a1206; border-color: #f3a93c; font-weight: 700; }
+  .btn.primary { background: linear-gradient(var(--accent), var(--accent-lo)); color: var(--on-accent); border-color: var(--accent); font-weight: 700; }
   .btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
   .btn.ghost { background: transparent; color: var(--muted); }
-  .btn.ghost:hover:not(:disabled) { color: var(--amber-2); background: var(--ink-3); }
+  .btn.ghost:hover:not(:disabled) { color: var(--accent-hi); background: var(--ink-3); }
   .update-hint { color: var(--faint); font-size: 12px; }
 
   .cards { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
@@ -76,23 +99,23 @@ _PAGE = """<!DOCTYPE html>
     text-decoration: none; color: inherit; box-shadow: var(--shadow);
     transition: border-color .12s, transform .12s;
   }
-  a.card:hover { border-color: var(--amber); transform: translateY(-2px); }
+  a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
   .card-title { font-weight: 700; font-size: 17px; margin-bottom: 6px; }
-  .card-title.easy { color: var(--amber-2); }
+  .card-title.easy { color: var(--accent-hi); }
   .card-title.editor { color: var(--teal); }
   .card-sub { color: var(--faint); font-size: 12.5px; line-height: 1.5; }
 
   .restart-overlay {
-    position: fixed; inset: 0; z-index: 500; background: rgba(6,5,4,.75); backdrop-filter: blur(3px);
+    position: fixed; inset: 0; z-index: 500; background: var(--backdrop); backdrop-filter: blur(3px);
     display: flex; align-items: center; justify-content: center;
   }
   .restart-card {
-    background: #16140f; border: 1px solid var(--line); border-radius: 14px; padding: 26px 30px;
+    background: var(--surface-modal); border: 1px solid var(--line); border-radius: 14px; padding: 26px 30px;
     box-shadow: var(--shadow); text-align: center; max-width: 360px;
   }
   .restart-spin {
     width: 26px; height: 26px; margin: 0 auto 14px; border-radius: 50%;
-    border: 3px solid var(--line); border-top-color: var(--amber); animation: spin .8s linear infinite;
+    border: 3px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   .restart-msg { color: var(--muted); font-size: 13px; white-space: pre-wrap; }
