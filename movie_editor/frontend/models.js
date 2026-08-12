@@ -489,9 +489,36 @@
     if (n != null) { slot.role_label = n.trim() || undefined; await persist(); render(); }
   }
 
+  // Which widget on a node names the file it loads. Checked in order, then any
+  // remaining combo input whose name ends in _name — enough to cover core loaders and
+  // most third-party ones without a per-class table to keep up to date.
+  const FILE_INPUTS = [
+    "lora_name", "unet_name", "ckpt_name", "checkpoint_name", "model_name", "clip_name",
+    "vae_name", "control_net_name", "style_model_name", "gguf_name", "upscale_model_name",
+  ];
+
+  // Five LoRAs all called "LoRA" are indistinguishable, and renaming each by hand is the
+  // tax this avoids: derive the name from the file the node actually loads.
+  function autoLabel(slot) {
+    const inputs = slot.inputs || {};
+    const spec = specFor(slot);
+    let key = FILE_INPUTS.find((k) => typeof inputs[k] === "string" && inputs[k]);
+    if (!key) {
+      const combos = (spec?.inputs || []).filter((i) => i.kind === "combo" && /_name$/.test(i.name));
+      key = combos.map((i) => i.name).find((k) => typeof inputs[k] === "string" && inputs[k]);
+    }
+    if (!key) return null;
+    const raw = String(inputs[key]);
+    // "SDXL/detail/add-detail-xl.safetensors" -> "add-detail-xl"
+    const base = raw.split(/[\\/]/).pop().replace(/\.[a-z0-9]+$/i, "");
+    return base || null;
+  }
+
   function slotDisplayLabel(slot) {
     const role = roles.find((r) => r.key === slot.role);
-    return slot.role_label || (role ? role.label : slot.role) || slotName(slot) || "?";
+    // An explicit rename always wins; the parsed filename only fills the gap where the
+    // label would otherwise be the role, which every node of that role shares.
+    return slot.role_label || autoLabel(slot) || (role ? role.label : slot.role) || slotName(slot) || "?";
   }
 
   // ── node page (one configured slot: values, wiring, sources) ──────────────────
@@ -851,6 +878,19 @@
   }
   // Replace a wire target + mirror it as an input source on the destination slot.
   function _setWireTarget(srcSlot, outName, oldTarget, newTarget) {
+    // A wire onto an open core port is recorded TWICE: as the slot's wire, and as a
+    // core_override. reconcileOpenPortWiring() rebuilds each from the other, so dropping
+    // only the wire left the override behind and the next reconcile put the wire straight
+    // back — which is why "Studio · model" could not be unwired without deleting the node.
+    if (String(oldTarget || "").startsWith("port:")) {
+      const map = portToOpenCore(oldTarget.slice(5));
+      if (map) {
+        const [cid, inp] = map;
+        // Only if the override still names THIS wire; another output may own it now.
+        if (config.core_overrides?.[cid]?.[inp] === `out:${srcSlot.id}:${outName}`)
+          delete config.core_overrides[cid][inp];
+      }
+    }
     const old = _parseNodeTarget(oldTarget);
     if (old) {
       const ds = slotById(old.slotId);
@@ -1616,8 +1656,49 @@
     const meta = el("div", "node-card-meta");
     meta.append(el("div", "node-card-title", slotDisplayLabel(slot)));
     meta.append(el("div", "node-card-sub", slotName(slot)));
+
+    // Where this node feeds — otherwise the shelf shows what you have but not how it is
+    // put together, and you have to open every card to find that out.
+    const outs = wireDestinationLabels(slot);
+    const flow = el("div", "node-card-flow");
+    if (!outs.length) {
+      flow.classList.add("none");
+      flow.append(el("span", null, "→ not wired"));
+    } else {
+      flow.append(el("span", null, "→ " + outs[0]));
+      if (outs.length > 1) flow.append(el("span", "node-card-more", `+${outs.length - 1} more`));
+    }
+    meta.append(flow);
     card.append(meta);
     return card;
+  }
+
+  // Human label for one wire target ("port:…", "node:<id>:<input>", "global:…").
+  function targetLabel(value) {
+    if (!value) return null;
+    if (value === "global:video") return "Global video output";
+    if (value === "global:audio") return "Global audio output";
+    if (value.startsWith("port:")) {
+      const p = ports.find((x) => "port:" + x.id === value);
+      return p ? p.label : value.slice(5);
+    }
+    const n = _parseNodeTarget(value);
+    if (n) {
+      const dest = slotById(n.slotId);
+      return dest ? `${slotDisplayLabel(dest)} · ${n.input}` : n.input;
+    }
+    return value;
+  }
+
+  function wireDestinationLabels(slot) {
+    const out = [];
+    Object.values(slot.wires || {}).forEach((raw) => {
+      wireTargets(raw).forEach((t) => {
+        const l = targetLabel(t);
+        if (l && !out.includes(l)) out.push(l);
+      });
+    });
+    return out;
   }
 
   function nodeGrid(v) {

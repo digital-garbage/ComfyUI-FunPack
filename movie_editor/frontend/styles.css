@@ -2347,8 +2347,10 @@ body.tour-mode { overflow: hidden; }
    is "+ New node", so adding lives where the nodes are rather than in a
    sidebar you have to know about. */
 .node-grid {
-  display: grid; gap: 14px; margin: 4px 0 22px;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  display: grid; gap: 14px; margin: 4px 0 22px; justify-content: start;
+  /* A capped max, not 1fr: in a narrow pane two 1fr columns stretched each tile to
+     ~270px tall. A shelf keeps its tile size and reflows the count instead. */
+  grid-template-columns: repeat(auto-fill, minmax(116px, 132px));
 }
 .node-card {
   display: flex; flex-direction: column; gap: 8px; padding: 0;
@@ -2356,7 +2358,7 @@ body.tour-mode { overflow: hidden; }
   font-family: inherit; color: var(--text);
 }
 .node-card-art {
-  position: relative; aspect-ratio: 3 / 4; border-radius: 10px; overflow: hidden;
+  position: relative; aspect-ratio: 1 / 1; border-radius: 10px; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
   background: linear-gradient(160deg, var(--ink-3), var(--ink-1));
   border: 1px solid var(--line);
@@ -2371,10 +2373,10 @@ body.tour-mode { overflow: hidden; }
 .node-card.bad .node-card-art { border-color: color-mix(in srgb, var(--danger) 60%, var(--line)); }
 
 .node-card-mark {
-  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.4; font-weight: 500;
-  color: var(--muted); text-align: center; padding: 10px 12px;
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.35; font-weight: 500;
+  color: var(--muted); text-align: center; padding: 8px 9px;
   overflow-wrap: anywhere; hyphens: auto;
-  display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
 }
 .node-card:hover .node-card-mark { color: var(--text); }
 .node-card-plus { font-size: 40px; line-height: 1; color: var(--accent); font-weight: 300; }
@@ -2419,3 +2421,15 @@ body.tour-mode { overflow: hidden; }
 .node-foot-hint { flex: 1; min-width: 160px; font-size: 11.5px; color: var(--faint); }
 .node-foot-acts { display: flex; gap: 8px; }
 .node-foot .btn.primary.disabled, .node-foot .btn.primary:disabled { opacity: .4; cursor: default; }
+
+/* Where a node feeds, on the card itself — the shelf should show how the pipeline is
+   put together, not just what is in it. */
+.node-card-flow {
+  display: flex; align-items: baseline; gap: 5px; margin-top: 3px;
+  font-size: 10.5px; line-height: 1.35; color: var(--teal);
+}
+.node-card-flow > span:first-child {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.node-card-flow.none { color: var(--faint); }
+.node-card-more { flex: none; color: var(--faint); }
