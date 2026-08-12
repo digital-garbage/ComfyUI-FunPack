@@ -39,8 +39,7 @@ def test_codename_tolerates_short_and_padded_versions(version):
 
 
 def test_codenames_advance_alphabetically():
-    """The Ubuntu rule this follows: adjective and vegetable share an initial, and the
-    initial advances with the major. A future entry that breaks it should fail here."""
+    """Adjective and vegetable share an initial; initials advance with the major."""
     for major, name in sorted(git_update.CODENAMES.items()):
         adjective, _, noun = name.partition(" ")
         assert noun, f"{name!r} should be two words"

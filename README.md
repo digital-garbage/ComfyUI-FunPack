@@ -46,9 +46,8 @@ From time to time other short-lived branches may appear for the most advanced ye
 
 ## Versions
 
-Since **3.5.1**, each major version carries a release codename — an adjective and a vegetable
-sharing an initial, advancing alphabetically, in the tradition Ubuntu made familiar. All of
-3.x is **"Auspicious Asparagus"**. It is shown in Settings ▸ About.
+Each major version carries a codename, shown in Settings ▸ About. 3.x is
+**"Auspicious Asparagus"**.
 
 ### Version 3.0 — Cutting Room and development direction
 

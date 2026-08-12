@@ -18,24 +18,14 @@
 
 ## [3.5.1] "Auspicious Asparagus" - 2026-08-11
 
-FunPack picks up release codenames, Ubuntu-style: an adjective and a vegetable sharing an
-initial, one per major version. All of 3.x is **Auspicious Asparagus**.
-
-Otherwise this is a compatibility-and-polish release on top of 3.5.0's second model family.
-LTX-2.5 landed upstream mid-cycle and turned out to need almost nothing — but the two places
-it *would* have broken silently are fixed, and several long-standing rough edges went with
-them.
+Compatibility and polish on top of 3.5.0. LTX-2.5 works, and the two places it would have
+broken silently are fixed. Releases now carry a codename per major version.
 
 ### Added
-- **Release codenames.** Shown under the name in Settings ▸ About, carried on the same
-  payload as the version. A major with no name yet simply shows nothing.
-- **About reports the machine ComfyUI runs on.** Chip, memory, GPU (name, VRAM and compute
-  capability), free disk, OS, ComfyUI, Python, torch and CUDA — plus which fast-attention
-  backend is actually importable, which answers "is SageAttention really installed on this
-  box" without reading the launch arguments. On a rental the host and the browser are
-  different machines and the host is the interesting one, so the panel says which it means.
-  Every probe degrades to a dash on its own: About is the screen that should still render
-  when the install is broken.
+- **Release codenames**, shown in Settings ▸ About.
+- **About reports the machine ComfyUI runs on**: chip, memory, GPU (name, VRAM, compute
+  capability), free disk, OS, ComfyUI, Python, torch, CUDA, and which fast-attention backend
+  is installed. On a rental that is the host, not the browser.
 - **A schedule for every sampler.** Steps and scheduler belong to the pass, not to the
   KSampler branch, so any sampler can now be given a computed schedule instead of only a
   hand-typed sigma list. The frames field became usable in the same pass.

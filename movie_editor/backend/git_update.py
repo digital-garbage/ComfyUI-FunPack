@@ -39,21 +39,15 @@ def funpack_version() -> str:
     return m.group(1) if m else ""
 
 
-# Release codenames, the way Ubuntu does it: an adjective and a vegetable sharing an
-# initial, advancing alphabetically. Keyed by MAJOR version, so every 3.x release ships
-# under the same name and only a new major earns a new letter.
+# Adjective + vegetable sharing an initial, advancing alphabetically. Keyed by MAJOR, so
+# every 3.x release ships under one name.
 CODENAMES = {
     "3": "Auspicious Asparagus",
 }
 
 
 def funpack_codename(version: str = "") -> str:
-    """Codename for `version` (default: the installed one), or "" when its major has none.
-
-    Kept beside funpack_version because they are read together and shipped together; a
-    major with no entry simply has no codename yet, which the UI renders as absence rather
-    than as a blank line.
-    """
+    """Codename for `version` (default: the installed one); "" when its major has none."""
     major = (version or funpack_version()).split(".", 1)[0].strip()
     return CODENAMES.get(major, "")
 
