@@ -959,10 +959,20 @@
     any.onclick = () => { pop.remove(); openNodeSetup("__any__"); };
     pop.append(any);
 
-    const r = anchor.getBoundingClientRect();
-    pop.style.left = r.left + "px";
-    pop.style.top = (r.bottom + 4) + "px";
+    // Measure before placing: below the card is the default, but the shelf is usually
+    // near the bottom of a scrolled pane, where "below" is off-screen.
+    pop.style.visibility = "hidden";
     document.body.append(pop);
+    const r = anchor.getBoundingClientRect();
+    const box = pop.getBoundingClientRect();
+    const gap = 6, edge = 8;
+    const below = r.bottom + gap;
+    const top = below + box.height <= window.innerHeight - edge
+      ? below
+      : Math.max(edge, r.top - gap - box.height);
+    pop.style.top = top + "px";
+    pop.style.left = Math.max(edge, Math.min(r.left, window.innerWidth - box.width - edge)) + "px";
+    pop.style.visibility = "";
     const away = (e) => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener("mousedown", away, true); } };
     document.addEventListener("mousedown", away, true);
   }
@@ -1641,8 +1651,8 @@
     card.onclick = () => setView("node:" + slot.id);
 
     const art = el("div", "node-card-art");
-    // The class name IS the art here — an initials monogram would only repeat the
-    // subtitle, and two LoRAs would look identical.
+    // The class name is the art. The label below it is the node's own name, so showing
+    // the class twice would say nothing new.
     art.append(el("span", "node-card-mark", slotName(slot) || "?"));
     const flags = el("div", "node-card-flags");
     if (slot.bypassed) flags.append(el("span", "node-flag warn", "bypassed"));
@@ -1651,25 +1661,23 @@
     if (errs) flags.append(el("span", "node-flag bad", errs + (errs > 1 ? " errors" : " error")));
     else if (warns) flags.append(el("span", "node-flag warn", warns + (warns > 1 ? " warnings" : " warning")));
     art.append(flags);
-    card.append(art);
 
+    // On the tile, not under it: the name and what it feeds are the card, and a caption
+    // floating below left the shelf reading as a grid of unlabelled squares.
     const meta = el("div", "node-card-meta");
     meta.append(el("div", "node-card-title", slotDisplayLabel(slot)));
-    meta.append(el("div", "node-card-sub", slotName(slot)));
-
-    // Where this node feeds — otherwise the shelf shows what you have but not how it is
-    // put together, and you have to open every card to find that out.
     const outs = wireDestinationLabels(slot);
     const flow = el("div", "node-card-flow");
     if (!outs.length) {
       flow.classList.add("none");
-      flow.append(el("span", null, "→ not wired"));
+      flow.append(el("span", null, "not wired"));
     } else {
       flow.append(el("span", null, "→ " + outs[0]));
-      if (outs.length > 1) flow.append(el("span", "node-card-more", `+${outs.length - 1} more`));
+      if (outs.length > 1) flow.append(el("span", "node-card-more", `+${outs.length - 1}`));
     }
     meta.append(flow);
-    card.append(meta);
+    art.append(meta);
+    card.append(art);
     return card;
   }
 
@@ -1709,11 +1717,10 @@
     add.title = "Add a loader or custom node to the pipeline";
     const addArt = el("div", "node-card-art");
     addArt.append(el("span", "node-card-plus", "+"));
-    add.append(addArt);
     const addMeta = el("div", "node-card-meta");
     addMeta.append(el("div", "node-card-title", "New node"));
-    addMeta.append(el("div", "node-card-sub", "loader or custom"));
-    add.append(addMeta);
+    addArt.append(addMeta);
+    add.append(addArt);
     add.onclick = (e) => openRoleMenu(e.currentTarget);
     wrap.append(add);
 

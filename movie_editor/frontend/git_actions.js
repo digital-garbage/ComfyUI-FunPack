@@ -33,9 +33,8 @@
     window.FunPackRestart?.waitForReload?.(msgEl, startMs);
   }
 
-  // All three actions below end in a server restart and a page reload, so anything the
-  // store is still holding — a debounced field, or a whole settings session waiting on its
-  // close — has to reach disk first. flushSave() ignores the suspension for exactly this.
+  // All three actions below end in a restart and a page reload, so anything the store is
+  // still holding has to reach disk first. flushSave() ignores the suspension for this.
   async function _flushPendingEdits() {
     try { await window.Store?.flushSave?.(); } catch (_) {}
   }

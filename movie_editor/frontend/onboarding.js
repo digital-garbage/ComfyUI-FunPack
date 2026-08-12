@@ -110,12 +110,10 @@
   }
 
   // ── hosted panes ──────────────────────────────────────────────────────────
-  // Setting up models, links, shortcuts or splits used to hand you off to the Settings
-  // window or a floating Composer, dropped on top of a half-finished wizard. The wizard
-  // hosts those panes itself instead: same builders, same editors, same store, but on a
-  // full screen of the flow, with one Done button back to where you were. Panes are NOT
-  // steps — they open over the current step and return to it, so Back stays symmetrical
-  // and skipping one never shifts the step count.
+  // Models, links, shortcuts and splits, shown as full screens of the wizard instead of
+  // handing off to the Settings window or a floating Composer. Same builders and editors,
+  // one Done button back. Panes are NOT steps: they open over the current step and return
+  // to it, so Back stays symmetrical and the step count never shifts.
   const PANES = {
     models: {
       title: "Models & pipeline",
@@ -433,9 +431,8 @@
 
     // ── guided tour ─────────────────────────────────────────────────────────
     tour: {
-      // The tour runs against a throwaway sandbox project in its own page mode, so it
-      // cannot start on top of the wizard — the choice is recorded here and acted on by
-      // finish(). Saying so on the screen is the whole point of the hint below.
+      // The tour runs in its own page mode against a sandbox project, so it cannot start
+      // over the wizard: the choice is recorded here and acted on by finish().
       render() {
         const box = el("div", "oo-step");
         box.append(head("tour", "Want the guided tour?",
@@ -473,6 +470,15 @@
 
   // ── the splash, which is not a step: it has no Back and no progress ───────
 
+  // Most recently touched project, or null when there is none to go back to.
+  async function lastProject() {
+    try {
+      const { projects } = await API().listProjects();
+      return (projects || []).slice()
+        .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))[0] || null;
+    } catch (_) { return null; }
+  }
+
   function splash() {
     const box = el("div", "oo-splash");
     const mark = el("div", "oo-splash-mark", "◉");
@@ -485,10 +491,28 @@
     begin.onclick = () => { idx = 0; renderStep(); };
     box.append(begin);
 
+    // One click back into whatever was open before the restart. Filled in when the
+    // project list arrives — the splash paints first and must not wait on a fetch.
+    const resumeBtn = el("button", "oo-btn oo-btn-quiet oo-btn-resume");
+    resumeBtn.type = "button";
+    resumeBtn.hidden = true;
+    box.append(resumeBtn);
+
     const load = el("button", "oo-btn oo-btn-quiet", "Load an existing project");
     load.type = "button";
     load.onclick = openExisting;
     box.append(load);
+
+    lastProject().then((p) => {
+      if (!p || !resumeBtn.isConnected) return;
+      resumeBtn.textContent = "Continue with “" + p.name + "”";
+      resumeBtn.hidden = false;
+      resumeBtn.onclick = () => {
+        suppressSession();
+        close();
+        (S().loadProject(p.id) || Promise.resolve()).catch(() => {});
+      };
+    });
 
     box.append(window.FunPackGit.maintenanceRow("oo-maint"));
 
@@ -540,7 +564,7 @@
   }
 
   function saveGenType() {
-    try { S().setEditorSetting?.("generationType", ctx.genType); } catch (_) {}
+    try { S().patchProject?.({ generation_mode: ctx.genType }); } catch (_) {}
     next();
   }
 
@@ -604,17 +628,9 @@
   }
 
   // ── persistence ───────────────────────────────────────────────────────────
-  // Two different things are recorded here, and conflating them was the bug:
-  //
-  //   resumable — the wizard ITSELF restarted ComfyUI (installing node packs) and the
-  //     page is about to reload underneath it. Only then does it come back mid-flow.
-  //
-  //   everything else — a refresh, a closed tab, a reset. Setup was never finished, so
-  //     it starts again from the top rather than dropping you into the middle of a flow
-  //     you have no memory of. The project it had already created comes along, so a
-  //     second run renames that one instead of leaving an orphan behind.
-  //
-  // The record is cleared only by finish(), so an unfinished wizard is always detectable.
+  // `resumable` marks the one case that resumes mid-flow: the wizard restarted ComfyUI
+  // itself and the page is about to reload. A refresh or a closed tab starts over, and
+  // carries the project the run had already created. Cleared only by finish().
   function save(resumable) {
     try {
       localStorage.setItem(LS_RUN, JSON.stringify({

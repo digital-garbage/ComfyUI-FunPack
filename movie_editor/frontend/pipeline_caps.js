@@ -194,9 +194,13 @@
     return CHAIN_ONLY.has(type);
   }
 
+  // "t2v" = shots start from the prompt. Mirrors pipeline_caps.is_t2v on the backend.
+  function isT2V(st) {
+    return String(st?.project?.generation_mode || "i2v").toLowerCase() === "t2v";
+  }
+
   function defaultSceneSourceType(st) {
-    // t2v ("empty") is no longer a user-facing mode — new scenes default to an i2v
-    // anchor (image). Anchorless scenes still fall back to t2v in the engine.
+    if (isT2V(st)) return usesChainSampler(st) ? "carry" : "empty";
     return usesChainSampler(st) ? "carry" : "image";
   }
 
@@ -206,6 +210,7 @@
   const ANCHOR_MEDIA_SOURCES = new Set(["image", "mixed", "generated_frame", "v2v", "anchor_guide"]);
 
   function sourceNeedsAnchorMedia(scene, st) {
+    if (isT2V(st)) return false;   // a t2v project expects no anchors
     return ANCHOR_MEDIA_SOURCES.has(effectiveSourceType(scene, st));
   }
 
@@ -311,6 +316,7 @@
     h3InertSettings,
     effectiveSourceType,
     isChainOnlySource,
+    isT2V,
     defaultSceneSourceType,
     sourceNeedsAnchorMedia,
     isMissingAnchorMedia,

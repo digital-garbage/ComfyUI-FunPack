@@ -43,6 +43,7 @@ def funpack_version() -> str:
 # every 3.x release ships under one name.
 CODENAMES = {
     "3": "Auspicious Asparagus",
+    "4": "Blinding Blackout",
 }
 
 

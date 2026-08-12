@@ -67,6 +67,20 @@ def test_scenes_missing_anchor_media_flags_only_the_unset_ones():
     assert pipeline_caps.scenes_missing_anchor_media(p, True) == ["s_bad"]
 
 
+def test_scenes_missing_anchor_media_silent_in_t2v():
+    """A t2v project starts shots from the prompt, so an unset anchor is the norm."""
+    p = Project(name="t", generation_mode="t2v")
+    bad = _scene("image"); bad.id = "s_bad"
+    p.scenes = [bad]
+    assert pipeline_caps.is_t2v(p) is True
+    # from_dict is an explicit field list — a field missing from it round-trips to the default.
+    assert Project.from_dict(p.to_dict()).generation_mode == "t2v"
+    assert Project.from_dict({"name": "x"}).generation_mode == "i2v"
+    assert pipeline_caps.scenes_missing_anchor_media(p, True) == []
+    # ...and the default is unchanged for everyone else.
+    assert pipeline_caps.is_t2v(Project(name="t")) is False
+
+
 def test_scenes_missing_anchor_media_silent_without_chain_sampler():
     """Without Chain Sampler an anchorless image scene degrades to t2v by design,
     so warning about a missing anchor there would be noise."""

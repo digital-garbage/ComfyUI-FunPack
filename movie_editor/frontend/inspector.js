@@ -478,6 +478,17 @@
     row2.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));
     body.append(row2);
 
+    // Sets what a new scene starts from and whether a missing anchor is worth mentioning.
+    // Images stay wireable in either mode.
+    const mode = el("select"); mode.dataset.k = "pj-genmode";
+    [["i2v", "From an image"], ["t2v", "From a prompt"]].forEach(([v, lbl]) => {
+      const o = new Option(lbl, v);
+      if ((p.generation_mode || "i2v") === v) o.selected = true;
+      mode.append(o);
+    });
+    mode.onchange = () => S.patchProject({ generation_mode: mode.value });
+    body.append(field("Start shots", mode));
+
     const promptTag = el("div", "insp-tag"); promptTag.textContent = "Prompt"; body.append(promptTag);
     const anchor = el("textarea"); anchor.rows = 2; anchor.value = p.anchor || ""; anchor.dataset.k = "pj-anchor";
     anchor.placeholder = "World / setting context prepended to every scene";

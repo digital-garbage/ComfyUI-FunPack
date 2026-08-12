@@ -574,6 +574,10 @@ class Project:
     # is a slot id from models.json. Stored now, full builder wiring in a future phase.
     conditioning_slot: str = "funpack"
     sampler_slot: str = "funpack"
+    # "i2v" (default) or "t2v". t2v means shots start from the prompt, so nothing checks
+    # or reports a missing anchor image. Images stay wireable either way — the mode only
+    # decides what is EXPECTED, never what is allowed.
+    generation_mode: str = "i2v"
     # Widget-input overrides for the built-in FunPack nodes (only used when the
     # corresponding slot == "funpack"). Keys match ComfyUI widget/input names exactly.
     studio_inputs: dict = field(default_factory=dict)
@@ -666,6 +670,7 @@ class Project:
             max_scenes=int(d.get("max_scenes", 8)),
             conditioning_slot=str(d.get("conditioning_slot", "funpack")),
             sampler_slot=str(d.get("sampler_slot", "funpack")),
+            generation_mode=("t2v" if str(d.get("generation_mode", "")).lower() == "t2v" else "i2v"),
             studio_inputs=dict(d.get("studio_inputs") or {}),
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
             variables=list(d.get("variables") or []),

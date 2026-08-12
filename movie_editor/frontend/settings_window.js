@@ -88,9 +88,8 @@
     teardownSection();
     if (overlay) overlay.remove();
     overlay = null; activeId = null;
-    // One save for the whole session, on the way out, with the values that are on screen.
-    // Nothing in here is worth a network round-trip per keystroke, and a save landing
-    // mid-edit used to come back and overwrite the knob still under the cursor.
+    // One save on the way out, with the values on screen. A save landing mid-edit used
+    // to come back and overwrite the knob under the cursor.
     if (wasOpen) window.Store?.resumeSave?.();
   }
 
@@ -100,8 +99,7 @@
     if (overlay && !overlay.isConnected) { close(); }
     if (overlay) { show(id || activeId); return; }
     query = "";
-    // Held until close() — see the note there. Paired strictly with the overlay's
-    // lifetime, and only on the branch that actually creates one.
+    // Held until close(). Paired with the overlay's lifetime, so only on this branch.
     window.Store?.suspendSave?.();
 
     overlay = el("div", "modal-overlay sw-overlay");
@@ -157,12 +155,9 @@
     return it;
   }
 
-  // Mount ONE registered section into an arbitrary container, with no sidebar, no search
-  // and no window chrome. The setup wizard shows Models (and, on Easy Gen, Shortcuts) as
-  // full screens of its own — asking someone to set up models should not drop the whole
-  // Settings window on top of the flow they are halfway through.
-  //
-  // Returns { spec, cleanup } or null when nothing has registered that id.
+  // Mount ONE registered section into an arbitrary container — no sidebar, no search, no
+  // window chrome. Used by the setup wizard to show a section as a screen of its own.
+  // Returns { spec, cleanup }, or null when nothing has registered that id.
   function mountSection(id, host, opts = {}) {
     const spec = registry.find((s) => s.id === id);
     if (!spec) return null;

@@ -65,6 +65,11 @@ def source_needs_anchor_media(scene: Scene, chain_available: bool) -> bool:
     return effective_source_type(scene, chain_available) in _ANCHOR_MEDIA_SOURCES
 
 
+def is_t2v(project) -> bool:
+    """True when the project starts shots from the prompt rather than an image."""
+    return str(getattr(project, "generation_mode", "i2v") or "i2v").lower() == "t2v"
+
+
 def scenes_missing_anchor_media(project, chain_available: bool) -> list[str]:
     """Scene ids whose source mode wants an anchor but has none selected.
 
@@ -72,7 +77,11 @@ def scenes_missing_anchor_media(project, chain_available: bool) -> list[str]:
     IS set but has fallen out of the media bin. This catches the ref never being set
     at all — that scene is skipped silently when anchors are assembled, so without
     this the user just gets a shot that quietly ignored its own source setting.
+
+    A t2v project expects no anchors, so nothing here is missing.
     """
+    if is_t2v(project):
+        return []
     missing: list[str] = []
     for sc in getattr(project, "scenes", None) or []:
         if getattr(sc, "excluded", False):

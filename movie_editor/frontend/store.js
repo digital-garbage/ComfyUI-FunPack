@@ -160,15 +160,12 @@
   let _selectionAnchorId = null;  // shift-click range anchor
   let _modelsSaveTimer = null;    // debounce exposed-control (node input) saves
   let _modelsSaveDirty = false;
-  // Autosave suspension, held while a settings surface is open (see suspendSave). Every
-  // knob in there writes through the store, so a debounce that fires mid-session sends a
-  // half-edited value AND comes back with a server copy that replaces state.project — the
-  // race behind "I set 0.5 and it went back to 1.0". Counted, not a flag: sections nest.
+  // Autosave suspension, held while a settings surface is open (see suspendSave). A
+  // debounce firing mid-session saves a half-edited value and echoes it back over
+  // state.project — "I set 0.5 and it went back to 1.0". Counted: surfaces nest.
   let _saveSuspended = 0;
-  // In-flight reload of state.models (fired by funpack-models-changed). commit() copies
-  // state.models into project.models, so committing while this is pending would write the
-  // PRE-edit node list — the same stale-copy problem the sync exists to prevent, just from
-  // the other side. Closing Settings commits immediately, so the window is real.
+  // In-flight reload of state.models (funpack-models-changed). commit() copies it into
+  // project.models, so committing mid-reload would write the pre-edit node list.
   let _modelsLoad = null;
 
   function notify() { listeners.forEach((fn) => { try { fn(state); } catch (e) { console.error(e); } }); }
@@ -929,20 +926,17 @@
     _notifySaveChip();
   }
 
-  // Hold every scheduled save until the matching resumeSave(). Edits still land in local
-  // state and still mark the project unsaved — only the network write waits, so a pane full
-  // of knobs saves once, on close, with the values that are actually on screen.
-  //
-  // An EXPLICIT flush still goes through: Generate, and anything else calling flushSave(),
-  // must not be able to build a graph from a project the server hasn't seen.
+  // Hold scheduled saves until the matching resumeSave(). Edits still land locally and
+  // still mark the project unsaved; only the network write waits. An explicit flushSave()
+  // (Generate, restart, tab hidden) ignores the hold.
   function suspendSave() {
     _saveSuspended++;
     clearTimeout(saveTimer);
     saveTimer = null;
   }
 
-  // Balanced with suspendSave(). Returns the commit promise if this released the last hold
-  // and there was something to write, else null.
+  // Balanced with suspendSave(). Returns the commit promise if this released the last
+  // hold and there was something to write, else null.
   function resumeSave() {
     if (_saveSuspended > 0) _saveSuspended--;
     if (_saveSuspended > 0) return null;
@@ -4058,9 +4052,8 @@
     clearTimeout(_modelsSaveTimer); _modelsSaveTimer = null; _modelsSaveDirty = false;
     try {
       const saved = await API.saveModels(state.project?.id, state.models);
-      // Same guard commit() has: an edit made while this write was in flight is NEWER than
-      // the copy the server just echoed back, and adopting the echo would roll it back —
-      // then send the rolled-back value on the next save. Keep local; the queued save wins.
+      // Same guard commit() has: an edit made during this write is newer than the echo,
+      // so adopting the echo would roll it back. Keep local; the queued save wins.
       if (!_modelsSaveDirty) state.models = saved;
       notify();
     } catch (e) { console.error("saveModels failed", e); }
@@ -4355,9 +4348,8 @@
     if (window.WelcomePage) window.WelcomePage.open();
   }
 
-  // Backstop for a suspended save the user walks away from: leaving the tab is the last
-  // moment we reliably get. Safe to do unconditionally — nobody is mid-edit in a tab that
-  // just went to the background, which is the only thing suspension exists to protect.
+  // Backstop for a suspended save the user walks away from. Unconditional is safe:
+  // nobody is mid-edit in a tab that just went to the background.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") { try { flushSave(); } catch (_) {} }
   });

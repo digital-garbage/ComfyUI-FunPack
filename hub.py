@@ -26,6 +26,9 @@ _PAGE = """<!DOCTYPE html>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>FunPack</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <script>
   (function () {
     var v; try { v = localStorage.getItem("funpack_theme"); } catch (e) {}
@@ -59,7 +62,7 @@ _PAGE = """<!DOCTYPE html>
   * { box-sizing: border-box; }
   html, body {
     margin: 0; min-height: 100%; background: var(--ink-0); color: var(--text);
-    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-family: "Inter", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
     display: flex; align-items: center; justify-content: center; padding: 32px 16px;
   }
   .hub { text-align: center; max-width: 640px; width: 100%; }
@@ -71,7 +74,7 @@ _PAGE = """<!DOCTYPE html>
     display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center;
     background: var(--ink-1); border: 1px solid var(--line); border-radius: var(--radius);
     padding: 10px 16px; margin-bottom: 28px; font-size: 12.5px; color: var(--muted);
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .about .led { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); display: inline-block; margin-right: 5px; }
   .about .led.ok { background: var(--good); box-shadow: 0 0 8px var(--good); }
@@ -93,7 +96,7 @@ _PAGE = """<!DOCTYPE html>
   .update-hint { color: var(--faint); font-size: 12px; }
   .branch-select {
     background: var(--ink-2); border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px;
-    font-size: 13px; color: var(--text); font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 13px; color: var(--text); font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     cursor: pointer; max-width: 220px;
   }
   .branch-select:hover:not(:disabled) { border-color: var(--accent); }
