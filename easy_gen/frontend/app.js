@@ -276,7 +276,7 @@
     }
     // First run (or a wizard interrupted by an install restart) gets the setup flow;
     // everyone else gets the project picker they already know.
-    if (!loaded && !window.Onboarding?.maybeOpen()) window.ProjectMenu.open({ dismissable: false });
+    if (!loaded) window.Onboarding?.maybeOpen();
     // After the project is in place, so a run targeting it re-attaches fully (result and
     // all) instead of falling back to the queue-watch path. Not awaited — it runs for as
     // long as the generation does.

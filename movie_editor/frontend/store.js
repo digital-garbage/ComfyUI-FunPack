@@ -824,7 +824,6 @@
     refreshPreview();
     await loadModels();
     _validateSceneRenders();
-    window.WelcomePage?.close?.();
     window.PipelineSetup?.maybePrompt?.();
   }
 
@@ -849,7 +848,7 @@
     if (state.projects[0]) await loadProject(state.projects[0].id);
     else {
       notify();
-      if (window.WelcomePage) window.WelcomePage.open();
+      window.Onboarding?.open?.();
     }
   }
 
@@ -4341,11 +4340,9 @@
       }
     } catch (_) { /* queue unreachable — boot normally */ }
     notify();
-    // First run (or a wizard interrupted by an install restart) gets the setup flow;
-    // everyone else gets the project picker they already know.
+    // One front door: the full-screen welcome, unless a running generation was resumed.
     if (resumed) return;
-    if (window.Onboarding?.maybeOpen()) return;
-    if (window.WelcomePage) window.WelcomePage.open();
+    window.Onboarding?.maybeOpen();
   }
 
   // Backstop for a suspended save the user walks away from. Unconditional is safe:

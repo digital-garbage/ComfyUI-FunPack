@@ -137,7 +137,7 @@
     wrap.append(el("span", null, m.label));
 
     const sel = el("select"); sel.dataset.k = "sc-" + kind + "mode";
-    [["project", "Inherit project global"], ["timeline", "Inherit timeline (trim)"], ["custom", "Custom"]]
+    [["project", "Project default"], ["timeline", "Timeline trim"], ["custom", "Custom"]]
       .forEach(([v, l]) => { const o = el("option", null, l); o.value = v; if (v === mode) o.selected = true; sel.append(o); });
     sel.onchange = () => {
       const patch = { [kind + "_mode"]: sel.value };

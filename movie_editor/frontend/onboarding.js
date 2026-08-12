@@ -15,7 +15,6 @@
   const API = () => window.MovieEditorAPI;
   const LS_DONE = "funpack_onboarded";
   const LS_RUN = "funpack_wizard";       // an unfinished run (see save())
-  const SS_SKIP = "funpack_wizard_skip"; // this tab session declined it
 
   let root = null;       // the full-screen overlay
   let stage = null;      // the animated content column
@@ -139,11 +138,76 @@
       sub: "Markers that cut one written prompt into separate scenes.",
       mount: (body) => ({ cleanup: window.Composer.mountPane("splits", body) }),
     },
+    projects: {
+      title: "Your projects",
+      sub: "Open one, or bring in a project file from somewhere else.",
+      mount: (body, setActions) => mountProjects(body, setActions),
+    },
   };
+
+  // The project picker. This screen replaced a separate welcome card — two different
+  // front doors for the same decision was one too many.
+  function mountProjects(body, setActions) {
+    const importInput = el("input");
+    importInput.type = "file";
+    importInput.accept = ".json,.funpack_project.json,application/json";
+    importInput.style.display = "none";
+    importInput.onchange = async () => {
+      const file = importInput.files?.[0];
+      importInput.value = "";
+      if (!file) return;
+      await S().importProject(file);
+      close();
+    };
+    body.append(importInput);
+
+    const imp = el("button", "btn ghost tiny", "Import project file…");
+    imp.type = "button";
+    imp.onclick = () => importInput.click();
+    setActions([imp]);
+
+    const list = el("div", "oo-projects");
+    body.append(list);
+
+    const paintList = async () => {
+      clear(list);
+      let projects = [];
+      try { projects = (await API().listProjects()).projects || []; } catch (_) {}
+      projects.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+      if (!projects.length) {
+        list.append(el("p", "oo-body", "No projects yet. Go back and press Begin."));
+        return;
+      }
+      projects.forEach((p) => {
+        const row = el("button", "oo-project");
+        row.type = "button";
+        const main = el("div", "oo-project-main");
+        main.append(el("div", "oo-project-name", p.name));
+        const n = p.scene_count || 0;
+        main.append(el("div", "oo-project-meta",
+          `${n} ${n === 1 ? "scene" : "scenes"} · ${when(p.updated_at)}`));
+        row.append(main);
+        row.onclick = () => { close(); S().loadProject(p.id); };
+        list.append(row);
+      });
+    };
+    paintList();
+    return { cleanup: () => {} };
+  }
+
+  function when(ts) {
+    if (!ts) return "never opened";
+    const days = Math.floor((Date.now() / 1000 - ts) / 86400);
+    if (days <= 0) return "today";
+    if (days === 1) return "yesterday";
+    if (days < 30) return days + " days ago";
+    return new Date(ts * 1000).toLocaleDateString();
+  }
 
   function openPane(kind) {
     const spec = PANES[kind];
     if (!spec) return;
+    const fromSplash = !panel && !!root?.querySelector(".oo-splash");
     closePane();
     const box = el("div", "oo-pane");
     const head = el("div", "oo-pane-head");
@@ -164,17 +228,20 @@
       body.append(el("p", "oo-body", "This part of the setup isn't available in this build."));
     }
 
-    panel = { kind, cleanup: mounted?.cleanup || null };
+    panel = { kind, fromSplash, cleanup: mounted?.cleanup || null };
     paint(box, "pane:" + kind, { pane: true });
-    root.append(actions({ primary: "Done", onPrimary: closePane }));
+    root.append(actions({ primary: fromSplash ? "Back" : "Done", onPrimary: closePane }));
     root.classList.add("oo-has-actions");
   }
 
   function closePane() {
     if (!panel) return;
+    const backToSplash = panel.fromSplash;
     try { panel.cleanup?.(); } catch (_) {}
     panel = null;
-    if (root) renderStep();
+    if (!root) return;
+    if (backToSplash) paint(splash(), null);
+    else renderStep();
   }
 
   // ── step registry ─────────────────────────────────────────────────────────
@@ -508,7 +575,6 @@
       resumeBtn.textContent = "Continue with “" + p.name + "”";
       resumeBtn.hidden = false;
       resumeBtn.onclick = () => {
-        suppressSession();
         close();
         (S().loadProject(p.id) || Promise.resolve()).catch(() => {});
       };
@@ -568,15 +634,7 @@
     next();
   }
 
-  // Loading a project IS an answer to the wizard's question, so it stops asking for the
-  // rest of this session — including the tour, which would only get in the way of work
-  // that is already under way.
-  function openExisting() {
-    suppressSession();
-    close();
-    if (isEasyGen()) window.ProjectMenu.open({ dismissable: true });
-    else window.WelcomePage.open();
-  }
+  function openExisting() { openPane("projects"); }
 
   // ── navigation ────────────────────────────────────────────────────────────
 
@@ -657,16 +715,6 @@
     try { localStorage.removeItem(LS_RUN); } catch (_) {}
   }
 
-  // Suppressed for the rest of this tab's session: the user answered the wizard's own
-  // question by loading a project instead. sessionStorage, not localStorage — next time
-  // they open the app fresh, an unfinished setup is worth offering again.
-  function suppressSession() {
-    try { sessionStorage.setItem(SS_SKIP, "1"); } catch (_) {}
-  }
-  function sessionSuppressed() {
-    try { return sessionStorage.getItem(SS_SKIP) === "1"; } catch (_) { return false; }
-  }
-
   // The tour lives in its own page mode against a sandbox project, so it cannot start
   // over the editor — finishing navigates there.
   function startTour() {
@@ -681,7 +729,6 @@
   function finish() {
     try { localStorage.setItem(LS_DONE, "1"); } catch (_) {}
     clearSaved();
-    suppressSession();
     // The wizard IS the pipeline setup — without this its modal reopens over the editor
     // and asks for the family and the node packs all over again.
     window.PipelineSetup?.markHandled?.();
@@ -747,25 +794,21 @@
     try { return localStorage.getItem(LS_DONE) === "1"; } catch (_) { return false; }
   }
 
-  // Called by each host's boot instead of its old welcome screen.
+  // The start screen for both frontends: shown whenever nothing is open, not just on a
+  // first run. Its splash carries Begin, the last project, the project list, and the
+  // maintenance actions, so there is one front door instead of two.
   function maybeOpen() {
     if (window.__FUNPACK_TOUR__) return false;
-    if (sessionSuppressed()) return false;
-    // Something is already open — a resumed generation, a restored project. Setup is not
-    // the screen anyone wants in front of work that is already there.
-    if (S()?.get?.().project) return false;
+    if (S()?.get?.().project) return false;   // work already open — don't cover it
     const saved = restore();
     if (saved?.resumable) { open({ resume: true }); return true; }
     // An unfinished run that did NOT end in a deliberate restart: start over.
-    if (saved) { open({ carry: true }); return true; }
-    if (done()) return false;
-    open();
+    open(saved ? { carry: true } : undefined);
     return true;
   }
 
   // Menu entry: run setup again on demand, whatever state the app is in.
   function reopen() {
-    try { sessionStorage.removeItem(SS_SKIP); } catch (_) {}
     clearSaved();
     open();
   }
