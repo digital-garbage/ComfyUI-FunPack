@@ -345,10 +345,11 @@ a.brand:hover .brand-sub { color: var(--accent-hi); }
 
 /* Simple mode: everything that needs explaining is gone. Nothing is disabled and no
    state is dropped — the timeline, ratings and advanced panes are still there, and
-   switching back shows them exactly as they were. The Media Bin stays: it IS the
-   gallery, so there is no second one to build. */
+   switching back shows them exactly as they were. */
 :root[data-ui-mode="simple"] .zone.timeline,
 :root[data-ui-mode="simple"] #split-bottom,
+:root[data-ui-mode="simple"] #split-left,
+:root[data-ui-mode="simple"] #split-right,
 :root[data-ui-mode="simple"] .dock-tabs,
 :root[data-ui-mode="simple"] .composer-btn,
 :root[data-ui-mode="simple"] .insp-engine-strip,
@@ -2507,3 +2508,35 @@ body.tour-mode { overflow: hidden; }
 }
 .node-card-flow.none { color: var(--faint); }
 .node-card-more { flex: none; color: var(--faint); }
+
+
+/* ── Simple mode: one prompt, one Generate, panels on demand ──────────────
+   Assets and Properties are not rebuilt for this mode — the same zones slide in
+   over the preview when asked for, and are off-canvas otherwise. */
+:root[data-ui-mode="simple"] #media-zone,
+:root[data-ui-mode="simple"] #inspector-zone {
+  position: absolute; top: 0; bottom: 0; z-index: 60;
+  width: min(340px, 82vw);
+  box-shadow: 0 0 40px -8px var(--shadow-ink);
+  transition: transform .18s cubic-bezier(.22,.61,.36,1);
+}
+:root[data-ui-mode="simple"] #media-zone { left: 0; transform: translateX(-101%); }
+:root[data-ui-mode="simple"] #inspector-zone { right: 0; transform: translateX(101%); }
+:root[data-ui-mode="simple"] .workspace.show-assets #media-zone,
+:root[data-ui-mode="simple"] .workspace.show-props #inspector-zone { transform: none; }
+:root[data-ui-mode="simple"] .main-row { position: relative; }
+
+.simple-bar {
+  flex: 0 0 auto; display: flex; flex-direction: column; gap: var(--sp-2);
+  padding: var(--sp-3); border-top: 1px solid var(--line); background: var(--ink-1);
+}
+.simple-bar[hidden] { display: none; }
+.simple-prompt {
+  width: 100%; resize: vertical; min-height: 76px;
+  font-size: var(--fs-title-3); line-height: 22px;
+}
+.simple-bar-row { display: flex; gap: var(--sp-2); justify-content: flex-end; }
+
+/* The close lives in the zone head and only exists while the zone is a slide-over. */
+.panel-close { margin-left: auto; }
+:root:not([data-ui-mode="simple"]) .panel-close { display: none; }
