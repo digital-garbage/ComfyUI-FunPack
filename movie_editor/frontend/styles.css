@@ -345,11 +345,10 @@ a.brand:hover .brand-sub { color: var(--accent-hi); }
 
 /* Simple mode: everything that needs explaining is gone. Nothing is disabled and no
    state is dropped — the timeline, ratings and advanced panes are still there, and
-   switching back shows them exactly as they were. */
+   switching back shows them exactly as they were. The Media Bin stays: it IS the
+   gallery, so there is no second one to build. */
 :root[data-ui-mode="simple"] .zone.timeline,
 :root[data-ui-mode="simple"] #split-bottom,
-:root[data-ui-mode="simple"] #media-zone,
-:root[data-ui-mode="simple"] #split-left,
 :root[data-ui-mode="simple"] .dock-tabs,
 :root[data-ui-mode="simple"] .composer-btn,
 :root[data-ui-mode="simple"] .insp-tabs,
