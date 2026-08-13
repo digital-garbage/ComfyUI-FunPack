@@ -1111,6 +1111,39 @@ def parse_timeline_segments(prompt):
     return {"anchor": anchor, "scenes": scenes, "transitions": transitions}
 
 
+class _ClipTokenizerAdapter:
+    """Presents a live Comfy tokenizer through the slice of the HuggingFace API the refinement
+    code uses: call it for `input_ids`, decode ids back to text.
+
+    Comfy's inner tokenizers take text and nothing else, so truncation and the leading start
+    token are handled here. Dropping the start token matters: concept spans are found by
+    matching a phrase's ids inside the whole prompt's ids, and a BOS on the phrase never
+    matches."""
+
+    def __init__(self, sd_tokenizer):
+        self._t = sd_tokenizer.tokenizer
+        self._start = getattr(sd_tokenizer, "start_token", None)
+        self.name_or_path = str(getattr(sd_tokenizer, "embedding_key", "") or "CLIP")
+
+    def __call__(self, text, add_special_tokens=True, truncation=False, max_length=None, **_):
+        ids = list((self._t(text) or {}).get("input_ids") or [])
+        if not add_special_tokens and self._start is not None:
+            while ids and ids[0] == self._start:
+                ids.pop(0)
+        if truncation and max_length:
+            ids = ids[: int(max_length)]
+        return {"input_ids": ids}
+
+    def encode(self, text, **kwargs):
+        return self(text, **kwargs)["input_ids"]
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        try:
+            return self._t.decode(list(token_ids), skip_special_tokens=skip_special_tokens)
+        except TypeError:
+            return self._t.decode(list(token_ids))
+
+
 class FunPackVideoRefiner:
     LATENT_OUTPUT_INDEX = 6
     NO_LATENT_REFERENCE_ERROR = "No available latent to operate. Please connect reference latent to input of Video Refiner."
@@ -1183,8 +1216,45 @@ class FunPackVideoRefiner:
 
         return sources
 
+    @staticmethod
+    def _clip_text_tokenizer(clip):
+        """The tokenizer that actually produced the conditioning, or None.
+
+        `clip.tokenizer` is a Comfy SD1Tokenizer holding one named sub-tokenizer — `gemma3_12b`
+        on LTX-2.3, `gemma4` on LTX-2.5, `umt5_xxl` on WAN. The name is on `.clip`."""
+        top = getattr(clip, "tokenizer", None)
+        name = getattr(top, "clip", None) if top is not None else None
+        sub = getattr(top, name, None) if isinstance(name, str) else None
+        return sub if getattr(sub, "tokenizer", None) is not None else None
+
+    @staticmethod
+    def _encoder_family_changed(stored, current):
+        """Whether learned state from `stored` may still be applied under `current`.
+
+        Either side being empty means unknown — an older session file, or a run with no CLIP
+        connected — and unknown must never trigger a reset, or every conditioning-only run
+        would wipe the key it was meant to use."""
+        return bool(current and stored and stored != current)
+
     @classmethod
-    def _get_tokenizer(cls, mode="ltx2"):
+    def _encoder_family(cls, clip):
+        """Short name of the text encoder behind `clip` ("gemma3_12b", "gemma4", ...), or ""."""
+        sub = cls._clip_text_tokenizer(clip)
+        return str(getattr(sub, "embedding_key", "") or "") if sub is not None else ""
+
+    @classmethod
+    def _get_tokenizer(cls, mode="ltx2", clip=None):
+        """Prefer the CLIP's own tokenizer. A downloaded one has to guess the encoder family,
+        and guessing wrong is silent: the spans still resolve, they just point at the wrong
+        positions. LTX-2.3 encodes with Gemma3 and LTX-2.5 with Gemma4."""
+        if clip is not None:
+            sub = cls._clip_text_tokenizer(clip)
+            if sub is not None:
+                try:
+                    return _ClipTokenizerAdapter(sub)
+                except Exception as e:
+                    print(f"[FunPackVideoRefiner] CLIP tokenizer unusable, falling back to download: {e}")
+
         mode = (mode or "ltx2").lower()
         cached = cls._tokenizers.get(mode)
         if cached is not None:
@@ -4940,6 +5010,9 @@ class FunPackVideoRefiner:
         mode = (mode or "ltx2").lower()
         if mode not in self._tokenizer_sources:
             mode = "ltx2"
+        # What learned state is tied to: token positions are only comparable within one encoder.
+        # Empty when no CLIP is connected, which disables the check rather than guessing.
+        encoder_family = self._encoder_family(clip)
         rating_profile = normalize_refiner_rating(rating)
         rating_label = rating_profile.get("label", str(rating))
         rating = int(rating_profile.get("legacy_score", 6))
@@ -5068,7 +5141,8 @@ class FunPackVideoRefiner:
                     }
                 },
                 "last_prompt_key": prompt_key,
-                "pending_feedback": None
+                "pending_feedback": None,
+                "encoder_family": encoder_family,
             }
 
         def _seed_fresh_prompt_discovery(data):
@@ -5099,29 +5173,39 @@ class FunPackVideoRefiner:
         # ====================== RESET / NEW SESSION ======================
         lucky_bootstrap = False
         fresh_discovery_seeded = False
-        if reset_session or not os.path.exists(json_file):
-            if reset_session:
-                self._delete_latent_reference(refinement_key, mode)
+        data = None
+
+        def _restart_session(status_short, status_long):
+            """Write a fresh session file. Returns refine()'s early-exit tuple, or None when the
+            run should carry on — Lucky bootstraps from the fresh file instead of stopping."""
+            nonlocal data, fresh_discovery_seeded, lucky_bootstrap
             data = _fresh_data()
             fresh_discovery_seeded = _seed_fresh_prompt_discovery(data)
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             if im_feeling_lucky:
                 lucky_bootstrap = True
+                return None
+            if latent_output_connected:
+                fallback_latent, fallback_latent_status = self._refine_latent(
+                    latent,
+                    refinement_key,
+                    mode,
+                    rating,
+                    reward,
+                    {},
+                    rating_profile,
+                )
             else:
-                if latent_output_connected:
-                    fallback_latent, fallback_latent_status = self._refine_latent(
-                        latent,
-                        refinement_key,
-                        mode,
-                        rating,
-                        reward,
-                        {},
-                        rating_profile,
-                    )
-                else:
-                    fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
-                return (positive_conditioning, "New session started - Reference saved", "", f"New session started. Reference embedding saved.\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
+                fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
+            return (positive_conditioning, status_short, "", f"{status_long}\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
+
+        if reset_session or not os.path.exists(json_file):
+            if reset_session:
+                self._delete_latent_reference(refinement_key, mode)
+            early = _restart_session("New session started - Reference saved", "New session started. Reference embedding saved.")
+            if early is not None:
+                return early
         else:
             # ====================== SAFE JSON LOAD ======================
             try:
@@ -5133,26 +5217,26 @@ class FunPackVideoRefiner:
                     os.remove(json_file)
                 except OSError:
                     pass
-                data = _fresh_data()
-                fresh_discovery_seeded = _seed_fresh_prompt_discovery(data)
-                with open(json_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
-                if im_feeling_lucky:
-                    lucky_bootstrap = True
-                else:
-                    if latent_output_connected:
-                        fallback_latent, fallback_latent_status = self._refine_latent(
-                            latent,
-                            refinement_key,
-                            mode,
-                            rating,
-                            reward,
-                            {},
-                            rating_profile,
-                        )
-                    else:
-                        fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
-                    return (positive_conditioning, "Session file was corrupt - Reset and started fresh", "", f"Session reset due to corrupt file\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
+                early = _restart_session("Session file was corrupt - Reset and started fresh", "Session reset due to corrupt file")
+                if early is not None:
+                    return early
+
+        # Everything learned is indexed by token position, and positions only mean the same thing
+        # under the encoder that produced them. LTX-2.5 encodes with Gemma4 where 2.3 used Gemma3,
+        # so a key carried across would steer the wrong tokens rather than fail.
+        stored_family = str(data.get("encoder_family") or "") if isinstance(data, dict) else ""
+        if self._encoder_family_changed(stored_family, encoder_family):
+            print(f"[FunPackVideoRefiner] Key '{refinement_key}' was trained on {stored_family}, "
+                  f"this run encodes with {encoder_family} — starting it over.")
+            self._delete_latent_reference(refinement_key, mode)
+            early = _restart_session(
+                f"Encoder changed ({stored_family} -> {encoder_family}) - Session restarted",
+                f"Key was trained on {stored_family}; this run encodes with {encoder_family}. Session restarted.",
+            )
+            if early is not None:
+                return early
+        elif isinstance(data, dict) and encoder_family and not stored_family:
+            data["encoder_family"] = encoder_family
 
         if lucky_bootstrap:
             rating_profile = dict(RATING_PROFILES["Initial discovery"], label="Initial discovery")
@@ -5182,7 +5266,7 @@ class FunPackVideoRefiner:
             )
 
         prompt_histories = data.get("prompt_histories", {})
-        tokenizer = self._get_tokenizer(mode)
+        tokenizer = self._get_tokenizer(mode, clip=clip)
 
         if prompt_key not in prompt_histories and not im_feeling_lucky:
             matched_prompt_key, prompt_variant_match = self._find_prompt_variant_history(
@@ -6665,7 +6749,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             "last_run": None,
         }
 
-    def _v2_load_state(self, refinement_key, reset_session=False):
+    def _v2_load_state(self, refinement_key, reset_session=False, encoder_family=""):
         path = self._v2_state_path(refinement_key)
         if reset_session:
             try:
@@ -6695,12 +6779,29 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 except Exception as e:
                     print(f"[FunPackVideoRefinerV2] Absolute store cleanup failed: {e}")
         if reset_session or not os.path.exists(path):
-            return self._v2_empty_state(refinement_key), "fresh"
+            fresh = self._v2_empty_state(refinement_key)
+            if encoder_family:
+                fresh["encoder_family"] = encoder_family
+            return fresh, "fresh"
         try:
             with open(path, "r", encoding="utf-8") as file:
                 data = json.load(file)
             if not isinstance(data, dict) or int(data.get("version", 0)) != 2:
                 return self._v2_empty_state(refinement_key), "reset invalid"
+            # Everything learned here is conditioning tensors and token positions from one
+            # encoder. LTX-2.5 encodes with Gemma4 where 2.3 used Gemma3, so carrying the key
+            # across steers on directions that no longer mean anything. The sidecars — value
+            # function, x0 snapshots, the keyless Absolute store — hold the same stale tensors,
+            # so this reuses Session Reset rather than blanking the JSON and orphaning them.
+            if self._encoder_family_changed(str(data.get("encoder_family") or ""), encoder_family):
+                print(f"[FunPackVideoRefinerV2] Key '{refinement_key}' was trained on "
+                      f"{data.get('encoder_family')}, this run encodes with {encoder_family} "
+                      f"— clearing it.")
+                state, _ = self._v2_load_state(refinement_key, reset_session=True,
+                                               encoder_family=encoder_family)
+                return state, "reset encoder changed"
+            if encoder_family:
+                data["encoder_family"] = encoder_family
             data.setdefault("global", {})
             data.setdefault("prompt_histories", {})
             data.setdefault("last_run", None)
@@ -6798,12 +6899,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return cond, meta
 
     @staticmethod
-    def _gemma3_has_vision(clip):
-        try:
-            t = clip.cond_stage_model.gemma3_12b.transformer
-            return hasattr(t, "vision_model") and hasattr(t, "multi_modal_projector")
-        except AttributeError:
+    def _encoder_has_vision(clip):
+        """Whether the text encoder can take the reference image alongside the prompt.
+
+        Comfy still calls the submodule `gemma3_12b` on LTX-2.5, where it holds Gemma4 — so the
+        name is checked first but not trusted, and anything else carrying a transformer is
+        tried before giving up."""
+        outer = getattr(clip, "cond_stage_model", None)
+        if outer is None:
             return False
+        try:
+            children = dict(outer.named_children())      # nn.Module: submodules are not in __dict__
+        except (AttributeError, TypeError):
+            children = dict(vars(outer))
+        candidates = [getattr(outer, "gemma3_12b", None)]
+        candidates += [v for k, v in children.items() if k != "gemma3_12b"]
+        for sub in candidates:
+            t = getattr(sub, "transformer", None)
+            if t is not None and hasattr(t, "vision_model") and hasattr(t, "multi_modal_projector"):
+                return True
+        return False
 
     @staticmethod
     def _image_fingerprint(image):
@@ -6845,7 +6960,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             for filename, why in ref_skips:
                 print(f"[FunPackStudio] H3 reference '{filename}' skipped — {why}.")
 
-        use_vision = reference_image is not None and (h3 or self._gemma3_has_vision(clip))
+        use_vision = reference_image is not None and (h3 or self._encoder_has_vision(clip))
         img_fp = self._image_fingerprint(reference_image) if use_vision else None
 
         # Per-call cache ONLY (the encode_cache dict is created fresh by the caller for this
@@ -6916,14 +7031,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             encode_cache[cache_key] = result
         return result
 
-    def _v2_gemma3_tokenizer_status(self):
+    def _v2_text_tokenizer_status(self):
+        """Only reached with no CLIP connected, so the encoder's own tokenizer is out of reach
+        and a downloaded stand-in is all there is. Says which one, because on LTX-2.5 it is the
+        wrong family and the concept spans it produces are approximate."""
         tokenizer = self._get_tokenizer("ltx2")
         if tokenizer is None:
-            return "Gemma3 tokenizer unavailable"
+            return "no text tokenizer available"
         source = str(getattr(tokenizer, "name_or_path", "") or "").strip()
-        if source:
-            return f"Gemma3 tokenizer loaded: {source}"
-        return "Gemma3 tokenizer loaded"
+        return f"stand-in tokenizer: {source}" if source else "stand-in tokenizer loaded"
 
     def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning, encode_cache=None,
                                 reference_image=None, h3_references=None):
@@ -6951,7 +7067,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "CONDITIONING-owned",
             )
 
-        tokenizer_status = self._v2_gemma3_tokenizer_status()
+        tokenizer_status = self._v2_text_tokenizer_status()
         encode_status = (
             f"accepted connected positive CONDITIONING "
             f"({self._get_conditioning_seq_len(cond)} positions); {tokenizer_status}"
@@ -12013,7 +12129,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         advisor_mode = self._v2_advisor_mode(advisor_mode)
         advisor_clip = advisor_clip if advisor_clip is not None else clip
         prompt_only_mode = execution_mode == "Prompt only"
-        state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session)
+        state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session,
+                                                  encoder_family=self._encoder_family(clip))
         if reset_session:
             extra_reset = self._v2_reset_prompt_keys(refinement_key, _raw_positive_prompt, _raw_intent_prompt)
             if extra_reset:

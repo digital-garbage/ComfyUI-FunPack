@@ -76,7 +76,7 @@ def test_an_ltx_anchor_is_not_carried_on_the_conditioning():
     """LTX writes the anchor into the latent in the graph. Carrying it here too would put a
     second, competing anchor mechanism on a family that already has one."""
     node = FunPackVideoRefinerV2()
-    node._gemma3_has_vision = lambda clip: True
+    node._encoder_has_vision = lambda clip: True
     _cond, meta, _status = node._v2_encode_prompt(LTXClip(), "a shot", reference_image=IMAGE)
     assert "funpack_h3_anchor" not in meta
 
@@ -152,7 +152,7 @@ def test_an_ltx_split_is_left_alone():
     """On LTX the anchor reaches the model through the latent. Adding Gemma3 vision to scene 0
     here would change what every existing multi-scene LTX project generates."""
     node = FunPackVideoRefinerV2()
-    node._gemma3_has_vision = lambda clip: True
+    node._encoder_has_vision = lambda clip: True
     scenes = node._v2_transition_scene_conditionings(LTXClip(), ["a room", "a street"],
                                                      reference_image=IMAGE)
     assert all("funpack_h3_anchor" not in m for _c, m in scenes)

@@ -63,11 +63,11 @@ FAMILY_SETUP: dict[str, dict[str, Any]] = {
     "ltxav": {
         "label": "LTX2 / LTX2.3 / LTX2.5",
         "released": True,
-        "summary": "Lightricks LTX-2, every point release. Gemma3 text encoder, separate video and audio latents.",
+        "summary": "Lightricks LTX-2, every point release. Gemma3 text encoder (Gemma4 on 2.5), separate video and audio latents.",
         "nodes": [],
         "models": [
             {"role": "unet", "label": "LTX-2 diffusion model", "folder": "diffusion_models"},
-            {"role": "clip", "label": "Gemma3 text encoder", "folder": "text_encoders"},
+            {"role": "clip", "label": "Gemma3 text encoder (Gemma4 on 2.5)", "folder": "text_encoders"},
             {"role": "video_vae", "label": "LTX-2 video VAE", "folder": "vae"},
             {"role": "audio_vae", "label": "LTX-2 audio VAE", "folder": "vae"},
         ],
