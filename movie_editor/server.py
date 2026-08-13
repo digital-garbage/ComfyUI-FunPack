@@ -1,7 +1,7 @@
 """Movie Editor routes, served by ComfyUI's own aiohttp server.
 
-UI:   GET  /funpack/movie/            (and static assets under /funpack/movie/<file>)
-API:  /funpack/movie/api/*
+UI:   GET  /funpack/               (and static assets under /funpack/<file>)
+API:  /funpack/api/*
 
 Registered on PromptServer like the other /funpack/* routes (see templates.py,
 batch_training.py). Pure logic lives in backend/ (timeline, projects, workflow);
@@ -36,7 +36,7 @@ from .backend.timeline import (
     is_video_clip,
 )
 
-UI_PREFIX = "/funpack/movie"
+UI_PREFIX = "/funpack"
 
 
 def _restart_comfy() -> None:
@@ -2552,6 +2552,16 @@ if web is not None and PromptServer is not None:
         nodes.save_models(glob)
         return web.json_response(body)
 
+    # --- UI: legacy entry points ---
+    # /funpack/movie/ and /funpack/easy/ were the Cutting Room and Easy Gen when they were
+    # two apps. Both are the same app now, so old bookmarks land on it rather than 404.
+    # Registered BEFORE the catch-all below, which would otherwise swallow them.
+    for _old in ("/movie", "/easy"):
+        for _path in (UI_PREFIX + _old, UI_PREFIX + _old + "/"):
+            @routes.get(_path)
+            async def _legacy_ui(_req):
+                raise web.HTTPFound(UI_PREFIX + "/")
+
     # --- UI: static frontend (must be registered AFTER api routes) ---
     @routes.get(UI_PREFIX)
     async def _root_redirect(_req):
@@ -2565,4 +2575,4 @@ if web is not None and PromptServer is not None:
     async def _static(req):
         return _serve_static(req.match_info["tail"])
 
-    print(f"[FunPack] Movie Editor available at {config.comfy_display_url()}{UI_PREFIX}/")
+    print(f"[FunPack] FunPack available at {config.comfy_display_url()}{UI_PREFIX}/")

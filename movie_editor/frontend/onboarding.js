@@ -1,4 +1,4 @@
-// First-run wizard, shared by the Cutting Room and Easy Gen.
+// Setup wizard and start screen.
 //
 // Shape is lifted from the macOS Setup Assistant: full screen, no window chrome, one
 // vertically centred column per step, a glyph over a large headline over a short
@@ -6,9 +6,6 @@
 // button is always the way forward. Back is a chevron in the top-left; there are no step
 // dots, because a linear flow that tells you how far you have to go invites you to bail.
 //
-// The steps a host runs are declared in HOSTS below, not branched on inside each step —
-// Easy Gen has no timeline, so prompt splits are not a thing it can offer, and that
-// belongs in one table rather than scattered through the screens.
 (function () {
   const { el, clear } = window.dom;
   const S = () => window.Store;
@@ -23,27 +20,14 @@
   let ctx = null;        // per-run state: project, family, deps, generation type
   let panel = null;      // { kind, cleanup } while a hosted pane is on screen
 
-  const isEasyGen = () => window.FunPackAppName === "Easy Gen";
-
-  const HOSTS = {
-    editor: {
-      product: "Cutting Room",
-      lead: "Multi-scene video on a real timeline.",
-      steps: ["theme", "project", "prereqs", "gentype", "models", "extras", "tour", "done"],
-      extras: ["links", "shortcuts", "splits"],
-      newProject: (name) => S().newProject(name),
-    },
-    easy: {
-      // No guided tour here: the tour drives a timeline, a Composer and an inspector that
-      // Easy Gen does not have. Its own screen is the whole product.
-      product: "Easy Gen",
-      lead: "One prompt, one button, one video.",
-      steps: ["theme", "project", "prereqs", "gentype", "models", "extras", "done"],
-      extras: ["links", "shortcuts"],
-      newProject: (name) => S().createProject(name),
-    },
+  // One app now — Simple and Editor are modes of it, and setup is the same either way.
+  const HOST = {
+    lead: "Multi-scene video on a real timeline.",
+    steps: ["theme", "project", "prereqs", "gentype", "models", "extras", "tour", "done"],
+    extras: ["links", "shortcuts", "splits"],
+    newProject: (name) => S().newProject(name),
   };
-  const host = () => (isEasyGen() ? HOSTS.easy : HOSTS.editor);
+  const host = () => HOST;
 
   // ── chrome ────────────────────────────────────────────────────────────────
 
@@ -127,11 +111,7 @@
     shortcuts: {
       title: "Prompt shortcuts",
       sub: "Short triggers that expand into full phrases while you type.",
-      // The Editor keeps shortcuts in the Composer; Easy Gen registers a settings section
-      // for the same library. Whichever this build has.
-      mount: (body) => (window.Composer?.mountPane
-        ? { cleanup: window.Composer.mountPane("shortcuts", body) }
-        : window.SettingsWindow.mountSection("shortcuts", body)),
+      mount: (body) => ({ cleanup: window.Composer.mountPane("shortcuts", body) }),
     },
     splits: {
       title: "Prompt splits",
@@ -278,7 +258,7 @@
         nameRow.append(el("label", "oo-label", "Project name"));
         const input = el("input", "oo-input");
         input.type = "text";
-        input.value = ctx.name || (isEasyGen() ? "Untitled" : "Untitled montage");
+        input.value = ctx.name || "Untitled montage";
         input.placeholder = "Project name";
         input.oninput = () => { ctx.name = input.value; };
         nameRow.append(input);
@@ -526,8 +506,8 @@
         box.append(head("done", "You're ready to generate",
           ctx.wantTour
             ? "The guided tour starts as soon as you press the button."
-            : isEasyGen()
-              ? "Write a prompt at the bottom and press Generate."
+            : window.FunPackMode?.isSimple()
+              ? "Write a prompt, then press Generate."
               : "Write in the Composer, then press Generate in the timeline header."));
         box.append(actions({ primary: ctx.wantTour ? "Start the tour" : "Let's go", onPrimary: finish }));
         return box;
@@ -598,7 +578,7 @@
   // ── actions ───────────────────────────────────────────────────────────────
 
   async function createProject() {
-    const name = (ctx.name || "").trim() || (isEasyGen() ? "Untitled" : "Untitled montage");
+    const name = (ctx.name || "").trim() || "Untitled montage";
     const bar = root.querySelector(".oo-actions");
     // An abandoned run left a project behind: adopt it rather than making a second one.
     // Failing to load it (deleted since) just falls through to creating a fresh project.

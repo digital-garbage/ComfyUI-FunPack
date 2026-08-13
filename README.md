@@ -21,14 +21,14 @@ Opening `/funpack/` inside ComfyUI lands you on the **Hub** - a small picker bet
 
 ### Two UIs, one engine
 
-Both UIs drive the exact same generation engine (FunPack Studio + the LTXAV Scene Chain Sampler) and the exact same project files - a project opened in one opens unchanged in the other. Pick based on how much control you want in front of you:
+One app at `/funpack/`, with a mode switch beside the wordmark:
 
-- **Cutting Room** - the full multi-scene non-linear editor: a real timeline with per-scene prompts, ratings and audio lanes, a program monitor, a media bin, and every Engine/Studio knob a click away. This is where rating-driven learning (refinement keys, value guidance, taste steering) lives.
-- **Easy Gen** - one prompt, one Generate button, one big preview. Built for quick single-scene (or simple multi-scene via prompt splits) generations without the full NLE around it - advanced settings are still there, just tucked behind an "Advanced settings" link, and rating-dependent controls are hidden entirely since there's no rating UI to feed them (Studio always runs in a plain Prompt-only mode there).
+- **Editor** - the full multi-scene non-linear editor: a real timeline with per-scene prompts, ratings and audio lanes, a program monitor, a media bin, and every Engine/Studio knob a click away. This is where rating-driven learning (refinement keys, value guidance, taste steering) lives.
+- **Simple** - media bin, preview and one prompt. The timeline, ratings and advanced settings are hidden, not disabled: switching back shows them exactly as they were.
 
-| Cutting Room - timeline, preview monitor, media bin, and scene inspector | Easy Gen - one prompt, one Generate button, one big preview |
+| Editor mode - timeline, preview monitor, media bin, and scene inspector | Simple mode - media bin, one prompt, one Generate button |
 | --- | --- |
-| ![FunPack Cutting Room - timeline, preview monitor, media bin, and scene inspector](docs/images/cutting-room.png) | ![FunPack Easy Gen - single prompt box, Generate button, and preview pane](docs/images/easy-gen.png) |
+| ![FunPack Editor mode - timeline, preview monitor, media bin, and scene inspector](docs/images/cutting-room.png) | ![FunPack Simple mode - single prompt box, Generate button, and preview pane](docs/images/easy-gen.png) |
 
 | The Composer - global prompt, shortcuts, split markers, `$variables` | Engine Settings - Studio + Chain Sampler knobs without touching a graph |
 | --- | --- |
@@ -51,7 +51,7 @@ Each major version carries a codename, shown in Settings ▸ About. 3.x is
 
 ### Version 3.0 — Cutting Room and development direction
 
-FunPack **3.0** introduces the **Cutting Room** — a dedicated montage editor at `/funpack/movie` inside ComfyUI. It is the primary surface for building multi-scene projects, previewing on a real timeline, and driving FunPack Studio + the LTXAV Scene Chain Sampler without wiring a graph by hand.
+FunPack **3.0** introduces the **Cutting Room** — a dedicated montage editor at `/funpack/` inside ComfyUI. It is the primary surface for building multi-scene projects, previewing on a real timeline, and driving FunPack Studio + the LTXAV Scene Chain Sampler without wiring a graph by hand.
 
 Going forward, **new features and UX work target the Cutting Room frontend**. The classic ComfyUI node popups (Studio, Refiner V2, Scene Chain Sampler, and other pre-3.0 nodes) remain fully usable but will receive **bugfixes only** — no significant UI reworks unless a fix requires it. If you live in ComfyUI graphs, nothing breaks; if you want the full montage workflow, use the Cutting Room.
 

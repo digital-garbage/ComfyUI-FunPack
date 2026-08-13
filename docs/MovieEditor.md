@@ -2,7 +2,7 @@
 
 The **Cutting Room** is FunPack's browser-based montage editor. It runs inside ComfyUI at:
 
-`/funpack/movie`
+`/funpack/`
 
 Use it to build multi-scene projects, edit on a real NLE timeline, preview the full sequence, generate clips with FunPack Studio and the LTXAV Scene Chain Sampler, and export or stitch a final video — without hand-wiring a ComfyUI graph for every montage.
 

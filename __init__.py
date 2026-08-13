@@ -27,17 +27,9 @@ if __package__:
     except Exception as _e:
         print(f"[FunPack] batch_training routes unavailable: {_e}")
     try:
-        from . import hub  # noqa: F401  registers /funpack/ (the UI picker)
+        from .movie_editor import server as _movie_editor_server  # noqa: F401  registers /funpack/* routes
     except Exception as _e:
-        print(f"[FunPack] Hub route unavailable: {_e}")
-    try:
-        from .movie_editor import server as _movie_editor_server  # noqa: F401  registers /funpack/movie/* routes
-    except Exception as _e:
-        print(f"[FunPack] Movie Editor routes unavailable: {_e}")
-    try:
-        from . import easy_gen  # noqa: F401  registers /funpack/easy/* routes
-    except Exception as _e:
-        print(f"[FunPack] Easy Gen routes unavailable: {_e}")
+        print(f"[FunPack] FunPack UI routes unavailable: {_e}")
 else:
     # Standalone tests may not have the full ComfyUI/CUDA runtime loaded.
     from conditioning import (
