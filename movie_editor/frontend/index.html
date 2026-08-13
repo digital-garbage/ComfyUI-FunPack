@@ -7,6 +7,7 @@
   <!-- Before the stylesheet on purpose: data-theme has to be on <html> for the
        first paint, or a light-theme user gets a dark flash on every load. -->
   <script src="theme.js"></script>
+  <script src="ui_mode.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@600;700;800&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -48,7 +49,8 @@
 <body>
   <!-- ───────────────────────── MENU BAR ───────────────────────── -->
   <nav class="menubar" id="menubar">
-    <a class="brand" href="/funpack/" title="FunPack Hub"><span class="brand-mark">◉</span> FunPack <span class="brand-sub">Cutting Room</span></a>
+    <span class="brand"><span class="brand-mark">◉</span> FunPack</span>
+    <div class="mode-switch" id="mode-switch" role="group" aria-label="Interface mode"></div>
     <div class="menus" id="menus"><!-- populated by menubar.js --></div>
     <div class="menubar-right">
       <span class="save-chip" id="save-chip"></span>
@@ -69,6 +71,9 @@
       <section class="zone preview dock-panel" id="preview-zone" data-dock="preview">
         <div class="zone-head">
           <span class="zone-title">Preview</span>
+          <!-- Simple mode parks the transport here: its home is the timeline header, and
+               that whole zone is hidden. -->
+          <div class="mode-actions" id="simple-actions"></div>
           <span class="zone-head-right" id="preview-status"></span>
         </div>
         <div class="zone-body program" id="preview-body"></div>

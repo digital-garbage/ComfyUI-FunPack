@@ -175,7 +175,10 @@
     if (!S) return () => {};
     let last = null;
     return S.subscribe((st) => {
-      const fp = fpFn(st);
+      // Every zone builds different content in Simple mode, so the mode belongs in every
+      // fingerprint. Folded in here rather than in each fpFn — one place, no way to forget
+      // it in the next one added.
+      const fp = (window.FunPackMode ? window.FunPackMode.get() + "|" : "") + fpFn(st);
       if (fp === last) return;
       const ok = fn(st);
       if (ok === false) return; // handler declined to apply this update — retry next notify

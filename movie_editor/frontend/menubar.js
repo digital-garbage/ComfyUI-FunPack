@@ -212,7 +212,25 @@
 
   function openMenu(name) { openName = name; veil.hidden = false; render(); }
 
+  // Simple ⇄ Editor, beside the wordmark. Both drive the same project and pipeline; the
+  // mode only decides how much of the app is on screen.
+  function renderModeSwitch() {
+    const M = window.FunPackMode;
+    const host = document.getElementById("mode-switch");
+    if (!M || !host) return;
+    clear(host);
+    [["simple", "Simple", "Prompt, Generate, result — nothing else"],
+     ["editor", "Editor", "Timeline, inspector, ratings, every setting"]].forEach(([key, label, title]) => {
+      const b = el("button", "mode-btn" + (M.is(key) ? " on" : ""), label);
+      b.type = "button";
+      b.title = title;
+      b.onclick = () => M.set(key);
+      host.append(b);
+    });
+  }
+
   function render() {
+    renderModeSwitch();
     const spec = menuSpec();
     clear(menusEl);
     Object.keys(spec).forEach((name) => {
@@ -275,6 +293,7 @@
 
   window.addEventListener("funpack-save-status", (e) => renderSaveChip(S.get(), e.detail));
   window.addEventListener("funpack-history-state", () => render());
+  window.addEventListener("funpack-ui-mode", () => render());
   window.addEventListener("keydown", (e) => {
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
     const t = document.activeElement;

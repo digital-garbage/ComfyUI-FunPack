@@ -13,12 +13,10 @@
   // the migration re-enters itself and recurses until the stack blows.
   const _ALG_MIGRATED = new Set();
 
-  // Easy Gen has no rating UI at all (by design — see easy_gen/frontend/), so every
-  // setting that is a no-op without a trained refinement key / rated history is hidden
-  // there, not just made harder to find. window.FunPackAppName is the same discriminator
-  // settings_window.js already uses to relabel the About section for a different frontend
-  // sharing this file; Editor leaves it unset.
-  const EASY = !!window.FunPackAppName;
+  // Simple mode has no rating UI, so every setting that is a no-op without a trained
+  // refinement key / rated history is hidden there rather than just made harder to find.
+  // Read per render, not once: the mode switch flips it live.
+  const EASY = () => !!window.FunPackMode?.isSimple();
   const RATING_GATED_KNOBS = new Set([
     "embed_guidance", "embed_guidance_source", "embed_guidance_strength",
     "score_slider", "score_slider_strength", "taste_nearest_prompt",
@@ -117,11 +115,11 @@
     const { rf } = parseStudioSettings(p);
     let n = 0;
     [...STUDIO_REFINER_ESSENTIALS, ...STUDIO_REFINER_ADVANCED].forEach((f) => {
-      if (EASY && RATING_GATED_STUDIO.has(f.name)) return;
+      if (EASY() && RATING_GATED_STUDIO.has(f.name)) return;
       const cur = rf[f.name] != null ? rf[f.name] : f.default;
       if (cur !== f.default) n++;
     });
-    if (!EASY && (p.refinement_key || "default") !== "default") n++;
+    if (!EASY() && (p.refinement_key || "default") !== "default") n++;
     return n;
   }
 
@@ -385,7 +383,7 @@
   }
 
   function knobVisible(k, si) {
-    if (EASY && RATING_GATED_KNOBS.has(k.name)) return false;
+    if (EASY() && RATING_GATED_KNOBS.has(k.name)) return false;
     // dependsOn/dependsValue: single condition (dependsValue absent = plain truthy
     // gate, as every existing boolean dependsOn already relies on).
     if (k.dependsOn && !_depSatisfied(k.dependsOn, k.dependsValue, si)) return false;
@@ -470,7 +468,7 @@
     const si = p.sampler_inputs || {};
     let n = 0;
     (CHAIN_VIEW_KNOBS[id] || []).forEach((name) => {
-      if (EASY && RATING_GATED_KNOBS.has(name)) return;
+      if (EASY() && RATING_GATED_KNOBS.has(name)) return;
       const k = SAMPLER_KNOB_MAP[name];
       if (k && si[name] != null && si[name] !== k.default) n++;
     });
@@ -562,7 +560,7 @@
     const p = st.project;
     const { rf } = parseStudioSettings(p);
 
-    if (!EASY) {
+    if (!EASY()) {
       // Refinement key — project-level (feeds Studio / Chain Sampler / SaveRefinementLatent).
       // "default" uses the keyless store; a custom name trains/loads its own key. Shortcuts
       // bound to a non-default key layer per-scene training on top of this.
@@ -575,18 +573,18 @@
     }
 
     const gEss = group(pane, "Essentials");
-    STUDIO_REFINER_ESSENTIALS.filter((f) => !EASY || !RATING_GATED_STUDIO.has(f.name))
+    STUDIO_REFINER_ESSENTIALS.filter((f) => !EASY() || !RATING_GATED_STUDIO.has(f.name))
       .forEach((f) => renderStudioRefinerBool(gEss, rf, f));
 
-    const gAdv = group(pane, EASY ? "Prompt shaping" : "Refinement");
-    STUDIO_REFINER_ADVANCED.filter((f) => !EASY || !RATING_GATED_STUDIO.has(f.name))
+    const gAdv = group(pane, EASY() ? "Prompt shaping" : "Refinement");
+    STUDIO_REFINER_ADVANCED.filter((f) => !EASY() || !RATING_GATED_STUDIO.has(f.name))
       .forEach((f) => renderStudioRefinerField(gAdv, rf, f));
 
-    if (EASY) {
+    if (EASY()) {
       pane.append(hintEl(
         "Studio runs in Prompt-only mode here: it shapes and splits the prompt, nothing more. "
-        + "Rating-dependent controls are hidden — Easy Gen has no rating UI to feed them. "
-        + "Use the Cutting Room for the full learned refiner."));
+        + "Rating-dependent controls are hidden — Simple mode has no rating UI to feed them. "
+        + "Switch to Editor for the full learned refiner."));
     } else {
       pane.append(hintEl("Scene text and transitions come from the timeline. Advisor, LoRA, and batch training remain in the ComfyUI Studio popup on the graph."));
     }
@@ -951,8 +949,8 @@
       case "chain_continuity": return renderChainContinuity(pane, st);
       case "chain_timing": return renderChainTiming(pane, st);
       case "chain_guidance": return renderChainKnobsView(pane, st, "chain_guidance", "Guidance",
-        EASY ? "Rating-dependent guidance (embed guidance, score slider, output guidance, taste retrieval, "
-          + "DynaShift) is hidden here — use the Cutting Room or ComfyUI graph for those." : null);
+        EASY() ? "Rating-dependent guidance (embed guidance, score slider, output guidance, taste retrieval, "
+          + "DynaShift) is hidden in Simple mode — switch to Editor for those." : null);
       case "chain_decode": return renderChainKnobsView(pane, st, "chain_decode", "Decode");
       case "chain_experimental": return renderChainExperimental(pane, st);
       default: return renderOverview(pane, st);
@@ -1030,8 +1028,10 @@
     });
 
     unsub = S.subscribe(() => render());
+    const offMode = window.FunPackMode?.onChange(() => render());
     render();
     return () => {
+      if (offMode) offMode();
       if (unsub) { unsub(); unsub = null; }
       _mounted = null;
       _editing = false;

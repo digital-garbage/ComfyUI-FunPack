@@ -322,6 +322,42 @@ a.brand { text-decoration: none; color: inherit; }
 a.brand:hover .brand-sub { color: var(--accent-hi); }
 
 .menus { display: flex; gap: 2px; }
+
+/* ── Simple ⇄ Editor ──────────────────────────────────────────────────────
+   One app, two faces. The switch sits beside the wordmark because it changes
+   what the whole window is, not what one panel shows. */
+.mode-switch {
+  display: inline-flex; flex: 0 0 auto; padding: 2px; gap: 2px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--ink-1);
+}
+.mode-btn {
+  border: 0; border-radius: 5px; background: transparent; color: var(--muted);
+  height: 22px; padding: 0 var(--sp-2); cursor: pointer;
+  font-family: inherit; font-size: var(--fs-subhead); line-height: var(--lh-subhead);
+  transition: background .12s, color .12s;
+}
+.mode-btn:hover { color: var(--text); }
+.mode-btn.on { background: var(--accent-soft); color: var(--accent-hi); }
+
+/* Where the transport bar lands when the timeline is hidden. */
+.mode-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.mode-actions:empty { display: none; }
+
+/* Simple mode: everything that needs explaining is gone. Nothing is disabled and no
+   state is dropped — the timeline, ratings and advanced panes are still there, and
+   switching back shows them exactly as they were. */
+:root[data-ui-mode="simple"] .zone.timeline,
+:root[data-ui-mode="simple"] #split-bottom,
+:root[data-ui-mode="simple"] #media-zone,
+:root[data-ui-mode="simple"] #split-left,
+:root[data-ui-mode="simple"] .dock-tabs,
+:root[data-ui-mode="simple"] .composer-btn,
+:root[data-ui-mode="simple"] .insp-tabs,
+:root[data-ui-mode="simple"] .insp-engine-strip,
+:root[data-ui-mode="simple"] .rating-bar,
+:root[data-ui-mode="simple"] .insp-fold,
+:root[data-ui-mode="simple"] .mode-full-only { display: none !important; }
+
 .menu { position: relative; }
 .menu-btn {
   background: transparent; border: 0; height: var(--ctl-h); padding: 0 var(--sp-2);

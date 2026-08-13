@@ -1,9 +1,23 @@
-// Main transport actions: Generate / Generate selection / Render (timeline header).
+// Main transport actions: Generate / Generate selection / Render.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
-  const mount = document.getElementById("transport-actions");
-  if (!mount) return;
+  const timelineHost = document.getElementById("transport-actions");
+  const simpleHost = document.getElementById("simple-actions");
+  if (!timelineHost) return;
+
+  // Home is the timeline header. Simple mode hides that whole zone, so the bar moves to
+  // the preview header rather than being rebuilt — one set of buttons, one set of handlers,
+  // and the running-generation tick keeps writing to the same nodes across a mode switch.
+  let mount = timelineHost;
+  function reparent() {
+    const want = (window.FunPackMode?.isSimple() && simpleHost) ? simpleHost : timelineHost;
+    if (want === mount) return;
+    clear(mount);          // leave nothing behind in the header we came from
+    mount = want;
+    render(S.get());       // ViewBus only fires on a state change, and this isn't one
+  }
+  window.addEventListener("funpack-ui-mode", reparent);
 
   function selCount() { return S.selectedSceneCount ? S.selectedSceneCount() : (S.get().selectedSceneId ? 1 : 0); }
   function hasProject() { return !!S.get().project; }
@@ -62,7 +76,7 @@
 
     const n = selCount();
     const selLabel = n > 1 ? `Selected (${n})` : "Selected";
-    const genSel = el("button", "btn ghost compact", selLabel);
+    const genSel = el("button", "btn ghost compact mode-full-only", selLabel);
     genSel.title = n > 1
       ? `Generate ${n} selected scenes (one chain run per segment)`
       : "Generate the selected scene";
@@ -88,7 +102,7 @@
     renderBtn.onclick = () => S.renderFinal();
     mount.append(renderBtn);
 
-    const montageBtn = el("button", "btn ghost compact", "⚡ Auto Montage");
+    const montageBtn = el("button", "btn ghost compact mode-full-only", "⚡ Auto Montage");
     montageBtn.title = "Build a trailer-style cut from already-rendered clips";
     montageBtn.disabled = !hasProject() || busy(st);
     montageBtn.onclick = () => window.MontageDialog?.open();
@@ -124,6 +138,7 @@
     });
   }
 
+  if (window.FunPackMode?.isSimple() && simpleHost) mount = simpleHost;
   if (window.ViewBus) window.ViewBus.subscribeActionbar(render);
   else S.subscribe(render);
   render(S.get());
