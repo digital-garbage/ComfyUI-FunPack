@@ -141,8 +141,9 @@
     gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),
 
     // generate (a single scene, or an explicit run of scene ids = one chain request)
+    // `simple` strips the enhancements for THIS run only (see pipeline_caps.apply_simple_mode).
     generate: (id, onlyScene, sceneIds, resetSession, nodeOverrides) =>
-      j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession, node_overrides: nodeOverrides || null }),
+      j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession, node_overrides: nodeOverrides || null, simple: !!window.FunPackMode?.isSimple() }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
     progress: () => j("GET", API("/progress")),
     // The editor's own in-flight generation, recovered from ComfyUI's queue (survives a UI reload).

@@ -52,6 +52,14 @@
 
   function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
+  const WARN_KEY = "funpack_ui_mode_warned";
+  function warned() {
+    try { return localStorage.getItem(WARN_KEY) === "1"; } catch (_) { return true; }
+  }
+  function markWarned() {
+    try { localStorage.setItem(WARN_KEY, "1"); } catch (_) {}
+  }
+
   stamp();
-  window.FunPackMode = { get, set, is, isSimple, onChange, MODES };
+  window.FunPackMode = { get, set, is, isSimple, onChange, warned, markWarned, MODES };
 })();

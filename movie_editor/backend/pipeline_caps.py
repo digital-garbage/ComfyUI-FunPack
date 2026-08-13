@@ -96,3 +96,54 @@ def scenes_missing_anchor_media(project, chain_available: bool) -> list[str]:
 
 
 
+
+
+# ── Simple mode ───────────────────────────────────────────────────────────────
+# Simple mode is not a skin. It generates what you asked for and nothing else: no
+# rating-driven steering, no experimental sampling, no second pass. Everything here is
+# either useless without rated history or costs real time for a quality bet — both of
+# which belong in the Editor.
+#
+# Applied per RUN, to a copy. The project keeps whatever the user set in the Editor, so
+# switching back restores it; only the graph that gets built is stripped.
+SIMPLE_MODE_SAMPLER_OFF: dict[str, Any] = {
+    # rating-driven — no-ops without a trained key, and this mode has no rating UI
+    "embed_guidance": False,
+    "score_slider": False,
+    "taste_nearest_prompt": False,
+    "output_guidance": False,
+    "dynashift": False,
+    # cross-shot memory and guides: real per-scene cost
+    "mid_scene_guide": False,
+    "joyai_memory": False,
+    "joyai_audio_memory": False,
+    "carry_i2v_guides": False,
+    # experimental / expensive sampling
+    "alg_anchor": False,
+    "alg_blur_guides": False,
+    "bounded_attention_enabled": False,
+    "identity_transfer_enabled": False,
+    "segmented_detailing": False,
+    "plateau_cache": False,
+    "context_windows": False,
+    "second_pass": False,
+    "second_pass_op": "none",
+}
+
+# Studio refiner keys, same reasoning.
+SIMPLE_MODE_REFINER_OFF: dict[str, Any] = {
+    "reference_injection": False,
+    "value_guidance": False,
+    "steer_mode": "relative",
+}
+
+
+def apply_simple_mode(sampler_inputs: Optional[dict], studio_settings: Optional[dict]) -> tuple[dict, dict]:
+    """Return (sampler_inputs, studio_settings) copies with the enhancements forced off."""
+    si = dict(sampler_inputs or {})
+    si.update(SIMPLE_MODE_SAMPLER_OFF)
+    ss = dict(studio_settings or {})
+    refiner = dict(ss.get("refiner") or {})
+    refiner.update(SIMPLE_MODE_REFINER_OFF)
+    ss["refiner"] = refiner
+    return si, ss

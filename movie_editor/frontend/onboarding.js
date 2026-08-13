@@ -23,7 +23,7 @@
   // One app now — Simple and Editor are modes of it, and setup is the same either way.
   const HOST = {
     lead: "Multi-scene video on a real timeline.",
-    steps: ["theme", "project", "prereqs", "gentype", "models", "extras", "tour", "done"],
+    steps: ["theme", "uimode", "project", "prereqs", "gentype", "models", "extras", "tour", "done"],
     extras: ["links", "shortcuts", "splits"],
     newProject: (name) => S().newProject(name),
   };
@@ -54,6 +54,9 @@
       + '<path d="M6 15l18 10 18-10M24 25v18" fill="none" stroke="currentColor" stroke-width="2.4"/>',
     extras: '<circle cx="24" cy="24" r="5" fill="currentColor"/>'
       + '<path d="M24 4v8M24 36v8M4 24h8M36 24h8M10 10l6 6M32 32l6 6M38 10l-6 6M16 32l-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+    uimode: '<rect x="5" y="9" width="38" height="30" rx="4" fill="none" stroke="currentColor" stroke-width="2.4"/>'
+      + '<path d="M24 9v30" stroke="currentColor" stroke-width="2.4"/>'
+      + '<path d="M10 17h8M10 23h8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
     tour: '<circle cx="24" cy="24" r="17" fill="none" stroke="currentColor" stroke-width="2.4"/>'
       + '<path d="M20 16.5l12 7.5-12 7.5z" fill="currentColor"/>',
     done: '<circle cx="24" cy="24" r="17" fill="none" stroke="currentColor" stroke-width="2.4"/>'
@@ -238,6 +241,45 @@
         grid.classList.add("oo-theme-cards");
         box.append(grid);
         box.append(actions({}));
+        return box;
+      },
+    },
+
+    // ── how much of the app to show ─────────────────────────────────────────
+    uimode: {
+      render() {
+        const box = el("div", "oo-step oo-step-wide");
+        box.append(head("uimode", "How much do you want in front of you?",
+          "You can switch at any time from the control beside the FunPack wordmark."));
+
+        const cards = el("div", "oo-cards oo-cards-2");
+        let bar;
+        const paint = () => {
+          [...cards.children].forEach((c) => c.classList.toggle("active", c.dataset.key === ctx.uiMode));
+          const nb = mkBar(); bar.replaceWith(nb); bar = nb;
+        };
+        const card = (key, title, sub) => {
+          const c = el("button", "oo-card");
+          c.type = "button"; c.dataset.key = key;
+          c.append(el("div", "oo-card-title", title));
+          c.append(el("div", "oo-card-sub", sub));
+          c.onclick = () => { ctx.uiMode = key; paint(); };
+          return c;
+        };
+        cards.append(
+          card("simple", "Simple",
+            "One prompt and Generate. Rating-driven steering, cross-shot memory and "
+            + "experimental sampling stay off, so runs are quicker and there is less to read."),
+          card("editor", "Editor",
+            "The full cutting room: timeline, ratings, and every Studio and sampler setting."),
+        );
+        box.append(cards);
+        bar = mkBar();
+        box.append(bar);
+        function mkBar() {
+          return actions({ disabled: !ctx.uiMode, onPrimary: saveUiMode });
+        }
+        if (ctx.uiMode) paint();
         return box;
       },
     },
@@ -609,6 +651,11 @@
     next();
   }
 
+  function saveUiMode() {
+    try { window.FunPackMode?.set(ctx.uiMode); window.FunPackMode?.markWarned(); } catch (_) {}
+    next();
+  }
+
   function saveGenType() {
     try { S().patchProject?.({ generation_mode: ctx.genType }); } catch (_) {}
     next();
@@ -674,7 +721,7 @@
       localStorage.setItem(LS_RUN, JSON.stringify({
         idx: resumable ? idx : 0,
         resumable: !!resumable,
-        ctx: { name: ctx.name, family: ctx.family, genType: ctx.genType,
+        ctx: { name: ctx.name, family: ctx.family, genType: ctx.genType, uiMode: ctx.uiMode,
                wantTour: ctx.wantTour, projectId: ctx.project?.id || null },
       }));
     } catch (_) {}
@@ -735,7 +782,7 @@
     steps = host().steps;
     // project stays null until the wizard creates one: seeding it from whatever happens
     // to be open would make the project step rename that project instead of making a new one.
-    ctx = { name: "", family: null, genType: null, wantTour: false, project: null, deps: null };
+    ctx = { name: "", family: null, genType: null, uiMode: null, wantTour: false, project: null, deps: null };
 
     root = el("div", "oo-root");
     const backBtn = el("button", "oo-back", "‹");

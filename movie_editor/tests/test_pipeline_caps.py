@@ -148,3 +148,35 @@ def test_h3_does_not_offer_ports_on_nodes_its_graph_never_emits():
     ltx_ports = {p["id"] for p in nodes.pipeline_ports(oi, "ltxav")}
     assert "LTXVAudioVAEDecode.audio_vae" in ltx_ports
     assert "VAEDecodeAudio.vae" not in ltx_ports
+
+
+# ── Simple mode ───────────────────────────────────────────────────────────────
+
+def test_simple_mode_switches_the_enhancements_off():
+    si, ss = pipeline_caps.apply_simple_mode(
+        {"embed_guidance": True, "joyai_memory": True, "second_pass_op": "upscale_2x", "cfg": 1.0},
+        {"refiner": {"value_guidance": True, "steer_mode": "absolute", "vision_conditioning": True}},
+    )
+    assert si["embed_guidance"] is False
+    assert si["joyai_memory"] is False
+    assert si["second_pass_op"] == "none"
+    assert ss["refiner"]["value_guidance"] is False
+    assert ss["refiner"]["steer_mode"] == "relative"
+    # untouched: not an enhancement, just how the scene is generated
+    assert si["cfg"] == 1.0
+    assert ss["refiner"]["vision_conditioning"] is True
+
+
+def test_simple_mode_does_not_mutate_the_project_settings():
+    """The project keeps what the Editor set — only the run is stripped."""
+    stored_si = {"embed_guidance": True}
+    stored_ss = {"refiner": {"value_guidance": True}}
+    pipeline_caps.apply_simple_mode(stored_si, stored_ss)
+    assert stored_si == {"embed_guidance": True}
+    assert stored_ss == {"refiner": {"value_guidance": True}}
+
+
+def test_simple_mode_handles_an_empty_project():
+    si, ss = pipeline_caps.apply_simple_mode(None, None)
+    assert si["embed_guidance"] is False
+    assert ss["refiner"]["value_guidance"] is False

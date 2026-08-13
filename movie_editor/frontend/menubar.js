@@ -224,7 +224,20 @@
       const b = el("button", "mode-btn" + (M.is(key) ? " on" : ""), label);
       b.type = "button";
       b.title = title;
-      b.onclick = () => M.set(key);
+      b.onclick = () => {
+        // Once, the first time: Simple genuinely changes what a run does, and finding
+        // that out from a scene report is too late.
+        if (key === "simple" && !M.warned()) {
+          const ok = confirm(
+            "Simple mode generates what you asked for and nothing else.\n\n"
+            + "Rating-driven steering, cross-shot memory, experimental sampling and the "
+            + "second pass are switched OFF while you are in it.\n\n"
+            + "Your project settings are kept — switch back to Editor to use them again.");
+          if (!ok) return;
+          M.markWarned();
+        }
+        M.set(key);
+      };
       host.append(b);
     });
   }

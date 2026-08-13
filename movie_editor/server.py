@@ -9,6 +9,7 @@ bridge.py talks to ComfyUI (parse/library in-process, queue/history/view over lo
 """
 from __future__ import annotations
 
+import json
 import mimetypes
 from typing import Optional
 
@@ -1767,6 +1768,19 @@ if web is not None and PromptServer is not None:
             sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p, models=models_cfg)
             if caps["chain_sampler"]:
                 _attach_scene_anchors(sampler_inputs, media_pack, target)
+            studio_inputs = _run_studio_inputs(
+                target, active_scenes, prompt_changed=prompt_changed, models=models_cfg,
+            )
+            # Simple mode generates what was asked for and nothing else. Applied to the
+            # RUN, never written back: the project keeps the Editor's settings.
+            if bool(body.get("simple")):
+                _settings = {}
+                try:
+                    _settings = json.loads(studio_inputs.get("studio_settings") or "{}")
+                except Exception:  # noqa: BLE001
+                    _settings = {}
+                sampler_inputs, _settings = pipeline_caps.apply_simple_mode(sampler_inputs, _settings)
+                studio_inputs["studio_settings"] = json.dumps(_settings)
             graph, report = builder.build(oi, models_cfg, {
                 "prompt": prompt, "seed": _resolve_run_seed(target),
                 "num_frames_per_scene": effective_frames,
@@ -1774,9 +1788,7 @@ if web is not None and PromptServer is not None:
                 "width": target.width, "height": target.height,
                 "negative_prompt": effective_negative_prompt(target) or None,
                 "max_scenes": active_scene_count,
-                "studio_inputs": _run_studio_inputs(
-                    target, active_scenes, prompt_changed=prompt_changed, models=models_cfg,
-                ),
+                "studio_inputs": studio_inputs,
                 # Scene boundaries handed to Studio structurally (the editor knows them) so the
                 # generation prompt stays clean — no injected `scene N` delimiters.
                 "scene_segments": build_generation_scene_segments(target),
@@ -1803,6 +1815,12 @@ if web is not None and PromptServer is not None:
         # silently when anchors are assembled — it still renders, just without the
         # anchor it was configured for. Report it rather than block: the run is valid,
         # it just may not be the shot the user set up.
+        if bool(body.get("simple")):
+            report["unsatisfied"].append(
+                "Simple mode: rating-driven steering, cross-shot memory, experimental "
+                "sampling and the second pass were switched off for this run. Your project "
+                "settings are unchanged — switch to Editor to use them."
+            )
         anchorless = pipeline_caps.scenes_missing_anchor_media(target, caps["chain_sampler"])
         if anchorless:
             report["unsatisfied"].append(

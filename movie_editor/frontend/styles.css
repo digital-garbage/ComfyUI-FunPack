@@ -253,7 +253,7 @@
      behind it, which IS San Francisco on a Mac. */
   --font-display: "Inter Tight", "Inter", system-ui, -apple-system, sans-serif;
   --font-ui: "Inter", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius: 9px;
 
   /* Type scale — the macOS text styles from Apple's HIG. Every size in this file is a
@@ -862,7 +862,7 @@ input[type=number] { font-family: var(--font-mono); }
 .insp-fold-body .insp-hint { margin: 4px 0 0; }
 
 /* read-only length/fps value when inheriting */
-.len-readout { font-family: var(--font-mono); font-size: 12px; color: var(--muted); padding: 6px 8px;
+.len-readout { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); padding: 6px 8px;
   background: var(--ink-0); border: 1px dashed var(--line); border-radius: 7px; }
 
 /* locked trim handle (scene length is Custom) */
@@ -1988,7 +1988,7 @@ body.tour-mode { overflow: hidden; }
   align-items: baseline; margin-bottom: 14px; font-size: 12px; }
 .sw-about-fact { display: contents; }
 .sw-about-k { color: var(--faint); text-align: right; white-space: nowrap; }
-.sw-about-v { color: var(--text); font-family: var(--font-mono); text-align: left;
+.sw-about-v { color: var(--text); font-variant-numeric: tabular-nums; text-align: left;
   max-width: 320px; overflow-wrap: anywhere; }
 .sw-about-group { grid-column: 1 / -1; margin-top: 12px; padding-bottom: 3px;
   border-bottom: 1px solid var(--line);
