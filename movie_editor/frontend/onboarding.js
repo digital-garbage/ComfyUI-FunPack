@@ -23,7 +23,7 @@
   // One app now — Simple and Editor are modes of it, and setup is the same either way.
   const HOST = {
     lead: "Multi-scene video on a real timeline.",
-    steps: ["theme", "uimode", "project", "prereqs", "gentype", "models", "extras", "tour", "done"],
+    steps: ["theme", "project", "prereqs", "gentype", "models", "uimode", "extras", "tour", "done"],
     extras: ["links", "shortcuts", "splits"],
     newProject: (name) => S().newProject(name),
   };
