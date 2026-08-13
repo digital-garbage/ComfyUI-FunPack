@@ -378,7 +378,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     ref_wv = load_reference()
     graph: dict[str, dict] = {}
     # `blocking` is the subset of problems that should stop generation (required inputs).
-    report: dict[str, list] = {"wired": [], "auto_wired": [], "ambiguous": [], "unsatisfied": [], "blocking": []}
+    # "ignored" is its own bucket, not part of "unsatisfied": it means a value the user SET
+    # did not reach the graph, so the run is valid but is not the one they configured. That
+    # is the only class worth interrupting them about, and it is surfaced in the editor.
+    report: dict[str, list] = {"wired": [], "auto_wired": [], "ambiguous": [], "unsatisfied": [],
+                               "ignored": [], "blocking": []}
     # (node_id, input) edges the cycle-breaker must never drop: fixed core-internal links and
     # explicit user/override wires. Auto-wires and role-default wires are left droppable.
     protected_edges: set[tuple[str, str]] = set()
@@ -630,12 +634,39 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                 val = family_frame_rate(family, val)
         else:
             val = link.get("value")
+        # Every way a link can fail to fire is reported below. It used to fail in silence —
+        # the node kept its own widget value, so a project setting the user had just changed
+        # simply did not reach the graph, and nothing anywhere said which value won.
+        label = str(link.get("name") or link.get("editor_key") or "link")
         if val is None:
+            report["ignored"].append(
+                f"Linked input '{label}' had no value to send"
+                + (f" — the project has no '{link.get('editor_key')}'." if link.get("source") == "editor"
+                   else " — set one in Models ▸ Linked inputs.")
+                + " Every input it drives kept its own value.")
             continue
+        applied = []
         for m in link.get("members") or []:
-            sid = slot_node_id.get(m.get("slotId"))
-            if sid and sid in graph:
-                graph[sid]["inputs"][m.get("input")] = val
+            slot_id, inp = m.get("slotId"), m.get("input")
+            sid = slot_node_id.get(slot_id)
+            if not sid or sid not in graph:
+                report["ignored"].append(
+                    f"Linked input '{label}' drives a node that is no longer in the pipeline, "
+                    f"so its '{inp}' kept its own value. Re-pick it in Models ▸ Linked inputs.")
+                continue
+            # A member naming a widget the node does not have writes a key ComfyUI ignores —
+            # the node keeps its default and the link looks like it fired. Renaming an input
+            # upstream is enough to cause it.
+            nd = slot_def.get(slot_id)
+            if nd is not None and inp not in _widget_defaults(nd):
+                report["ignored"].append(
+                    f"Linked input '{label}': {graph[sid].get('class_type')} has no widget called "
+                    f"'{inp}' — nothing was set. Re-pick it in Models ▸ Linked inputs.")
+                continue
+            graph[sid]["inputs"][inp] = val
+            applied.append(f"{graph[sid].get('class_type')}.{inp}")
+        if applied:
+            report["wired"].append(f"linked '{label}' = {val} -> " + ", ".join(applied))
 
     port_to_core = _port_index(object_info, core=CORE)
 

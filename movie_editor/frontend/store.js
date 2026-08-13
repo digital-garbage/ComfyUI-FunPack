@@ -3595,6 +3595,21 @@
           run_hash: r.validation.run_hash,
         };
       }
+      // The builder reports values the user SET that did not reach the graph — a linked
+      // input pointing at a node that was replaced, a widget renamed out from under it. The
+      // run is valid, it just isn't the one they configured, and nothing used to say so:
+      // the whole report was being thrown away here.
+      const ignored = (r.report && r.report.ignored) || [];
+      // Positive confirmation, console-only: which linked inputs fired and with what value.
+      // Checking that a project setting actually reached the graph should not require
+      // reading the queued prompt, but it is not worth a UI element on every run either.
+      const fired = ((r.report && r.report.wired) || []).filter((w) => w.startsWith("linked "));
+      if (fired.length) console.info("[FunPack] linked inputs sent this run:\n  " + fired.join("\n  "));
+      if (ignored.length) {
+        state.notice = ignored.length === 1
+          ? ignored[0]
+          : `${ignored.length} settings didn't reach the pipeline — ${ignored[0]}`;
+      }
       pollStart = Date.now();
       let runMsg = `${prefix}: generating…`;
       if (r.prompt_repairs_cleared) {

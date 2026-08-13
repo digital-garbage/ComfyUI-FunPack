@@ -849,3 +849,53 @@ def test_h3_audio_decodes_from_the_sampler_latent_not_a_separated_stream():
 
     ltx, _ = builder.build(OI, {"slots": []}, PARAMS)
     assert ltx["audiodec"]["inputs"]["samples"] == ["separate", 1]
+
+
+# ── a link that does not fire says so ────────────────────────────────────────
+# Every one of these used to be silent: the node kept its own widget value, so a project
+# setting the user had just changed did not reach the graph and nothing said which value won.
+
+def _link_models(members, **link):
+    return {
+        "slots": [{"id": "a", "node_class": "ImgProc", "inputs": {"length": 50}, "wires": {}}],
+        "links": [{"id": "L", "name": "Project · Size", "source": "editor",
+                   "editor_key": "num_frames_per_scene", "members": members, **link}],
+    }
+
+
+def test_a_link_that_fires_is_reported_with_its_value():
+    graph, report = builder.build(OI, _link_models([{"slotId": "a", "input": "length"}]), PARAMS)
+    assert graph["slot_a"]["inputs"]["length"] == 121
+    assert any("Project · Size" in w and "121" in w for w in report["wired"])
+
+
+def test_a_link_pointing_at_a_deleted_node_is_reported():
+    """Re-adding a node gives it a new slot id; the link still names the old one."""
+    models = _link_models([{"slotId": "gone", "input": "length"}])
+    _graph, report = builder.build(OI, models, PARAMS)
+    assert any("no longer in the pipeline" in u for u in report["ignored"])
+    # Reported, never blocking: the run is still valid, it just isn't what was set.
+    assert not any("no longer in the pipeline" in b for b in report["blocking"])
+
+
+def test_a_link_naming_a_widget_the_node_does_not_have_is_reported():
+    """Writing an unknown key sends ComfyUI something it ignores, so the node keeps its
+    default and the link looks like it fired."""
+    models = _link_models([{"slotId": "a", "input": "widht"}])
+    graph, report = builder.build(OI, models, PARAMS)
+    assert "widht" not in graph["slot_a"]["inputs"]
+    assert graph["slot_a"]["inputs"]["length"] == 50
+    assert any("has no widget called" in u for u in report["ignored"])
+
+
+def test_a_link_with_nothing_to_send_is_reported():
+    models = _link_models([{"slotId": "a", "input": "length"}], editor_key="nonesuch")
+    graph, report = builder.build(OI, models, PARAMS)
+    assert graph["slot_a"]["inputs"]["length"] == 50
+    assert any("had no value to send" in u for u in report["ignored"])
+
+
+def test_a_link_beats_the_value_saved_on_the_slot():
+    """The whole point: the project's number wins over whatever the node was left set to."""
+    graph, _ = builder.build(OI, _link_models([{"slotId": "a", "input": "length"}]), PARAMS)
+    assert graph["slot_a"]["inputs"]["length"] == 121 != 50
