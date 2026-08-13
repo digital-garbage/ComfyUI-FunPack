@@ -172,3 +172,44 @@ def test_core_graph_marks_locked_inputs():
     assert model_in["locked"] is False
     assert latent_in["locked"] is False
     assert pos_in["locked"] is True
+
+
+# ── a role with no rules ──────────────────────────────────────────────────────
+# "Any node…" gives a slot role `custom`, which no rule table mentions. Guided mode is
+# there to keep the core's INTERNAL links fixed, not to decide which node may fill an open
+# socket — restricting to role rules meant a custom VAE loader could not be wired into the
+# pipeline at all, and an already-saved wire read back as "(not allowed)".
+
+def test_custom_role_may_reach_a_port_of_its_type():
+    ok = pipeline_wiring.validate_port_wire(
+        role="custom", out_type="VAE", out_name="VAE",
+        target="port:FunPackLTXAVSceneChainSampler.vae", models={"slots": []},
+    )
+    assert ok is None
+
+
+def test_custom_role_still_cannot_reach_an_internal_link():
+    err = pipeline_wiring.validate_port_wire(
+        role="custom", out_type="LATENT", out_name="LATENT",
+        target="port:LTXVConcatAVLatent.video_latent", models={"slots": []},
+    )
+    assert err is not None and "Studio · latent" in err
+
+
+def test_a_role_with_a_rule_keeps_it():
+    """The fallback must not widen a role that HAS an opinion about this type."""
+    assert pipeline_wiring.allowed_port_ids("audio_encoder", "LATENT", family="ltxav") == \
+        ["LTXVConcatAVLatent.audio_latent"]
+
+
+def test_the_panel_filters_exactly_as_the_builder_validates():
+    """models.js allowedDestinations() reads type_fallback_ports for a role with no rule.
+    A panel that hides a wire the builder would accept is how "(not allowed)" appeared."""
+    for family in ("ltxav", "minimax_h3"):
+        payload = pipeline_wiring.wiring_rules_payload(family)
+        for out_type, ports in payload["type_fallback_ports"].items():
+            assert ports == pipeline_wiring.allowed_port_ids(
+                "custom", out_type, family=family)
+        # and nothing internal leaks into it
+        for ports in payload["type_fallback_ports"].values():
+            assert not set(ports) & set(payload["guided_hidden_ports"])

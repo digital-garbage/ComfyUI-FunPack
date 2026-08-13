@@ -200,6 +200,36 @@ def _chain_terminals(family: str) -> dict:
     return out
 
 
+def _type_fallback_ports(family: str) -> dict[str, list[str]]:
+    """Ports an output of a given type may reach when its own role has no rule for that type.
+
+    Guided wiring exists to keep the core's INTERNAL links fixed, not to decide which node is
+    allowed to fill an open socket. Restricting to role rules did the latter: a node added
+    through "Any node…" has role ``custom``, which no table mentions, and the chain terminals
+    cover only MODEL/CLIP/LATENT/IMAGE — so a custom VAE loader could not be wired into the
+    pipeline at all, and an already-saved wire read back as "(not allowed)".
+
+    So the fallback is every port some role can reach with this type, minus the hidden
+    internal ones. Roles that DO have a rule keep it: audio_encoder's LATENT still has to
+    land on Concat · audio_latent and nowhere else.
+    """
+    out: dict[str, list[str]] = {}
+
+    def add(t, port):
+        lst = out.setdefault(t, [])
+        if port not in lst:
+            lst.append(port)
+
+    for rules in _role_targets(family).values():
+        for t, _name, port in rules:
+            add(t, port)
+    for t, ports in _chain_terminals(family).items():
+        for port in ports:
+            add(t, port)
+    hidden = _hidden_ports(family)
+    return {t: [p for p in ports if p not in hidden] for t, ports in out.items()}
+
+
 def _default_wires(family: str) -> dict:
     out = {k: dict(v) for k, v in DEFAULT_WIRES_BY_ROLE.items()}
     out.update({k: dict(v) for k, v in (FAMILY_WIRING.get(family, {}).get("default_wires") or {}).items()})
@@ -252,7 +282,6 @@ def wiring_locked(models: Any) -> bool:
 def allowed_port_ids(role: str, out_type: str, out_name: Optional[str] = None,
                      family: str = DEFAULT_FAMILY) -> list[str]:
     role_targets = _role_targets(family)
-    terminals = _chain_terminals(family)
     out: list[str] = []
     role_rules = role_targets.get(role or "", [])
     for t, name, port in role_rules:
@@ -261,11 +290,12 @@ def allowed_port_ids(role: str, out_type: str, out_name: Optional[str] = None,
         if name is not None and out_name is not None and name != out_name:
             continue
         out.append(port)
-    # Generic chain terminals only when the role has no explicit rule for this type
-    # (e.g. audio_encoder LATENT must stay on Concat · audio_latent, not Studio · latent).
+    # Only when the role has no rule for this type at all (an unknown or custom role, or a
+    # role that simply says nothing about this output). A role that DOES have one keeps it:
+    # audio_encoder LATENT stays on Concat · audio_latent, not Studio · latent.
     has_explicit = any(t == out_type for t, _, _ in role_rules)
     if not has_explicit:
-        for port in terminals.get(out_type, []):
+        for port in _type_fallback_ports(family).get(out_type, []):
             if port not in out:
                 out.append(port)
     return out
@@ -305,20 +335,9 @@ def validate_port_wire(
             f"{out_name} ({out_type}) cannot wire to {port_label(port_id, family)} in guided mode "
             f"(internal core link). Enable Full control to override."
         )
+    # allowed_port_ids falls back to every port of this type for a role with no rule, which
+    # is what a custom or legacy slot has — no special case needed here any more.
     allowed = allowed_port_ids(role, out_type, out_name, family=family)
-    if not allowed and role in ("custom", "", None):
-        # Legacy slots without a role: allow canonical built-in ports for this output type.
-        for rules in _role_targets(family).values():
-            for t, name, port in rules:
-                if t != out_type:
-                    continue
-                if name is not None and name != out_name:
-                    continue
-                if port not in allowed:
-                    allowed.append(port)
-        for port in _chain_terminals(family).get(out_type, []):
-            if port not in allowed:
-                allowed.append(port)
     if not allowed:
         return (
             f"{out_name or out_type} from role '{role}' cannot wire into the built-in pipeline "
@@ -385,6 +404,10 @@ def wiring_rules_payload(family: str = DEFAULT_FAMILY) -> dict[str, Any]:
         "family": family,
         "role_targets": role_targets,
         "type_chain_terminals": _chain_terminals(family),
+        # What a role with no rule for this output type may reach. The panel has to filter
+        # destinations exactly as validate_port_wire does, or it hides a wire the builder
+        # would have accepted — which is how a saved wire came back "(not allowed)".
+        "type_fallback_ports": _type_fallback_ports(family),
         "guided_hidden_ports": sorted(_hidden_ports(family)),
         "default_wires": _default_wires(family),
         "default_input_sources": DEFAULT_INPUT_SOURCES_BY_ROLE,

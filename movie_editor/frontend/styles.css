@@ -817,6 +817,7 @@ input[type=number] { font-family: var(--font-mono); }
 .insp-tag { font-size: var(--fs-subhead); line-height: var(--lh-subhead); color: var(--muted); font-weight: 600; }
 .insp-hint { font-size: 11px; color: var(--faint); margin: -4px 0 12px; }
 .insp-hint.warn { color: var(--accent-hi, var(--accent)); }
+.insp-hint .btn { margin-left: 6px; vertical-align: baseline; }
 .insp-block { margin-bottom: 16px; }
 /* global prompt — first entry in the inspector list (scrolls with content) */
 .insp-global { margin: 0 0 14px; padding: 10px 10px 8px;

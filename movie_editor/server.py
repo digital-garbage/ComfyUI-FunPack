@@ -2377,12 +2377,18 @@ if web is not None and PromptServer is not None:
         return web.json_response({"cancelled": True, "job_id": job_id})
 
     @routes.get(UI_PREFIX + "/api/pipeline-ports")
-    async def _pipeline_ports(_req):
+    async def _pipeline_ports(req):
         try:
             oi = await bridge.object_info()
         except Exception:
             oi = None
-        fam = pipeline_wiring.family_of(nodes.load_models())
+        # The family decides which ports exist and which wires are legal, and it lives on the
+        # PROJECT. Answering from the global default described whatever project was saved last,
+        # so opening one on the other family read its saved wires back as "(not allowed)" and
+        # let reconcile drop them against stale overrides.
+        pid = req.query.get("pid")
+        fam = pipeline_wiring.family_of(
+            _project_models(projects.get(pid)) if pid else nodes.load_models())
         return web.json_response({
             "family": fam,
             "ports": nodes.pipeline_ports(oi, fam),

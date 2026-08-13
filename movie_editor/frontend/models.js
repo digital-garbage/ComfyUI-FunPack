@@ -59,13 +59,17 @@
     if (!pipelineLocked()) return all;
     const role = slot.role || "custom";
     const rules = wiringRules.role_targets?.[role] || [];
-    const chainPorts = wiringRules.type_chain_terminals?.[out.type] || [];
     const hidden = new Set(wiringRules.guided_hidden_ports || []);
-    const allowedPorts = [...rules
+    // Must match pipeline_wiring.allowed_port_ids exactly: a role's own rules when it has any
+    // for this type, otherwise every port of the type. Filtering harder than the builder
+    // validates is what made saved wires read back as "(not allowed)".
+    const explicit = rules
       .filter((r) => r.type === out.type && (r.output_name == null || r.output_name === out.name))
-      .map((r) => "port:" + r.port),
-    ...chainPorts.map((p) => "port:" + p),
-    ].filter((p, i, a) => a.indexOf(p) === i);
+      .map((r) => "port:" + r.port);
+    const fallback = rules.some((r) => r.type === out.type)
+      ? []
+      : (wiringRules.type_fallback_ports?.[out.type] || []).map((p) => "port:" + p);
+    const allowedPorts = [...explicit, ...fallback].filter((p, i, a) => a.indexOf(p) === i);
     return all.filter((d) => {
       if (!d.value.startsWith("port:")) return true;
       const id = d.value.slice(5);
@@ -113,6 +117,10 @@
       const src = config.core_overrides?.[cid]?.[inp];
       const parsed = _parseOutSource(src);
       if (!parsed) continue;
+      // An override naming a slot that no longer exists is stale — _addWire below would
+      // no-op on it while _clearPortWires still stripped everyone ELSE's wire to that port,
+      // so the surviving loader lost its wire on load. Drop the override, keep the wire.
+      if (!slotById(parsed.slotId)) { delete config.core_overrides[cid][inp]; continue; }
       _clearPortWires(portId, parsed.slotId, parsed.out);
       _addWire(parsed.slotId, parsed.out, "port:" + portId);
     }
@@ -1523,7 +1531,7 @@
         // the family decides which core nodes exist and which ports loaders may wire
         // into, so both have to be re-fetched before the panel redraws
         try {
-          const pp = await API.pipelinePorts();
+          const pp = await API.pipelinePorts(window.Store?.get().project?.id);
           ports = pp.ports || ports;
           requirements = pp.requirements || requirements;
           wiringRules = pp.wiring || wiringRules;
@@ -1781,14 +1789,17 @@
 
   async function loadAll() {
     await ensureRoles();
+    const pid = window.Store?.get().project?.id;
+    // Config FIRST: the ports and wiring rules depend on the project's model family, so
+    // asking for them before we know it answered for whatever family was saved globally.
+    try { config = await API.getModels(pid); } catch (_) { config = { slots: [] }; }
     try {
-      const pp = await API.pipelinePorts();
+      const pp = await API.pipelinePorts(pid);
       ports = pp.ports || [];
       coreProducers = pp.core_producers || [];
       requirements = pp.requirements || [];
       wiringRules = pp.wiring || {};
     } catch (_) { ports = []; coreProducers = []; requirements = []; wiringRules = {}; }
-    try { config = await API.getModels(window.Store?.get().project?.id); } catch (_) { config = { slots: [] }; }
     reconcileOpenPortWiring();
     try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || []; } catch (_) { coreNodes = []; }
     await prewarmSpecs();

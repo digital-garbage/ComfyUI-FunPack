@@ -184,12 +184,38 @@ def test_an_unknown_operation_is_reported_not_guessed():
     assert out is lat and "unknown operation" in note
 
 
-def test_the_pin_is_dropped_when_the_operation_changed_the_resolution():
-    """upscale_2x leaves the chunk's anchor and mask the wrong size. Rescaling them would be
-    inventing an anchor, so the pin is dropped — and the caller reports it."""
+def test_the_pin_survives_an_operation_that_changed_the_resolution():
+    """upscale_2x leaves the chunk's mask the wrong size, which used to drop the pin and let
+    pass 2 re-denoise the anchor at 4x the pixels — the run most likely to drift.
+
+    The anchor is not re-derived from the source image: the pinned frames in the upscaled
+    state ARE the anchor, carried through the same upsampler as every other frame. Only the
+    mask has to be brought to the new grid.
+    """
     clean = torch.zeros(1, 4, 4, 8, 8)
     mask = torch.ones_like(clean)
     mask[:, :, :1] = 0.0
+    chunk = {"samples": clean, "noise_mask": mask}
+    anchor = torch.full((1, 4, 1, 16, 16), 7.0)
+    upscaled = {"samples": torch.zeros(1, 4, 4, 16, 16)}
+    upscaled["samples"][:, :, :1] = anchor
+
+    out = _node()._restore_pinned_prefix(upscaled, chunk)
+    assert out is not upscaled
+    m = out["noise_mask"]
+    assert m.shape[-2:] == (16, 16)
+    assert float(m[:, :, :1].max()) == 0.0      # anchor frame still pinned...
+    assert float(m[:, :, 1:].min()) == 1.0      # ...and nothing else is
+    # The upsampler's anchor is what stays pinned — untouched by the restore.
+    assert torch.equal(out["samples"][:, :, :1], anchor)
+
+
+def test_the_pin_is_dropped_when_the_mask_cannot_be_rebuilt():
+    """A mask with no spatial axes to scale is unusable at the new size. Dropping the pin and
+    saying so beats pinning against a grid that isn't there."""
+    clean = torch.zeros(1, 4, 4, 8, 8)
+    mask = torch.ones(1, 4, 4)                  # 3-D: no H/W to rescale
+    mask[:, :1] = 0.0
     chunk = {"samples": clean, "noise_mask": mask}
     upscaled = {"samples": torch.zeros(1, 4, 4, 16, 16)}
     assert _node()._restore_pinned_prefix(upscaled, chunk) is upscaled

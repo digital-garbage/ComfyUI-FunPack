@@ -1838,6 +1838,28 @@
     return sc.frames != null ? sc.frames : p.num_frames_per_scene;
   }
 
+  // Generative scenes whose own length overrides the project's Frames field. Any timeline
+  // resize, trim or split flips a scene out of "project" mode, and from then on editing the
+  // project number does nothing to it — silently, which reads as the field being ignored.
+  function scenesOverridingProjectFrames() {
+    if (!state.project) return [];
+    return (state.project.scenes || []).filter(
+      (s) => s && !isVideoClip(s) && (s.frames_mode || "project") !== "project");
+  }
+
+  // Put those scenes back on the project's length. Video clips keep theirs: their length is
+  // the source file's, not a preference.
+  function useProjectFramesEverywhere() {
+    if (!state.project) return;
+    const targets = scenesOverridingProjectFrames();
+    if (!targets.length) return;
+    _historyRecord();
+    targets.forEach((s) => { s.frames_mode = "project"; s.frames = null; });
+    _afterTimelineStructureChange();
+    notify();
+    scheduleSave();
+  }
+
   function sceneEffFps(sc, project) {
     const p = project || state.project;
     if (!sc || !p) return p?.frame_rate || 25;
@@ -4372,7 +4394,7 @@
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
     addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,
     isOverlayAudioTrack, isSeparatedAudioTrack,
-    resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
+    resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, scenesOverridingProjectFrames, useProjectFramesEverywhere, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate: _clockedGenerate, generateMontage: _clockedMontage, generateSelected: _clockedSelected, genElapsed, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,

@@ -60,6 +60,10 @@
         conditioning_slot: p.conditioning_slot, sampler_slot: p.sampler_slot,
         studio_inputs: p.studio_inputs, sampler_inputs: p.sampler_inputs,
         guide_settings: p.guide_settings, continuity_settings: p.continuity_settings,
+        // The Project panel warns when its Frames field reaches no shot, so it depends on
+        // scene state even with no scene selected — without this the warning stays on screen
+        // after "Use project length everywhere" has already cleared it.
+        ownLength: (p.scenes || []).filter((s) => (s.frames_mode || "project") !== "project").length,
       },
       preview: st.preview ? {
         warning: st.preview.warning, parse_error: st.preview.parse_error,

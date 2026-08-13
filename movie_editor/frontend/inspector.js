@@ -473,6 +473,24 @@
     }
     row1.append(fpsField);
     body.append(row1);
+
+    // A scene leaves "project" length the moment it is resized, trimmed or split, and from
+    // then on this field does not reach it. Nothing said so, so typing a new number and
+    // watching the render come out the old length read as the editor ignoring the edit.
+    const overridden = S.scenesOverridingProjectFrames ? S.scenesOverridingProjectFrames() : [];
+    const gen = (p.scenes || []).filter((s) => s && !S.isVideoClip?.(s));
+    if (overridden.length) {
+      const warn = el("div", "insp-hint warn");
+      warn.textContent = overridden.length >= gen.length
+        ? `Frames doesn't reach any shot — all ${overridden.length} have their own length from the timeline.`
+        : `Frames doesn't reach ${overridden.length} of ${gen.length} shots — they have their own length from the timeline.`;
+      const fix = el("button", "btn ghost tiny", "Use project length everywhere");
+      fix.title = "Put every generated shot back on the project's Frames value. Video clips keep "
+        + "their own length. Undoable.";
+      fix.onclick = () => S.useProjectFramesEverywhere();
+      warn.append(fix);
+      body.append(warn);
+    }
     const row2 = el("div", "fields-row");
     row2.append(numberField("Width", p.width != null ? p.width : 768, (v) => S.patchProjectQuiet({ width: v }), "pj-w"));
     row2.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));

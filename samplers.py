@@ -2863,7 +2863,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "second_pass_op": (["none", "sharpen", "upscale_2x"], {
                     "default": "none",
-                    "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor) — the scene report says so when it happens. MULTI-SCENE works with it: a scene finishes at 2x while every later scene is still built from the latent template at the original size, so everything that crosses a scene boundary (carried overlap frames, the anchor's continuation, the soft join, JoyAI memory, per-scene guide sources) is brought back to the template's grid on the way. Each scene still samples and OUTPUTS at 2x — only the carried material is resampled, and only downwards, which is the direction that survives it: those frames exist to say 'continue from here', which a resample preserves far better than invented detail would. Both ops use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official one on first use). Video stream only; audio is never reshaped.",
+                    "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half. The i2v pin SURVIVES it: the pinned frames are carried through the upsampler with everything else and the mask is scaled to the new grid, so pass 2 still holds the anchor — as the upscaled anchor rather than the encoded source image, which the scene report states. Guide keyframes do not survive, because they are token indices into the old grid; pass 1 uses them in full. MULTI-SCENE works with it: a scene finishes at 2x while every later scene is still built from the latent template at the original size, so everything that crosses a scene boundary (carried overlap frames, the anchor's continuation, the soft join, JoyAI memory, per-scene guide sources) is brought back to the template's grid on the way. Each scene still samples and OUTPUTS at 2x — only the carried material is resampled, and only downwards, which is the direction that survives it: those frames exist to say 'continue from here', which a resample preserves far better than invented detail would. Both ops use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official one on first use). Video stream only; audio is never reshaped.",
                 }),
                 "h3_audio_clock": ("BOOLEAN", {
                     "default": False,
@@ -3786,6 +3786,37 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return False
 
+    def _rescale_mask_to(self, mask, height, width):
+        """A noise mask on `height`x`width`, or None if it cannot be built.
+
+        Nearest-neighbour, and deliberately: this mask is a hard 0/1 pin, and interpolating
+        its edge would hand pass 2 half-pinned latent positions that are neither frozen nor
+        free. An i2v pin covers whole leading frames, so nearest is exact for it.
+
+        Nested masks carry one entry per stream and only the video stream has spatial axes —
+        audio is passed through untouched, as everywhere else.
+        """
+        if mask is None:
+            return None
+        try:
+            if self._is_nested(mask):
+                parts = list(mask.unbind())
+                out = [self._rescale_mask_to(parts[0], height, width)] + [
+                    self._clone_value(m) for m in parts[1:]]
+                if out[0] is None:
+                    return None
+                return comfy.nested_tensor.NestedTensor(out)
+            if not isinstance(mask, torch.Tensor) or mask.dim() < 4:
+                return None
+            if mask.shape[-2:] == (int(height), int(width)):
+                return self._clone_value(mask)
+            flat = mask.reshape(-1, 1, mask.shape[-2], mask.shape[-1]).float()
+            resized = torch.nn.functional.interpolate(
+                flat, size=(int(height), int(width)), mode="nearest")
+            return resized.reshape(*mask.shape[:-2], int(height), int(width)).to(mask.dtype)
+        except Exception:
+            return None
+
     def _restore_pinned_prefix(self, state, chunk):
         """Put the i2v pin back on a latent that is about to be handed to a second pass.
 
@@ -3793,20 +3824,34 @@ class FunPackLTXAVSceneChainSampler:
         would run UNPINNED and re-denoise the anchor frame, letting the reference drift. The
         pinned region's values are copied back from the original chunk as well, since pass 2
         re-noises everything it is handed, including frames that are supposed to be frozen.
+
+        When a resolution-changing second_pass_op (upscale_2x) has run, the chunk's anchor and
+        mask are the old size. The anchor is NOT re-derived from the source image: the pinned
+        frames already in `state` are the upsampler's own rendering of those very frames, so
+        they are kept as they are and only the mask is scaled to the new grid. That is the
+        same upscale every other frame in the clip just got, which is what makes it the anchor
+        and not an invention — but it does mean the pin at 2x holds the upsampled anchor
+        rather than the encoded source image.
         """
         mask = chunk.get("noise_mask")
         pinned = self._anchor_pinned_frames(chunk)
         if mask is None or pinned <= 0:
             return state
         try:
-            # A resolution-changing second_pass_op (upscale_2x) leaves the chunk's anchor and
-            # mask the wrong size. Rescaling them here would be inventing an anchor; the
-            # caller reports the lost pin instead.
-            if self._latent_spatial_changed(state, chunk):
-                return state
+            upscaled = self._latent_spatial_changed(state, chunk)
         except Exception:
             return state
         result = self._clone_latent(state)
+        if upscaled:
+            try:
+                h, w = self._latent_tensors(result)[0].shape[-2:]
+            except Exception:
+                return state
+            scaled = self._rescale_mask_to(mask, int(h), int(w))
+            if scaled is None:
+                return state
+            result["noise_mask"] = scaled
+            return result
         try:
             src = self._latent_tensors(chunk)[0]
             dst = self._latent_tensors(result)
@@ -6928,14 +6973,21 @@ class FunPackLTXAVSceneChainSampler:
                     # re-denoises the reference frame and the scene drifts away from the
                     # image it was supposed to start from.
                     _sp_before = _sp_state
+                    _sp_pinned = self._anchor_pinned_frames(chunk) > 0
+                    _sp_resized = _sp_pinned and self._latent_spatial_changed(_sp_state, chunk)
                     _sp_state = self._restore_pinned_prefix(_sp_state, chunk)
-                    if _sp_state is _sp_before and self._anchor_pinned_frames(chunk) > 0:
-                        # Only happens when the op changed the resolution — say so, because
-                        # an unpinned pass 2 can drift off the reference image.
+                    if _sp_state is _sp_before and _sp_pinned:
+                        # The mask could not be rebuilt at the new size — an unpinned pass 2
+                        # can drift off the reference image, so say so.
                         run_mechanisms.append(
                             "second_pass NOTE: the i2v anchor could not stay pinned for pass 2 "
                             "because second_pass_op changed the latent resolution — pass 2 runs "
                             "unpinned and may drift from the reference image.")
+                    elif _sp_resized:
+                        run_mechanisms.append(
+                            "second_pass NOTE: second_pass_op changed the resolution, so the i2v "
+                            "anchor stays pinned as the UPSCALED anchor — the same upsampler pass "
+                            "the rest of the clip got, not the encoded source image.")
                     # Same resolution change, second casualty: guide keyframes are recorded as
                     # TOKEN indices into the pass-1 grid, and 2x spatial means 4x the tokens per
                     # latent frame, so those indices now address the wrong tokens entirely.
