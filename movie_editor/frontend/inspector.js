@@ -937,15 +937,16 @@
     if (!st.project) { title.textContent = "Inspector"; body.append(el("div", "pj-meta", "No project open.")); return; }
     const ov = st.selectedOverlayId ? S.overlayTrack(st.selectedOverlayId) : null;
     const scene = !ov && st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
-    renderSwitch(st, scene);
-    renderEngineStrip(st);
+    const simple = !!window.FunPackMode?.isSimple();
+    renderSwitch(st, scene);   // stays: it is the only route to project settings
+    if (!simple) renderEngineStrip(st);
     if (ov) renderOverlayInspector(st, ov);
     else if (scene) {
       if (S.isVideoClip(scene)) renderVideoClip(st, scene);
       else renderScene(st, scene);
     } else renderProject(st);
-    renderExposed(st);
-    renderSplit(st);
+    renderExposed(st);   // knobs the user chose to surface — deliberate, not clutter
+    if (!simple) renderSplit(st);
     body.scrollTop = scrollTop;  // restore so editing doesn't jump to the top
   }
 

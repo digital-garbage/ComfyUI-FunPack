@@ -1,7 +1,7 @@
 // Thin backend client. Served by ComfyUI, so all URLs are same-origin (relative):
 // the browser automatically uses whatever host:port ComfyUI runs on.
 (function () {
-  // Base = the directory this app is served from, e.g. /funpack/movie
+  // Base = the directory this app is served from, i.e. /funpack
   const BASE = window.location.pathname.replace(/\/+$/, "").replace(/\/index\.html$/, "");
   const API = (p) => `${BASE}/api${p}`;
   const FUNPACK = "/funpack";
