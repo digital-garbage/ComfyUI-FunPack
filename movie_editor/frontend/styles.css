@@ -717,6 +717,10 @@ input[type=number] { font-family: var(--font-mono); }
 /* video canvas — fills the zone above transport */
 .pm-canvas { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; min-height: 0; background: var(--ink-void); }
 .pm-canvas::after { content: ""; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 140px 10px color-mix(in srgb, var(--shadow-ink) 76.5%, transparent); z-index: 1; }
+/* The letterbox stays black behind real video in both themes. An EMPTY stage is just a
+   panel, and a black rectangle with a vignette reads as a broken player in the light one. */
+.pm-canvas:has(> .program-empty), .pm-canvas:has(> .pm-gen-splash) { background: var(--ink-1); }
+.pm-canvas:has(> .program-empty)::after, .pm-canvas:has(> .pm-gen-splash)::after { box-shadow: none; }
 .pm-canvas.media-previewing .pm-stage,
 .pm-canvas.media-previewing .pm-slate,
 .pm-canvas.media-previewing .pm-segment-badge,
@@ -738,7 +742,7 @@ input[type=number] { font-family: var(--font-mono); }
 .pm-gen-splash { display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted); }
 .pm-gen-icon { font-size: 36px; animation: pm-spin 3s linear infinite; }
 @keyframes pm-spin { to { transform: rotate(360deg); } }
-.pm-gen-label { font-size: 13px; font-family: var(--font-mono); }
+.pm-gen-label { font-size: var(--fs-body); line-height: var(--lh-body); color: var(--muted); }
 .gen-readout { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); font-family: var(--font-mono); font-size: 12px; color: var(--accent-hi); background: var(--scrim-2); border: 1px solid var(--line); padding: 5px 12px; border-radius: 20px; display: flex; align-items: center; gap: 8px; z-index: 2; white-space: nowrap; }
 .gen-readout .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1s infinite; flex: 0 0 auto; }
 .gen-readout.error { color: var(--danger); }
@@ -2379,10 +2383,10 @@ body.tour-mode { overflow: hidden; }
    is "+ New node", so adding lives where the nodes are rather than in a
    sidebar you have to know about. */
 .node-grid {
-  display: grid; gap: 12px; margin: 4px 0 22px; justify-content: start;
-  /* A capped max, not 1fr: in a narrow pane two 1fr columns stretched each tile to
-     ~270px tall. A shelf keeps its tile size and reflows the count instead. */
-  grid-template-columns: repeat(auto-fill, minmax(148px, 168px));
+  display: grid; gap: var(--sp-3); margin: var(--sp-1) 0 var(--sp-6);
+  /* 1fr so the row has no dead strip at its right edge. Safe here only because the art
+     below is a fixed height — with aspect-ratio, a wide column also made a tall one. */
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
 }
 .node-card {
   display: block; padding: 0;
@@ -2390,7 +2394,7 @@ body.tour-mode { overflow: hidden; }
   font-family: inherit; color: var(--text);
 }
 .node-card-art {
-  position: relative; aspect-ratio: 4 / 3; border-radius: 10px; overflow: hidden;
+  position: relative; height: 116px; border-radius: 10px; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
   background: linear-gradient(160deg, var(--ink-3), var(--ink-1));
   border: 1px solid var(--line);
