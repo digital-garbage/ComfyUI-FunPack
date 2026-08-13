@@ -1013,7 +1013,16 @@
     const touches = ["num_frames_per_scene", "frame_rate", "width", "height"].some((k) => k in patch);
     if (!touches) return;
     for (const sc of p.scenes || []) {
-      if (patch.num_frames_per_scene != null && (sc.frames_mode || "project") === "project" && !isVideoClip(sc)) {
+      // Editing the project's length wins over a length the TIMELINE gave a shot. A resize,
+      // trim or split moves a shot off project length as a side effect of a drag, and it
+      // never moved back — so the field looked live while reaching nothing.
+      //
+      // "custom" is the exception, and the same exception the rest of the app already makes:
+      // a shot set to Custom is locked against timeline resize too (resizeScene, splitScene).
+      // It is the one length the user typed on purpose, so it is the one this leaves alone.
+      if (patch.num_frames_per_scene != null && !isVideoClip(sc)
+          && (sc.frames_mode || "project") !== "custom") {
+        sc.frames_mode = "project";
         sc.frames = null;
       }
       if (patch.frame_rate != null && (sc.fps_mode || "project") === "project") {
@@ -1040,8 +1049,19 @@
     notify();
     scheduleSave();
   }
+  // Whether this patch is about to throw away lengths the timeline gave shots. Quiet patches
+  // record no history — they fire per keystroke — but this one discards work, so it gets one
+  // undo point. Only the FIRST keystroke of a burst finds anything left in "timeline" mode,
+  // so the stack gets one entry rather than one per character.
+  function _willDiscardTimelineLengths(patch) {
+    if (!state.project || patch.num_frames_per_scene == null) return false;
+    return (state.project.scenes || []).some(
+      (s) => s && !isVideoClip(s) && (s.frames_mode || "project") === "timeline");
+  }
+
   function patchProjectQuiet(patch) {
     if (!state.project) return;
+    if (_willDiscardTimelineLengths(patch)) _historyRecord();
     const before = {
       num_frames_per_scene: state.project.num_frames_per_scene,
       frame_rate: state.project.frame_rate,
@@ -1838,17 +1858,18 @@
     return sc.frames != null ? sc.frames : p.num_frames_per_scene;
   }
 
-  // Generative scenes whose own length overrides the project's Frames field. Any timeline
-  // resize, trim or split flips a scene out of "project" mode, and from then on editing the
-  // project number does nothing to it — silently, which reads as the field being ignored.
+  // Generative scenes the project's Frames field does not reach. Editing that field now
+  // resets a timeline-derived length (see _propagateProjectSettingsToScenes), so the only
+  // ones left are those set to Custom on purpose.
   function scenesOverridingProjectFrames() {
     if (!state.project) return [];
     return (state.project.scenes || []).filter(
-      (s) => s && !isVideoClip(s) && (s.frames_mode || "project") !== "project");
+      (s) => s && !isVideoClip(s) && s.frames_mode === "custom");
   }
 
-  // Put those scenes back on the project's length. Video clips keep theirs: their length is
-  // the source file's, not a preference.
+  // Put those back on the project's length too — the explicit version of what editing the
+  // Frames field does implicitly, for the one mode that field deliberately leaves alone.
+  // Video clips keep theirs: their length is the source file's, not a preference.
   function useProjectFramesEverywhere() {
     if (!state.project) return;
     const targets = scenesOverridingProjectFrames();

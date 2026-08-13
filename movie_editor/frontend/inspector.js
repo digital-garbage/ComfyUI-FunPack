@@ -447,14 +447,20 @@
       (v) => S.patchProjectQuiet({ num_frames_per_scene: v }), "pj-frames");
     const framesInput = framesField.querySelector("input");
     if (framesInput) {
+      // Says what editing this does to shots that already have their own length, because it
+      // discards timeline trims and there is no other place that would tell you.
+      const reach = "Sets the length of every shot, including ones trimmed or split on the "
+        + "timeline. Shots set to Custom keep theirs.";
       if (spec) {
         framesInput.step = String(spec.step);
         framesInput.min = String(spec.min);
-        framesInput.title = spec.snap
-          ? "MiniMax H3 only generates on its " + grid.label + " frame grid, so this snaps to it "
+        framesInput.title = reach + (spec.snap
+          ? " MiniMax H3 only generates on its " + grid.label + " frame grid, so this snaps to it "
             + "— the arrows move a whole " + spec.step + " frames."
-          : "Any length works; the arrows walk this model's " + grid.label + " grid, and an "
-            + "off-grid number is rounded up to it when the graph is built.";
+          : " Any length works; the arrows walk this model's " + grid.label + " grid, and an "
+            + "off-grid number is rounded up to it when the graph is built.");
+      } else {
+        framesInput.title = reach;
       }
       framesInput.onchange = () => {
         const typed = parseInt(framesInput.value || "0", 10);
@@ -474,19 +480,19 @@
     row1.append(fpsField);
     body.append(row1);
 
-    // A scene leaves "project" length the moment it is resized, trimmed or split, and from
-    // then on this field does not reach it. Nothing said so, so typing a new number and
-    // watching the render come out the old length read as the editor ignoring the edit.
+    // Editing Frames resets a shot the timeline gave its own length — the field used to look
+    // live while reaching nothing. Custom is the exception, so it is the only one worth a
+    // warning: it is also the only one that can still silently disagree with this number.
     const overridden = S.scenesOverridingProjectFrames ? S.scenesOverridingProjectFrames() : [];
     const gen = (p.scenes || []).filter((s) => s && !S.isVideoClip?.(s));
     if (overridden.length) {
       const warn = el("div", "insp-hint warn");
       warn.textContent = overridden.length >= gen.length
-        ? `Frames doesn't reach any shot — all ${overridden.length} have their own length from the timeline.`
-        : `Frames doesn't reach ${overridden.length} of ${gen.length} shots — they have their own length from the timeline.`;
+        ? `Frames doesn't reach any shot — all ${overridden.length} are set to Custom.`
+        : `Frames doesn't reach ${overridden.length} of ${gen.length} shots — they're set to Custom.`;
       const fix = el("button", "btn ghost tiny", "Use project length everywhere");
-      fix.title = "Put every generated shot back on the project's Frames value. Video clips keep "
-        + "their own length. Undoable.";
+      fix.title = "Put those shots back on the project's Frames value. Video clips keep their "
+        + "own length. Undoable.";
       fix.onclick = () => S.useProjectFramesEverywhere();
       warn.append(fix);
       body.append(warn);
