@@ -242,7 +242,7 @@
     { name: "v2a_grad_scale",        label: "Video→audio coupling", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.25, dependsOn: "joyai_audio_memory",
       hint: "How much the carried audio follows the new shot's picture. 1.0 is the model's own behaviour and costs nothing; JoyAI uses 2.0; 0 makes audio ignore the video." },
     { name: "alg_anchor",            label: "Blur the i2v anchor (ALG)", kind: "bool", default: false,
-      hint: "Hides the anchor image's fine detail during the first, noisiest steps so the shot can't shortcut to a near-still that just matches it — the usual fix for an anchored scene that barely moves. Works with whatever sampler you have wired, including a plain KSampler, and does nothing on a scene with no anchor image." },
+      hint: "Blurs the anchor's fine detail during the first, noisiest steps — the usual fix for an anchored scene that barely moves. No effect without an anchor image." },
     { name: "alg_anchor_strength",   label: "Anchor blur strength", kind: "float", default: 2.0, min: 1.0, max: 4.0, step: 0.1, dependsOn: "alg_anchor",
       hint: "How blurry the anchor gets while it's blurred. The paper says 2.5; 2.0 held character likeness noticeably better here." },
     { name: "alg_anchor_sigma_threshold", label: "Anchor blur sigma threshold", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "alg_anchor",
@@ -634,22 +634,6 @@
       const next = JSON.stringify({ ...cur, samplers: updatedSamplers });
       if (quiet) S.setStudioInput("studio_settings", next);
       else S.setStudioInputNow("studio_settings", next);
-      syncSecondPassFromSchedule(updatedSamplers, quiet);
-    }
-    // The second pass is driven by ONE thing: the schedule. Giving it one turns it on;
-    // taking it away turns it off. There is no cut and no re-entry point to configure —
-    // pass 1 always runs the main schedule in full and pass 2 always runs this one in full.
-    // A schedule is either typed into the low pass's Sigmas field or COMPUTED by picking a
-    // scheduler for it; both must count here, or picking one would be an inert control.
-    function syncSecondPassFromSchedule(samplers, quiet) {
-      const raw = String(samplers?.low?.sigmas || "").replace(/;/g, ",");
-      const vals = raw.split(",").map((v) => parseFloat(v.trim())).filter((v) => !isNaN(v));
-      const sched = String(samplers?.low?.scheduler || "use_user_sigmas");
-      const computed = sched !== "use_user_sigmas" && Number(samplers?.low?.steps || 0) > 0;
-      const set = quiet ? S.setSamplerInput : S.setSamplerInputNow;
-      // one number is not a schedule
-      if (computed || vals.length >= 2) set("second_pass", true);
-      else S.unsetSamplerInput("second_pass");
     }
 
     // ALG used to have two switches: the Distilled Flow panel's own alg_enabled, and the
@@ -705,15 +689,10 @@
       moved.style.color = "var(--accent)";
       algG.append(moved);
     }
-    algG.append(hintEl("This is the only ALG anchor control — on Distilled Flow it runs inside "
-      + "the sampler loop, on every other sampler through a denoiser proxy. The same blur for "
-      + "guide and JoyAI-memory frames is under Experimental (“Blur i2v guides and JoyAI "
-      + "memory”) — it has its own strength and window."));
-    // Second pass lives here rather than under Experimental: at its defaults the split is
-    // behaviour-neutral (pass 2 resumes from exactly the state pass 1 handed over), so it
-    // is a sampler setting, not a gamble. The only control is the schedule field in the
-    // panel above — enable and cut are derived from it (see syncSecondPassFromSchedule);
-    // all that is left here is the optional between-pass operation.
+    algG.append(hintEl("The same blur for guide and JoyAI-memory frames is under Experimental, "
+      + "with its own strength and window."));
+    // Enable and schedule are in the panel above, with the sampler they belong to; this is
+    // the optional operation applied to the latent between the two passes.
     const g = group(pane, "Second pass");
     renderKnobList(g, st, ["second_pass_op"]);
     const si = st.project.sampler_inputs || {};

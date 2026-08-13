@@ -406,23 +406,19 @@
     // reuses the sampler configured above, and rendering its algorithm settings here would
     // offer knobs that quietly do nothing.
     sectionTag(container, "Second pass");
+    const spOn = !!(window.Store?.get()?.project?.sampler_inputs || {}).second_pass;
+    row(container, "Enable", checkCtrl(spOn, "sp-second-on", (v) => {
+      window.Store?.setSamplerInputNow?.("second_pass", v);
+    }));
+    hint(container, "Samples each scene twice. Pass 1 runs the main schedule in full, then "
+                  + "pass 2 runs the one below in full — total steps are the two added up.");
+
     const spSig = textCtrl(s.low.sigmas, "e.g. 0.812, 0.6, 0.35, 0.15, 0.0", "sp-second-sig",
       (v) => { s.low.sigmas = v; mkSave(true)(); });
-    row(container, "Second pass schedule", spSig);
-hint(container, "Fill this in and each scene is sampled in two passes; leave it empty and "
-                    + "it isn't. Comma-separated floats, high to low, ending at 0. Pass 1 "
-                    + "runs the main Sigmas schedule above in full, then pass 2 runs THIS "
-                    + "one in full, so the total is simply the two added up (a 9-step main "
-                    + "plus a 4-step second pass is 13). Pass 2 starts from the finished "
-                    + "clip: it is handed in as the latent and the sampler noises it to your "
-                    + "first sigma itself, exactly as any img2img does — no extra step in "
-                    + "between. That first sigma is therefore the strength dial, and it is "
-                    + "literal: at 0.8 pass 2 starts from 80% fresh noise over 20% of the "
-                    + "pass-1 picture and will rework the shot (and look soft if it has few "
-                    + "steps to resolve it); at 0.4 it is 40/60 and polishes; at 0.2 it is "
-                    + "nearly pure detail work. The rest of the list sets how many steps it "
-                    + "gets. To make pass 1 "
-                    + "shorter, shorten the schedule above; nothing here cuts it short.");
+    row(container, "Schedule", spSig);
+    hint(container, "Comma-separated, high to low, ending at 0. The FIRST sigma is the strength "
+                  + "dial: 0.8 reworks the shot, 0.4 polishes, 0.2 is detail work. The rest sets "
+                  + "how many steps pass 2 gets.");
 
     // Pass 2 can be computed instead of typed, same switch as pass 1 — its SIGMAS is the
     // only thing of the low pass that is wired, so a schedule chosen here IS pass 2.
@@ -430,18 +426,17 @@ hint(container, "Fill this in and each scene is sampled in two passes; leave it 
     if (s.low.steps === undefined) s.low.steps = s.low.ksampler_steps === undefined ? 4 : s.low.ksampler_steps;
     const spScheds = ksamplerSchedulers(mkSave(false));
     const spSchedCur = s.low.scheduler || KSAMPLER_USER_SIGMAS;
-    row(container, "Second pass schedule (computed)",
+    row(container, "Schedule (computed)",
       selCtrl(spScheds.includes(spSchedCur) ? spScheds : spScheds.concat([spSchedCur]), spSchedCur,
         "sp-second-sch", (v) => { s.low.scheduler = v; mkSave(false)(); }));
-    hint(container, "Leave on '" + KSAMPLER_USER_SIGMAS + "' to use the typed field above. Pick a "
-                  + "scheduler and pass 2 runs a computed schedule of the step count below instead "
-                  + "— which also TURNS THE SECOND PASS ON, whatever the field above says. A full "
-                  + "computed schedule starts at the model's top sigma, so pass 2 reworks the shot "
-                  + "rather than polishing it; for a polish, type the short low-sigma list above "
-                  + "and leave this alone.");
+    hint(container, "Leave on '" + KSAMPLER_USER_SIGMAS + "' to use the field above. A computed "
+                  + "schedule starts at the model's top sigma, so pass 2 reworks rather than polishes.");
     if (spSchedCur !== KSAMPLER_USER_SIGMAS) {
-      row(container, "Second pass steps",
+      row(container, "Steps",
         intCtrl(s.low.steps, 1, 200, "sp-second-steps", (v) => { s.low.steps = v; mkSave(true)(); }));
+    }
+    if (spOn && spSchedCur === KSAMPLER_USER_SIGMAS && !String(s.low.sigmas || "").trim()) {
+      hint(container, "Pass 2 is on but has no schedule — give it one above, or pick a computed one.");
     }
   }
 
