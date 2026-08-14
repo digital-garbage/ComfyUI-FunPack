@@ -320,8 +320,97 @@ def _flatten_subgraphs(workflow: dict, object_info: dict) -> dict:
     return wf
 
 
+# ── virtual link nodes ────────────────────────────────────────────────────────
+# KJNodes' Set/Get exist ONLY in JavaScript (web/js/setgetnodes.js — there is no Python
+# class), so ComfyUI's frontend resolves them away when it builds the prompt. Emitting one
+# queues a node type the backend has never heard of. They are common in big LTX workflows:
+# one shipped 53 of them across 117 nodes.
+_VIRTUAL_LINK_NODES = frozenset({"SetNode", "GetNode"})
+_VIRTUAL_MAX_CHASE = 32          # Set -> Get -> Set chains; bounds a cycle
+
+
+def _virtual_name(node: dict) -> str:
+    values = node.get("widgets_values")
+    if isinstance(values, list) and values and isinstance(values[0], str):
+        return values[0]
+    return ""
+
+
+def _resolve_virtual_links(workflow: dict) -> dict:
+    """Rewire past Set/Get nodes, then drop them.
+
+    Link rows are re-pointed IN PLACE, keeping their id, so the `link` ids recorded on
+    every consumer's input socket stay valid and only the origin changes.
+    """
+    nodes = workflow.get("nodes") or []
+    if not any(n.get("type") in _VIRTUAL_LINK_NODES for n in nodes):
+        return workflow
+
+    wf = json.loads(json.dumps(workflow))
+    nodes = wf.get("nodes") or []
+    links = [l for l in (wf.get("links") or []) if isinstance(l, list) and len(l) >= 6]
+    by_id = {n.get("id"): n for n in nodes}
+    by_target = {}                                   # (node id, slot) -> link row
+    for row in links:
+        by_target[(row[3], row[4])] = row
+
+    # What each name was Set from.
+    produced: dict[str, tuple] = {}
+    for n in nodes:
+        if n.get("type") != "SetNode":
+            continue
+        row = by_target.get((n.get("id"), 0))
+        if row:
+            produced[_virtual_name(n)] = (row[1], row[2])
+
+    def source_of(nid, slot, seen=None):
+        """Follow Set/Get hops to the real producing node, or None if the chain is broken."""
+        seen = seen or set()
+        for _ in range(_VIRTUAL_MAX_CHASE):
+            node = by_id.get(nid)
+            kind = (node or {}).get("type")
+            if kind not in _VIRTUAL_LINK_NODES:
+                return (nid, slot)
+            if nid in seen:
+                return None
+            seen.add(nid)
+            if kind == "GetNode":
+                hit = produced.get(_virtual_name(node))
+                if not hit:
+                    return None                      # Get with no matching Set
+                nid, slot = hit
+            else:                                    # SetNode passthrough output
+                row = by_target.get((nid, 0))
+                if not row:
+                    return None
+                nid, slot = row[1], row[2]
+        return None
+
+    kept, dropped = [], set()
+    for row in links:
+        if (by_id.get(row[3]) or {}).get("type") in _VIRTUAL_LINK_NODES:
+            dropped.add(int(row[0]))                 # feeds a Set/Get: it goes with them
+            continue
+        src = source_of(row[1], row[2])
+        if src is None:
+            dropped.add(int(row[0]))                 # unresolvable — leave the input unwired
+            continue
+        row[1], row[2] = src
+        kept.append(row)
+
+    wf["links"] = kept
+    wf["nodes"] = [n for n in nodes if n.get("type") not in _VIRTUAL_LINK_NODES]
+    for n in wf["nodes"]:
+        for socket in n.get("inputs") or []:
+            if socket.get("link") is not None and int(socket["link"]) in dropped:
+                socket["link"] = None
+    return wf
+
+
 def _parse_ui_workflow(workflow: dict, object_info: dict) -> dict:
     workflow = _flatten_subgraphs(workflow, object_info)
+    # After flattening: a subgraph can contain Set/Get, and its nodes are outer nodes now.
+    workflow = _resolve_virtual_links(workflow)
     nodes_raw = workflow.get("nodes") or []
     links_map = _parse_ui_links(workflow.get("links") or [])
     inp_links = _ui_input_links(nodes_raw)

@@ -254,3 +254,78 @@ def test_an_unconnected_subgraph_input_leaves_the_widget_value_alone():
     parsed = workflow_import.parse_workflow(wf, OI)
     assert "KSampler" in _classes(parsed)
     assert not any(t == "KSampler.latent_image" for _f, t in _pairs(parsed))
+
+
+# ── Set/Get virtual link nodes ───────────────────────────────────────────────
+# KJNodes' Set/Get exist only in web/js/setgetnodes.js — there is no Python class, so the
+# frontend resolves them away when building a prompt and emitting one queues a node type
+# the backend has never heard of. Big LTX workflows lean on them heavily.
+
+def _setget_workflow():
+    """LoadImage -> Set("img") ... Get("img") -> SaveImage, plus a Get with no Set."""
+    return {
+        "nodes": [
+            {"id": 1, "type": "LoadImage", "widgets_values": ["a.png"],
+             "inputs": [], "outputs": [{"name": "IMAGE", "links": [1]}]},
+            {"id": 2, "type": "SetNode", "widgets_values": ["img"],
+             "inputs": [{"name": "value", "type": "IMAGE", "link": 1}],
+             "outputs": [{"name": "IMAGE", "links": []}]},
+            {"id": 3, "type": "GetNode", "widgets_values": ["img"],
+             "inputs": [], "outputs": [{"name": "IMAGE", "links": [2]}]},
+            {"id": 4, "type": "SaveImage", "widgets_values": ["out"],
+             "inputs": [{"name": "images", "type": "IMAGE", "link": 2}], "outputs": []},
+            {"id": 5, "type": "GetNode", "widgets_values": ["nothing-sets-this"],
+             "inputs": [], "outputs": [{"name": "IMAGE", "links": [3]}]},
+            {"id": 6, "type": "SaveImage", "widgets_values": ["out2"],
+             "inputs": [{"name": "images", "type": "IMAGE", "link": 3}], "outputs": []},
+        ],
+        "links": [[1, 1, 0, 2, 0, "IMAGE"], [2, 3, 0, 4, 0, "IMAGE"], [3, 5, 0, 6, 0, "IMAGE"]],
+    }
+
+
+def test_set_get_nodes_are_resolved_away():
+    parsed = workflow_import.parse_workflow(_setget_workflow(), OI)
+    assert not [s for s in parsed["slots"] if s["node_class"] in ("SetNode", "GetNode")]
+
+
+def test_the_link_reconnects_across_the_set_get_pair():
+    parsed = workflow_import.parse_workflow(_setget_workflow(), OI)
+    assert ("LoadImage.IMAGE", "SaveImage.images") in _pairs(parsed)
+
+
+def test_a_get_with_no_matching_set_leaves_the_input_unwired():
+    """Better an unwired input the user can see than a link to a node that cannot exist."""
+    parsed = workflow_import.parse_workflow(_setget_workflow(), OI)
+    # exactly one SaveImage is fed; the one behind the orphan Get is not
+    fed = [t for _f, t in _pairs(parsed) if t == "SaveImage.images"]
+    assert len(fed) == 1
+
+
+def test_a_workflow_without_set_get_is_untouched():
+    plain = {
+        "nodes": [{"id": 1, "type": "LoadImage", "widgets_values": ["a.png"],
+                   "inputs": [], "outputs": [{"name": "IMAGE", "links": [1]}]},
+                  {"id": 2, "type": "SaveImage", "widgets_values": ["out"],
+                   "inputs": [{"name": "images", "type": "IMAGE", "link": 1}], "outputs": []}],
+        "links": [[1, 1, 0, 2, 0, "IMAGE"]],
+    }
+    assert _pairs(workflow_import.parse_workflow(plain, OI)) == {("LoadImage.IMAGE", "SaveImage.images")}
+
+
+def test_a_set_get_chain_terminates():
+    """Set -> Get -> Set -> Get is legal; a Get whose Set loops back to it must not hang."""
+    wf = {
+        "nodes": [
+            {"id": 1, "type": "GetNode", "widgets_values": ["a"],
+             "inputs": [], "outputs": [{"name": "IMAGE", "links": [1]}]},
+            {"id": 2, "type": "SetNode", "widgets_values": ["a"],
+             "inputs": [{"name": "value", "type": "IMAGE", "link": 1}], "outputs": []},
+            {"id": 3, "type": "GetNode", "widgets_values": ["a"],
+             "inputs": [], "outputs": [{"name": "IMAGE", "links": [2]}]},
+            {"id": 4, "type": "SaveImage", "widgets_values": ["out"],
+             "inputs": [{"name": "images", "type": "IMAGE", "link": 2}], "outputs": []},
+        ],
+        "links": [[1, 1, 0, 2, 0, "IMAGE"], [2, 3, 0, 4, 0, "IMAGE"]],
+    }
+    parsed = workflow_import.parse_workflow(wf, OI)     # must return, not spin
+    assert _classes(parsed) == ["SaveImage"]
