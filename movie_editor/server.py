@@ -1817,9 +1817,9 @@ if web is not None and PromptServer is not None:
         # it just may not be the shot the user set up.
         if bool(body.get("simple")):
             report["unsatisfied"].append(
-                "Simple mode: rating-driven steering, cross-shot memory, experimental "
-                "sampling and the second pass were switched off for this run. Your project "
-                "settings are unchanged — switch to Editor to use them."
+                "Simple mode: rating-driven steering, cross-shot memory and experimental "
+                "sampling were switched off for this run. Your project settings are "
+                "unchanged — switch to Editor to use them."
             )
         anchorless = pipeline_caps.scenes_missing_anchor_media(target, caps["chain_sampler"])
         if anchorless:

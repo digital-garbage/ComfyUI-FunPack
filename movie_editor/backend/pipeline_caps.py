@@ -99,10 +99,13 @@ def scenes_missing_anchor_media(project, chain_available: bool) -> list[str]:
 
 
 # ── Simple mode ───────────────────────────────────────────────────────────────
-# Simple mode is not a skin. It generates what you asked for and nothing else: no
-# rating-driven steering, no experimental sampling, no second pass. Everything here is
-# either useless without rated history or costs real time for a quality bet — both of
-# which belong in the Editor.
+# Simple mode is not a skin. It generates what you asked for and nothing else.
+#
+# A setting belongs here only if it CANNOT WORK in this mode — it is a no-op without a
+# trained key (there is no rating UI to feed one), or it describes a relationship between
+# shots (there is one shot). "Costs real time for a quality bet" is NOT a reason: that is
+# the user's call to make, and making it for them is how the second pass ended up stripped
+# from a mode whose predecessor allowed it, while its switch stayed on screen.
 #
 # Applied per RUN, to a copy. The project keeps whatever the user set in the Editor, so
 # switching back restores it; only the graph that gets built is stripped.
@@ -126,8 +129,9 @@ SIMPLE_MODE_SAMPLER_OFF: dict[str, Any] = {
     "segmented_detailing": False,
     "plateau_cache": False,
     "context_windows": False,
-    "second_pass": False,
-    "second_pass_op": "none",
+    # second_pass / second_pass_op are deliberately ABSENT. They need no rated history and
+    # no second shot, so they work here exactly as they do in the Editor — and upscaling a
+    # single shot is one of the main things this mode is for.
 }
 
 # Studio refiner keys, same reasoning.

@@ -159,12 +159,29 @@ def test_simple_mode_switches_the_enhancements_off():
     )
     assert si["embed_guidance"] is False
     assert si["joyai_memory"] is False
-    assert si["second_pass_op"] == "none"
     assert ss["refiner"]["value_guidance"] is False
     assert ss["refiner"]["steer_mode"] == "relative"
     # untouched: not an enhancement, just how the scene is generated
     assert si["cfg"] == 1.0
     assert ss["refiner"]["vision_conditioning"] is True
+
+
+def test_simple_mode_keeps_the_second_pass():
+    """It needs no rated history and no second shot, so it works here exactly as it does in
+    the Editor — and Easy Gen, which this mode replaced, always allowed it. The switch is on
+    screen in Simple mode either way, so stripping it made the control lie."""
+    si, _ss = pipeline_caps.apply_simple_mode(
+        {"second_pass": True, "second_pass_op": "upscale_2x"}, {})
+    assert si["second_pass"] is True
+    assert si["second_pass_op"] == "upscale_2x"
+
+
+def test_simple_mode_only_strips_what_cannot_work():
+    """The rule for the strip list: a no-op without a trained key, or a relationship between
+    shots. Anything that merely costs time is the user's call."""
+    for key in pipeline_caps.SIMPLE_MODE_SAMPLER_OFF:
+        assert not key.startswith("second_pass"), (
+            f"{key} costs time but works fine on one un-rated shot — see Easy Gen")
 
 
 def test_simple_mode_does_not_mutate_the_project_settings():

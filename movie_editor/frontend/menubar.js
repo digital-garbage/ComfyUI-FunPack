@@ -230,8 +230,9 @@
         if (key === "simple" && !M.warned()) {
           const ok = confirm(
             "Simple mode generates what you asked for and nothing else.\n\n"
-            + "Rating-driven steering, cross-shot memory, experimental sampling and the "
-            + "second pass are switched OFF while you are in it.\n\n"
+            + "Rating-driven steering, cross-shot memory and experimental sampling are "
+            + "switched OFF while you are in it — none of them can do anything without "
+            + "ratings or a second shot. The second pass still works.\n\n"
             + "Your project settings are kept — switch back to Editor to use them again.");
           if (!ok) return;
           M.markWarned();
