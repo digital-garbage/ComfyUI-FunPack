@@ -1208,6 +1208,13 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
     explicitly asked for must never be silently ignored. Runs after auto-wire so the
     passthrough source is already resolved to a concrete value/link.
     """
+    # Every node going away, known up front. A node that only feeds OTHER bypassed nodes
+    # needs no pass-through for that output, because once they are all gone nothing reads
+    # it. Judging each one against a graph that still holds its doomed siblings refused
+    # perfectly sound bypasses — and refused every group bypass of a connected run of nodes.
+    leaving = {slot_node_id.get(s["id"]) for s in slots if s.get("bypassed")}
+    leaving.discard(None)
+
     for s in slots:
         if not s.get("bypassed"):
             continue
@@ -1224,7 +1231,7 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
         # would refuse a bypass that is completely unambiguous for every link that exists.
         consumed = set()
         for nid, ndata in graph.items():
-            if nid == sid:
+            if nid == sid or nid in leaving:
                 continue
             for val in (ndata.get("inputs") or {}).values():
                 if isinstance(val, list) and len(val) == 2 and val[0] == sid:
@@ -1232,14 +1239,15 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
         passthrough = {}
         blocked = None
         for i, o in enumerate(outs):
-            if i not in consumed:
-                continue
             # A union-typed input ("IMAGE,MASK") can carry any of its members through.
             names = [ci["name"] for ci in cis if type_accepts(ci["type"], o["type"])]
-            if len(names) != 1:
+            if i in consumed and len(names) != 1:
                 blocked = (o, names)
                 break
-            passthrough[i] = graph[sid]["inputs"].get(names[0])
+            # Resolved even for outputs only OTHER leaving nodes read, so a chain of
+            # bypasses collapses to the surviving producer instead of to a deleted one.
+            if len(names) == 1:
+                passthrough[i] = graph[sid]["inputs"].get(names[0])
         if blocked is not None:
             # Silently leaving the node active would mean a user who explicitly bypassed it
             # (e.g. to skip an i2v preprocessing node) gets generation output as if they
@@ -1263,6 +1271,10 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
                     replacement = passthrough.get(val[1])
                     if replacement is not None:
                         ndata["inputs"][inp_name] = replacement
+                    elif nid in leaving:
+                        # The consumer is being bypassed too, so there is nothing to repair
+                        # and nothing to warn about — it will not be in the graph either.
+                        del ndata["inputs"][inp_name]
                     else:
                         # The bypassed node's own matching input was never wired — passing
                         # nothing through would silently drop {nid}.{inp_name} instead of

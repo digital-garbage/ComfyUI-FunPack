@@ -1485,10 +1485,14 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 /* Node groups: a heading over the flat grid, never a container. */
 .node-group { margin-bottom: 10px; }
 .node-group-head { display: flex; align-items: center; gap: 8px; width: 100%;
-  background: none; border: 0; cursor: pointer; padding: 6px 2px; text-align: left;
+  padding: 6px 2px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.node-group-fold { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0;
+  background: none; border: 0; cursor: pointer; padding: 0; text-align: left;
   color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em;
-  text-transform: uppercase; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
-.node-group-head:hover { color: var(--fg); }
+  text-transform: uppercase; }
+.node-group-fold:hover { color: var(--fg); }
+.node-group-byp { flex: 0 0 auto; }
+.node-group-byp.risky { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
 .node-group-caret { font-family: var(--font-mono); flex: 0 0 auto; }
 .node-group-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-group-count { font-family: var(--font-mono); color: var(--faint); text-transform: none; }

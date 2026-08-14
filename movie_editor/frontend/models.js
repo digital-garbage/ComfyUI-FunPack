@@ -1862,6 +1862,50 @@
     return wrap;
   }
 
+  // Why this node cannot be bypassed, or [] when it can. Mirrors builder._apply_bypass: for
+  // every output something CONSUMES there must be exactly one input that can carry it
+  // through. Checked here so a group's bypass button is never offered when pressing it
+  // would stop the run instead — the builder still has the last word, and still explains.
+  function bypassBlockers(slot, alsoGoing) {
+    const cand = specFor(slot);
+    if (!cand) return [];                            // spec unknown: let the builder decide
+    // `alsoGoing` are the other nodes leaving with it. An output read only by them needs no
+    // pass-through, because after the bypass nothing reads it — which is the whole
+    // difference between bypassing a node and bypassing the group it lives in.
+    const leaving = new Set([slot.id, ...(alsoGoing || [])]);
+    const consumed = new Set();
+    Object.keys(slot.wires || {}).forEach((outName) => {
+      const targets = wireTargets(slot.wires[outName]).filter(Boolean);
+      // A wire onto a core port or a global output is always an outside consumer; a wire
+      // onto another node counts only when that node is staying.
+      if (targets.some((t) => !t.startsWith("node:") || !leaving.has(t.split(":")[1])))
+        consumed.add(outName);
+    });
+    config.slots.forEach((s2) => {
+      if (leaving.has(s2.id)) return;
+      Object.values(s2.input_sources || {}).forEach((src) => {
+        const hit = _parseOutSource(src);
+        if (hit && hit.slotId === slot.id) consumed.add(hit.out);
+      });
+    });
+    const out = [];
+    (cand.outputs || []).forEach((o) => {
+      if (!consumed.has(o.name)) return;             // feeds nothing: nothing to pass through
+      const n = (cand.connection_inputs || []).filter((ci) => typeAccepts(ci.type, o.type)).length;
+      if (n !== 1) {
+        out.push(`${slotName(slot)}: ${o.name} (${o.type}) has `
+          + `${n ? "more than one" : "no"} matching input to pass through`);
+      }
+    });
+    return out;
+  }
+
+  async function setGroupBypassed(slots, on) {
+    slots.forEach((s) => { if (on) s.bypassed = true; else delete s.bypassed; });
+    await persist();
+    render();
+  }
+
   // A group is a VIEW, never a container: the nodes stay flat, every wire keeps its real
   // endpoints, and anything can still wire to anything. That is the whole difference from a
   // subgraph — there is no inside to navigate into, only a heading you can fold.
@@ -1903,17 +1947,46 @@
     sections.forEach(([name, slots]) => {
       if (!slots.length) return;
       const sec = el("div", "node-group");
-      const head = el("button", "node-group-head");
-      head.type = "button";
+      const head = el("div", "node-group-head");
       const isClosed = closed.has(name);
-      head.append(el("span", "node-group-caret", isClosed ? "▸" : "▾"));
-      head.append(el("span", "node-group-name", name));
-      head.append(el("span", "node-group-count", String(slots.length)));
+      const fold = el("button", "node-group-fold");
+      fold.type = "button";
+      fold.append(el("span", "node-group-caret", isClosed ? "▸" : "▾"));
+      fold.append(el("span", "node-group-name", name));
+      fold.append(el("span", "node-group-count", String(slots.length)));
       // Errors only: a folded group must still say when something inside it is broken.
       const bad = slots.reduce(
         (n, s) => n + ((v.perSlot[s.id] || []).some((m) => m.level === "error") ? 1 : 0), 0);
-      if (bad) head.append(el("span", "node-group-bad", `${bad} to fix`));
-      head.onclick = () => { toggleGroup(name); render(); };
+      if (bad) fold.append(el("span", "node-group-bad", `${bad} to fix`));
+      fold.onclick = () => { toggleGroup(name); render(); };
+      head.append(fold);
+
+      // Bypass the whole group. No new graph concept: it sets the per-node bypass every
+      // card already has, so the pass-through rules and the reporting are the same ones.
+      const allOff = slots.every((s) => s.bypassed);
+      const ids = slots.map((s) => s.id);
+      const blockers = allOff ? [] : slots.flatMap((s) => bypassBlockers(s, ids));
+      const byp = el("button", "btn ghost tiny node-group-byp" + (allOff ? " on" : ""),
+        allOff ? "bypassed" : "bypass");
+      // Advisory, never a gate. What we can see here is only the explicit wiring; the
+      // builder also auto-wires, so this predicate is neither sufficient nor necessary —
+      // it would refuse bypasses that work and allow ones that don't. So warn with what we
+      // do know and let the builder, which resolves the real graph, have the last word.
+      const warn = blockers.length
+        ? "Some nodes here may not be bypassable:\n· " + blockers.slice(0, 4).join("\n· ")
+          + (blockers.length > 4 ? `\n· …and ${blockers.length - 4} more` : "")
+        : "";
+      byp.title = (allOff
+        ? `Put all ${slots.length} nodes in "${name}" back in the graph.`
+        : `Skip all ${slots.length} nodes in "${name}", passing their inputs straight through.`)
+        + (warn ? "\n\n" + warn : "");
+      if (warn) byp.classList.add("risky");
+      byp.onclick = () => {
+        if (warn && !confirm(`Bypass "${name}"?\n\n${warn}\n\n`
+            + "Generation will say exactly which node and input it could not pass through.")) return;
+        setGroupBypassed(slots, !allOff);
+      };
+      head.append(byp);
       sec.append(head);
       if (!isClosed) sec.append(_grid(slots, v));
       host.append(sec);

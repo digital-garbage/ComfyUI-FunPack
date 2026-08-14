@@ -899,3 +899,24 @@ def test_a_link_beats_the_value_saved_on_the_slot():
     """The whole point: the project's number wins over whatever the node was left set to."""
     graph, _ = builder.build(OI, _link_models([{"slotId": "a", "input": "length"}]), PARAMS)
     assert graph["slot_a"]["inputs"]["length"] == 121 != 50
+
+
+def test_bypassing_a_connected_run_of_nodes_is_not_refused_by_its_own_members():
+    """Two chained LoRAs bypassed together. The first one's MODEL is read only by the
+    second, which is also going — so once both are gone nothing reads it and it needs no
+    pass-through. Judging each node against a graph that still held its doomed siblings
+    refused this, which meant no group of connected nodes could ever be bypassed at once.
+    """
+    models = {"slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {}},
+        {"id": "l1", "node_class": "LTXICLoRALoaderModelOnly", "bypassed": True,
+         "inputs": {}, "input_sources": {"model": "out:u:MODEL"}, "wires": {}},
+        {"id": "l2", "node_class": "LTXICLoRALoaderModelOnly", "bypassed": True,
+         "inputs": {}, "input_sources": {"model": "out:l1:model"},
+         "wires": {"model": "port:FunPackStudio.model"}},
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    assert "slot_l1" not in graph and "slot_l2" not in graph
+    assert not any("bypass" in b for b in report["blocking"]), report["blocking"]
+    # both collapse away and Studio ends up on the loader itself
+    assert graph["studio"]["inputs"]["model"] == ["slot_u", 0]
