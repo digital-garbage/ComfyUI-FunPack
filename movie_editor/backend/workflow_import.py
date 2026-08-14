@@ -177,7 +177,151 @@ def _input_name_for_slot(nd: dict | None, slot_idx: int, typ: str | None) -> str
     return None
 
 
+# ── subgraphs ─────────────────────────────────────────────────────────────────
+# A subgraph instance is a node whose `type` is a uuid listed in
+# definitions.subgraphs; the real nodes live inside that definition. Without
+# expanding it the importer takes the uuid for a class name, so the whole pipeline
+# inside the subgraph is lost and the graph is queued with a class ComfyUI has never
+# heard of. ComfyUI's own MiniMax H3 templates ship this way.
+_SG_IN, _SG_OUT = -10, -20      # the definition's own input / output boundary nodes
+_SG_MAX_DEPTH = 8               # a subgraph may contain subgraphs; this bounds a cycle
+
+
+def _subgraph_defs(workflow: dict) -> dict[str, dict]:
+    defs = ((workflow.get("definitions") or {}).get("subgraphs")) or []
+    return {str(d.get("id")): d for d in defs if isinstance(d, dict) and d.get("id")}
+
+
+def _promoted_widget_inputs(defn: dict) -> list[int]:
+    """Indices of the definition's inputs that stand for an inner WIDGET.
+
+    An instance's widgets_values lists exactly these, in this order — the socket-only
+    inputs (an IMAGE to wire in) are not among them. Which is which is not stated
+    anywhere; it is read off the inner node the boundary link lands on, whose input
+    socket carries a "widget" key when it is a promoted widget.
+    """
+    by_id = {n.get("id"): n for n in defn.get("nodes") or []}
+    promoted: list[int] = []
+    for idx in range(len(defn.get("inputs") or [])):
+        for link in defn.get("links") or []:
+            if link.get("origin_id") != _SG_IN or link.get("origin_slot") != idx:
+                continue
+            tgt = by_id.get(link.get("target_id")) or {}
+            socket = (tgt.get("inputs") or [])[link.get("target_slot")] \
+                if link.get("target_slot") is not None \
+                and link.get("target_slot") < len(tgt.get("inputs") or []) else None
+            if socket and socket.get("widget"):
+                promoted.append(idx)
+            break
+    return promoted
+
+
+def _flatten_subgraphs(workflow: dict, object_info: dict) -> dict:
+    """Replace every subgraph instance with the nodes inside it, rewired.
+
+    Returns a workflow in the same shape, so everything downstream is unchanged.
+    """
+    defs = _subgraph_defs(workflow)
+    if not defs:
+        return workflow
+
+    wf = json.loads(json.dumps(workflow))          # never mutate the caller's dict
+    next_link = [max((int(l[0]) for l in (wf.get("links") or [])
+                      if isinstance(l, list) and l), default=0) + 1]
+
+    def expand(nodes: list, links: list, depth: int) -> tuple[list, list]:
+        if depth > _SG_MAX_DEPTH:
+            return nodes, links
+        out_nodes, out_links, expanded = [], list(links), False
+        for inst in nodes:
+            defn = defs.get(str(inst.get("type")))
+            if not defn:
+                out_nodes.append(inst)
+                continue
+            expanded = True
+            pfx = f"sg{inst.get('id')}_"
+            inner_nodes = json.loads(json.dumps(defn.get("nodes") or []))
+            by_old = {n.get("id"): n for n in inner_nodes}
+            for n in inner_nodes:
+                n["id"] = f"{pfx}{n.get('id')}"
+
+            # 1. promoted widget values: the instance's, not the inner node's stale copy
+            values = inst.get("widgets_values")
+            if isinstance(values, list):
+                for slot, val in zip(_promoted_widget_inputs(defn), values):
+                    for link in defn.get("links") or []:
+                        if link.get("origin_id") != _SG_IN or link.get("origin_slot") != slot:
+                            continue
+                        tgt = by_old.get(link.get("target_id"))
+                        sockets = (tgt or {}).get("inputs") or []
+                        ts = link.get("target_slot")
+                        if tgt is None or ts is None or ts >= len(sockets):
+                            continue
+                        name = (sockets[ts].get("widget") or {}).get("name")
+                        if not name:
+                            continue
+                        cur = builder.extract_widgets(
+                            object_info.get(tgt.get("type")), tgt.get("widgets_values"))
+                        cur[name] = val
+                        tgt["widgets_values"] = cur   # dict form: extract_widgets passes it through
+
+            # 2. what the outer graph feeds each instance input, by name
+            outer_in = {i.get("name"): i.get("link") for i in inst.get("inputs") or []}
+            outer_by_id = {int(l[0]): l for l in out_links if isinstance(l, list) and l}
+            in_names = [i.get("name") for i in defn.get("inputs") or []]
+
+            # 3. inner links -> outer link rows, resolving both boundaries
+            remap: dict[Any, Any] = {}                 # inner link id -> new id or None
+            out_slot_src: dict[int, tuple[Any, int]] = {}
+            for link in defn.get("links") or []:
+                src, sslot = link.get("origin_id"), link.get("origin_slot")
+                dst, dslot = link.get("target_id"), link.get("target_slot")
+                if dst == _SG_OUT:
+                    out_slot_src[int(dslot or 0)] = (f"{pfx}{src}", int(sslot or 0))
+                    remap[link.get("id")] = None
+                    continue
+                if src == _SG_IN:
+                    name = in_names[sslot] if sslot is not None and sslot < len(in_names) else None
+                    feed = outer_by_id.get(int(outer_in.get(name) or -1)) if name else None
+                    if not feed:
+                        remap[link.get("id")] = None   # unlinked: the widget value stands
+                        continue
+                    src, sslot = feed[1], feed[2]
+                else:
+                    src = f"{pfx}{src}"
+                nid = next_link[0]; next_link[0] += 1
+                remap[link.get("id")] = nid
+                out_links.append([nid, src, int(sslot or 0), f"{pfx}{dst}", int(dslot or 0),
+                                  link.get("type")])
+
+            # 4. inner sockets point at inner link ids — repoint or clear them
+            for n in inner_nodes:
+                for socket in n.get("inputs") or []:
+                    if socket.get("link") is not None:
+                        socket["link"] = remap.get(socket["link"])
+
+            # 5. consumers of the instance's outputs now read the inner producer
+            for row in out_links:
+                if isinstance(row, list) and len(row) >= 6 and row[1] == inst.get("id"):
+                    hit = out_slot_src.get(int(row[2] or 0))
+                    if hit:
+                        row[1], row[2] = hit[0], hit[1]
+            out_nodes.extend(inner_nodes)
+        if expanded:
+            return expand(out_nodes, out_links, depth + 1)
+        return out_nodes, out_links
+
+    wf["nodes"], wf["links"] = expand(wf.get("nodes") or [], wf.get("links") or [], 0)
+    # Links into the vanished instance nodes are dead; drop them rather than leave rows
+    # whose target no longer exists.
+    live = {n.get("id") for n in wf["nodes"]}
+    wf["links"] = [l for l in wf["links"]
+                   if isinstance(l, list) and len(l) >= 6 and l[3] in live and l[1] in live]
+    return wf
+
+
 def _parse_ui_workflow(workflow: dict, object_info: dict) -> dict:
+    workflow = _flatten_subgraphs(workflow, object_info)
     nodes_raw = workflow.get("nodes") or []
     links_map = _parse_ui_links(workflow.get("links") or [])
     inp_links = _ui_input_links(nodes_raw)
