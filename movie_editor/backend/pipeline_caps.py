@@ -101,53 +101,67 @@ def scenes_missing_anchor_media(project, chain_available: bool) -> list[str]:
 # ── Simple mode ───────────────────────────────────────────────────────────────
 # Simple mode is not a skin. It generates what you asked for and nothing else.
 #
-# A setting belongs here only if it CANNOT WORK in this mode — it is a no-op without a
-# trained key (there is no rating UI to feed one), or it describes a relationship between
-# shots (there is one shot). "Costs real time for a quality bet" is NOT a reason: that is
-# the user's call to make, and making it for them is how the second pass ended up stripped
-# from a mode whose predecessor allowed it, while its switch stayed on screen.
+# REFINEMENT, and only refinement. Simple mode has no rating UI, so anything driven by
+# ratings or a trained key cannot do its job here — that is the one and only reason a
+# setting belongs in these lists. Everything else runs exactly as it does in the Editor:
+# cross-shot memory, guides, experimental sampling, the second pass, all of it.
+#
+# Cost is NOT a reason. Deciding a feature was too expensive for someone is how the second
+# pass ended up stripped from a mode whose predecessor allowed it, while its switch stayed
+# on screen doing nothing.
+#
+# These mirror the frontend's RATING_GATED_KNOBS / RATING_GATED_STUDIO (engine_settings.js)
+# and the velocity gate in sampler_panel.js. Keep them in step: a control that is hidden
+# here but still live at runtime is the same lie in the other direction.
 #
 # Applied per RUN, to a copy. The project keeps whatever the user set in the Editor, so
 # switching back restores it; only the graph that gets built is stripped.
 SIMPLE_MODE_SAMPLER_OFF: dict[str, Any] = {
-    # rating-driven — no-ops without a trained key, and this mode has no rating UI
     "embed_guidance": False,
     "score_slider": False,
     "taste_nearest_prompt": False,
     "output_guidance": False,
     "dynashift": False,
-    # cross-shot memory and guides: real per-scene cost
-    "mid_scene_guide": False,
-    "joyai_memory": False,
-    "joyai_audio_memory": False,
-    "carry_i2v_guides": False,
-    # experimental / expensive sampling
-    "alg_anchor": False,
-    "alg_blur_guides": False,
-    "bounded_attention_enabled": False,
-    "identity_transfer_enabled": False,
-    "segmented_detailing": False,
-    "plateau_cache": False,
-    "context_windows": False,
-    # second_pass / second_pass_op are deliberately ABSENT. They need no rated history and
-    # no second shot, so they work here exactly as they do in the Editor — and upscaling a
-    # single shot is one of the main things this mode is for.
 }
 
-# Studio refiner keys, same reasoning.
+# Studio refiner keys, same rule.
 SIMPLE_MODE_REFINER_OFF: dict[str, Any] = {
     "reference_injection": False,
     "value_guidance": False,
     "steer_mode": "relative",
 }
 
+# Per-sampler refinement, inside studio_settings["samplers"]: velocity bias replays a rated
+# velocity bank and rescue reacts to one. Both are hidden in Simple mode already.
+SIMPLE_MODE_SAMPLER_ENTRY_OFF: dict[str, Any] = {
+    "velocity_bias_mode": "off",
+    "rescue_mode": False,
+}
+
+
+def _strip_sampler_entries(samplers: Any) -> Any:
+    """Force the per-sampler refinement keys off in a `samplers` config, whatever shape it
+    has — the panel writes a dict keyed by pass, but a list is cheap to tolerate and a
+    wrong guess here would silently leave the bank replaying."""
+    if isinstance(samplers, dict):
+        # A dict of per-pass entries, or one entry that IS the dict. Telling them apart by
+        # the keys we would set is enough and needs no knowledge of the pass names.
+        if any(k in samplers for k in SIMPLE_MODE_SAMPLER_ENTRY_OFF):
+            return {**samplers, **SIMPLE_MODE_SAMPLER_ENTRY_OFF}
+        return {k: _strip_sampler_entries(v) for k, v in samplers.items()}
+    if isinstance(samplers, list):
+        return [_strip_sampler_entries(v) for v in samplers]
+    return samplers
+
 
 def apply_simple_mode(sampler_inputs: Optional[dict], studio_settings: Optional[dict]) -> tuple[dict, dict]:
-    """Return (sampler_inputs, studio_settings) copies with the enhancements forced off."""
+    """Return (sampler_inputs, studio_settings) copies with refinement forced off."""
     si = dict(sampler_inputs or {})
     si.update(SIMPLE_MODE_SAMPLER_OFF)
     ss = dict(studio_settings or {})
     refiner = dict(ss.get("refiner") or {})
     refiner.update(SIMPLE_MODE_REFINER_OFF)
     ss["refiner"] = refiner
+    if ss.get("samplers") is not None:
+        ss["samplers"] = _strip_sampler_entries(ss["samplers"])
     return si, ss

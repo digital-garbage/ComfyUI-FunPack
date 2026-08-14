@@ -229,10 +229,9 @@
         // that out from a scene report is too late.
         if (key === "simple" && !M.warned()) {
           const ok = confirm(
-            "Simple mode generates what you asked for and nothing else.\n\n"
-            + "Rating-driven steering, cross-shot memory and experimental sampling are "
-            + "switched OFF while you are in it — none of them can do anything without "
-            + "ratings or a second shot. The second pass still works.\n\n"
+            "Simple mode turns refinement off — rating-driven steering, taste and value "
+            + "guidance, DynaShift, velocity bias. There is no rating UI here to feed them.\n\n"
+            + "Everything else runs as it does in the Editor, including the second pass.\n\n"
             + "Your project settings are kept — switch back to Editor to use them again.");
           if (!ok) return;
           M.markWarned();

@@ -1,4 +1,5 @@
 """Tests for pipeline capability flags (Studio / Chain Sampler availability)."""
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -152,36 +153,60 @@ def test_h3_does_not_offer_ports_on_nodes_its_graph_never_emits():
 
 # ── Simple mode ───────────────────────────────────────────────────────────────
 
-def test_simple_mode_switches_the_enhancements_off():
+def test_simple_mode_switches_refinement_off():
     si, ss = pipeline_caps.apply_simple_mode(
-        {"embed_guidance": True, "joyai_memory": True, "second_pass_op": "upscale_2x", "cfg": 1.0},
+        {"embed_guidance": True, "dynashift": True, "score_slider": True,
+         "taste_nearest_prompt": True, "output_guidance": True, "cfg": 1.0},
         {"refiner": {"value_guidance": True, "steer_mode": "absolute", "vision_conditioning": True}},
     )
-    assert si["embed_guidance"] is False
-    assert si["joyai_memory"] is False
+    for key in ("embed_guidance", "dynashift", "score_slider", "taste_nearest_prompt",
+                "output_guidance"):
+        assert si[key] is False, key
     assert ss["refiner"]["value_guidance"] is False
     assert ss["refiner"]["steer_mode"] == "relative"
-    # untouched: not an enhancement, just how the scene is generated
+    # untouched: not refinement, just how the scene is generated
     assert si["cfg"] == 1.0
     assert ss["refiner"]["vision_conditioning"] is True
 
 
-def test_simple_mode_keeps_the_second_pass():
-    """It needs no rated history and no second shot, so it works here exactly as it does in
-    the Editor — and Easy Gen, which this mode replaced, always allowed it. The switch is on
-    screen in Simple mode either way, so stripping it made the control lie."""
-    si, _ss = pipeline_caps.apply_simple_mode(
-        {"second_pass": True, "second_pass_op": "upscale_2x"}, {})
-    assert si["second_pass"] is True
-    assert si["second_pass_op"] == "upscale_2x"
+def test_simple_mode_leaves_everything_that_is_not_refinement_alone():
+    """Cross-shot memory, guides, experimental sampling and the second pass all work here.
+    None of them need a rating to do their job, so none of them are Simple mode's business —
+    and the second pass in particular was allowed by Easy Gen, which this mode replaced."""
+    on = {
+        "second_pass": True, "second_pass_op": "upscale_2x",
+        "mid_scene_guide": True, "joyai_memory": True, "joyai_audio_memory": True,
+        "carry_i2v_guides": True, "alg_anchor": True, "alg_blur_guides": True,
+        "bounded_attention_enabled": True, "identity_transfer_enabled": True,
+        "segmented_detailing": True, "plateau_cache": True, "context_windows": True,
+    }
+    si, _ss = pipeline_caps.apply_simple_mode(dict(on), {})
+    for key, value in on.items():
+        assert si[key] == value, f"{key} was stripped but is not refinement"
 
 
-def test_simple_mode_only_strips_what_cannot_work():
-    """The rule for the strip list: a no-op without a trained key, or a relationship between
-    shots. Anything that merely costs time is the user's call."""
+def test_simple_mode_stops_the_velocity_bank_replaying():
+    """velocity_bias / rescue live per-sampler inside studio_settings and are hidden in
+    Simple mode. Hidden AND live is the worst of both."""
+    ss_in = {"samplers": {"high": {"velocity_bias_mode": "apply", "rescue_mode": True, "eta": 1.0},
+                          "low": {"velocity_bias_mode": "capture_and_apply", "rescue_mode": True}}}
+    _si, ss = pipeline_caps.apply_simple_mode({}, ss_in)
+    for entry in ss["samplers"].values():
+        assert entry["velocity_bias_mode"] == "off"
+        assert entry["rescue_mode"] is False
+    assert ss["samplers"]["high"]["eta"] == 1.0     # nothing else touched
+
+
+def test_the_strip_list_matches_what_the_ui_hides():
+    """engine_settings.js hides exactly the rating-gated controls in Simple mode. A key
+    stripped here but visible there is a control that lies; visible there but live here is
+    the same lie inverted. This pins the backend half against the frontend source."""
+    js = (ROOT / "movie_editor" / "frontend" / "engine_settings.js").read_text(encoding="utf-8")
+    hidden = set(re.findall(r'"([a-z0-9_]+)"', js[js.index("RATING_GATED_KNOBS"):js.index("let _mounted")]))
     for key in pipeline_caps.SIMPLE_MODE_SAMPLER_OFF:
-        assert not key.startswith("second_pass"), (
-            f"{key} costs time but works fine on one un-rated shot — see Easy Gen")
+        assert key in hidden, f"{key} is stripped in Simple mode but its control is not hidden"
+    for key in pipeline_caps.SIMPLE_MODE_REFINER_OFF:
+        assert key in hidden, f"{key} is stripped in Simple mode but its control is not hidden"
 
 
 def test_simple_mode_does_not_mutate_the_project_settings():
