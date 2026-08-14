@@ -1479,9 +1479,19 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 /* config validation banner */
 /* Pipeline requirements panel */
 .req-panel { margin-bottom: 18px; }
-.req-title { font-size: 11px; color: var(--teal); margin-bottom: 8px; font-weight: 600;}
+.req-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.req-title { font-size: 11px; color: var(--teal); font-weight: 600; }
+.req-dismiss { margin-left: auto; background: none; border: 0; cursor: pointer;
+  color: var(--faint); font-size: 12px; line-height: 1; padding: 2px 4px; border-radius: 4px; }
+.req-dismiss:hover { color: var(--fg); background: var(--line); }
+.req-collapsed { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.req-collapsed .req-dot { color: var(--danger); }
+.req-fold { margin-top: 6px; }
+.req-fold-sum { font-size: 11px; color: var(--faint); cursor: pointer; padding: 4px 0; }
 .req-opt-head { font-size: 11px; color: var(--faint); margin: 8px 0 4px; font-weight: 600;}
-.req-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-radius: 6px; margin-bottom: 4px; font-size: 12px; flex-wrap: wrap; }
+/* One line, never wrapping: the row is a status, not a paragraph. */
+.req-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: 6px; margin-bottom: 3px; font-size: 12px; }
+.req-row .req-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .req-row.ok { background: color-mix(in srgb, var(--teal) 8%, transparent); }
 .req-row.missing { background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); }
 .req-row.opt { background: transparent; opacity: 0.7; }
@@ -1491,7 +1501,9 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .req-label { flex: 1; }
 .req-type  { font-family: var(--font-mono); font-size: 10px; color: var(--faint); flex: 0 0 auto; padding: 1px 5px; border: 1px solid var(--line); border-radius: 3px; }
 .req-hint  { width: 100%; margin-top: 3px; margin-left: 22px; font-size: 11px; color: var(--muted); }
-.req-add   { flex: 0 0 auto; }
+/* Square, so it reads as an action on the row rather than a second label. */
+.req-add   { flex: 0 0 auto; width: 20px; height: 20px; padding: 0; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 14px; }
 .req-empty { color: var(--faint); font-size: 12px; padding: 8px 0; }
 
 .valid-banner { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 8px; margin-bottom: 14px; font-size: 12px; border: 1px solid var(--line); }

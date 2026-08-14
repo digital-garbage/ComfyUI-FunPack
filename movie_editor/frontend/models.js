@@ -1183,71 +1183,114 @@
     return slotProducesType(req.type, null);
   }
 
+  // Dismiss state for the requirements list. Persisted, because a pipeline someone is
+  // deliberately leaving incomplete stays incomplete across reloads, and re-nagging every
+  // time the panel opens is exactly what the dismiss is for.
+  const REQ_HIDE_KEY = "funpack_models_req_hidden";
+  function reqPanelHidden(next) {
+    try {
+      if (next === undefined) return localStorage.getItem(REQ_HIDE_KEY) === "1";
+      if (next) localStorage.setItem(REQ_HIDE_KEY, "1");
+      else localStorage.removeItem(REQ_HIDE_KEY);
+    } catch (_) { /* private mode: the list just stays visible */ }
+    return !!next;
+  }
+
   function requirementsPanel() {
     const sec = el("div", "req-panel");
     if (config.disable_core) {
-      sec.append(el("div", "req-title", "Custom workflow"));
+      // No FunPack core means no FunPack requirements — say so once, briefly, and get out
+      // of the way. Everything else in this panel still works on the user's own nodes.
       sec.append(el("div", "req-empty",
-        "Built-in FunPack pipeline is off. Wire your workflow nodes below; FunPack loader requirements do not apply."));
+        "Custom workflow — the built-in pipeline is off, so FunPack's loader requirements "
+        + "do not apply. Wire your own nodes below."));
       return sec;
     }
-    if (pipelineLocked()) {
+    if (reqPanelHidden()) {
+      const missingNow = requirements.filter((r) => r.required && !requirementSatisfied(r));
+      if (!missingNow.length) return sec;          // nothing to say; stay quiet
+      const line = el("div", "req-collapsed");
+      line.append(el("span", "req-dot", "✕"));
+      line.append(el("span", null, `${missingNow.length} missing in pipeline`));
+      const show = el("button", "btn ghost tiny", "Show");
+      show.onclick = () => { reqPanelHidden(false); render(); };
+      line.append(show);
+      sec.append(line);
+      return sec;
+    }
+    // The wiring rules are reference material, not a warning — folded away so the first
+    // thing in this panel is the short list of what is actually missing.
+    function guidedRulesFold() {
       // The latent and audio path differ by family — H3 makes both streams in one node
       // that feeds the sampler directly, so pointing at Studio · latent here would send
       // the user to a port its graph does not even have.
       const h3 = familyKey() === "minimax_h3";
-      sec.append(el("div", "req-hint guided-hint",
+      const det = el("details", "req-fold");
+      det.append(el("summary", "req-fold-sum", "Guided wiring rules"));
+      det.append(el("div", "req-hint guided-hint",
         (h3
-          ? "Guided wiring: the AV LATENT → Chain Sampler · latent_template (Empty MiniMax H3 "
+          ? "The AV LATENT → Chain Sampler · latent_template (Empty MiniMax H3 "
             + "AV Latent makes both streams). Audio VAE → VAE Decode Audio · vae, and optionally "
             + "also Chain Sampler · audio_vae to encode audio references. "
-          : "Guided wiring: LATENT → Studio · latent (core forwards to Concat · video_latent). "
+          : "LATENT → Studio · latent (core forwards to Concat · video_latent). "
             + "Audio latent → Concat · audio_latent only. ")
         + "IMAGE → Studio · source_image (Input Image Processing defaults to Timeline scene image). "
         + "MODEL/CLIP may chain through LoRA. "
         + "Enable Full control for manual rewiring."));
+      return det;
     }
-    sec.append(el("div", "req-title", "Pipeline requirements"));
-
     if (!requirements.length) {
+      sec.append(el("div", "req-title", "Pipeline requirements"));
       sec.append(el("div", "req-empty", "Requirements not loaded — open Models to refresh."));
       return sec;
     }
 
     const required = requirements.filter((r) => r.required);
     const optional = requirements.filter((r) => !r.required);
-    const allOk = required.every(requirementSatisfied);
+    const missing = required.filter((r) => !requirementSatisfied(r));
+    const allOk = !missing.length;
 
-    required.forEach((req) => {
+    // One line per requirement: dot, name, type, and — only when it is missing and we know
+    // which role fills it — a + on the right. The hint used to be a paragraph inside the
+    // row, which made every missing item a block three times the height of a satisfied one.
+    function reqRow(req, cls) {
       const ok = requirementSatisfied(req);
-      const row = el("div", "req-row" + (ok ? " ok" : " missing"));
-      row.append(el("span", "req-dot", ok ? "✓" : "✕"));
-      const lbl = el("span", "req-label", req.label);
-      const badge = el("span", "req-type", req.type);
-      row.append(lbl); row.append(badge);
-      if (!ok) {
-        const hint = el("div", "req-hint", req.hint);
-        row.append(hint);
-        if (req.role_hint) {
-          const addBtn = el("button", "btn ghost tiny req-add", "+ Add");
-          addBtn.onclick = () => openNodeSetup(req.role_hint);
-          row.append(addBtn);
-        }
+      const row = el("div", "req-row" + cls + (ok ? " ok" : (req.required ? " missing" : "")));
+      row.append(el("span", "req-dot", ok ? "✓" : (req.required ? "✕" : "·")));
+      row.append(el("span", "req-label", req.label));
+      row.append(el("span", "req-type", req.type));
+      if (req.hint) row.title = req.hint;
+      if (!ok && req.required && req.role_hint) {
+        const addBtn = el("button", "btn ghost tiny req-add", "+");
+        addBtn.title = `Add a ${req.label} — ${req.hint || "picks the node for you"}`;
+        addBtn.onclick = () => openNodeSetup(req.role_hint);
+        row.append(addBtn);
       }
-      sec.append(row);
-    });
+      return row;
+    }
 
-    if (optional.length) {
-      const optHead = el("div", "req-opt-head", "Optional");
-      sec.append(optHead);
-      optional.forEach((req) => {
-        const ok = requirementSatisfied(req);
-        const row = el("div", "req-row opt" + (ok ? " ok" : ""));
-        row.append(el("span", "req-dot", ok ? "✓" : "·"));
-        row.append(el("span", "req-label", req.label));
-        row.append(el("span", "req-type", req.type));
-        sec.append(row);
-      });
+    const head = el("div", "req-head");
+    head.append(el("span", "req-title", missing.length
+      ? `Missing in pipeline · ${missing.length}` : "Pipeline requirements"));
+    // Dismissable, because a half-built pipeline the user is deliberately leaving half-built
+    // should not keep shouting. It comes back as a one-line link, never silently.
+    const hide = el("button", "req-dismiss", "✕");
+    hide.title = "Hide this list";
+    hide.onclick = () => { reqPanelHidden(true); render(); };
+    head.append(hide);
+    sec.append(head);
+
+    // Missing first: it is the only part that needs doing.
+    missing.forEach((req) => sec.append(reqRow(req, "")));
+    const satisfied = required.filter(requirementSatisfied);
+    if (satisfied.length || optional.length) {
+      const det = el("details", "req-fold");
+      det.open = false;
+      det.append(el("summary", "req-fold-sum",
+        `Satisfied${optional.length ? " and optional" : ""} · ${satisfied.length + optional.length}`));
+      satisfied.forEach((req) => det.append(reqRow(req, "")));
+      optional.forEach((req) => det.append(reqRow(req, " opt")));
+      sec.append(det);
     }
 
     if (allOk && config.slots.length) {
@@ -1262,6 +1305,7 @@
       sec.append(bar);
     }
 
+    if (pipelineLocked()) sec.append(guidedRulesFold());
     return sec;
   }
 
@@ -1750,8 +1794,10 @@
       pane.append(banner);
     }
     pane.append(familySection());
-    pane.append(nodeGrid(v));
+    // Above the node grid: what is missing is what the user came here to fix, and it used
+    // to sit below a grid tall enough to push it off screen.
     pane.append(requirementsPanel());
+    pane.append(nodeGrid(v));
     pane.append(coreSection());
     return pane;
   }
