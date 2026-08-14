@@ -2581,7 +2581,19 @@ if web is not None and PromptServer is not None:
     # /funpack/movie/ and /funpack/easy/ were the Cutting Room and Easy Gen when they were
     # two apps. Both are the same app now, so old bookmarks land on it rather than 404.
     # Registered BEFORE the catch-all below, which would otherwise swallow them.
+    #
+    # The API prefix has to move too. Those frontends build their API base from
+    # location.pathname, so a page still open on the old URL after an update polls
+    # /funpack/<old>/api/health. Answering 404 leaves its restart overlay spinning on
+    # "Reloading ComfyUI" forever — it only reloads once health says ok, and the reload is
+    # what would have reached the redirect below. 307 keeps the method and body.
     for _old in ("/movie", "/easy"):
+        @routes.route("*", UI_PREFIX + _old + "/api/{tail:.*}")
+        async def _legacy_api(req):
+            target = f"{UI_PREFIX}/api/{req.match_info['tail']}"
+            raise web.HTTPTemporaryRedirect(
+                f"{target}?{req.query_string}" if req.query_string else target)
+
         for _path in (UI_PREFIX + _old, UI_PREFIX + _old + "/"):
             @routes.get(_path)
             async def _legacy_ui(_req):
