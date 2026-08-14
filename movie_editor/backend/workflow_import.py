@@ -130,6 +130,8 @@ def _build_slots_from_nodes(
             "input_sources": {},
             "_wf_node_id": wf_id,
         }
+        if ent.get("group"):
+            slot["group"] = ent["group"]
         if cls not in object_info:
             slot["_missing_class"] = True
         slots.append(slot)
@@ -242,8 +244,14 @@ def _flatten_subgraphs(workflow: dict, object_info: dict) -> dict:
             pfx = f"sg{inst.get('id')}_"
             inner_nodes = json.loads(json.dumps(defn.get("nodes") or []))
             by_old = {n.get("id"): n for n in inner_nodes}
+            # The subgraph becomes a group, so what it organised survives being flattened.
+            # Its own inner groups are more specific, so they win; the instance's title (or
+            # the definition name) is the fallback.
+            outer_name = str(inst.get("title") or defn.get("name") or "Subgraph")
             for n in inner_nodes:
                 n["id"] = f"{pfx}{n.get('id')}"
+                if not n.get(_GROUP_KEY):
+                    n[_GROUP_KEY] = _group_of(n, defn.get("groups") or []) or outer_name
 
             # 1. promoted widget values: the instance's, not the inner node's stale copy
             values = inst.get("widgets_values")
@@ -318,6 +326,59 @@ def _flatten_subgraphs(workflow: dict, object_info: dict) -> dict:
     wf["links"] = [l for l in wf["links"]
                    if isinstance(l, list) and len(l) >= 6 and l[3] in live and l[1] in live]
     return wf
+
+
+# ── groups ────────────────────────────────────────────────────────────────────
+# Workflow authors already organise their graphs — "MODELS", "Prompt", "Sampler - First
+# Pass". That grouping is in the file and was being thrown away, leaving one flat wall of
+# cards. A group here is a VIEW, never a container: the nodes stay flat and first-class and
+# every wire keeps its real endpoints, so there is no inside to navigate into. That is the
+# whole difference from a ComfyUI subgraph, which is the part people dislike.
+_GROUP_KEY = "_fp_group"
+
+
+def _group_of(node: dict, groups: list) -> str:
+    """Title of the smallest group whose box contains the node's centre, or "".
+
+    Centre rather than corner because nodes routinely overhang a group's edge by a few
+    pixels; smallest-wins so a group nested inside another takes the node.
+    """
+    pos, size = node.get("pos") or [], node.get("size") or []
+    if len(pos) < 2:
+        return ""
+    try:
+        cx = float(pos[0]) + float(size[0] if len(size) > 0 else 0) / 2
+        cy = float(pos[1]) + float(size[1] if len(size) > 1 else 0) / 2
+    except (TypeError, ValueError):
+        return ""
+    best, best_area = "", None
+    for g in groups or []:
+        box = g.get("bounding") or []
+        if len(box) < 4:
+            continue
+        try:
+            x, y, w, h = (float(v) for v in box[:4])
+        except (TypeError, ValueError):
+            continue
+        if not (x <= cx <= x + w and y <= cy <= y + h):
+            continue
+        area = w * h
+        if best_area is None or area < best_area:
+            best, best_area = str(g.get("title") or ""), area
+    return best
+
+
+def _apply_groups(workflow: dict) -> dict:
+    """Stamp each node with its group title. Nodes that came from a subgraph already carry
+    one and keep it — the subgraph's own name is a better label than whatever outer box the
+    instance happened to sit in."""
+    groups = workflow.get("groups") or []
+    for node in workflow.get("nodes") or []:
+        if not node.get(_GROUP_KEY):
+            title = _group_of(node, groups)
+            if title:
+                node[_GROUP_KEY] = title
+    return workflow
 
 
 # ── virtual link nodes ────────────────────────────────────────────────────────
@@ -411,6 +472,7 @@ def _parse_ui_workflow(workflow: dict, object_info: dict) -> dict:
     workflow = _flatten_subgraphs(workflow, object_info)
     # After flattening: a subgraph can contain Set/Get, and its nodes are outer nodes now.
     workflow = _resolve_virtual_links(workflow)
+    workflow = _apply_groups(workflow)
     nodes_raw = workflow.get("nodes") or []
     links_map = _parse_ui_links(workflow.get("links") or [])
     inp_links = _ui_input_links(nodes_raw)
@@ -429,6 +491,7 @@ def _parse_ui_workflow(workflow: dict, object_info: dict) -> dict:
             "widgets_values": node.get("widgets_values"),
             "label": None,
             "properties": node.get("properties") or {},
+            "group": node.get(_GROUP_KEY) or "",
         })
 
     for (tgt_wf, in_name), lid in inp_links.items():

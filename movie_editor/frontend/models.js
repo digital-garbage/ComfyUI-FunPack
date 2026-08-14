@@ -578,6 +578,33 @@
     const ib = issuesBox(issues);
     if (ib) card.append(ib);
 
+    // Which section this node is filed under. Purely a heading — moving a node between
+    // groups changes nothing about how it is wired or built.
+    const grpRow = el("div", "field node-group-field");
+    grpRow.append(el("span", null, "Group"));
+    const grpSel = el("select");
+    const cur = (slot.group || "").trim();
+    const opts = groupNames();
+    if (cur && !opts.includes(cur)) opts.push(cur);
+    [["", "— none —"], ...opts.map((g) => [g, g]), ["__new__", "New group…"]]
+      .forEach(([val, label]) => {
+        const o = el("option", null, label); o.value = val;
+        if (val === cur) o.selected = true;
+        grpSel.append(o);
+      });
+    grpSel.onchange = async () => {
+      let next = grpSel.value;
+      if (next === "__new__") {
+        next = (prompt("Group name:", cur) || "").trim();
+        if (!next) { render(); return; }
+      }
+      if (next) slot.group = next; else delete slot.group;
+      await persist();
+      render();
+    };
+    grpRow.append(grpSel);
+    card.append(grpRow);
+
     const cand = specFor(slot);
 
     // Card reads top-down in signal order: what comes IN, what the node is set to,
@@ -1761,23 +1788,137 @@
     return out;
   }
 
-  function nodeGrid(v) {
+  // ── search ────────────────────────────────────────────────────────────────────
+  // One box over everything a node can be recognised by: its class, its label, the group
+  // it is filed under, the names AND values of its widgets (so a model filename matches),
+  // and the names and TYPES of its sockets. "model" therefore finds UNETLoader by class,
+  // anything with a MODEL input or output by type, and every node holding a file with
+  // "model" in its name.
+  let searchQ = "";
+
+  function slotHaystack(slot) {
+    const out = [slot.node_class || "", slot.label || "", slot.role_label || "", slot.group || ""];
+    Object.entries(slot.inputs || {}).forEach(([k, v]) => {
+      out.push(k);
+      if (v != null && typeof v !== "object") out.push(String(v));
+    });
+    const cand = specFor(slot);
+    (cand?.connection_inputs || []).forEach((ci) => out.push(ci.name || "", ci.type || ""));
+    (cand?.outputs || []).forEach((o) => out.push(o.name || "", o.type || ""));
+    (cand?.inputs || []).forEach((i) => out.push(i.name || ""));
+    return out.join("\n").toLowerCase();
+  }
+
+  function slotMatches(slot) {
+    if (!searchQ) return true;
+    const hay = slotHaystack(slot);
+    // Every word must appear somewhere, so "lora model" narrows instead of widening.
+    return searchQ.split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
+  }
+
+  function searchBar(shown, total) {
+    const row = el("div", "node-search");
+    const inp = el("input", "node-search-input");
+    inp.type = "search";
+    inp.placeholder = "Search nodes — name, model file, or socket type (e.g. model, vae, lora)";
+    inp.value = searchQ;
+    inp.dataset.k = "models-search";
+    inp.oninput = () => { searchQ = inp.value.trim().toLowerCase(); render(); };
+    row.append(inp);
+    if (searchQ) {
+      row.append(el("span", "node-search-count", `${shown} of ${total}`));
+      const clear = el("button", "btn ghost tiny", "Clear");
+      clear.onclick = () => { searchQ = ""; render(); };
+      row.append(clear);
+    }
+    return row;
+  }
+
+  // Groups a node can be filed under, in the order they first appear.
+  function groupNames() {
+    const seen = [];
+    config.slots.forEach((s) => {
+      const g = (s.group || "").trim();
+      if (g && !seen.includes(g)) seen.push(g);
+    });
+    return seen;
+  }
+
+  // Collapsed groups, per project. A group someone folded away should stay folded.
+  const GROUP_FOLD_KEY = "funpack_models_groups_closed";
+  function closedGroups() {
+    try { return new Set(JSON.parse(localStorage.getItem(GROUP_FOLD_KEY) || "[]")); }
+    catch (_) { return new Set(); }
+  }
+  function toggleGroup(name) {
+    const set = closedGroups();
+    if (set.has(name)) set.delete(name); else set.add(name);
+    try { localStorage.setItem(GROUP_FOLD_KEY, JSON.stringify([...set])); } catch (_) {}
+  }
+
+  function _grid(slots, v) {
     const wrap = el("div", "node-grid");
-
-    const add = el("button", "node-card node-card-add");
-    add.type = "button";
-    add.title = "Add a loader or custom node to the pipeline";
-    const addArt = el("div", "node-card-art");
-    addArt.append(el("span", "node-card-plus", "+"));
-    const addMeta = el("div", "node-card-meta");
-    addMeta.append(el("div", "node-card-title", "New node"));
-    addArt.append(addMeta);
-    add.append(addArt);
-    add.onclick = (e) => openRoleMenu(e.currentTarget);
-    wrap.append(add);
-
-    config.slots.forEach((slot) => wrap.append(nodeCard(slot, v.perSlot[slot.id] || [])));
+    slots.forEach((slot) => wrap.append(nodeCard(slot, v.perSlot[slot.id] || [])));
     return wrap;
+  }
+
+  // A group is a VIEW, never a container: the nodes stay flat, every wire keeps its real
+  // endpoints, and anything can still wire to anything. That is the whole difference from a
+  // subgraph — there is no inside to navigate into, only a heading you can fold.
+  function nodeGrid(v) {
+    const host = el("div", "node-groups");
+    const visible = config.slots.filter(slotMatches);
+    host.append(searchBar(visible.length, config.slots.length));
+
+    if (!searchQ) {                            // the add card is an action, not a result
+      const addWrap = el("div", "node-grid");
+      const add = el("button", "node-card node-card-add");
+      add.type = "button";
+      add.title = "Add a loader or custom node to the pipeline";
+      const addArt = el("div", "node-card-art");
+      addArt.append(el("span", "node-card-plus", "+"));
+      const addMeta = el("div", "node-card-meta");
+      addMeta.append(el("div", "node-card-title", "New node"));
+      addArt.append(addMeta);
+      add.append(addArt);
+      add.onclick = (e) => openRoleMenu(e.currentTarget);
+      addWrap.append(add);
+      host.append(addWrap);
+    } else if (!visible.length) {
+      host.append(el("div", "req-empty", `Nothing matches "${searchQ}".`));
+      return host;
+    }
+
+    const names = groupNames();
+    if (!names.length) {                       // nothing grouped: the plain grid, as before
+      host.append(_grid(visible, v));
+      return host;
+    }
+    // A match inside a folded group has to be reachable, so search overrides the folds.
+    const closed = searchQ ? new Set() : closedGroups();
+    const sections = names.map((n) => [n, visible.filter((s) => (s.group || "").trim() === n)]);
+    const loose = visible.filter((s) => !(s.group || "").trim());
+    if (loose.length) sections.push(["Ungrouped", loose]);
+
+    sections.forEach(([name, slots]) => {
+      if (!slots.length) return;
+      const sec = el("div", "node-group");
+      const head = el("button", "node-group-head");
+      head.type = "button";
+      const isClosed = closed.has(name);
+      head.append(el("span", "node-group-caret", isClosed ? "▸" : "▾"));
+      head.append(el("span", "node-group-name", name));
+      head.append(el("span", "node-group-count", String(slots.length)));
+      // Errors only: a folded group must still say when something inside it is broken.
+      const bad = slots.reduce(
+        (n, s) => n + ((v.perSlot[s.id] || []).some((m) => m.level === "error") ? 1 : 0), 0);
+      if (bad) head.append(el("span", "node-group-bad", `${bad} to fix`));
+      head.onclick = () => { toggleGroup(name); render(); };
+      sec.append(head);
+      if (!isClosed) sec.append(_grid(slots, v));
+      host.append(sec);
+    });
+    return host;
   }
 
   function paneContent(v) {
@@ -1817,10 +1958,18 @@
     // Preserve the content pane's scroll across the full re-render every edit triggers.
     const prevPane = container.querySelector(".models-pane");
     const scrollTop = prevPane ? prevPane.scrollTop : 0;
+    const hadSearchFocus = document.activeElement
+      && document.activeElement.dataset && document.activeElement.dataset.k === "models-search";
     clear(container);
     container.append(body());
     const pane = container.querySelector(".models-pane");
     if (pane) pane.scrollTop = scrollTop;
+    // Typing in the search box re-renders on every keystroke, which would otherwise throw
+    // the caret away after the first character.
+    if (hadSearchFocus) {
+      const box = container.querySelector('[data-k="models-search"]');
+      if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+    }
   }
 
   async function prewarmSpecs() {

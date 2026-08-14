@@ -1478,6 +1478,23 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 
 /* config validation banner */
 /* Pipeline requirements panel */
+.node-search { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
+.node-search-input { flex: 1 1 auto; min-width: 0; }
+.node-search-count { font-family: var(--font-mono); font-size: 11px; color: var(--faint); flex: 0 0 auto; }
+
+/* Node groups: a heading over the flat grid, never a container. */
+.node-group { margin-bottom: 10px; }
+.node-group-head { display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: 0; cursor: pointer; padding: 6px 2px; text-align: left;
+  color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.node-group-head:hover { color: var(--fg); }
+.node-group-caret { font-family: var(--font-mono); flex: 0 0 auto; }
+.node-group-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-group-count { font-family: var(--font-mono); color: var(--faint); text-transform: none; }
+.node-group-bad { color: var(--danger); text-transform: none; letter-spacing: 0; }
+.node-group-field { margin: 10px 0 4px; }
+
 .req-panel { margin-bottom: 18px; }
 .req-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .req-title { font-size: 11px; color: var(--teal); font-weight: 600; }

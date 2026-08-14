@@ -329,3 +329,62 @@ def test_a_set_get_chain_terminates():
     }
     parsed = workflow_import.parse_workflow(wf, OI)     # must return, not spin
     assert _classes(parsed) == ["SaveImage"]
+
+
+# ── groups ───────────────────────────────────────────────────────────────────
+# Authors already organise their graphs; that grouping is in the file and used to be
+# thrown away. A group is a VIEW — it changes no wiring, so nothing downstream reads it.
+
+def _grouped_workflow():
+    return {
+        "nodes": [
+            {"id": 1, "type": "LoadImage", "widgets_values": ["a.png"], "pos": [10, 10],
+             "size": [100, 40], "inputs": [], "outputs": [{"name": "IMAGE", "links": [1]}]},
+            {"id": 2, "type": "SaveImage", "widgets_values": ["out"], "pos": [500, 10],
+             "size": [100, 40], "inputs": [{"name": "images", "type": "IMAGE", "link": 1}],
+             "outputs": []},
+            {"id": 3, "type": "CLIPTextEncode", "widgets_values": ["hi"], "pos": [900, 10],
+             "size": [100, 40], "inputs": [], "outputs": []},
+        ],
+        "links": [[1, 1, 0, 2, 0, "IMAGE"]],
+        "groups": [
+            {"title": "Input", "bounding": [0, 0, 200, 200]},
+            {"title": "Output", "bounding": [400, 0, 200, 200]},
+        ],
+    }
+
+
+def _group_of(parsed, cls):
+    return next(s.get("group", "") for s in parsed["slots"] if s["node_class"] == cls)
+
+
+def test_nodes_take_the_group_box_they_sit_in():
+    parsed = workflow_import.parse_workflow(_grouped_workflow(), OI)
+    assert _group_of(parsed, "LoadImage") == "Input"
+    assert _group_of(parsed, "SaveImage") == "Output"
+
+
+def test_a_node_in_no_group_box_is_left_ungrouped():
+    parsed = workflow_import.parse_workflow(_grouped_workflow(), OI)
+    assert _group_of(parsed, "CLIPTextEncode") == ""
+
+
+def test_the_smallest_box_wins_when_groups_nest():
+    wf = _grouped_workflow()
+    wf["groups"].append({"title": "Everything", "bounding": [0, 0, 2000, 2000]})
+    parsed = workflow_import.parse_workflow(wf, OI)
+    assert _group_of(parsed, "LoadImage") == "Input"        # not "Everything"
+
+
+def test_a_subgraph_becomes_a_group_so_what_it_organised_survives_flattening():
+    parsed = workflow_import.parse_workflow(_subgraph_workflow(), OI)
+    assert _group_of(parsed, "KSampler") == "inner"
+    assert _group_of(parsed, "CLIPTextEncode") == "inner"
+
+
+def test_grouping_does_not_touch_the_wiring():
+    """The whole premise: a group is a heading, not a container."""
+    grouped = workflow_import.parse_workflow(_grouped_workflow(), OI)
+    plain = _grouped_workflow()
+    plain.pop("groups")
+    assert _pairs(grouped) == _pairs(workflow_import.parse_workflow(plain, OI))
