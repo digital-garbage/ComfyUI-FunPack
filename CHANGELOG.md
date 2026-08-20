@@ -31,6 +31,11 @@
   quietly. Latent width and height snap to even, since a patchified model cannot take odd.
 
 ### Fixed
+- **A resolution-changing second pass no longer fails on MiniMax H3.** A keyframe pin is
+  packed as condition rows, so its token count belongs to the grid it was encoded on, and
+  `upscale_2x` handed pass 2 a pin from pass 1 — `value tensor of shape [168, 96] cannot be
+  broadcast to indexing result of shape [672, 96]`. The pins are resampled onto the new
+  grid rather than dropped: on H3 the pin IS the anchor, and pass 2 has to keep holding it.
 - **Multi-scene chains work with a second pass again.** `second_pass_op="upscale_2x"` hands
   back a scene at twice the latent size, but every later scene is still built from the latent
   template at the original size — so the carried overlap frames, the anchor's continuation,

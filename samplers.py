@@ -5022,6 +5022,47 @@ class FunPackLTXAVSceneChainSampler:
             positive, [{"resolved_frame_index": 0, "latent": frame}], self._h3_frame_count)
         return positive, True
 
+    def _h3_rescale_pins(self, conditioning, height, width):
+        """Bring H3 keyframe pins onto a resized latent grid.
+
+        A pin is a latent frame that core packs into the sequence as condition ROWS, so its
+        token count is fixed by the grid it was encoded on. After a resolution-changing
+        second_pass_op that grid no longer exists, and the model fails placing it:
+
+            shape mismatch: value tensor of shape [168, 96] cannot be broadcast to
+            indexing result of shape [672, 96]
+
+        (96 = 24 channels x the 2x2 patch; 672 = 4 x 168, i.e. 2x spatial is 4x the tokens.)
+
+        Dropping them is what the LTX path does with guide keyframes, but on H3 the pin IS
+        the anchor, and un-pinning it for pass 2 is precisely what a second pass must not do.
+        So they are resampled. Bicubic, not the upsampler: a pin is a condition row, and what
+        has to survive is its structure, not invented detail.
+        """
+        height, width = int(height), int(width)
+        out, changed = [], 0
+        for entry in conditioning or []:
+            if not (isinstance(entry, (list, tuple)) and len(entry) == 2
+                    and isinstance(entry[1], dict) and entry[1].get("minimax_keyframes")):
+                out.append(entry)
+                continue
+            pins = []
+            for pin in entry[1]["minimax_keyframes"]:
+                latent = pin.get("latent")
+                if (getattr(latent, "ndim", 0) == 5
+                        and tuple(latent.shape[-2:]) != (height, width)):
+                    frames = latent.movedim(2, 0).flatten(0, 1)          # [B*T, C, H, W]
+                    resized = torch.nn.functional.interpolate(
+                        frames.float(), size=(height, width), mode="bicubic",
+                        align_corners=False).to(latent.dtype)
+                    latent = resized.unflatten(
+                        0, (latent.shape[0], latent.shape[2])).movedim(1, 2)
+                    changed += 1
+                pins.append({**pin, "latent": latent})
+            meta = {**entry[1], "minimax_keyframes": pins}
+            out.append([entry[0], meta])
+        return out, changed
+
     def _h3_external_pins(self, conditioning):
         """Rescue the keyframe pins from a MiniMax H3 Image to Video node's conditioning.
 
@@ -7146,6 +7187,25 @@ class FunPackLTXAVSceneChainSampler:
                                 "dropped for pass 2 because second_pass_op changed the latent "
                                 "resolution — their token positions describe the pass-1 grid. "
                                 "Pass 1 used them in full.")
+                    # H3's own casualty of the same resolution change: a keyframe pin is
+                    # packed as condition ROWS, so its token count belongs to the grid it was
+                    # encoded on and the model refuses it outright on any other. The LTX keys
+                    # above are dropped; a pin is resampled instead, because on H3 the pin IS
+                    # the anchor and pass 2 has to keep holding it.
+                    if self._is_h3 and self._latent_spatial_changed(_sp_state, chunk):
+                        try:
+                            _h, _w = self._latent_tensors(_sp_state)[0].shape[-2:]
+                            _sp_positive, _n_pins = self._h3_rescale_pins(
+                                _sp_positive, int(_h), int(_w))
+                        except Exception as _pin_exc:  # noqa: BLE001
+                            _n_pins = 0
+                            print(f"[FunPackSceneChain] H3: could not resample the keyframe "
+                                  f"pins for pass 2 ({_pin_exc}).")
+                        if _n_pins:
+                            run_mechanisms.append(
+                                f"second_pass NOTE: {_n_pins} H3 keyframe pin(s) resampled to "
+                                f"the pass-2 grid ({int(_h)}x{int(_w)}) — a pin is packed as "
+                                f"condition rows, so it only fits the grid it was encoded on")
                     _sp_kw = dict(_sample_kwargs)
                     _sp_kw["step_offset"] = _sample_kwargs["step_offset"] + (int(sigmas.numel()) - 1)
                     # Announced BEFORE it runs: the after-the-fact run_mechanisms line says

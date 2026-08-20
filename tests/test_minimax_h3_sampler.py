@@ -654,3 +654,51 @@ def test_mid_scene_guide_declines_on_h3_instead_of_damaging_the_latent(capsys):
     assert out_chunk["samples"].unbind()[0].shape == before
     assert tail == 0 and _pins(positive) == []
     assert "pins only the first" in capsys.readouterr().out
+
+
+# ── pins vs a resolution-changing second pass ────────────────────────────────
+
+def test_keyframe_pins_are_resampled_onto_the_pass_two_grid():
+    """A pin is packed as condition ROWS, so its token count belongs to the grid it was
+    encoded on. Handing pass 2 a pass-1 pin fails inside the model as
+    "value tensor of shape [168, 96] cannot be broadcast to [672, 96]" — 2x spatial is 4x
+    the tokens, and 96 is 24 channels x the 2x2 patch."""
+    node = h3_node()
+    positive = [[torch.zeros(1, 8, 16), {"minimax_keyframes": [
+        {"resolved_frame_index": 0, "latent": torch.randn(1, 24, 1, 24, 28)}]}]]
+    out, changed = node._h3_rescale_pins(positive, 48, 56)
+    assert changed == 1
+    assert _pins(out)[0]["latent"].shape == (1, 24, 1, 48, 56)
+    assert _pins(out)[0]["resolved_frame_index"] == 0     # position is untouched
+    # the original conditioning is not mutated in place
+    assert _pins(positive)[0]["latent"].shape == (1, 24, 1, 24, 28)
+
+
+def test_a_pin_already_on_the_right_grid_is_left_exactly_alone():
+    node = h3_node()
+    latent = torch.randn(1, 24, 1, 48, 56)
+    positive = [[torch.zeros(1, 8, 16), {"minimax_keyframes": [
+        {"resolved_frame_index": 0, "latent": latent}]}]]
+    out, changed = node._h3_rescale_pins(positive, 48, 56)
+    assert changed == 0
+    assert _pins(out)[0]["latent"] is latent
+
+
+def test_conditioning_without_pins_passes_through_untouched():
+    node = h3_node()
+    positive = [[torch.zeros(1, 8, 16), {"minimax_refs": [{"kind": "image"}]}]]
+    out, changed = node._h3_rescale_pins(positive, 48, 56)
+    assert changed == 0 and out == positive
+
+
+def test_every_pin_in_a_multi_pin_conditioning_is_brought_along():
+    """first_frame and last_frame can both be set; one surviving on the old grid still
+    fails the whole render."""
+    node = h3_node()
+    positive = [[torch.zeros(1, 8, 16), {"minimax_keyframes": [
+        {"resolved_frame_index": 0, "latent": torch.randn(1, 24, 1, 24, 28)},
+        {"resolved_frame_index": 123, "latent": torch.randn(1, 24, 1, 24, 28)}]}]]
+    out, changed = node._h3_rescale_pins(positive, 48, 56)
+    assert changed == 2
+    assert all(p["latent"].shape == (1, 24, 1, 48, 56) for p in _pins(out))
+    assert [p["resolved_frame_index"] for p in _pins(out)] == [0, 123]
