@@ -7048,6 +7048,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 clip, prompt_text, encode_cache=encode_cache, reference_image=reference_image,
                 h3_references=h3_references,
             )
+            if positive_conditioning is not None:
+                # Both connected: CLIP wins and the wired CONDITIONING is never read. Silent
+                # until now — the ownership label below was computed and thrown away — so a
+                # graph feeding Studio from an i2v node looked like it was working while the
+                # prompt path quietly supplied everything.
+                note = ("both CLIP and positive CONDITIONING are connected — CLIP owns the "
+                        "prompt and the wired CONDITIONING is IGNORED; disconnect CLIP to "
+                        "use the wired one")
+                if not getattr(self, "_funpack_cond_owner_noted", False):
+                    self._funpack_cond_owner_noted = True
+                    print(f"[FunPackStudio] {note}")
+                encode_status = f"{encode_status}; {note}"
             return cond, meta, encode_status, "CLIP-owned"
 
         if positive_conditioning is None:

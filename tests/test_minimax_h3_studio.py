@@ -156,3 +156,60 @@ def test_an_ltx_split_is_left_alone():
     scenes = node._v2_transition_scene_conditionings(LTXClip(), ["a room", "a street"],
                                                      reference_image=IMAGE)
     assert all("funpack_h3_anchor" not in m for _c, m in scenes)
+
+
+# --- which input actually owns the conditioning -----------------------------------
+# CLIP wins whenever it is connected; a wired positive CONDITIONING is then never read.
+# That was silent (the ownership label was computed and discarded), so a graph feeding
+# Studio from an i2v node looked like it was steering conditioning it never saw.
+
+class _StubClip:
+    pass
+
+
+def _source(node, clip, wired, monkeypatch):
+    monkeypatch.setattr(
+        node, "_v2_encode_prompt",
+        lambda *a, **k: (torch.ones(1, 4, 8), {"pooled_output": None}, "encoded"),
+        raising=False)
+    monkeypatch.setattr(
+        node, "_v2_extract_conditioning",
+        lambda c: (torch.zeros(1, 4, 8), {"pooled_output": None}), raising=False)
+    monkeypatch.setattr(node, "_v2_text_tokenizer_status", lambda: "tokenizer ok", raising=False)
+    return node._v2_conditioning_source(clip, "a prompt", wired)
+
+
+def test_clip_owns_the_conditioning_when_both_are_connected(monkeypatch, capsys):
+    node = FunPackVideoRefinerV2()
+    wired = [[torch.zeros(1, 4, 8), {}]]
+    cond, _meta, status, owner = _source(node, _StubClip(), wired, monkeypatch)
+    assert owner == "CLIP-owned"
+    assert torch.equal(cond, torch.ones(1, 4, 8))   # the wired tensor was never used
+    assert "IGNORED" in status
+    assert "IGNORED" in capsys.readouterr().out
+
+
+def test_the_both_connected_warning_is_said_once_not_once_per_scene(monkeypatch, capsys):
+    node = FunPackVideoRefinerV2()
+    wired = [[torch.zeros(1, 4, 8), {}]]
+    for _ in range(3):
+        _source(node, _StubClip(), wired, monkeypatch)
+    assert capsys.readouterr().out.count("IGNORED") == 1
+
+
+def test_a_wired_conditioning_is_used_when_clip_is_absent(monkeypatch, capsys):
+    node = FunPackVideoRefinerV2()
+    wired = [[torch.zeros(1, 4, 8), {}]]
+    cond, _meta, status, owner = _source(node, None, wired, monkeypatch)
+    assert owner == "CONDITIONING-owned"
+    assert torch.equal(cond, torch.zeros(1, 4, 8))
+    assert "IGNORED" not in status
+    assert capsys.readouterr().out == ""
+
+
+def test_clip_alone_says_nothing_extra(monkeypatch, capsys):
+    node = FunPackVideoRefinerV2()
+    _cond, _meta, status, owner = _source(node, _StubClip(), None, monkeypatch)
+    assert owner == "CLIP-owned"
+    assert "IGNORED" not in status
+    assert capsys.readouterr().out == ""

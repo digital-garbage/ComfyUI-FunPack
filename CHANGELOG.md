@@ -31,6 +31,12 @@
   quietly. Latent width and height snap to even, since a patchified model cannot take odd.
 
 ### Fixed
+- **Studio said nothing when both CLIP and a positive CONDITIONING were wired to it.** CLIP
+  wins and the wired conditioning is never read — but the ownership label that knew this was
+  computed and discarded, so a graph feeding Studio from an i2v node looked like it was
+  working while the prompt path quietly supplied everything. Now stated once per run and
+  carried in the encode status.
+
 - **The late-step gate every rating-driven mechanism shares was measuring the wrong thing
   on H3**, so embed guidance, score slider, DynaShift and output guidance were inert or
   nearly inert while reporting themselves active. `max(0, 1 - 2*sigma)` reads sigma as
