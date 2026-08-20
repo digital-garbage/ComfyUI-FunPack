@@ -61,8 +61,10 @@ def attention_choices():
     'default' leaves the model on whatever ComfyUI itself selected (the --use-sage-attention
     / --use-flash-attention launch flags), which is why it stays the default here.
 
-    sla_h3 is not in the registry — it is FunPack's own block-sparse kernel, listed only
-    where CUDA and Triton can run it, on the same principle as the rest of this list.
+    SLA is deliberately NOT in this list: it is not a rival backend but a layer above one.
+    It handles only H3's long packed self-attention and hands everything else — the text
+    refiner, masked calls, the trailing dense steps — to whichever backend is chosen here,
+    so the two compose instead of displacing each other. Its switch is `sla`.
     """
     names = []
     try:
@@ -70,8 +72,6 @@ def attention_choices():
         names = sorted(REGISTERED_ATTENTION_FUNCTIONS.keys())
     except Exception:  # noqa: BLE001 - older ComfyUI without the registry
         pass
-    if sla_attention.sla_available():
-        names.append(sla_attention.SLA_NAME)
     return ["default"] + names
 
 
@@ -141,17 +141,26 @@ class FunPackDiffusionModelLoader:
                     "default": "default",
                     "tooltip": "Attention backend for THIS model. 'default' uses whatever "
                                "ComfyUI was launched with. Only backends installed on this "
-                               "machine are listed. 'sla_h3' is block-sparse attention for "
-                               "MiniMax H3 — the inference path lightx2v's SLA turbo LoRA was "
-                               "distilled against, which is why that LoRA gives no speedup "
-                               "without it. Roughly 3.7x the attention throughput at 768p/15s; "
-                               "ignored on any other model family."}),
+                               "machine are listed. Composes with `sla`: sparse attention "
+                               "handles H3's long packed sequence, this backend handles "
+                               "everything else."}),
             },
             "optional": {
                 "fp16_accumulation": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Accumulate fp16 matmuls in fp16. Faster on recent NVIDIA cards; "
                                "needs a torch build that supports it, ignored otherwise."}),
+                "sla": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Block-sparse attention for MiniMax H3 — the inference path "
+                               "lightx2v's SLA turbo LoRA was distilled against, which is why "
+                               "that LoRA gives no speedup on its own. Roughly 3.7x the "
+                               "attention throughput at 768p/15s. It runs ALONGSIDE the "
+                               "attention backend above rather than replacing it: SLA takes "
+                               "H3's long packed self-attention, the chosen backend (sage3, "
+                               "int8, flash…) takes the text refiner, masked calls and any "
+                               "trailing dense steps. Skipped, with the reason, on anything "
+                               "that is not MiniMax H3 or on a machine without Triton."}),
                 # SLA settings. Every one is validated at its default (see sla_attention);
                 # they are here because a knob whose value was measured is still a knob.
                 "sla_sparsity": ("FLOAT", {
@@ -187,13 +196,6 @@ class FunPackDiffusionModelLoader:
                     "tooltip": "Sequences shorter than this stay dense. Guards the short text "
                                "refiner, which must never be sparsified, and low-resolution "
                                "runs where block selection costs more than it saves."}),
-                "sla_enabled": ("BOOLEAN", {
-                    "default": sla_attention.SLA_DEFAULTS["enabled"],
-                    "advanced": True,
-                    "tooltip": "Off runs dense attention while leaving sla_h3 selected — a "
-                               "like-for-like speed and quality baseline that keeps the "
-                               "settings you were testing, instead of losing them to the "
-                               "backend dropdown."}),
                 "sla_dense_last_steps": ("INT", {
                     "default": sla_attention.SLA_DEFAULTS["dense_last_steps"],
                     "min": 0, "max": 8,
@@ -206,7 +208,7 @@ class FunPackDiffusionModelLoader:
     def load_model(self, model_name, weight_dtype, compute_dtype, attention,
                    fp16_accumulation=False, sla_sparsity=None, sla_block_size=None,
                    sla_protect_audio=None, sla_min_seq_len=None, sla_dense_last_steps=None,
-                   sla_enabled=None):
+                   sla=False):
         notes = [f"FunPack Diffusion Model Loader | {model_name}"]
 
         accum = set_fp16_accumulation(fp16_accumulation)
@@ -235,23 +237,29 @@ class FunPackDiffusionModelLoader:
         elif dtype is not None:
             notes.append("compute dtype: unsupported by this ComfyUI, ignored")
 
-        if attention == sla_attention.SLA_NAME:
-            # Its own install: SLA needs a per-step wrapper as well as the override, to
-            # read the packed layout (which never reaches the attention call site) and to
-            # report at the end of a run whether it actually fired.
-            model, note = sla_attention.install_sla(
+        override = attention_override(attention)
+
+        # SLA wraps the chosen backend rather than replacing it: there is one override
+        # slot, so the backend goes in as SLA's dense fall-through. When SLA does not
+        # take (not H3, no Triton, switched off) the backend is installed on its own —
+        # asking for sparse attention must never cost the backend you picked.
+        installed = False
+        if sla:
+            model, note, installed = sla_attention.install_sla(
                 model,
                 sparsity_ratio=sla_sparsity, block_size=sla_block_size,
                 min_seq_len=sla_min_seq_len, dense_last_steps=sla_dense_last_steps,
-                protect_audio=sla_protect_audio, enabled=sla_enabled)
+                protect_audio=sla_protect_audio,
+                dense_fn=override, dense_label=attention)
             notes.append(note)
-        else:
-            override = attention_override(attention)
+        if not installed:
             if override is not None:
                 model.model_options.setdefault("transformer_options", {})["optimized_attention_override"] = override
                 notes.append(f"attention: {attention}")
             else:
                 notes.append("attention: default (as launched)")
+        else:
+            notes.append(f"attention: {attention} (dense calls)")
 
         return (model, "\n".join(notes))
 

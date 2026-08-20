@@ -224,9 +224,10 @@ def test_the_lora_list_is_a_picker_not_a_table_of_dropdowns():
     assert spec["optional"]["lora_stack"][1]["advanced"] is True
 
 
-def test_the_sla_backend_is_offered_only_where_it_can_run():
-    """Same rule as the rest of the list: a backend this machine cannot run is not
-    offered, rather than listed and failing at generation."""
+def test_sla_is_a_toggle_not_a_rival_backend():
+    """It layers ABOVE a backend — sparse for H3's packed sequence, the chosen backend for
+    everything else — so listing it as a choice would force an either/or that is not real."""
     import sla_attention
-    choices = loaders.attention_choices()
-    assert (sla_attention.SLA_NAME in choices) is sla_attention.sla_available()
+    assert sla_attention.SLA_NAME not in loaders.attention_choices()
+    spec = loaders.FunPackDiffusionModelLoader.INPUT_TYPES()
+    assert spec["optional"]["sla"][1]["default"] is False

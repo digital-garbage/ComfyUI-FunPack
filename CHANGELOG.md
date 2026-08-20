@@ -7,9 +7,12 @@
   Loader's `attention` list rather than a node to wire. ComfyUI ships no sparse-attention
   backend for H3, which is why lightx2v's SLA turbo LoRA gives no speedup on its own — the
   LoRA is the adaptation to sparsity, not the acceleration. Roughly 3.7x the attention
-  throughput at 768p/15s. Six settings, folded under Advanced and validated at their
-  defaults; offered only where CUDA and Triton can run it, and ignored on any model that is
-  not H3. Kernel and block map vendored from LightX2V (Apache-2.0) via
+  throughput at 768p/15s. It is a toggle beside the attention backend, not one of its
+  values: SLA takes H3's long packed self-attention and the chosen backend (sage3, int8,
+  flash) takes the text refiner, masked calls and any trailing dense steps, so the two
+  compose. Five settings folded under Advanced and validated at their defaults; skipped
+  with a stated reason on anything that is not H3 or without Triton, leaving the chosen
+  backend installed on its own. Kernel and block map vendored from LightX2V (Apache-2.0) via
   ComfyUI-H3-SLA-Attention (MIT).
 
 ### Fixed

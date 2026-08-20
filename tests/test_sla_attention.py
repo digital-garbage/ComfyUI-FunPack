@@ -214,18 +214,18 @@ def test_sla_refuses_a_model_that_is_not_h3_and_says_so():
     """Head shape alone matches LTX too, and sparsifying LTX attention is a quality loss
     with no LoRA compensating for it. Silence would read as "it is on"."""
     model = _Patcher("LTXVModel")
-    out, note = sla.install_sla(model)
-    assert out is model
+    out, note, installed = sla.install_sla(model)
+    assert out is model and installed is False
     assert "not a MiniMax H3 model" in note
 
 
 def test_sla_reports_when_the_machine_cannot_run_it():
     model = _Patcher("MiniMaxH3Model")
-    out, note = sla.install_sla(model)
+    out, note, installed = sla.install_sla(model)
     if sla.sla_available():
-        assert out is not model and "sparsity=0.90" in note
+        assert installed is True and out is not model and "sparsity=0.90" in note
     else:
-        assert out is model and "CUDA+Triton" in note
+        assert installed is False and out is model and "CUDA+Triton" in note
 
 
 def test_the_defaults_are_the_validated_ones():
@@ -238,9 +238,38 @@ def test_the_defaults_are_the_validated_ones():
 def test_turning_sla_off_leaves_the_settings_in_place():
     """A dense A/B baseline must not cost the settings being tested."""
     model = _Patcher("MiniMaxH3Model")
-    out, note = sla.install_sla(model, sparsity_ratio=0.85, enabled=False)
-    assert out is model
+    out, note, installed = sla.install_sla(model, sparsity_ratio=0.85, enabled=False)
+    assert out is model and installed is False
     assert "off (dense baseline)" in note
+
+
+# ── composing with a chosen backend ───────────────────────────────────────────
+
+def test_dense_calls_go_to_the_chosen_backend_not_the_launched_one():
+    """There is one override slot. Without this, choosing SLA would silently discard the
+    backend the user picked and drop the text refiner onto whatever ComfyUI launched with."""
+    seen = []
+
+    def chosen(func, q, k, v, heads, **kw):
+        seen.append("chosen")
+        return func(q, k, v, heads, **kw)
+
+    state = sla.new_state()
+    ov = sla.make_override(state, 0.90, 64, 64, min_seq_len=8192,
+                           dense_fn=chosen, dense_label="sage3")
+    q = torch.randn(1, H, 512, D)              # short -> dense fall-through
+    out = _call(ov, q, q.clone(), q.clone())
+    assert seen == ["chosen"]
+    assert state["backend"] == "sage3"         # what the log will name
+    assert out.shape == (1, 512, H * D)
+
+
+def test_without_a_chosen_backend_dense_still_runs():
+    state = sla.new_state()
+    ov = sla.make_override(state, 0.90, 64, 64, min_seq_len=8192)
+    q = torch.randn(1, H, 512, D)
+    assert _call(ov, q, q.clone(), q.clone()).shape == (1, 512, H * D)
+    assert state["dense"] == 1
 
 
 # ── the kernel itself ─────────────────────────────────────────────────────────

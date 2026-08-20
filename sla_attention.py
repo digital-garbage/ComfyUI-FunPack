@@ -104,8 +104,16 @@ def _summarise(state, sparsity, blkq, blkk):
                         state["failed"])
 
 
-def make_override(state, sparsity_ratio, blkq, blkk, min_seq_len, protect_audio=True):
-    """The `optimized_attention_override` wrap_attn hands every attention call to."""
+def make_override(state, sparsity_ratio, blkq, blkk, min_seq_len, protect_audio=True,
+                  dense_fn=None, dense_label=None):
+    """The `optimized_attention_override` wrap_attn hands every attention call to.
+
+    `dense_fn` is another override (same signature) handling everything SLA does not:
+    the text refiner, masked calls, the trailing dense steps, any non-H3 model. There is
+    only one override slot, so without this, choosing SLA would silently discard the
+    backend the user picked and drop those calls onto whatever ComfyUI was launched with.
+    Sparse where sparsity applies, the chosen backend everywhere else.
+    """
     torch = _torch()
     ok_dtypes = (torch.bfloat16, torch.float16)
     topk_ratio = 1.0 - sparsity_ratio
@@ -114,12 +122,13 @@ def make_override(state, sparsity_ratio, blkq, blkk, min_seq_len, protect_audio=
                  skip_reshape=False, skip_output_reshape=False, **kwargs):
         def dense():
             state["dense"] += 1
-            return func(q, k, v, heads, mask=mask, attn_precision=attn_precision,
-                        skip_reshape=skip_reshape,
-                        skip_output_reshape=skip_output_reshape, **kwargs)
+            run = (lambda *a, **kw: dense_fn(func, *a, **kw)) if dense_fn is not None else func
+            return run(q, k, v, heads, mask=mask, attn_precision=attn_precision,
+                       skip_reshape=skip_reshape,
+                       skip_output_reshape=skip_output_reshape, **kwargs)
 
         if state["backend"] is None:
-            state["backend"] = getattr(func, "__name__", repr(func))
+            state["backend"] = dense_label or getattr(func, "__name__", repr(func))
 
         to = kwargs.get("transformer_options") or {}
 
@@ -239,12 +248,16 @@ def make_wrapper(state, sparsity_ratio, blkq, blkk, dense_last_steps):
 
 
 def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
-                dense_last_steps=None, protect_audio=None, enabled=None):
-    """Give `model` block-sparse H3 attention. Returns (model, status line).
+                dense_last_steps=None, protect_audio=None, enabled=None,
+                dense_fn=None, dense_label=None):
+    """Give `model` block-sparse H3 attention. Returns (model, status line, installed).
 
-    Weights are untouched: this installs an attention override and a per-step wrapper
-    on a clone. A model that is not MiniMax H3 comes back unchanged and says so —
-    the sparsity is only safe at the ratio H3's turbo LoRA was distilled to tolerate.
+    Weights are untouched: this installs an attention override and a per-step wrapper on
+    a clone. A model that is not MiniMax H3 comes back unchanged and says so — the
+    sparsity is only safe at the ratio H3's turbo LoRA was distilled to tolerate.
+
+    `installed` is False whenever SLA did not take, so the caller can fall back to
+    installing the chosen backend on its own rather than leaving the model with nothing.
     """
     def pick(value, key):
         return SLA_DEFAULTS[key] if value is None else value
@@ -258,13 +271,11 @@ def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
     if not bool(pick(enabled, "enabled")):
         # A dense baseline without touching the backend choice, so an A/B is one click
         # and the settings you were testing are still on the node when you switch back.
-        return model, "attention: sla_h3 off (dense baseline)"
+        return model, "SLA: off (dense baseline)", False
     if not is_h3_model(model):
-        return model, ("attention: sla_h3 requested but this is not a MiniMax H3 model — "
-                       "left on the launched backend")
+        return model, ("SLA: skipped — not a MiniMax H3 model"), False
     if not sla_available():
-        return model, ("attention: sla_h3 requested but this machine has no CUDA+Triton — "
-                       "left on the launched backend")
+        return model, ("SLA: skipped — this machine has no CUDA+Triton"), False
 
     # BLKK=64 is not a typo. On sm_120 the 128x128 tile needs 160 KB of shared memory
     # against a ~99 KB limit and cannot launch at all; 128x64 both fits and measured
@@ -275,12 +286,14 @@ def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
     patched = model.clone()
     to = patched.model_options.get("transformer_options", {}).copy()
     to["optimized_attention_override"] = make_override(
-        state, sparsity_ratio, blkq, blkk, min_seq_len, protect_audio)
+        state, sparsity_ratio, blkq, blkk, min_seq_len, protect_audio,
+        dense_fn=dense_fn, dense_label=dense_label)
     patched.model_options["transformer_options"] = to
     patched.add_wrapper_with_key(
         "diffusion_model", "funpack_sla_state",
         make_wrapper(state, sparsity_ratio, blkq, blkk, dense_last_steps))
 
-    return patched, (f"attention: sla_h3 | sparsity={sparsity_ratio:.2f} BLK={blkq}x{blkk} "
+    return patched, (f"SLA on | sparsity={sparsity_ratio:.2f} BLK={blkq}x{blkk} "
                      f"min_seq_len={min_seq_len} dense_last_steps={dense_last_steps} "
-                     f"protect_audio={protect_audio}")
+                     f"protect_audio={protect_audio} | dense calls -> "
+                     f"{dense_label or 'as launched'}"), True
