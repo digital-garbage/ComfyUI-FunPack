@@ -467,3 +467,39 @@ def test_a_pipeline_the_user_edited_is_never_rebuilt_under_them():
     models["model_family"] = "minimax_h3"
     assert pipeline_wiring.reseed_for_family(models, OI_FILES) is False
     assert any(s["id"] == "mine" for s in models["slots"])
+
+
+# ── every output a role can emit has somewhere to go ──────────────────────────
+
+def test_an_h3_image_to_video_node_can_wire_all_three_of_its_outputs():
+    """It is an image node that also emits the AV latent and its keyframe pins. Studio's
+    latent port does not exist in this family, so without these the LATENT output could be
+    added to the pipeline and never wired into anything."""
+    targets = pipeline_wiring._role_targets("minimax_h3")["image_processing"]
+    by_type = {t: p for t, _n, p in targets}
+    assert by_type["IMAGE"] == "FunPackStudio.source_image"
+    assert by_type["LATENT"] == "FunPackLTXAVSceneChainSampler.latent_template"
+    assert by_type["CONDITIONING"] == "FunPackLTXAVSceneChainSampler.h3_keyframes"
+
+
+def test_every_latent_role_reaches_a_port_in_every_family():
+    """A role whose output type has no destination is a node the user can add, fill in and
+    never connect — with nothing saying why."""
+    for family in ("ltxav", "minimax_h3"):
+        targets = pipeline_wiring._role_targets(family)
+        for role in ("empty_latent", "video_latent", "image_processing"):
+            assert any(t == "LATENT" for t, _n, _p in targets.get(role, [])), (family, role)
+
+
+def test_every_open_core_input_is_reachable_from_some_role():
+    """The ports the builder leaves for user loaders must all be offered somewhere, or an
+    input exists that nothing in the panel can ever feed."""
+    for family in ("ltxav", "minimax_h3"):
+        offered = {p for rules in pipeline_wiring._role_targets(family).values()
+                   for _t, _n, p in rules}
+        offered |= {p for ports in pipeline_wiring._chain_terminals(family).values()
+                    for p in ports}
+        for port in pipeline_wiring._open_core(family):
+            if port in pipeline_wiring._hidden_ports(family):
+                continue
+            assert port in offered, (family, port)

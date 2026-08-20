@@ -121,7 +121,13 @@ FAMILY_WIRING: dict[str, dict] = {
                              ("CONDITIONING", None, _H3_KEYFRAME_PORT)],
             "video_latent": [("LATENT", None, _H3_LATENT_PORT),
                              ("CONDITIONING", None, _H3_KEYFRAME_PORT)],
-            "image_processing": [("IMAGE", None, "FunPackStudio.source_image")],
+            # An H3 Image to Video node is an image_processing node that also emits the AV
+            # latent and its keyframe pins. Without these two the LATENT output had nowhere
+            # to go at all: Studio's latent port does not exist in this family, so the node
+            # could be added and never wired into anything.
+            "image_processing": [("IMAGE", None, "FunPackStudio.source_image"),
+                                 ("LATENT", None, _H3_LATENT_PORT),
+                                 ("CONDITIONING", None, _H3_KEYFRAME_PORT)],
         },
         "type_chain_terminals": {"LATENT": [_H3_LATENT_PORT],
                                  "CONDITIONING": [_H3_KEYFRAME_PORT]},
