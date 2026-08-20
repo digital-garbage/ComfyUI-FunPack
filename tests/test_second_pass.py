@@ -16,6 +16,7 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -291,3 +292,33 @@ def test_auto_says_what_to_install_when_nothing_fits(monkeypatch):
 def test_an_explicitly_chosen_file_is_always_honoured(monkeypatch):
     _installed(monkeypatch, [])
     assert detailing.resolve_upsampler_name("my_upsampler.safetensors", 24) == "my_upsampler.safetensors"
+
+
+# ── an upsampler ComfyUI cannot load at all ───────────────────────────────────
+
+def test_an_unknown_upsampler_architecture_is_named_not_a_python_error(monkeypatch):
+    """Core's loader is an if/elif with no else, so a file it does not recognise falls off
+    the end as `cannot access local variable 'model'` — which names neither the file nor
+    the problem, and reads like a FunPack bug."""
+    called = []
+    monkeypatch.setitem(
+        sys.modules, "comfy_extras.nodes_hunyuan",
+        types.SimpleNamespace(LatentUpscaleModelLoader=types.SimpleNamespace(
+            execute=lambda name: called.append(name))))
+    sd = {"encoder.layers.0.weight": object(), "decoder.out.bias": object()}
+    with pytest.raises(ValueError) as exc:
+        detailing._load_upsampler_via_core("h3_upsampler.safetensors", sd)
+    msg = str(exc.value)
+    assert "h3_upsampler.safetensors" in msg
+    assert "encoder, decoder" in msg          # what the file actually looks like
+    assert "Hunyuan Video 1.5 SR (720p)" in msg
+    assert not called, "core's loader should not be reached with a file it cannot branch on"
+
+
+def test_an_architecture_core_does_know_is_still_handed_over(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules, "comfy_extras.nodes_hunyuan",
+        types.SimpleNamespace(LatentUpscaleModelLoader=types.SimpleNamespace(
+            execute=lambda name: ("loaded",))))
+    sd = {"blocks.0.block.0.conv.weight": object()}
+    assert detailing._load_upsampler_via_core("hunyuan_sr.safetensors", sd) == "loaded"

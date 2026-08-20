@@ -207,7 +207,7 @@ def load_latent_upsampler(model_name):
     if "post_upsample_res_blocks.0.conv2.bias" not in sd:
         # Not Lightricks' architecture. ComfyUI's own loader knows the others (and will know
         # the next one), so hand it over rather than declaring the file unusable here.
-        return _load_upsampler_via_core(model_name)
+        return _load_upsampler_via_core(model_name, sd)
     config = json.loads(metadata["config"])
     # ComfyUI v0.29.0 (upstream f8a3fd9d) moved the upsampler onto DynamicVram and made
     # `operations` a required argument of from_config; older cores build nn.Modules
@@ -225,7 +225,30 @@ def load_latent_upsampler(model_name):
     return model
 
 
-def _load_upsampler_via_core(model_name):
+# The state-dict keys ComfyUI's own loader branches on, and what each one is.
+# Its execute() is an if/elif/elif with NO else, so a file matching none of them falls off
+# the end and raises `cannot access local variable 'model'` — a Python internal that names
+# neither the file nor the problem. Probing here means an unknown architecture is reported
+# as what it is, and it also means we never depend on that missing else.
+CORE_UPSAMPLER_SIGNATURES = (
+    ("blocks.0.block.0.conv.weight", "Hunyuan Video 1.5 SR (720p)"),
+    ("up.0.block.0.conv1.conv.weight", "Hunyuan Video 1.5 SR (1080p)"),
+)
+
+
+def _key_families(sd, limit=6):
+    """A few distinguishing top-level key prefixes, to identify an unknown file by."""
+    seen = []
+    for key in sd:
+        head = str(key).split(".")[0]
+        if head not in seen:
+            seen.append(head)
+        if len(seen) >= limit:
+            break
+    return ", ".join(seen) or "no keys"
+
+
+def _load_upsampler_via_core(model_name, sd=None):
     """ComfyUI's Load Latent Upscale Model, for every architecture that is not LTX's."""
     try:
         from comfy_extras.nodes_hunyuan import LatentUpscaleModelLoader
@@ -233,6 +256,13 @@ def _load_upsampler_via_core(model_name):
         raise ValueError(
             f"{model_name} is not an LTX latent upsampler, and this ComfyUI has no other "
             "latent upscale model loader to try") from exc
+    if sd is not None and not any(k in sd for k, _ in CORE_UPSAMPLER_SIGNATURES):
+        known = ", ".join(name for _, name in CORE_UPSAMPLER_SIGNATURES)
+        raise ValueError(
+            f"{model_name} is not an architecture this ComfyUI can load as a latent "
+            f"upscale model. It knows Lightricks LatentUpsampler and {known}; this file's "
+            f"keys start with: {_key_families(sd)}. Either it is not a latent upsampler, or "
+            "it needs the custom node pack it shipped with")
     out = LatentUpscaleModelLoader.execute(model_name)
     result = getattr(out, "result", out)
     if isinstance(result, (tuple, list)):
