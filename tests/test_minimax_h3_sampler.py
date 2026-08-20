@@ -702,3 +702,125 @@ def test_every_pin_in_a_multi_pin_conditioning_is_brought_along():
     assert changed == 2
     assert all(p["latent"].shape == (1, 24, 1, 48, 56) for p in _pins(out))
     assert [p["resolved_frame_index"] for p in _pins(out)] == [0, 123]
+
+
+# --- taste directions across a text preprocessor ---------------------------------
+# H3 refines the conditioning inside extra_conds, so what the DiT consumes is NOT what the
+# taste store captured. Adding one to the other crashed embed_guidance outright and was
+# silently swallowed by score_slider's except clause.
+
+TEXT_DIM, HIDDEN = 5120, 5376
+
+
+class _RefinerModel:
+    """Stands in for MiniMaxH3Model: condition_proj + a nonlinear token refiner."""
+
+    def __init__(self, seed=0):
+        g = torch.Generator().manual_seed(seed)
+        self.w = torch.randn(TEXT_DIM, HIDDEN, generator=g) / (TEXT_DIM ** 0.5)
+
+    def preprocess_text_embeds(self, text_states):
+        if text_states.shape[-1] == HIDDEN:
+            return text_states
+        return torch.tanh(text_states @ self.w)
+
+
+def _h3ish_model(with_preprocessor=True):
+    inner = types.SimpleNamespace()
+    if with_preprocessor:
+        inner.diffusion_model = _RefinerModel()
+    else:
+        inner.diffusion_model = types.SimpleNamespace()
+    return types.SimpleNamespace(model=inner, model_options={})
+
+
+def test_a_direction_already_in_the_models_space_is_left_alone():
+    node = FunPackLTXAVSceneChainSampler()
+    direction = torch.randn(HIDDEN)
+    cond = torch.randn(1, 8, HIDDEN)
+    out = node._direction_in_cond_space(_h3ish_model(), None, direction, cond)
+    assert out is direction  # LTX: capture space == consumed space
+
+
+def test_a_taste_direction_is_lifted_through_the_models_text_preprocessor():
+    node = FunPackLTXAVSceneChainSampler()
+    raw = torch.randn(1, 12, TEXT_DIM)
+    direction = torch.randn(TEXT_DIM)
+    cond = torch.randn(1, 12, HIDDEN)
+    out = node._direction_in_cond_space(_h3ish_model(), raw, direction, cond)
+    assert out is not None
+    assert tuple(out.shape) == (HIDDEN,)
+    assert torch.isfinite(out).all()
+    assert float(out.norm()) == pytest.approx(1.0, abs=1e-4)
+
+
+def test_the_lift_follows_the_direction_rather_than_returning_a_constant():
+    node = FunPackLTXAVSceneChainSampler()
+    raw = torch.randn(1, 12, TEXT_DIM)
+    cond = torch.randn(1, 12, HIDDEN)
+    model = _h3ish_model()
+    a = node._direction_in_cond_space(model, raw, torch.randn(TEXT_DIM), cond)
+    b = node._direction_in_cond_space(model, raw, torch.randn(TEXT_DIM), cond)
+    assert float(torch.nn.functional.cosine_similarity(a, b, dim=0)) < 0.9
+
+
+def test_a_direction_that_cannot_be_mapped_is_declined_not_forced():
+    node = FunPackLTXAVSceneChainSampler()
+    out = node._direction_in_cond_space(
+        _h3ish_model(with_preprocessor=False), torch.randn(1, 12, TEXT_DIM),
+        torch.randn(TEXT_DIM), torch.randn(1, 12, HIDDEN))
+    assert out is None
+
+
+def _run_embed_wrapper(model, raw_cond, direction, cond):
+    node = FunPackLTXAVSceneChainSampler()
+    node._build_embed_guidance_wrapper(model, direction, 0.3, raw_cond=raw_cond)
+    wrapper = model.model_options["model_function_wrapper"]
+    seen = {}
+
+    def apply_fn(x, t, **c):
+        seen["cond"] = c.get("c_crossattn")
+        return torch.zeros(1, 4)
+
+    args = {"input": torch.zeros(1, 4), "timestep": torch.tensor([0.2]),
+            "c": {"c_crossattn": cond}}
+    return wrapper(apply_fn, args), seen
+
+
+def test_embed_guidance_steers_the_refined_conditioning_instead_of_crashing():
+    cond = torch.randn(1, 12, HIDDEN)
+    _, seen = _run_embed_wrapper(_h3ish_model(), torch.randn(1, 12, TEXT_DIM),
+                                 torch.randn(TEXT_DIM), cond)
+    assert seen["cond"].shape == cond.shape
+    assert not torch.equal(seen["cond"], cond)  # the nudge actually landed
+
+
+def test_embed_guidance_passes_through_when_the_direction_cannot_be_mapped(capsys):
+    cond = torch.randn(1, 12, HIDDEN)
+    out, seen = _run_embed_wrapper(_h3ish_model(with_preprocessor=False),
+                                   torch.randn(1, 12, TEXT_DIM), torch.randn(TEXT_DIM), cond)
+    assert torch.equal(seen["cond"], cond)   # untouched, and no exception escaped
+    assert out.shape == (1, 4)
+    assert "steering skipped" in capsys.readouterr().out
+
+
+def test_dynashift_weights_negatives_against_the_raw_prompt_not_the_refined_one():
+    node = FunPackLTXAVSceneChainSampler()
+    raw = torch.randn(1, 12, TEXT_DIM)
+    pooled = raw.mean(dim=0).mean(dim=0)
+    negatives = [{"latent": torch.randn(3, 2, 4, 4), "cond": pooled.clone()},
+                 {"latent": torch.randn(3, 2, 4, 4), "cond": -pooled.clone()}]
+    model = _h3ish_model()
+    node._build_dynashift_wrapper(model, negatives, 0.3, 0.6, raw_cond=raw)
+    captured = {}
+
+    def apply_fn(x, t, **c):
+        captured["ran"] = True
+        return torch.zeros(1, 1, 8)
+
+    # The bank's cond is 5120-wide; the model consumes 5376. Before the fix the numel guard
+    # weighted every negative 1.0 regardless of how unrelated its prompt was.
+    args = {"input": torch.zeros(1, 1, 8), "timestep": torch.tensor([0.2]),
+            "c": {"c_crossattn": torch.randn(1, 12, HIDDEN)}}
+    model.model_options["model_function_wrapper"](apply_fn, args)
+    assert captured["ran"]

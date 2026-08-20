@@ -4559,7 +4559,7 @@ class FunPackLTXAVSceneChainSampler:
         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_output_wrapper, old_wrapper)
         return old_wrapper
 
-    def _build_dynashift_wrapper(self, model, negatives, strength, threshold):
+    def _build_dynashift_wrapper(self, model, negatives, strength, threshold, raw_cond=None):
         """DynaShift: steer the predicted x0 AWAY from the key's negative latent memory.
 
         A negative prompt at CFG=1: the repulsor is not a second text pass but the
@@ -4586,6 +4586,16 @@ class FunPackLTXAVSceneChainSampler:
         _desc_dim = 512
         _prep = {}  # device -> (desc [Tall,512] fp32, units [Tall,D] fp16, owner [Tall], conds)
         _warned = [False]
+        # The bank stores the RAW scene conditioning (negative_memory.save_pending is handed
+        # positive[0][0]), so the prompt-similarity weight has to be computed against the raw
+        # cond too. On H3 `c_crossattn` is the refined DiT hidden state instead, a different
+        # width entirely, and the numel guard below would silently weight every negative 1.0.
+        _raw_pooled = None
+        if isinstance(raw_cond, torch.Tensor):
+            _p = raw_cond.detach().float()
+            while _p.dim() > 1:
+                _p = _p.mean(dim=0)
+            _raw_pooled = _p
 
         def _call(apply_fn, a):
             if old_wrapper is not None:
@@ -4626,11 +4636,12 @@ class FunPackLTXAVSceneChainSampler:
             return prepared
 
         def _cond_weights(conds, c_dict, device):
-            cur = (c_dict or {}).get("c_crossattn")
+            cur = _raw_pooled if _raw_pooled is not None else (c_dict or {}).get("c_crossattn")
             if cur is None or not any(isinstance(cv, torch.Tensor) for cv in conds):
                 return torch.ones(len(conds), device=device)
-            cm = cur.detach().float()
-            cm = cm.mean(dim=tuple(range(cm.dim() - 1)))  # -> [D]
+            cm = cur.detach().float().to(device)
+            while cm.dim() > 1:
+                cm = cm.mean(dim=0)  # -> [D]
             weights = []
             for cv in conds:
                 if isinstance(cv, torch.Tensor) and cv.numel() == cm.numel():
@@ -4781,12 +4792,86 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
-    def _build_embed_guidance_wrapper(self, model, liked_dir, strength, value_fn=None):
+    def _direction_in_cond_space(self, model, raw_cond, direction, cond):
+        """Express a learned taste direction in the space of the conditioning the DiT
+        actually consumes.
+
+        On LTX the two are the same tensor and this is an identity check. On H3 they are
+        not: ``MiniMaxH3.extra_conds`` runs ``preprocess_text_embeds`` (condition_proj +
+        the token refiner) once per sampling run, so ``c_crossattn`` is refined DiT hidden
+        state (5376) while every direction in the taste store was captured from the raw
+        Qwen3-VL conditioning (5120). Adding one to the other is a hard shape error in
+        embed_guidance and a silently caught one in score_slider.
+
+        condition_proj is linear but the refiner is not (attention + RMSNorm), so the
+        direction is carried across by a finite difference through the model's OWN
+        preprocessor -- the hidden-space image of nudging the raw conditioning by
+        `direction`, which is exactly what embed guidance means on LTX. Two refiner calls
+        over ~150 text tokens, once per scene.
+
+        Returns a unit [D] direction in `cond`'s space, or None when there is no
+        preprocessor to map through (the caller then skips steering rather than crashing).
+        """
+        if not isinstance(direction, torch.Tensor) or not isinstance(cond, torch.Tensor):
+            return None
+        if int(direction.shape[-1]) == int(cond.shape[-1]):
+            return direction
+        pre = getattr(getattr(getattr(model, "model", None), "diffusion_model", None),
+                      "preprocess_text_embeds", None)
+        if pre is None or not isinstance(raw_cond, torch.Tensor) or \
+                int(raw_cond.shape[-1]) != int(direction.shape[-1]):
+            return None
+        try:
+            with torch.no_grad():
+                base = raw_cond.to(device=cond.device, dtype=cond.dtype)
+                while base.dim() < 3:
+                    base = base.unsqueeze(0)
+                unit = torch.nn.functional.normalize(direction.float(), dim=-1).to(
+                    device=base.device, dtype=base.dtype)
+                # 5% of the conditioning's own RMS: clear of bf16 noise, still inside the
+                # refiner's locally-linear regime.
+                eps = 0.05 * float(base.float().pow(2).mean().sqrt())
+                delta = (pre(base + eps * unit) - pre(base)).float()
+            while delta.dim() > 1:
+                delta = delta.mean(dim=0)
+            if not torch.isfinite(delta).all() or float(delta.norm()) <= 0.0:
+                return None
+            return torch.nn.functional.normalize(delta, dim=0)
+        except Exception:
+            return None
+
+    def _taste_direction_resolver(self, model, raw_cond, fixed_dir, label):
+        """Lazily map a taste direction into the consumed conditioning space, once.
+
+        Deferred to the first gated step deliberately: at wrapper-build time the model may
+        still sit on the offload device, and the finite difference wants the loaded one."""
+        state = {}
+
+        def resolve(cond):
+            if "d" not in state:
+                mapped = self._direction_in_cond_space(model, raw_cond, fixed_dir, cond)
+                state["d"] = mapped
+                if mapped is None:
+                    print(f"[FunPackSceneChain] {label}: the learned taste direction is "
+                          f"{int(fixed_dir.shape[-1])}-dim, this model consumes "
+                          f"{int(cond.shape[-1])}-dim conditioning, and it exposes no "
+                          "preprocessor to map between them \u2014 steering skipped")
+                elif int(mapped.shape[-1]) != int(fixed_dir.shape[-1]):
+                    print(f"[FunPackSceneChain] {label}: taste direction lifted "
+                          f"{int(fixed_dir.shape[-1])} -> {int(mapped.shape[-1])} through "
+                          "the model's own text preprocessor")
+            return state["d"]
+
+        return resolve
+
+    def _build_embed_guidance_wrapper(self, model, liked_dir, strength, value_fn=None, raw_cond=None):
         """Register a model_function_wrapper that nudges conditioning toward the
         liked quality direction at each denoising step. Uses value function gradient
         when available, falls back to the fixed liked direction otherwise."""
         old_wrapper = model.model_options.get("model_function_wrapper")
         fixed_dir = torch.nn.functional.normalize(liked_dir.float(), dim=-1)
+        resolve_dir = self._taste_direction_resolver(model, raw_cond, fixed_dir, "embed_guidance")
+        vf_noted = [False]
 
         def _embed_wrapper(apply_fn, args, _ew=old_wrapper, _fixed=fixed_dir, _vf=value_fn, _s=strength):
             c = args.get("c") or {}
@@ -4799,20 +4884,27 @@ class FunPackLTXAVSceneChainSampler:
                     sigma = 1.0
                 scale = max(0.0, 1.0 - sigma * 2.0)
                 if scale > 0:
+                    d = None
                     if _vf is not None:
                         try:
                             grad = _vf.gradient(cond)
                             d = torch.nn.functional.normalize(grad.float(), dim=-1).to(cond.dtype)
                         except Exception as _e:
-                            print(f"[FunPackSceneChain] embed_guidance: value function gradient failed ({_e}), using fixed direction")
-                            d = _fixed.to(cond.device, cond.dtype).expand_as(cond)
-                    else:
-                        d = _fixed.to(cond.device, cond.dtype).expand_as(cond)
-                    new_c = dict(c)
-                    # Steer video channels only; audio keeps its original text conditioning.
-                    new_c["c_crossattn"] = self._protect_audio(cond + (_s * scale) * d, cond)
-                    args = dict(args)
-                    args["c"] = new_c
+                            # Once per run: this fires on every step otherwise, and the
+                            # fixed-direction fallback below is the same each time.
+                            if not vf_noted[0]:
+                                vf_noted[0] = True
+                                print(f"[FunPackSceneChain] embed_guidance: value function gradient failed ({_e}), using fixed direction")
+                    if d is None:
+                        _mapped = resolve_dir(cond)
+                        d = (_mapped.to(cond.device, cond.dtype).expand_as(cond)
+                             if _mapped is not None else None)
+                    if d is not None:
+                        new_c = dict(c)
+                        # Steer video channels only; audio keeps its original text conditioning.
+                        new_c["c_crossattn"] = self._protect_audio(cond + (_s * scale) * d, cond)
+                        args = dict(args)
+                        args["c"] = new_c
             if _ew is not None:
                 return _ew(apply_fn, args)
             return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
@@ -4820,7 +4912,7 @@ class FunPackLTXAVSceneChainSampler:
         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_embed_wrapper, old_wrapper)
         return old_wrapper
 
-    def _build_score_slider_wrapper(self, model, liked_dir, eta, bad_dir=None):
+    def _build_score_slider_wrapper(self, model, liked_dir, eta, bad_dir=None, raw_cond=None):
         """FreeSliders (arxiv 2511.00103) in score space, sourced from the learned taste.
 
         embed_guidance nudges the conditioning embedding once per step. FreeSliders
@@ -4850,6 +4942,9 @@ class FunPackLTXAVSceneChainSampler:
         bad_fixed = None
         if bad_dir is not None:
             bad_fixed = torch.nn.functional.normalize(bad_dir.float(), dim=-1)
+        resolve_dir = self._taste_direction_resolver(model, raw_cond, fixed_dir, "score_slider")
+        resolve_bad = (self._taste_direction_resolver(model, raw_cond, bad_fixed, "score_slider(bad pole)")
+                       if bad_fixed is not None else None)
 
         def _call(apply_fn, a):
             if old_wrapper is not None:
@@ -4868,7 +4963,10 @@ class FunPackLTXAVSceneChainSampler:
             if cond is None or _eta == 0.0 or ramp <= 0.0:
                 return _call(apply_fn, args)
             try:
-                d = _fixed.to(cond.device, cond.dtype).expand_as(cond)
+                _mapped = resolve_dir(cond)
+                if _mapped is None:
+                    return _call(apply_fn, args)
+                d = _mapped.to(cond.device, cond.dtype).expand_as(cond)
                 # Calibrated finite-difference step along the taste axis (per-token,
                 # mirrors _v2_apply_direction's NORM_SCALE=0.3 calibration but halved
                 # so the symmetric +/- spread stays non-destructive).
@@ -4880,8 +4978,14 @@ class FunPackLTXAVSceneChainSampler:
                     # (eps_+ - eps_-) axis becomes good-vs-bad, steering away from the
                     # conditioning region that produced rated-bad gens. Same step magnitude
                     # keeps the pair symmetric in size, asymmetric in direction.
-                    bd = _bad.to(cond.device, cond.dtype).expand_as(cond)
-                    cond_minus = self._protect_audio(cond + bd * scale, cond)
+                    _mapped_bad = resolve_bad(cond) if resolve_bad is not None else None
+                    if _mapped_bad is not None:
+                        bd = _mapped_bad.to(cond.device, cond.dtype).expand_as(cond)
+                        cond_minus = self._protect_audio(cond + bd * scale, cond)
+                    else:
+                        # Bad pole unmappable: fall back to the symmetric mirror rather
+                        # than dropping the slider entirely.
+                        cond_minus = self._protect_audio(cond - step, cond)
                 else:
                     cond_minus = self._protect_audio(cond - step, cond)
                 eps_base = _call(apply_fn, args)
@@ -6964,18 +7068,27 @@ class FunPackLTXAVSceneChainSampler:
                     orig_cond, orig_extra = scene_positive[0][0], scene_positive[0][1]
                     ascended = self._protect_audio(_value_fn.ascend(orig_cond), orig_cond)
                     scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
+                # The taste store, the value function and the negative bank all live in the
+                # RAW conditioning space, which is not what every model consumes -- hand the
+                # raw scene cond to whoever needs to bridge the two.
+                _raw_scene_cond = (scene_positive[0][0]
+                                   if scene_positive and isinstance(scene_positive[0], (list, tuple))
+                                   else None)
                 if embed_guidance and _scene_liked_dir is not None:
                     run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
-                    self._build_embed_guidance_wrapper(model, _scene_liked_dir, embed_guidance_strength, value_fn=_value_fn)
+                    self._build_embed_guidance_wrapper(model, _scene_liked_dir, embed_guidance_strength,
+                                                       value_fn=_value_fn, raw_cond=_raw_scene_cond)
                 if score_slider and _scene_liked_dir is not None:
                     _pole = "contrastive" if _bad_dir is not None else "symmetric"
                     run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
-                    self._build_score_slider_wrapper(model, _scene_liked_dir, score_slider_strength, bad_dir=_bad_dir)
+                    self._build_score_slider_wrapper(model, _scene_liked_dir, score_slider_strength,
+                                                     bad_dir=_bad_dir, raw_cond=_raw_scene_cond)
                 if dynashift and _dynashift_negatives:
                     run_mechanisms.append(
                         f"dynashift({len(_dynashift_negatives)}neg,{dynashift_strength},thr={dynashift_threshold})")
                     self._build_dynashift_wrapper(
-                        model, _dynashift_negatives, dynashift_strength, dynashift_threshold)
+                        model, _dynashift_negatives, dynashift_strength, dynashift_threshold,
+                        raw_cond=_raw_scene_cond)
                 if output_guidance and _output_value_fn is not None:
                     # Installed outermost (after embed_guidance/score_slider/dynashift) so it
                     # corrects whatever prediction those already produced, not the raw base one.

@@ -31,6 +31,15 @@
   quietly. Latent width and height snap to even, since a patchified model cannot take odd.
 
 ### Fixed
+- **Embed guidance crashed every H3 run that reached a steering step**, and score slider
+  silently did nothing on the same models. H3 refines the conditioning inside
+  `extra_conds`, so the DiT consumes 5376-dim hidden state while the taste store captured
+  the raw 5120-dim text conditioning; embed guidance raised the size mismatch, score
+  slider caught it and returned the base prediction every step. Learned directions are now
+  carried into the consumed space through the model's own text preprocessor, once per
+  scene. DynaShift's prompt-similarity weighting was affected too — it compared the raw
+  banked prompt against the refined one and weighted every negative equally.
+
 - **A resolution-changing second pass no longer fails on MiniMax H3.** A keyframe pin is
   packed as condition rows, so its token count belongs to the grid it was encoded on, and
   `upscale_2x` handed pass 2 a pin from pass 1 — `value tensor of shape [168, 96] cannot be
