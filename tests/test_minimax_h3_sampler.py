@@ -892,3 +892,67 @@ def test_a_working_value_function_says_so_instead_of_steering_silently(capsys):
     out = capsys.readouterr().out
     assert out.count("steering on the value function gradient") == 1
     assert "5120 -> 5376" in out
+
+
+# --- the late-step gate on shifted schedules --------------------------------------
+# `max(0, 1 - 2*sigma)` reads sigma as schedule progress. True on LTX, false on H3, where
+# a large shift keeps sigma high until the final leap and left the wrappers with no window.
+
+from samplers import _make_steer_ramp, _steer_ramp_coverage  # noqa: E402
+
+
+def _h3_schedule(shift, steps):
+    return torch.tensor([shift * (1 - i / steps) / (1 + (shift - 1) * (1 - i / steps))
+                         for i in range(steps + 1)])
+
+
+@pytest.mark.parametrize("shift,steps", [(6, 4), (6, 6), (12, 12), (3, 20)])
+def test_the_old_gate_left_h3_schedules_with_almost_no_window(shift, steps):
+    sigmas = _h3_schedule(shift, steps)
+    legacy = _make_steer_ramp(sigmas, h3=False)
+    gated, total, _peak = _steer_ramp_coverage(legacy, sigmas)
+    assert total == steps
+    assert gated <= max(1, steps // 5)          # the bug: a sliver at best
+    if (shift, steps) in ((6, 4), (6, 6), (12, 12)):
+        assert gated == 0                        # turbo and the H3 default: nothing at all
+
+
+@pytest.mark.parametrize("shift,steps", [(6, 4), (6, 6), (12, 12), (3, 20)])
+def test_the_base_grid_gate_opens_the_back_half_at_any_shift(shift, steps):
+    sigmas = _h3_schedule(shift, steps)
+    ramp = _make_steer_ramp(sigmas, h3=True)
+    gated, total, peak = _steer_ramp_coverage(ramp, sigmas)
+    assert total == steps
+    assert gated >= 1                            # turbo included
+    assert gated <= steps // 2 + 1               # back half, never the whole schedule
+    assert peak > 0.0
+
+
+def test_the_gate_is_the_same_at_every_shift_for_the_same_step_count():
+    # The whole point: coverage is a property of the schedule's shape, not of its shift.
+    cov = [_steer_ramp_coverage(_make_steer_ramp(_h3_schedule(sh, 20), h3=True),
+                                _h3_schedule(sh, 20))[0] for sh in (2, 3, 6, 12)]
+    assert len(set(cov)) == 1
+
+
+def test_the_gate_still_ramps_from_nothing_to_full_authority():
+    sigmas = _h3_schedule(3, 20)
+    ramp = _make_steer_ramp(sigmas, h3=True)
+    gates = [ramp(float(v)) for v in sigmas]
+    assert gates[0] == 0.0                       # first step: untouched
+    assert gates[-1] == pytest.approx(1.0)       # terminal: full
+    assert gates == sorted(gates)                # monotone, no jumps
+
+
+def test_ltx_keeps_the_gate_it_was_validated_with():
+    sigmas = torch.tensor([1.0, 0.75, 0.5, 0.25, 0.0])
+    ramp = _make_steer_ramp(sigmas, h3=False)
+    assert ramp(1.0) == 0.0
+    assert ramp(0.25) == pytest.approx(0.5)
+    assert ramp(0.0) == pytest.approx(1.0)
+
+
+def test_a_degenerate_schedule_falls_back_instead_of_dividing_by_zero():
+    ramp = _make_steer_ramp(torch.tensor([1.0]), h3=True)
+    assert ramp(0.25) == pytest.approx(0.5)      # legacy gate
+    assert _make_steer_ramp(None, h3=True)(0.0) == pytest.approx(1.0)

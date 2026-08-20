@@ -31,6 +31,18 @@
   quietly. Latent width and height snap to even, since a patchified model cannot take odd.
 
 ### Fixed
+- **The late-step gate every rating-driven mechanism shares was measuring the wrong thing
+  on H3**, so embed guidance, score slider, DynaShift and output guidance were inert or
+  nearly inert while reporting themselves active. `max(0, 1 - 2*sigma)` reads sigma as
+  schedule progress, which holds on LTX and fails on H3: its schedules are
+  `shift*t / (1 + (shift-1)*t)`, so a large shift keeps sigma high until the final leap.
+  Measured coverage of the old gate — shift 6 / 4 steps (turbo): 0 of 4; shift 12 / 12
+  (H3's default): 0 of 12; shift 3 / 20: 4 of 20, the first two at gate 0.14 and 0.31. The
+  gate now reads position on the schedule's own base grid, recovered from the schedule
+  rather than from a shift constant (the shift is only reliable when MiniMaxH3SigmaShift is
+  wired, which video sampling does not require). LTX keeps the gate it was validated with.
+  Every run now reports its steering window, and says so outright when nothing will steer.
+
 - **Embed guidance crashed every H3 run that reached a steering step**, and score slider
   silently did nothing on the same models. H3 refines the conditioning inside
   `extra_conds`, so the DiT consumes 5376-dim hidden state while the taste store captured

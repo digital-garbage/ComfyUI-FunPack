@@ -1027,6 +1027,66 @@ def _video_span(model, x):
 _FUNPACK_SCENE_WRAPPER_TAG = "_funpack_scene_wrapper"
 
 
+def _make_steer_ramp(sigmas, h3):
+    """The late-step gate every rating-driven wrapper shares, as a function of sigma.
+
+    The historical gate is ``max(0, 1 - 2*sigma)``: full authority at sigma 0, nothing
+    above 0.5. That reads sigma as "how far through the schedule are we", which holds on
+    LTX's hand-authored schedules and is FALSE on H3. H3's schedules are
+    ``sigma = shift*t / (1 + (shift-1)*t)`` over uniform t, so a large shift keeps sigma
+    high right up to the final leap. Measured coverage of the old gate:
+
+        shift 6 / 4 steps (turbo)   0 of 4 steps
+        shift 12 / 12 (H3 default)  0 of 12
+        shift 3 / 20                4 of 20, the first two at gate 0.14 and 0.31
+
+    So embed guidance, score_slider, DynaShift and output_guidance were inert or nearly
+    inert on H3 -- silently, since each reported itself as active.
+
+    The fix reads the position on the underlying uniform base grid instead, recovered from
+    the schedule itself rather than from a shift constant (the shift is only reliable when
+    MiniMaxH3SigmaShift is wired, and video sampling does not require that node). For a
+    shift-generated schedule the base grid IS the step position, so the gate becomes
+    ``max(0, 2k/n - 1)`` -- the same "last half, ramping to full" intent the constant was
+    written to express, at any shift and any step count.
+
+    LTX is untouched: it keeps the absolute-sigma gate it was validated with.
+    """
+    def legacy(sigma):
+        return max(0.0, 1.0 - float(sigma) * 2.0)
+
+    if not h3 or sigmas is None:
+        return legacy
+    try:
+        vals = [float(v) for v in sigmas.flatten().tolist()]
+    except Exception:
+        return legacy
+    n = len(vals) - 1
+    if n < 1:
+        return legacy
+
+    def progress(sigma):
+        sigma = float(sigma)
+        k = min(range(len(vals)), key=lambda i: abs(vals[i] - sigma))
+        return max(0.0, 2.0 * (k / n) - 1.0)
+
+    return progress
+
+
+def _steer_ramp_coverage(ramp_fn, sigmas):
+    """(gated steps, total steps, peak gate) for a schedule -- so a run can say out loud
+    how much of it the steering actually reaches instead of only that it is 'active'."""
+    try:
+        vals = [float(v) for v in sigmas.flatten().tolist()][:-1]  # sigma[-1] is terminal
+    except Exception:
+        return None
+    if not vals:
+        return None
+    gates = [ramp_fn(v) for v in vals]
+    return sum(1 for g in gates if g > 0.0), len(gates), max(gates) if gates else 0.0
+
+
+
 def _tag_scene_wrapper(wrapper, prev):
     """Mark a per-scene wrapper (and remember what it wrapped) so a later run can
     identify and unwind leaked ones."""
@@ -4494,7 +4554,7 @@ class FunPackLTXAVSceneChainSampler:
         except Exception as e:
             print(f"[FunPackSceneChain] output value snapshot save failed: {e}")
 
-    def _build_output_guidance_wrapper(self, model, value_fn, strength):
+    def _build_output_guidance_wrapper(self, model, value_fn, strength, ramp_fn=None):
         """Sibling of _build_embed_guidance_wrapper, but corrects the model's OUTPUT
         (x0_hat) instead of nudging the INPUT conditioning. value_fn.gradient() backprops
         through its own compress() step, so feeding it the denoised prediction returns a
@@ -4518,6 +4578,7 @@ class FunPackLTXAVSceneChainSampler:
           (0.02 = 2%), the same relative-calibration convention as the slider's 0.15 and
           the Refiner's NORM_SCALE."""
         old_wrapper = model.model_options.get("model_function_wrapper")
+        _ramp = ramp_fn or (lambda sigma: max(0.0, 1.0 - float(sigma) * 2.0))
 
         def _call(apply_fn, a):
             if old_wrapper is not None:
@@ -4531,7 +4592,7 @@ class FunPackLTXAVSceneChainSampler:
                 sigma = float(ts.max().item()) if ts is not None else 1.0
             except Exception:
                 sigma = 1.0
-            scale = max(0.0, 1.0 - sigma * 2.0)  # same late-step ramp as embed_guidance
+            scale = _ramp(sigma)  # same late-step gate as embed_guidance
             if scale <= 0:
                 return denoised
             try:
@@ -4559,7 +4620,7 @@ class FunPackLTXAVSceneChainSampler:
         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_output_wrapper, old_wrapper)
         return old_wrapper
 
-    def _build_dynashift_wrapper(self, model, negatives, strength, threshold, raw_cond=None):
+    def _build_dynashift_wrapper(self, model, negatives, strength, threshold, raw_cond=None, ramp_fn=None):
         """DynaShift: steer the predicted x0 AWAY from the key's negative latent memory.
 
         A negative prompt at CFG=1: the repulsor is not a second text pass but the
@@ -4583,6 +4644,7 @@ class FunPackLTXAVSceneChainSampler:
         construction (video span only, cat back). Frame-level (not sub-frame) v1:
         the "mask" is temporal + magnitude gating; unmatched frames are untouched."""
         old_wrapper = model.model_options.get("model_function_wrapper")
+        _ramp = ramp_fn or (lambda sigma: max(0.0, 1.0 - float(sigma) * 2.0))
         _desc_dim = 512
         _prep = {}  # device -> (desc [Tall,512] fp32, units [Tall,D] fp16, owner [Tall], conds)
         _warned = [False]
@@ -4659,7 +4721,7 @@ class FunPackLTXAVSceneChainSampler:
                 sigma = float(ts.max().item()) if ts is not None else 1.0
             except Exception:
                 sigma = 1.0
-            ramp = max(0.0, 1.0 - sigma * 2.0)  # same late-step ramp as the other wrappers
+            ramp = _ramp(sigma)  # same late-step gate as the other wrappers
             if ramp <= 0.0 or _s <= 0.0:
                 return denoised
             try:
@@ -4864,11 +4926,12 @@ class FunPackLTXAVSceneChainSampler:
 
         return resolve
 
-    def _build_embed_guidance_wrapper(self, model, liked_dir, strength, value_fn=None, raw_cond=None):
+    def _build_embed_guidance_wrapper(self, model, liked_dir, strength, value_fn=None, raw_cond=None, ramp_fn=None):
         """Register a model_function_wrapper that nudges conditioning toward the
         liked quality direction at each denoising step. Uses value function gradient
         when available, falls back to the fixed liked direction otherwise."""
         old_wrapper = model.model_options.get("model_function_wrapper")
+        _ramp = ramp_fn or (lambda sigma: max(0.0, 1.0 - float(sigma) * 2.0))
         fixed_dir = torch.nn.functional.normalize(liked_dir.float(), dim=-1)
         resolve_dir = self._taste_direction_resolver(model, raw_cond, fixed_dir, "embed_guidance")
         vf_state = {}
@@ -4918,7 +4981,7 @@ class FunPackLTXAVSceneChainSampler:
                     sigma = float(ts.max().item()) if ts is not None else 1.0
                 except Exception:
                     sigma = 1.0
-                scale = max(0.0, 1.0 - sigma * 2.0)
+                scale = _ramp(sigma)
                 if scale > 0:
                     d = None
                     if _vf is not None:
@@ -4942,7 +5005,7 @@ class FunPackLTXAVSceneChainSampler:
         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_embed_wrapper, old_wrapper)
         return old_wrapper
 
-    def _build_score_slider_wrapper(self, model, liked_dir, eta, bad_dir=None, raw_cond=None):
+    def _build_score_slider_wrapper(self, model, liked_dir, eta, bad_dir=None, raw_cond=None, ramp_fn=None):
         """FreeSliders (arxiv 2511.00103) in score space, sourced from the learned taste.
 
         embed_guidance nudges the conditioning embedding once per step. FreeSliders
@@ -4968,6 +5031,7 @@ class FunPackLTXAVSceneChainSampler:
         the embed wrapper, so its nudge cancels in (eps_+ - eps_-) and only the slider
         axis remains, while eps_base still carries the embed steering."""
         old_wrapper = model.model_options.get("model_function_wrapper")
+        _ramp = ramp_fn or (lambda sigma: max(0.0, 1.0 - float(sigma) * 2.0))
         fixed_dir = torch.nn.functional.normalize(liked_dir.float(), dim=-1)
         bad_fixed = None
         if bad_dir is not None:
@@ -4989,7 +5053,7 @@ class FunPackLTXAVSceneChainSampler:
                 sigma = float(ts.max().item()) if ts is not None else 1.0
             except Exception:
                 sigma = 1.0
-            ramp = max(0.0, 1.0 - sigma * 2.0)  # base-only warmup at high sigma
+            ramp = _ramp(sigma)  # base-only warmup early in the schedule
             if cond is None or _eta == 0.0 or ramp <= 0.0:
                 return _call(apply_fn, args)
             try:
@@ -6516,6 +6580,9 @@ class FunPackLTXAVSceneChainSampler:
         # its time axis needs to know before it touches a tensor, because LTXAV and MiniMax
         # H3 disagree about which axis that is on the AUDIO stream and both are 4-D.
         self._is_h3 = self._set_stream_axes(model)
+        # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's
+        # own base grid; on LTX it stays the absolute-sigma gate it was validated with.
+        _steer_ramp = _make_steer_ramp(sigmas, self._is_h3)
         if self._is_h3:
             # H3 only generates on a 17k+5 pixel-frame grid. Empty MiniMax H3 AV Latent snaps
             # its own `length` up silently, so an off-grid scene length produces a template
@@ -6766,6 +6833,19 @@ class FunPackLTXAVSceneChainSampler:
             else:
                 print(f"[FunPackSceneChain] output_guidance: active ({_output_value_fn.n_trained} samples), "
                       f"strength={output_guidance_strength}")
+
+        # How much of the schedule the steering actually reaches. "active" alone hid the
+        # fact that a shift-heavy H3 schedule left these wrappers with almost no window.
+        if embed_guidance or score_slider or dynashift or output_guidance:
+            _cov = _steer_ramp_coverage(_steer_ramp, sigmas)
+            if _cov is not None:
+                _gated, _total, _peak = _cov
+                print(f"[FunPackSceneChain] steering window: {_gated} of {_total} steps "
+                      f"(peak gate {_peak:.2f})"
+                      + (" — read off the schedule's base grid" if self._is_h3 else ""))
+                if _gated == 0:
+                    print("[FunPackSceneChain] steering window: NOTHING will steer on this "
+                          "schedule — every rating-driven mechanism is gated off")
 
         # Phase timing + quantized-path census: "the matmuls got faster" and "the video
         # arrives sooner" are different claims — the report separates sampling, decode,
@@ -7107,23 +7187,26 @@ class FunPackLTXAVSceneChainSampler:
                 if embed_guidance and _scene_liked_dir is not None:
                     run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
                     self._build_embed_guidance_wrapper(model, _scene_liked_dir, embed_guidance_strength,
-                                                       value_fn=_value_fn, raw_cond=_raw_scene_cond)
+                                                       value_fn=_value_fn, raw_cond=_raw_scene_cond,
+                                                       ramp_fn=_steer_ramp)
                 if score_slider and _scene_liked_dir is not None:
                     _pole = "contrastive" if _bad_dir is not None else "symmetric"
                     run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
                     self._build_score_slider_wrapper(model, _scene_liked_dir, score_slider_strength,
-                                                     bad_dir=_bad_dir, raw_cond=_raw_scene_cond)
+                                                     bad_dir=_bad_dir, raw_cond=_raw_scene_cond,
+                                                     ramp_fn=_steer_ramp)
                 if dynashift and _dynashift_negatives:
                     run_mechanisms.append(
                         f"dynashift({len(_dynashift_negatives)}neg,{dynashift_strength},thr={dynashift_threshold})")
                     self._build_dynashift_wrapper(
                         model, _dynashift_negatives, dynashift_strength, dynashift_threshold,
-                        raw_cond=_raw_scene_cond)
+                        raw_cond=_raw_scene_cond, ramp_fn=_steer_ramp)
                 if output_guidance and _output_value_fn is not None:
                     # Installed outermost (after embed_guidance/score_slider/dynashift) so it
                     # corrects whatever prediction those already produced, not the raw base one.
                     run_mechanisms.append(f"output_guidance({output_guidance_strength})")
-                    self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength)
+                    self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength,
+                                                        ramp_fn=_steer_ramp)
                 # Per-scene temporal style (auto / pulse / rapid_start / rapid_end /
                 # rapid_start_end): layer a frame_rate wrapper on top of whatever is
                 # installed (e.g. embed guidance).
