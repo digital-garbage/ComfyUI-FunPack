@@ -920,3 +920,80 @@ def test_bypassing_a_connected_run_of_nodes_is_not_refused_by_its_own_members():
     assert not any("bypass" in b for b in report["blocking"]), report["blocking"]
     # both collapse away and Studio ends up on the loader itself
     assert graph["studio"]["inputs"]["model"] == ["slot_u", 0]
+
+
+# ── the default pipeline actually builds ──────────────────────────────────────
+# Seeding loaders is only worth anything if the graph they produce is complete. This runs
+# the real recipe through the real builder: what a user gets on a fresh project, minus the
+# model files they still have to pick.
+from movie_editor.backend import pipeline_wiring  # noqa: E402
+
+OI_DEFAULTS = dict(OI, **{
+    "FunPackDiffusionModelLoader": {
+        "input": {"required": {"model_name": [["m.safetensors"]],
+                               "weight_dtype": [["default", "fp8_e4m3fn"], {"default": "default"}]}},
+        "output": ["MODEL", "STRING"], "output_name": ["MODEL", "status"]},
+    "FunPackCLIPLoader": {
+        "input": {"required": {"clip_list": ["STRING", {"default": "[]", "funpack_list": {}}],
+                               "type": [["ltxv"], {"default": "ltxv"}]}},
+        "output": ["CLIP", "STRING"], "output_name": ["CLIP", "status"]},
+    "FunPackVAELoader": {
+        "input": {"required": {"vae_name": [["v.safetensors"]],
+                               "dtype": [["default", "bf16"], {"default": "default"}]}},
+        "output": ["VAE", "STRING"], "output_name": ["VAE", "status"]},
+    "LTXVEmptyLatentAudio": {
+        "input": {"required": {"frames_number": ["INT", {"default": 97}],
+                               "frame_rate": ["FLOAT,INT", {"default": 25.0, "widgetType": "FLOAT"}],
+                               "audio_vae": ["VAE", {}]}},
+        "output": ["LATENT"], "output_name": ["Latent"]},
+})
+
+
+def _seeded_models(family="ltxav"):
+    models = {"slots": [], "model_family": family}
+    pipeline_wiring.seed_default_pipeline(models, OI_DEFAULTS)
+    for slot in models["slots"]:            # the files the user picks; everything else is set
+        if slot["node_class"] == "FunPackDiffusionModelLoader":
+            slot["inputs"]["model_name"] = "m.safetensors"
+        if slot["node_class"] == "FunPackVAELoader":
+            slot["inputs"]["vae_name"] = "v.safetensors"
+    return models
+
+
+def test_a_freshly_seeded_pipeline_builds_with_nothing_left_to_wire():
+    """t2v: only the i2v anchor is unfed, and that comes from a scene's image, not a loader."""
+    _graph, report = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS)
+    assert report["blocking"] == []
+    assert len(report["unsatisfied"]) == 1
+    assert "source_image" in report["unsatisfied"][0]
+
+
+def test_a_freshly_seeded_pipeline_is_complete_for_i2v_too():
+    """With a scene image the builder materialises it as a LoadImage, which is the IMAGE
+    producer Studio's anchor was waiting for — so nothing is left over at all."""
+    _graph, report = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS,
+                                   media={"filename": "scene.png"})
+    assert report["blocking"] == []
+    assert report["unsatisfied"] == []
+
+
+def test_the_seeded_loaders_reach_the_core_ports_they_were_wired_to():
+    graph, _ = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS)
+    by_class = {n["class_type"]: nid for nid, n in graph.items()}
+    assert graph["studio"]["inputs"]["model"] == [by_class["FunPackDiffusionModelLoader"], 0]
+    assert graph["studio"]["inputs"]["clip"] == [by_class["FunPackCLIPLoader"], 0]
+    # two VAE loaders: the video one feeds the sampler, the audio one the audio decode
+    video_vae = graph["sampler"]["inputs"]["vae"]
+    audio_vae = graph["audiodec"]["inputs"]["audio_vae"]
+    assert graph[video_vae[0]]["class_type"] == "FunPackVAELoader"
+    assert graph[audio_vae[0]]["class_type"] == "FunPackVAELoader"
+    assert video_vae[0] != audio_vae[0]
+
+
+def test_the_seeded_audio_latent_follows_the_project_not_its_own_widgets():
+    graph, _ = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS)
+    audio = next(n for n in graph.values() if n["class_type"] == "LTXVEmptyLatentAudio")
+    assert audio["inputs"]["frames_number"] == ["frames", 0]
+    assert audio["inputs"]["frame_rate"] == ["fps", 0]
+    # and it takes the AUDIO vae, not whichever VAE auto-wire happened to reach first
+    assert audio["inputs"]["audio_vae"] == graph["audiodec"]["inputs"]["audio_vae"]

@@ -20,6 +20,7 @@
   let coreProducers = [];          // [{id,type,label}]
   let requirements = [];           // [{id,type,label,required,role_hint,hint}]
   let wiringRules = {};            // guided wiring rules from /pipeline-ports
+  let defaultSlots = [];           // what a project with no pipeline yet starts as
   let container = null;           // mounted content root inside the Settings window
   let linkMode = false;           // selecting inputs to bind into one shared control
   let linkSel = [];               // [{slotId, input, kind, choices, label}]
@@ -1200,6 +1201,13 @@
     }
     search.oninput = () => { listOpen = true; renderList(); };
 
+    // Opening "Add loader → Text encoder" on FunPack's own loader is the difference between
+    // choosing a file and choosing a node first. Any other node is still one search away.
+    function preferredClassFor(role) {
+      const recipe = defaultSlots.find((r) => r.role === role);
+      return recipe ? recipe.node_class : null;
+    }
+
     async function pick(cls) {
       curCand = specByClass[cls];
       if (!curCand) { try { curCand = await loadSpec(cls); } catch (_) { return; } }
@@ -1298,7 +1306,12 @@
 
     listBox.append(el("div", "ns-empty", "Loading nodes…"));
     (roleKey === "__any__" ? ensureAllNodes() : candidates(roleKey))
-      .then((list) => { curList = list || []; renderList(); })
+      .then((list) => {
+        curList = list || [];
+        const preferred = preferredClassFor(roleFinal);
+        if (preferred && curList.some((c) => c.class === preferred)) { pick(preferred); return; }
+        renderList();
+      })
       .catch((e) => {
         clear(listBox);
         listBox.append(el("div", "ns-empty", "Node list unavailable: " + (e && e.message ? e.message : e)));
@@ -2145,6 +2158,29 @@
     return add;
   }
 
+  // Recipes whose role nothing fills yet. A project made before FunPack had its own
+  // loaders — or one inherited from a global config — never gets seeded, so the offer has
+  // to be reachable by hand too. Only MISSING roles are ever added: an existing loader is
+  // someone's choice, and in guided mode a second producer on the same port would take it.
+  function missingDefaultLoaders() {
+    if (!pipelineLocked()) return [];
+    return defaultSlots.filter((r) => !(config.slots || []).some((s) => s.role === r.role));
+  }
+
+  async function addMissingDefaultLoaders() {
+    const missing = missingDefaultLoaders();
+    if (!missing.length) return;
+    for (const recipe of missing) {
+      const id = (config.slots || []).some((s) => s.id === recipe.id)
+        ? recipe.id + "_" + Math.random().toString(36).slice(2, 7) : recipe.id;
+      config.slots.push({ ...recipe, id, inputs: { ...recipe.inputs } });
+    }
+    reconcileOpenPortWiring();
+    await persistNow();
+    await prewarmSpecs();
+    render();
+  }
+
   function loaderSection(slots, v) {
     const sec = el("div", "node-group node-group-pinned");
     const head = el("div", "node-group-head");
@@ -2155,6 +2191,14 @@
       (n, s) => n + ((v.perSlot[s.id] || []).some((m) => m.level === "error") ? 1 : 0), 0);
     if (bad) title.append(el("span", "node-group-bad", `${bad} to fix`));
     head.append(title);
+    const missing = missingDefaultLoaders();
+    if (missing.length && !searchQ) {
+      const use = el("button", "btn ghost tiny", `Use FunPack loaders (${missing.length})`);
+      use.title = "Add FunPack's own loaders for the roles nothing fills yet, already wired "
+        + "to the pipeline. Loaders you have set up are left exactly as they are.";
+      use.onclick = addMissingDefaultLoaders;
+      head.append(use);
+    }
     sec.append(head);
     sec.append(el("div", "node-group-note", "Your model files. Pick them here — the rest of the pipeline wires itself."));
     const grid = _grid(slots, v);
@@ -2318,7 +2362,8 @@
       coreProducers = pp.core_producers || [];
       requirements = pp.requirements || [];
       wiringRules = pp.wiring || {};
-    } catch (_) { ports = []; coreProducers = []; requirements = []; wiringRules = {}; }
+      defaultSlots = pp.default_slots || [];
+    } catch (_) { ports = []; coreProducers = []; requirements = []; wiringRules = {}; defaultSlots = []; }
     reconcileOpenPortWiring();
     try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || []; } catch (_) { coreNodes = []; }
     await prewarmSpecs();

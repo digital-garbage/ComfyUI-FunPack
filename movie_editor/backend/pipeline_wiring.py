@@ -389,6 +389,113 @@ def validate_models_wiring(models: Any) -> list[str]:
 
 
 
+# ── the default pipeline ──────────────────────────────────────────────────────
+# A fresh project starts with FunPack's own loaders, already wired to the core ports it
+# needs, so setting up a model is choosing files and nothing else. Every one of these is an
+# ordinary slot afterwards: rename it, swap the node class, rewire it, delete it.
+#
+# (role, node class, label, input sources). Outputs are read from the live schema and wired
+# through DEFAULT_WIRES_BY_ROLE, the same table used when a node is added by hand.
+FUNPACK_DEFAULT_LOADERS: list[tuple[str, str, str, dict]] = [
+    ("unet",      "FunPackDiffusionModelLoader", "Diffusion model", {}),
+    ("clip",      "FunPackCLIPLoader",           "Text encoder",    {}),
+    ("video_vae", "FunPackVAELoader",            "Video VAE",       {}),
+    ("audio_vae", "FunPackVAELoader",            "Audio VAE",       {}),
+]
+
+# The rest of what a family needs before it can generate. Not loaders and not FunPack's, but
+# leaving them out would mean "the pipeline sets itself up" still ended in a required slot
+# the user has to find, add and wire by hand — which is the thing this is here to remove.
+# Sources name seeded slots by their fixed ids, and the project's own frames / fps
+# primitives, so the node follows the project instead of holding a second copy of its length.
+FAMILY_DEFAULT_EXTRAS: dict[str, list[tuple[str, str, str, dict]]] = {
+    "ltxav": [
+        ("audio_encoder", "LTXVEmptyLatentAudio", "Audio latent",
+         {"audio_vae": "out:fp_audio_vae:VAE",
+          "frames_number": "core:frames:0",
+          "frame_rate": "core:fps:0"}),
+    ],
+    "minimax_h3": [
+        # H3 emits both streams from one node, so this IS the latent the sampler starts from.
+        ("empty_latent", "EmptyMiniMaxH3LatentAV", "AV latent", {"length": "core:frames:0"}),
+    ],
+}
+
+
+def declared_widget_defaults(node_def: Optional[dict]) -> dict:
+    """A node's DECLARED widget defaults — no first-choice fallback.
+
+    `nodes.widget_inputs` fills a combo's default with its first option, which is right when
+    someone adds a node by hand and wrong here: it would pre-select an arbitrary model file
+    and make an unconfigured loader look configured. Only what the node actually declares is
+    seeded, so the file pickers stay empty and say so.
+    """
+    out = {}
+    inp = (node_def or {}).get("input") or {}
+    for group in ("required", "optional"):
+        for name, spec in (inp.get(group) or {}).items():
+            if not isinstance(spec, (list, tuple)) or not spec:
+                continue
+            opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+            if opts.get("forceInput") or "default" not in opts:
+                continue
+            out[name] = opts["default"]
+    return out
+
+
+def default_pipeline_slots(family: str = DEFAULT_FAMILY,
+                           object_info: Optional[dict] = None) -> list[dict]:
+    """Slot recipes for a project that has none yet, wired for `family`.
+
+    A loader with nothing to feed in this family is skipped rather than seeded as a node
+    wired to nowhere.
+    """
+    from .nodes import node_outputs  # lazy: nodes imports this module's siblings
+
+    family = family if family in FAMILY_WIRING else DEFAULT_FAMILY
+    wires_by_role = _default_wires(family)
+    out = []
+    for role, cls, label, sources in (FUNPACK_DEFAULT_LOADERS
+                                      + FAMILY_DEFAULT_EXTRAS.get(family, [])):
+        node_def = (object_info or {}).get(cls)
+        if node_def is None:
+            continue        # this ComfyUI does not have the node
+        role_wires = wires_by_role.get(role) or {}
+        # By output NAME first, then by type — the same rule the add-a-node path uses, and
+        # necessary because the tables are keyed by type while a node names its own outputs.
+        wires = {}
+        for o in node_outputs(node_def):
+            target = role_wires.get(o["name"]) or role_wires.get(o["type"])
+            if target:
+                wires[o["name"]] = [target]
+        if not wires:
+            continue        # nothing to feed in this family: not a node, just clutter
+        out.append({"id": f"fp_{role}", "role": role, "role_label": label,
+                    "node_class": cls, "inputs": declared_widget_defaults(node_def),
+                    "input_sources": dict(sources), "wires": wires})
+    return out
+
+
+def seed_default_pipeline(models: dict, object_info: Optional[dict] = None) -> dict:
+    """Give a pipeline config that has never been set up FunPack's own loaders.
+
+    Recorded with `defaults_seeded` so it happens exactly once: a pipeline someone emptied
+    on purpose stays empty, and so does one built around an imported workflow.
+    """
+    if not isinstance(models, dict) or models.get("defaults_seeded"):
+        return models
+    if models.get("slots") or models.get("workflow_import") or models.get("disable_core"):
+        models["defaults_seeded"] = True     # nothing to seed, and never seed it later
+        return models
+    if not isinstance(object_info, dict):
+        # No live schema means no way to tell whether FunPack's loaders are even installed,
+        # and no widget defaults to seed them with. Leave it unmarked and try again later.
+        return models
+    models["slots"] = default_pipeline_slots(family_of(models), object_info)
+    models["defaults_seeded"] = True
+    return models
+
+
 def wiring_rules_payload(family: str = DEFAULT_FAMILY) -> dict[str, Any]:
     """Static rules for the Models UI, for one model family."""
     family = family if family in FAMILY_WIRING else DEFAULT_FAMILY

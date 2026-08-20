@@ -213,3 +213,111 @@ def test_the_panel_filters_exactly_as_the_builder_validates():
         # and nothing internal leaks into it
         for ports in payload["type_fallback_ports"].values():
             assert not set(ports) & set(payload["guided_hidden_ports"])
+
+
+# ── the default pipeline ──────────────────────────────────────────────────────
+# Shipping FunPack's own loaders was pointless if a new project still started empty: the
+# stated goal is that setting up a model is choosing files and nothing else.
+OI_LOADERS = {
+    "FunPackDiffusionModelLoader": {"input": {"required": {
+        "model_name": [["a.safetensors", "b.safetensors"]],
+        "weight_dtype": [["default", "fp8_e4m3fn"], {"default": "default"}]}},
+        "output": ["MODEL"]},
+    "FunPackCLIPLoader": {"input": {"required": {
+        "clip_list": ["STRING", {"default": "[]", "funpack_list": {}}],
+        "type": [["ltxv", "minimax"], {"default": "ltxv"}]}},
+        "output": ["CLIP"]},
+    "FunPackVAELoader": {"input": {"required": {
+        "vae_name": [["v.safetensors"]],
+        "dtype": [["default", "bf16"], {"default": "default"}]}},
+        "output": ["VAE"]},
+}
+
+
+def test_a_fresh_pipeline_is_funpacks_own_loaders_already_wired():
+    slots = pipeline_wiring.default_pipeline_slots("ltxav", OI_LOADERS)
+    assert [s["role"] for s in slots] == ["unet", "clip", "video_vae", "audio_vae"]
+    wired = {s["role"]: list(s["wires"].values())[0][0] for s in slots}
+    assert wired["unet"] == "port:FunPackStudio.model"
+    assert wired["clip"] == "port:FunPackStudio.clip"
+    assert wired["video_vae"] == "port:FunPackLTXAVSceneChainSampler.vae"
+    assert wired["audio_vae"] == "port:LTXVAudioVAEDecode.audio_vae"
+
+
+def test_the_default_pipeline_follows_the_family():
+    """H3 decodes audio with core's node, so the audio VAE lands somewhere else entirely."""
+    slots = pipeline_wiring.default_pipeline_slots("minimax_h3", OI_LOADERS)
+    wired = {s["role"]: list(s["wires"].values())[0][0] for s in slots}
+    assert wired["audio_vae"] == "port:VAEDecodeAudio.vae"
+
+
+def test_seeded_loaders_carry_declared_defaults_but_no_model_file():
+    """Pre-selecting the first file would make an unconfigured loader look configured."""
+    slots = {s["role"]: s for s in pipeline_wiring.default_pipeline_slots("ltxav", OI_LOADERS)}
+    assert slots["unet"]["inputs"] == {"weight_dtype": "default"}
+    assert "model_name" not in slots["unet"]["inputs"]
+    assert slots["clip"]["inputs"] == {"clip_list": "[]", "type": "ltxv"}
+
+
+def test_loaders_this_comfyui_does_not_have_are_not_seeded():
+    assert pipeline_wiring.default_pipeline_slots("ltxav", {}) == []
+
+
+def test_seeding_happens_once_and_is_recorded():
+    models = {"slots": []}
+    pipeline_wiring.seed_default_pipeline(models, OI_LOADERS)
+    assert models["defaults_seeded"] is True and len(models["slots"]) == 4
+    models["slots"] = []
+    pipeline_wiring.seed_default_pipeline(models, OI_LOADERS)
+    assert models["slots"] == []          # emptied on purpose stays empty
+
+
+def test_an_existing_pipeline_is_never_replaced():
+    models = {"slots": [{"id": "mine", "role": "unet", "node_class": "UNETLoader"}]}
+    pipeline_wiring.seed_default_pipeline(models, OI_LOADERS)
+    assert [s["id"] for s in models["slots"]] == ["mine"]
+    assert models["defaults_seeded"] is True
+
+
+def test_an_imported_workflow_is_never_seeded_over():
+    models = {"slots": [], "workflow_import": {"name": "mine.json"}}
+    pipeline_wiring.seed_default_pipeline(models, OI_LOADERS)
+    assert models["slots"] == []
+
+
+def test_seeding_is_deferred_when_the_node_schema_is_unavailable():
+    """Marking it done without a schema would mean this project never gets loaders at all."""
+    models = {"slots": []}
+    pipeline_wiring.seed_default_pipeline(models, None)
+    assert "defaults_seeded" not in models
+    pipeline_wiring.seed_default_pipeline(models, OI_LOADERS)
+    assert len(models["slots"]) == 4
+
+
+OI_WITH_PLUMBING = dict(OI_LOADERS, **{
+    "LTXVEmptyLatentAudio": {"input": {"required": {
+        "frames_number": ["INT", {"default": 97}],
+        "frame_rate": ["FLOAT,INT", {"default": 25.0, "widgetType": "FLOAT"}],
+        "audio_vae": ["VAE", {}]}},
+        "output": ["LATENT"], "output_name": ["Latent"]},
+})
+
+
+def test_the_default_pipeline_is_complete_not_just_the_loaders():
+    """A required slot the user still has to find, add and wire by hand is the thing this
+    is here to remove — so the family's own plumbing is seeded with it."""
+    slots = {s["role"]: s for s in
+             pipeline_wiring.default_pipeline_slots("ltxav", OI_WITH_PLUMBING)}
+    assert "audio_encoder" in slots
+    audio = slots["audio_encoder"]
+    # wired by output NAME ("Latent"), while the rules table is keyed by type ("LATENT")
+    assert audio["wires"] == {"Latent": ["port:LTXVConcatAVLatent.audio_latent"]}
+    assert audio["input_sources"]["audio_vae"] == "out:fp_audio_vae:VAE"
+    # length and rate come from the project, not from a second copy inside the node
+    assert audio["input_sources"]["frames_number"] == "core:frames:0"
+    assert audio["input_sources"]["frame_rate"] == "core:fps:0"
+
+
+def test_plumbing_for_another_family_is_not_seeded():
+    slots = pipeline_wiring.default_pipeline_slots("minimax_h3", OI_WITH_PLUMBING)
+    assert "audio_encoder" not in {s["role"] for s in slots}

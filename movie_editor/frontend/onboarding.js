@@ -466,10 +466,26 @@
       render() {
         const box = el("div", "oo-step");
         const own = ctx.family === "__own__";
-        box.append(head("models", own ? "Wire your pipeline" : "Point it at your models",
+        box.append(head("models", own ? "Wire your pipeline" : "Choose your model files",
           own
             ? "Nothing is generated until a final IMAGE reaches the global video output."
-            : "Pick the checkpoint, text encoder and VAE files this model uses."));
+            : "The loaders are already in place and wired. All that is left is picking files."));
+
+        if (!own) {
+          const panel = el("div", "oo-panel");
+          panel.append(el("div", "oo-list-label", "Already wired — pick a file for each"));
+          const list = el("ul", "oo-list");
+          [["Diffusion model", "the model itself, plus how it is quantized and which attention backend it uses"],
+           ["Text encoder", "one file, or two for LTX-2.3's Gemma3 and its connector"],
+           ["Video VAE", "decodes the picture"],
+           ["Audio VAE", "decodes the sound"]].forEach(([name, why]) => {
+            const li = el("li", null, name);
+            li.append(el("span", "oo-list-sub", why));
+            list.append(li);
+          });
+          panel.append(list);
+          box.append(panel);
+        }
 
         const p = el("p", "oo-body");
         p.textContent = ctx.genType === "t2v"
@@ -478,7 +494,7 @@
         box.append(p);
 
         box.append(actions({
-          primary: "Set up models…",
+          primary: own ? "Set up models…" : "Choose files…",
           onPrimary: () => openPane("models"),
           secondary: "Continue",
           onSecondary: next,

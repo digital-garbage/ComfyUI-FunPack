@@ -2396,6 +2396,9 @@ if web is not None and PromptServer is not None:
             "core_producers": nodes.core_producers(oi),
             "requirements": nodes.pipeline_requirements(fam),
             "wiring": pipeline_wiring.wiring_rules_payload(fam),
+            # What a project with no pipeline yet should start as: FunPack's own loaders,
+            # already wired. Sent with the rules because it is derived from the same family.
+            "default_slots": pipeline_wiring.default_pipeline_slots(fam, oi) if oi else [],
         })
 
     @routes.get(UI_PREFIX + "/api/image-targets")
@@ -2554,7 +2557,20 @@ if web is not None and PromptServer is not None:
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}/models")
     async def _project_models_get(req):
-        return web.json_response(_project_models(_project_or_404(req.match_info["pid"])))
+        p = _project_or_404(req.match_info["pid"])
+        models = _project_models(p)
+        # First look at a pipeline that has never been set up: it becomes FunPack's own
+        # loaders, already wired. Seeded HERE rather than in the panel so it happens once,
+        # server-side, and never travels into the global default the way a save does.
+        if not models.get("defaults_seeded") and not models.get("slots"):
+            try:
+                oi = await bridge.object_info()
+            except Exception:
+                oi = None
+            if pipeline_wiring.seed_default_pipeline(models, oi).get("slots"):
+                p.models = models
+                projects.save(p)
+        return web.json_response(models)
 
     @routes.put(UI_PREFIX + "/api/projects/{pid}/models")
     async def _project_models_put(req):
@@ -2563,12 +2579,32 @@ if web is not None and PromptServer is not None:
         if not isinstance(body, dict):
             body = {"slots": []}
         body.setdefault("slots", [])
+        # A pipeline that has never been set up starts as FunPack's own loaders, already
+        # wired — the wizard's family step reaches here before the Models panel is ever
+        # opened, so seeding only in the panel would leave "Continue" with no pipeline.
+        seeded_now = False
+        if not body.get("defaults_seeded"):
+            oi = None
+            if not body.get("slots"):
+                try:
+                    oi = await bridge.object_info()
+                except Exception:
+                    oi = None
+            before = len(body.get("slots") or [])
+            pipeline_wiring.seed_default_pipeline(body, oi)
+            seeded_now = len(body.get("slots") or []) > before
         p.models = body
         projects.save(p)
         # Keep the global default in sync (it seeds new projects) — but never let a save that
         # simply omits `model_family` erase the one already recorded there. A caller that
         # means to change the family sends it; one that is only rearranging loaders does not,
         # and silently clearing it is how every later project ends up with no family at all.
+        #
+        # A SEED is not a user edit, and must not reach the global at all: opening a new
+        # project would otherwise replace the loaders someone configured — the very thing
+        # the global exists to hand on — with four empty ones.
+        if seeded_now:
+            return web.json_response(body)
         glob = dict(body)
         if not glob.get("model_family"):
             inherited = nodes.load_models().get("model_family")
