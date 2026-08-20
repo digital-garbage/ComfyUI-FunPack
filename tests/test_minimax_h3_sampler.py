@@ -824,3 +824,63 @@ def test_dynashift_weights_negatives_against_the_raw_prompt_not_the_refined_one(
             "c": {"c_crossattn": torch.randn(1, 12, HIDDEN)}}
     model.model_options["model_function_wrapper"](apply_fn, args)
     assert captured["ran"]
+
+
+class _RawSpaceValueFunction:
+    """A value function fitted on raw conditioning: it refuses anything else, the way a
+    [5120, 256] first layer refuses a 5376-wide tensor."""
+
+    def __init__(self):
+        self.seen = []
+
+    def gradient(self, conditioning):
+        self.seen.append(int(conditioning.shape[-1]))
+        if conditioning.shape[-1] != TEXT_DIM:
+            raise RuntimeError(
+                f"mat1 and mat2 shapes cannot be multiplied (1x{conditioning.shape[-1]} and {TEXT_DIM}x256)")
+        return torch.ones_like(conditioning)
+
+
+def _run_embed_wrapper_with_vf(model, raw_cond, cond, value_fn, steps=1):
+    node = FunPackLTXAVSceneChainSampler()
+    node._build_embed_guidance_wrapper(model, torch.randn(TEXT_DIM), 0.3,
+                                       value_fn=value_fn, raw_cond=raw_cond)
+    wrapper = model.model_options["model_function_wrapper"]
+    seen = {}
+
+    def apply_fn(x, t, **c):
+        seen["cond"] = c.get("c_crossattn")
+        return torch.zeros(1, 4)
+
+    for _ in range(steps):
+        wrapper(apply_fn, {"input": torch.zeros(1, 4), "timestep": torch.tensor([0.2]),
+                           "c": {"c_crossattn": cond}})
+    return seen
+
+
+def test_the_value_function_is_asked_for_a_gradient_in_the_space_it_was_fitted_in():
+    vf = _RawSpaceValueFunction()
+    cond = torch.randn(1, 12, HIDDEN)
+    seen = _run_embed_wrapper_with_vf(_h3ish_model(), torch.randn(1, 12, TEXT_DIM), cond, vf)
+    assert vf.seen == [TEXT_DIM]          # never handed the refined conditioning
+    assert not torch.equal(seen["cond"], cond)
+
+
+def test_the_value_function_gradient_is_taken_once_per_scene_not_once_per_step():
+    vf = _RawSpaceValueFunction()
+    _run_embed_wrapper_with_vf(_h3ish_model(), torch.randn(1, 12, TEXT_DIM),
+                               torch.randn(1, 12, HIDDEN), vf, steps=5)
+    assert len(vf.seen) == 1
+
+
+def test_an_unusable_value_function_falls_back_to_the_fixed_direction(capsys):
+    class Broken:
+        def gradient(self, conditioning):
+            raise RuntimeError("no")
+
+    cond = torch.randn(1, 12, HIDDEN)
+    seen = _run_embed_wrapper_with_vf(_h3ish_model(), torch.randn(1, 12, TEXT_DIM),
+                                      cond, Broken(), steps=3)
+    out = capsys.readouterr().out
+    assert out.count("value function gradient failed") == 1   # once per run, not per step
+    assert not torch.equal(seen["cond"], cond)                # fixed direction still steers

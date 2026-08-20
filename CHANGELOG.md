@@ -39,6 +39,10 @@
   carried into the consumed space through the model's own text preprocessor, once per
   scene. DynaShift's prompt-similarity weighting was affected too — it compared the raw
   banked prompt against the refined one and weighted every negative equally.
+  The value function had the same fault one layer down: fitted on raw conditioning, it was
+  handed the refined tensor and threw every step, so the run steered on the fixed direction
+  while the report claimed the value function was driving. It is now asked for its gradient
+  in the space it was fitted in, once per scene rather than once per step.
 
 - **A resolution-changing second pass no longer fails on MiniMax H3.** A keyframe pin is
   packed as condition rows, so its token count belongs to the grid it was encoded on, and

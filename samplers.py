@@ -4871,7 +4871,35 @@ class FunPackLTXAVSceneChainSampler:
         old_wrapper = model.model_options.get("model_function_wrapper")
         fixed_dir = torch.nn.functional.normalize(liked_dir.float(), dim=-1)
         resolve_dir = self._taste_direction_resolver(model, raw_cond, fixed_dir, "embed_guidance")
-        vf_noted = [False]
+        vf_state = {}
+
+        def resolve_vf(cond):
+            """Ask the value function for a gradient in the space it was FITTED in.
+
+            Its first layer is [raw_dim, 256], so handing it the refined conditioning the
+            DiT consumes is a matmul error, not a steering signal — the run then silently
+            fell back to the fixed direction while the report still claimed the value
+            function was driving. Take the gradient at the raw conditioning and carry the
+            answer across with the same bridge the fixed direction uses.
+
+            Cached: comfy builds the conds once per run, so within a scene this gradient is
+            the same every step — and identical across score_slider's +/- poles, which is
+            what makes the embed nudge cancel in (eps_+ - eps_-) as its docstring intends.
+            """
+            if "d" in vf_state:
+                return vf_state["d"]
+            vf_state["d"] = None
+            try:
+                source = raw_cond if isinstance(raw_cond, torch.Tensor) else cond
+                grad = value_fn.gradient(source)
+                unit = torch.nn.functional.normalize(grad.float(), dim=-1)
+                vf_state["d"] = self._direction_in_cond_space(model, raw_cond, unit, cond)
+                if vf_state["d"] is None:
+                    print("[FunPackSceneChain] embed_guidance: the value function gradient "
+                          "cannot be mapped onto this model's conditioning, using fixed direction")
+            except Exception as _e:
+                print(f"[FunPackSceneChain] embed_guidance: value function gradient failed ({_e}), using fixed direction")
+            return vf_state["d"]
 
         def _embed_wrapper(apply_fn, args, _ew=old_wrapper, _fixed=fixed_dir, _vf=value_fn, _s=strength):
             c = args.get("c") or {}
@@ -4886,15 +4914,9 @@ class FunPackLTXAVSceneChainSampler:
                 if scale > 0:
                     d = None
                     if _vf is not None:
-                        try:
-                            grad = _vf.gradient(cond)
-                            d = torch.nn.functional.normalize(grad.float(), dim=-1).to(cond.dtype)
-                        except Exception as _e:
-                            # Once per run: this fires on every step otherwise, and the
-                            # fixed-direction fallback below is the same each time.
-                            if not vf_noted[0]:
-                                vf_noted[0] = True
-                                print(f"[FunPackSceneChain] embed_guidance: value function gradient failed ({_e}), using fixed direction")
+                        _mapped_vf = resolve_vf(cond)
+                        if _mapped_vf is not None:
+                            d = _mapped_vf.to(cond.device, cond.dtype).expand_as(cond)
                     if d is None:
                         _mapped = resolve_dir(cond)
                         d = (_mapped.to(cond.device, cond.dtype).expand_as(cond)
