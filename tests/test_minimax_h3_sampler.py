@@ -884,3 +884,11 @@ def test_an_unusable_value_function_falls_back_to_the_fixed_direction(capsys):
     out = capsys.readouterr().out
     assert out.count("value function gradient failed") == 1   # once per run, not per step
     assert not torch.equal(seen["cond"], cond)                # fixed direction still steers
+
+
+def test_a_working_value_function_says_so_instead_of_steering_silently(capsys):
+    _run_embed_wrapper_with_vf(_h3ish_model(), torch.randn(1, 12, TEXT_DIM),
+                               torch.randn(1, 12, HIDDEN), _RawSpaceValueFunction(), steps=4)
+    out = capsys.readouterr().out
+    assert out.count("steering on the value function gradient") == 1
+    assert "5120 -> 5376" in out

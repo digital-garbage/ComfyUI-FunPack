@@ -4894,6 +4894,14 @@ class FunPackLTXAVSceneChainSampler:
                 grad = value_fn.gradient(source)
                 unit = torch.nn.functional.normalize(grad.float(), dim=-1)
                 vf_state["d"] = self._direction_in_cond_space(model, raw_cond, unit, cond)
+                if vf_state["d"] is not None:
+                    # Say so out loud: the fixed-direction fallback announces itself when it
+                    # lifts, so silence here reads as "nothing happened" rather than success.
+                    lifted = int(vf_state["d"].shape[-1]) != int(unit.shape[-1])
+                    print("[FunPackSceneChain] embed_guidance: steering on the value function "
+                          "gradient" + (f", lifted {int(unit.shape[-1])} -> "
+                                        f"{int(vf_state['d'].shape[-1])} through the model's own "
+                                        "text preprocessor" if lifted else ""))
                 if vf_state["d"] is None:
                     print("[FunPackSceneChain] embed_guidance: the value function gradient "
                           "cannot be mapped onto this model's conditioning, using fixed direction")
