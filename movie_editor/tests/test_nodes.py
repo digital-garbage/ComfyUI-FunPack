@@ -307,3 +307,13 @@ def test_an_input_the_node_calls_advanced_is_marked_as_such():
     cis = {ci["name"]: ci for ci in nodes.connection_inputs(nd)}
     assert cis["lora_stack"]["advanced"] is True
     assert "advanced" not in cis["clip"]
+
+
+def test_a_widget_the_node_calls_advanced_is_marked_as_such():
+    """Five validated SLA knobs must not sit between the user and the file picker."""
+    nd = {"input": {"optional": {
+        "sla_sparsity": ["FLOAT", {"default": 0.9, "advanced": True}],
+        "fp16_accumulation": ["BOOLEAN", {"default": False}]}}}
+    widgets = {w["name"]: w for w in nodes.widget_inputs(nd)}
+    assert widgets["sla_sparsity"]["advanced"] is True
+    assert "advanced" not in widgets["fp16_accumulation"]

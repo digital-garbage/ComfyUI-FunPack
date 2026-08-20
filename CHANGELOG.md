@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+- **SLA block-sparse attention for MiniMax H3**, as a value in the FunPack Diffusion Model
+  Loader's `attention` list rather than a node to wire. ComfyUI ships no sparse-attention
+  backend for H3, which is why lightx2v's SLA turbo LoRA gives no speedup on its own — the
+  LoRA is the adaptation to sparsity, not the acceleration. Roughly 3.7x the attention
+  throughput at 768p/15s. Six settings, folded under Advanced and validated at their
+  defaults; offered only where CUDA and Triton can run it, and ignored on any model that is
+  not H3. Kernel and block map vendored from LightX2V (Apache-2.0) via
+  ComfyUI-H3-SLA-Attention (MIT).
+
 ### Fixed
 - **Multi-scene chains work with a second pass again.** `second_pass_op="upscale_2x"` hands
   back a scene at twice the latent size, but every later scene is still built from the latent

@@ -354,6 +354,11 @@ def widget_inputs(node_def: dict) -> list[dict]:
             if opts.get("forceInput"):
                 continue
             field = {"name": name, "required": group == "required", "options": opts}
+            # A widget the node itself calls advanced: real, tweakable, and validated at
+            # its default, so the panel folds it away rather than putting five of them
+            # between the user and the file picker.
+            if opts.get("advanced"):
+                field["advanced"] = True
             # A MultiType widget ("FLOAT,INT") renders as its widget member, not the union.
             if isinstance(t, str):
                 t = widget_type_of(t, opts) or t

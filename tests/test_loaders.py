@@ -222,3 +222,11 @@ def test_the_lora_list_is_a_picker_not_a_table_of_dropdowns():
     lst = spec["required"]["lora_list"][1]["funpack_list"]
     assert lst["picker"] == "lora"                       # rows are picked from installed files
     assert spec["optional"]["lora_stack"][1]["advanced"] is True
+
+
+def test_the_sla_backend_is_offered_only_where_it_can_run():
+    """Same rule as the rest of the list: a backend this machine cannot run is not
+    offered, rather than listed and failing at generation."""
+    import sla_attention
+    choices = loaders.attention_choices()
+    assert (sla_attention.SLA_NAME in choices) is sla_attention.sla_available()

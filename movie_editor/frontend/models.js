@@ -838,6 +838,16 @@
 
     if (cand && cand.inputs.length) {
       const grid = el("div", "slot-fields");
+      // Widgets the node calls advanced are tweakable, but validated at their defaults —
+      // folded away so they do not sit between the user and the file picker.
+      const advWidgets = cand.inputs.filter((w) => w.advanced);
+      let advGrid = null, advWrap = null;
+      if (advWidgets.length) {
+        advWrap = el("details", "wire-advanced");
+        advWrap.append(el("summary", null, `Advanced · ${advWidgets.length}`));
+        advGrid = el("div", "slot-fields");
+        advWrap.append(advGrid);
+      }
       cand.inputs.forEach((spec) => {
         const lk = linkOf(slot.id, spec.name);
         const iw = incomingWidgetWire(slot, spec.name);
@@ -876,9 +886,10 @@
           // A list holds many values; there is no single control to expose to the editor.
           f.append(eyeButton(slot, spec));
         }
-        grid.append(f);
+        (spec.advanced ? advGrid : grid).append(f);
       });
       card.append(grid);
+      if (advWrap) card.append(advWrap);
     }
 
     // Wiring: each output -> one or more destinations.
