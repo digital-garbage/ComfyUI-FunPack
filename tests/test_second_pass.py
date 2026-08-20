@@ -322,3 +322,67 @@ def test_an_architecture_core_does_know_is_still_handed_over(monkeypatch):
             execute=lambda name: ("loaded",))))
     sd = {"blocks.0.block.0.conv.weight": object()}
     assert detailing._load_upsampler_via_core("hunyuan_sr.safetensors", sd) == "loaded"
+
+
+# ── the resample factor ───────────────────────────────────────────────────────
+
+class _ScalingUpsampler(torch.nn.Module):
+    """Stands in for H3's resizer: it takes a factor and reports the one it got."""
+
+    def __init__(self):
+        super().__init__()
+        self.seen = None
+        self.weight = torch.nn.Parameter(torch.zeros(1))
+
+    def funpack_latent_upscale(self, x, scale=2.0):
+        self.seen = float(scale)
+        h, w = int(round(x.shape[3] * scale / 2)) * 2, int(round(x.shape[4] * scale / 2)) * 2
+        return torch.nn.functional.interpolate(x, size=(x.shape[2], h, w), mode="nearest")
+
+
+class _FixedTwoX(torch.nn.Module):
+    """Stands in for Lightricks': 2x is the architecture, not a parameter."""
+
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        return torch.nn.functional.interpolate(
+            x, size=(x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest")
+
+
+def _latent(c=24, h=8, w=12):
+    return {"samples": torch.randn(1, c, 3, h, w)}
+
+
+def test_the_factor_reaches_an_upsampler_that_takes_one():
+    node = samplers.FunPackLTXAVSceneChainSampler()
+    up = _ScalingUpsampler()
+    out, note = node._second_pass_operate(_latent(), "upscale_2x", up, None, scale=1.5)
+    assert up.seen == 1.5
+    assert out["samples"].shape[-2:] == (12, 18)          # 8x12 -> 12x18, both even
+    assert "2.2x the pixels" in note
+
+
+def test_a_fixed_two_x_upsampler_says_it_ignored_the_factor(monkeypatch):
+    """Silently rounding 1.5 to 2 would make the knob a lie on LTX."""
+    node = samplers.FunPackLTXAVSceneChainSampler()
+    monkeypatch.setattr(detailing, "_per_channel_stats", lambda vae: None)
+    out, note = node._second_pass_operate(_latent(128), "upscale_2x", _FixedTwoX(), None, scale=1.5)
+    assert out["samples"].shape[-2:] == (16, 24)
+    assert "1.5x ignored" in note and "fixed at 2x" in note
+
+
+def test_sharpen_uses_the_factor_and_still_comes_back_to_size():
+    node = samplers.FunPackLTXAVSceneChainSampler()
+    up = _ScalingUpsampler()
+    out, note = node._second_pass_operate(_latent(), "sharpen", up, None, scale=3.0)
+    assert up.seen == 3.0
+    assert out["samples"].shape[-2:] == (8, 12)
+    assert "3x upsampler pass" in note
+
+
+def test_only_an_upsampler_that_takes_a_factor_is_asked_for_one():
+    assert detailing.upsampler_takes_a_scale(_ScalingUpsampler()) is True
+    assert detailing.upsampler_takes_a_scale(_FixedTwoX()) is False

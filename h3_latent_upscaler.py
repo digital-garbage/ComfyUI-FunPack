@@ -156,7 +156,14 @@ class H3LatentResizer3D(nn.Module):
                 f"{x.shape[1]}-channel")
         # Spatial only: H3's video latent is on a 5k+2 time grid and resampling it would
         # leave a frame count the VAE has no defined decode for.
-        target = (int(x.shape[2]), int(round(x.shape[3] * scale)), int(round(x.shape[4] * scale)))
+        #
+        # Latent H/W snap to even numbers: H3 patchifies 2x2, so an odd latent dimension is
+        # not a size the model can take at all. At scale 2.0 this is a no-op; it only bites
+        # on the in-between factors this net also supports.
+        def side(dim):
+            return max(2, int(round(dim * scale / 2.0)) * 2)
+
+        target = (int(x.shape[2]), side(x.shape[3]), side(x.shape[4]))
         out = self((x - mean) / std, scale=scale, target_size=target)
         return out * std + mean
 

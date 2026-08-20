@@ -25,6 +25,11 @@
   accepts. A carried latent tail is not conditioning on this model, so the seam matched
   while the rest of the shot knew nothing about the scene before it.
 
+- **A resample factor for the between-pass operation** (`second_pass_upscale`, 1.0-4.0).
+  Only upsamplers that take a factor honour it: MiniMax H3's resizer does, Lightricks' LTX
+  one is a fixed 2x network and reports that it ignored the value rather than rounding
+  quietly. Latent width and height snap to even, since a patchified model cannot take odd.
+
 ### Fixed
 - **Multi-scene chains work with a second pass again.** `second_pass_op="upscale_2x"` hands
   back a scene at twice the latent size, but every later scene is still built from the latent

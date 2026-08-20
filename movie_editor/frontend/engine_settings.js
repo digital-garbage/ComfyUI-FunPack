@@ -307,6 +307,9 @@
     { name: "cut_opening_frames", label: "Cut the opening (frames)", kind: "int", default: 0, min: 0, max: 512, step: 8,
       hint: "Trims this many frames off the FRONT of the finished clip, so an i2v render reads as t2v. The scene comes out shorter.",
       detail: "The anchor is generated at full strength, then this many frames are dropped from the FRONT of the finished clip, so an i2v render reads as t2v without weakening the anchor. Nothing is regrown: the scene comes out shorter and the audio is cropped to match. 8 removes only the anchor and is usually too little; 48 worked on a 768x768x305@30 chain. Skipped on continuation scenes and scenes carrying guides." },
+    { name: "second_pass_upscale", label: "Resample factor", kind: "float", min: 1.0, max: 4.0, step: 0.05, default: 2.0,
+      hint: "Cost is the SQUARE of this when upscaling — 2x is four times the pixels for pass 2, 4x is sixteen.",
+      detail: "Only upsamplers that take a factor honour it: the LTX one is a fixed 2x network and reports that it ignored the value; MiniMax H3's resizer takes anything from 1.0 to 4.0. On 'sharpen' it is how far up the latent goes before coming straight back, so it buys detail rather than resolution." },
     { name: "second_pass_op", label: "Between-pass operation", kind: "combo", choices: ["none", "sharpen", "upscale_2x"], default: "none",
       hint: "'sharpen' adds detail almost free; 'upscale_2x' doubles the output resolution at 3-5x the cost of pass 2.",
       detail: "Both need the LTX 2.3 latent upsampler (~1 GB, found or downloaded once); without it pass 2 still runs and the report says the operation was skipped. 'sharpen' resamples straight back to size — no video-model calls, and it cannot fix wrong structure. 'upscale_2x' keeps the 2x, so pass 2 costs 3-5x; the i2v anchor is upscaled with the clip and stays pinned, but guide keyframes are dropped for pass 2. Video only." },
@@ -697,6 +700,7 @@
     renderKnobList(g, st, ["second_pass_op"]);
     const si = st.project.sampler_inputs || {};
     if (si.second_pass_op && si.second_pass_op !== "none") {
+      renderKnobList(g, st, ["second_pass_upscale"]);
       // Both operations are one forward of the same trained latent upsampler segmented
       // detailing uses, so the model choice belongs here too — otherwise picking 'sharpen'
       // silently depends on a file the user was never shown.

@@ -2875,6 +2875,17 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "Sample each scene in TWO passes. Pass 1 runs the main sigmas schedule in full, exactly as written; pass 2 then runs the second_pass_sigmas schedule in full, exactly as written, starting from pass 1's finished clip. Nothing is cut short and nothing is derived — to make pass 1 shorter, shorten the main schedule. Total steps are simply the two schedules added up (a 9-step main plus a 4-step second pass is 13). Pass 1's finished latent is simply handed to pass 2 as its latent_image and the sampler noises it to the schedule's first sigma itself, exactly as any img2img does — there is no extra step in between. That first sigma is therefore the strength dial, and it is literal (CONST scaling: x = s*noise + (1-s)*picture): at 0.8 pass 2 starts from 80% fresh noise over 20% of the pass-1 picture and reworks the shot, looking soft if the schedule has few steps to resolve it; at 0.4 it is 40/60 and polishes; at 0.2 it is nearly pure detail work. Requires a second_pass_sigmas schedule; without one the pass is skipped with a note.",
                 }),
+                "second_pass_upscale": ("FLOAT", {
+                    "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.05,
+                    "tooltip": "How far the between-pass operation resamples the latent. Cost "
+                               "is the SQUARE of this on upscale: 2x is four times the pixels "
+                               "for pass 2, 4x is sixteen. Only upsamplers that take a factor "
+                               "honour it — Lightricks' LTX one is a fixed 2x network and says "
+                               "so in the scene report; MiniMax H3's resizer takes any factor "
+                               "in 1.0-4.0. On 'sharpen' it is how far up the latent goes "
+                               "before coming straight back, so it buys detail rather than "
+                               "resolution. Latent width and height snap to even numbers, "
+                               "because a patchified model cannot take an odd one."}),
                 "second_pass_op": (["none", "sharpen", "upscale_2x"], {
                     "default": "none",
                     "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half. The i2v pin SURVIVES it: the pinned frames are carried through the upsampler with everything else and the mask is scaled to the new grid, so pass 2 still holds the anchor — as the upscaled anchor rather than the encoded source image, which the scene report states. Guide keyframes do not survive, because they are token indices into the old grid; pass 1 uses them in full. MULTI-SCENE works with it: a scene finishes at 2x while every later scene is still built from the latent template at the original size, so everything that crosses a scene boundary (carried overlap frames, the anchor's continuation, the soft join, JoyAI memory, per-scene guide sources) is brought back to the template's grid on the way. Each scene still samples and OUTPUTS at 2x — only the carried material is resampled, and only downwards, which is the direction that survives it: those frames exist to say 'continue from here', which a resample preserves far better than invented detail would. Both ops use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official Lightricks one on first use). Works on any model family, not just LTX — what it needs is an upsampler whose latents are the same width as this model's, so on MiniMax H3 install an H3 latent upsampler and pick it here; 'auto' will not download the LTX file for a model it cannot fit, and a mismatch is reported as a skip with both channel counts rather than failing the render. Video stream only; audio is never reshaped.",
@@ -3760,7 +3771,7 @@ class FunPackLTXAVSceneChainSampler:
             return None, "second-pass schedule starts at 0 — there is nothing for it to denoise"
         return alt_sigmas, None
 
-    def _second_pass_operate(self, latent, op, upsampler, vae):
+    def _second_pass_operate(self, latent, op, upsampler, vae, scale=2.0):
         """Apply the chosen latent-space operation between the two passes.
 
         All of these are OPTIONS — "none" is the default and the whole feature is opt-in.
@@ -3806,17 +3817,26 @@ class FunPackLTXAVSceneChainSampler:
             return latent, (f"second_pass_op={op} skipped: the selected latent upsampler takes "
                             f"{want}-channel latents and this model's are {have}-channel — "
                             f"install an upsampler trained for this model")
+        # Lightricks' upsampler is a fixed 2x network — its final PixelShuffle decides that,
+        # not a parameter — so a factor it cannot honour is reported rather than silently
+        # rounded to 2x. H3's resizer interpolates to a requested size and takes any factor.
+        scale, fixed = float(scale), ""
+        if abs(scale - 2.0) > 1e-6 and not _d.upsampler_takes_a_scale(upsampler):
+            fixed = f", {scale:g}x ignored: this upsampler is fixed at 2x"
+            scale = 2.0
         try:
-            up = _d._run_upsampler(upsampler, video, vae)
+            up = _d._run_upsampler(upsampler, video, vae, scale=scale)
         except Exception as exc:  # noqa: BLE001
             return latent, f"second_pass_op={op} skipped: upsampler failed ({exc})"
         if op == "sharpen":
             tensors[0] = _d._downscale_to(up, h, w)
-            note = f"second_pass_op(sharpen: 2x upsampler pass, resampled back to {h}x{w})"
-        else:  # "upscale_2x"
+            note = (f"second_pass_op(sharpen: {scale:g}x upsampler pass, resampled back to "
+                    f"{h}x{w}{fixed})")
+        else:  # "upscale_2x" — the value is historical; the factor is the knob
             tensors[0] = up
-            note = (f"second_pass_op(upscale_2x: {h}x{w} -> {up.shape[-2]}x{up.shape[-1]} — "
-                    f"pass 2 runs at {(up.shape[-2] * up.shape[-1]) // max(1, h * w)}x the pixels)")
+            got_h, got_w = int(up.shape[-2]), int(up.shape[-1])
+            note = (f"second_pass_op(upscale: {h}x{w} -> {got_h}x{got_w} — pass 2 runs at "
+                    f"{(got_h * got_w) / max(1, h * w):.2g}x the pixels{fixed})")
         if self._is_nested(result.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
         else:
@@ -6301,6 +6321,7 @@ class FunPackLTXAVSceneChainSampler:
                plateau_cache=False, plateau_cache_threshold=0.975,
                taste_nearest_prompt=False,
                segmented_detailing=False, detail_targets="hands",
+               second_pass_upscale=2.0,
                detail_upsampler="None", detail_strength=1.0, detail_threshold=0.35,
                detail_max_area=0.35, detail_denoise=0.85, detail_mode="repair",
                context_windows=False, context_window_length=145, context_window_overlap=40,
@@ -7075,7 +7096,8 @@ class FunPackLTXAVSceneChainSampler:
                                       f"loaded: {_detail_disabled_reason} — the second pass "
                                       f"still runs, without the operation.")
                         _sp_state, _op_note = self._second_pass_operate(
-                            _sp_state, second_pass_op, _detail_upsampler_model, vae)
+                            _sp_state, second_pass_op, _detail_upsampler_model, vae,
+                            scale=second_pass_upscale)
                         if _op_note:
                             # "no upsampler could be loaded" on its own doesn't say WHY —
                             # missing huggingface_hub, a failed download, an unreadable file

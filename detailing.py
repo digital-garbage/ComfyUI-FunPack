@@ -468,7 +468,18 @@ def _per_channel_stats(vae):
     return getattr(getattr(vae, "first_stage_model", None), "per_channel_statistics", None)
 
 
-def _run_upsampler(upsampler, video_crop, vae, debug=False):
+def upsampler_takes_a_scale(upsampler):
+    """Whether this upsampler can be asked for a factor other than 2x.
+
+    Lightricks' is a fixed 2x network (its final PixelShuffle decides that, not a
+    parameter); H3's resizer interpolates to a requested size, so it takes any factor in
+    its trained range. Asking the wrong one for 1.5x would silently give 2x.
+    """
+    return callable(getattr(getattr(upsampler, "model", upsampler),
+                            "funpack_latent_upscale", None))
+
+
+def _run_upsampler(upsampler, video_crop, vae, debug=False, scale=2.0):
     """un_normalize -> LatentUpsampler(2x spatial) -> normalize, on the crop.
 
     Same recipe as comfy's LTXVLatentUpsampler node: the model was trained on
@@ -493,7 +504,7 @@ def _run_upsampler(upsampler, video_crop, vae, debug=False):
         if stats is not None:
             x = stats.un_normalize(x)
         with torch.no_grad():
-            x = own_norm(x, scale=2.0) if callable(own_norm) else module(x)
+            x = own_norm(x, scale=float(scale)) if callable(own_norm) else module(x)
         if stats is not None:
             x = stats.normalize(x)
     finally:
