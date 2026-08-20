@@ -416,11 +416,56 @@
     return cell;
   }
 
+  // Pick a file from what is installed, by name, with a filter — the alternative is a
+  // combo holding hundreds of LoRAs, where finding one means scrolling a dropdown.
+  function openChoicePicker(anchor, choices, taken, onPick) {
+    document.querySelectorAll(".mn-role-pop").forEach((n) => n.remove());
+    const pop = el("div", "mn-role-pop mn-pick-pop");
+    const search = el("input", "mn-pick-search");
+    search.type = "search";
+    search.placeholder = "Search…";
+    pop.append(search);
+    const list = el("div", "mn-pick-list");
+    pop.append(list);
+    const paint = () => {
+      clear(list);
+      const q = search.value.trim().toLowerCase();
+      const hits = choices.filter((c) => !q || String(c).toLowerCase().includes(q));
+      if (!hits.length) { list.append(el("div", "mn-pick-empty", "Nothing matches.")); return; }
+      hits.slice(0, 300).forEach((c) => {
+        const it = el("div", "mn-role-item", String(c));
+        if (taken.includes(c)) it.append(el("span", "mn-pick-used", "in use"));
+        it.onclick = () => { pop.remove(); onPick(c); };
+        list.append(it);
+      });
+    };
+    search.oninput = paint;
+    paint();
+
+    pop.style.visibility = "hidden";
+    document.body.append(pop);
+    const r = anchor.getBoundingClientRect();
+    const box = pop.getBoundingClientRect();
+    const gap = 6, edge = 8;
+    const below = r.bottom + gap;
+    pop.style.top = (below + box.height <= window.innerHeight - edge
+      ? below : Math.max(edge, r.top - gap - box.height)) + "px";
+    pop.style.left = Math.max(edge, Math.min(r.left, window.innerWidth - box.width - edge)) + "px";
+    pop.style.visibility = "";
+    search.focus();
+    const away = (e) => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener("mousedown", away, true); } };
+    document.addEventListener("mousedown", away, true);
+  }
+
   function listField(spec, value, onChange) {
     const meta = spec.list || {};
     const fields = (meta.fields || []).filter((f) => f && f.name);
     const rows = parseListValue(value != null ? value : spec.default);
-    const wrap = el("div", "field list-field");
+    // Picker mode: one field names a file and the rest are its settings, so the row reads
+    // "this LoRA, at this strength" instead of a table of dropdowns.
+    const pickField = meta.picker ? fields.find((f) => f.name === meta.picker) : null;
+    const restFields = pickField ? fields.filter((f) => f !== pickField) : fields;
+    const wrap = el("div", "field list-field" + (pickField ? " list-picker" : ""));
     wrap.append(el("span", "list-field-name", meta.item ? `${spec.name} · ${meta.item}s` : spec.name));
     const box = el("div", "list-rows");
     wrap.append(box);
@@ -431,7 +476,7 @@
     function draw() {
       clear(box);
       if (!rows.length) box.append(el("div", "list-empty", `No ${meta.item || "entries"} yet.`));
-      if (rows.length && fields.length > 1) {
+      if (rows.length && !pickField && fields.length > 1) {
         const head = el("div", "list-row list-head");
         head.append(el("span", "list-ord", ""));
         fields.forEach((f) => head.append(el("div", "list-cell", f.label || f.name)));
@@ -450,7 +495,16 @@
         down.onclick = () => { rows.splice(i + 1, 0, rows.splice(i, 1)[0]); commit(); draw(); };
         ord.append(up, down);
         r.append(ord);
-        fields.forEach((f) => r.append(listRowCell(f, row, commit)));
+        if (pickField) {
+          const name = el("button", "list-pick-name", String(row[pickField.name] || "Choose a file…"));
+          name.title = `${row[pickField.name] || "Nothing picked"} — click to change`;
+          name.onclick = (e) => openChoicePicker(e.currentTarget,
+            (pickField.choices || []).filter((c) => c !== "None"),
+            rows.map((r2) => r2[pickField.name]).filter(Boolean),
+            (chosen) => { row[pickField.name] = chosen; commit(); draw(); });
+          r.append(name);
+        }
+        restFields.forEach((f) => r.append(listRowCell(f, row, commit)));
         const rm = el("button", "btn ghost tiny wire-rm", "×");
         rm.title = `Remove this ${meta.item || "entry"}`;
         rm.onclick = () => { rows.splice(i, 1); commit(); draw(); };
@@ -460,10 +514,22 @@
       const max = meta.max_rows || 0;
       if (!max || rows.length < max) {
         const add = el("button", "btn ghost tiny wire-add", meta.add_label || "+ Add");
-        add.onclick = () => {
+        const blank = () => {
           const row = {};
           fields.forEach((f) => { if (f.default != null) row[f.name] = f.default; });
-          rows.push(row); commit(); draw();
+          return row;
+        };
+        add.onclick = (e) => {
+          if (!pickField) { rows.push(blank()); commit(); draw(); return; }
+          const choices = (pickField.choices || []).filter((c) => c !== "None");
+          if (!choices.length) return;
+          openChoicePicker(e.currentTarget, choices,
+            rows.map((r2) => r2[pickField.name]).filter(Boolean),
+            (chosen) => {
+              const row = blank();
+              row[pickField.name] = chosen;
+              rows.push(row); commit(); draw();
+            });
         };
         box.append(add);
       }
@@ -736,7 +802,16 @@
       slot.input_sources = slot.input_sources || {};
       const sbox = el("div", "wire-box");
       sbox.append(el("div", "wire-title", "Input sources"));
-      visibleConnectionInputs(slot, cand.connection_inputs).forEach((ci) => {
+      // An input the node calls advanced is folded away UNLESS something feeds it: a wire
+      // that exists has to stay visible, or the page would hide part of the pipeline.
+      const visible = visibleConnectionInputs(slot, cand.connection_inputs);
+      const advanced = visible.filter((ci) => ci.advanced && !inputIsFed(slot, ci.name));
+      let advBox = null;
+      if (advanced.length) {
+        advBox = el("details", "wire-advanced");
+        advBox.append(el("summary", null, `Advanced · ${advanced.length}`));
+      }
+      visible.forEach((ci) => {
         const row = el("div", "wire-row");
         const lbl = el("span", "wire-out", `${ci.display || ci.name} (${ci.type})`);
         if (ci.autogrow)
@@ -754,8 +829,9 @@
         }
         sel.onchange = async () => { _setInputSource(slot, ci.name, sel.value); await persist(); render(); };
         row.append(sel);
-        sbox.append(row);
+        (advanced.includes(ci) ? advBox : sbox).append(row);
       });
+      if (advBox) sbox.append(advBox);
       card.append(sbox);
     }
 

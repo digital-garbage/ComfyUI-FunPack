@@ -297,3 +297,13 @@ def test_a_list_input_is_a_widget_not_a_socket():
 def test_a_plain_string_widget_is_still_a_string():
     oi = {"N": {"input": {"required": {"text": ["STRING", {"default": "hi"}]}}, "output": []}}
     assert nodes.describe_node(oi, "N")["inputs"][0]["kind"] == "string"
+
+
+def test_an_input_the_node_calls_advanced_is_marked_as_such():
+    """The LoRA list is the way to add a LoRA; the trained stack must not read as the way in."""
+    nd = {"input": {"optional": {
+        "lora_stack": ["FP_LORA_STACK", {"advanced": True}],
+        "clip": ["CLIP", {}]}}}
+    cis = {ci["name"]: ci for ci in nodes.connection_inputs(nd)}
+    assert cis["lora_stack"]["advanced"] is True
+    assert "advanced" not in cis["clip"]

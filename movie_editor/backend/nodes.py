@@ -313,7 +313,12 @@ def connection_inputs(node_def: dict) -> list[dict]:
                 continue
             # V3 nodes can mark a required-group input as optional via the flag.
             is_required = group == "required" and not opts.get("optional", False)
-            out.append({"name": name, "type": _normalize_type(t), "required": is_required})
+            entry = {"name": name, "type": _normalize_type(t), "required": is_required}
+            # An input the node itself calls advanced is one the normal path never wires;
+            # the panel folds it away so the normal path stays the obvious one.
+            if opts.get("advanced"):
+                entry["advanced"] = True
+            out.append(entry)
     return out
 
 

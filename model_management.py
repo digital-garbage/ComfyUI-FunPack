@@ -200,8 +200,8 @@ def lora_row_fields():
 
 
 def lora_list_input(tooltip, allow_empty=False):
-    return list_widget("LoRA", lora_row_fields(), add_label="+ Add LoRA", tooltip=tooltip,
-                       allow_empty=allow_empty)
+    return list_widget("LoRA", lora_row_fields(), add_label="+ Add LoRA…", tooltip=tooltip,
+                       allow_empty=allow_empty, picker="lora")
 
 
 def stack_from_lora_list(value, per_block=False):
@@ -579,6 +579,9 @@ class FunPackLoraLoader:
             "optional": {
                 "clip": ("CLIP",),
                 "lora_stack": (LORA_STACK_TYPE, {
+                    # Advanced: LoRAs are chosen in the list above. The stack is for trained,
+                    # prompt-specific strengths, so it must not read as the way in.
+                    "advanced": True,
                     "tooltip": "Optional stack from FunPack Apply LoRA Weights, carrying "
                                "prompt-specific trained strengths. Its LoRAs are applied "
                                "first, then this node's own list."}),

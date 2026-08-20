@@ -31,7 +31,7 @@ def field(name, kind, *, label=None, choices=None, default=None, min=None, max=N
 
 
 def list_widget(item, fields, *, default=None, add_label=None, max_rows=0, tooltip=None,
-                allow_empty=False):
+                allow_empty=False, picker=None):
     """An INPUT_TYPES entry for a list input. Returns the ("STRING", {...}) tuple.
 
     `allow_empty` marks a list whose empty state is a working state — the node passes its
@@ -42,6 +42,11 @@ def list_widget(item, fields, *, default=None, add_label=None, max_rows=0, toolt
         spec["max_rows"] = int(max_rows)
     if allow_empty:
         spec["allow_empty"] = True
+    if picker:
+        # Rows are PICKED from this field's file list rather than typed into a table: the
+        # frontend shows a searchable list of what is installed, and the row is that file
+        # plus its settings. A table of combos is a spreadsheet; this is a picker.
+        spec["picker"] = picker
     opts = {
         "default": json.dumps(default or []),
         "multiline": False,

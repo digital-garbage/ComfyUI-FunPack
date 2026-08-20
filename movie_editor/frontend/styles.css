@@ -1527,6 +1527,31 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .list-ord > button:disabled { opacity: .3; cursor: default; }
 .list-empty { font-size: 12px; color: var(--faint); }
 
+/* picker mode: the file is the row's identity, its settings trail behind it */
+.list-picker .list-row { gap: 8px; }
+.list-pick-name { flex: 3 1 0; min-width: 0; text-align: left; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px; color: var(--text); background: var(--surface-raised-4);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+.list-pick-name:hover { border-color: var(--teal); }
+.list-picker .list-cell { flex: 0 0 96px; }
+
+.mn-pick-pop { min-width: 320px; max-width: min(520px, 90vw); }
+.mn-pick-search { width: 100%; margin-bottom: 6px; }
+.mn-pick-list { max-height: 46vh; overflow: auto; }
+.mn-pick-list .mn-role-item { display: flex; justify-content: space-between; gap: 10px;
+  font-family: var(--mono, ui-monospace, monospace); }
+.mn-pick-used { color: var(--faint); font-size: 10px; text-transform: uppercase;
+  letter-spacing: .04em; align-self: center; }
+.mn-pick-empty { padding: 6px 8px; font-size: 12px; color: var(--faint); }
+
+/* inputs a node calls advanced: present, but not in the way of the normal path */
+.wire-advanced { margin-top: 4px; }
+.wire-advanced > summary { font-size: 11px; color: var(--faint); cursor: pointer;
+  padding: 2px 0; list-style: none; }
+.wire-advanced > summary::before { content: "▸ "; }
+.wire-advanced[open] > summary::before { content: "▾ "; }
+
 .req-panel { margin-bottom: 18px; }
 .req-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .req-title { font-size: 11px; color: var(--teal); font-weight: 600; }

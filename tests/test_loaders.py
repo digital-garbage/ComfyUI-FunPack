@@ -215,3 +215,10 @@ def test_the_empty_lora_list_is_declared_a_working_state():
     """The Models panel flags an empty list as something to fix — except this one."""
     spec = mm.FunPackLoraLoader.INPUT_TYPES()
     assert spec["required"]["lora_list"][1]["funpack_list"]["allow_empty"] is True
+
+
+def test_the_lora_list_is_a_picker_not_a_table_of_dropdowns():
+    spec = mm.FunPackLoraLoader.INPUT_TYPES()
+    lst = spec["required"]["lora_list"][1]["funpack_list"]
+    assert lst["picker"] == "lora"                       # rows are picked from installed files
+    assert spec["optional"]["lora_stack"][1]["advanced"] is True
