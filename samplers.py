@@ -1035,6 +1035,20 @@ def _tag_scene_wrapper(wrapper, prev):
     return wrapper
 
 
+def _tag_funpack_hook(fn):
+    """Mark a forward hook as FunPack's, so the run-start sweep can remove one that leaked.
+
+    Anything installed on the shared diffusion model needs this: the sweep only removes
+    what it can prove is ours, so an untagged hook is one nothing will ever clean up.
+    """
+    try:
+        from .ltx_enhancements import _FUNPACK_HOOK_TAG
+    except ImportError:
+        from ltx_enhancements import _FUNPACK_HOOK_TAG
+    setattr(fn, _FUNPACK_HOOK_TAG, True)
+    return fn
+
+
 def _strip_funpack_scene_wrappers(model):
     """Unwind FunPack per-scene wrappers leaked by a previous interrupted/failed run.
     Walks the recorded prev-wrapper chain back to the first non-FunPack wrapper (or
@@ -5623,6 +5637,7 @@ class FunPackLTXAVSceneChainSampler:
                 return (output[0] * s,) + tuple(output[1:])
             return output * s
 
+        _tag_funpack_hook(_hook)
         handles = []
         for blk in blocks:
             sub = getattr(blk, "video_to_audio_attn", None)
@@ -6113,6 +6128,7 @@ class FunPackLTXAVSceneChainSampler:
             except Exception:
                 return args, kwargs
 
+        _tag_funpack_hook(_hook)
         handles = []
         for blk in blocks:
             sub = getattr(blk, "attn2", None)
@@ -6298,10 +6314,19 @@ class FunPackLTXAVSceneChainSampler:
         # build_enhancements, so stale hooks can't fire on an unenhanced generation.
         try:
             try:
-                from .ltx_enhancements import strip_funpack_block_hooks
+                from .ltx_enhancements import strip_funpack_block_hooks, count_module_hooks
             except ImportError:
-                from ltx_enhancements import strip_funpack_block_hooks
+                from ltx_enhancements import strip_funpack_block_hooks, count_module_hooks
             strip_funpack_block_hooks(model)
+            # Nothing of ours is installed yet at this point, so whatever is left is either a
+            # third-party hook or a leak this sweep cannot prove is ours. Printing the count
+            # every run makes the difference visible: a number that climbs run after run is
+            # the progressive-degradation bug, not a hunch.
+            _left, _mods = count_module_hooks(model)
+            if _left:
+                print(f"[FunPackSceneChain] hook census before sampling: {_left} hook(s) on "
+                      f"{_mods} module(s) — FunPack installs none until it samples, so a count "
+                      f"that grows every run means hooks are leaking")
         except Exception as _e:
             print(f"[FunPackLTXAVSceneChainSampler] hook strip failed: {_e}")
         # Same defense for per-scene model_function_wrappers: normally unwound in the

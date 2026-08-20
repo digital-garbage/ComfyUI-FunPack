@@ -1262,16 +1262,30 @@ def _funpack_locate_blocks(model):
     return None
 
 
+def funpack_diffusion_model(model):
+    """The shared nn.Module every ModelPatcher clone points at."""
+    return getattr(getattr(model, "model", None), "diffusion_model", None)
+
+
+def _hook_stores(module):
+    return (getattr(module, "_forward_hooks", None),
+            getattr(module, "_forward_pre_hooks", None))
+
+
 def strip_funpack_block_hooks(model):
-    """Remove forward / forward-pre hooks this module installed on the shared
-    diffusion blocks in a previous run. Idempotent; safe to call every run."""
-    bl = _funpack_locate_blocks(model)
-    if bl is None:
+    """Remove forward / forward-pre hooks FunPack installed on the shared diffusion model
+    in a previous run. Idempotent; safe to call every run.
+
+    Sweeps every submodule, not only the blocks: the v2a scale sits on each block's
+    `video_to_audio_attn` and bounded attention on its `attn2`, so a block-only sweep left
+    those to accumulate silently. Foreign hooks are never touched — only tagged ones.
+    """
+    diff = funpack_diffusion_model(model)
+    if diff is None:
         return 0
     removed = 0
-    for block in bl:
-        for store in (getattr(block, "_forward_hooks", None),
-                      getattr(block, "_forward_pre_hooks", None)):
+    for module in diff.modules():
+        for store in _hook_stores(module):
             if not store:
                 continue
             for hid in [hid for hid, fn in list(store.items())
@@ -1279,8 +1293,27 @@ def strip_funpack_block_hooks(model):
                 store.pop(hid, None)
                 removed += 1
     if removed:
-        print(f"[FunPackEnhancements] Stripped {removed} leaked block hook(s) from a previous run")
+        print(f"[FunPackEnhancements] Stripped {removed} leaked hook(s) from a previous run")
     return removed
+
+
+def count_module_hooks(model):
+    """(hooks, modules) currently installed anywhere under the shared diffusion model.
+
+    Read at the start of a run, when FunPack has installed nothing yet, this should be 0.
+    A number that climbs generation after generation IS the progressive-corruption bug —
+    each leftover hook keeps rewriting activations with a previous run's state.
+    """
+    diff = funpack_diffusion_model(model)
+    if diff is None:
+        return 0, 0
+    hooks = modules = 0
+    for module in diff.modules():
+        n = sum(len(store) for store in _hook_stores(module) if store)
+        if n:
+            hooks += n
+            modules += 1
+    return hooks, modules
 
 
 # ---------------------------------------------------------------------------
