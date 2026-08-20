@@ -1294,6 +1294,7 @@
           _setWireTarget(slot, o, "", t); // mirror node: targets onto the destination's input source
         });
         Object.entries(draft.input_sources).forEach(([inp, v]) => { if (v) _setInputSource(slot, inp, v); });
+        feedMatchingInputs(slot);
         reconcileOpenPortWiring();
         await persist();
         closeSetup();
@@ -2199,6 +2200,29 @@
       const out = ((specFor(producer) || {}).outputs || []).find((o) => o.name === m[2]);
       if (out && outTypes.has(out.type))
         (producer.wires = producer.wires || {})[m[2]] = [`node:${slot.id}:${input}`];
+    });
+  }
+
+  // A role whose output more than one node needs, and the input name each of them uses.
+  // The audio VAE is the case that bites: it decodes the sound AND encodes the empty audio
+  // latent, so wiring it to one of the two leaves the pipeline unable to generate — and
+  // with two VAE loaders present neither input can auto-resolve by type, so nothing filled
+  // the gap and nothing said which node was still waiting.
+  const ROLE_EXTRA_INPUTS = { audio_vae: ["audio_vae"], video_vae: ["vae"] };
+
+  function feedMatchingInputs(slot) {
+    const names = ROLE_EXTRA_INPUTS[slot.role];
+    if (!names) return;
+    const out = ((specFor(slot) || {}).outputs || [])[0];
+    if (!out) return;
+    (config.slots || []).forEach((other) => {
+      if (other.id === slot.id) return;
+      ((specFor(other) || {}).connection_inputs || []).forEach((ci) => {
+        if (!names.includes(ci.name) || !typeAccepts(ci.type, out.type)) return;
+        const cur = (other.input_sources || {})[ci.name];
+        if (cur && cur !== "auto") return;
+        _setInputSource(other, ci.name, `out:${slot.id}:${out.name}`);
+      });
     });
   }
 

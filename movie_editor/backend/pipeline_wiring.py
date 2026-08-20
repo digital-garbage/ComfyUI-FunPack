@@ -7,6 +7,8 @@ legacy free rewiring behaviour.
 """
 from __future__ import annotations
 
+import json
+
 from typing import Any, Optional
 
 # port id (NodeClass.input) allowed for each model role + output type.
@@ -532,6 +534,155 @@ def seed_default_pipeline(models: dict, object_info: Optional[dict] = None) -> d
     models["slots"] = default_pipeline_slots(family_of(models), object_info)
     models["defaults_seeded"] = True
     return models
+
+
+# Where a seeded loader's file lives, and which widget names on ANOTHER pipeline's node
+# hold the same file. An imported workflow uses whatever loader its author picked, so the
+# only reliable bridge between the two is the file name itself.
+SEEDED_FILE_INPUTS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "FunPackDiffusionModelLoader": ("model_name", ("model_name", "unet_name", "ckpt_name")),
+    "FunPackVAELoader": ("vae_name", ("vae_name",)),
+}
+
+
+def _combo_choices(node_def: Optional[dict], input_name: str) -> Optional[list]:
+    inp = (node_def or {}).get("input") or {}
+    for group in ("required", "optional"):
+        spec = (inp.get(group) or {}).get(input_name)
+        if isinstance(spec, (list, tuple)) and spec and isinstance(spec[0], list):
+            return spec[0]
+    return None
+
+
+def is_workflow_import(models: Optional[dict]) -> bool:
+    """A pipeline built from someone's exported graph rather than from FunPack's loaders."""
+    models = models if isinstance(models, dict) else {}
+    return bool(models.get("workflow_import") or models.get("disable_core"))
+
+
+def _file_input_names(cls: str) -> tuple[str, ...]:
+    if cls == "FunPackCLIPLoader":
+        return ("clip_name",)          # matched by prefix: clip_name, clip_name1, clip_name2…
+    return SEEDED_FILE_INPUTS.get(cls, (None, ()))[1]
+
+
+def _slot_picks(slot: dict, cls: str) -> list[str]:
+    """The file names a slot has picked, in widget-name order."""
+    names = _file_input_names(cls)
+    out = []
+    for key in sorted((slot.get("inputs") or {}).keys()):
+        value = (slot.get("inputs") or {})[key]
+        if not isinstance(value, str) or not value:
+            continue
+        if key.startswith(names[0]) if cls == "FunPackCLIPLoader" else key in names:
+            out.append(value)
+    return out
+
+
+def _donor_for(slot: dict, source_slots: list[dict]) -> Optional[dict]:
+    """The old slot that held the same file as this seeded loader.
+
+    Role first — but an imported workflow records every node as `custom`, so the fallbacks
+    matter more than the happy path: a node wired to the same core port is the same link in
+    the pipeline, and failing that, a file input only one node in the whole graph has can
+    only be that one. Anything ambiguous is left for the user rather than guessed at.
+    """
+    cls = slot.get("node_class")
+    role = slot.get("role")
+    candidates = [d for d in source_slots if _slot_picks(d, cls)]
+    if not candidates:
+        return None
+    by_role = [d for d in candidates if role and d.get("role") == role]
+    if len(by_role) == 1:
+        return by_role[0]
+    targets = {t for wires in (slot.get("wires") or {}).values() for t in (wires or [])}
+    if targets:
+        by_port = [d for d in candidates
+                   if targets & {t for w in (d.get("wires") or {}).values() for t in (w or [])}]
+        if len(by_port) == 1:
+            return by_port[0]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def carry_over_model_files(slots: list[dict], source: Optional[dict],
+                           object_info: Optional[dict] = None) -> int:
+    """Move the FILES an old pipeline had picked onto freshly seeded loaders.
+
+    The point of a new project inheriting anything at all is not having to find the same
+    files again. A name the installed node does not offer is skipped rather than written,
+    so a stale pick cannot make an empty loader look configured.
+    """
+    source_slots = (source or {}).get("slots") or []
+    carried = 0
+    for slot in slots:
+        cls = slot.get("node_class")
+        if cls != "FunPackCLIPLoader" and cls not in SEEDED_FILE_INPUTS:
+            continue
+        donor = _donor_for(slot, source_slots)
+        if donor is None:
+            continue
+        picks = _slot_picks(donor, cls)
+        node_def = (object_info or {}).get(cls)
+        if cls == "FunPackCLIPLoader":
+            choices = _combo_choices(node_def, "clip_list") or []
+            rows = [{"clip_name": n} for n in picks if not choices or n in choices]
+            if rows:
+                slot.setdefault("inputs", {})["clip_list"] = json.dumps(rows)
+                carried += len(rows)
+            continue
+        target = SEEDED_FILE_INPUTS[cls][0]
+        choices = _combo_choices(node_def, target)
+        pick = next((n for n in picks if not choices or n in choices), None)
+        if pick:
+            slot.setdefault("inputs", {})[target] = pick
+            carried += 1
+    return carried
+
+
+def is_seeded_pipeline(models: Optional[dict]) -> bool:
+    """True when the pipeline is still exactly what seeding produced — no node the user
+    added, so rebuilding it for another family throws away nothing of theirs."""
+    slots = (models or {}).get("slots") or []
+    seeded_ids = {f"fp_{role}" for role, _c, _l, _s in FUNPACK_DEFAULT_LOADERS}
+    for extras in FAMILY_DEFAULT_EXTRAS.values():
+        seeded_ids |= {f"fp_{role}" for role, _c, _l, _s in extras}
+    return bool(slots) and all(s.get("id") in seeded_ids for s in slots)
+
+
+def reseed_for_family(models: dict, object_info: Optional[dict] = None) -> bool:
+    """Rebuild an untouched seeded pipeline for the family it now says it is.
+
+    Answering "MiniMax H3" and being handed LTX's nodes is the setup answering back with
+    something the user did not choose. Only ever runs on a pipeline nobody has edited.
+    """
+    if not isinstance(object_info, dict) or not is_seeded_pipeline(models):
+        return False
+    slots = default_pipeline_slots(family_of(models), object_info)
+    if not slots:
+        return False
+    carry_over_model_files(slots, models, object_info)
+    models["slots"] = slots
+    return True
+
+
+def new_project_models(glob: Optional[dict], object_info: Optional[dict] = None) -> dict:
+    """The pipeline a NEW project starts with.
+
+    A configured pipeline IS the template — picking the same files in every project is the
+    thing the global default exists to prevent. An IMPORTED WORKFLOW is not: it is one
+    project's graph, and copying it hands every later project a pile of third-party loaders
+    to understand instead of FunPack's four. The files it picked come along; the graph does
+    not.
+    """
+    glob = glob if isinstance(glob, dict) else {}
+    if not is_workflow_import(glob):
+        return dict(glob)
+    carried = {k: glob[k] for k in ("model_family", "full_control") if glob.get(k)}
+    carried["slots"] = []
+    seed_default_pipeline(carried, object_info)
+    if carried.get("slots"):
+        carry_over_model_files(carried["slots"], glob, object_info)
+    return carried
 
 
 def wiring_rules_payload(family: str = DEFAULT_FAMILY) -> dict[str, Any]:

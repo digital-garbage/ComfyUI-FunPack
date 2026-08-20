@@ -1,4 +1,5 @@
 """Tests for guided vs full-control pipeline wiring rules."""
+import json
 import sys
 from pathlib import Path
 
@@ -357,3 +358,112 @@ def test_the_default_pipeline_is_complete_not_just_the_loaders():
 def test_plumbing_for_another_family_is_not_seeded():
     slots = pipeline_wiring.default_pipeline_slots("minimax_h3", OI_WITH_PLUMBING)
     assert "audio_encoder" not in {s["role"] for s in slots}
+
+
+# ── what a NEW project starts from ────────────────────────────────────────────
+
+IMPORTED_GLOBAL = {
+    "model_family": "ltxav",
+    "workflow_import": {"name": "PinkCherry.json"},
+    "disable_core": False,
+    "slots": [
+        {"id": "w1", "role": "custom", "node_class": "DiffusionModelLoaderKJ",
+         "inputs": {"model_name": "LTX25dist.safetensors", "quantization": "fp8"},
+         "wires": {"MODEL": ["node:w2:model"]}},
+        {"id": "w2", "role": "custom", "node_class": "LTX2LoraLoaderAdvanced",
+         "inputs": {"lora_name": "mistic.safetensors"}, "wires": {"MODEL": ["node:w3:model"]}},
+        {"id": "w4", "role": "custom", "node_class": "CLIPLoader",
+         "inputs": {"clip_name": "gemma4-12b.safetensors"},
+         "wires": {"CLIP": ["port:FunPackStudio.clip"]}},
+        {"id": "w5", "role": "custom", "node_class": "VAELoader",
+         "inputs": {"vae_name": "ltx-2.5-video-vae-bf16.safetensors"},
+         "wires": {"VAE": ["port:FunPackLTXAVSceneChainSampler.vae"]}},
+        {"id": "w6", "role": "custom", "node_class": "VAELoader",
+         "inputs": {"vae_name": "ltx-2.5-audio-vae-bf16.safetensors"},
+         "wires": {"VAE": ["port:LTXVAudioVAEDecode.audio_vae"]}},
+    ],
+}
+
+OI_FILES = dict(OI_LOADERS, **{
+    "FunPackDiffusionModelLoader": {"input": {"required": {
+        "model_name": [["LTX25dist.safetensors", "other.safetensors"]],
+        "weight_dtype": [["default"], {"default": "default"}]}}, "output": ["MODEL"]},
+    "FunPackCLIPLoader": {"input": {"required": {
+        "clip_list": ["STRING", {"default": "[]",
+                                 "funpack_list": {}, }],
+        "type": [["ltxv"], {"default": "ltxv"}]}}, "output": ["CLIP"]},
+    "FunPackVAELoader": {"input": {"required": {
+        "vae_name": [["ltx-2.5-video-vae-bf16.safetensors",
+                      "ltx-2.5-audio-vae-bf16.safetensors"]],
+        "dtype": [["default"], {"default": "default"}]}}, "output": ["VAE"]},
+})
+
+
+def test_an_imported_workflow_is_not_the_template_for_every_later_project():
+    """It is ONE project's graph. Copying it starts a fresh setup with a pile of
+    third-party loaders to understand — the thing FunPack's own loaders remove."""
+    fresh = pipeline_wiring.new_project_models(IMPORTED_GLOBAL, OI_FILES)
+    assert "workflow_import" not in fresh
+    assert [s["node_class"] for s in fresh["slots"]] == [
+        "FunPackDiffusionModelLoader", "FunPackLoraLoader", "FunPackCLIPLoader",
+        "FunPackVAELoader", "FunPackVAELoader"]
+    assert fresh["model_family"] == "ltxav"      # what IS reusable comes along
+
+
+def test_the_files_the_old_pipeline_had_picked_come_along():
+    """Not having to find the same files again is the only reason to inherit anything."""
+    slots = {s["id"]: s for s in pipeline_wiring.new_project_models(IMPORTED_GLOBAL, OI_FILES)["slots"]}
+    assert slots["fp_unet"]["inputs"]["model_name"] == "LTX25dist.safetensors"
+    assert slots["fp_video_vae"]["inputs"]["vae_name"] == "ltx-2.5-video-vae-bf16.safetensors"
+    assert slots["fp_audio_vae"]["inputs"]["vae_name"] == "ltx-2.5-audio-vae-bf16.safetensors"
+    assert json.loads(slots["fp_clip"]["inputs"]["clip_list"]) == [
+        {"clip_name": "gemma4-12b.safetensors"}]
+
+
+def test_a_file_this_comfyui_does_not_have_is_not_carried_over():
+    """Writing a stale pick would make an unconfigured loader look configured."""
+    source = {"slots": [{"id": "w1", "role": "unet", "node_class": "UNETLoader",
+                         "inputs": {"unet_name": "gone.safetensors"}}]}
+    slots = pipeline_wiring.default_pipeline_slots("ltxav", OI_FILES)
+    assert pipeline_wiring.carry_over_model_files(slots, source, OI_FILES) == 0
+    assert "model_name" not in {s["id"]: s for s in slots}["fp_unet"]["inputs"]
+
+
+def test_an_ambiguous_donor_is_left_for_the_user_to_pick():
+    """Two VAEs wired to nothing recognisable: guessing which is the audio one is worse
+    than an empty picker that says it is empty."""
+    source = {"slots": [
+        {"id": "a", "role": "custom", "node_class": "VAELoader",
+         "inputs": {"vae_name": "ltx-2.5-video-vae-bf16.safetensors"}},
+        {"id": "b", "role": "custom", "node_class": "VAELoader",
+         "inputs": {"vae_name": "ltx-2.5-audio-vae-bf16.safetensors"}}]}
+    slots = pipeline_wiring.default_pipeline_slots("ltxav", OI_FILES)
+    pipeline_wiring.carry_over_model_files(slots, source, OI_FILES)
+    for slot in slots:
+        if slot["node_class"] == "FunPackVAELoader":
+            assert "vae_name" not in slot["inputs"]
+
+
+def test_a_configured_funpack_pipeline_is_still_the_template():
+    glob = {"model_family": "ltxav",
+            "slots": pipeline_wiring.default_pipeline_slots("ltxav", OI_FILES)}
+    assert pipeline_wiring.new_project_models(glob, OI_FILES) == glob
+
+
+def test_an_untouched_pipeline_follows_the_family_the_user_picked():
+    """Answering "MiniMax H3" and being handed LTX's nodes is the setup contradicting
+    the user."""
+    models = pipeline_wiring.new_project_models(IMPORTED_GLOBAL, OI_FILES)
+    models["model_family"] = "minimax_h3"
+    assert pipeline_wiring.reseed_for_family(models, OI_FILES) is True
+    audio = {s["id"]: s for s in models["slots"]}["fp_audio_vae"]
+    assert audio["wires"] == {"VAE": ["port:VAEDecodeAudio.vae"]}
+    assert audio["inputs"]["vae_name"] == "ltx-2.5-audio-vae-bf16.safetensors"  # kept
+
+
+def test_a_pipeline_the_user_edited_is_never_rebuilt_under_them():
+    models = pipeline_wiring.new_project_models(IMPORTED_GLOBAL, OI_FILES)
+    models["slots"].append({"id": "mine", "role": "custom", "node_class": "VAELoader"})
+    models["model_family"] = "minimax_h3"
+    assert pipeline_wiring.reseed_for_family(models, OI_FILES) is False
+    assert any(s["id"] == "mine" for s in models["slots"])

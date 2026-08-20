@@ -1332,7 +1332,15 @@ if web is not None and PromptServer is not None:
         # projects, so copy it whole and let the per-key rules below decide the rest.
         glob = nodes.load_models()
         if isinstance(glob, dict) and glob:
-            p.models = glob
+            try:
+                oi = await bridge.object_info()
+            except Exception:
+                oi = None
+            # ...except when the global is an IMPORTED WORKFLOW. That is one project's
+            # graph, not a template: copying it starts every new project with a pile of
+            # third-party loaders to wire, which is precisely what FunPack's own loaders
+            # exist to remove. The files it picked are carried over; the graph is not.
+            p.models = pipeline_wiring.new_project_models(glob, oi)
             projects.save(p)
         return web.json_response(p.to_dict())
 
@@ -2593,6 +2601,17 @@ if web is not None and PromptServer is not None:
             before = len(body.get("slots") or [])
             pipeline_wiring.seed_default_pipeline(body, oi)
             seeded_now = len(body.get("slots") or []) > before
+        # The family step can land here after seeding, and a pipeline nobody has touched
+        # must follow the answer: being handed LTX's nodes after choosing H3 is the setup
+        # contradicting the user. Only an untouched seed is rebuilt.
+        elif body.get("model_family") != (getattr(p, "models", None) or {}).get("model_family") \
+                and pipeline_wiring.is_seeded_pipeline(body):
+            try:
+                oi = await bridge.object_info()
+            except Exception:
+                oi = None
+            if pipeline_wiring.reseed_for_family(body, oi):
+                seeded_now = True
         p.models = body
         projects.save(p)
         # Keep the global default in sync (it seeds new projects) — but never let a save that
