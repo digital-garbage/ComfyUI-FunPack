@@ -1650,8 +1650,25 @@
     if (link.source === "editor") {
       const srcLbl = (EDITOR_SOURCES.find((s) => s.key === link.editor_key) || {}).label || link.editor_key;
       const isText = ["prompt", "negative_prompt", "anchor", "postfix", "full_prompt"].includes(link.editor_key);
-      card.append(el("div", "link-bound", `Value comes from ${srcLbl} at generate — the fields below are ignored.`
-        + (isText ? " Shortcuts and $variables are expanded first, so the node encodes the same text Studio would." : "")));
+      // "the same text Studio would" is only true of full_prompt. Studio appends the postfix
+      // to every scene itself, so a node linked to the global prompt encodes strictly less --
+      // silently, and the postfix is where audio and style directions usually live.
+      let note = "";
+      if (isText) {
+        note = " Shortcuts and $variables are expanded first";
+        if (link.editor_key === "full_prompt") {
+          note += ", so the node encodes the same text Studio would.";
+        } else if (link.editor_key === "prompt") {
+          const pj = window.Store?.get().project || {};
+          const hasPostfix = pj.postfix_enabled !== false && String(pj.postfix || "").trim();
+          note += hasPostfix
+            ? ". The postfix is NOT included — Studio appends it to every scene. Pick Project · Prompt + postfix to match."
+            : ".";
+        } else {
+          note += ".";
+        }
+      }
+      card.append(el("div", "link-bound", `Value comes from ${srcLbl} at generate — the fields below are ignored.` + note));
     } else {
       const spec = { name: "shared value", kind: link.kind, choices: link.choices, required: false };
       const vf = widgetField(spec, link.value, async (v) => { applyLinkValue(link, v); await persist(); });

@@ -31,6 +31,12 @@
   quietly. Latent width and height snap to even, since a patchified model cannot take odd.
 
 ### Fixed
+- **A linked input driven by `Project · Prompt (global)` claimed to encode "the same text
+  Studio would" and did not.** Studio appends the postfix to every scene itself, so the
+  global prompt is strictly less than what it encodes — and the postfix is usually where
+  audio and style directions live, which went missing with no clue. The hint is now accurate
+  per source, and points at `Project · Prompt + postfix` when a postfix is set.
+
 - **Studio said nothing when both CLIP and a positive CONDITIONING were wired to it.** CLIP
   wins and the wired conditioning is never read — but the ownership label that knew this was
   computed and discarded, so a graph feeding Studio from an i2v node looked like it was
