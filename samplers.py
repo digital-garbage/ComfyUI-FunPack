@@ -4940,6 +4940,42 @@ class FunPackLTXAVSceneChainSampler:
                                           aug=None if aug >= 1.0 else aug)
         return positive, True
 
+    def _h3_has_first_frame_pin(self, conditioning):
+        pins = self._conditioning_value(conditioning, "minimax_keyframes") or []
+        return any(int(p.get("resolved_frame_index", -1)) == 0 for p in pins)
+
+    def _h3_continuation_pin(self, positive, carry_source):
+        """Continue an H3 scene from the previous one, the only way H3 can be told to.
+
+        LTX chains through the LATENT: the previous scene's tail is copied into the leading
+        frames and masked out of denoising, and the model treats those frames as context.
+        H3 has no latent conditioning at all — a pre-filled frame is, in its own terms, just
+        noise it is free to overwrite. The mask still holds those pixels in the output, so
+        the seam looked right while the rest of the shot was generated knowing nothing about
+        what came before: the chain produced a batch of unrelated clips.
+
+        The previous scene's last latent frame becomes this scene's frame-0 keyframe pin,
+        which is exactly the conditioning an i2v anchor uses. No VAE round trip: the frame is
+        already in latent space, and the pin path takes latents (the guide path already
+        relies on that). Skipped when something already pinned frame 0 — an explicit anchor
+        or a wired first_frame outranks a carried tail.
+
+        Returns (positive, applied).
+        """
+        if carry_source is None or self._h3_has_first_frame_pin(positive):
+            return positive, False
+        try:
+            video = self._latent_tensors(carry_source)[0]
+            if getattr(video, "ndim", 0) < 5 or int(video.shape[2]) < 1:
+                return positive, False
+            frame = video[:1, :, -1:].clone()
+        except Exception as error:  # noqa: BLE001
+            print(f"[FunPackSceneChain] H3: continuation pin skipped — {error}.")
+            return positive, False
+        positive = self._h3_add_keyframes(
+            positive, [{"resolved_frame_index": 0, "latent": frame}], self._h3_frame_count)
+        return positive, True
+
     def _h3_external_pins(self, conditioning):
         """Rescue the keyframe pins from a MiniMax H3 Image to Video node's conditioning.
 
@@ -6714,6 +6750,14 @@ class FunPackLTXAVSceneChainSampler:
                         run_mechanisms.append(f"h3_wired_keyframes({'+'.join(_pin_labels)})")
                     if "first" in _pin_labels:
                         _h3_opening_anchored = True
+                # Nothing claimed frame 0 and a previous scene exists: continue from its last
+                # frame. Without this the carried latent tail is not conditioning on H3 — the
+                # seam matched and the rest of the shot knew nothing about the scene before it.
+                if _carry_source is not None:
+                    scene_positive, _continued = self._h3_continuation_pin(
+                        scene_positive, _carry_source)
+                    if _continued:
+                        run_mechanisms.append("h3_continuation_pin")
 
             # ref2va reference blocks. Applied after the chunk is final because the blocks are
             # sized against this scene's canvas, and to every scene branch (fresh / anchored /

@@ -556,3 +556,52 @@ def test_a_wired_first_frame_overrides_the_timeline_anchor_on_frame_zero():
     out, _labels = node._apply_h3_external_pins(positive, pins, scene_index=0, scene_count=1)
     kfs = out[0][1]["minimax_keyframes"]
     assert len(kfs) == 1 and kfs[0]["latent"] is not anchor
+
+
+# ── continuing a scene from the one before it ────────────────────────────────
+
+def _pins(cond):
+    return (cond[0][1] or {}).get("minimax_keyframes") or []
+
+
+def test_a_continuation_scene_is_pinned_to_the_previous_scenes_last_frame():
+    """H3 has no latent conditioning: a carried tail is, in the model's terms, noise it may
+    overwrite. Without a pin the seam matched and the rest of the shot knew nothing about the
+    scene before it — the chain produced unrelated clips."""
+    node = h3_node()
+    previous = av_latent(video_t=37)
+    previous["samples"].unbind()[0][:, :, -1] = 7.0        # a mark only the last frame has
+    positive = [[torch.zeros(1, 8, 16), {}]]
+
+    out, applied = node._h3_continuation_pin(positive, previous)
+    assert applied is True
+    pins = _pins(out)
+    assert [p["resolved_frame_index"] for p in pins] == [0]
+    latent = pins[0]["latent"]
+    assert latent.shape == (1, 24, 1, 48, 84)              # exactly one latent frame
+    assert float(latent.max()) == 7.0                      # and it is the LAST one
+
+
+def test_an_explicit_anchor_outranks_the_carried_tail():
+    """An anchor image (or a wired first_frame) is the user saying where this scene starts;
+    the tail is inferred. Two pins cannot share frame 0."""
+    node = h3_node()
+    anchored = [[torch.zeros(1, 8, 16), {"minimax_keyframes": [
+        {"resolved_frame_index": 0, "latent": torch.full((1, 24, 1, 48, 84), 3.0)}]}]]
+    out, applied = node._h3_continuation_pin(anchored, av_latent())
+    assert applied is False
+    assert float(_pins(out)[0]["latent"].max()) == 3.0
+
+
+def test_the_opening_scene_has_nothing_to_continue_from():
+    node = h3_node()
+    positive = [[torch.zeros(1, 8, 16), {}]]
+    out, applied = node._h3_continuation_pin(positive, None)
+    assert applied is False and _pins(out) == []
+
+
+def test_an_unreadable_carry_source_skips_rather_than_failing_the_render():
+    node = h3_node()
+    positive = [[torch.zeros(1, 8, 16), {}]]
+    out, applied = node._h3_continuation_pin(positive, {"samples": torch.zeros(1, 24, 4)})
+    assert applied is False and _pins(out) == []
