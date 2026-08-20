@@ -503,3 +503,22 @@ def test_every_open_core_input_is_reachable_from_some_role():
             if port in pipeline_wiring._hidden_ports(family):
                 continue
             assert port in offered, (family, port)
+
+
+def test_pre_encoded_conditioning_has_a_port_in_both_families():
+    """A CONDITIONING output could be added and never connected: Studio's own port was not
+    offered, and the sampler's positive is a core-internal link."""
+    for family in ("ltxav", "minimax_h3"):
+        assert "FunPackStudio.positive_conditioning" in \
+            pipeline_wiring._chain_terminals(family)["CONDITIONING"]
+        assert "FunPackStudio.positive_conditioning" in \
+            pipeline_wiring._type_fallback_ports(family)["CONDITIONING"]
+
+
+def test_the_samplers_own_positive_stays_core_owned():
+    """Studio produces the conditioning the sampler samples. Wiring straight into the
+    sampler would cut Studio out of its own pipeline."""
+    for family in ("ltxav", "minimax_h3"):
+        offered = {p for ports in pipeline_wiring._type_fallback_ports(family).values()
+                   for p in ports}
+        assert "FunPackLTXAVSceneChainSampler.positive" not in offered

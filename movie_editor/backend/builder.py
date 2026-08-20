@@ -81,10 +81,19 @@ OPEN_PORTS: list[tuple[str, str, str, bool]] = [   # (core_id, input, type, requ
     ("studio", "clip", "CLIP", True),
     ("studio", "source_image", "IMAGE", False),
     ("studio", "latent", "LATENT", False),
+    ("studio", "positive_conditioning", "CONDITIONING", False),
     ("sampler", "vae", "VAE", True),
     ("concat", "audio_latent", "LATENT", True),
     ("audiodec", "audio_vae", "VAE", True),
 ]
+
+# Ports that may be wired but must never AUTO-wire. A pre-encoded conditioning replaces
+# the whole prompt path — no shortcuts, no $variables, no per-scene split — so it has to be
+# something the user asked for. A lone CLIPTextEncode someone added for another purpose
+# would otherwise capture the prompt silently.
+EXPLICIT_ONLY_PORTS: frozenset[tuple[str, str]] = frozenset({
+    ("studio", "positive_conditioning"),
+})
 
 # A required port another input can stand in for: {(core_id, input): (alternative inputs…)}.
 # Studio encodes the prompt through `clip`, but a pre-encoded CONDITIONING wired into
@@ -1018,8 +1027,18 @@ def _producers(graph, slots, slot_node_id, slot_def, object_info):
         out.setdefault(t, []).append((cid, oidx))
     for s in slots:
         nd = slot_def[s["id"]]
+        node_id = slot_node_id[s["id"]]
+        # A pass-through output is only real once its own input is fed: the LoRA loader
+        # hands CLIP straight back, so an unwired one emits nothing while still making
+        # every other CLIP consumer look ambiguous ("2 possible sources").
+        dead = set()
+        for ci in connection_inputs(nd or {}):
+            if not isinstance((graph.get(node_id) or {}).get("inputs", {}).get(ci["name"]), list):
+                dead.add(ci["type"])
         for i, o in enumerate(node_outputs(nd or {})):
-            out.setdefault(o["type"], []).append((slot_node_id[s["id"]], i))
+            if o["type"] in dead:
+                continue
+            out.setdefault(o["type"], []).append((node_id, i))
     return out
 
 
@@ -1165,6 +1184,8 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
             continue
         if isinstance(node["inputs"].get(inp), list):
             continue  # already wired (explicit/core)
+        if (node_id, inp) in EXPLICIT_ONLY_PORTS:
+            continue  # wirable, never automatic — see EXPLICIT_ONLY_PORTS
         alt_wired = next((alt for alt in PORT_ALTERNATIVES.get((node_id, inp), ())
                           if isinstance(node["inputs"].get(alt), list)), None)
         if alt_wired:

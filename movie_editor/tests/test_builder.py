@@ -946,6 +946,9 @@ OI_DEFAULTS = dict(OI, **{
                                "frame_rate": ["FLOAT,INT", {"default": 25.0, "widgetType": "FLOAT"}],
                                "audio_vae": ["VAE", {}]}},
         "output": ["LATENT"], "output_name": ["Latent"]},
+    "CLIPTextEncode": {
+        "input": {"required": {"text": ["STRING", {"default": ""}], "clip": ["CLIP", {}]}},
+        "output": ["CONDITIONING"], "output_name": ["CONDITIONING"]},
     "FunPackLoraLoader": {
         "input": {"required": {"model": ["MODEL", {}],
                                "lora_list": ["STRING", {"default": "[]",
@@ -1017,3 +1020,42 @@ def test_the_seeded_audio_latent_follows_the_project_not_its_own_widgets():
     assert audio["inputs"]["frame_rate"] == ["fps", 0]
     # and it takes the AUDIO vae, not whichever VAE auto-wire happened to reach first
     assert audio["inputs"]["audio_vae"] == graph["audiodec"]["inputs"]["audio_vae"]
+
+
+def test_a_conditioning_node_never_captures_the_prompt_by_itself():
+    """positive_conditioning replaces the typed prompt wholesale — shortcuts, $variables and
+    the per-scene split all go with it — so it must be something the user wired on purpose."""
+    models = _seeded_models()
+    models["slots"].append({
+        "id": "enc", "role": "custom", "node_class": "CLIPTextEncode",
+        "inputs": {"text": "hello"}, "wires": {}, "input_sources": {}})
+    graph, report = builder.build(OI_DEFAULTS, models, PARAMS)
+    assert "positive_conditioning" not in graph["studio"]["inputs"]
+    assert not any("positive_conditioning" in m for m in report["blocking"])
+
+
+def test_a_conditioning_wire_the_user_asked_for_is_honoured():
+    models = _seeded_models()
+    models["slots"].append({
+        "id": "enc", "role": "custom", "node_class": "CLIPTextEncode",
+        "inputs": {"text": "hello"},
+        "wires": {"CONDITIONING": ["port:FunPackStudio.positive_conditioning"]},
+        "input_sources": {}})
+    graph, report = builder.build(OI_DEFAULTS, models, PARAMS)
+    assert isinstance(graph["studio"]["inputs"]["positive_conditioning"], list)
+    assert report["blocking"] == []
+
+
+def test_an_unwired_pass_through_is_not_counted_as_a_source():
+    """The seeded LoRA loader hands CLIP straight back. With its clip input unwired it emits
+    nothing, and counting it made every other CLIP consumer read as ambiguous."""
+    models = _seeded_models()
+    models["slots"].append({
+        "id": "enc", "role": "custom", "node_class": "CLIPTextEncode",
+        "inputs": {"text": "hello"},
+        "wires": {"CONDITIONING": ["port:FunPackStudio.positive_conditioning"]},
+        "input_sources": {}})
+    graph, report = builder.build(OI_DEFAULTS, models, PARAMS)
+    by_class = {n["class_type"]: nid for nid, n in graph.items()}
+    assert graph[by_class["CLIPTextEncode"]]["inputs"]["clip"] == [by_class["FunPackCLIPLoader"], 0]
+    assert report["ambiguous"] == []

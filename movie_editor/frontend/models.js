@@ -640,7 +640,8 @@
       const incoming = (config.slots || []).some((s2) =>
         s2.id !== slot.id && Object.values(s2.wires || {}).some((tg) => wireTargets(tg).includes(`node:${slot.id}:${ci.name}`)));
       if (incoming) return;
-      const prod = sources(slot, ci.type).filter((o) => o.value && o.value !== "timeline").length;
+      const prod = sources(slot, ci.type)
+        .filter((o) => o.value && o.value !== "timeline" && producerIsLive(o.value)).length;
       if (prod === 1) return;  // a single producer auto-wires
       if (prod > 1)
         issues.push({ level: "error", msg: `Input "${ci.name}" (${ci.type}): ${prod} possible sources — set its Input source.` });
@@ -1042,6 +1043,23 @@
   // Available sources for a slot connection input of a given type.
   // Source IDs: "" = auto, "out:<slotId>:<outName>", "core:<coreId>:<outIdx>",
   // "timeline" (IMAGE only), "ref:<mediaId>" (media marked R in the bin).
+  // A pass-through output is only a real source once its own input is fed: the LoRA loader
+  // hands CLIP straight back, so an unwired one emits nothing while still making every
+  // other CLIP consumer read as ambiguous. Matches builder._producers, which is what
+  // actually decides whether generation is blocked.
+  function producerIsLive(value) {
+    const m = /^out:([^:]+):(.+)$/.exec(String(value));
+    if (!m) return true;
+    const slot = (config.slots || []).find((s) => s.id === m[1]);
+    if (!slot) return true;
+    const spec = specFor(slot);
+    if (!spec) return true;
+    const out = (spec.outputs || []).find((o) => o.name === m[2]);
+    if (!out) return true;
+    return !(spec.connection_inputs || []).some(
+      (ci) => ci.type === out.type && !inputIsFed(slot, ci.name));
+  }
+
   function sources(slot, type) {
     const out = [{ value: "", label: "(auto-wire)" }];
     if (typeAccepts(type, "IMAGE")) out.push({ value: "timeline", label: "Timeline (scene image)" });

@@ -35,6 +35,11 @@ TYPE_CHAIN_TERMINALS: dict[str, list[str]] = {
     "CLIP": ["FunPackStudio.clip"],
     "LATENT": ["FunPackStudio.latent"],
     "IMAGE": ["FunPackStudio.source_image"],
+    # Pre-encoded conditioning. Studio's own port, not the sampler's positive: the sampler's
+    # is a core-internal link, and feeding it directly would cut Studio out of its own
+    # pipeline. Never auto-wired (builder.EXPLICIT_ONLY_PORTS) because it replaces the
+    # typed prompt wholesale.
+    "CONDITIONING": ["FunPackStudio.positive_conditioning"],
 }
 
 # Core-internal ports: shown in the full port list but not user-wirable in guided mode
@@ -64,6 +69,7 @@ PORT_LABELS: dict[str, str] = {
     "FunPackStudio.clip": "Studio · clip",
     "FunPackStudio.latent": "Studio · latent (forwards to Concat AV · video_latent)",
     "FunPackStudio.source_image": "Studio · source_image (Img2Video anchor)",
+    "FunPackStudio.positive_conditioning": "Studio · positive_conditioning (replaces the typed prompt)",
     "FunPackLTXAVSceneChainSampler.vae": "Chain Sampler · vae",
     "LTXVConcatAVLatent.audio_latent": "Concat AV Latent · audio_latent",
     "LTXVAudioVAEDecode.audio_vae": "Audio VAE Decode · audio_vae",
@@ -76,6 +82,7 @@ OPEN_CORE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("studio", "clip"),
     ("studio", "source_image"),
     ("studio", "latent"),
+    ("studio", "positive_conditioning"),
     ("sampler", "vae"),
     ("concat", "audio_latent"),
     ("audiodec", "audio_vae"),
@@ -86,6 +93,7 @@ PORT_TO_OPEN_CORE: dict[str, tuple[str, str]] = {
     "FunPackStudio.clip": ("studio", "clip"),
     "FunPackStudio.source_image": ("studio", "source_image"),
     "FunPackStudio.latent": ("studio", "latent"),
+    "FunPackStudio.positive_conditioning": ("studio", "positive_conditioning"),
     "FunPackLTXAVSceneChainSampler.vae": ("sampler", "vae"),
     "LTXVConcatAVLatent.audio_latent": ("concat", "audio_latent"),
     "LTXVAudioVAEDecode.audio_vae": ("audiodec", "audio_vae"),
@@ -130,7 +138,8 @@ FAMILY_WIRING: dict[str, dict] = {
                                  ("CONDITIONING", None, _H3_KEYFRAME_PORT)],
         },
         "type_chain_terminals": {"LATENT": [_H3_LATENT_PORT],
-                                 "CONDITIONING": [_H3_KEYFRAME_PORT]},
+                                 "CONDITIONING": [_H3_KEYFRAME_PORT,
+                                                  "FunPackStudio.positive_conditioning"]},
         "default_wires": {
             "audio_vae": {"VAE": "port:VAEDecodeAudio.vae"},
             "audio_encoder": {},
