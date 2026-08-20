@@ -605,3 +605,52 @@ def test_an_unreadable_carry_source_skips_rather_than_failing_the_render():
     positive = [[torch.zeros(1, 8, 16), {}]]
     out, applied = node._h3_continuation_pin(positive, {"samples": torch.zeros(1, 24, 4)})
     assert applied is False and _pins(out) == []
+
+
+# ── the two carry toggles that had no H3 path at all ─────────────────────────
+
+def _template(video_t=37, protected=1):
+    latent = av_latent(video_t=video_t)
+    video = latent["samples"].unbind()[0]
+    mask = torch.ones_like(video)
+    mask[:, :, :protected] = 0.0                       # protected = pinned prefix
+    latent["noise_mask"] = NT([mask, torch.ones_like(latent["samples"].unbind()[1])])
+    video[:, :, 0] = 5.0                               # the reference frame
+    return latent
+
+
+def test_carry_i2v_guides_pins_the_reference_instead_of_growing_the_latent():
+    """The LTX path prepends the template's protected frames to the chunk. On H3 that adds
+    video frames off its 5k+2 grid and attaches conditioning the model does not read."""
+    node = h3_node()
+    chunk = av_latent(video_t=37)
+    before = chunk["samples"].unbind()[0].shape
+    out_chunk, positive, _neg, carried = node._append_i2v_guides(
+        chunk, _template(), [[torch.zeros(1, 8, 16), {}]], None)
+    assert out_chunk["samples"].unbind()[0].shape == before   # latent untouched
+    assert carried == 0                                       # nothing to crop later
+    pins = _pins(positive)
+    assert [p["resolved_frame_index"] for p in pins] == [0]
+    assert float(pins[0]["latent"].max()) == 5.0              # the ORIGINAL reference
+
+
+def test_holding_the_reference_outranks_continuing_from_the_last_shot():
+    """Continuing is the default; carry_i2v_guides is the user asking for the opposite."""
+    node = h3_node()
+    _c, positive, _n, _t = node._append_i2v_guides(
+        av_latent(), _template(), [[torch.zeros(1, 8, 16), {}]], None)
+    out, applied = node._h3_continuation_pin(positive, av_latent())
+    assert applied is False
+    assert float(_pins(out)[0]["latent"].max()) == 5.0
+
+
+def test_mid_scene_guide_declines_on_h3_instead_of_damaging_the_latent(capsys):
+    """H3's packed layout places a pin at the first or last frame, nowhere between."""
+    node = h3_node(frame_count=124)
+    chunk = av_latent(video_t=37)
+    before = chunk["samples"].unbind()[0].shape
+    out_chunk, positive, _neg, tail = node._append_mid_scene_guide(
+        chunk, av_latent(video_t=37), [[torch.zeros(1, 8, 16), {}]], None, LTXVAE(), 1.0)
+    assert out_chunk["samples"].unbind()[0].shape == before
+    assert tail == 0 and _pins(positive) == []
+    assert "pins only the first" in capsys.readouterr().out

@@ -3284,7 +3284,33 @@ class FunPackLTXAVSceneChainSampler:
             chunk["noise_mask"] = out_masks[0]
         return chunk, count
 
+    def _h3_carry_i2v_guide(self, chunk, template, positive, negative):
+        """carry_i2v_guides on H3: hold the ORIGINAL reference, as a frame-0 pin.
+
+        The LTX path below prepends the template's protected frames to the chunk. On H3 that
+        adds video latent frames the packed layout never accounted for — off its 5k+2 grid —
+        and attaches LTX conditioning this model does not read, so it damaged the latent
+        instead of carrying anything. The same intent (every scene keeps the opening
+        reference) is a keyframe pin, and nothing is appended, so no tail is cropped later.
+
+        It claims frame 0 ahead of the continuation pin: continuing from the previous shot is
+        the default, holding the original reference is what the user asked for by name.
+        """
+        tensors = self._latent_tensors(template)
+        masks = self._latent_masks(template, len(tensors))
+        if not tensors or getattr(tensors[0], "ndim", 0) < 5:
+            return chunk, positive, negative, 0
+        protected = self._protected_prefix_frames(masks[0], self._tensor_frames(tensors[0]))
+        if protected <= 0:
+            return chunk, positive, negative, 0
+        frame = self._time_slice(tensors[0], 0, 1)[:1].clone()
+        positive = self._h3_add_keyframes(
+            positive, [{"resolved_frame_index": 0, "latent": frame}], self._h3_frame_count)
+        return chunk, positive, negative, 0
+
     def _append_i2v_guides(self, chunk, template, positive, negative):
+        if self._is_h3:
+            return self._h3_carry_i2v_guide(chunk, template, positive, negative)
         chunk_tensors = self._latent_tensors(chunk)
         template_tensors = self._latent_tensors(template)
         template_masks = self._latent_masks(template, len(template_tensors))
@@ -5489,11 +5515,6 @@ class FunPackLTXAVSceneChainSampler:
         using LTX's guide attention mechanism (keyframe_idxs + guide_attention_entries).
         Audio-safe: appends only to the video tensor, guide tokens influence denoising
         through attention weights rather than overwriting hidden states."""
-        try:
-            from comfy_extras.nodes_lt import LTXVAddGuide, _append_guide_attention_entry
-        except ImportError:
-            return chunk, positive, negative, 0
-
         prev_tensors = self._latent_tensors(previous_output)
         chunk_tensors = self._latent_tensors(chunk)
         if not prev_tensors or not chunk_tensors:
@@ -5503,6 +5524,22 @@ class FunPackLTXAVSceneChainSampler:
         F_prev = self._tensor_frames(prev_tensors[0])
         guide_frame = self._time_slice(prev_tensors[0], F_prev // 2, F_prev // 2 + 1)
         guide_frame = guide_frame.to(device=chunk_tensors[0].device, dtype=chunk_tensors[0].dtype)
+
+        if self._is_h3:
+            # A mid-clip pin is not something H3's packed layout can place, and the LTX path
+            # below would append a latent frame off its grid rather than refuse. Routed
+            # through the keyframe path so it declines by the same rule, and says so.
+            positive, negative, tail = self._append_h3_keyframe(
+                guide_frame, max(1, int(self._h3_frame_count)) // 2, strength,
+                positive, negative)
+            return chunk, positive, negative, tail
+
+        # LTX from here down. Imported after the H3 branch so the H3 path does not depend on
+        # an LTX-only module importing.
+        try:
+            from comfy_extras.nodes_lt import LTXVAddGuide, _append_guide_attention_entry
+        except ImportError:
+            return chunk, positive, negative, 0
 
         # Target temporal position: middle of current chunk in pixel space
         F_chunk = self._tensor_frames(chunk_tensors[0])
