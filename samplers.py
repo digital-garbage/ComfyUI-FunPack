@@ -2788,7 +2788,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "segmented_detailing": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL ADetailer-for-video: after each scene finishes denoising, CLIPSeg (text-prompted segmentation) locates the regions named in detail_targets on a few decoded keyframes; the matched region is cut out of the video latent as a spatiotemporal tube, pushed through Lightricks' trained latent upsampler (2x spatial — the official two-stage pipeline's stage-2 model), then either used directly (detail_mode='sharpen', near-free) or re-noised + re-denoised for a 3-step tail (detail_mode='repair', default — costs ~4x tube area fraction x 3 steps, hands ~+15%). Downscaled back to its ORIGINAL latent size and pasted through the feathered CLIPSeg silhouette either way. Final resolution never changes. Tubes over detail_max_area (default 35%) are refused as a cost guard, not a content judgment. Audio untouched by construction. detail_upsampler 'auto' finds or downloads the official Lightricks upsampler (~1 GB, once); skips are reported loudly in console + scene report. UNVALIDATED LIVE.",
+                    "tooltip": "EXPERIMENTAL ADetailer-for-video: after each scene finishes denoising, CLIPSeg (text-prompted segmentation) locates the regions named in detail_targets on a few decoded keyframes; the matched region is cut out of the video latent as a spatiotemporal tube, pushed through Lightricks' trained latent upsampler (2x spatial — the official two-stage pipeline's stage-2 model), then either used directly (detail_mode='sharpen', near-free) or re-noised + re-denoised for a 3-step tail (detail_mode='repair', default — costs ~4x tube area fraction x 3 steps, hands ~+15%). Downscaled back to its ORIGINAL latent size and pasted through the feathered CLIPSeg silhouette either way. Final resolution never changes. Tubes over detail_max_area (default 35%) are refused as a cost guard, not a content judgment. Audio untouched by construction. detail_upsampler 'auto' finds or downloads the official Lightricks upsampler (~1 GB, once) when the model's latents are LTX-width, and otherwise uses an installed upsampler without downloading anything; skips are reported loudly in console + scene report. UNVALIDATED LIVE.",
                 }),
                 "detail_targets": ("STRING", {
                     "default": "hands",
@@ -2863,7 +2863,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "second_pass_op": (["none", "sharpen", "upscale_2x"], {
                     "default": "none",
-                    "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half. The i2v pin SURVIVES it: the pinned frames are carried through the upsampler with everything else and the mask is scaled to the new grid, so pass 2 still holds the anchor — as the upscaled anchor rather than the encoded source image, which the scene report states. Guide keyframes do not survive, because they are token indices into the old grid; pass 1 uses them in full. MULTI-SCENE works with it: a scene finishes at 2x while every later scene is still built from the latent template at the original size, so everything that crosses a scene boundary (carried overlap frames, the anchor's continuation, the soft join, JoyAI memory, per-scene guide sources) is brought back to the template's grid on the way. Each scene still samples and OUTPUTS at 2x — only the carried material is resampled, and only downwards, which is the direction that survives it: those frames exist to say 'continue from here', which a resample preserves far better than invented detail would. Both ops use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official one on first use). Video stream only; audio is never reshaped.",
+                    "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half. The i2v pin SURVIVES it: the pinned frames are carried through the upsampler with everything else and the mask is scaled to the new grid, so pass 2 still holds the anchor — as the upscaled anchor rather than the encoded source image, which the scene report states. Guide keyframes do not survive, because they are token indices into the old grid; pass 1 uses them in full. MULTI-SCENE works with it: a scene finishes at 2x while every later scene is still built from the latent template at the original size, so everything that crosses a scene boundary (carried overlap frames, the anchor's continuation, the soft join, JoyAI memory, per-scene guide sources) is brought back to the template's grid on the way. Each scene still samples and OUTPUTS at 2x — only the carried material is resampled, and only downwards, which is the direction that survives it: those frames exist to say 'continue from here', which a resample preserves far better than invented detail would. Both ops use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official Lightricks one on first use). Works on any model family, not just LTX — what it needs is an upsampler whose latents are the same width as this model's, so on MiniMax H3 install an H3 latent upsampler and pick it here; 'auto' will not download the LTX file for a model it cannot fit, and a mismatch is reported as a skip with both channel counts rather than failing the render. Video stream only; audio is never reshaped.",
                 }),
                 "h3_audio_clock": ("BOOLEAN", {
                     "default": False,
@@ -3758,6 +3758,14 @@ class FunPackLTXAVSceneChainSampler:
         tensors = self._latent_tensors(result)
         video = tensors[0]
         h, w = int(video.shape[-2]), int(video.shape[-1])
+        # An upsampler trained on a different model's latents fails inside a convolution,
+        # minutes in, with a shape error that names neither model. Say it here instead.
+        want = _d.upsampler_in_channels(upsampler)
+        have = int(video.shape[1]) if video.ndim >= 5 else None
+        if want and have and want != have:
+            return latent, (f"second_pass_op={op} skipped: the selected latent upsampler takes "
+                            f"{want}-channel latents and this model's are {have}-channel — "
+                            f"install an upsampler trained for this model")
         try:
             up = _d._run_upsampler(upsampler, video, vae)
         except Exception as exc:  # noqa: BLE001
@@ -6272,12 +6280,6 @@ class FunPackLTXAVSceneChainSampler:
                     and abs(float(v2a_grad_scale) - 1.0) > 1e-6):
                 _dead.append("v2a_grad_scale (hooks LTXAV's video_to_audio_attn submodule; H3 "
                              "has no separate video->audio cross-attention to scale)")
-            if segmented_detailing:
-                _dead.append("segmented_detailing (Lightricks' latent upsampler is trained on "
-                             "LTX's 128-channel latent, not H3's 24-channel one)")
-            if second_pass and str(second_pass_op or "none").lower() in ("sharpen", "upscale_2x"):
-                _dead.append(f"second_pass_op='{second_pass_op}' (same LTX-only latent upsampler; "
-                             "the second pass itself still runs, just without the latent op)")
             for _line in _dead:
                 print(f"[FunPackSceneChain] H3: {_line} — SKIPPED.")
             # Turn them off for real rather than letting each one discover its own missing
@@ -6285,10 +6287,10 @@ class FunPackLTXAVSceneChainSampler:
             # that dies three minutes in is worse than a knob that says why it is inert.
             bounded_attention_enabled = False
             identity_transfer_enabled = False
-            segmented_detailing = False
             v2a_grad_scale = 1.0
-            if second_pass and str(second_pass_op or "none").lower() != "none":
-                second_pass_op = "none"
+            # second_pass_op is NOT switched off here. It only needs a latent upsampler that
+            # matches this model's latent width; which file that is depends on what is
+            # installed, not on the family, so it is checked where the upsampler is loaded.
 
         # Defensively strip any enhancement block hooks left on the shared diffusion
         # model by a previous run (build_enhancements only removes them on scene
@@ -6949,7 +6951,13 @@ class FunPackLTXAVSceneChainSampler:
                                     from . import detailing as _det
                                 except ImportError:
                                     import detailing as _det
-                                _r = _det.resolve_upsampler_name(detail_upsampler)
+                                _chans = None
+                                try:
+                                    _v = self._latent_tensors(_sp_state)[0]
+                                    _chans = int(_v.shape[1]) if _v.ndim >= 5 else None
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                _r = _det.resolve_upsampler_name(detail_upsampler, _chans)
                                 _detail_upsampler_model = _det.load_latent_upsampler(_r)
                             except Exception as _exc:  # noqa: BLE001
                                 _detail_disabled_reason = str(_exc)
@@ -7093,7 +7101,13 @@ class FunPackLTXAVSceneChainSampler:
                     except ImportError:
                         import detailing as _detailing
                     if _detail_upsampler_model is None:
-                        _resolved = _detailing.resolve_upsampler_name(detail_upsampler)
+                        _chans = None
+                        try:
+                            _v = self._latent_tensors(sampled)[0]
+                            _chans = int(_v.shape[1]) if _v.ndim >= 5 else None
+                        except Exception:  # noqa: BLE001
+                            pass
+                        _resolved = _detailing.resolve_upsampler_name(detail_upsampler, _chans)
                         _detail_upsampler_model = _detailing.load_latent_upsampler(_resolved)
                         print(f"[FunPackSceneChain] latent upsampler loaded: {_resolved}")
                     _t_detail0 = _time.perf_counter()

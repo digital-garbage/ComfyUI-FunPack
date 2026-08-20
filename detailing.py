@@ -99,7 +99,34 @@ DEFAULT_UPSAMPLER_REPO = "Lightricks/LTX-2.3"
 DEFAULT_UPSAMPLER_FILE = "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
 
 
-def resolve_upsampler_name(model_name=None):
+# LTX-2's video latent width. The official Lightricks upsampler is trained on it, so a
+# model whose latents are a different width cannot use that file no matter how it is loaded.
+LTX_LATENT_CHANNELS = 128
+
+
+def upsampler_in_channels(model):
+    """How many latent channels an upsampler expects, or None when it can't be read.
+
+    Used to say "this upsampler is for a different model" instead of letting a shape error
+    surface from inside a conv three minutes into a render.
+    """
+    for candidate in (model, getattr(model, "model", None)):
+        if candidate is None:
+            continue
+        declared = getattr(candidate, "in_channels", None)
+        if isinstance(declared, int) and declared > 0:
+            return declared
+        state = getattr(candidate, "state_dict", None)
+        if not callable(state):
+            continue
+        for tensor in state().values():
+            # The first convolution is the input one; its second dim is what it accepts.
+            if getattr(tensor, "ndim", 0) >= 4:
+                return int(tensor.shape[1])
+    return None
+
+
+def resolve_upsampler_name(model_name=None, latent_channels=None):
     """Turn the node's detail_upsampler widget value into a loadable filename.
 
     Explicit filename -> returned as-is. "auto" (and the legacy "None" default)
@@ -107,6 +134,10 @@ def resolve_upsampler_name(model_name=None):
     installed latent upscale model, else download the official file from HF.
     Raises with a user-actionable message when nothing can be obtained — callers
     surface it, they must NOT silently skip.
+
+    `latent_channels` is the width of the latents this run actually produces. When it is
+    not LTX's, the official Lightricks file cannot be the answer, so it is never downloaded
+    on a model it could not serve — a gigabyte for nothing, then a shape error.
     """
     import os
 
@@ -116,6 +147,14 @@ def resolve_upsampler_name(model_name=None):
     if name and name not in ("None", "auto"):
         return name
     files = folder_paths.get_filename_list("latent_upscale_models")
+    if latent_channels is not None and int(latent_channels) != LTX_LATENT_CHANNELS:
+        if files:
+            return files[0]
+        raise RuntimeError(
+            f"no latent upscale model installed, and this model's latents are "
+            f"{int(latent_channels)}-channel, so the official Lightricks upsampler "
+            f"({LTX_LATENT_CHANNELS}-channel) would not fit it — put an upsampler trained "
+            "for this model in models/latent_upscale_models")
     if DEFAULT_UPSAMPLER_FILE in files:
         return DEFAULT_UPSAMPLER_FILE
     spatial = [f for f in files if "spatial" in f.lower() and "upscal" in f.lower()]
@@ -166,8 +205,9 @@ def load_latent_upsampler(model_name):
     model_path = folder_paths.get_full_path_or_raise("latent_upscale_models", model_name)
     sd, metadata = comfy.utils.load_torch_file(model_path, safe_load=True, return_metadata=True)
     if "post_upsample_res_blocks.0.conv2.bias" not in sd:
-        raise ValueError(
-            f"{model_name} is not an LTX latent upsampler (expected post_upsample_res_blocks keys).")
+        # Not Lightricks' architecture. ComfyUI's own loader knows the others (and will know
+        # the next one), so hand it over rather than declaring the file unusable here.
+        return _load_upsampler_via_core(model_name)
     config = json.loads(metadata["config"])
     # ComfyUI v0.29.0 (upstream f8a3fd9d) moved the upsampler onto DynamicVram and made
     # `operations` a required argument of from_config; older cores build nn.Modules
@@ -183,6 +223,23 @@ def load_latent_upsampler(model_name):
     model.load_state_dict(sd)
     model.eval()
     return model
+
+
+def _load_upsampler_via_core(model_name):
+    """ComfyUI's Load Latent Upscale Model, for every architecture that is not LTX's."""
+    try:
+        from comfy_extras.nodes_hunyuan import LatentUpscaleModelLoader
+    except ImportError as exc:
+        raise ValueError(
+            f"{model_name} is not an LTX latent upsampler, and this ComfyUI has no other "
+            "latent upscale model loader to try") from exc
+    out = LatentUpscaleModelLoader.execute(model_name)
+    result = getattr(out, "result", out)
+    if isinstance(result, (tuple, list)):
+        result = result[0]
+    if result is None:
+        raise ValueError(f"{model_name} could not be loaded as a latent upscale model")
+    return result
 
 
 def _get_clipseg():
@@ -380,21 +437,23 @@ def _run_upsampler(upsampler, video_crop, vae, debug=False):
     """
     import comfy.model_management
 
+    # Core's loader hands back a patcher; FunPack's LTX path hands back the module itself.
+    module = getattr(upsampler, "model", upsampler)
     device = comfy.model_management.get_torch_device()
-    model_dtype = next(upsampler.parameters()).dtype
+    model_dtype = next(module.parameters()).dtype
     in_dtype, in_device = video_crop.dtype, video_crop.device
     stats = _per_channel_stats(vae)
     try:
-        upsampler.to(device)
+        module.to(device)
         x = video_crop.to(device=device, dtype=model_dtype)
         if stats is not None:
             x = stats.un_normalize(x)
         with torch.no_grad():
-            x = upsampler(x)
+            x = module(x)
         if stats is not None:
             x = stats.normalize(x)
     finally:
-        upsampler.cpu()
+        module.cpu()
     return x.to(device=in_device, dtype=in_dtype)
 
 

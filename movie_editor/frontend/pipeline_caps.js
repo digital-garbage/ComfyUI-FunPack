@@ -128,20 +128,15 @@
     bounded_attention_enabled:
       "Bounded Attention masks text cross-attention; H3 puts text in the same self-attention "
       + "stream as the video, where the mask would be far too large to hold.",
-    segmented_detailing:
-      "Segmented detailing uses Lightricks' latent upsampler, trained on LTX's 128-channel "
-      + "latent; H3's latent has 24 channels.",
   };
 
   // Same idea for non-boolean knobs whose neutral value means "off".
-  function h3DeadValueIssues(si) {
-    const out = [];
-    if (si.second_pass && si.second_pass_op && si.second_pass_op !== "none") {
-      out.push(["second_pass_op",
-        "The second pass still runs on H3, but its latent op ('" + si.second_pass_op + "') uses the "
-        + "same LTX-only upsampler, so the op is skipped."]);
-    }
-    return out;
+  // The latent ops (second_pass_op, segmented detailing) are NOT listed here any more: what
+  // they need is an upsampler whose latents are the same width as the model's, which depends
+  // on what is installed rather than on the family, and the sampler reports a mismatch by
+  // name. A chip here would be a guess about the user's models folder.
+  function h3DeadValueIssues(_si) {
+    return [];
   }
 
   // The mirror image of H3_DEAD_SAMPLER_INPUTS: settings that only mean something ON H3.

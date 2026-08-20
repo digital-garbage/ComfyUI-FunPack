@@ -219,3 +219,75 @@ def test_the_pin_is_dropped_when_the_mask_cannot_be_rebuilt():
     chunk = {"samples": clean, "noise_mask": mask}
     upscaled = {"samples": torch.zeros(1, 4, 4, 16, 16)}
     assert _node()._restore_pinned_prefix(upscaled, chunk) is upscaled
+
+
+# ── a latent op is about the upsampler, not the model family ──────────────────
+# The op used to be switched off outright on MiniMax H3 because Lightricks' upsampler is
+# trained on LTX's 128-channel latent. That is a fact about the FILE, not about H3: with an
+# upsampler trained for the model, the op runs. What has to stay true is that a mismatched
+# one is refused by name rather than blowing up inside a convolution mid-render.
+import detailing  # noqa: E402
+
+
+class _TypedUpsampler(_FakeUpsampler):
+    def __init__(self, in_channels):
+        self.in_channels = in_channels
+
+
+def test_an_upsamplers_width_is_read_from_the_model():
+    assert detailing.upsampler_in_channels(_TypedUpsampler(24)) == 24
+
+
+def test_an_upsamplers_width_falls_back_to_its_first_convolution():
+    class _Weights:
+        def state_dict(self):
+            return {"initial_conv.weight": torch.zeros(512, 24, 3, 3)}
+    assert detailing.upsampler_in_channels(_Weights()) == 24
+
+
+def test_an_upsampler_wrapped_in_a_patcher_is_still_readable():
+    class _Patcher:
+        model = _TypedUpsampler(24)
+    assert detailing.upsampler_in_channels(_Patcher()) == 24
+
+
+def test_an_upsampler_for_another_model_is_refused_by_name():
+    lat = _video()                                   # 4-channel stand-in latents
+    out, note = _node()._second_pass_operate(lat, "upscale_2x", _TypedUpsampler(128), None)
+    assert out is lat
+    assert "128-channel" in note and "4-channel" in note
+
+
+def test_a_matching_upsampler_runs_on_any_family():
+    out, note = _node()._second_pass_operate(_video(h=8, w=8), "upscale_2x", _TypedUpsampler(4), None)
+    assert out["samples"].shape == (1, 4, 4, 16, 16)
+    assert "4x the pixels" in note
+
+
+def _installed(monkeypatch, files):
+    """Patch the SHARED folder_paths stub in place. Replacing sys.modules["folder_paths"]
+    would leak this test's view of the models folder into every later test file."""
+    monkeypatch.setattr(sys.modules["folder_paths"], "get_filename_list",
+                        lambda _kind: list(files))
+
+
+def test_auto_never_downloads_the_ltx_upsampler_for_a_model_it_cannot_fit(monkeypatch):
+    """A gigabyte, then a shape error. 'auto' takes what is installed instead."""
+    _installed(monkeypatch, ["h3_latent_upscaler.safetensors"])
+    monkeypatch.setattr(detailing, "DEFAULT_UPSAMPLER_FILE", "ltx.safetensors", raising=False)
+    assert detailing.resolve_upsampler_name("auto", 24) == "h3_latent_upscaler.safetensors"
+
+
+def test_auto_says_what_to_install_when_nothing_fits(monkeypatch):
+    _installed(monkeypatch, [])
+    try:
+        detailing.resolve_upsampler_name("auto", 24)
+    except RuntimeError as exc:
+        assert "24-channel" in str(exc) and "latent_upscale_models" in str(exc)
+    else:
+        raise AssertionError("expected a RuntimeError naming the channel width")
+
+
+def test_an_explicitly_chosen_file_is_always_honoured(monkeypatch):
+    _installed(monkeypatch, [])
+    assert detailing.resolve_upsampler_name("my_upsampler.safetensors", 24) == "my_upsampler.safetensors"
