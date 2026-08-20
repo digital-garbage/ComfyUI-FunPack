@@ -204,6 +204,16 @@ def load_latent_upsampler(model_name):
 
     model_path = folder_paths.get_full_path_or_raise("latent_upscale_models", model_name)
     sd, metadata = comfy.utils.load_torch_file(model_path, safe_load=True, return_metadata=True)
+    try:
+        from . import h3_latent_upscaler as _h3up
+    except ImportError:
+        import h3_latent_upscaler as _h3up
+    if _h3up.is_h3_latent_upscaler(sd):
+        # MiniMax H3's own upscaler. ComfyUI has no branch for this architecture, so
+        # without this the only published 24-channel upsampler needs a custom node pack —
+        # and second_pass_op on H3 needs a 24-channel one to run at all.
+        return _h3up.from_state_dict(sd, dtype=comfy.model_management.vae_dtype(
+            allowed_dtypes=[torch.bfloat16, torch.float32]))
     if "post_upsample_res_blocks.0.conv2.bias" not in sd:
         # Not Lightricks' architecture. ComfyUI's own loader knows the others (and will know
         # the next one), so hand it over rather than declaring the file unusable here.
@@ -472,14 +482,18 @@ def _run_upsampler(upsampler, video_crop, vae, debug=False):
     device = comfy.model_management.get_torch_device()
     model_dtype = next(module.parameters()).dtype
     in_dtype, in_device = video_crop.dtype, video_crop.device
-    stats = _per_channel_stats(vae)
+    # An upscaler that owns its normalisation (H3's) says so, because its statistics are the
+    # model's own — running it through the VAE's per-channel stats instead would hand it a
+    # distribution it never saw.
+    own_norm = getattr(module, "funpack_latent_upscale", None)
+    stats = None if callable(own_norm) else _per_channel_stats(vae)
     try:
         module.to(device)
         x = video_crop.to(device=device, dtype=model_dtype)
         if stats is not None:
             x = stats.un_normalize(x)
         with torch.no_grad():
-            x = module(x)
+            x = own_norm(x, scale=2.0) if callable(own_norm) else module(x)
         if stats is not None:
             x = stats.normalize(x)
     finally:

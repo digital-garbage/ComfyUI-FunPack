@@ -15,6 +15,16 @@
   backend installed on its own. Kernel and block map vendored from LightX2V (Apache-2.0) via
   ComfyUI-H3-SLA-Attention (MIT).
 
+- **MiniMax H3's latent upscaler loads without its custom node pack**, so `second_pass_op`
+  and segmented detailing work on H3 — the operation needs an upsampler whose latents are
+  the model's width, and the only published 24-channel one shipped behind its own node.
+  Architecture and normalisation statistics are read off the checkpoint; verified
+  bit-identical against the reference implementation.
+- **H3 scenes continue from the previous one.** The previous scene's last latent frame
+  becomes the next scene's frame-0 keyframe pin — the only continuity conditioning H3
+  accepts. A carried latent tail is not conditioning on this model, so the seam matched
+  while the rest of the shot knew nothing about the scene before it.
+
 ### Fixed
 - **Multi-scene chains work with a second pass again.** `second_pass_op="upscale_2x"` hands
   back a scene at twice the latent size, but every later scene is still built from the latent
