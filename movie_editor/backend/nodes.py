@@ -102,6 +102,12 @@ def _combo_default(opts: dict, choices: list | None = None):
         return d
     return choices[0] if choices else ""
 
+
+def _is_list_widget(t, opts: dict) -> bool:
+    """A FunPack list input (see widgets.py): a STRING carrying a `funpack_list` row spec."""
+    return t == "STRING" and isinstance(opts.get("funpack_list"), dict)
+
+
 def _is_autogrow_type(t) -> bool:
     """A V3 autogrow list input (COMFY_AUTOGROW_V3): not a socket itself, but a template
     that ComfyUI expands into one real socket per index (ref_image0, ref_image1, …)."""
@@ -358,6 +364,12 @@ def widget_inputs(node_def: dict) -> list[dict]:
                 field["kind"] = "combo"
                 field["choices"] = choices
                 field["default"] = _combo_default(opts, choices)
+            elif _is_list_widget(t, opts):
+                # A FunPack list input: one STRING holding a JSON array of rows, with the row
+                # shape declared alongside it so this renders as rows, not raw JSON.
+                field["kind"] = "list"
+                field["list"] = opts["funpack_list"]
+                field["default"] = opts.get("default", "[]")
             elif t in WIDGET_PRIMITIVES:
                 field["kind"] = t.lower()
                 field["default"] = opts.get("default")

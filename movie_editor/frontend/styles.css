@@ -1498,6 +1498,34 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .node-group-count { font-family: var(--font-mono); color: var(--faint); text-transform: none; }
 .node-group-bad { color: var(--danger); text-transform: none; letter-spacing: 0; }
 .node-group-field { margin: 10px 0 4px; }
+/* Loaders are pinned above everything else: choosing model files is the one step every
+   project has, and on a big pipeline they used to be scattered among nodes nobody touches. */
+.node-group-pinned { margin-bottom: 18px; }
+.node-group-pinned .node-group-head { border-bottom-color: color-mix(in srgb, var(--teal) 45%, var(--line)); }
+.node-group-pinned .node-group-name { color: var(--teal); }
+.node-group-fold.static { cursor: default; }
+.node-group-note { font-size: var(--fs-subhead); color: var(--faint); margin: -2px 0 8px; }
+
+/* list inputs: one string widget holding N rows (text encoders, LoRAs) */
+.list-field { display: block; margin-bottom: 12px; min-width: 0; }
+.list-field-name { display: block; font-size: var(--fs-subhead); line-height: var(--lh-subhead);
+  color: var(--faint); margin-bottom: 4px; }
+.list-rows { display: flex; flex-direction: column; gap: 4px; }
+.list-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.list-row.list-head { font-size: 10px; color: var(--faint); text-transform: uppercase;
+  letter-spacing: .04em; padding-bottom: 2px; }
+.list-cell { flex: 1 1 0; min-width: 0; }
+.list-cell input, .list-cell select { width: 100%; min-width: 0; max-width: 100%; }
+.list-cell input[type="checkbox"] { width: auto; }
+/* the first column is the file/name picker and deserves the room */
+.list-row > .list-cell:first-of-type { flex: 3 1 0; }
+/* the two gutters are fixed so the header line sits over the columns it names */
+.list-ord { display: flex; flex-direction: column; gap: 1px; flex: 0 0 18px; }
+.list-rm-head { flex: 0 0 20px; }
+.list-row > .wire-rm { flex: 0 0 20px; padding: 0; }
+.list-ord > button { padding: 0 3px; line-height: 1; font-size: 8px; }
+.list-ord > button:disabled { opacity: .3; cursor: default; }
+.list-empty { font-size: 12px; color: var(--faint); }
 
 .req-panel { margin-bottom: 18px; }
 .req-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }

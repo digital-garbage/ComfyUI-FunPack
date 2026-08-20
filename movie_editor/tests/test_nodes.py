@@ -262,3 +262,38 @@ def test_models_store_roundtrip(tmp_path, monkeypatch):
     assert nodes.load_models() == {"slots": []}
     nodes.save_models({"slots": [{"id": "x", "role": "unet", "node_class": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "a.safetensors"}}]})
     assert nodes.load_models()["slots"][0]["node_class"] == "CheckpointLoaderSimple"
+
+
+# ── FunPack list inputs ───────────────────────────────────────────────────────
+# One STRING widget holding a JSON array of rows, with the row shape declared beside it, is
+# how a FunPack node asks for N of something (text encoders, LoRAs). It must reach the
+# editor as a list, not as a string field showing raw JSON.
+LIST_SPEC = {"item": "text encoder", "add_label": "+ Add slot",
+             "fields": [{"name": "clip_name", "kind": "combo", "label": "file",
+                         "choices": ["gemma4.safetensors"]}]}
+LIST_OI = {
+    "FunPackCLIPLoader": {
+        "input": {"required": {
+            "clip_list": ["STRING", {"default": "[]", "funpack_list": LIST_SPEC}],
+            "type": [["ltxv", "minimax"]],
+        }},
+        "output": ["CLIP"], "display_name": "FunPack CLIP Loader"},
+}
+
+
+def test_a_list_input_reaches_the_editor_as_a_list_not_a_string():
+    spec = nodes.describe_node(LIST_OI, "FunPackCLIPLoader")
+    clip_list = next(w for w in spec["inputs"] if w["name"] == "clip_list")
+    assert clip_list["kind"] == "list"
+    assert clip_list["list"] == LIST_SPEC
+    assert clip_list["default"] == "[]"
+
+
+def test_a_list_input_is_a_widget_not_a_socket():
+    spec = nodes.describe_node(LIST_OI, "FunPackCLIPLoader")
+    assert [c["name"] for c in spec["connection_inputs"]] == []
+
+
+def test_a_plain_string_widget_is_still_a_string():
+    oi = {"N": {"input": {"required": {"text": ["STRING", {"default": "hi"}]}}, "output": []}}
+    assert nodes.describe_node(oi, "N")["inputs"][0]["kind"] == "string"

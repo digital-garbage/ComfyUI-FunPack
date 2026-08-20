@@ -357,7 +357,123 @@
   }
 
   // ── widget field rendering from object_info spec ─────────────────────────────
+  // ── list inputs ───────────────────────────────────────────────────────────────
+  // A FunPack list input is ONE string widget holding a JSON array of rows, with the row
+  // shape declared next to it (see widgets.py). ComfyUI has no repeatable input, so this is
+  // how a node asks for N text encoders or N LoRAs — and rendering it as raw JSON, which is
+  // what a plain STRING widget got, made the node unusable here.
+  function parseListValue(value) {
+    if (Array.isArray(value)) return value.map((r) => (r && typeof r === "object" ? { ...r } : {}));
+    try {
+      const parsed = JSON.parse(value || "[]");
+      return Array.isArray(parsed) ? parsed.map((r) => (r && typeof r === "object" ? { ...r } : {})) : [];
+    } catch (_) { return []; }
+  }
+
+  function listRowCell(f, row, onEdit) {
+    const cell = el("div", "list-cell");
+    cell.title = f.tooltip || f.label || f.name;
+    let cur = row[f.name] != null ? row[f.name] : f.default;
+    let ctrl;
+    if (f.kind === "combo") {
+      const choices = f.choices || [];
+      // A row the user never touched still has to save what it SHOWS. Without this the
+      // first option is displayed, nothing is stored, and the node loads an empty row.
+      if (choices.length && !choices.map(String).includes(String(cur))) {
+        cur = choices[0];
+        row[f.name] = cur;
+        onEdit();
+      }
+      ctrl = el("select");
+      choices.forEach((c) => {
+        const o = el("option", null, String(c)); o.value = c;
+        if (String(c) === String(cur)) o.selected = true;
+        ctrl.append(o);
+      });
+      if (!choices.length) { ctrl.append(el("option", null, "(none installed)")); ctrl.disabled = true; }
+      ctrl.onchange = () => { row[f.name] = ctrl.value; onEdit(); };
+    } else if (f.kind === "boolean") {
+      if (row[f.name] == null) { row[f.name] = cur !== false; onEdit(); }
+      ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = cur !== false; ctrl.style.width = "auto";
+      ctrl.onchange = () => { row[f.name] = ctrl.checked; onEdit(); };
+    } else if (f.kind === "int" || f.kind === "float") {
+      if (row[f.name] == null && cur != null) { row[f.name] = cur; onEdit(); }
+      ctrl = el("input"); ctrl.type = "number";
+      if (f.min != null) ctrl.min = f.min;
+      if (f.max != null) ctrl.max = f.max;
+      ctrl.step = f.step != null ? f.step : (f.kind === "int" ? 1 : 0.01);
+      ctrl.value = cur != null ? cur : "";
+      ctrl.oninput = () => {
+        row[f.name] = f.kind === "int" ? parseInt(ctrl.value || "0", 10) : parseFloat(ctrl.value || "0");
+        onEdit();
+      };
+    } else {
+      ctrl = el("input"); ctrl.type = "text"; ctrl.value = cur != null ? cur : "";
+      ctrl.oninput = () => { row[f.name] = ctrl.value; onEdit(); };
+    }
+    cell.append(ctrl);
+    return cell;
+  }
+
+  function listField(spec, value, onChange) {
+    const meta = spec.list || {};
+    const fields = (meta.fields || []).filter((f) => f && f.name);
+    const rows = parseListValue(value != null ? value : spec.default);
+    const wrap = el("div", "field list-field");
+    wrap.append(el("span", "list-field-name", meta.item ? `${spec.name} · ${meta.item}s` : spec.name));
+    const box = el("div", "list-rows");
+    wrap.append(box);
+
+    // Rows are edited in place, so keys this frontend does not know about survive a save.
+    const commit = () => onChange(JSON.stringify(rows));
+
+    function draw() {
+      clear(box);
+      if (!rows.length) box.append(el("div", "list-empty", `No ${meta.item || "entries"} yet.`));
+      if (rows.length && fields.length > 1) {
+        const head = el("div", "list-row list-head");
+        head.append(el("span", "list-ord", ""));
+        fields.forEach((f) => head.append(el("div", "list-cell", f.label || f.name)));
+        head.append(el("span", "list-rm-head", ""));   // matches the row's remove button
+        box.append(head);
+      }
+      rows.forEach((row, i) => {
+        const r = el("div", "list-row");
+        // Order is load order — the text encoder before its connector, LoRAs top to bottom.
+        const ord = el("div", "list-ord");
+        const up = el("button", "btn ghost tiny", "▲");
+        up.title = "Move up"; up.disabled = i === 0;
+        up.onclick = () => { rows.splice(i - 1, 0, rows.splice(i, 1)[0]); commit(); draw(); };
+        const down = el("button", "btn ghost tiny", "▼");
+        down.title = "Move down"; down.disabled = i === rows.length - 1;
+        down.onclick = () => { rows.splice(i + 1, 0, rows.splice(i, 1)[0]); commit(); draw(); };
+        ord.append(up, down);
+        r.append(ord);
+        fields.forEach((f) => r.append(listRowCell(f, row, commit)));
+        const rm = el("button", "btn ghost tiny wire-rm", "×");
+        rm.title = `Remove this ${meta.item || "entry"}`;
+        rm.onclick = () => { rows.splice(i, 1); commit(); draw(); };
+        r.append(rm);
+        box.append(r);
+      });
+      const max = meta.max_rows || 0;
+      if (!max || rows.length < max) {
+        const add = el("button", "btn ghost tiny wire-add", meta.add_label || "+ Add");
+        add.onclick = () => {
+          const row = {};
+          fields.forEach((f) => { if (f.default != null) row[f.name] = f.default; });
+          rows.push(row); commit(); draw();
+        };
+        box.append(add);
+      }
+    }
+
+    draw();
+    return wrap;
+  }
+
   function widgetField(spec, value, onChange) {
+    if (spec.kind === "list") return listField(spec, value, onChange);
     const wrap = el("label", "field");
     wrap.append(el("span", null, spec.name + (spec.required ? "" : "  ·opt")));
     let ctrl;
@@ -417,6 +533,10 @@
       const v = slot.inputs[w.name];
       if (w.kind === "combo" && (!w.choices || !w.choices.length)) {
         issues.push({ level: "error", msg: `"${w.name}" has no installed options to pick from.` });
+      } else if (w.kind === "list") {
+        // "[]" passes the emptiness check below but means the node has nothing to load.
+        if (parseListValue(v != null ? v : w.default).length === 0)
+          issues.push({ level: "error", msg: `"${w.name}" is empty — add at least one entry.` });
       } else if (v == null || v === "") {
         // A linked input is FILLED at generate time from a project value, so the stored
         // blank is the normal state for one — warning about it would train the user to
@@ -566,7 +686,7 @@
       if (!confirm(`Remove "${slotDisplayLabel(slot)}" (${slotName(slot)}) from the pipeline?`)) return;
       // Removal is its own confirmed decision, not part of the edit buffer — and there
       // would be nothing left to press Save on.
-      config.slots = config.slots.filter((s) => s.id !== slot.id);
+      removeSlot(slot);
       deferSave = false;
       await persistNow();
       _setView("pipeline");
@@ -647,7 +767,8 @@
           const l2 = linkOf(slot.id, spec.name); if (l2) applyLinkValue(l2, v);  // keep group in sync
           await persist();
         });
-        if (!EASY() || iw || lk || linkMode) f.classList.add("with-eye");
+        const isList = spec.kind === "list";
+        if (!isList && (!EASY() || iw || lk || linkMode)) f.classList.add("with-eye");
         if (iw) {
           // Wired from another node's output: the widget value is replaced by the
           // connection at generation — lock the field and say where it comes from
@@ -662,7 +783,7 @@
           f.classList.add("linked");
           const ctrl = f.querySelector("input,select"); if (ctrl) ctrl.disabled = true;
           f.append(el("span", "link-tag", "🔗 " + lk.name));
-        } else if (linkMode) {
+        } else if (linkMode && !isList) {
           const chk = el("button", "eye-btn link-pick" + (linkSelHas(slot.id, spec.name) ? " on" : ""), "+");
           chk.type = "button"; chk.title = "Add to link selection";
           chk.onclick = (e) => {
@@ -672,7 +793,8 @@
             render();
           };
           f.append(chk);
-        } else if (!EASY()) {
+        } else if (!EASY() && !isList) {
+          // A list holds many values; there is no single control to expose to the editor.
           f.append(eyeButton(slot, spec));
         }
         grid.append(f);
@@ -976,11 +1098,12 @@
   }
 
   // ── "+ New node": role dropdown → "Setup node" modal (search → values + wiring) ──
-  function openRoleMenu(anchor) {
+  function openRoleMenu(anchor, onlyCategory) {
     document.querySelectorAll(".mn-role-pop").forEach((n) => n.remove());
     const pop = el("div", "mn-role-pop");
     const cats = {};
-    roles.forEach((r) => { (cats[r.category] = cats[r.category] || []).push(r); });
+    roles.filter((r) => !onlyCategory || r.category === onlyCategory)
+      .forEach((r) => { (cats[r.category] = cats[r.category] || []).push(r); });
     Object.keys(cats).forEach((cat) => {
       pop.append(el("div", "mn-role-cat", cat));
       cats[cat].forEach((r) => {
@@ -989,10 +1112,12 @@
         pop.append(it);
       });
     });
-    pop.append(el("div", "mn-role-cat", "Advanced"));
-    const any = el("div", "mn-role-item", "Any node…");
-    any.onclick = () => { pop.remove(); openNodeSetup("__any__"); };
-    pop.append(any);
+    if (!onlyCategory) {
+      pop.append(el("div", "mn-role-cat", "Advanced"));
+      const any = el("div", "mn-role-item", "Any node…");
+      any.onclick = () => { pop.remove(); openNodeSetup("__any__"); };
+      pop.append(any);
+    }
 
     // Measure before placing: below the card is the default, but the shelf is usually
     // near the bottom of a scrolled pane, where "below" is off-screen.
@@ -1856,6 +1981,89 @@
     try { localStorage.setItem(GROUP_FOLD_KEY, JSON.stringify([...set])); } catch (_) {}
   }
 
+  // Removing a node from the middle of a chain joins its neighbours, the way deleting a node
+  // in ComfyUI does: loader → LoRA → sampler, drop the LoRA and the loader feeds the sampler.
+  // Same rule as bypass — for each output, exactly one input of a matching type is the one
+  // that carried it — except this one is permanent, so it runs before the slot goes.
+  function rewireAround(slot) {
+    const cand = specFor(slot);
+    if (!cand) return;
+    const cis = cand.connection_inputs || [];
+    const outs = cand.outputs || [];
+    // output name -> the source feeding the one input that can carry it through
+    const passthrough = {};
+    outs.forEach((out) => {
+      const matching = cis.filter((ci) => typeAccepts(ci.type, out.type));
+      if (matching.length !== 1) return;          // ambiguous: nothing to promote
+      const upstream = (slot.input_sources || {})[matching[0].name];
+      if (upstream && upstream !== "auto") passthrough[out.name] = upstream;
+    });
+    if (!Object.keys(passthrough).length) return;
+    // An imported workflow records output names as its own graph spelled them, which need
+    // not match this node class's output_name. With a single output there is no ambiguity.
+    const only = outs.length === 1 ? passthrough[outs[0].name] : undefined;
+    const resolve = (outName) => (passthrough[outName] !== undefined ? passthrough[outName] : only);
+
+    // An edge can be authored from either end. Downstream nodes usually hold it as their own
+    // input source ("out:<this>:<output>") and carry no wire on this side at all — which is
+    // exactly how an imported workflow arrives, so both directions have to be walked.
+    config.slots.forEach((s2) => {
+      if (s2.id === slot.id) return;
+      Object.entries(s2.input_sources || {}).forEach(([inp, value]) => {
+        const p = _parseOutSource(value);
+        if (!p || p.slotId !== slot.id) return;
+        const up = resolve(p.out);
+        if (up) _setInputSource(s2, inp, up);
+      });
+    });
+    Object.entries(slot.wires || {}).forEach(([outName, raw]) => {
+      const up = resolve(outName);
+      if (!up) return;
+      const src = _parseOutSource(up);
+      wireTargets(raw).filter(Boolean).forEach((target) => {
+        const dest = _parseNodeTarget(target);
+        if (dest) {
+          const ds = slotById(dest.slotId);
+          if (ds && ds.id !== slot.id) {
+            ds.input_sources = ds.input_sources || {};
+            _setInputSource(ds, dest.input, up);
+          }
+          return;
+        }
+        // A core port or a global output can only be re-fed from another node's output —
+        // the timeline image and the core primitives have no wire to inherit.
+        if (src) _addWire(src.slotId, src.out, target);
+      });
+    });
+  }
+
+  // Everything still pointing at a node that is gone. Left behind, these render as
+  // "(missing)" sources and dead wires that the builder then has to reject.
+  function purgeSlotReferences(id) {
+    config.slots.forEach((s) => {
+      Object.keys(s.wires || {}).forEach((out) => {
+        s.wires[out] = wireTargets(s.wires[out])
+          .filter((t) => { const n = _parseNodeTarget(t); return !n || n.slotId !== id; });
+      });
+      Object.entries(s.input_sources || {}).forEach(([inp, src]) => {
+        const p = _parseOutSource(src);
+        if (p && p.slotId === id) s.input_sources[inp] = "";
+      });
+    });
+    Object.values(config.core_overrides || {}).forEach((ins) => {
+      Object.keys(ins || {}).forEach((k) => {
+        if (String(ins[k]).startsWith(`out:${id}:`)) delete ins[k];
+      });
+    });
+  }
+
+  function removeSlot(slot) {
+    rewireAround(slot);
+    config.slots = config.slots.filter((s) => s.id !== slot.id);
+    purgeSlotReferences(slot.id);
+    reconcileOpenPortWiring();
+  }
+
   function _grid(slots, v) {
     const wrap = el("div", "node-grid");
     slots.forEach((slot) => wrap.append(nodeCard(slot, v.perSlot[slot.id] || [])));
@@ -1909,39 +2117,82 @@
   // A group is a VIEW, never a container: the nodes stay flat, every wire keeps its real
   // endpoints, and anything can still wire to anything. That is the whole difference from a
   // subgraph — there is no inside to navigate into, only a heading you can fold.
+  // Whether a slot is a model loader. Loaders are pinned to the top of the shelf: picking
+  // model files is the one thing every project has to do, and on a busy pipeline the
+  // loaders were scattered among nodes nobody needs to touch.
+  const LOADER_OUTPUT_TYPES = ["MODEL", "CLIP", "VAE", "CLIP_VISION"];
+  function isLoaderSlot(slot) {
+    const r = roles.find((x) => x.key === slot.role);
+    if (r) return r.category === "Loaders";
+    // An imported workflow has no roles — its nodes are all "custom" — so fall back to what
+    // the node actually produces. Anything emitting a model, encoder or VAE is model-side
+    // and belongs up here, including LoRA patchers.
+    const cand = specFor(slot);
+    return !!cand && (cand.outputs || []).some((o) => LOADER_OUTPUT_TYPES.includes(o.type));
+  }
+
+  function addCard(title, hint, onClick) {
+    const add = el("button", "node-card node-card-add");
+    add.type = "button";
+    add.title = hint;
+    const art = el("div", "node-card-art");
+    art.append(el("span", "node-card-plus", "+"));
+    const meta = el("div", "node-card-meta");
+    meta.append(el("div", "node-card-title", title));
+    art.append(meta);
+    add.append(art);
+    add.onclick = onClick;
+    return add;
+  }
+
+  function loaderSection(slots, v) {
+    const sec = el("div", "node-group node-group-pinned");
+    const head = el("div", "node-group-head");
+    const title = el("div", "node-group-fold static");
+    title.append(el("span", "node-group-name", "Loaders"));
+    title.append(el("span", "node-group-count", String(slots.length)));
+    const bad = slots.reduce(
+      (n, s) => n + ((v.perSlot[s.id] || []).some((m) => m.level === "error") ? 1 : 0), 0);
+    if (bad) title.append(el("span", "node-group-bad", `${bad} to fix`));
+    head.append(title);
+    sec.append(head);
+    sec.append(el("div", "node-group-note", "Your model files. Pick them here — the rest of the pipeline wires itself."));
+    const grid = _grid(slots, v);
+    if (!searchQ)
+      grid.append(addCard("Add loader", "Add a model loader to the pipeline",
+        (e) => openRoleMenu(e.currentTarget, "Loaders")));
+    sec.append(grid);
+    return sec;
+  }
+
   function nodeGrid(v) {
     const host = el("div", "node-groups");
     const visible = config.slots.filter(slotMatches);
     host.append(searchBar(visible.length, config.slots.length));
 
+    const loaders = visible.filter(isLoaderSlot);
+    const rest = visible.filter((s) => !isLoaderSlot(s));
+    if (loaders.length || !searchQ) host.append(loaderSection(loaders, v));
+
     if (!searchQ) {                            // the add card is an action, not a result
       const addWrap = el("div", "node-grid");
-      const add = el("button", "node-card node-card-add");
-      add.type = "button";
-      add.title = "Add a loader or custom node to the pipeline";
-      const addArt = el("div", "node-card-art");
-      addArt.append(el("span", "node-card-plus", "+"));
-      const addMeta = el("div", "node-card-meta");
-      addMeta.append(el("div", "node-card-title", "New node"));
-      addArt.append(addMeta);
-      add.append(addArt);
-      add.onclick = (e) => openRoleMenu(e.currentTarget);
-      addWrap.append(add);
+      addWrap.append(addCard("New node", "Add a loader or custom node to the pipeline",
+        (e) => openRoleMenu(e.currentTarget)));
       host.append(addWrap);
     } else if (!visible.length) {
       host.append(el("div", "req-empty", `Nothing matches "${searchQ}".`));
       return host;
     }
 
-    const names = groupNames();
+    const names = groupNames().filter((n) => rest.some((s) => (s.group || "").trim() === n));
     if (!names.length) {                       // nothing grouped: the plain grid, as before
-      host.append(_grid(visible, v));
+      if (rest.length) host.append(_grid(rest, v));
       return host;
     }
     // A match inside a folded group has to be reachable, so search overrides the folds.
     const closed = searchQ ? new Set() : closedGroups();
-    const sections = names.map((n) => [n, visible.filter((s) => (s.group || "").trim() === n)]);
-    const loose = visible.filter((s) => !(s.group || "").trim());
+    const sections = names.map((n) => [n, rest.filter((s) => (s.group || "").trim() === n)]);
+    const loose = rest.filter((s) => !(s.group || "").trim());
     if (loose.length) sections.push(["Ungrouped", loose]);
 
     sections.forEach(([name, slots]) => {
