@@ -2614,22 +2614,13 @@ if web is not None and PromptServer is not None:
                 seeded_now = True
         p.models = body
         projects.save(p)
-        # Keep the global default in sync (it seeds new projects) — but never let a save that
-        # simply omits `model_family` erase the one already recorded there. A caller that
-        # means to change the family sends it; one that is only rearranging loaders does not,
-        # and silently clearing it is how every later project ends up with no family at all.
-        #
-        # A SEED is not a user edit, and must not reach the global at all: opening a new
-        # project would otherwise replace the loaders someone configured — the very thing
-        # the global exists to hand on — with four empty ones.
+        # A SEED is not a user edit and must not reach the global default at all: opening a
+        # new project would otherwise replace the loaders someone configured with empty ones.
         if seeded_now:
             return web.json_response(body)
-        glob = dict(body)
-        if not glob.get("model_family"):
-            inherited = nodes.load_models().get("model_family")
-            if inherited:
-                glob["model_family"] = inherited
-        nodes.save_models(glob)
+        glob = pipeline_wiring.global_template_update(nodes.load_models(), body)
+        if glob is not None:
+            nodes.save_models(glob)
         return web.json_response(body)
 
     # --- UI: legacy entry points ---

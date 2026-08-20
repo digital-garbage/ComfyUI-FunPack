@@ -522,3 +522,38 @@ def test_the_samplers_own_positive_stays_core_owned():
         offered = {p for ports in pipeline_wiring._type_fallback_ports(family).values()
                    for p in ports}
         assert "FunPackLTXAVSceneChainSampler.positive" not in offered
+
+
+# ── what a project's save leaves in the global default ────────────────────────
+
+def test_an_imported_workflow_never_becomes_the_global_template():
+    """Mirroring one project's graph is how every later project came to adopt it."""
+    current = {"model_family": "ltxav", "slots": []}
+    saved = dict(IMPORTED_GLOBAL)
+    assert pipeline_wiring.global_template_update(current, saved) is None
+
+
+def test_a_hand_wired_graph_stays_that_projects_business():
+    saved = {"model_family": "ltxav",
+             "slots": [{"id": "mine", "role": "custom", "node_class": "VAELoader"}]}
+    assert pipeline_wiring.global_template_update({"model_family": "ltxav"}, saved) is None
+
+
+def test_seeded_loaders_do_travel_because_that_is_what_the_global_is_for():
+    """Picking the same model files in every project is the thing it prevents."""
+    saved = {"model_family": "ltxav",
+             "slots": pipeline_wiring.default_pipeline_slots("ltxav", OI_FILES)}
+    assert pipeline_wiring.global_template_update({}, saved) == saved
+
+
+def test_the_family_is_recorded_even_when_the_graph_is_not():
+    saved = dict(IMPORTED_GLOBAL, model_family="minimax_h3")
+    out = pipeline_wiring.global_template_update({"model_family": "ltxav", "slots": []}, saved)
+    assert out["model_family"] == "minimax_h3"
+    assert out["slots"] == []          # the old global's own slots, not the import's
+
+
+def test_a_save_that_omits_the_family_does_not_erase_it():
+    saved = {"slots": pipeline_wiring.default_pipeline_slots("ltxav", OI_FILES)}
+    out = pipeline_wiring.global_template_update({"model_family": "minimax_h3"}, saved)
+    assert out["model_family"] == "minimax_h3"

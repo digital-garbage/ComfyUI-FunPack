@@ -680,6 +680,32 @@ def reseed_for_family(models: dict, object_info: Optional[dict] = None) -> bool:
     return True
 
 
+def global_template_update(current: Optional[dict], saved: dict) -> Optional[dict]:
+    """What a project's save should leave in the global default that seeds NEW projects.
+
+    Only FunPack's own seeded loaders travel: those are the file picks anyone's next
+    project wants, and the reason the global exists. An imported workflow or a hand-wired
+    graph is that ONE project's business — mirroring it whole is how every later project
+    came to adopt it, loaders and all. The family is reusable either way, so it is recorded
+    on its own.
+
+    Returns the global to write, or None when the save must not touch it.
+    """
+    current = current if isinstance(current, dict) else {}
+    saved = saved if isinstance(saved, dict) else {}
+    if is_seeded_pipeline(saved) and not is_workflow_import(saved):
+        out = dict(saved)
+        # A save that simply omits the family must not erase the one already recorded:
+        # a caller changing it sends it, one rearranging loaders does not.
+        if not out.get("model_family") and current.get("model_family"):
+            out["model_family"] = current["model_family"]
+        return out
+    family = saved.get("model_family")
+    if family and current.get("model_family") != family:
+        return {**current, "model_family": family}
+    return None
+
+
 def new_project_models(glob: Optional[dict], object_info: Optional[dict] = None) -> dict:
     """The pipeline a NEW project starts with.
 

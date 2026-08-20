@@ -1679,7 +1679,14 @@
     }
     ensureLinks().push(link);
     applyLinkValue(link, val);
-    linkMode = false; linkSel = []; await persist(); setView("links");
+    linkMode = false; linkSel = [];
+    // Members are picked ON node pages, where saving is deferred until the node's Save
+    // button. Going through that buffer meant "Save link" only marked the page dirty, and
+    // the jump to the links view then offered to DISCARD the link it had just made — so a
+    // link could never be created at all. Pressing Save link is the explicit save.
+    if (deferSave) { await persistNow(); deferDirty = false; }
+    else await persist();
+    setView("links");
   }
 
   // Persistent bar while picking link members — stays visible as the user moves
