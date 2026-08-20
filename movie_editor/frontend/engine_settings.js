@@ -856,11 +856,19 @@
       sel.append(o);
     });
     sel.onchange = () => S.setSamplerInputNow("detail_upsampler", sel.value);
+    // An upsampler has to take latents the same width as the model's, so on H3 the LTX
+    // file is not a fallback and 'auto' deliberately will not fetch it. Promising a
+    // download that cannot happen sends people to wait at the console for nothing.
+    const h3 = !!(window.PipelineCaps && window.PipelineCaps.isH3(S.get()));
     g.append(field("Latent upsampler", sel,
-      "'auto' picks the newest installed one, or downloads the official file (~1 GB, once).",
-      "The LTX 2.3 spatial upsampler from models/latent_upscale_models — the official two-stage workflows use the same file."));
+      h3 ? "'auto' uses an installed upsampler; it never downloads the LTX one on H3."
+         : "'auto' picks the newest installed one, or downloads the official file (~1 GB, once).",
+      h3 ? "MiniMax H3's latents are 24-channel, so it needs an upsampler trained for H3 — the LTX file is 128-channel and is refused by name rather than failing mid-render."
+         : "The LTX 2.3 spatial upsampler from models/latent_upscale_models — the official two-stage workflows use the same file."));
     if (_detailUpsamplerChoices.length <= 1) {
-      g.append(hintEl("Nothing installed in models/latent_upscale_models yet — the first detailed run downloads the official upsampler automatically (watch the ComfyUI console)."));
+      g.append(hintEl(h3
+        ? "Nothing installed in models/latent_upscale_models yet. H3 needs a 24-channel upsampler — put one there and it appears in this list; the operation is skipped, with the reason, until then."
+        : "Nothing installed in models/latent_upscale_models yet — the first detailed run downloads the official upsampler automatically (watch the ComfyUI console)."));
     }
   }
 
