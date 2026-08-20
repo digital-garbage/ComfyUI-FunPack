@@ -15,6 +15,11 @@ import torch
 from aiohttp import web
 from server import PromptServer
 
+try:
+    from .widgets import field, list_widget, parse_rows
+except ImportError:  # standalone tests import the modules directly
+    from widgets import field, list_widget, parse_rows
+
 LORA_TYPES = ["general", "action", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
 TRANSFORMER_BLOCK_PATTERN = re.compile(r"(?:^|\.)transformer_blocks\.(\d+)\.")
@@ -183,6 +188,109 @@ def patch_energy(value):
     return 0.0
 
 
+def lora_row_fields():
+    """The columns of one LoRA row, shared by the list widget and its parser."""
+    loras = ["None"] + folder_paths.get_filename_list("loras")
+    return [
+        field("lora", "combo", label="LoRA", choices=loras, default="None"),
+        field("type", "combo", label="type", choices=LORA_TYPES, default="general",
+              tooltip="What the LoRA is for. Drives per-block placement when per_block is on."),
+        field("strength", "float", label="strength", default=1.0, min=-10.0, max=10.0, step=0.01),
+    ]
+
+
+def lora_list_input(tooltip):
+    return list_widget("LoRA", lora_row_fields(), add_label="+ Add LoRA", tooltip=tooltip)
+
+
+def stack_from_lora_list(value, per_block=False):
+    """A LoRA stack straight from a list widget, with no refinement suggestions applied.
+
+    Same row shape FunPack Apply LoRA Weights emits, so the loader cannot tell the two
+    apart — which is what lets a LoRA be used without wiring a second node for it.
+    """
+    entries = []
+    for row in parse_rows(value, lora_row_fields(), key="lora"):
+        name = row["lora"]
+        lora_type = normalize_lora_type(row["type"])
+        entries.append({
+            "slot": row["index"],
+            "name": name,
+            "type": lora_type,
+            "id": lora_state_id(name, lora_type),
+            "base_model_weight": row["strength"],
+            "model_weight": row["strength"],
+            "source": "list",
+        })
+    return {
+        "version": 2,
+        "refinement_key": "",
+        "mode": "ltx2",
+        "per_block": coerce_bool(per_block),
+        "positive_prompt": "",
+        "prompt_key": "",
+        "loras": entries,
+    }
+
+
+# Wrapper prefixes trainers put in front of otherwise-standard keys. ComfyUI's own key maps
+# already cover diffusion_model./lora_unet_/lycoris_ and, for LTX, the bare
+# transformer_blocks.* form -- these are the ones that arrive wrapped and match nothing at
+# all until the wrapper comes off.
+LORA_KEY_PREFIXES = (
+    "transformer.",
+    "diffusion_model.",
+    "model.diffusion_model.",
+    "base_model.model.",
+    "lora_model.",
+    "net.",
+)
+
+
+def _count_lora_matches(lora, key_map):
+    try:
+        return len(comfy.lora.load_lora(lora, key_map, log_missing=False))
+    except TypeError:  # ComfyUI without the log_missing argument
+        return len(comfy.lora.load_lora(lora, key_map))
+
+
+def _strip_key_prefix(lora, prefix):
+    if not any(k.startswith(prefix) for k in lora):
+        return None
+    return {(k[len(prefix):] if k.startswith(prefix) else k): v for k, v in lora.items()}
+
+
+def resolve_lora_patches(model, lora, clip=None):
+    """Match a LoRA against a model, trying known wrapper prefixes. -> (patches, note).
+
+    ComfyUI's converters handle the tensor-naming dialects (lora_up/lora_A/lora.up/PEFT
+    defaults); what they do not handle is a whole state dict nested under a wrapper the
+    model's key map never mentions, which is how a diffusers-trained LoRA ends up applying
+    zero weights in silence. Every candidate is scored against the real key map and the one
+    that matches the most weights wins, so a format nobody anticipated still lands as long
+    as its keys are recognisable underneath.
+    """
+    key_map = comfy.lora.model_lora_keys_unet(model.model, {})
+    if clip is not None:
+        key_map = comfy.lora.model_lora_keys_clip(clip.cond_stage_model, key_map)
+    converted = comfy.lora_convert.convert_lora(lora)
+
+    best, best_count, best_note = converted, _count_lora_matches(converted, key_map), "as-is"
+    for prefix in LORA_KEY_PREFIXES:
+        variant = _strip_key_prefix(converted, prefix)
+        if variant is None:
+            continue
+        count = _count_lora_matches(variant, key_map)
+        if count > best_count:
+            best, best_count, best_note = variant, count, f"stripped {prefix}"
+
+    patches = comfy.lora.load_lora(best, key_map)
+    if not patches:
+        logging.warning("[FunPack] LoRA matched no weights in this model - wrong model family?")
+        return patches, "MATCHED NOTHING"
+    return patches, f"keys={len(patches)} fmt={best_note}"
+
+
 class FunPackApplyLoraWeights:
     """
     Builds a LoRA stack from user base weights, then applies prompt-specific
@@ -201,7 +309,10 @@ class FunPackApplyLoraWeights:
         optional = FlexibleOptionalInputType(
             any_type,
             {
-                "lora_list": ("STRING", {"default": "[]", "multiline": False}),
+                # The canvas draws this with web/funpack_lora_weights.js; the funpack_list
+                # spec is what lets the FunPack Editor draw the same rows instead of raw JSON.
+                "lora_list": lora_list_input(
+                    "LoRAs whose weights this node looks up for the current prompt."),
                 "refinement_key_input": ("STRING", {
                     "default": "",
                     "multiline": False,
@@ -458,10 +569,21 @@ class FunPackLoraLoader:
         return {
             "required": {
                 "model": ("MODEL",),
-                "lora_stack": (LORA_STACK_TYPE,),
+                "lora_list": lora_list_input(
+                    "LoRAs to apply, top to bottom. Enough on its own — a stack is only "
+                    "needed for prompt-specific trained weights."),
             },
             "optional": {
                 "clip": ("CLIP",),
+                "lora_stack": (LORA_STACK_TYPE, {
+                    "tooltip": "Optional stack from FunPack Apply LoRA Weights, carrying "
+                               "prompt-specific trained strengths. Its LoRAs are applied "
+                               "first, then this node's own list."}),
+                "per_block": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Analyze each LoRA's block deltas and balance competing block "
+                               "strengths. LTX models only; a wired stack can switch this on "
+                               "by itself."}),
             },
         }
 
@@ -512,21 +634,18 @@ class FunPackLoraLoader:
         )
 
     def _load_model_lora_patches(self, model, lora, lora_cache_key, model_cache_key=None):
+        """(patches, format note). The note says how the LoRA's keys had to be read."""
         if lora_cache_key is None:
-            key_map = comfy.lora.model_lora_keys_unet(model.model, {})
-            converted_lora = comfy.lora_convert.convert_lora(lora)
-            return comfy.lora.load_lora(converted_lora, key_map)
+            return resolve_lora_patches(model, lora)
 
         cache_key = (lora_cache_key, model_cache_key or self._model_cache_key(model))
-        loaded = self._cache_get(self.model_patch_cache, cache_key)
-        if loaded is not None:
-            return loaded
+        cached = self._cache_get(self.model_patch_cache, cache_key)
+        if cached is not None:
+            return cached
 
-        key_map = comfy.lora.model_lora_keys_unet(model.model, {})
-        converted_lora = comfy.lora_convert.convert_lora(lora)
-        loaded = comfy.lora.load_lora(converted_lora, key_map)
-        self._cache_put(self.model_patch_cache, cache_key, loaded, LORA_PATCH_CACHE_SIZE)
-        return loaded
+        result = resolve_lora_patches(model, lora)
+        self._cache_put(self.model_patch_cache, cache_key, result, LORA_PATCH_CACHE_SIZE)
+        return result
 
     def _split_model_patches_by_block(self, loaded):
         global_patches = {}
@@ -793,10 +912,10 @@ class FunPackLoraLoader:
 
     def _load_lora_per_block(self, model, lora, model_weight):
         lora_cache_key = None
-        loaded = self._load_model_lora_patches(model, lora, lora_cache_key)
+        loaded, fmt = self._load_model_lora_patches(model, lora, lora_cache_key)
         profile = self._lora_block_profile({}, loaded, model_weight)
         if not profile:
-            return None, "per-block fallback=global"
+            return None, f"per-block fallback=global {fmt}"
 
         new_model, non_block_count, _ = self._apply_model_patches(
             model,
@@ -809,13 +928,19 @@ class FunPackLoraLoader:
         max_eff = model_weight * max(scales.values())
         status = (
             f"per-block blocks={len(scales)} non_block={non_block_count} "
-            f"range={min_eff:.3f}..{max_eff:.3f}"
+            f"range={min_eff:.3f}..{max_eff:.3f} {fmt}"
         )
         return new_model, status
 
-    def load_loras(self, model, lora_stack, clip=None):
-        loras = lora_stack.get("loras", []) if isinstance(lora_stack, dict) else []
-        per_block = coerce_bool(lora_stack.get("per_block", False)) if isinstance(lora_stack, dict) else False
+    def load_loras(self, model, lora_list="[]", lora_stack=None, clip=None, per_block=False):
+        # Both sources are honoured: a wired stack carries trained, prompt-specific weights,
+        # the list is what the user typed here. Dropping either one silently would make a
+        # filled-in field do nothing.
+        stack = lora_stack if isinstance(lora_stack, dict) else {}
+        own = stack_from_lora_list(lora_list, per_block)
+        loras = list(stack.get("loras", [])) + own["loras"]
+        per_block = coerce_bool(stack.get("per_block", False)) or coerce_bool(per_block)
+        lora_stack = {**own, **stack, "per_block": per_block, "loras": loras}
         lines = [f"FunPack LoRA Loader | loading {len(loras)} LoRA(s)"]
         lines.append(f"Per-block application: {'enabled' if per_block else 'disabled'}")
         loaded_count = 0
@@ -832,7 +957,7 @@ class FunPackLoraLoader:
             lora, lora_cache_key = self._load_lora_file(entry["name"])
             if self._per_block_supported(model, lora_stack, entry):
                 patch_cache_key = (lora_cache_key, model_cache_key)
-                loaded = self._load_model_lora_patches(model, lora, lora_cache_key, model_cache_key)
+                loaded, fmt = self._load_model_lora_patches(model, lora, lora_cache_key, model_cache_key)
                 profile = self._lora_block_profile(entry, loaded, model_weight, patch_cache_key)
                 if profile is not None:
                     item = {
@@ -851,7 +976,7 @@ class FunPackLoraLoader:
                             "loaded": loaded,
                             "mode": "patch_global",
                             "model_weight": model_weight,
-                            "status": "per-block fallback=global",
+                            "status": f"per-block fallback=global {fmt}",
                         }
                     )
             elif self._per_block_requested(entry, lora_stack):
@@ -859,6 +984,7 @@ class FunPackLoraLoader:
                     {
                         "entry": entry,
                         "lora": lora,
+                        "cache_key": lora_cache_key,
                         "mode": "global",
                         "model_weight": model_weight,
                         "status": "per-block unsupported -> global",
@@ -869,6 +995,7 @@ class FunPackLoraLoader:
                     {
                         "entry": entry,
                         "lora": lora,
+                        "cache_key": lora_cache_key,
                         "mode": "global",
                         "model_weight": model_weight,
                         "status": "global",
@@ -893,8 +1020,12 @@ class FunPackLoraLoader:
                 apply_status = item["status"]
                 model, _, _ = self._apply_model_patches(model, item["loaded"], model_weight)
             else:
-                apply_status = item["status"]
-                model, clip = comfy.sd.load_lora_for_models(model, clip, item["lora"], model_weight, 0.0)
+                # Same resolver as the per-block path: comfy's own converters, plus the
+                # wrapper-prefix search, so an unusual format is not silently a no-op.
+                loaded, fmt = self._load_model_lora_patches(
+                    model, item["lora"], item.get("cache_key"), model_cache_key)
+                model, _, _ = self._apply_model_patches(model, loaded, model_weight)
+                apply_status = f"{item['status']} {fmt}"
 
             loaded_count += 1
             lines.append(

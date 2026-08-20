@@ -19,6 +19,7 @@ if __package__:
         FunPackStoryMemLastFrameExtractor,
         FunPackVideoStitch,
     )
+    from .loaders import FunPackCLIPLoader, FunPackDiffusionModelLoader, FunPackVAELoader
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     from .templates import FunPackRefinementKeyLoader
@@ -63,6 +64,12 @@ else:
         FunPackApplyLoraWeights = None
         FunPackLoraLoader = None
     try:
+        from loaders import FunPackCLIPLoader, FunPackDiffusionModelLoader, FunPackVAELoader
+    except Exception:
+        FunPackCLIPLoader = None
+        FunPackDiffusionModelLoader = None
+        FunPackVAELoader = None
+    try:
         from samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     except Exception:
         FunPackHybridEuler2SSampler = None
@@ -96,6 +103,9 @@ NODE_CLASS_MAPPINGS = {
     "FunPackLTXAVSceneChainSampler": FunPackLTXAVSceneChainSampler,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
+    "FunPackDiffusionModelLoader": FunPackDiffusionModelLoader,
+    "FunPackCLIPLoader": FunPackCLIPLoader,
+    "FunPackVAELoader": FunPackVAELoader,
     "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
 }
 NODE_CLASS_MAPPINGS = {name: cls for name, cls in NODE_CLASS_MAPPINGS.items() if cls is not None}
@@ -121,6 +131,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackLTXAVSceneChainSampler": "FunPack LTXAV Scene Chain Sampler",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
+    "FunPackDiffusionModelLoader": "FunPack Diffusion Model Loader",
+    "FunPackCLIPLoader": "FunPack CLIP Loader",
+    "FunPackVAELoader": "FunPack VAE Loader",
     "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
 }
 

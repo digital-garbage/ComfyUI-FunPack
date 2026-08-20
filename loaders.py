@@ -1,0 +1,281 @@
+"""FunPack's own model loaders.
+
+The point is not to replace ComfyUI's loaders — it is to make the FunPack pipeline
+configurable by picking files and nothing else. One loader per model kind, every option
+that actually matters on the node (quantization, compute dtype, attention backend), and
+list inputs where a family needs more than one file.
+
+Attention backends come from ComfyUI's own registry rather than a private sageattention
+import, so this node offers exactly what the machine can run — sage/sage3 when
+SageAttention is installed, flash when flash-attn is, xformers when enabled — and never
+lies about the rest.
+"""
+import logging
+
+import comfy.sd
+import comfy.utils
+import folder_paths
+import torch
+
+try:
+    from .widgets import field, list_widget, parse_rows
+except ImportError:  # standalone tests import the modules directly
+    from widgets import field, list_widget, parse_rows
+
+WEIGHT_DTYPES = ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2", "fp16", "bf16", "fp32"]
+COMPUTE_DTYPES = ["default", "fp16", "bf16", "fp32"]
+VAE_DTYPES = ["default", "fp16", "bf16", "fp32"]
+
+_DTYPE_BY_NAME = {
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+    "fp32": torch.float32,
+    "fp8_e4m3fn": getattr(torch, "float8_e4m3fn", None),
+    "fp8_e5m2": getattr(torch, "float8_e5m2", None),
+    # fp8_e4m3fn_fast is fp8_e4m3fn plus comfy's fp8 matmul path; see weight_model_options.
+    "fp8_e4m3fn_fast": getattr(torch, "float8_e4m3fn", None),
+}
+
+
+def dtype_of(name):
+    """The torch dtype a dtype choice names, or None for 'default'/unsupported builds."""
+    return _DTYPE_BY_NAME.get(str(name or "default"))
+
+
+def weight_model_options(weight_dtype):
+    """comfy `model_options` for a weight dtype choice. Same mapping core's UNETLoader uses."""
+    options = {}
+    dtype = dtype_of(weight_dtype)
+    if dtype is not None:
+        options["dtype"] = dtype
+    if weight_dtype == "fp8_e4m3fn_fast":
+        options["fp8_optimizations"] = True
+    return options
+
+
+def attention_choices():
+    """Attention backends this ComfyUI can actually run, newest-registry first.
+
+    'default' leaves the model on whatever ComfyUI itself selected (the --use-sage-attention
+    / --use-flash-attention launch flags), which is why it stays the default here.
+    """
+    names = []
+    try:
+        from comfy.ldm.modules.attention import REGISTERED_ATTENTION_FUNCTIONS
+        names = sorted(REGISTERED_ATTENTION_FUNCTIONS.keys())
+    except Exception:  # noqa: BLE001 - older ComfyUI without the registry
+        pass
+    return ["default"] + names
+
+
+def attention_override(name):
+    """A transformer_options override that routes every attention call to `name`.
+
+    ComfyUI wraps each attention implementation with `wrap_attn`, which hands the override
+    the original function plus the call's arguments. Calling the wrapped replacement would
+    re-enter that machinery, so the unwrapped function is what gets called.
+    """
+    if not name or name == "default":
+        return None
+    try:
+        from comfy.ldm.modules.attention import get_attention_function
+    except ImportError:
+        logging.warning("[FunPack] this ComfyUI has no attention registry; leaving attention alone")
+        return None
+    chosen = get_attention_function(name, None)
+    if chosen is None:
+        logging.warning("[FunPack] attention backend %r is not available; leaving attention alone", name)
+        return None
+    inner = getattr(chosen, "__wrapped__", chosen)
+
+    def override(_func, *args, **kwargs):
+        return inner(*args, **kwargs)
+
+    return override
+
+
+def set_fp16_accumulation(enabled):
+    """torch's fp16 accumulation switch. Returns what it ended up as, or None if unsupported."""
+    matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
+    if matmul is None or not hasattr(matmul, "allow_fp16_accumulation"):
+        return None
+    matmul.allow_fp16_accumulation = bool(enabled)
+    return bool(enabled)
+
+
+class FunPackDiffusionModelLoader:
+    """Loads a diffusion model with quantization and an attention backend chosen per node."""
+
+    CATEGORY = "FunPack/Loaders"
+    RETURN_TYPES = ("MODEL", "STRING")
+    RETURN_NAMES = ("MODEL", "status")
+    FUNCTION = "load_model"
+    DESCRIPTION = ("Diffusion model loader with weight/compute dtype and a per-model attention "
+                   "backend (SageAttention, FlashAttention, xformers — whichever are installed).")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model_name": (folder_paths.get_filename_list("diffusion_models"), {
+                    "tooltip": "The diffusion model file, from ComfyUI/models/diffusion_models."}),
+                "weight_dtype": (WEIGHT_DTYPES, {
+                    "default": "default",
+                    "tooltip": "How weights are stored in VRAM. fp8_e4m3fn roughly halves the "
+                               "model's memory; _fast additionally runs fp8 matmuls, which is "
+                               "faster on Ada and newer and slightly less precise. 'default' "
+                               "keeps whatever the file already is."}),
+                "compute_dtype": (COMPUTE_DTYPES, {
+                    "default": "default",
+                    "tooltip": "The dtype the model computes in. Setting this stops per-weight "
+                               "casting, so an fp8 model computes in bf16 without re-casting "
+                               "every layer."}),
+                "attention": (attention_choices(), {
+                    "default": "default",
+                    "tooltip": "Attention backend for THIS model. 'default' uses whatever "
+                               "ComfyUI was launched with. Only backends installed on this "
+                               "machine are listed."}),
+            },
+            "optional": {
+                "fp16_accumulation": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Accumulate fp16 matmuls in fp16. Faster on recent NVIDIA cards; "
+                               "needs a torch build that supports it, ignored otherwise."}),
+            },
+        }
+
+    def load_model(self, model_name, weight_dtype, compute_dtype, attention, fp16_accumulation=False):
+        notes = [f"FunPack Diffusion Model Loader | {model_name}"]
+
+        accum = set_fp16_accumulation(fp16_accumulation)
+        if fp16_accumulation and accum is None:
+            notes.append("fp16_accumulation: unsupported by this torch build, ignored")
+        elif accum is not None:
+            notes.append(f"fp16_accumulation: {accum}")
+
+        model_options = weight_model_options(weight_dtype)
+        notes.append(f"weight dtype: {weight_dtype}")
+
+        path = folder_paths.get_full_path_or_raise("diffusion_models", model_name)
+        state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
+        model = comfy.sd.load_diffusion_model_state_dict(
+            state_dict, model_options=model_options, metadata=metadata)
+        if model is None:
+            raise RuntimeError(
+                f"ERROR: could not detect a diffusion model in {model_name}. "
+                "Loading a text encoder or VAE file here is the usual cause.")
+
+        dtype = dtype_of(compute_dtype)
+        if dtype is not None and hasattr(model, "set_model_compute_dtype"):
+            model.set_model_compute_dtype(dtype)
+            model.force_cast_weights = False
+            notes.append(f"compute dtype: {compute_dtype}")
+        elif dtype is not None:
+            notes.append("compute dtype: unsupported by this ComfyUI, ignored")
+
+        override = attention_override(attention)
+        if override is not None:
+            model.model_options.setdefault("transformer_options", {})["optimized_attention_override"] = override
+            notes.append(f"attention: {attention}")
+        else:
+            notes.append("attention: default (as launched)")
+
+        return (model, "\n".join(notes))
+
+
+class FunPackCLIPLoader:
+    """Loads one or more text encoder files into a single CLIP."""
+
+    CATEGORY = "FunPack/Loaders"
+    RETURN_TYPES = ("CLIP", "STRING")
+    RETURN_NAMES = ("CLIP", "status")
+    FUNCTION = "load_clip"
+    DESCRIPTION = ("Text encoder loader. Add one slot for a single-file encoder (LTX-2.5's "
+                   "Gemma4), or two for an encoder plus its connector (LTX-2.3's Gemma3).")
+
+    @classmethod
+    def clip_types(cls):
+        try:
+            return [t.name.lower() for t in comfy.sd.CLIPType]
+        except Exception:  # noqa: BLE001
+            return ["ltxv"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        encoders = folder_paths.get_filename_list("text_encoders")
+        types = cls.clip_types()
+        return {
+            "required": {
+                "clip_list": list_widget(
+                    "text encoder",
+                    [field("clip_name", "combo", label="file", choices=encoders)],
+                    add_label="+ Add slot",
+                    tooltip="Text encoder files, in load order. One slot for LTX-2.5 (Gemma4); "
+                            "two for LTX-2.3 (Gemma3 + its connector)."),
+                "type": (types, {
+                    "default": "ltxv" if "ltxv" in types else (types[0] if types else "ltxv"),
+                    "tooltip": "Which model family the encoder is for. LTX-2 (all point "
+                               "releases) is 'ltxv'; MiniMax H3 is 'minimax'."}),
+            },
+            "optional": {
+                "device": (["default", "cpu"], {
+                    "default": "default",
+                    "tooltip": "'cpu' keeps the encoder off the GPU — slower prompts, more VRAM "
+                               "left for the diffusion model."}),
+            },
+        }
+
+    def load_clip(self, clip_list, type, device="default"):
+        rows = parse_rows(clip_list, [field("clip_name", "combo")], key="clip_name")
+        names = [row["clip_name"] for row in rows]
+        if not names:
+            raise RuntimeError("FunPack CLIP Loader: add at least one text encoder file.")
+
+        clip_type = getattr(comfy.sd.CLIPType, str(type).upper(), comfy.sd.CLIPType.STABLE_DIFFUSION)
+        model_options = {}
+        if device == "cpu":
+            model_options["load_device"] = model_options["offload_device"] = torch.device("cpu")
+
+        paths = [folder_paths.get_full_path_or_raise("text_encoders", n) for n in names]
+        clip = comfy.sd.load_clip(
+            ckpt_paths=paths,
+            embedding_directory=folder_paths.get_folder_paths("embeddings"),
+            clip_type=clip_type,
+            model_options=model_options,
+        )
+        status = "FunPack CLIP Loader | type={} device={}\n{}".format(
+            type, device, "\n".join(f"  {i + 1}. {n}" for i, n in enumerate(names)))
+        return (clip, status)
+
+
+class FunPackVAELoader:
+    """Loads one VAE. Add a second instance for the audio VAE."""
+
+    CATEGORY = "FunPack/Loaders"
+    RETURN_TYPES = ("VAE", "STRING")
+    RETURN_NAMES = ("VAE", "status")
+    FUNCTION = "load_vae"
+    DESCRIPTION = ("VAE loader with an explicit dtype. LTX-2 and MiniMax H3 both ship a video "
+                   "VAE and an audio VAE — use one of these per VAE.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "vae_name": (folder_paths.get_filename_list("vae"), {
+                    "tooltip": "The VAE file, from ComfyUI/models/vae."}),
+                "dtype": (VAE_DTYPES, {
+                    "default": "default",
+                    "tooltip": "MiniMax H3's VAEs must run in bf16 — fp16 produces garbage and "
+                               "fp32 decodes slowly. 'default' lets ComfyUI choose."}),
+            },
+        }
+
+    def load_vae(self, vae_name, dtype="default"):
+        path = folder_paths.get_full_path_or_raise("vae", vae_name)
+        state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
+        vae = comfy.sd.VAE(sd=state_dict, dtype=dtype_of(dtype), metadata=metadata)
+        check = getattr(vae, "throw_exception_if_invalid", None)
+        if callable(check):
+            check()
+        return (vae, f"FunPack VAE Loader | {vae_name} dtype={dtype}")
