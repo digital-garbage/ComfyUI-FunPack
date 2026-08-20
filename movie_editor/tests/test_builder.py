@@ -946,6 +946,14 @@ OI_DEFAULTS = dict(OI, **{
                                "frame_rate": ["FLOAT,INT", {"default": 25.0, "widgetType": "FLOAT"}],
                                "audio_vae": ["VAE", {}]}},
         "output": ["LATENT"], "output_name": ["Latent"]},
+    "FunPackLoraLoader": {
+        "input": {"required": {"model": ["MODEL", {}],
+                               "lora_list": ["STRING", {"default": "[]",
+                                                        "funpack_list": {"allow_empty": True}}]},
+                  "optional": {"clip": ["CLIP", {}],
+                               "per_block": ["BOOLEAN", {"default": False}]}},
+        "output": ["MODEL", "CLIP", "FP_LORA_STACK", "STRING"],
+        "output_name": ["MODEL", "CLIP", "lora_stack", "status"]},
 })
 
 
@@ -980,7 +988,7 @@ def test_a_freshly_seeded_pipeline_is_complete_for_i2v_too():
 def test_the_seeded_loaders_reach_the_core_ports_they_were_wired_to():
     graph, _ = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS)
     by_class = {n["class_type"]: nid for nid, n in graph.items()}
-    assert graph["studio"]["inputs"]["model"] == [by_class["FunPackDiffusionModelLoader"], 0]
+    assert graph["studio"]["inputs"]["model"] == [by_class["FunPackLoraLoader"], 0]
     assert graph["studio"]["inputs"]["clip"] == [by_class["FunPackCLIPLoader"], 0]
     # two VAE loaders: the video one feeds the sampler, the audio one the audio decode
     video_vae = graph["sampler"]["inputs"]["vae"]
@@ -988,6 +996,18 @@ def test_the_seeded_loaders_reach_the_core_ports_they_were_wired_to():
     assert graph[video_vae[0]]["class_type"] == "FunPackVAELoader"
     assert graph[audio_vae[0]]["class_type"] == "FunPackVAELoader"
     assert video_vae[0] != audio_vae[0]
+
+
+def test_the_seeded_lora_loader_is_a_wire_the_model_passes_through():
+    """It is seeded empty on purpose: the hop every LoRA needs is already in the graph, so
+    using one is picking a file — not adding a node and rewiring the model path."""
+    graph, report = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS)
+    by_class = {n["class_type"]: nid for nid, n in graph.items()}
+    lora = by_class["FunPackLoraLoader"]
+    assert graph[lora]["inputs"]["model"] == [by_class["FunPackDiffusionModelLoader"], 0]
+    assert graph[lora]["inputs"]["lora_list"] == "[]"
+    assert graph["studio"]["inputs"]["model"] == [lora, 0]
+    assert report["blocking"] == []
 
 
 def test_the_seeded_audio_latent_follows_the_project_not_its_own_widgets():

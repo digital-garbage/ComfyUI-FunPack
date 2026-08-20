@@ -199,8 +199,9 @@ def lora_row_fields():
     ]
 
 
-def lora_list_input(tooltip):
-    return list_widget("LoRA", lora_row_fields(), add_label="+ Add LoRA", tooltip=tooltip)
+def lora_list_input(tooltip, allow_empty=False):
+    return list_widget("LoRA", lora_row_fields(), add_label="+ Add LoRA", tooltip=tooltip,
+                       allow_empty=allow_empty)
 
 
 def stack_from_lora_list(value, per_block=False):
@@ -571,7 +572,9 @@ class FunPackLoraLoader:
                 "model": ("MODEL",),
                 "lora_list": lora_list_input(
                     "LoRAs to apply, top to bottom. Enough on its own — a stack is only "
-                    "needed for prompt-specific trained weights."),
+                    "needed for prompt-specific trained weights. Empty is fine: the model "
+                    "passes straight through.",
+                    allow_empty=True),
             },
             "optional": {
                 "clip": ("CLIP",),
@@ -941,6 +944,10 @@ class FunPackLoraLoader:
         loras = list(stack.get("loras", [])) + own["loras"]
         per_block = coerce_bool(stack.get("per_block", False)) or coerce_bool(per_block)
         lora_stack = {**own, **stack, "per_block": per_block, "loras": loras}
+        if not loras:
+            # An empty loader is a wire, not an error: it hands the model on untouched so it
+            # can sit in the pipeline permanently, waiting for the run that wants a LoRA.
+            return (model, clip, lora_stack, "FunPack LoRA Loader | No active LoRAs")
         lines = [f"FunPack LoRA Loader | loading {len(loras)} LoRA(s)"]
         lines.append(f"Per-block application: {'enabled' if per_block else 'disabled'}")
         loaded_count = 0

@@ -231,17 +231,53 @@ OI_LOADERS = {
         "vae_name": [["v.safetensors"]],
         "dtype": [["default", "bf16"], {"default": "default"}]}},
         "output": ["VAE"]},
+    "FunPackLoraLoader": {"input": {
+        "required": {"model": ["MODEL", {}],
+                     "lora_list": ["STRING", {"default": "[]",
+                                              "funpack_list": {"allow_empty": True}}]},
+        "optional": {"clip": ["CLIP", {}]}},
+        "output": ["MODEL", "CLIP", "FP_LORA_STACK", "STRING"],
+        "output_name": ["MODEL", "CLIP", "lora_stack", "status"]},
 }
 
 
 def test_a_fresh_pipeline_is_funpacks_own_loaders_already_wired():
     slots = pipeline_wiring.default_pipeline_slots("ltxav", OI_LOADERS)
-    assert [s["role"] for s in slots] == ["unet", "clip", "video_vae", "audio_vae"]
+    assert [s["role"] for s in slots] == ["unet", "lora", "clip", "video_vae", "audio_vae"]
     wired = {s["role"]: list(s["wires"].values())[0][0] for s in slots}
-    assert wired["unet"] == "port:FunPackStudio.model"
+    assert wired["lora"] == "port:FunPackStudio.model"
     assert wired["clip"] == "port:FunPackStudio.clip"
     assert wired["video_vae"] == "port:FunPackLTXAVSceneChainSampler.vae"
     assert wired["audio_vae"] == "port:LTXVAudioVAEDecode.audio_vae"
+
+
+def test_the_seeded_lora_loader_sits_between_the_model_and_the_studio():
+    """A LoRA has to be usable without adding and rewiring a node, so the hop is already
+    there. It is empty, and empty means the model passes straight through."""
+    slots = {s["role"]: s for s in pipeline_wiring.default_pipeline_slots("ltxav", OI_LOADERS)}
+    assert slots["lora"]["input_sources"]["model"] == "out:fp_unet:MODEL"
+    assert slots["lora"]["inputs"]["lora_list"] == "[]"
+    # the diffusion loader now feeds the LoRA loader instead of the Studio directly, so the
+    # Studio's model port has exactly one source
+    assert slots["unet"]["wires"] == {"MODEL": ["node:fp_lora:model"]}
+    assert slots["lora"]["wires"] == {"MODEL": ["port:FunPackStudio.model"]}
+
+
+def test_the_seeded_lora_loader_does_not_take_over_the_clip_path():
+    """It hands CLIP back untouched, so wiring it there is a hop that only adds a second
+    source for the port the CLIP loader already feeds."""
+    slots = {s["role"]: s for s in pipeline_wiring.default_pipeline_slots("ltxav", OI_LOADERS)}
+    assert "CLIP" not in slots["lora"]["wires"]
+    assert slots["clip"]["wires"] == {"CLIP": ["port:FunPackStudio.clip"]}
+    assert "clip" not in slots["lora"]["input_sources"]
+
+
+def test_a_consumer_that_does_not_re_emit_the_type_claims_nothing():
+    """The audio latent takes the audio VAE, but emits LATENT — the VAE still goes to the
+    decode port as well."""
+    slots = {s["role"]: s for s in
+             pipeline_wiring.default_pipeline_slots("ltxav", OI_WITH_PLUMBING)}
+    assert slots["audio_vae"]["wires"] == {"VAE": ["port:LTXVAudioVAEDecode.audio_vae"]}
 
 
 def test_the_default_pipeline_follows_the_family():
@@ -266,7 +302,7 @@ def test_loaders_this_comfyui_does_not_have_are_not_seeded():
 def test_seeding_happens_once_and_is_recorded():
     models = {"slots": []}
     pipeline_wiring.seed_default_pipeline(models, OI_LOADERS)
-    assert models["defaults_seeded"] is True and len(models["slots"]) == 4
+    assert models["defaults_seeded"] is True and len(models["slots"]) == 5
     models["slots"] = []
     pipeline_wiring.seed_default_pipeline(models, OI_LOADERS)
     assert models["slots"] == []          # emptied on purpose stays empty
@@ -291,7 +327,7 @@ def test_seeding_is_deferred_when_the_node_schema_is_unavailable():
     pipeline_wiring.seed_default_pipeline(models, None)
     assert "defaults_seeded" not in models
     pipeline_wiring.seed_default_pipeline(models, OI_LOADERS)
-    assert len(models["slots"]) == 4
+    assert len(models["slots"]) == 5
 
 
 OI_WITH_PLUMBING = dict(OI_LOADERS, **{

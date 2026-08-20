@@ -535,8 +535,9 @@
       if (w.kind === "combo" && (!w.choices || !w.choices.length)) {
         issues.push({ level: "error", msg: `"${w.name}" has no installed options to pick from.` });
       } else if (w.kind === "list") {
-        // "[]" passes the emptiness check below but means the node has nothing to load.
-        if (parseListValue(v != null ? v : w.default).length === 0)
+        // "[]" passes the emptiness check below but means the node has nothing to load —
+        // unless the node declares empty a working state, where it passes its input through.
+        if (!(w.list || {}).allow_empty && parseListValue(v != null ? v : w.default).length === 0)
           issues.push({ level: "error", msg: `"${w.name}" is empty — add at least one entry.` });
       } else if (v == null || v === "") {
         // A linked input is FILLED at generate time from a project value, so the stored
@@ -2173,12 +2174,32 @@
     for (const recipe of missing) {
       const id = (config.slots || []).some((s) => s.id === recipe.id)
         ? recipe.id + "_" + Math.random().toString(36).slice(2, 7) : recipe.id;
-      config.slots.push({ ...recipe, id, inputs: { ...recipe.inputs } });
+      const slot = { ...recipe, id, inputs: { ...recipe.inputs },
+                     input_sources: { ...(recipe.input_sources || {}) } };
+      graftRecipeSources(slot);
+      config.slots.push(slot);
     }
     reconcileOpenPortWiring();
     await persistNow();
     await prewarmSpecs();
     render();
+  }
+
+  // A recipe's sources name the OTHER seeded slots by their fixed ids. Dropped into a
+  // pipeline that was not seeded, those ids may not be there — and where they are, the
+  // producer is already wired to the port this pass-through now takes over, which would
+  // leave the port with two sources.
+  function graftRecipeSources(slot) {
+    const outTypes = new Set(((specFor(slot) || {}).outputs || []).map((o) => o.type));
+    Object.entries(slot.input_sources || {}).forEach(([input, src]) => {
+      const m = /^out:([^:]+):(.+)$/.exec(String(src));
+      if (!m) return;
+      const producer = (config.slots || []).find((s) => s.id === m[1]);
+      if (!producer) { delete slot.input_sources[input]; return; }
+      const out = ((specFor(producer) || {}).outputs || []).find((o) => o.name === m[2]);
+      if (out && outTypes.has(out.type))
+        (producer.wires = producer.wires || {})[m[2]] = [`node:${slot.id}:${input}`];
+    });
   }
 
   function loaderSection(slots, v) {

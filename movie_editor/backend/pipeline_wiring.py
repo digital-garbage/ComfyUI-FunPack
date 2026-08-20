@@ -398,10 +398,20 @@ def validate_models_wiring(models: Any) -> list[str]:
 # through DEFAULT_WIRES_BY_ROLE, the same table used when a node is added by hand.
 FUNPACK_DEFAULT_LOADERS: list[tuple[str, str, str, dict]] = [
     ("unet",      "FunPackDiffusionModelLoader", "Diffusion model", {}),
+    # Seeded empty, and empty means pass-through: the one node every LoRA needs is already
+    # in the chain, so using one is picking a file rather than adding and rewiring a node.
+    ("lora",      "FunPackLoraLoader",           "LoRAs",           {"model": "out:fp_unet:MODEL"}),
     ("clip",      "FunPackCLIPLoader",           "Text encoder",    {}),
     ("video_vae", "FunPackVAELoader",            "Video VAE",       {}),
     ("audio_vae", "FunPackVAELoader",            "Audio VAE",       {}),
 ]
+
+# Wires for a seeded slot whose role has no default, or wants less than the role allows.
+# The LoRA loader hands CLIP straight back untouched, so wiring it there would only add a
+# hop — and a second source for the port the CLIP loader already feeds.
+DEFAULT_SEED_WIRES: dict[str, dict[str, str]] = {
+    "lora": {"MODEL": "port:FunPackStudio.model"},
+}
 
 # The rest of what a family needs before it can generate. Not loaders and not FunPack's, but
 # leaving them out would mean "the pipeline sets itself up" still ended in a required slot
@@ -460,7 +470,7 @@ def default_pipeline_slots(family: str = DEFAULT_FAMILY,
         node_def = (object_info or {}).get(cls)
         if node_def is None:
             continue        # this ComfyUI does not have the node
-        role_wires = wires_by_role.get(role) or {}
+        role_wires = DEFAULT_SEED_WIRES.get(role) or wires_by_role.get(role) or {}
         # By output NAME first, then by type — the same rule the add-a-node path uses, and
         # necessary because the tables are keyed by type while a node names its own outputs.
         wires = {}
@@ -472,8 +482,36 @@ def default_pipeline_slots(family: str = DEFAULT_FAMILY,
             continue        # nothing to feed in this family: not a node, just clutter
         out.append({"id": f"fp_{role}", "role": role, "role_label": label,
                     "node_class": cls, "inputs": declared_widget_defaults(node_def),
-                    "input_sources": dict(sources), "wires": wires})
+                    "input_sources": dict(sources), "wires": wires,
+                    "outputs": {o["name"]: o["type"] for o in node_outputs(node_def)}})
+    for slot in out:
+        _claim_upstream_ports(slot, out)
+    for slot in out:
+        slot.pop("outputs", None)
     return out
+
+
+def _claim_upstream_ports(slot: dict, slots: list[dict]) -> None:
+    """Move a port wire onto a seeded pass-through that sits in front of it.
+
+    A slot that consumes type T from another seeded slot AND emits T is a link in that
+    chain, not a second branch off it: the producer must feed the pass-through, or both
+    would arrive at the same core port. Slots that merely consume T (an audio latent taking
+    a VAE) emit no T and so claim nothing.
+    """
+    emits = set((slot.get("outputs") or {}).values())
+    by_id = {s["id"]: s for s in slots}
+    for input_name, source in (slot.get("input_sources") or {}).items():
+        parts = str(source).split(":")
+        if len(parts) != 3 or parts[0] != "out":
+            continue
+        producer = by_id.get(parts[1])
+        if producer is None or producer is slot:
+            continue
+        out_type = (producer.get("outputs") or {}).get(parts[2])
+        if out_type is None or out_type not in emits:
+            continue
+        producer["wires"][parts[2]] = [f"node:{slot['id']}:{input_name}"]
 
 
 def seed_default_pipeline(models: dict, object_info: Optional[dict] = None) -> dict:

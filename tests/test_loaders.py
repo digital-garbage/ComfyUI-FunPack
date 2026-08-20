@@ -199,3 +199,19 @@ def test_a_list_becomes_the_same_stack_shape_apply_lora_weights_emits():
     assert entry["type"] == "style"
     assert entry["model_weight"] == entry["base_model_weight"] == 0.8
     assert entry["id"] == mm.lora_state_id("a.safetensors", "style")
+
+
+def test_an_empty_lora_loader_is_a_wire_not_an_error():
+    """It is seeded into every new pipeline, so its resting state has to be a working one:
+    the model goes straight through and the log says so."""
+    model, clip, stack, status = mm.FunPackLoraLoader().load_loras(
+        model="MODEL-SENTINEL", lora_list="[]", clip="CLIP-SENTINEL")
+    assert model == "MODEL-SENTINEL" and clip == "CLIP-SENTINEL"
+    assert stack["loras"] == []
+    assert status == "FunPack LoRA Loader | No active LoRAs"
+
+
+def test_the_empty_lora_list_is_declared_a_working_state():
+    """The Models panel flags an empty list as something to fix — except this one."""
+    spec = mm.FunPackLoraLoader.INPUT_TYPES()
+    assert spec["required"]["lora_list"][1]["funpack_list"]["allow_empty"] is True

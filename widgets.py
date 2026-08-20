@@ -30,11 +30,18 @@ def field(name, kind, *, label=None, choices=None, default=None, min=None, max=N
     return spec
 
 
-def list_widget(item, fields, *, default=None, add_label=None, max_rows=0, tooltip=None):
-    """An INPUT_TYPES entry for a list input. Returns the ("STRING", {...}) tuple."""
+def list_widget(item, fields, *, default=None, add_label=None, max_rows=0, tooltip=None,
+                allow_empty=False):
+    """An INPUT_TYPES entry for a list input. Returns the ("STRING", {...}) tuple.
+
+    `allow_empty` marks a list whose empty state is a working state — the node passes its
+    input through — so a frontend does not flag it as something to fix.
+    """
     spec = {"item": item, "fields": list(fields), "add_label": add_label or f"+ Add {item}"}
     if max_rows:
         spec["max_rows"] = int(max_rows)
+    if allow_empty:
+        spec["allow_empty"] = True
     opts = {
         "default": json.dumps(default or []),
         "multiline": False,
