@@ -87,6 +87,12 @@
       const img = el("img");
       img.src = url;
       img.loading = "lazy";
+      // An <img> is natively draggable, and inside a draggable card it WINS: the browser
+      // starts its own image drag, whose dataTransfer carries a URL instead of our
+      // application/funpack-media id, so every drop target rejects it. It also has to
+      // decode and rasterize the full-size bitmap first, which is why big images felt like
+      // they "resisted" dragging. Opting the image out hands the drag back to the card.
+      img.draggable = false;
       thumb.append(img);
       return;
     }
@@ -278,11 +284,18 @@
       + (previewing ? " previewing" : "")
       + (picked ? " picked" : ""));
     card.draggable = true;
-    card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("application/funpack-media", m.id); e.dataTransfer.effectAllowed = "copy"; });
+    card.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("application/funpack-media", m.id);
+      e.dataTransfer.effectAllowed = "copy";
+      // Drag the card's own thumbnail as the ghost: the default is a snapshot of the whole
+      // card, which for a full-resolution source image is a large rasterize on every drag.
+      const th = card.querySelector(".media-thumb");
+      if (th) { try { e.dataTransfer.setDragImage(th, 20, 20); } catch (_) {} }
+    });
     card.title = mediaSelectMode
       ? `${m.name}\nClick to toggle selection`
       : m.kind === "image"
-        ? `${m.name}\nImage · click to preview · drag onto timeline to add a clip, or onto a clip to set its anchor`
+        ? `${m.name}\nImage · click to preview · double-click to set it as the selected clip's anchor · drag onto the timeline to add a clip`
         : m.kind === "audio"
           ? `${m.name}\nAudio · click to preview · add via timeline + Add → Audio`
           : m.kind === "video"
@@ -377,6 +390,22 @@
       if (m.kind === "image" || m.kind === "audio" || m.kind === "video") {
         S.previewMedia(m.id);
       }
+    };
+    // Double-click = set this image as the selected clip's i2v anchor: the same assignment
+    // dragging it onto the clip performs. Drag was the ONLY way in, and a high-resolution
+    // image can refuse to drag at all (the browser builds a full-size drag image first), so
+    // the feature was unreachable for exactly the pictures most worth using as an anchor.
+    card.ondblclick = (e) => {
+      if (e.target.closest(".media-name-actions, .media-act, .media-name")) return;
+      if (mediaSelectMode || m.kind !== "image") return;
+      e.preventDefault(); e.stopPropagation();
+      const cur = S.get();
+      const sc = cur.selectedSceneId ? S.scene(cur.selectedSceneId) : null;
+      if (!sc || !S.isGenerativeScene(sc)) {
+        alert("Select a generated clip on the timeline first — the anchor is set on that clip.");
+        return;
+      }
+      S.assignMediaToScene(sc.id, m.id);
     };
     return card;
   }

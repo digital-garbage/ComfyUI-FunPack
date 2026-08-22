@@ -65,6 +65,12 @@
   looked exactly like one where the feature was switched off.
 
 ### Fixed
+- **Double-click an image in the Media bin to make it the selected clip's anchor.** Dragging
+  was the only way in, and it could not be relied on: an `<img>` is natively draggable, so
+  inside the card the browser started its own image drag whose payload every drop target
+  rejects — worse the larger the image. The image now opts out of dragging, and the drag
+  ghost is the thumbnail rather than a snapshot of the full-size card.
+
 - **Preview playback could stall at "Video is loading…" and stay there**, with the transport
   buttons dead. A media reset leaves a `<video>` with no metadata and no load running, and
   every recovery path keyed on the element having errored — which a reset does not do. Play
