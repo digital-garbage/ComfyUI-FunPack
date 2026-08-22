@@ -31,6 +31,13 @@
   quietly. Latent width and height snap to even, since a patchified model cannot take odd.
 
 ### Changed
+- **Settings the loaded model cannot use are no longer shown.** MiniMax H3 drops Bounded
+  Attention, Best-FaceID (with its four sub-settings) and `v2a_grad_scale`; LTX drops
+  `h3_audio_clock`. Previously each was offered, left switchable, and then reported once per
+  generation as inert — a control that is not offered needs no explanation. Stored values are
+  untouched, so switching family back restores the setting. The main-window chips for these are
+  gone with them: "turn it off in Settings → Engine" named a row that no longer renders.
+
 - **Operations that fail now say so, and standing conditions stop repeating.** Two rules that
   fight each other unless they share one mechanism, so they now do (`funpack_log.py`). A failure
   reports what was attempted, why it stopped, and **what the output looks like as a result** —
