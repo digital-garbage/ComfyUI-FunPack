@@ -128,7 +128,18 @@
     bounded_attention_enabled:
       "Bounded Attention masks text cross-attention; H3 puts text in the same self-attention "
       + "stream as the video, where the mask would be far too large to hold.",
+    joyai_memory:
+      "JoyAI-Echo places memory frame i at sequence position i. H3's packed layout pins only "
+      + "the FIRST or LAST frame, so every frame past the first is refused — and the one that "
+      + "lands replaces the scene's i2v anchor, because pins are keyed by frame index. This "
+      + "one is not merely inert on H3, it is harmful, so the sampler forces it off.",
   };
+
+  // JoyAI's own sub-settings: they configure a bank that cannot be built here.
+  const JOYAI_SUB_INPUTS = [
+    "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength",
+    "joyai_audio_memory",
+  ];
 
   // Same idea for non-boolean knobs whose neutral value means "off".
   // The latent ops (second_pass_op, segmented detailing) are NOT listed here any more: what
@@ -171,7 +182,7 @@
     if (!usesChainSampler(st)) return new Set();
     if (!isH3(st)) return new Set(Object.keys(H3_ONLY_SAMPLER_INPUTS));
     return new Set([...Object.keys(H3_DEAD_SAMPLER_INPUTS), ...IDENTITY_SUB_INPUTS,
-                    ...H3_DEAD_VALUE_INPUTS]);
+                    ...JOYAI_SUB_INPUTS, ...H3_DEAD_VALUE_INPUTS]);
   }
 
   // Returns [{short, detail}] for settings that are ON but cannot do anything on H3.

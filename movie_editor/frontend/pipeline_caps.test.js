@@ -26,11 +26,13 @@ test("H3 hides identity transfer's sub-settings with it, not just the toggle", (
   }
 });
 
-test("H3 hides v2a_grad_scale but keeps the feature it couples to", () => {
+test("H3 hides the whole JoyAI group, coupling knob included", () => {
+  // This used to assert the opposite for joyai_audio_memory, on the reading that only the
+  // LTXAV coupling knob was dead. That was wrong: the VIDEO half does not work on H3
+  // either, and audio memory is gated on it, so nothing in the group can function.
   const inert = PC.familyInertInputs(h3);
   assert.ok(inert.has("v2a_grad_scale"));
-  // JoyAI audio memory itself works on H3 — only the LTXAV coupling knob is dead.
-  assert.ok(!inert.has("joyai_audio_memory"));
+  assert.ok(inert.has("joyai_audio_memory"));
 });
 
 test("LTX hides the H3-only audio clock", () => {
@@ -69,4 +71,25 @@ test("the main-window chips no longer name a control that is now hidden", () => 
   const chips = PC.h3InertSettings(st);
   assert.ok(!chips.some((c) => /can't run/.test(c.short)),
     "a hidden setting should not also be chipped");
+});
+
+// ── JoyAI-Echo is hidden on H3 ────────────────────────────────────────────────
+// Not because it fails to fire, but because it fires and does the wrong thing: H3 keys
+// keyframe pins by frame index and accepts only the first or last, so the one memory frame
+// that lands REPLACES the scene's i2v anchor and the rest are refused.
+
+test("every JoyAI control disappears on H3", () => {
+  const inert = PC.familyInertInputs(h3);
+  for (const k of ["joyai_memory", "joyai_memory_size", "joyai_fix_frames",
+                   "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory",
+                   "v2a_grad_scale"]) {
+    assert.ok(inert.has(k), `${k} should be hidden on H3`);
+  }
+});
+
+test("JoyAI stays available on LTX", () => {
+  const inert = PC.familyInertInputs(ltx);
+  for (const k of ["joyai_memory", "joyai_memory_size", "joyai_audio_memory"]) {
+    assert.ok(!inert.has(k), `${k} must remain reachable on LTX`);
+  }
 });

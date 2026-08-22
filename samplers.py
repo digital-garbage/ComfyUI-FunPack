@@ -2740,7 +2740,7 @@ class FunPackLTXAVSceneChainSampler:
                 # mapping and lands a numeric on a combo (e.g. joyai_frame_select got 0).
                 "joyai_memory": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "JoyAI-Echo cross-shot memory bank. Generalizes mid_scene_guide from one anchor to a managed set of clean prior-shot frames injected into each scene via LTX guide attention, so character/scene identity carries across the whole chain (JoyAI-Echo's story-level consistency). The first joyai_fix_frames scenes are pinned permanently as a global anchor; the rest is a rolling most-recent window capped at joyai_memory_size. Supersedes mid_scene_guide when on. Video memory only; pair it with joyai_audio_memory for the soundtrack.",
+                    "tooltip": "JoyAI-Echo cross-shot memory bank. REQUIRES the JoyAI-Echo LoRA — without it the injected memory frames change nothing, because the base model was never trained to read them as memory. Generalizes mid_scene_guide from one anchor to a managed set of clean prior-shot frames injected into each scene via LTX guide attention, so character/scene identity carries across the whole chain (JoyAI-Echo's story-level consistency). The first joyai_fix_frames scenes are pinned permanently as a global anchor; the rest is a rolling most-recent window capped at joyai_memory_size. Supersedes mid_scene_guide when on. Video memory only; pair it with joyai_audio_memory for the soundtrack.",
                 }),
                 "joyai_memory_size": ("INT", {
                     "default": 7, "min": 1, "max": 32,
@@ -2762,7 +2762,7 @@ class FunPackLTXAVSceneChainSampler:
                 # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
                 "joyai_audio_memory": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "JoyAI-Echo PAIRED AUDIO memory. Alongside each video memory frame, pin the prior shot's clean audio latent into the audio stream so voice/timbre/ambience carry across shots the way the face now does. Deliberately breaks the audio pass-through invariant — off by default. Requires joyai_memory on; no effect on single-stream (video-only) LTXV.",
+                    "tooltip": "JoyAI-Echo PAIRED AUDIO memory. Needs the JoyAI-Echo LoRA, like the video memory it accompanies. Alongside each video memory frame, pin the prior shot's clean audio latent into the audio stream so voice/timbre/ambience carry across shots the way the face now does. Deliberately breaks the audio pass-through invariant — off by default. Requires joyai_memory on; no effect on single-stream (video-only) LTXV.",
                 }),
                 "v2a_grad_scale": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.25,
@@ -6680,6 +6680,12 @@ class FunPackLTXAVSceneChainSampler:
                              "against LTX's 4096-wide cross-attention context, and the overlap "
                              "tokens need LTX's patchifier; H3's native ref2va reference blocks "
                              "are the equivalent and are not wired yet)")
+            if joyai_memory:
+                _dead.append("joyai_memory / JoyAI-Echo (the memory bank places frame i at "
+                             "sequence position i, and H3's packed layout pins only the FIRST "
+                             "or LAST frame — so every frame past the first is refused, and "
+                             "the one that lands REPLACES the scene's i2v anchor, since pins "
+                             "are keyed by frame index. Not inert on H3: harmful)")
             # Gated on joyai_audio_memory, not on the value alone: v2a_grad_scale is that
             # feature's coupling knob and is never installed without it (see the call site),
             # so reporting a left-over value as an H3 limitation blames the model for a knob
@@ -6698,6 +6704,11 @@ class FunPackLTXAVSceneChainSampler:
             # that dies three minutes in is worse than a knob that says why it is inert.
             bounded_attention_enabled = False
             identity_transfer_enabled = False
+            # Off for real, not merely hidden in the UI: unlike the two above, this one does
+            # not fail to fire — it fires and overwrites the anchor pin. A stored value from
+            # an LTX project must not keep doing that here.
+            joyai_memory = False
+            joyai_audio_memory = False
             v2a_grad_scale = 1.0
             # second_pass_op is NOT switched off here. It only needs a latent upsampler that
             # matches this model's latent width; which file that is depends on what is

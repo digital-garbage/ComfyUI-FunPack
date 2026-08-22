@@ -99,6 +99,16 @@
   looked exactly like one where the feature was switched off.
 
 ### Fixed
+- **JoyAI-Echo is switched off and hidden on MiniMax H3, where it was doing damage.** The
+  memory bank places frame *i* at sequence position *i*, but H3's packed layout pins only the
+  first or last frame — so every frame past the first was refused, and the one that landed
+  *replaced the scene's i2v anchor*, because H3 keys pins by frame index. Not an inert toggle:
+  a harmful one. The sampler now forces it off on H3 and says why, and Engine Settings stops
+  offering the whole group.
+- **JoyAI-Echo's tooltips now say it requires the JoyAI-Echo LoRA.** Without it the injected
+  memory frames change nothing on any model, because the base weights were never trained to
+  read them as memory — the controls read as a working feature.
+
 - **Closing Models & Pipeline mid-edit no longer leaves its edit buffer behind.** Escape, the
   ✕, or switching to another section tore the section down without ending the edit, so the
   next visit inherited a dirty flag and a baseline belonging to a config that had already
