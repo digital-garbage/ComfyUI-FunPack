@@ -1318,6 +1318,86 @@
     document.addEventListener("mousedown", away, true);
   }
 
+  // ── export settings as a picture ──────────────────────────────────────────────
+  // "Which model was that?" outlives the session that could answer it. The card is built
+  // on the server (it knows torch/CUDA/GPU; the browser only knows the laptop showing the
+  // page) and comes back as one PNG that is shown, saved or copied from here.
+  function openSettingsCard() {
+    document.querySelectorAll(".sc-overlay").forEach((n) => n.remove());
+    const overlay = el("div", "modal-overlay sc-overlay");
+    const modal = el("div", "modal sc-modal");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", "Export settings"));
+    const hr = el("div", "modal-head-right");
+    const x = el("button", "btn ghost tiny", "✕");
+    const close = () => { if (url) URL.revokeObjectURL(url); overlay.remove(); };
+    x.onclick = close;
+    hr.append(x); head.append(hr);
+    const content = el("div", "modal-content sc-content");
+    const foot = el("div", "modal-foot sc-foot");
+    modal.append(head, content, foot);
+    overlay.append(modal);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    document.body.append(overlay);
+
+    let url = null, blob = null;
+    content.append(el("div", "pj-meta", "Rendering…"));
+
+    const status = el("div", "sc-status");
+    const dl = el("button", "btn primary tiny", "⤓ Download");
+    const cp = el("button", "btn ghost tiny", "⧉ Copy image");
+    const cl = el("button", "btn ghost tiny", "Close");
+    cl.onclick = close;
+    dl.disabled = true; cp.disabled = true;
+    foot.append(status, dl, cp, cl);
+
+    // The card is rendered in whatever theme the app is showing, because it is a document
+    // about this install and it should look like this install.
+    const theme = window.FunPackTheme?.resolved?.()
+      || document.documentElement.getAttribute("data-theme") || "dark";
+    const project = window.Store?.get().project;
+    API.settingsCard(project?.id, theme)
+      .then((b) => {
+        if (!overlay.isConnected) return;
+        blob = b; url = URL.createObjectURL(b);
+        clear(content);
+        const img = el("img", "sc-img");
+        img.src = url;
+        img.alt = "FunPack settings card";
+        content.append(img);
+        dl.disabled = false; cp.disabled = false;
+      })
+      .catch((e) => {
+        if (!overlay.isConnected) return;
+        clear(content);
+        content.append(el("div", "pj-meta", "Could not render the card: " + (e?.message || e)));
+      });
+
+    dl.onclick = () => {
+      if (!url) return;
+      const a = document.createElement("a");
+      a.href = url;
+      const base = (project?.name || "funpack-settings").replace(/[^\w.-]+/g, "_");
+      a.download = `${base}-settings.png`;
+      document.body.append(a); a.click(); a.remove();
+    };
+
+    cp.onclick = async () => {
+      // Clipboard image writes need a secure context, which a rental reached over plain
+      // http://<ip> is not. Say that, rather than failing silently — Download still works.
+      status.textContent = "";
+      try {
+        if (!navigator.clipboard || typeof window.ClipboardItem !== "function") {
+          throw new Error("this browser/connection has no image clipboard");
+        }
+        await navigator.clipboard.write([new window.ClipboardItem({ "image/png": blob })]);
+        status.textContent = "Copied.";
+      } catch (e) {
+        status.textContent = "Could not copy (" + (e?.message || e) + "). Use Download.";
+      }
+    };
+  }
+
   // Setup-node modal: pick the node by search, then set widget values AND wire its
   // outputs / input sources before it lands in the pipeline. On Add the new node's
   // page opens (multi-wire, expose, bypass live there).
@@ -2654,7 +2734,11 @@
     imp.onclick = () => window.WorkflowImportWizard?.open();
     const refresh = el("button", "btn ghost tiny", "↻ Refresh model list");
     refresh.onclick = refreshList;
-    ctx.setActions([imp, refresh]);
+    const card = el("button", "btn ghost tiny", "🖼 Export settings…");
+    card.title = "Render this pipeline as a PNG — loaders, LoRAs, typed-in node values, "
+               + "and the host's torch / CUDA / attention";
+    card.onclick = openSettingsCard;
+    ctx.setActions([imp, refresh, card]);
     loadAll()
       .then(() => {
         if (!container || !container.isConnected) return;
@@ -2689,7 +2773,7 @@
       endEdit();
       _directNodeId = null;
       _openNodeOnMount = null;
-      document.querySelectorAll(".mn-role-pop, .ns-overlay").forEach((n) => n.remove());
+      document.querySelectorAll(".mn-role-pop, .ns-overlay, .sc-overlay").forEach((n) => n.remove());
     };
   }
 

@@ -20,7 +20,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, custom_nodes, git_update, media, model_probe, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, sysinfo, workflow_import
+from .backend import bridge, builder, config, custom_nodes, git_update, media, model_probe, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, settings_card, sysinfo, workflow_import
 from .backend.nle_effects import geometry_filters, reverse_refusal, zoompan_z_expr
 from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_export
 from .backend.timeline import (
@@ -2491,6 +2491,31 @@ if web is not None and PromptServer is not None:
         # Describes the ComfyUI host, not the browser — on a rental those are different
         # machines and the host is the one worth looking at.
         return web.json_response(sysinfo.collect())
+
+    @routes.get(UI_PREFIX + "/api/settings-card")
+    async def _settings_card(req):
+        import asyncio
+        # to_thread for the same reason every other slow route uses it: sysinfo shells out
+        # to the OS (and can wait on nvidia), and one blocking second here stalls every
+        # preview stream on the page.
+        pid = req.query.get("pid")
+        theme = req.query.get("theme") or "dark"
+        p = projects.get(pid) if pid else None
+        models_cfg = _project_models(p) if pid else nodes.load_models()
+        name = getattr(p, "name", None) if p else None
+
+        def _build():
+            st = git_update.status()
+            report = settings_card.collect(
+                models_cfg, sysinfo.collect(), project_name=name,
+                version=st.get("version"), codename=st.get("codename"))
+            return settings_card.render_png(report, theme)
+
+        try:
+            png = await asyncio.to_thread(_build)
+        except Exception as e:
+            raise web.HTTPInternalServerError(reason=f"Could not render the card: {e}")
+        return web.Response(body=png, content_type="image/png")
 
     @routes.get(UI_PREFIX + "/api/git/status")
     async def _git_status(_req):

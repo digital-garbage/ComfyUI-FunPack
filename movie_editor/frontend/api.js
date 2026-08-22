@@ -134,6 +134,16 @@
     // default route (used as the seed/template) when no project is given.
     coreGraph: (pid) => j("GET", API("/core-graph" + (pid ? `?pid=${encodeURIComponent(pid)}` : ""))),
     getModels: (pid) => j("GET", API(pid ? `/projects/${pid}/models` : "/models")),
+    // The settings card is a PNG, not JSON — fetched as a blob so the modal can show it,
+    // download it and put it on the clipboard from the one response.
+    settingsCard: async (pid, theme) => {
+      const q = new URLSearchParams();
+      if (pid) q.set("pid", pid);
+      if (theme) q.set("theme", theme);
+      const r = await fetch(API("/settings-card") + (q.toString() ? `?${q}` : ""));
+      if (!r.ok) throw new Error(await r.text().catch(() => r.statusText));
+      return r.blob();
+    },
     saveModels: (pid, data) => j("PUT", API(pid ? `/projects/${pid}/models` : "/models"), data),
     refreshModels: () => j("POST", API("/models/refresh")),
     parseWorkflow: (workflow) => j("POST", API("/workflow/parse"), { workflow }),

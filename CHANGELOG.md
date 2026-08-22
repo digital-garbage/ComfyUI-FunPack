@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- **Models & Pipeline ▸ Export settings…** renders the loaded pipeline as a PNG: every
+  loader with its full filename, every LoRA with its weight, the typed-in values of any
+  custom node, and the host's PyTorch / CUDA / attention / GPU. Only inputs that were typed
+  are printed — a wired input is marked `‹wired›` rather than showing the stale widget
+  behind the socket. The card is drawn in the theme the app is showing, watermarked with the
+  FunPack version, and carries the same data as JSON in a tEXt chunk. The dialog previews it
+  with Download and Copy image.
 - **Quality sharpness now works with a stock KSampler.** The unsharp mask that recovers fine
   detail lived inside Hybrid Euler 2S and Distilled Flow only. It reads the current x0
   prediction, the previous one and the step's sigma — nothing that needs a sampler's loop —

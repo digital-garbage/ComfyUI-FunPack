@@ -2718,3 +2718,12 @@ body.tour-mode { overflow: hidden; }
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
 }
+
+/* Export-settings card modal. The image is the content, so the box is sized to it and the
+   picture scrolls rather than being squeezed — a card you cannot read is not a preview. */
+.sc-modal { width: min(1140px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+.sc-content { flex: 1; min-height: 0; overflow: auto; background: var(--ink-0); }
+.sc-img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; }
+.sc-foot { display: flex; align-items: center; gap: 8px; padding: 12px 16px 14px;
+           border-top: 1px solid var(--line); background: var(--surface-deep-2); }
+.sc-status { flex: 1; font-size: 11px; color: var(--muted); }
