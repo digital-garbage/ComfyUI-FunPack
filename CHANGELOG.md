@@ -122,6 +122,14 @@
   looked exactly like one where the feature was switched off.
 
 ### Fixed
+- **Updating FunPack in the app installs the dependencies the update needs.** It pulled new
+  code and never new requirements, so a release that added one left the node pack unable to
+  import with nothing said. When an update touches `requirements.txt`, pip runs against the
+  interpreter ComfyUI is using — never a bare `pip`, which in a venv installs somewhere else
+  entirely — before the restart, and a failure names the command to run by hand rather than
+  turning a completed update into an error. Update and branch switch also moved off the event
+  loop; a fetch over a tunnel plus an install was freezing every stream in the meantime.
+
 - **A LoRA that matches by name but not by shape now says so.** Key matching proves a LoRA is
   *for* a model, not that its weights fit it; a mismatched pair is dropped during the merge,
   which was visible only as one generic warning per key while FunPack's own status line still

@@ -53,15 +53,29 @@
     const msg = _restartOverlay(`Pulling origin/${branch}…\nComfyUI will restart when the pull finishes.`);
     try {
       const res = await API().gitUpdate(branch);
-      msg.textContent = res.updated
-        ? `Updated ${res.before} → ${res.after}.\nRestarting ComfyUI…`
-        : "Already up to date.\nRestarting ComfyUI…";
+      const deps = _reportRequirements(res);
+      msg.textContent = (res.updated
+        ? `Updated ${res.before} → ${res.after}.${deps}\nRestarting ComfyUI…`
+        : "Already up to date.\nRestarting ComfyUI…");
     } catch (e) {
       window.FunPackRestart?.removeOverlay?.();
       alert("Update failed: " + (e.message || e));
       return;
     }
     _waitForComfyReload(msg, Date.now());
+  }
+
+  // An update that changed requirements.txt installs them before restarting. A FAILED
+  // install is the one outcome the user has to act on — the code is updated and the node
+  // pack will not import — so it interrupts rather than scrolling past in an overlay.
+  function _reportRequirements(res) {
+    const r = res && res.requirements;
+    if (!r || !r.ran) return "";
+    if (r.ok) return "\nDependencies installed.";
+    alert("FunPack updated, but installing its dependencies failed.\n\n"
+          + (r.detail || "")
+          + "\n\nFunPack may not load until this is run.");
+    return "\nDependency install FAILED — see the message above.";
   }
 
   async function switchBranch() {
@@ -85,9 +99,10 @@
         const msg = _restartOverlay(`Switching to ${branch}…\nComfyUI will restart when ready.`);
         try {
           const res = await API().gitCheckout(branch);
-          msg.textContent = res.updated
-            ? `Switched to ${branch} (${res.before} → ${res.after}).\nRestarting ComfyUI…`
-            : `On ${branch}, already up to date.\nRestarting ComfyUI…`;
+          const deps = _reportRequirements(res);
+          msg.textContent = (res.updated
+            ? `Switched to ${branch} (${res.before} → ${res.after}).${deps}\nRestarting ComfyUI…`
+            : `On ${branch}, already up to date.\nRestarting ComfyUI…`);
         } catch (e) {
           window.FunPackRestart?.removeOverlay?.();
           alert("Branch switch failed: " + (e.message || e));

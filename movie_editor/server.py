@@ -2496,13 +2496,26 @@ if web is not None and PromptServer is not None:
     async def _git_status(_req):
         return web.json_response(git_update.status())
 
+    # install_deps is opt-in on the library side: pressing Update is what means "install
+    # what this update needs", and no other caller of pull()/checkout() should acquire a
+    # pip run by accident.
+    def _pull_with_deps(branch):
+        return git_update.pull(branch, install_deps=True)
+
+    def _checkout_with_deps(branch):
+        return git_update.checkout(branch, pull_after=True, install_deps=True)
+
     @routes.post(UI_PREFIX + "/api/git/update")
     async def _git_update(req):
         import asyncio
         body = await req.json() if req.can_read_body else {}
         branch = body.get("branch")
         try:
-            result = git_update.pull(str(branch).strip() if branch else None)
+            # to_thread: git fetch over a tunnel takes seconds, and a requirements install
+            # can take a minute. Inline, both freeze the one event loop ComfyUI has —
+            # stalling every playing /result stream and the whole editor API meanwhile.
+            result = await asyncio.to_thread(
+                _pull_with_deps, str(branch).strip() if branch else None)
         except git_update.GitUpdateError as e:
             return web.json_response({"detail": str(e)}, status=400)
         asyncio.get_event_loop().call_later(0.7, _restart_comfy)
@@ -2516,7 +2529,7 @@ if web is not None and PromptServer is not None:
         if not branch:
             return web.json_response({"detail": "Branch name is required."}, status=400)
         try:
-            result = git_update.checkout(branch, pull_after=True)
+            result = await asyncio.to_thread(_checkout_with_deps, branch)
         except git_update.GitUpdateError as e:
             return web.json_response({"detail": str(e)}, status=400)
         asyncio.get_event_loop().call_later(0.7, _restart_comfy)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -154,8 +155,65 @@ def status() -> dict:
                 "codename": funpack_codename(), "detail": str(e)}
 
 
-def pull(branch: str | None = None) -> dict:
-    """Fast-forward pull from origin on the given branch (current if omitted)."""
+REQUIREMENTS = "requirements.txt"
+
+
+def requirements_changed(before: str, after: str) -> bool:
+    """Did this update touch requirements.txt?
+
+    The only honest trigger for installing: running pip on every pull would be slow and
+    surprising, and running it on none leaves an update that added a dependency looking
+    like a broken build instead of an unfinished install.
+    """
+    if not before or not after or before == after:
+        return False
+    proc = _run_git("diff", "--name-only", f"{before}..{after}", "--", REQUIREMENTS)
+    if proc.returncode != 0:
+        # Cannot tell — install rather than skip. A redundant pip run costs seconds; a
+        # skipped one costs a broken node pack and a confusing error.
+        return True
+    return bool((proc.stdout or "").strip())
+
+
+def install_requirements(timeout: int = 900) -> dict:
+    """`pip install -r requirements.txt` into the interpreter ComfyUI is running.
+
+    `sys.executable`, never a bare `pip`: ComfyUI is usually in a venv, and the pip on PATH
+    belongs to whatever else is on it. Installing into the wrong environment succeeds
+    loudly and changes nothing.
+
+    Never raises. A failed install must not turn a completed update into an error — the
+    code IS updated by this point, and the remedy is a command the user can run.
+    """
+    req = REPO_ROOT / REQUIREMENTS
+    if not req.is_file():
+        return {"ran": False, "ok": True, "detail": "no requirements.txt in this checkout"}
+    cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+           "-r", str(req)]
+    try:
+        proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"ran": True, "ok": False,
+                "detail": f"pip did not finish within {timeout}s — run it yourself: "
+                          f"pip install -r {req}"}
+    except OSError as e:
+        return {"ran": True, "ok": False, "detail": f"could not run pip: {e}"}
+    if proc.returncode != 0:
+        tail = ((proc.stderr or proc.stdout or "").strip() or "pip failed")[-800:]
+        return {"ran": True, "ok": False,
+                "detail": f"pip install failed — run it yourself:\n"
+                          f"  {sys.executable} -m pip install -r {req}\n\n{tail}"}
+    return {"ran": True, "ok": True, "detail": (proc.stdout or "").strip()[-800:]}
+
+
+def pull(branch: str | None = None, *, install_deps: bool = False) -> dict:
+    """Fast-forward pull from origin on the given branch (current if omitted).
+
+    `install_deps` is OFF by default and turned on by the update route. Running pip is a
+    side effect no caller should acquire by accident just for asking git to move a branch —
+    it has to be asked for at the point that means "the user pressed Update".
+    """
     branch = (branch or _current_branch()).strip()
     if not branch:
         raise GitUpdateError("Could not determine current branch.")
@@ -188,11 +246,17 @@ def pull(branch: str | None = None) -> dict:
             raise GitUpdateError(msg)
         realigned = True
     after = _current_commit()
+    # Dependencies are part of the update. Done BEFORE the response, so the restart the
+    # caller schedules cannot race an install that is still running.
+    deps = None
+    if install_deps and before != after and requirements_changed(before, after):
+        deps = install_requirements()
     return {
         "branch": branch,
         "before": before,
         "after": after,
         "updated": before != after,
+        "requirements": deps,
         # Surfaced so the update reads as what it was, not a silent jump to another commit.
         "realigned": realigned,
         "output": ((pull_proc.stdout or "").strip() if not realigned
@@ -201,7 +265,7 @@ def pull(branch: str | None = None) -> dict:
     }
 
 
-def checkout(branch: str, *, pull_after: bool = True) -> dict:
+def checkout(branch: str, *, pull_after: bool = True, install_deps: bool = False) -> dict:
     """Switch branch, optionally pull, return combined result."""
     branch = (branch or "").strip()
     if not branch:
@@ -219,9 +283,14 @@ def checkout(branch: str, *, pull_after: bool = True) -> dict:
             raise GitUpdateError((co.stderr or co.stdout or "git checkout failed").strip())
     result = {"branch": branch, "before_branch": before_branch, "before": before_commit}
     if pull_after:
-        pulled = pull(branch)
+        pulled = pull(branch, install_deps=install_deps)
         result.update(pulled)
     else:
         result["after"] = _current_commit()
         result["updated"] = result["before"] != result["after"]
+        # A branch switch alone can cross a requirements change just as a pull can — the
+        # checkout above already moved the working tree onto the other branch's files.
+        if install_deps and result["updated"] and requirements_changed(before_commit,
+                                                                      result["after"]):
+            result["requirements"] = install_requirements()
     return result
