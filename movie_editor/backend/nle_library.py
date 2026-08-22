@@ -49,6 +49,11 @@ DEFAULT_EFFECTS: list[dict[str, Any]] = [
         "param": {"label": "Trim per edge (%)", "default": 10, "min": 0, "max": 40, "step": 1},
     },
     {
+        "id": "reverse",
+        "name": "Reverse",
+        "description": "Play the clip backwards, audio included. Apply again to turn it off.",
+    },
+    {
         "id": "reset",
         "name": "Remove all effects",
         "description": "Clear every effect on the selected clip.",

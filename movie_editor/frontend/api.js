@@ -193,6 +193,9 @@
         // window must travel in the query), and it versions the browser cache — segments
         // are cached for an hour, so a timeline trim must produce a different URL.
         if (spec.dur != null) q.set("dur", String(spec.dur));
+        // Reverse changes the bytes, so it must change the URL — segments are cached for
+        // an hour and would otherwise replay the forward encode.
+        if (spec.reverse) q.set("rev", "1");
         u += "?" + q.toString();
       }
       return u;

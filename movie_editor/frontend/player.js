@@ -162,7 +162,10 @@
     for (const list of groups.values()) {
       const shared = list.length >= 2;
       for (const c of list) {
-        if (!shared && (c.inSec || 0) <= 0.5) continue;  // shallow single clip: direct URL is fine
+        // Reverse is the one effect with no preview-side equivalent — the server has to
+        // produce the reversed bytes, so the shallow-clip shortcut cannot apply to it.
+        const wantsReverse = !!(c.sceneId && S.scene(c.sceneId)?.effects?.reverse);
+        if (!wantsReverse && !shared && (c.inSec || 0) <= 0.5) continue;  // shallow single clip: direct URL is fine
         if (c.ghost) {
           // No scene server-side — the trim window travels entirely in the query.
           c.streamUrl = API.previewSegmentUrl(pid, c.ghostId, {
@@ -174,7 +177,7 @@
         const sourceIn = sc?.source_in || 0;
         const renderIn = Math.max(0, (c.inSec || 0) - sourceIn);
         c.streamUrl = API.previewSegmentUrl(pid, c.sceneId, {
-          media: c.media, renderIn, dur: c.durationSec,
+          media: c.media, renderIn, dur: c.durationSec, reverse: wantsReverse,
         });
       }
     }

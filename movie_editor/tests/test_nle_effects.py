@@ -99,3 +99,52 @@ def test_ffmpeg_accepts_every_chain(fx, tmp_path):
     )
     assert r.returncode == 0, r.stderr[-1500:]
     assert out.stat().st_size > 0
+
+
+# ── reverse ───────────────────────────────────────────────────────────────────
+
+def test_reverse_allowed_for_ordinary_clips():
+    from movie_editor.backend.nle_effects import reverse_refusal
+    assert reverse_refusal(20, 24) is None      # a typical FunPack clip
+    assert reverse_refusal(49, 24) is None      # just under the cap
+    assert reverse_refusal(None, None) is None  # unknown length is not a refusal
+
+
+def test_reverse_refused_past_the_frame_cap():
+    from movie_editor.backend.nle_effects import REVERSE_MAX_FRAMES, reverse_refusal
+    msg = reverse_refusal(300, 24)
+    assert msg and str(REVERSE_MAX_FRAMES) in msg
+    # The message has to say what to do about it, not just that it failed.
+    assert "Split" in msg
+
+
+def test_reverse_cap_is_frames_not_seconds():
+    """A high-fps clip hits the memory limit sooner in wall-clock terms."""
+    from movie_editor.backend.nle_effects import reverse_refusal
+    assert reverse_refusal(45, 24) is None
+    assert reverse_refusal(45, 60) is not None
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+def test_ffmpeg_reverse_chain_runs_and_flips_order(tmp_path):
+    """reverse+areverse must survive the same chain the render builds around them."""
+    src, out = tmp_path / "src.mp4", tmp_path / "out.mp4"
+    # A clip whose brightness ramps up, so reversing is detectable rather than assumed.
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=10:d=1",
+         "-vf", "geq=lum='N*20':cb=128:cr=128", "-frames:v", "10", str(src)],
+        capture_output=True, text=True, check=True, timeout=120)
+    chain = ",".join(["reverse"] + geometry_filters({}, 64, 64) + ["setsar=1", "fps=10"])
+    r = subprocess.run(["ffmpeg", "-y", "-i", str(src), "-vf", chain, str(out)],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-1500:]
+
+    def first_frame_luma(path):
+        p = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1",
+             "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+            capture_output=True, timeout=120)
+        return sum(p.stdout[:64]) / 64.0
+
+    # Source starts dark and ends bright; reversed, frame 0 must be the bright end.
+    assert first_frame_luma(out) > first_frame_luma(src) + 20

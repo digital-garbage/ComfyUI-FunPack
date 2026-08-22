@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **Reverse a clip**, audio included, in `+ Add → Effects`. Unlike the other clip effects
+  there is no preview-side equivalent, so the monitor switches that clip to a server-rendered
+  segment — what you watch is the reversed encode, not a forward one standing in for it.
+  ffmpeg holds every frame of a reversal in memory, so clips past a frame limit are refused
+  with the count, the limit, and the fix, rather than being rendered forwards silently.
+
 - **Clip geometry on the timeline: flip, crop, and fill-frame**, in `+ Add → Effects`
   alongside the existing zoom/blur/fades. Flip horizontal and Flip vertical mirror the clip;
   Crop edges trims a percentage off each side and rescales (a punch-in that composes with

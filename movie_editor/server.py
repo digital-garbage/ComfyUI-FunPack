@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     PromptServer = None
 
 from .backend import bridge, builder, config, git_update, media, model_probe, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, sysinfo, workflow_import
-from .backend.nle_effects import geometry_filters, zoompan_z_expr
+from .backend.nle_effects import geometry_filters, reverse_refusal, zoompan_z_expr
 from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_export
 from .backend.timeline import (
     Project,
@@ -186,7 +186,8 @@ def _clip_needs_trim(clip: dict) -> bool:
     return inn > 0.001 or dur is not None
 
 
-def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur, fast: bool = False) -> None:
+def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur, fast: bool = False,
+                      reverse: bool = False) -> None:
     import shutil
     import subprocess
     ff = shutil.which("ffmpeg")
@@ -197,7 +198,11 @@ def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur, fast: bool = False
         cmd += ["-ss", f"{float(inn):.3f}"]
     if dur is not None:
         cmd += ["-t", f"{float(dur):.3f}"]
-    cmd += ["-i", src_path, "-c:v", "libx264", "-pix_fmt", "yuv420p"]
+    cmd += ["-i", src_path]
+    if reverse:
+        # Applied AFTER the -ss/-t trim above, so only the clip's own frames are buffered.
+        cmd += ["-vf", "reverse", "-af", "areverse"]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
     if fast:
         # Preview segments: latency matters far more than a few % of bitrate — the player
         # is waiting on this encode to unfreeze a scrub across a chain boundary.
@@ -335,17 +340,19 @@ def _scene_playback_clip_spec(
     if not media.get("filename"):
         raise KeyError(f"no render for {scene_id}")
     in_sec = float(scene.source_in or 0) + float(render.get("inSec") or 0)
+    fps = float(scene.eff_fps(project) or 25)
     if scene.source_dur is not None:
         dur = float(scene.source_dur)
     else:
-        fps = scene.eff_fps(project) or 25
-        dur = scene.eff_frames(project) / float(fps)
+        dur = scene.eff_frames(project) / fps
     return {
         "filename": media.get("filename", ""),
         "subfolder": media.get("subfolder") or "",
         "type": media.get("type") or "output",
         "in": in_sec,
         "dur": dur,
+        # Carried for the reverse guard, which is a frame-count limit, not a time limit.
+        "fps": fps,
     }
 
 
@@ -358,10 +365,12 @@ _faststart_locks: dict = {}  # source path -> asyncio.Lock (dedupe concurrent re
 _FASTSTART_RETRY_SEC = 30.0  # min gap between remux re-attempts on a file that failed to remux
 
 
-def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict) -> str:
+def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict,
+                               reverse: bool = False) -> str:
     return (
         f"{pid}:{scene_id}:{clip.get('filename')}:{clip.get('subfolder') or ''}:"
         f"{clip.get('type') or 'output'}:{clip.get('in')}:{clip.get('dur')}"
+        f"{':rev' if reverse else ''}"
     )
 
 
@@ -862,7 +871,14 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
             # Normalize first: flips, crop, and fit into the canvas (letterbox or fill),
             # then fixed fps + square pixels. Shared with the live preview so the render
             # cannot drift from what was shown.
-            vf: list[str] = geometry_filters(fx, cw, ch) + ["setsar=1", f"fps={cfps:g}"]
+            vf: list[str] = []
+            if fx.get("reverse"):
+                refusal = reverse_refusal(dur, cfps)
+                if refusal:
+                    raise ValueError(f"clip {i + 1}: {refusal}")
+                # Before the geometry so the reversal is of the source, matching preview.
+                vf.append("reverse")
+            vf += geometry_filters(fx, cw, ch) + ["setsar=1", f"fps={cfps:g}"]
             zoom = fx.get("zoom")
             if zoom in ("in", "out") and dur > 0:
                 nframes = max(1, round(dur * cfps))
@@ -887,6 +903,10 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
             if keep_original:
                 vol = float(c.get("volume", 1.0))
                 af = "aformat=sample_fmts=fltp:channel_layouts=stereo"
+                if fx.get("reverse"):
+                    # Audio has to turn around with the picture, or a reversed clip plays
+                    # its own soundtrack forwards against it.
+                    af += ",areverse"
                 if abs(vol - 1.0) > 1e-3:
                     af += f",volume={max(0.0, vol):.3f}"
                 parts.append(f"[{i}:a:0]{af}[a{i}]")
@@ -2193,7 +2213,12 @@ if web is not None and PromptServer is not None:
                 status=503, headers={"Retry-After": "2"})
         # Source signature in the key: a re-rendered source at the SAME path must not keep
         # serving the segment encoded from the old bytes (stale previews).
-        key = _preview_segment_cache_key(pid, scene_id, clip) + f":{src_sig[0]}:{src_sig[1]}"
+        want_reverse = str(req.query.get("rev") or "") in ("1", "true", "yes")
+        if want_reverse:
+            refusal = reverse_refusal(clip.get("dur"), clip.get("fps") or 24)
+            if refusal:
+                return web.json_response({"detail": refusal}, status=400)
+        key = _preview_segment_cache_key(pid, scene_id, clip, want_reverse) + f":{src_sig[0]}:{src_sig[1]}"
         # Serialize per segment: the pool preloads every clip at once after a run, and a
         # scrub can re-request the same URL — without this lock each request would start
         # its own duplicate encode of the same segment.
@@ -2218,7 +2243,7 @@ if web is not None and PromptServer is not None:
                 # the whole editor API for its duration (stale/black previews on scrub).
                 await asyncio.to_thread(
                     _ffmpeg_trim_clip, src_path, out_path, clip.get("in"), clip.get("dur"),
-                    fast=True,
+                    fast=True, reverse=want_reverse,
                 )
             except FileNotFoundError as e:
                 return web.json_response({"detail": str(e)}, status=400)

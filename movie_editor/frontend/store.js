@@ -4295,6 +4295,9 @@
       crop: (v) => ({
         effects: { ...(sc.effects || {}), crop_inset: Math.max(0, Math.min(0.4, (+v || 0) / 100)) },
       }),
+      // Reverse is server-side only (ffmpeg has to produce the frames backwards), so the
+      // preview switches to a rendered segment for this clip. Toggle, like the flips.
+      reverse: () => ({ effects: { ...(sc.effects || {}), reverse: !sc.effects?.reverse } }),
       reset: () => ({ effects: {} }),
     };
     const fn = patches[effectId]; if (!fn) return false;

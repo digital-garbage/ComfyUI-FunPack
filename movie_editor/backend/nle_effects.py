@@ -92,3 +92,32 @@ def geometry_filters(fx: dict[str, Any] | None, cw: int, ch: int) -> list[str]:
         out.append(f"scale={cw}:{ch}:force_original_aspect_ratio=decrease")
         out.append(f"pad={cw}:{ch}:-1:-1:color=black")
     return out
+
+
+# ffmpeg's `reverse` filter holds every frame of its input in memory — there is no streaming
+# form of it. Inputs are already trimmed to the clip, so the bound is the clip's own length,
+# but a long imported video would still try to buffer gigabytes and take the rental's ComfyUI
+# down with it. At 768x768 yuv420p a frame is ~0.9 MB, so this cap is roughly 1 GB.
+REVERSE_MAX_FRAMES = 1200
+
+
+def reverse_frame_count(dur_sec: float | None, fps: float | None) -> int:
+    try:
+        return max(0, int(round(float(dur_sec or 0) * float(fps or 0))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def reverse_refusal(dur_sec: float | None, fps: float | None) -> str | None:
+    """Why reverse cannot run on this clip, or None when it can.
+
+    Returned rather than silently dropped: a clip rendered forwards when reverse was asked
+    for is a wrong result that looks like a working one.
+    """
+    frames = reverse_frame_count(dur_sec, fps)
+    if frames <= REVERSE_MAX_FRAMES:
+        return None
+    secs = REVERSE_MAX_FRAMES / float(fps or 24)
+    return (f"Reverse needs every frame in memory at once, and this clip is {frames} frames "
+            f"(limit {REVERSE_MAX_FRAMES}, about {secs:.0f}s at {float(fps or 24):g} fps). "
+            f"Split the clip and reverse the parts.")

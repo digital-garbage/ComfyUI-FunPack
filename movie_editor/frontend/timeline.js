@@ -882,6 +882,7 @@
   // What's actually on this clip. Without it the effects are invisible — and several are
   // toggles, so "apply again to turn it off" is meaningless if you cannot see what is on.
   const FX_LABELS = [
+    ["reverse", () => "◀ reverse"],
     ["flip_h", () => "⇄ flip"],
     ["flip_v", () => "⇅ flip"],
     ["fit", (v) => (v === "fill" ? "fill" : null)],
