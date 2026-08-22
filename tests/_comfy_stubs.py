@@ -152,6 +152,16 @@ def _install_comfy():
         get_torch_device=lambda: "cpu",
         intermediate_device=lambda: "cpu",
     )
+    # model_management.py imports these at module scope. The stubs are inert: the tests that
+    # need them exercise FunPack's own logic AROUND comfy's LoRA loading, never comfy's.
+    install_module(
+        "comfy.lora",
+        model_lora_keys_unet=lambda model, key_map: key_map,
+        model_lora_keys_clip=lambda model, key_map: key_map,
+        load_lora=lambda lora, key_map: {},
+    )
+    install_module("comfy.lora_convert", convert_lora=lambda lora: lora)
+    install_module("comfy.sd")
 
 
 def install_all():

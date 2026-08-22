@@ -108,6 +108,15 @@
   looked exactly like one where the feature was switched off.
 
 ### Fixed
+- **A LoRA that matches by name but not by shape now says so.** Key matching proves a LoRA is
+  *for* a model, not that its weights fit it; a mismatched pair is dropped during the merge,
+  which was visible only as one generic warning per key while FunPack's own status line still
+  read like a clean load. The count now reaches that status line. The common case is named
+  outright: MiniMax H3's pruned "curve-form" checkpoints read adaLN from a compact
+  time-curve basis, so a turbo LoRA trained against the full-width model matches all 51 adaLN
+  keys and merges into none of them. They cannot be projected — the basis that built the
+  table is not in the checkpoint — so the message says that and points at a converted LoRA.
+
 - **Context windowing and ALG's guide blur are switched off and hidden on MiniMax H3.**
   Core's windowing unpacks the LTXAV stream specifically and measures its window on LTX's 8x
   latent ratio; ALG's guide blur acts on guide frames appended to the latent, and an H3 guide

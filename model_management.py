@@ -17,8 +17,10 @@ from server import PromptServer
 
 try:
     from .widgets import field, list_widget, parse_rows
+    from . import funpack_log as _log
 except ImportError:  # standalone tests import the modules directly
     from widgets import field, list_widget, parse_rows
+    import funpack_log as _log
 
 LORA_TYPES = ["general", "action", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
@@ -261,6 +263,73 @@ def _strip_key_prefix(lora, prefix):
     return {(k[len(prefix):] if k.startswith(prefix) else k): v for k, v in lora.items()}
 
 
+def _lora_pair_dims(adapter):
+    """(out_dim, in_dim) a plain LoRA entry expects of the weight it names, else None.
+
+    comfy's LoRAAdapter holds `weights = (up[out, rank], down[rank, in], alpha, ...)`.
+    Anything that is not that shape (LoKr, LoHa, a plain "diff") is left to comfy.
+    """
+    w = getattr(adapter, "weights", None)
+    if not w or len(w) < 2:
+        return None
+    try:
+        return int(w[0].shape[0]), int(w[1].shape[-1])
+    except (AttributeError, IndexError, TypeError):
+        return None
+
+
+def _mismatched_lora_keys(model, patches):
+    """Patch keys whose LoRA pair cannot multiply into the weight they name.
+
+    Key matching says the LoRA is FOR this model; it says nothing about the weights fitting.
+    A mismatch is only discovered later, inside comfy's merge, as one generic warning per
+    key — 51 of them for the case below, mixed into everything else a load prints. Checked
+    here so the count reaches the status line the user actually reads.
+    """
+    try:
+        sd = model.model.state_dict()
+    except Exception:  # noqa: BLE001 — diagnostics must never break a load
+        return []
+    bad = []
+    for key, adapter in patches.items():
+        dims = _lora_pair_dims(adapter)
+        target = sd.get(key)
+        if dims is None or target is None or getattr(target, "dim", None) is None:
+            continue
+        try:
+            if target.dim() < 2:
+                continue
+            want = (int(target.shape[0]), int(target.shape[1:].numel()))
+        except Exception:  # noqa: BLE001
+            continue
+        if dims != want:
+            bad.append((key, dims, want))
+    return bad
+
+
+def _adaln_curve_note(model, bad):
+    """The specific, common cause — named, because "51 shape mismatches" is not actionable.
+
+    ComfyUI's MiniMax H3 checkpoints come in two forms. The full one derives the adaLN input
+    from a `time_embedder` (time_embed_dim 2688); the pruned "curve" one replaces it with a
+    precomputed `adaln_t_table` over a much smaller shared basis, so every
+    `adaln_proj.linear` is narrower on its input side. A LoRA trained against the full model
+    therefore cannot merge into a curve-form checkpoint — and it cannot be projected either,
+    because the basis used to build the table is not in the file.
+    """
+    if not any("adaln_proj" in k for k, _, _ in bad):
+        return None
+    dm = getattr(getattr(model, "model", None), "diffusion_model", None)
+    if not getattr(dm, "use_adaln_curves", False):
+        return None
+    n = sum(1 for k, _, _ in bad if "adaln_proj" in k)
+    return (f"{n} adaLN adapters do NOT apply: this is a curve-form H3 checkpoint (adaLN "
+            f"reads a compact time-curve basis), and the LoRA was trained against the "
+            f"full-width form. They cannot be projected onto it — the basis that built the "
+            f"table is not in the checkpoint. The rest of the LoRA still applies. For the "
+            f"full effect use a LoRA converted for ComfyUI's H3 checkpoint.")
+
+
 def resolve_lora_patches(model, lora, clip=None):
     """Match a LoRA against a model, trying known wrapper prefixes. -> (patches, note).
 
@@ -289,7 +358,24 @@ def resolve_lora_patches(model, lora, clip=None):
     if not patches:
         logging.warning("[FunPack] LoRA matched no weights in this model - wrong model family?")
         return patches, "MATCHED NOTHING"
-    return patches, f"keys={len(patches)} fmt={best_note}"
+    note = f"keys={len(patches)} fmt={best_note}"
+    # Matched by NAME is not applied: a mismatched pair is dropped during the merge, and
+    # a LoRA that reports success while a third of it never lands is the worst of both.
+    bad = _mismatched_lora_keys(model, patches)
+    if bad:
+        curve = _adaln_curve_note(model, bad)
+        if curve:
+            _log.note_on_change("lora:adaln_curve", "FunPack", curve)
+            note += f" | {len(bad)} SHAPE MISMATCH (adaLN curve-form — see log)"
+        else:
+            sample = ", ".join(k for k, _, _ in bad[:3])
+            _log.note_on_change(
+                "lora:shape", "FunPack",
+                f"{len(bad)} LoRA weights match this model by name but not by shape and will "
+                f"NOT be merged (e.g. {sample}). The LoRA was trained against a different "
+                f"variant of this architecture.")
+            note += f" | {len(bad)} SHAPE MISMATCH"
+    return patches, note
 
 
 class FunPackApplyLoraWeights:
