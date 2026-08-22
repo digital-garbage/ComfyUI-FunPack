@@ -727,7 +727,9 @@ def _expand_with_map(text):
               "orig_end": len(text), "is_shortcut": False}]
     try:
         data = load_shortcut_db()
-    except Exception:
+    except Exception as _e:
+        _log.failed("FunPackShortcuts", "shortcut library load", _e,
+                    "the prompt is used VERBATIM — no shortcut triggers were expanded")
         return text, whole
     candidates = []
     for db_key, shortcut in (data.get("shortcuts", {}) or {}).items():
@@ -760,7 +762,9 @@ def _expand_with_map(text):
     _rev_random = bool(_revolver.get("random"))
     try:
         pattern = re.compile(combined, re.IGNORECASE | re.UNICODE)
-    except re.error:
+    except re.error as _e:
+        _log.failed("FunPackShortcuts", "shortcut trigger pattern", _e,
+                    "the prompt is used VERBATIM — no shortcut triggers were expanded")
         return text, whole
 
     pieces, parts, exp_pos, last = [], [], 0, 0
@@ -10595,8 +10599,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 strength = strength * confidence_scale
                 # Gradient direction for phrase-level alignment
                 vf_grad_dir = self._vf_gradient_direction(original, vf)
-            except Exception:
-                pass
+            except Exception as _e:
+                _log.failed("FunPackStudio", "value-function confidence scaling", _e,
+                            "steering runs at full strength with no confidence discount")
         axis_feedback = axis_feedback or self._v2_axis_feedback(
             rating_profile,
             global_state.get("last_missing_axes", []),
@@ -10613,8 +10618,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             try:
                 liked = serializable_to_tensor(liked_payload).to(device=mixed.device, dtype=mixed.dtype)
                 mixed = mixed.lerp(liked, strength)
-            except Exception:
-                pass
+            except Exception as _e:
+                _log.failed("FunPackStudio", "liked-conditioning blend", _e,
+                            "the conditioning is NOT pulled toward what you rated well")
 
         mixed, family_delta_status = self._v2_apply_intent_family_delta(mixed, intent_family_slot, strength)
 
@@ -10683,8 +10689,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 d = concept_delta_dir.to(device=mixed.device, dtype=mixed.dtype)
                 mixed = mixed + concept_delta_strength * d.reshape(mixed.shape[-1]).unsqueeze(0).unsqueeze(0).expand_as(mixed)
                 axis_actions.append(f"concept-delta:{concept_delta_strength:.3f}")
-            except Exception:
-                pass
+            except Exception as _e:
+                _log.failed("FunPackStudio", "concept delta", _e,
+                            "the concept adjustment is not applied to this conditioning")
 
         # --- NEGATIVE SIGNALS: broad bad direction ---
         # Applied after all positive signals so we remove bad directions
@@ -10698,8 +10705,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 try:
                     bad = serializable_to_tensor(bad_payload).to(device=mixed.device, dtype=mixed.dtype)
                     mixed = mixed + (mixed - bad) * min(0.055, strength * 0.72)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    _log.failed("FunPackStudio", "disliked-conditioning repel", _e,
+                                "the conditioning is NOT pushed away from what you rated badly")
 
         # --- NEGATIVE SIGNALS: specific pair repulsion ---
         # Applied last among negatives — most targeted, has final say on
@@ -10744,8 +10752,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     rollback = min(0.75, (vf_score - new_score) / max(0.1, abs(vf_score) + 0.1))
                     mixed = mixed.lerp(original, rollback)
                     axis_actions.append(f"vf-rollback:{rollback:.2f}")
-            except Exception:
-                pass
+            except Exception as _e:
+                # The rollback is the safety net on the whole memory blend: without it a blend
+                # the value function scores WORSE than the original is kept anyway.
+                _log.failed("FunPackStudio", "value-function rollback check", _e,
+                            "the blended conditioning is kept unchecked — it may score worse "
+                            "than the unblended one")
 
         liked_count = int(liked_dir_slot.get("direction_count", 0))
         liked_mode = f"direction ({liked_count} runs)" if liked_count >= 3 else f"lerp fallback ({liked_count}/3 runs)"
@@ -13792,7 +13804,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         try:
             cond2 = cond2.to(device=cond1.device, dtype=cond1.dtype)
             combined = torch.cat([cond1, cond2], dim=1)
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "Bounded Attention split encode", _e,
+                        "the prompt is encoded as one span — subject bleed is not masked")
             return None, None
         return combined, int(cond1.shape[1])
 

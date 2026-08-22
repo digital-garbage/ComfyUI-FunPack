@@ -1196,7 +1196,9 @@ def _alg_blur_frames(model, latent_image, kappa, frame_indices=(), tail_count=0)
         out = latent_image.clone()
         out[..., off:off + sz] = video_blurred.reshape(b, 1, sz)
         return out
-    except Exception:
+    except Exception as _e:
+        _log.failed("FunPackSceneChain", "ALG anchor blur", _e,
+                    "the step runs on the sharp anchor — ALG de-staticking is inert")
         return None
 
 
@@ -5310,7 +5312,9 @@ class FunPackLTXAVSceneChainSampler:
         for pin in pins:
             try:
                 index = int(pin["resolved_frame_index"])
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError) as _e:
+                _log.failed("FunPackSceneChain", "wired keyframe pin", _e,
+                            "that pin is DROPPED — the scene it anchored is unpinned")
                 continue
             (first if index == 0 else last).append(pin)
         if not first and not last:
@@ -5704,7 +5708,9 @@ class FunPackLTXAVSceneChainSampler:
             import folder_paths
             import numpy as np
             from PIL import Image
-        except ImportError:
+        except ImportError as _e:
+            _log.failed("FunPackSceneChain", "guide image load (PIL/numpy)", _e,
+                        "the scene renders with NO image guide")
             return None
         path = os.path.join(folder_paths.get_input_directory(), filename)
         if not os.path.isfile(path):
@@ -6219,7 +6225,9 @@ class FunPackLTXAVSceneChainSampler:
             from identity_transfer import rotate_overlap_freqs as _rotate_overlap_freqs
         try:
             ltxv = model.model.diffusion_model
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackSceneChain", "identity transfer install", _e,
+                        "identity transfer is INERT for this run — no overlap tokens injected")
             return None
         if getattr(ltxv, self._IDENTITY_OVERLAP_TAG, False):
             return None  # already installed (idempotent across scenes/runs)
@@ -6353,8 +6361,12 @@ class FunPackLTXAVSceneChainSampler:
             for attr in ("_funpack_id_ref_len", "_funpack_id_target_len"):
                 if hasattr(ltxv, attr):
                     delattr(ltxv, attr)
-        except Exception:
-            pass
+        except Exception as _e:
+            # A cleanup that fails silently is how a patch survives the run that installed it
+            # and steers every later generation — the "each gen looks dirtier" failure mode.
+            _log.failed("FunPackSceneChain", "identity transfer removal", _e,
+                        "the patch may still be installed — RESTART ComfyUI before trusting "
+                        "later generations")
 
     def _resolve_identity_overlap(self, state, filename, vae, chunk, identity_projector, source_id,
                                    phase_scale, id_strength, arcface_mode, debug_log):
@@ -6510,8 +6522,11 @@ class FunPackLTXAVSceneChainSampler:
         for h in handles or []:
             try:
                 h.remove()
-            except Exception:
-                pass
+            except Exception as _e:
+                # Same leak class as identity-transfer removal: a hook that outlives its run.
+                _log.failed("FunPackSceneChain", "bounded attention removal", _e,
+                            "an attention hook may still be installed — RESTART ComfyUI before "
+                            "trusting later generations")
 
     def _decode_tile_latent(self, vae, decode_tile_size):
         """`decode_tile_size` is in PIXELS; decode_tiled wants latent units.
