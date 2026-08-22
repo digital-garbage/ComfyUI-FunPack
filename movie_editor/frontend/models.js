@@ -270,8 +270,22 @@
     // Keep the SAME `config` object — every wire/widget handler closes over it, so
     // reassigning it to the server's returned object detaches those closures and the
     // next edit wouldn't persist until the node is re-rendered. Save in place instead.
-    try { await API.saveModels(window.Store?.get().project?.id, config); window.dispatchEvent(new Event("funpack-models-changed")); }
-    catch (e) { console.error(e); }
+    const familyBefore = config.model_family;
+    try {
+      // The server detects the family from the checkpoint and answers with it, so a model
+      // swap can change the family without anyone touching a control. Copy the answer back
+      // onto the SAME object (see above) and migrate the project's frame geometry, which
+      // otherwise stays on the previous model's grid and fails the run.
+      const saved = await API.saveModels(window.Store?.get().project?.id, config);
+      if (saved && typeof saved === "object") {
+        if (saved.model_family) config.model_family = saved.model_family;
+        config.model_family_probe = saved.model_family_probe;
+      }
+      window.dispatchEvent(new Event("funpack-models-changed"));
+      if (config.model_family && config.model_family !== familyBefore) {
+        window.PipelineSetup?.applyFamilyGeometry?.();
+      }
+    } catch (e) { console.error(e); }
   }
 
   // ── deferred saving while a node is open ─────────────────────────────────────
@@ -1856,43 +1870,34 @@
     const head = el("div", "links-head");
     head.append(el("span", "lib-sub", "Model family"));
     sec.append(head);
-    sec.append(el("div", "links-hint",
-      "Which model the built-in pipeline is wired for. Changing it changes which nodes the "
-      + "graph uses, so re-check your loaders afterwards — the ports they wire into move."));
+    // Detected from the checkpoint, never chosen. A radio button here could contradict the
+    // file that is actually loaded — pick LTX, load H3 — and the whole graph would be wired
+    // for the wrong model, surfacing as a stray port instead of as a family error.
+    const probe = config.model_family_probe || {};
+    const known = FAMILIES.find((x) => x.key === familyKey());
     const row = el("div", "links-row");
-    FAMILIES.forEach((f) => {
-      const active = familyKey() === f.key;
-      const b = el("button", "btn ghost tiny" + (active ? " active" : ""), f.label);
-      b.title = f.sub;
-      b.onclick = async () => {
-        if (familyKey() === f.key) return;
-        config.model_family = f.key;
-        await persist();
-        // the family decides which core nodes exist and which ports loaders may wire
-        // into, so both have to be re-fetched before the panel redraws
-        try {
-          const pp = await API.pipelinePorts(window.Store?.get().project?.id);
-          ports = pp.ports || ports;
-          requirements = pp.requirements || requirements;
-          wiringRules = pp.wiring || wiringRules;
-        } catch (_) {}
-        try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || coreNodes; } catch (_) {}
-        // Only now — the prune needs the NEW family's core nodes to know which inputs exist.
-        const before = JSON.stringify(config.core_overrides || {});
-        dropOverridesForMissingInputs();
-        if (JSON.stringify(config.core_overrides || {}) !== before) await persist();
-        render();
-      };
-      row.append(b);
-    });
-    const setup = el("button", "btn ghost tiny", "Setup…");
-    setup.title = "What this model family needs — nodes and model files, including anything "
+    if (probe.detected) {
+      row.append(el("span", "lib-sub", (known ? known.label : familyKey())));
+      sec.append(row);
+      sec.append(el("div", "links-hint", "Detected from " + probe.reason));
+    } else {
+      row.append(el("span", "lib-sub", known ? known.label : familyKey()));
+      sec.append(row);
+      sec.append(el("div", "links-hint",
+        (probe.reason ? "Could not read the model: " + probe.reason + ". " : "")
+        + "Showing the last known family. Pick a .safetensors diffusion model and the "
+        + "pipeline will wire itself for whatever it is."));
+    }
+    const setup = el("div", "links-row");
+    const btn = el("button", "btn ghost tiny", "Setup\u2026");
+    btn.title = "What this model family needs — nodes and model files, including anything "
       + "not released yet.";
-    setup.onclick = () => window.PipelineSetup?.open();
-    row.append(setup);
-    sec.append(row);
+    btn.onclick = () => window.PipelineSetup?.open();
+    setup.append(btn);
+    sec.append(setup);
     return sec;
   }
+
 
   function coreSection() {
     const sec = el("div", "links-section");

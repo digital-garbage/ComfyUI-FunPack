@@ -204,10 +204,15 @@
     models.model_family = key;
     await API.saveModels(S.get().project.id, models);
     await refreshModels(models);
-    // Frame geometry belongs to the model, not to taste: the new family may generate on a
-    // different frame grid (LTX 8k+1 / H3 17k+5) and at a fixed rate (H3 is always 24 fps).
-    // Bring the project onto them now, while the user is looking at the choice that caused
-    // it — the alternative is a run that fails, or plays back at the wrong speed, later.
+    return applyFamilyGeometry();
+  }
+
+  // Frame geometry belongs to the model, not to taste: a family change may move the project
+  // onto a different frame grid (LTX 8k+1 / H3 17k+5) and a fixed rate (H3 is always 24 fps).
+  // Split out from applyFamily because the family is now DETECTED from the checkpoint, so a
+  // change can arrive from the Models panel without anyone visiting the wizard — and the
+  // migration has to happen either way or the run fails, or plays back at the wrong speed.
+  function applyFamilyGeometry() {
     const st = S.get();
     const grid = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(st) : null;
     if (grid && st.project) {
@@ -419,7 +424,7 @@
     // Exposed for the onboarding wizard, which renders the prerequisite step in its
     // own full-screen chrome but must not re-implement the install/poll/restart
     // machinery below.
-    applyFamily, useOwnPipeline, markHandled,
+    applyFamily, applyFamilyGeometry, useOwnPipeline, markHandled,
     installPacks: startInstall,
     installManager: startManagerInstall,
     restartComfy: restartComfyOnly,

@@ -31,6 +31,19 @@
   quietly. Latent width and height snap to even, since a patchified model cannot take odd.
 
 ### Changed
+- **The model family is detected from the checkpoint instead of chosen.** Selecting LTX while
+  loading an H3 file wired the entire graph for the wrong model, and the mismatch surfaced as a
+  stray port rather than as a family error. The family now comes from the diffusion model's own
+  safetensors header — key-name signatures only, the same ones ComfyUI's `model_detection` uses,
+  so it costs the same on a 40 GB file as on a small one and never loads weights. Changing the
+  checkpoint rewires the pipeline and migrates the project's frame geometry, which previously
+  only happened if you went through the wizard.
+
+  A file that cannot be identified proposes **no** family: the previous one stands and the panel
+  says why. Nothing silently becomes LTX. A video-only Lightricks checkpoint is wired on the AV
+  graph, as before, but is now named as video-only so an empty audio branch is expected rather
+  than mysterious.
+
 - **Settings the loaded model cannot use are no longer shown.** MiniMax H3 drops Bounded
   Attention, Best-FaceID (with its four sub-settings) and `v2a_grad_scale`; LTX drops
   `h3_audio_clock`. Previously each was offered, left switchable, and then reported once per

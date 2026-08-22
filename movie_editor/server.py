@@ -20,7 +20,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, sysinfo, workflow_import
+from .backend import bridge, builder, config, git_update, media, model_probe, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, sysinfo, workflow_import
 from .backend.nle_effects import zoompan_z_expr
 from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_export
 from .backend.timeline import (
@@ -2590,6 +2590,16 @@ if web is not None and PromptServer is not None:
         # A pipeline that has never been set up starts as FunPack's own loaders, already
         # wired — the wizard's family step reaches here before the Models panel is ever
         # opened, so seeding only in the panel would leave "Continue" with no pipeline.
+        # The family follows the CHECKPOINT, not a button. Picking LTX while loading an H3
+        # file used to wire the whole graph for the wrong model and surface as a stray port
+        # rather than as a family error. Detection is a header read, so it costs the same on
+        # a 40 GB file as on a small one. A file we cannot identify leaves the existing
+        # family alone — guessing is what this replaced.
+        probe = model_probe.probe_models(body)
+        if probe.get("family") and probe["family"] != body.get("model_family"):
+            body["model_family"] = probe["family"]
+        body["model_family_probe"] = probe
+
         seeded_now = False
         if not body.get("defaults_seeded"):
             oi = None
