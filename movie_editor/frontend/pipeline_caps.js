@@ -149,29 +149,40 @@
       + "schedules. LTX puts both streams on one schedule, so there is nothing to correct.",
   };
 
+  // Sub-settings of identity transfer: meaningless wherever the feature itself cannot run,
+  // so they travel with it rather than each needing its own entry above.
+  const IDENTITY_SUB_INPUTS = ["source_id", "phase_scale", "id_strength", "arcface_mode"];
+
+  // Non-boolean knobs H3 cannot use. v2a_grad_scale hooks LTXAV's video_to_audio_attn
+  // submodule; H3 has no separate video->audio cross-attention to scale, and the sampler
+  // forces it back to 1.0. Its parent feature (joyai_audio_memory) DOES work on H3, so only
+  // the coupling knob goes.
+  const H3_DEAD_VALUE_INPUTS = ["v2a_grad_scale"];
+
+  // The sampler inputs the LOADED model cannot use. Engine Settings hides these outright
+  // rather than offering a control and explaining once per run that it does nothing — a
+  // toggle that is not offered needs no explanation. The stored value is left untouched, so
+  // switching family back restores the user's setting instead of silently resetting it.
+  //
+  // Safe because the sampler already forces every one of these off for the family in
+  // question, so hiding removes a control that was inert either way — it never makes a
+  // working knob unreachable.
+  function familyInertInputs(st) {
+    if (!usesChainSampler(st)) return new Set();
+    if (!isH3(st)) return new Set(Object.keys(H3_ONLY_SAMPLER_INPUTS));
+    return new Set([...Object.keys(H3_DEAD_SAMPLER_INPUTS), ...IDENTITY_SUB_INPUTS,
+                    ...H3_DEAD_VALUE_INPUTS]);
+  }
+
   // Returns [{short, detail}] for settings that are ON but cannot do anything on H3.
   function h3InertSettings(st) {
     const p = st && st.project;
     if (!p || !usesChainSampler(st)) return [];
-    const si = p.sampler_inputs || {};
-    if (!isH3(st)) {
-      return Object.keys(H3_ONLY_SAMPLER_INPUTS)
-        .filter((key) => si[key])
-        .map((key) => ({
-          short: key.replace(/_/g, " ") + " needs MiniMax H3",
-          detail: H3_ONLY_SAMPLER_INPUTS[key]
-            + " Turn it off in Settings → Engine to stop it showing here.",
-        }));
-    }
-    const issues = [];
-    Object.keys(H3_DEAD_SAMPLER_INPUTS).forEach((key) => {
-      if (si[key]) issues.push([key, H3_DEAD_SAMPLER_INPUTS[key]]);
-    });
-    issues.push(...h3DeadValueIssues(si));
-    const out = issues.map(([key, detail]) => ({
-      short: "H3: " + key.replace(/_enabled$/, "").replace(/_/g, " ") + " can't run",
-      detail: detail + " Turn it off in Settings → Engine to stop it showing here.",
-    }));
+    // Everything family-inert is now HIDDEN from Engine Settings, so a chip here would
+    // point at a control the user cannot find ("turn it off in Settings → Engine" names a
+    // row that is not rendered). What is left is the one issue hiding cannot express: a
+    // frame rate the model will not honour, which is a value the user must change.
+    const out = [];
     const fps = frameRateIssue(st);
     if (fps) out.push(fps);
     return out;
@@ -297,7 +308,7 @@
     return map[type] || type;
   }
 
-  window.PipelineCaps = {
+  const api = {
     usesFunpackStudio,
     usesChainSampler,
     caps,
@@ -309,6 +320,7 @@
     snapFramesIfRequired,
     frameRateIssue,
     h3InertSettings,
+    familyInertInputs,
     effectiveSourceType,
     isChainOnlySource,
     isT2V,
@@ -319,4 +331,9 @@
     promptSourceIssue,
     sourceLabel,
   };
+  // Node can require this for the pure predicates (familyInertInputs, snapFramesTo, …);
+  // the browser keeps the window global. `window` does not exist under Node, so neither
+  // assignment may assume the other's environment.
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (typeof window !== "undefined") window.PipelineCaps = api;
 })();

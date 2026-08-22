@@ -385,8 +385,12 @@
     return value !== undefined ? depVal === value : !!depVal;
   }
 
-  function knobVisible(k, si) {
+  function knobVisible(k, si, st) {
     if (EASY() && RATING_GATED_KNOBS.has(k.name)) return false;
+    // The loaded model cannot use this one. Hide it rather than offer a control and then
+    // explain per run that it does nothing — what is not wired does not appear. The stored
+    // value survives, so switching family back brings the setting back with it.
+    if (st && window.PipelineCaps?.familyInertInputs(st).has(k.name)) return false;
     // dependsOn/dependsValue: single condition (dependsValue absent = plain truthy
     // gate, as every existing boolean dependsOn already relies on).
     if (k.dependsOn && !_depSatisfied(k.dependsOn, k.dependsValue, si)) return false;
@@ -402,7 +406,7 @@
   }
 
   function renderSamplerKnob(parentGroup, st, k, si, multiScene) {
-    if (!knobVisible(k, si)) return;
+    if (!knobVisible(k, si, st)) return;
     const val = si[k.name] != null ? si[k.name] : k.default;
     const gs = normGuideSettings(st.project);
     const cs = normContinuitySettings(st.project);
@@ -467,11 +471,15 @@
     chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "h3_audio_clock", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
-  function countChainView(p, id) {
+  function countChainView(p, id, st) {
     const si = p.sampler_inputs || {};
+    // A knob the model cannot use is hidden, so a badge counting it would advertise a
+    // change the user cannot see or undo from this pane.
+    const inert = st ? (window.PipelineCaps?.familyInertInputs(st) || new Set()) : new Set();
     let n = 0;
     (CHAIN_VIEW_KNOBS[id] || []).forEach((name) => {
       if (EASY() && RATING_GATED_KNOBS.has(name)) return;
+      if (inert.has(name)) return;
       const k = SAMPLER_KNOB_MAP[name];
       if (k && si[name] != null && si[name] !== k.default) n++;
     });
@@ -494,11 +502,11 @@
     }
     if (chainOn) {
       out.push(
-        { id: "chain_continuity", group: "Chain Sampler", title: "Continuity", icon: "∞", badge: countChainView(p, "chain_continuity") || null },
-        { id: "chain_timing", group: "Chain Sampler", title: "Timing & Seed", icon: "⏱", badge: countChainView(p, "chain_timing") || null },
-        { id: "chain_guidance", group: "Chain Sampler", title: "Guidance", icon: "◇", badge: countChainView(p, "chain_guidance") || null },
-        { id: "chain_decode", group: "Chain Sampler", title: "Decode", icon: "▣", badge: countChainView(p, "chain_decode") || null },
-        { id: "chain_experimental", group: "Chain Sampler", title: "Experimental", icon: "⚗", badge: countChainView(p, "chain_experimental") || null },
+        { id: "chain_continuity", group: "Chain Sampler", title: "Continuity", icon: "∞", badge: countChainView(p, "chain_continuity", st) || null },
+        { id: "chain_timing", group: "Chain Sampler", title: "Timing & Seed", icon: "⏱", badge: countChainView(p, "chain_timing", st) || null },
+        { id: "chain_guidance", group: "Chain Sampler", title: "Guidance", icon: "◇", badge: countChainView(p, "chain_guidance", st) || null },
+        { id: "chain_decode", group: "Chain Sampler", title: "Decode", icon: "▣", badge: countChainView(p, "chain_decode", st) || null },
+        { id: "chain_experimental", group: "Chain Sampler", title: "Experimental", icon: "⚗", badge: countChainView(p, "chain_experimental", st) || null },
       );
     }
     return out;
