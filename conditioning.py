@@ -538,6 +538,19 @@ def refinement_state_path(refinement_key, mode, prefix="refine", extension="json
 
 
 def clone_latent(latent):
+    """Shallow-clone a LATENT dict, deep-copying its tensor values.
+
+    A NestedTensor (LTXAV / H3 packed audio+video) is NOT a torch.Tensor, so it is carried over
+    BY REFERENCE and the "clone" aliases the caller's samples. That is safe here, and an audit
+    should not re-open it: `latent_samples` returns None for a nested value, so
+    `latent_is_plain_video_tensor` is False and `_refine_latent` rejects the latent outright
+    (`_raise_wrong_latent`) before reaching this function. Every other caller returns the clone
+    unmodified — the two writes in `_refine_latent` REPLACE the "samples" key rather than
+    mutating it in place, so nothing can reach through the alias.
+
+    The sampler's own `_clone_latent` unbinds and clones each stream, because it works on
+    latents that ARE nested.
+    """
     if not isinstance(latent, dict):
         return None
 
