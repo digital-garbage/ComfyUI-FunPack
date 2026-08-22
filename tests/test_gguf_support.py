@@ -74,9 +74,11 @@ def test_no_backend_refuses_with_both_remedies(monkeypatch):
     with pytest.raises(RuntimeError) as e:
         gguf_support.load_state_dict("/nope.gguf")
     msg = str(e.value)
-    # Both ways out must be named: they have different consequences for VRAM.
+    # Both ways out must be named: they have different consequences for VRAM. `gguf` is a
+    # FunPack requirement now, so the first is a re-run of them rather than a lone package.
     assert "ComfyUI-GGUF" in msg
-    assert "pip install gguf" in msg
+    assert "requirements.txt" in msg
+    assert "quantized in VRAM" in msg
 
 
 def test_the_pack_wins_when_both_are_available(monkeypatch):
@@ -229,3 +231,12 @@ def test_a_pack_refusal_without_the_library_still_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(gguf_support.importlib.util, "find_spec", lambda name: None)
     with pytest.raises(ValueError, match="nope"):
         gguf_support.load_state_dict("/h3.gguf")
+
+
+def test_gguf_is_a_declared_requirement():
+    """The advice in UNAVAILABLE is "re-run FunPack's requirements", which is only true
+    while gguf is actually in them."""
+    import pathlib
+    reqs = pathlib.Path("requirements.txt").read_text(encoding="utf-8")
+    lines = [ln.strip() for ln in reqs.splitlines() if ln.strip() and not ln.startswith("#")]
+    assert any(ln == "gguf" or ln.startswith("gguf") for ln in lines)

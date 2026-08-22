@@ -190,9 +190,12 @@ def backend() -> Optional[str]:
 
 
 UNAVAILABLE = (
-    "No GGUF backend is available. Either install ComfyUI-GGUF (custom node pack — keeps the "
-    "weights quantized in VRAM, which is the point of GGUF), or `pip install gguf` into "
-    "ComfyUI's environment for a load-time dequantize that works but gives back no memory."
+    "No GGUF backend is available. The `gguf` package is one of FunPack's requirements, so an "
+    "install that predates .gguf support just needs them re-run:\n"
+    "    pip install -r custom_nodes/ComfyUI-FunPack/requirements.txt\n"
+    "That gives a load-time dequantize: the file loads, but at its full size. To keep the "
+    "weights quantized in VRAM — which is the point of GGUF — install the ComfyUI-GGUF node "
+    "pack as well; FunPack uses it as the runtime and stays the only loader you wire."
 )
 
 

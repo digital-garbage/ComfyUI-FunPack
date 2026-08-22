@@ -2,6 +2,9 @@ transformers>=5.0.0
 huggingface_hub
 safetensors
 numpy
+# Reads .gguf containers in the FunPack loaders. Pure python + numpy; it does not
+# pull CUDA or any model. Without it a .gguf needs the ComfyUI-GGUF node pack instead.
+gguf
 Pillow
 insightface
 opencv-python-headless
