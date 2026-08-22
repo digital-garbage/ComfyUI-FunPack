@@ -20,10 +20,25 @@
     try { localStorage.setItem(LS_KEY, "1"); } catch (_) {}
   }
 
+  // Bumped by every close the USER asked for. chooseFamily / applyFamily / useOwnPipeline
+  // each span two or three round-trips and then reopen the modal with fresh deps; without
+  // this, a continuation that started before the user dismissed the modal reopens it
+  // afterwards — which is exactly what "No, I'll use my own pipeline" looked like, since
+  // disabling the built-in pipeline installs nothing, so `needs_setup` is still true when
+  // the in-flight chooseFamily lands.
+  let _closeToken = 0;
+
   function closeModal() {
     if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
     overlay?.remove();
     overlay = null;
+  }
+
+  // Close AND supersede anything already in flight. Use this for every close the user
+  // initiates; closeModal() alone is for internal teardown before a reopen.
+  function dismissModal() {
+    _closeToken += 1;
+    closeModal();
   }
 
   function builtInPipelineActive(st) {
@@ -43,13 +58,29 @@
   }
 
   async function useOwnPipeline() {
-    if (!S.get().project) return;
-    const models = JSON.parse(JSON.stringify(S.get().models || S.get().project?.models || { slots: [] }));
-    models.disable_core = true;
-    await API.saveModels(S.get().project.id, models);
-    await refreshModels(models);
+    const proj = S.get().project;
+    if (!proj) {
+      // Nothing to write the choice to. Still close: leaving the modal up with a button
+      // that does nothing when pressed is the worse of the two failures.
+      dismissModal();
+      return;
+    }
+    // Dismissed BEFORE the awaits: the decision is already made, and holding the modal open
+    // for two round-trips is what let an in-flight family lookup reopen it afterwards.
     setDismissed();
-    closeModal();
+    dismissModal();
+    const models = JSON.parse(JSON.stringify(S.get().models || proj.models || { slots: [] }));
+    models.disable_core = true;
+    try {
+      await API.saveModels(proj.id, models);
+    } catch (e) {
+      // The choice did NOT persist — saying so beats a project that quietly still runs the
+      // built-in pipeline on the next Generate.
+      alert("Could not save the pipeline choice: " + (e?.message || e)
+            + "\n\nSet it in Models → Enable built-in pipeline.");
+      return;
+    }
+    await refreshModels(models);
   }
 
   function packList(deps) {
@@ -236,9 +267,12 @@
 
   async function chooseFamily(key) {
     if (!S.get().project) return;
+    const tok = _closeToken;
     await applyFamily(key);
+    if (tok !== _closeToken) return;   // user closed the modal while this was in flight
     let deps;
     try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { closeModal(); return; }
+    if (tok !== _closeToken) return;
     if (!deps?.needs_setup) { closeModal(); return; }
     openModal(deps);
   }
@@ -382,12 +416,12 @@
     foot.append(ownBtn);
     const dismissBtn = el("button", "btn ghost", "Close");
     dismissBtn.type = "button";
-    dismissBtn.onclick = () => closeModal();
+    dismissBtn.onclick = () => dismissModal();
     foot.append(dismissBtn);
     modal.append(foot);
 
     overlay.append(modal);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) dismissModal(); });
     document.body.append(overlay);
   }
 
@@ -395,7 +429,7 @@
   // not open behind it — or, worse, on top of the editor the moment the wizard finishes.
   function markHandled() {
     setDismissed();
-    closeModal();
+    dismissModal();
   }
 
   async function maybePrompt() {
@@ -404,8 +438,10 @@
     if (dismissed()) return;
     const st = S.get();
     if (!st.project || !builtInPipelineActive(st)) return;
+    const tok = _closeToken;
     let deps;
     try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { return; }
+    if (tok !== _closeToken) return;
     if (!deps?.needs_setup) return;
     openModal(deps);
   }
@@ -414,8 +450,10 @@
   // after it has been dismissed once (the auto-prompt is one-shot per browser).
   async function open() {
     if (!S.get().project) return;
+    const tok = _closeToken;
     let deps;
     try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { return; }
+    if (tok !== _closeToken) return;
     openModal(deps);
   }
 

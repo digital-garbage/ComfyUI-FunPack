@@ -86,6 +86,14 @@
   looked exactly like one where the feature was switched off.
 
 ### Fixed
+- **"No, I'll use my own pipeline" left the setup modal on screen.** Picking a model family
+  starts a chain of requests that reopens the modal with fresh prerequisites; dismissing it
+  mid-flight closed it, then the reply landed and put it straight back — and since opting out
+  installs nothing, the prerequisites were still missing, so it always reopened. Closes the
+  user asks for now supersede anything in flight. The choice is also recorded before the
+  save round-trip rather than after it, and a save that fails says so instead of leaving the
+  project quietly still on the built-in pipeline.
+
 - **An output can be wired to several destinations while adding a node**, not only after.
   The Add-node panel offered one destination per output and told you to finish the job on
   the node's page; it now uses the same multi-destination editor the node page does, with
