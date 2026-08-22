@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### Added
+- **Settings ▸ Custom Nodes: install, update and remove ComfyUI node packs.** `＋ Add node`
+  asks for a repository URL and clones it into `custom_nodes`, installing its
+  `requirements.txt` if it has one; each row offers Update (a fast-forward pull, refused if
+  the pack has local changes) and Remove. It is three git operations, not a catalogue — you
+  supply the URL, and nothing about the repository is vetted first, which the dialog says.
+  Removal names the full path it is about to delete and cannot reach outside `custom_nodes`:
+  the name must be a single path segment that resolves to a direct child directory, so a
+  symlink cannot redirect it, and FunPack cannot delete itself. Node packs register at
+  import, so the panel says a restart is needed rather than restarting under you.
+
 - **FunPack's loaders take `.gguf` files**, for diffusion models and text encoders alike, and
   a text-encoder list may mix a `.gguf` with `.safetensors` slots (the usual LTX-2.3 shape).
   Core's extension set has no `.gguf`, so those files were on disk and invisible to every

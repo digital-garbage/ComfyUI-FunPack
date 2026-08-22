@@ -20,7 +20,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, git_update, media, model_probe, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, sysinfo, workflow_import
+from .backend import bridge, builder, config, custom_nodes, git_update, media, model_probe, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, sysinfo, workflow_import
 from .backend.nle_effects import geometry_filters, reverse_refusal, zoompan_z_expr
 from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_export
 from .backend.timeline import (
@@ -2534,6 +2534,47 @@ if web is not None and PromptServer is not None:
             return web.json_response({"detail": str(e)}, status=400)
         asyncio.get_event_loop().call_later(0.7, _restart_comfy)
         return web.json_response({"restarting": True, **result})
+
+    # --- API: custom node packs (a small stand-in for ComfyUI-Manager: clone, pull, delete) ---
+    # Every one of these shells out to git or pip, which take seconds to minutes. Inline they
+    # would freeze the one event loop ComfyUI has, stalling playback and the whole editor API.
+
+    @routes.get(UI_PREFIX + "/api/custom-nodes")
+    async def _custom_nodes_list(_req):
+        import asyncio
+        return web.json_response(await asyncio.to_thread(custom_nodes.list_nodes))
+
+    @routes.post(UI_PREFIX + "/api/custom-nodes/install")
+    async def _custom_nodes_install(req):
+        import asyncio
+        body = await req.json() if req.can_read_body else {}
+        try:
+            result = await asyncio.to_thread(custom_nodes.install, str(body.get("url") or ""))
+        except custom_nodes.CustomNodeError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        return web.json_response(result)
+
+    @routes.post(UI_PREFIX + "/api/custom-nodes/update")
+    async def _custom_nodes_update(req):
+        import asyncio
+        body = await req.json() if req.can_read_body else {}
+        try:
+            result = await asyncio.to_thread(custom_nodes.update, str(body.get("name") or ""))
+        except custom_nodes.CustomNodeError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        return web.json_response(result)
+
+    @routes.post(UI_PREFIX + "/api/custom-nodes/remove")
+    async def _custom_nodes_remove(req):
+        import asyncio
+        body = await req.json() if req.can_read_body else {}
+        try:
+            result = await asyncio.to_thread(custom_nodes.remove, str(body.get("name") or ""))
+        except custom_nodes.CustomNodeError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        except OSError as e:
+            return web.json_response({"detail": f"Could not delete it: {e}"}, status=500)
+        return web.json_response(result)
 
     @routes.post(UI_PREFIX + "/api/restart")
     async def _restart(_req):

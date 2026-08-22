@@ -2687,3 +2687,32 @@ body.tour-mode { overflow: hidden; }
 /* The close lives in the zone head and only exists while the zone is a slide-over. */
 .panel-close { margin-left: auto; }
 :root:not([data-ui-mode="simple"]) .panel-close { display: none; }
+
+/* ── Settings ▸ Custom Nodes ────────────────────────────────────────────── */
+.cn-mount { display: flex; flex-direction: column; gap: var(--sp-3); }
+.cn-bar { display: flex; align-items: center; gap: var(--sp-2); }
+.cn-busy { font-size: 11px; color: var(--muted); }
+.cn-lead { font-size: 13px; color: var(--text); margin-bottom: 6px; }
+.cn-hint { font-size: 11px; color: var(--faint); line-height: 1.45; margin-top: 6px;
+  overflow-wrap: anywhere; }
+.cn-modal { max-width: 460px; }
+.cn-list { display: flex; flex-direction: column; gap: 4px; }
+.cn-row {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  padding: 8px 10px; border-radius: 8px;
+  background: var(--ink-2); border: 1px solid var(--line);
+}
+.cn-row.self { background: color-mix(in srgb, var(--accent) 10%, var(--ink-2));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+.cn-row-text { min-width: 0; }
+.cn-name { font-size: 12px; font-weight: 600; color: var(--text);
+  overflow-wrap: anywhere; }
+.cn-sub { font-size: 10px; color: var(--faint); font-family: var(--font-mono);
+  margin-top: 2px; overflow-wrap: anywhere; }
+.cn-row-acts { display: flex; gap: 4px; flex-shrink: 0; }
+.cn-restart {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  padding: 8px 10px; border-radius: 8px; font-size: 11px; line-height: 1.45;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+}

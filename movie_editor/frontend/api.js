@@ -97,6 +97,10 @@
     deleteFile: (group, name) => j("DELETE", API(`/files/${encodeURIComponent(group)}/${encodeURIComponent(name)}`)),
     clearFiles: (group) => j("POST", API(`/files/${encodeURIComponent(group)}/clear`), {}),
     nleLibrary: () => j("GET", API("/library/nle")),
+    customNodes: () => j("GET", API("/custom-nodes")),
+    customNodeInstall: (url) => j("POST", API("/custom-nodes/install"), { url }),
+    customNodeUpdate: (name) => j("POST", API("/custom-nodes/update"), { name }),
+    customNodeRemove: (name) => j("POST", API("/custom-nodes/remove"), { name }),
 
     // media bin
     listMedia: () => j("GET", API("/media")),
