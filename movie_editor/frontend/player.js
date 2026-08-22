@@ -628,14 +628,7 @@
     for (const u of want) {
       if (pool.has(u)) continue;
       const clip = _clips.find((c) => _clipUrl(c) === u);
-      if (!clip) continue;
-      // Register BEFORE materializing: _classifyVideoError drops any element whose url is
-      // not in _urlClips, so an element created here without one could never retry a failed
-      // load and sat on "loading" forever. Only _syncPool registered, and it only runs on a
-      // timeline rebuild — so every clip the sliding window materialized during playback
-      // (i.e. everything past the first window) was unrecoverable.
-      _registerUrlClip(u, clip);
-      _ensureVideo(u, clip);
+      if (clip) _ensureVideo(u, clip);
     }
     if (pool.size <= POOL_MAX) return;
     for (const [u, v] of [...pool]) {  // Map order = insertion order ⇒ oldest first
