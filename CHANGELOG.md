@@ -11,6 +11,8 @@
   dequantize at load — the file loads, but at full size, and the status output says which of
   the two happened. With neither, the loader names both remedies instead of failing obscurely.
   Model-family detection reads GGUF containers too, using the same architecture signatures.
+  A GGUF renamed to `.safetensors` is recognised by its container magic and loaded correctly
+  rather than failing in the safetensors parser with a UTF-8 decode error.
 
 - **Pin up to three shortcuts to the timeline toolbar.** Settings is a window with a sidebar,
   and its useful places — a specific node's page, one Engine category — are several clicks

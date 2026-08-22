@@ -240,10 +240,22 @@ class FunPackDiffusionModelLoader:
         model_options = weight_model_options(weight_dtype)
         notes.append(f"weight dtype: {weight_dtype}")
 
+        path = None
+        misnamed = False
         if gguf_support.is_gguf(model_name):
             path = gguf_support.gguf_path("diffusion_models", model_name)
             if not path:
                 raise RuntimeError(f"ERROR: {model_name} is no longer where it was listed from.")
+        else:
+            path = folder_paths.get_full_path_or_raise("diffusion_models", model_name)
+            # The CONTENT decides, not the extension. A .gguf renamed to .safetensors used to
+            # reach the safetensors parser and fail with a UTF-8 decode error from reading a
+            # binary header as JSON — true, and no help at all.
+            misnamed = gguf_support.has_gguf_magic(path)
+        if path is not None and (gguf_support.is_gguf(model_name) or misnamed):
+            if misnamed:
+                notes.append(f"{model_name} is named .safetensors but is a GGUF container — "
+                             f"loaded as GGUF")
             state_dict, gguf_options, gguf_note = gguf_support.load_state_dict(path)
             # The quantized path needs its own torch operations, and they must not be lost to
             # the dtype options merged above — a GGUF loaded with stock ops would try to matmul
@@ -252,7 +264,6 @@ class FunPackDiffusionModelLoader:
             metadata = None
             notes.append(gguf_note)
         else:
-            path = folder_paths.get_full_path_or_raise("diffusion_models", model_name)
             state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
         model = comfy.sd.load_diffusion_model_state_dict(
             state_dict, model_options=model_options, metadata=metadata)
@@ -351,17 +362,28 @@ class FunPackCLIPLoader:
             model_options["load_device"] = model_options["offload_device"] = torch.device("cpu")
 
         gguf_notes = []
-        if any(gguf_support.is_gguf(n) for n in names):
+        # Resolved once: a slot counts as GGUF by extension OR by container magic, so a
+        # renamed file behaves the same here as in the diffusion loader.
+        def _gguf_slot(n):
+            if gguf_support.is_gguf(n):
+                return gguf_support.gguf_path("text_encoders", n)
+            try:
+                p = folder_paths.get_full_path_or_raise("text_encoders", n)
+            except Exception:  # noqa: BLE001 — the normal path reports a missing file
+                return None
+            return p if gguf_support.has_gguf_magic(p) else None
+
+        gguf_slots = {n: _gguf_slot(n) for n in names}
+        if any(gguf_slots.values()):
             # A .gguf encoder cannot go through load_clip(), which reads files itself. Every
             # slot becomes a state dict instead, so a GGUF and a .safetensors connector can
             # sit in the same list — which is the normal LTX-2.3 shape.
             state_dicts = []
             for n in names:
-                if gguf_support.is_gguf(n):
-                    gpath = gguf_support.gguf_path("text_encoders", n)
-                    if not gpath:
-                        raise RuntimeError(f"FunPack CLIP Loader: {n} is no longer where it "
-                                           f"was listed from.")
+                gpath = gguf_slots.get(n)
+                if gpath:
+                    if not gguf_support.is_gguf(n):
+                        gguf_notes.append(f"{n} is named .safetensors but is a GGUF container")
                     sd, gopts, gnote = gguf_support.load_clip_state_dict(gpath)
                     state_dicts.append(sd)
                     model_options = {**model_options, **gopts}

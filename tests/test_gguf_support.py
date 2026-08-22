@@ -127,3 +127,65 @@ def test_pack_load_passes_custom_operations_through(tmp_path, monkeypatch):
     assert "custom_operations" in options
     assert type(options["custom_operations"]).__name__ == "GGMLOps"
     assert "quantized" in note
+
+
+def test_container_magic_beats_the_extension(tmp_path):
+    """A .gguf renamed to .safetensors reached the safetensors parser, which read its binary
+    header as UTF-8 JSON and failed with a decode error — true, and no help at all."""
+    renamed = tmp_path / "ltx-Q4_K_M.safetensors"
+    renamed.write_bytes(b"GGUF\x03\x00\x00\x00" + b"\x80" * 200)
+    assert gguf_support.has_gguf_magic(str(renamed))
+    # ...and the name alone still says nothing.
+    assert not gguf_support.is_gguf(renamed.name)
+
+
+def test_a_real_safetensors_is_not_mistaken_for_gguf(tmp_path):
+    st = tmp_path / "real.safetensors"
+    st.write_bytes((8).to_bytes(8, "little") + b'{"a":{}}')
+    assert not gguf_support.has_gguf_magic(str(st))
+
+
+def test_magic_check_survives_a_missing_file():
+    assert gguf_support.has_gguf_magic("/definitely/not/here.safetensors") is False
+
+
+def test_pack_modules_can_use_relative_imports(tmp_path, monkeypatch):
+    """ComfyUI-GGUF's loader.py does `from .ops import ...`. Loading it as a standalone
+    module by file path raised "attempted relative import with no known parent package";
+    mounting the directory as a package is what makes it resolve."""
+    d = tmp_path / "ComfyUI-GGUF"
+    d.mkdir()
+    (d / "__init__.py").write_text("raise AssertionError('the pack __init__ must not run')")
+    (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
+    (d / "dequant.py").write_text("MARKER = 'dequant'\n")
+    (d / "loader.py").write_text(
+        "from .ops import GGMLOps\n"
+        "from .dequant import MARKER\n"
+        "def gguf_sd_loader(path):\n"
+        "    return {'w': MARKER}\n"
+    )
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+
+    sd, options, note = gguf_support.load_state_dict("/whatever.gguf")
+    assert sd == {"w": "dequant"}
+    assert type(options["custom_operations"]).__name__ == "GGMLOps"
+
+
+def test_switching_pack_directories_remounts(tmp_path, monkeypatch):
+    """The synthesized package is cached in sys.modules; a different directory must not keep
+    resolving to the first one."""
+    for name, marker in (("a", "first"), ("b", "second")):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
+        (d / "loader.py").write_text(
+            f"def gguf_sd_loader(path):\n    return {{'w': '{marker}'}}\n")
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(tmp_path / "a"))
+    assert gguf_support.load_state_dict("/x.gguf")[0] == {"w": "first"}
+
+    # No manual cache clearing: remounting a different directory must purge it by itself.
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(tmp_path / "b"))
+    assert gguf_support.load_state_dict("/x.gguf")[0] == {"w": "second"}

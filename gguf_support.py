@@ -25,8 +25,11 @@ Nothing here downloads or installs anything.
 """
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import os
+import sys
+import types
 from typing import Optional
 
 GGUF_EXT = ".gguf"
@@ -34,6 +37,24 @@ GGUF_EXT = ".gguf"
 
 def is_gguf(name: str) -> bool:
     return str(name or "").lower().endswith(GGUF_EXT)
+
+
+GGUF_MAGIC = b"GGUF"
+
+
+def has_gguf_magic(path: str) -> bool:
+    """True when the FILE is a GGUF container, whatever it is called.
+
+    Renaming a .gguf to .safetensors is an easy mistake to make — for most of this project's
+    life the pickers only offered .safetensors, so renaming was the obvious way to get a file
+    to show up. The result is an unreadable error from the safetensors parser trying to read
+    a binary header as UTF-8 JSON. Four bytes settle it, so the content decides.
+    """
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == GGUF_MAGIC
+    except OSError:
+        return False
 
 
 # ── finding .gguf files ───────────────────────────────────────────────────────
@@ -95,19 +116,44 @@ def gguf_path(folder: str, name: str) -> Optional[str]:
 
 # ── backends ──────────────────────────────────────────────────────────────────
 
+_PKG_NAME = "_funpack_gguf_pack"
+
+
+def _ensure_pack_package(dirname: str) -> str:
+    """Register the pack's directory as an importable package, once.
+
+    Loading `loader.py` as a standalone module by file path fails the moment it does
+    `from .ops import ...` — "attempted relative import with no known parent package",
+    because a module loaded that way has no package to be relative TO. So a parent package
+    is synthesized with `__path__` pointing at the directory, and submodules are imported
+    underneath it, which is what makes relative imports resolve.
+
+    The pack's own `__init__.py` is deliberately NOT executed: it registers the pack's nodes,
+    and we want its loader, not a second copy of its node list.
+    """
+    pkg = sys.modules.get(_PKG_NAME)
+    if pkg is not None and getattr(pkg, "__path__", [None])[0] == dirname:
+        return _PKG_NAME
+    # Pointing at a different directory: drop the cached SUBMODULES too. Replacing only the
+    # parent leaves `<pkg>.loader` in sys.modules, and import_module would hand back the old
+    # pack's code from the new path's name.
+    for name in [m for m in sys.modules if m == _PKG_NAME or m.startswith(_PKG_NAME + ".")]:
+        del sys.modules[name]
+    pkg = types.ModuleType(_PKG_NAME)
+    pkg.__path__ = [dirname]
+    pkg.__package__ = _PKG_NAME
+    sys.modules[_PKG_NAME] = pkg
+    return _PKG_NAME
+
+
 def _load_pack_module(dirname: str, mod: str):
     """Import one module out of a custom-node package by path.
 
     Custom node folders are not importable by name (``ComfyUI-GGUF`` is not an identifier),
-    so the file is loaded directly.
+    so the directory is mounted as a package first and the submodule imported from it.
     """
-    spec = importlib.util.spec_from_file_location(
-        f"_funpack_gguf_{mod}", os.path.join(dirname, f"{mod}.py"))
-    if spec is None or spec.loader is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    pkg = _ensure_pack_package(dirname)
+    return importlib.import_module(f"{pkg}.{mod}")
 
 
 def _pack_dir() -> Optional[str]:

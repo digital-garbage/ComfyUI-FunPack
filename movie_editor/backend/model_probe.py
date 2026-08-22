@@ -56,6 +56,16 @@ def read_safetensors_keys(path: str | Path) -> Optional[list[str]]:
     return [k for k in header if k != "__metadata__"]
 
 
+def _is_gguf_container(path: Path) -> bool:
+    """A GGUF renamed to .safetensors is common enough to check for: the pickers only
+    offered .safetensors until recently, so renaming was the obvious way in. Four bytes."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"GGUF"
+    except OSError:
+        return False
+
+
 def read_gguf_keys(path: str | Path) -> Optional[list[str]]:
     """Tensor names from a GGUF file, or None when they cannot be read.
 
@@ -105,7 +115,7 @@ def detect_family(path: str | Path) -> dict:
     if not p.is_file():
         return {"family": None, "arch": None, "detected": False,
                 "reason": f"{p.name}: file not found"}
-    if p.suffix.lower() == ".gguf":
+    if p.suffix.lower() == ".gguf" or _is_gguf_container(p):
         keys = read_gguf_keys(p)
         if keys is None:
             return {"family": None, "arch": None, "detected": False,

@@ -186,3 +186,15 @@ def test_gguf_with_no_known_signature_proposes_nothing(tmp_path, monkeypatch):
     out = mp.detect_family(p)
     assert out["family"] is None
     assert "no LTX or MiniMax H3 signature" in out["reason"]
+
+
+def test_probe_reads_a_gguf_renamed_to_safetensors(tmp_path, monkeypatch):
+    """Detection follows the container, not the filename — the loader does the same, so the
+    two cannot disagree about what a file is."""
+    import movie_editor.backend.model_probe as mp
+    p = tmp_path / "h3-Q8_0.safetensors"
+    p.write_bytes(b"GGUF\x03\x00\x00\x00" + b"\x80" * 64)
+    monkeypatch.setattr(mp, "read_gguf_keys",
+                        lambda _p: ["video_patch_proj.weight", "audio_patch_proj.weight"])
+    out = mp.detect_family(p)
+    assert out["arch"] == "minimax_h3"
