@@ -2543,6 +2543,24 @@ body.tour-mode { overflow: hidden; }
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .node-card:hover .node-card-mark { color: var(--text); }
+/* FunPack's own nodes: an icon and a plain name where a third-party node shows its class.
+   The accent tint is the whole point — these read as the built-in, already-wired pieces. */
+.node-card-builtin {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 4px 9px 42px; text-align: center;
+}
+.node-card-icon { font-size: 30px; line-height: 1; }
+.node-card-kind {
+  font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text);
+  overflow-wrap: anywhere;
+}
+.node-card.built-in .node-card-art {
+  background: linear-gradient(160deg,
+    color-mix(in srgb, var(--accent) 14%, var(--ink-3)), var(--ink-1));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+}
+.node-card.built-in:hover .node-card-art { border-color: color-mix(in srgb, var(--accent) 65%, var(--line)); }
+.slot-node.built-in { color: var(--text); font-family: inherit; font-weight: 600; }
 .node-card-plus { font-size: 40px; line-height: 1; color: var(--accent); font-weight: 300; }
 .node-card-add .node-card-art {
   border-style: dashed;

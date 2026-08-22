@@ -47,6 +47,11 @@
   quietly. Latent width and height snap to even, since a patchified model cannot take odd.
 
 ### Changed
+- **FunPack's own nodes now say what they are.** A card in the Models shelf reads
+  `🧠 Diffusion model` / `🔤 CLIP model` / `🎞️ VAE` / `🧩 LoRA` / `🔑 Refinement key`, tinted
+  to read as built-in, instead of showing the class name. Third-party nodes keep their class
+  name — the difference is the signal: these are the pieces that come wired.
+
 - **The model family is detected from the checkpoint instead of chosen.** Selecting LTX while
   loading an H3 file wired the entire graph for the wrong model, and the mismatch surfaced as a
   stray port rather than as a family error. The family now comes from the diffusion model's own
@@ -81,6 +86,11 @@
   looked exactly like one where the feature was switched off.
 
 ### Fixed
+- **An output can be wired to several destinations while adding a node**, not only after.
+  The Add-node panel offered one destination per output and told you to finish the job on
+  the node's page; it now uses the same multi-destination editor the node page does, with
+  the same rule about what the built-in pipeline will honour.
+
 - **Double-click an image in the Media bin to make it the selected clip's anchor.** Dragging
   was the only way in, and it could not be relied on: an `<img>` is natively draggable, so
   inside the card the browser started its own image drag whose payload every drop target

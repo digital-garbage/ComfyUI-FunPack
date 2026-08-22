@@ -27,6 +27,18 @@
 
   function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : (key === "custom" ? "Node" : (key || "?")); }
   function slotName(slot) { return slot.label || slot.node_class; }
+
+  // FunPack's own nodes say what they ARE, not what class they are. Everything else keeps
+  // its class name — that difference is the point: these are the built-in, wired-for-you
+  // pieces, and a third-party node is an addition that does not need to look native.
+  const BUILT_IN = {
+    FunPackDiffusionModelLoader: { icon: "🧠", label: "Diffusion model" },
+    FunPackCLIPLoader:           { icon: "🔤", label: "CLIP model" },
+    FunPackVAELoader:            { icon: "🎞️", label: "VAE" },
+    FunPackLoraLoader:           { icon: "🧩", label: "LoRA" },
+    FunPackRefinementKeyLoader:  { icon: "🔑", label: "Refinement key" },
+  };
+  function builtIn(slot) { return BUILT_IN[slot?.node_class] || null; }
   // Full display name for use in pickers: "RoleLabel · NodeName"
   function slotFullLabel(slot) {
     const rl = slot.role_label || roleLabel(slot.role);
@@ -750,7 +762,9 @@
     const ren = el("button", "ic-btn", "✎"); ren.title = "Rename node label";
     ren.onclick = (e) => { e.stopPropagation(); renameSlot(slot); };
     head.append(ren);
-    head.append(el("span", "slot-node", slotName(slot)));
+    const biHead = builtIn(slot);
+    head.append(el("span", "slot-node" + (biHead ? " built-in" : ""),
+                   biHead ? `${biHead.icon} ${biHead.label}` : slotName(slot)));
     const nExp = (slot.exposed || []).length;
     if (nExp) head.append(el("span", "slot-badge exposed", `◉ ${nExp}`));
     if (slot.bypassed) head.append(el("span", "slot-badge warn", "bypassed"));
@@ -1218,6 +1232,52 @@
     return wrap;
   }
 
+  // Same multi-destination editor as the node page, for a DRAFT slot: it has no id, is not
+  // in config yet, and nothing about it is persisted until "Add node". So this writes only
+  // into the draft's own wires map — no _setWireTarget mirroring, no persist, no re-render.
+  // The targets are replayed onto the real slot once it exists.
+  function draftDestMulti(draftSlot, out, wires) {
+    const targets = wireTargets(wires[out.name]);
+    if (!targets.length) targets.push("");  // always show one row, as the old single select did
+    wires[out.name] = targets;
+    const wrap = el("div", "wire-multi");
+
+    function renderRows() {
+      clear(wrap);
+      const dests = allowedDestinations(draftSlot, out);
+      targets.forEach((t, i) => {
+        const row = el("div", "wire-multi-row");
+        const sel = el("select", "wire-select");
+        dests.forEach((d) => {
+          const o = el("option", null, d.label); o.value = d.value;
+          if (d.value === t) o.selected = true;
+          sel.append(o);
+        });
+        sel.onchange = () => { targets[i] = sel.value; };
+        const rm = el("button", "btn ghost tiny wire-rm", "×");
+        rm.type = "button";
+        rm.title = "Remove this wire";
+        rm.onclick = () => { targets.splice(i, 1); renderRows(); };
+        row.append(sel, rm);
+        wrap.append(row);
+      });
+      // Same gate as the node page: with the built-in pipeline in charge a node normally
+      // feeds exactly one open core port, so offering more wires there would be offering
+      // something the pipeline will not honour.
+      const portOpts = dests.filter((d) => d.value.startsWith("port:"));
+      if (!pipelineLocked() || portOpts.length > 1
+          || (portOpts.length === 1 && !targets.some((t) => t.startsWith("port:")))) {
+        const add = el("button", "btn ghost tiny wire-add", "+ Add");
+        add.type = "button";
+        add.onclick = () => { targets.push(""); renderRows(); };
+        wrap.append(add);
+      }
+    }
+
+    renderRows();
+    return wrap;
+  }
+
   // ── "+ New node": role dropdown → "Setup node" modal (search → values + wiring) ──
   function openRoleMenu(anchor, onlyCategory) {
     document.querySelectorAll(".mn-role-pop").forEach((n) => n.remove());
@@ -1385,16 +1445,9 @@
           const row = el("div", "wire-row");
           row.append(el("span", "wire-out", `${out.name} (${out.type})`));
           row.append(el("span", "wire-arrow", "→"));
-          const sel = el("select", "wire-select");
-          const cur = draft.wires[out.name] || "";
-          allowedDestinations(draftSlot, out).forEach((d) => {
-            const o = el("option", null, d.label); o.value = d.value; if (d.value === cur) o.selected = true; sel.append(o);
-          });
-          sel.onchange = () => { if (sel.value) draft.wires[out.name] = sel.value; else delete draft.wires[out.name]; };
-          row.append(sel);
+          row.append(draftDestMulti(draftSlot, out, draft.wires));
           wbox.append(row);
         });
-        wbox.append(el("div", "links-hint", "One wire per output here — add more on the node's page after adding."));
         detail.append(wbox);
       }
 
@@ -1407,10 +1460,12 @@
           wires: {}, input_sources: {},
         };
         config.slots.push(slot);
-        Object.entries(draft.wires).forEach(([o, t]) => {
-          if (!t) return;
-          _addWire(slot.id, o, t);
-          _setWireTarget(slot, o, "", t); // mirror node: targets onto the destination's input source
+        Object.entries(draft.wires).forEach(([o, raw]) => {
+          wireTargets(raw).forEach((t) => {
+            if (!t) return;
+            _addWire(slot.id, o, t);
+            _setWireTarget(slot, o, "", t); // mirror node: targets onto the destination's input source
+          });
         });
         Object.entries(draft.input_sources).forEach(([inp, v]) => { if (v) _setInputSource(slot, inp, v); });
         feedMatchingInputs(slot);
@@ -2004,9 +2059,19 @@
     card.onclick = () => setView("node:" + slot.id);
 
     const art = el("div", "node-card-art");
-    // The class name is the art. The label below it is the node's own name, so showing
-    // the class twice would say nothing new.
-    art.append(el("span", "node-card-mark", slotName(slot) || "?"));
+    // For FunPack's own nodes the art is an icon and a plain-language name. For anything
+    // else the class name IS the art — the label below it is the node's own name, so
+    // showing the class twice would say nothing new.
+    const bi = builtIn(slot);
+    if (bi) {
+      card.classList.add("built-in");
+      const mark = el("div", "node-card-builtin");
+      mark.append(el("div", "node-card-icon", bi.icon));
+      mark.append(el("div", "node-card-kind", bi.label));
+      art.append(mark);
+    } else {
+      art.append(el("span", "node-card-mark", slotName(slot) || "?"));
+    }
     const flags = el("div", "node-card-flags");
     if (slot.bypassed) flags.append(el("span", "node-flag warn", "bypassed"));
     const nExp = (slot.exposed || []).length;
