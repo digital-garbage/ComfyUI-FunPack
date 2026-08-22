@@ -30,19 +30,25 @@
       .filter((e) => e.target);
   }
 
+  /** Identity of a destination. `sub` is part of it: two Engine categories are the same
+   *  section but different places, and treating them as one would make the second pin
+   *  silently evict the first. */
+  function pinKey(t) {
+    return t ? `${t.kind}:${t.id}:${t.sub || ""}` : "";
+  }
+
   /** The same destination twice is a wasted slot. Placing it in `index` clears any other
    *  slot pointing at the same thing. */
   function placePin(list, index, target) {
     const next = normalizePins(list);
-    next.forEach((p, j) => {
-      if (p && j !== index && p.kind === target.kind && p.id === target.id) next[j] = null;
-    });
+    const key = pinKey(target);
+    next.forEach((p, j) => { if (p && j !== index && pinKey(p) === key) next[j] = null; });
     next[index] = target;
     return next;
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { SLOTS, normalizePins, visibleSlots, placePin };
+    module.exports = { SLOTS, normalizePins, visibleSlots, placePin, pinKey };
   }
   if (typeof window === "undefined" || !window.dom || !window.Store) return;
 
@@ -90,7 +96,7 @@
             + "Pin something else to that slot to replace it.");
       return;
     }
-    window.SettingsWindow.open(t.id);
+    window.SettingsWindow.open(t.id, t.sub || null);
   }
 
   // ── the toolbar ───────────────────────────────────────────────────────────────

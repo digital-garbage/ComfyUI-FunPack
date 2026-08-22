@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { SLOTS, normalizePins, visibleSlots, placePin } = require("./pinned_buttons.js");
+const { SLOTS, normalizePins, visibleSlots, placePin, pinKey } = require("./pinned_buttons.js");
 
 const A = { kind: "section", id: "engine", label: "Engine" };
 const B = { kind: "node", id: "fp_lora", label: "FunPack LoRA Loader" };
@@ -48,4 +48,35 @@ test("placing does not mutate the list it was given", () => {
   const before = [A, null, null];
   placePin(before, 1, B);
   assert.deepStrictEqual(before, [A, null, null]);
+});
+
+
+// ── sub-views: a place INSIDE a section is its own destination ─────────────────
+
+const ENG = { kind: "section", id: "engine", label: "Engine" };
+const ENG_SAMPLER = { kind: "section", id: "engine", sub: "studio_sampler",
+                      label: "Engine ▸ FunPack Studio ▸ Sampler algorithm" };
+const ENG_GUIDANCE = { kind: "section", id: "engine", sub: "chain_guidance",
+                       label: "Engine ▸ Chain Sampler ▸ Guidance" };
+
+test("two categories of one section are different destinations", () => {
+  assert.notStrictEqual(pinKey(ENG_SAMPLER), pinKey(ENG_GUIDANCE));
+  // Pinning the second must NOT evict the first — that was the failure the key prevents.
+  const after = placePin([ENG_SAMPLER, null, null], 1, ENG_GUIDANCE);
+  assert.deepStrictEqual(after, [ENG_SAMPLER, ENG_GUIDANCE, null]);
+});
+
+test("a section and one of its categories are different destinations", () => {
+  assert.notStrictEqual(pinKey(ENG), pinKey(ENG_SAMPLER));
+  assert.deepStrictEqual(placePin([ENG, null, null], 2, ENG_SAMPLER), [ENG, null, ENG_SAMPLER]);
+});
+
+test("the SAME category still never occupies two slots", () => {
+  assert.deepStrictEqual(placePin([ENG_SAMPLER, null, null], 2, ENG_SAMPLER),
+    [null, null, ENG_SAMPLER]);
+});
+
+test("a missing sub is the same as an empty one", () => {
+  assert.strictEqual(pinKey(ENG), pinKey({ kind: "section", id: "engine", sub: "" }));
+  assert.strictEqual(pinKey(null), "");
 });

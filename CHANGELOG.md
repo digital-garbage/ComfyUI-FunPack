@@ -8,7 +8,8 @@
   deep: fine to walk once, tedious while dialling something in. `📌 Pin to a button` in the
   Settings header puts whatever is open into one of three slots, chosen from a dialog that
   shows what each slot currently holds and asks before replacing one. Pinning while a node
-  is open pins the NODE, not the section it lives in. Slot 1 is always the leftmost button
+  is open pins the NODE, and pinning inside Engine pins the CATEGORY — "Sampler algorithm",
+  not "Engine" — since the section itself was never the slow part. Slot 1 is always the leftmost button
   and slot 3 the one nearest Assets; an empty slot closes up and the remaining buttons keep
   their own numbers, so a shortcut's position never moves. Hovering says where it leads.
   Pins ride with the project, like the other editor preferences. A node opened this way is a

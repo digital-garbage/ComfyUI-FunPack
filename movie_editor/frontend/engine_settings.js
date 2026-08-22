@@ -1009,11 +1009,27 @@
     if (pane) pane.scrollTop = scrollTop;
   }
 
-  function mount(body) {
+  /** Human name for a category, group included — "Sampler algorithm" alone appears under
+   *  more than one group, and a pin's tooltip has to be unambiguous. */
+  function viewLabel(id) {
+    // Guarded: this runs from mount(), and viewList reads project state that may not be
+    // there yet. A throw here would blank the whole section over a tooltip.
+    try {
+      const found = (viewList(S.get()) || []).find((v) => v.id === id);
+      if (!found) return null;
+      return found.group ? `${found.group} ▸ ${found.title}` : found.title;
+    } catch (_) { return null; }
+  }
+
+  function mount(body, ctx) {
     const content = el("div", "models-mount eng-mount");
     body.append(content);
     _mounted = { content };
-    view = "overview";
+    // A pinned button can name a category to open straight into. A category that is not in
+    // the list for THIS pipeline (Studio panes with no Studio wired) falls back to the
+    // overview — the sidebar visibly does not offer it, so the reason is on screen.
+    const wanted = ctx && ctx.sub;
+    view = (wanted && viewLabel(wanted)) ? wanted : "overview";
 
     content.addEventListener("focusin", (e) => {
       const t = e.target;
@@ -1045,6 +1061,14 @@
     iconBg: "linear-gradient(180deg,#ffb64d,#e07f1f)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13"><path d="M9.2 1.3 3 9h4.1l-1 5.7L12.9 7H8.5l.7-5.7z" fill="#fff"/></svg>',
     mount,
+    // Pin the CATEGORY that is open, not the section — "Engine" is one click from anywhere
+    // already; "Sampler algorithm" is the one that costs a hunt through the sidebar.
+    pinTarget: () => {
+      if (!view || view === "overview") return null;
+      const label = viewLabel(view);
+      if (!label) return null;
+      return { kind: "section", id: "engine", sub: view, label: `Engine ▸ ${label}` };
+    },
   });
 
   window.EngineSettingsModal = {

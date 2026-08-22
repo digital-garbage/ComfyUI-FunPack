@@ -62,7 +62,9 @@
     cleanup = null;
   }
 
-  function show(id) {
+  // `sub` names a place INSIDE a section (an Engine category, say). Sections that have
+  // inner views read it from ctx on mount; the rest ignore it harmlessly.
+  function show(id, subView) {
     const spec = registry.find((s) => s.id === id) || orderedSections()[0];
     if (!spec || !overlay) return;
     teardownSection();
@@ -78,6 +80,7 @@
     const ctx = {
       setActions: (nodes) => { clear(actionsEl); (nodes || []).forEach((n) => actionsEl.append(n)); },
       openSection: (sid) => show(sid),
+      sub: subView || null,
     };
     cleanup = spec.mount(bodyEl, ctx) || null;
     renderNav();
@@ -93,11 +96,11 @@
     if (wasOpen) window.Store?.resumeSave?.();
   }
 
-  function open(id) {
+  function open(id, subView) {
     // Recover if something removed our overlay from the DOM directly
     // (e.g. the tour's closeModalOverlay sweep) without calling close().
     if (overlay && !overlay.isConnected) { close(); }
-    if (overlay) { show(id || activeId); return; }
+    if (overlay) { show(id || activeId, subView); return; }
     query = "";
     // Held until close(). Paired with the overlay's lifetime, so only on this branch.
     window.Store?.suspendSave?.();
@@ -134,7 +137,7 @@
     overlay.append(win);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
     document.body.append(overlay);
-    show(id);
+    show(id, subView);
   }
 
   window.addEventListener("keydown", (e) => {
