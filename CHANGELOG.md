@@ -6,10 +6,12 @@
 - **FunPack's loaders take `.gguf` files**, for diffusion models and text encoders alike, and
   a text-encoder list may mix a `.gguf` with `.safetensors` slots (the usual LTX-2.3 shape).
   Core's extension set has no `.gguf`, so those files were on disk and invisible to every
-  picker. The runtime is whichever backend is present: ComfyUI-GGUF keeps the weights
-  quantized in VRAM, which is the point of GGUF; failing that, the `gguf` package is used to
-  dequantize at load — the file loads, but at full size, and the status output says which of
-  the two happened. With neither, the loader names both remedies instead of failing obscurely.
+  picker. `gguf` is now one of FunPack's requirements, so a fresh install reads GGUF
+  containers with nothing extra to set up. The runtime is whichever backend is present:
+  ComfyUI-GGUF keeps the weights quantized in VRAM, which is the point of GGUF; failing that,
+  the `gguf` package dequantizes at load — the file loads, but at full size, and the status
+  output says which of the two happened. With neither, the loader names both remedies instead
+  of failing obscurely.
   Model-family detection reads GGUF containers too, using the same architecture signatures.
   A GGUF renamed to `.safetensors` is recognised by its container magic and loaded correctly
   rather than failing in the safetensors parser with a UTF-8 decode error. When ComfyUI-GGUF
