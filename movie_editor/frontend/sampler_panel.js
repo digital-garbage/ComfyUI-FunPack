@@ -84,6 +84,7 @@
       type: type || "Hybrid Euler 2S", sigmas: "",
       hybrid: defaultHybrid(), distilled: defaultDistilled(),
       ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: KSAMPLER_USER_SIGMAS,
+      ksampler_sharpness: 0.0, ksampler_sharpen_start_pct: 0.35,
     };
   }
 
@@ -365,6 +366,20 @@
           (v) => { cfg.ksampler_name = v; save(); }));
       hint(container, "A KSampler is only the step function — it carries no schedule of its own, "
                     + "so the Schedule / Steps above are the only thing that can give it one.");
+      row(container, "quality sharpness",
+        numCtrl(cfg.ksampler_sharpness, 0, 1, 0.01, dk + "-kqs",
+          (v) => { cfg.ksampler_sharpness = v; saveNow(); }));
+      hint(container, "The same free unsharp mask FunPack's own samplers have, driven from "
+                    + "outside this sampler's loop. Recovers the fine detail that goes missing "
+                    + "at low resolution. 0 = off, 0.2-0.4 typical.");
+      if (+cfg.ksampler_sharpness > 0) {
+        row(container, "sharpen last %",
+          numCtrl(cfg.ksampler_sharpen_start_pct, 0, 1, 0.05, dk + "-kqsp",
+            (v) => { cfg.ksampler_sharpen_start_pct = v; save(); }));
+        hint(container, "Fraction of the schedule it applies to, counted from the end — the same "
+                      + "meaning as Hybrid Euler 2S's high quality pct. Sharpening the noisy "
+                      + "early steps amplifies noise, not detail.");
+      }
     }
   }
 

@@ -1334,6 +1334,109 @@ def _alg_wrap_sampler(sampler, anchor_on, anchor_strength, anchor_threshold,
     )
 
 
+class _SharpenDenoiser:
+    """Denoiser proxy that runs the quality-sharpness unsharp for a sampler we can't get inside.
+
+    Same mechanism as the in-loop version on Hybrid Euler 2S / Distilled Flow: boost the
+    x0 prediction's high-frequency component against the previous prediction. Nothing about
+    it needs the sampler's loop — it reads only the current denoised, the previous one, and
+    the step's sigma, and sigma is an argument of every model call. So a stock KSampler
+    (euler, res_multistep, dpmpp_2m, …) can have the detail recovery that until now only
+    FunPack's own samplers had.
+
+    Two honest differences from the in-loop version:
+
+    * On a multi-eval sampler (heun, dpmpp_2m_sde, …) "previous prediction" means the
+      previous *evaluation*, which may be the second half of the same step rather than the
+      step before. The high-pass is still a high-pass; its magnitude is not identical.
+    * `prev` holds the SHARPENED result, matching the in-loop samplers, where
+      `prev_denoised = denoised` runs after the sharpen. That makes the boost mildly
+      self-limiting instead of compounding.
+
+    Transparent for everything else: attribute access forwards to the wrapped denoiser, so
+    this composes with the ALG proxy in either order.
+    """
+
+    _OWN = ("_inner", "_amount", "_thr", "_mask", "_prev", "_mask_done")
+
+    def __init__(self, inner, amount, threshold, mask):
+        self._inner = inner
+        self._amount = float(amount)
+        self._thr = float(threshold)
+        self._mask = mask
+        self._prev = None
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def __setattr__(self, name, value):
+        if name in _SharpenDenoiser._OWN:
+            object.__setattr__(self, name, value)
+        else:                       # e.g. samplers (or the ALG proxy) assigning latent_image
+            setattr(self._inner, name, value)
+
+    def __call__(self, x, sigma, **kwargs):
+        denoised = self._inner(x, sigma, **kwargs)
+        try:
+            s = float(sigma.flatten()[0]) if hasattr(sigma, "flatten") else float(sigma)
+            if s <= self._thr:
+                denoised = _video_only(
+                    _apply_quality_sharpness(denoised, self._prev, self._amount),
+                    denoised, self._mask)
+        except Exception as _e:
+            _log.failed("FunPackStudio", "quality sharpness", _e,
+                        "this evaluation keeps the unsharpened prediction")
+        try:
+            self._prev = denoised.detach()
+        except Exception:
+            self._prev = None
+        return denoised
+
+
+def _sharpen_wrap_sampler(sampler, sharpness, start_pct):
+    """A SAMPLER equivalent to `sampler` with quality sharpness applied around its model.
+
+    Returns `sampler` unchanged when sharpness is off, and None when the sampler exposes no
+    `sampler_function` to wrap.
+    """
+    sharpness = max(0.0, min(1.0, float(sharpness or 0.0)))
+    if sharpness <= 0.0:
+        return sampler
+    fn = getattr(sampler, "sampler_function", None)
+    if fn is None:
+        return None
+
+    def _wrapped(model, x, sigmas, extra_args=None, callback=None, disable=None, **options):
+        # The window is a fraction of the schedule, converted to the sigma that starts it —
+        # exactly how Hybrid Euler 2S derives its quality phase from high_quality_pct, so the
+        # same number means the same thing on both samplers.
+        try:
+            sched_steps = max(1, int(sigmas.shape[0]) - 1)
+            late_start = _get_late_start_index(sched_steps, start_pct)
+            thr = float(sigmas[late_start].item()) if late_start < int(sigmas.shape[0]) else None
+        except Exception:
+            thr = None
+        if thr is None:
+            return fn(model, x, sigmas, extra_args=extra_args, callback=callback,
+                      disable=disable, **options)
+        mask = _packed_video_mask(model, x)
+        print(f"[FunPack] quality sharpness {sharpness:.2f} on the last "
+              f"{start_pct * 100:.0f}% of the schedule (sigma <= {thr:.4f}) — driven from "
+              f"outside {getattr(fn, '__name__', 'the sampler')}'s loop, off the sigma of "
+              f"each model call"
+              f"{'' if mask is not None else '; single-stream latent, no audio to protect'}")
+        proxy = _SharpenDenoiser(model, sharpness, thr, mask)
+        return fn(proxy, x, sigmas, extra_args=extra_args, callback=callback,
+                  disable=disable, **options)
+
+    _wrapped.__name__ = getattr(fn, "__name__", "sampler") + "_sharpen"
+    return comfy.samplers.KSAMPLER(
+        _wrapped,
+        extra_options=getattr(sampler, "extra_options", None) or {},
+        inpaint_options=getattr(sampler, "inpaint_options", None) or {},
+    )
+
+
 class _JoyAIMemoryBank:
     """JoyAI-Echo cross-shot memory: a rolling set of clean prior-shot latent frames.
 

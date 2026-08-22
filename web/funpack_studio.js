@@ -90,8 +90,8 @@ function defaultSettings() {
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
     samplers: {
-      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: "use_user_sigmas" },
-      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: "use_user_sigmas" },
+      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: "use_user_sigmas", ksampler_sharpness: 0.0, ksampler_sharpen_start_pct: 0.35 },
+      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: "use_user_sigmas", ksampler_sharpness: 0.0, ksampler_sharpen_start_pct: 0.35 },
     },
   };
 }
@@ -1490,6 +1490,29 @@ function openPanel(node) {
         body.append(el("div", "funpack-studio-hint",
           "A KSampler is only the step function — it carries no schedule of its own, so the "
           + "schedule / steps above are the only thing that can give it one."));
+        // The unsharp FunPack's own samplers run in-loop, lifted out through a denoiser
+        // proxy so a stock KSampler gets it too. renderSampler() on change, because the
+        // window control only exists while it is on.
+        const kqs = numInput(cfg.ksampler_sharpness, 0, 1, 0.01);
+        kqs.addEventListener("change", () => {
+          cfg.ksampler_sharpness = parseFloat(kqs.value); renderSampler();
+        });
+        body.append(row("quality sharpness", kqs));
+        body.append(el("div", "funpack-studio-hint",
+          "The same free unsharp mask FunPack's own samplers have, driven from outside this "
+          + "sampler's loop. Recovers the fine detail that goes missing at low resolution. "
+          + "0 = off, 0.2-0.4 typical."));
+        if (+cfg.ksampler_sharpness > 0) {
+          const kqp = numInput(cfg.ksampler_sharpen_start_pct, 0, 1, 0.05);
+          kqp.addEventListener("input", () => {
+            cfg.ksampler_sharpen_start_pct = parseFloat(kqp.value);
+          });
+          body.append(row("sharpen last %", kqp));
+          body.append(el("div", "funpack-studio-hint",
+            "Fraction of the schedule it applies to, counted from the end — the same meaning as "
+            + "Hybrid Euler 2S's high quality pct. Sharpening the noisy early steps amplifies "
+            + "noise, not detail."));
+        }
       }
     }
 

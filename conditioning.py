@@ -15131,6 +15131,25 @@ class FunPackStudio:
                 # just the step function — so the pass's steps + schedule (built above, and
                 # shared with the FunPack samplers) is the only thing that can supply one.
                 sampler = _cs.sampler_object(sampler_name)
+                # Quality sharpness for a loop we do not own. The unsharp needs only the
+                # current x0 prediction, the previous one and the step's sigma, so it lifts
+                # out of the sampler through a denoiser proxy — the same trick ALG uses.
+                # Wrapping keeps the sampler you chose; it does not replace it.
+                _sharp = float(cfg.get("ksampler_sharpness", 0.0) or 0.0)
+                if _sharp > 0.0:
+                    try:
+                        from .samplers import _sharpen_wrap_sampler
+                    except ImportError:
+                        from samplers import _sharpen_wrap_sampler
+                    _wrapped = _sharpen_wrap_sampler(
+                        sampler, _sharp,
+                        float(cfg.get("ksampler_sharpen_start_pct", 0.35) or 0.0))
+                    if _wrapped is not None:
+                        sampler = _wrapped
+                    else:
+                        print(f"[FunPackStudio] ksampler_sharpness is set, but "
+                              f"'{sampler_name}' exposes no sampler_function to wrap — "
+                              f"sampling continues without the sharpening.")
                 out_sigmas = sigmas_raw
             else:  # Hybrid Euler 2S (default)
                 try:

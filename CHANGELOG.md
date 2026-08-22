@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- **Quality sharpness now works with a stock KSampler.** The unsharp mask that recovers fine
+  detail lived inside Hybrid Euler 2S and Distilled Flow only. It reads the current x0
+  prediction, the previous one and the step's sigma — nothing that needs a sampler's loop —
+  so it now runs through a denoiser proxy on any `sampler_name`. `sharpen last %` sets the
+  window as a fraction of the schedule, the same meaning as Hybrid's `high quality pct`.
+  Audio on a packed AV latent is excluded, as in-loop. Off by default; a sampler that cannot
+  be wrapped keeps sampling and says so.
 - **Settings ▸ Custom Nodes: install, update and remove ComfyUI node packs.** `＋ Add node`
   asks for a repository URL and clones it into `custom_nodes`, installing its
   `requirements.txt` if it has one; each row offers Update (a fast-forward pull, refused if
