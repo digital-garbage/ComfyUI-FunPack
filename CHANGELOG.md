@@ -31,6 +31,14 @@
   quietly. Latent width and height snap to even, since a patchified model cannot take odd.
 
 ### Fixed
+- **Timeline playback died partway through a long timeline: play/pause left it on "Loading"
+  forever.** `_classifyVideoError` drops any element whose url is not registered in
+  `_urlClips`, and only `_syncPool` registered — which runs on a timeline rebuild, not as the
+  playhead moves. So every clip the sliding pool window materialized during playback could
+  never retry a failed load: one transient error (rapid play/pause over the network poisons a
+  stream) and that clip was stuck until a page reload. The boundary fell wherever the initial
+  window ended, which on a typical timeline is around the halfway point.
+
 - **A linked input driven by `Project · Prompt (global)` claimed to encode "the same text
   Studio would" and did not.** Studio appends the postfix to every scene itself, so the
   global prompt is strictly less than what it encodes — and the postfix is usually where
