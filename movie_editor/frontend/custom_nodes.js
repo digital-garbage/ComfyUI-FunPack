@@ -16,6 +16,24 @@
   let busy = "";        // name (or "__install__") of whatever is running
   let dirty = false;    // something changed → a restart is needed
   let error = "";
+  // name -> {checked, behind, ahead, reason}. Empty until the user asks: each entry costs a
+  // network round trip, and doing that on open would make the panel feel broken.
+  let checked = {};
+  let checking = false;
+
+  async function checkUpdates() {
+    if (checking || busy) return;
+    checking = true;
+    render();
+    try {
+      checked = (await API.customNodesCheck()).checked || {};
+    } catch (e) {
+      alert("Could not check for updates:\n\n" + (e?.message || e));
+    } finally {
+      checking = false;
+      render();
+    }
+  }
 
   async function refresh() {
     try {
@@ -47,6 +65,9 @@
       const res = await fn();
       reportRequirements(res, what);
       dirty = true;
+      // Whatever this was, its behind-count is now stale. Dropping it beats showing a
+      // number that was true a moment ago.
+      if (key !== "__install__") delete checked[key];
     } catch (e) {
       alert(`${what} failed:\n\n${e?.message || e}`);
     } finally {
@@ -107,12 +128,23 @@
     if (n.is_funpack) bits.push("FunPack itself");
     if (n.git) bits.push(`${n.branch || "?"} · ${n.commit || "?"}`);
     else bits.push("not a git checkout");
+    const chk = checked[n.name];
+    if (chk && chk.checked) {
+      if (chk.behind > 0) bits.push(`${chk.behind} behind`);
+      else if (chk.ahead > 0) bits.push(`${chk.ahead} ahead of origin`);
+      else bits.push("up to date");
+    } else if (chk && chk.reason) {
+      bits.push(`not compared — ${chk.reason}`);
+    }
     left.append(el("div", "cn-sub", bits.join(" — ")));
     r.append(left);
 
     const acts = el("div", "cn-row-acts");
+    if (chk && chk.checked && chk.behind > 0) r.classList.add("behind");
     if (!n.is_funpack) {
-      const up = el("button", "btn ghost tiny", busy === n.name ? "…" : "Update");
+      const label = busy === n.name ? "…"
+        : (chk && chk.checked && chk.behind > 0) ? `Update (${chk.behind})` : "Update";
+      const up = el("button", "btn ghost tiny" + (chk?.behind > 0 ? " primary" : ""), label);
       up.type = "button";
       up.disabled = !!busy || !n.git;
       up.title = n.git ? `git pull in ${n.name}` : "Not a git checkout — nothing to pull";
@@ -142,8 +174,16 @@
     add.disabled = !!busy;
     add.onclick = addDialog;
     bar.append(add);
+    const chkBtn = el("button", "btn ghost tiny", checking ? "Checking…" : "Check for updates");
+    chkBtn.type = "button";
+    chkBtn.disabled = checking || !!busy;
+    chkBtn.title = "Fetch each pack's origin and report how far behind it is";
+    chkBtn.onclick = checkUpdates;
+    bar.append(chkBtn);
     if (busy) bar.append(el("span", "cn-busy", busy === "__install__"
       ? "Cloning and installing…" : `Working on ${busy}…`));
+    else if (checking) bar.append(el("span", "cn-busy",
+      "Fetching each pack — this talks to the network."));
     host.append(bar);
 
     if (dirty) {
@@ -177,6 +217,7 @@
     host = el("div", "cn-mount");
     body.append(host);
     dirty = false;
+    checked = {};
     render();
     refresh();
     return () => { host = null; };

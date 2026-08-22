@@ -98,6 +98,7 @@
     clearFiles: (group) => j("POST", API(`/files/${encodeURIComponent(group)}/clear`), {}),
     nleLibrary: () => j("GET", API("/library/nle")),
     customNodes: () => j("GET", API("/custom-nodes")),
+    customNodesCheck: () => j("POST", API("/custom-nodes/check"), {}),
     customNodeInstall: (url) => j("POST", API("/custom-nodes/install"), { url }),
     customNodeUpdate: (name) => j("POST", API("/custom-nodes/update"), { name }),
     customNodeRemove: (name) => j("POST", API("/custom-nodes/remove"), { name }),

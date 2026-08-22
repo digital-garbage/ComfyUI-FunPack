@@ -188,3 +188,94 @@ def test_listing_skips_dotfiles_and_disabled_packs(root, monkeypatch):
     names = [n["name"] for n in cn.list_nodes()["nodes"]]
     assert "__pycache__" not in names and ".git" not in names
     assert "Old.disabled" not in names
+
+
+# ── check for updates ─────────────────────────────────────────────────────────
+# A network round trip per pack, which is why it is a button. Every failure mode has to
+# produce a reason rather than an absent answer, or a pack silently reads as "fine".
+
+def test_behind_ahead_parses_the_counts(root, monkeypatch):
+    (root / "SomePack" / ".git").mkdir()
+
+    def fake_git(cwd, *args, **kw):
+        if args[0] == "rev-parse":
+            return types.SimpleNamespace(returncode=0, stdout="main\n", stderr="")
+        if args[0] == "config":
+            return types.SimpleNamespace(returncode=0, stdout="https://x/y\n", stderr="")
+        if args[0] == "fetch":
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="2\t7\n", stderr="")
+
+    monkeypatch.setattr(cn, "_git", fake_git)
+    out = cn._behind_ahead(root / "SomePack")
+    assert out == {"checked": True, "branch": "main", "ahead": 2, "behind": 7}
+
+
+def test_a_detached_head_says_so(root, monkeypatch):
+    (root / "SomePack" / ".git").mkdir()
+    monkeypatch.setattr(cn, "_git", lambda cwd, *a, **k: types.SimpleNamespace(
+        returncode=0, stdout="HEAD\n", stderr=""))
+    out = cn._behind_ahead(root / "SomePack")
+    assert out["checked"] is False and "detached" in out["reason"]
+
+
+def test_an_unreachable_origin_says_so(root, monkeypatch):
+    (root / "SomePack" / ".git").mkdir()
+
+    def fake_git(cwd, *args, **kw):
+        if args[0] == "rev-parse":
+            return types.SimpleNamespace(returncode=0, stdout="main\n", stderr="")
+        if args[0] == "config":
+            return types.SimpleNamespace(returncode=0, stdout="https://x/y\n", stderr="")
+        return types.SimpleNamespace(returncode=128, stdout="",
+                                     stderr="fatal: could not read from remote")
+
+    monkeypatch.setattr(cn, "_git", fake_git)
+    out = cn._behind_ahead(root / "SomePack")
+    assert out["checked"] is False and "remote" in out["reason"]
+
+
+def test_a_pack_with_no_remote_is_not_compared(root, monkeypatch):
+    (root / "SomePack" / ".git").mkdir()
+
+    def fake_git(cwd, *args, **kw):
+        if args[0] == "rev-parse":
+            return types.SimpleNamespace(returncode=0, stdout="main\n", stderr="")
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(cn, "_git", fake_git)
+    assert cn._behind_ahead(root / "SomePack")["reason"] == "no origin remote"
+
+
+def test_a_non_git_pack_is_reported_not_omitted(root):
+    out = cn._behind_ahead(root / "SomePack")
+    assert out == {"checked": False, "reason": "not a git checkout"}
+
+
+def test_every_pack_appears_in_the_result(root, monkeypatch):
+    """Including the ones that could not be checked — an absent entry would read as
+    'nothing to say', which is not the same as 'could not tell'."""
+    monkeypatch.setattr(cn, "_git_info", lambda p: {
+        "git": p.name == "ComfyUI-GGUF", "branch": "main", "commit": "abc", "remote": "x"})
+    monkeypatch.setattr(cn, "_behind_ahead",
+                        lambda p: {"checked": True, "branch": "main", "ahead": 0, "behind": 3})
+    got = cn.check_updates()["checked"]
+    assert set(got) == {"ComfyUI-FunPack", "ComfyUI-GGUF", "SomePack"}
+    assert got["ComfyUI-GGUF"]["behind"] == 3
+    assert got["SomePack"]["checked"] is False
+
+
+def test_one_failing_pack_does_not_sink_the_sweep(root, monkeypatch):
+    monkeypatch.setattr(cn, "_git_info", lambda p: {
+        "git": True, "branch": "main", "commit": "abc", "remote": "x"})
+
+    def flaky(path):
+        if path.name == "SomePack":
+            raise RuntimeError("git exploded")
+        return {"checked": True, "branch": "main", "ahead": 0, "behind": 1}
+
+    monkeypatch.setattr(cn, "_behind_ahead", flaky)
+    got = cn.check_updates()["checked"]
+    assert got["SomePack"]["checked"] is False
+    assert "exploded" in got["SomePack"]["reason"]
+    assert got["ComfyUI-GGUF"]["behind"] == 1

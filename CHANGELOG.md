@@ -12,6 +12,11 @@
   the name must be a single path segment that resolves to a direct child directory, so a
   symlink cannot redirect it, and FunPack cannot delete itself. Node packs register at
   import, so the panel says a restart is needed rather than restarting under you.
+  **Check for updates** fetches each pack's origin and shows how far behind it is, on the
+  row and on its Update button. It is a button rather than part of the listing because it
+  costs a network round trip per pack; the fetches run four at a time, and a pack that
+  cannot be compared says why (detached HEAD, no remote, origin unreachable) instead of
+  quietly reading as up to date.
 
 - **FunPack's loaders take `.gguf` files**, for diffusion models and text encoders alike, and
   a text-encoder list may mix a `.gguf` with `.safetensors` slots (the usual LTX-2.3 shape).

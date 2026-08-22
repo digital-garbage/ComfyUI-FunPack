@@ -2544,6 +2544,11 @@ if web is not None and PromptServer is not None:
         import asyncio
         return web.json_response(await asyncio.to_thread(custom_nodes.list_nodes))
 
+    @routes.post(UI_PREFIX + "/api/custom-nodes/check")
+    async def _custom_nodes_check(_req):
+        import asyncio
+        return web.json_response(await asyncio.to_thread(custom_nodes.check_updates))
+
     @routes.post(UI_PREFIX + "/api/custom-nodes/install")
     async def _custom_nodes_install(req):
         import asyncio

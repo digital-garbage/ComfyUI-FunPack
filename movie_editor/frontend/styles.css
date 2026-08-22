@@ -2704,6 +2704,8 @@ body.tour-mode { overflow: hidden; }
 }
 .cn-row.self { background: color-mix(in srgb, var(--accent) 10%, var(--ink-2));
   border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+/* Behind origin — the one row state worth spotting without reading. */
+.cn-row.behind { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
 .cn-row-text { min-width: 0; }
 .cn-name { font-size: 12px; font-weight: 600; color: var(--text);
   overflow-wrap: anywhere; }

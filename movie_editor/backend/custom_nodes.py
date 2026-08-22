@@ -205,3 +205,66 @@ def remove(name: str) -> dict:
     path = node_dir(name)
     shutil.rmtree(path)
     return {"name": name, "removed": True, "path": str(path)}
+
+
+# ── checking for updates ──────────────────────────────────────────────────────
+
+def _behind_ahead(path: Path) -> dict:
+    """How far one pack is from its upstream, after fetching it.
+
+    Costs a network round trip per pack, which is why it is a button rather than part of
+    the listing: on a tunnelled instance with a dozen packs, doing this on open would make
+    the panel feel broken.
+    """
+    if not (path / ".git").exists():
+        return {"checked": False, "reason": "not a git checkout"}
+    br = _git(path, "rev-parse", "--abbrev-ref", "HEAD", timeout=30)
+    branch = (br.stdout or "").strip()
+    if br.returncode != 0 or not branch or branch == "HEAD":
+        return {"checked": False, "reason": "not on a branch (detached HEAD)"}
+    remote = _git(path, "config", "--get", "remote.origin.url", timeout=30)
+    if remote.returncode != 0 or not (remote.stdout or "").strip():
+        return {"checked": False, "reason": "no origin remote"}
+    fetched = _git(path, "fetch", "--quiet", "origin", branch, timeout=180)
+    if fetched.returncode != 0:
+        return {"checked": False,
+                "reason": (fetched.stderr or "could not reach origin").strip()[-200:]}
+    counts = _git(path, "rev-list", "--left-right", "--count",
+                  f"HEAD...origin/{branch}", timeout=60)
+    if counts.returncode != 0:
+        return {"checked": False, "reason": "no upstream branch to compare against"}
+    parts = (counts.stdout or "").split()
+    if len(parts) != 2:
+        return {"checked": False, "reason": "could not compare with origin"}
+    ahead, behind = int(parts[0]), int(parts[1])
+    return {"checked": True, "branch": branch, "ahead": ahead, "behind": behind}
+
+
+def check_updates() -> dict:
+    """Fetch every git pack and report how far behind each one is.
+
+    Fetches run concurrently and bounded: they are network-bound, so serial would be as slow
+    as the sum of them, and unbounded would open a connection per pack at once.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    packs = [n for n in list_nodes()["nodes"]]
+    targets = [p for p in packs if p.get("git")]
+    results: dict[str, dict] = {}
+    if targets:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {}
+            for p in targets:
+                try:
+                    futures[pool.submit(_behind_ahead, node_dir(p["name"]))] = p["name"]
+                except CustomNodeError as e:
+                    results[p["name"]] = {"checked": False, "reason": str(e)}
+            for fut, name in futures.items():
+                try:
+                    results[name] = fut.result()
+                except Exception as e:  # noqa: BLE001 — one bad pack must not sink the sweep
+                    results[name] = {"checked": False, "reason": str(e)[-200:]}
+    for p in packs:
+        if p["name"] not in results:
+            results[p["name"]] = {"checked": False, "reason": "not a git checkout"}
+    return {"checked": results}
