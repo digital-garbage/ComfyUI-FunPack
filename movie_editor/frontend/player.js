@@ -477,6 +477,34 @@
     }, delayMs != null ? delayMs : 1500 * n);
   }
 
+  // A media reset (browser dropping an aborted/poisoned stream, a src swap that never
+  // started, the resource being reclaimed) leaves an element with no metadata AND no load
+  // in flight. Nothing will ever fire `loadedmetadata` for it, and because `error` never
+  // fired it has v.error === null — which is what every other recovery path here keys on.
+  // Left alone it sits behind "Video is loading…" forever and the transport freezes, since
+  // _isSeeking() treats readyState < 1 as a seek in progress and the tick refuses to
+  // advance the playhead. networkState 2 is NETWORK_LOADING: bytes are on the way, leave
+  // it be.
+  function _isStalledEmpty(v) {
+    if (!v || v.readyState >= 1) return false;
+    try { return v.networkState !== 2; } catch (_) { return false; }
+  }
+
+  // Confirm the stall before acting on it: a fresh `v.src = …` also reads as EMPTY for a
+  // beat before the resource selection algorithm starts, so an immediate check would
+  // cancel loads that were about to succeed.
+  const STALL_WATCHDOG_MS = 1200;
+  function _armStallWatchdog(url, v) {
+    clearTimeout(v._pmStallTimer);
+    v._pmStallTimer = setTimeout(() => {
+      v._pmStallTimer = null;
+      if (pool.get(url) !== v || !_urlClips.has(url)) return;
+      if (!_isStalledEmpty(v)) return;   // loading, or metadata already arrived
+      if (v._pmRetryTimer) return;       // an error-driven retry already owns recovery
+      _scheduleVideoRetry(url, v, 0);
+    }, STALL_WATCHDOG_MS);
+  }
+
   // If the active clip's element changed readiness, repaint the slate/badge over it.
   function _refreshClipStatusUi(url) {
     if (_currentClip && !_currentClip.pending && _clipUrl(_currentClip) === url) {
@@ -529,6 +557,7 @@
     viewport.append(zoom);
     v.addEventListener("loadedmetadata", () => {
       v._pmRetries = 0; // healthy again — restore the full retry budget
+      clearTimeout(v._pmStallTimer); v._pmStallTimer = null;
       v._pmStatus = "ready";
       _refreshClipStatusUi(url);
       const pending = v._pmSeekPending != null ? v._pmSeekPending : (v === _active ? _seekPending : null);
@@ -552,6 +581,8 @@
       // A media reset means the bytes are gone — downgrade so the slate covers the element
       // instead of it blinking black while the retry reloads.
       if (v._pmStatus === "ready") { v._pmStatus = "loading"; _refreshClipStatusUi(url); }
+      // The reset may or may not be followed by a load. Check back and restart it if not.
+      _armStallWatchdog(url, v);
       if (v !== _active || !_currentClip || _currentClip.pending) return;
       if (_clipUrl(_currentClip) !== url) return;
       if (v._pmSeekPending == null) {
@@ -613,6 +644,7 @@
     if (_active === v) _active = null;
     v.pause();
     clearTimeout(v._pmRetryTimer);
+    clearTimeout(v._pmStallTimer); v._pmStallTimer = null;
     // Release the socket BEFORE detaching: a detached media element that still has a
     // src holds its per-origin connection until GC (media-connection-pool class).
     try { v.removeAttribute("src"); v.load(); } catch (_) {}
@@ -653,7 +685,9 @@
       if (clip) _registerUrlClip(u, clip);
       // Clip rebuild (e.g. a run just completed): give exhausted-but-errored elements a
       // fresh recovery attempt — the failure was likely the server being busy back then.
-      if (v.error && !v._pmRetryTimer) { v._pmRetries = 0; _scheduleVideoRetry(u, v); }
+      if ((v.error || _isStalledEmpty(v)) && !v._pmRetryTimer) {
+        v._pmRetries = 0; _scheduleVideoRetry(u, v);
+      }
     }
   }
 
@@ -846,6 +880,14 @@
       _seekPending = null;
       if (play) { v.play().catch(() => {}); _startTick(); } else { _playPending = false; _clipBoundaryToken = 0; }
     } else {
+      // Waiting on loadedmetadata is only correct while a load is actually running. On a
+      // stalled-empty element it waits forever — and this is the branch Play goes through,
+      // which is why play/pause reads as dead. Restart it, with a fresh budget: the user
+      // asking again is a better reason to retry than any timer.
+      if (_isStalledEmpty(v) && !v._pmRetryTimer) {
+        v._pmRetries = 0;
+        _scheduleVideoRetry(_clipUrl(clip), v, 0);
+      }
       v._pmSeekPending = target;
       _seekPending = target;
       _playPending = !!play;

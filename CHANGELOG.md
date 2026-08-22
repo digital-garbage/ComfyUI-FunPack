@@ -65,6 +65,13 @@
   looked exactly like one where the feature was switched off.
 
 ### Fixed
+- **Preview playback could stall at "Video is loading…" and stay there**, with the transport
+  buttons dead. A media reset leaves a `<video>` with no metadata and no load running, and
+  every recovery path keyed on the element having errored — which a reset does not do. Play
+  went down the same wait-for-metadata branch, so pressing it changed nothing. Elements are
+  now checked after a reset and restarted if no load followed; Play restarts a stalled one
+  outright.
+
 - **A linked input driven by `Project · Prompt (global)` claimed to encode "the same text
   Studio would" and did not.** Studio appends the postfix to every scene itself, so the
   global prompt is strictly less than what it encodes — and the postfix is usually where
