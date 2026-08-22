@@ -189,3 +189,43 @@ def test_switching_pack_directories_remounts(tmp_path, monkeypatch):
     # No manual cache clearing: remounting a different directory must purge it by itself.
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(tmp_path / "b"))
     assert gguf_support.load_state_dict("/x.gguf")[0] == {"w": "second"}
+
+
+def test_pack_refusing_an_architecture_falls_back(tmp_path, monkeypatch):
+    """ComfyUI-GGUF raises "Unexpected architecture type in GGUF file: 'minimax_h3'" for
+    architectures it has no handling for. That is a fair refusal on its part and a dead end
+    for us — but the pack DEPENDS on the gguf package, so the fallback is always there."""
+    d = tmp_path / "pack"
+    d.mkdir()
+    (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
+    (d / "loader.py").write_text(
+        "def gguf_sd_loader(path):\n"
+        "    raise ValueError(\"Unexpected architecture type in GGUF file: 'minimax_h3'\")\n")
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+    monkeypatch.setattr(gguf_support.importlib.util, "find_spec",
+                        lambda name: object() if name == "gguf" else None)
+    monkeypatch.setattr(gguf_support, "_load_native",
+                        lambda p: ({"w": 1}, {}, "gguf: dequantized at load"))
+
+    sd, options, note = gguf_support.load_state_dict("/h3.gguf")
+    assert sd == {"w": 1}
+    # Both halves must be in the note: what refused, and what happened instead.
+    assert "minimax_h3" in note
+    assert "dequantized at load" in note
+    # The quantized ops must NOT be carried over — these tensors are plain.
+    assert "custom_operations" not in options
+
+
+def test_a_pack_refusal_without_the_library_still_raises(tmp_path, monkeypatch):
+    """No silent success: with nothing to fall back to, the original refusal stands."""
+    d = tmp_path / "pack"
+    d.mkdir()
+    (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
+    (d / "loader.py").write_text(
+        "def gguf_sd_loader(path):\n    raise ValueError('nope')\n")
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+    monkeypatch.setattr(gguf_support.importlib.util, "find_spec", lambda name: None)
+    with pytest.raises(ValueError, match="nope"):
+        gguf_support.load_state_dict("/h3.gguf")

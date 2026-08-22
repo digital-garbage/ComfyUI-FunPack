@@ -202,20 +202,7 @@ def load_state_dict(path: str) -> tuple[dict, dict, str]:
     `model_options` carries the custom operations the quantized path needs; it is empty for
     the native path, whose tensors are ordinary ones by the time they are returned.
     """
-    which = backend()
-    if which is None:
-        raise RuntimeError(UNAVAILABLE)
-    if which == "pack":
-        d = _pack_dir()
-        loader = _load_pack_module(d, "loader")
-        ops = _load_pack_module(d, "ops")
-        sd = loader.gguf_sd_loader(path)
-        options = {}
-        ggml_ops = getattr(ops, "GGMLOps", None)
-        if ggml_ops is not None:
-            options["custom_operations"] = ggml_ops()
-        return sd, options, f"gguf: quantized (ComfyUI-GGUF at {os.path.basename(d)})"
-    return _load_native(path)
+    return _load(path, clip=False)
 
 
 def load_clip_state_dict(path: str) -> tuple[dict, dict, str]:
@@ -225,20 +212,40 @@ def load_clip_state_dict(path: str) -> tuple[dict, dict, str]:
     llama.cpp tensor names that have to be mapped back to the transformer's, which its
     diffusion-model reader does not do.
     """
+    return _load(path, clip=True)
+
+
+def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
+    """Try the quantized backend, fall back to dequantizing, in that order.
+
+    The pack refuses architectures it has no handling for — "Unexpected architecture type in
+    GGUF file: 'minimax_h3'" — which is a reasonable refusal on its part and a dead end for
+    us. Since the pack DEPENDS on the `gguf` package, its presence guarantees the fallback
+    is available, so a refusal costs memory rather than the load.
+    """
     which = backend()
     if which is None:
         raise RuntimeError(UNAVAILABLE)
     if which == "pack":
         d = _pack_dir()
-        loader = _load_pack_module(d, "loader")
-        ops = _load_pack_module(d, "ops")
-        read = getattr(loader, "gguf_clip_loader", None) or loader.gguf_sd_loader
-        sd = read(path)
-        options = {}
-        ggml_ops = getattr(ops, "GGMLOps", None)
-        if ggml_ops is not None:
-            options["custom_operations"] = ggml_ops()
-        return sd, options, f"gguf: quantized (ComfyUI-GGUF at {os.path.basename(d)})"
+        try:
+            loader = _load_pack_module(d, "loader")
+            ops = _load_pack_module(d, "ops")
+            read = loader.gguf_sd_loader
+            if clip:
+                read = getattr(loader, "gguf_clip_loader", None) or read
+            sd = read(path)
+            options = {}
+            ggml_ops = getattr(ops, "GGMLOps", None)
+            if ggml_ops is not None:
+                options["custom_operations"] = ggml_ops()
+            return sd, options, f"gguf: quantized (ComfyUI-GGUF at {os.path.basename(d)})"
+        except Exception as e:  # noqa: BLE001 — any refusal is a reason to fall back
+            if importlib.util.find_spec("gguf") is None:
+                raise
+            sd, options, note = _load_native(path)
+            return sd, options, (f"gguf: ComfyUI-GGUF could not read this file ({e}) — "
+                                 f"fell back. {note}")
     return _load_native(path)
 
 
@@ -265,9 +272,19 @@ def _load_native(path: str) -> tuple[dict, dict, str]:
             arr = gguf.quants.dequantize(tensor.data, qtype)
             quantized += 1
         t = torch.from_numpy(arr.copy())
-        # GGUF stores shapes reversed relative to torch.
+        # GGUF stores dimensions in the opposite order to torch.
         shape = tuple(int(d) for d in reversed(tensor.shape))
-        if shape and t.numel() == int(torch.tensor(shape).prod()):
+        expected = 1
+        for d in shape:
+            expected *= d
+        if shape and t.numel() != expected:
+            # Loading the tensor unshaped would hand the model a weight of the wrong rank
+            # and fail somewhere far from here, so stop with the name of the culprit.
+            raise RuntimeError(
+                f"{os.path.basename(path)}: tensor {name!r} dequantized to {t.numel()} "
+                f"elements but its header declares {shape} ({expected}). This container is "
+                f"not laid out the way the gguf package describes it.")
+        if shape:
             t = t.reshape(shape)
         sd[name] = t.to(torch.float16) if t.dtype == torch.float32 else t
     note = (f"gguf: dequantized at load ({quantized} quantized tensors expanded) — the file "

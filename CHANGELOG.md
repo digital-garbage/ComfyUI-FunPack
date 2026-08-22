@@ -12,7 +12,17 @@
   the two happened. With neither, the loader names both remedies instead of failing obscurely.
   Model-family detection reads GGUF containers too, using the same architecture signatures.
   A GGUF renamed to `.safetensors` is recognised by its container magic and loaded correctly
-  rather than failing in the safetensors parser with a UTF-8 decode error.
+  rather than failing in the safetensors parser with a UTF-8 decode error. When ComfyUI-GGUF
+  refuses an architecture it has no handling for (MiniMax H3, today), the load falls back to
+  dequantizing rather than stopping, and says both what refused and what happened instead.
+
+- **Simple mode's Advanced settings button opens the panel it names.** It slides in the
+  Editor's own Properties column — which does nothing at all when that column was collapsed
+  in Editor mode, since Simple mode hides the dock tabs that would uncollapse it. Opening the
+  panel now uncollapses it, and the saved dock state is handed back on the way out of Simple
+  mode. The panel also shows its folded sections again: they are hidden to keep the pinned
+  column tidy, which left a button called "Advanced settings" opening onto the few rows that
+  are not in a fold.
 
 - **Pin up to three shortcuts to the timeline toolbar.** Settings is a window with a sidebar,
   and its useful places — a specific node's page, one Engine category — are several clicks

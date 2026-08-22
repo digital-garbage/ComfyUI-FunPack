@@ -23,11 +23,21 @@
       || (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt)) || "";
   }
 
+  const PANEL_ZONES = { assets: "media-zone", props: "inspector-zone" };
+  function panelZone(which) { return document.getElementById(PANEL_ZONES[which]); }
+
   function togglePanel(which) {
     const cls = "show-" + which;
     const other = which === "assets" ? "show-props" : "show-assets";
     workspace.classList.remove(other);
+    const opening = !workspace.classList.contains(cls);
     workspace.classList.toggle(cls);
+    // These are the Editor's own zones, and layout.js marks a collapsed column `hidden`.
+    // Simple mode hides the dock tabs, so that state is a leftover Editor choice the user
+    // cannot see or change here — and `[hidden]` is display:none, which no transform can
+    // slide into view. The button did nothing at all, silently. Uncollapse on the way in;
+    // the saved dock state is restored when the mode changes back.
+    if (opening) panelZone(which)?.removeAttribute("hidden");
   }
 
   function closePanels() {
@@ -87,7 +97,14 @@
   }
 
   S.subscribe(refresh);
-  window.addEventListener("funpack-ui-mode", () => { draft = null; refresh(); });
+  window.addEventListener("funpack-ui-mode", () => {
+    draft = null;
+    closePanels();
+    // Hand the columns back to the dock: whatever the user collapsed in Editor mode is
+    // theirs, and Simple mode borrowing a zone must not permanently un-collapse it.
+    window.DockLayout?.set({});
+    refresh();
+  });
   refresh();
 
   window.SimpleBar = { closePanels };

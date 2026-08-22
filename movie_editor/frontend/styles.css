@@ -2664,6 +2664,13 @@ body.tour-mode { overflow: hidden; }
 :root[data-ui-mode="simple"] #inspector-zone { right: 0; transform: translateX(101%); }
 :root[data-ui-mode="simple"] .workspace.show-assets #media-zone,
 :root[data-ui-mode="simple"] .workspace.show-props #inspector-zone { transform: none; }
+/* Simple mode hides the inspector's folds so the pinned column stays uncluttered — but the
+   slide-over IS that inspector, opened from a button named "Advanced settings". With the
+   folds still hidden it opened onto the handful of rows that are not in one, which reads as
+   the button having done nothing. Asking for the panel is asking for what is in it. */
+:root[data-ui-mode="simple"] .workspace.show-props #inspector-zone .insp-fold {
+  display: block !important;
+}
 :root[data-ui-mode="simple"] .main-row { position: relative; }
 
 .simple-bar {
