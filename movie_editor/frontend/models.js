@@ -950,7 +950,7 @@
     cancel.onclick = () => {
       if (deferDirty && !confirm("Discard the changes to this node?")) return;
       restoreBaseline();
-      _setView("pipeline");
+      finishNodeEdit();
     };
 
     const save = el("button", "btn primary", "Save");
@@ -960,7 +960,7 @@
       deferSave = false;
       await persistNow();
       endEdit();
-      _setView("pipeline");
+      finishNodeEdit();
     };
 
     acts.append(cancel, save);
@@ -2011,6 +2011,7 @@
   // Internal: no unsaved-changes check. Used by Cancel/Save, which have already dealt
   // with the buffer, and by paths that removed the node they were editing.
   function _setView(v) {
+    if (v !== "node:" + _directNodeId) _directNodeId = null;
     if (view.startsWith("node:")) endEdit();
     view = v;
     if (view.startsWith("node:")) beginEdit();
@@ -2622,6 +2623,24 @@
   // A pinned button can ask for a node before the section has ever mounted, and the slots
   // only exist after loadAll(). Held here and applied once they do.
   let _openNodeOnMount = null;
+  // The node currently being shown as a DESTINATION rather than as a stop inside Settings.
+  // Set when a pinned button opens it; cleared as soon as the user navigates elsewhere,
+  // because from then on they are browsing Settings normally.
+  let _directNodeId = null;
+
+  /** Leave a node page: back to the pipeline normally, but a node opened straight from a
+   *  pinned button is somewhere the user went ON PURPOSE — dropping them into the Models
+   *  list afterwards would undo the point of the shortcut. Finishing there closes Settings
+   *  and returns them to the editor, saved or discarded alike. */
+  function finishNodeEdit() {
+    if (_directNodeId && view === "node:" + _directNodeId) {
+      _directNodeId = null;
+      endEdit();
+      window.SettingsWindow.close();
+      return;
+    }
+    _setView("pipeline");
+  }
 
   function mount(body, ctx) {
     container = el("div", "models-mount");
@@ -2640,7 +2659,11 @@
       .then(() => {
         if (!container || !container.isConnected) return;
         const pending = _openNodeOnMount; _openNodeOnMount = null;
-        if (pending && slotById(pending)) { _setView("node:" + pending); return; }
+        if (pending && slotById(pending)) {
+          _setView("node:" + pending);
+          _directNodeId = pending;   // after _setView, which clears it
+          return;
+        }
         render();
         if (pending) {
           // Landing on the pipeline instead, without saying why, would look like the
@@ -2658,6 +2681,14 @@
       });
     return () => {
       container = null;
+      // The section can be torn down mid-edit — Escape, the ✕, switching sections — and
+      // loadAll() replaces `config` on the next mount anyway. Leaving the edit buffer
+      // behind would carry deferDirty and a baseline for an object that no longer exists
+      // into that mount: a spurious "unsaved changes" prompt, and a Cancel that splices
+      // stale slots into freshly loaded ones.
+      endEdit();
+      _directNodeId = null;
+      _openNodeOnMount = null;
       document.querySelectorAll(".mn-role-pop, .ns-overlay").forEach((n) => n.remove());
     };
   }
@@ -2686,13 +2717,13 @@
     // whether or not the section has been mounted before.
     openNode: (slotId) => {
       if (!slotId) return;
-      if (container && container.isConnected && slotById(slotId)) {
-        window.SettingsWindow.open("models");
-        setView("node:" + slotId);
-        return;
-      }
-      _openNodeOnMount = slotId;
+      // One route, whatever is on screen: open() mounts (or REMOUNTS) the section, and the
+      // request is armed AFTER that call — a remount tears the old section down, which
+      // clears pending state, so arming first would lose it. mount()'s load is async, so
+      // this still lands before the node view is chosen. The remount costs one refetch and
+      // buys freshness, which is what a shortcut into a quick edit wants anyway.
       window.SettingsWindow.open("models");
+      _openNodeOnMount = slotId;
     },
     refresh: async () => {
       await ensureRoles().catch(() => {});

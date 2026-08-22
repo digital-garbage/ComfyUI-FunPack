@@ -11,7 +11,9 @@
   is open pins the NODE, not the section it lives in. Slot 1 is always the leftmost button
   and slot 3 the one nearest Assets; an empty slot closes up and the remaining buttons keep
   their own numbers, so a shortcut's position never moves. Hovering says where it leads.
-  Pins ride with the project, like the other editor preferences.
+  Pins ride with the project, like the other editor preferences. A node opened this way is a
+  destination, not a stop inside Settings: Save and Cancel both close the window and return
+  you to the editor, rather than leaving you in the Models list you never asked for.
 
 - **Reverse a clip**, audio included, in `+ Add → Effects`. Unlike the other clip effects
   there is no preview-side equivalent, so the monitor switches that clip to a server-rendered
@@ -96,6 +98,12 @@
   looked exactly like one where the feature was switched off.
 
 ### Fixed
+- **Closing Models & Pipeline mid-edit no longer leaves its edit buffer behind.** Escape, the
+  ✕, or switching to another section tore the section down without ending the edit, so the
+  next visit inherited a dirty flag and a baseline belonging to a config that had already
+  been replaced — a spurious "unsaved changes" prompt, and a Cancel that could splice stale
+  slots into freshly loaded ones.
+
 - **Prompt templates can be renamed, deleted, and turned off.** The Composer's Templates bar
   applied a template and immediately forgot it, so there was no state to leave and no way to
   leave it — and clearing the prompt box by hand did nothing, because an empty global prompt
