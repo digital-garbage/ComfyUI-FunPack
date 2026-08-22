@@ -1101,15 +1101,53 @@
   }
   function deletePromptTemplate(name) {
     if (!state.project) return;
-    patchProject({ prompt_templates: (state.project.prompt_templates || []).filter((t) => t && t.name !== name) });
+    const patch = {
+      prompt_templates: (state.project.prompt_templates || []).filter((t) => t && t.name !== name),
+    };
+    // Deleting the one in use leaves nothing selected — the prompt itself is untouched,
+    // it is just no longer "from" a template.
+    if (state.project.active_prompt_template === name) patch.active_prompt_template = "";
+    patchProject(patch);
+  }
+  function renamePromptTemplate(oldName, newName) {
+    if (!state.project) return false;
+    const nm = String(newName || "").trim();
+    if (!nm || nm === oldName) return false;
+    const list = state.project.prompt_templates || [];
+    if (list.some((t) => t && t.name === nm)) return false;   // caller reports the clash
+    const patch = {
+      prompt_templates: list.map((t) => (t && t.name === oldName ? { ...t, name: nm } : t)),
+    };
+    if (state.project.active_prompt_template === oldName) patch.active_prompt_template = nm;
+    patchProject(patch);
+    return true;
   }
   async function applyPromptTemplate(name) {
     if (!state.project) return;
     const tpl = (state.project.prompt_templates || []).find((t) => t && t.name === name);
     if (!tpl) return;
     // Restore the saved variables first, then distribute the prompt (re-splits the timeline).
-    patchProjectQuiet({ variables: JSON.parse(JSON.stringify(tpl.variables || [])) });
+    patchProjectQuiet({
+      variables: JSON.parse(JSON.stringify(tpl.variables || [])),
+      active_prompt_template: name,
+    });
     await applyGlobalPromptQuiet(tpl.prompt || "");
+  }
+  // Back to no template. applyGlobalPromptQuiet REFUSES empty text (an empty parse would
+  // wipe the timeline as a side effect of a stray keystroke), which is why clearing the
+  // box by hand never did anything — the scene texts it is built from stayed put. Clearing
+  // is therefore its own deliberate operation, and it is recorded for undo.
+  function clearGlobalPrompt() {
+    if (!state.project) return false;
+    // Drop any debounced edit first. It carries the text that is being cleared, and would
+    // otherwise land half a second later and redistribute it back onto the scenes.
+    if (_globalApplyTimer) { clearTimeout(_globalApplyTimer); _globalApplyTimer = null; }
+    _pendingGlobalPromptText = null;
+    _historyRecord();
+    (state.project.scenes || []).forEach((sc) => { sc.text = ""; });
+    patchProject({ active_prompt_template: "" });
+    syncGlobalPromptFromTimeline();
+    return true;
   }
 
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
@@ -4449,6 +4487,7 @@
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate: _clockedGenerate, generateMontage: _clockedMontage, generateSelected: _clockedSelected, genElapsed, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
+    renamePromptTemplate, clearGlobalPrompt,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, clearShortcuts, addCategory,

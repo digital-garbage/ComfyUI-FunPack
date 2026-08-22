@@ -601,6 +601,10 @@ class Project:
     # Saved global-prompt templates: [{"name": str, "prompt": str, "variables": [...]}]. Selecting
     # one in the Composer applies its prompt + variables; loaded with the project (no Load button).
     prompt_templates: list = field(default_factory=list)
+    # Which saved template the global prompt currently came from, so the Composer can show
+    # it as selected and offer rename / update / delete for it. "" = none applied; the
+    # prompt is whatever the user typed.
+    active_prompt_template: str = ""
     # Refinement key for this project's runs. Feeds the FunPackRefinementKeyLoader (Studio /
     # Chain Sampler / SaveRefinementLatent). "default" = the keyless/default store. Shortcuts
     # bound to a non-default key layer their own per-scene training on top of this.
@@ -677,6 +681,7 @@ class Project:
             h3_references=list(d.get("h3_references") or []),
             references=[str(r) for r in (d.get("references") or []) if r],
             prompt_templates=list(d.get("prompt_templates") or []),
+            active_prompt_template=str(d.get("active_prompt_template") or ""),
             refinement_key=str(d.get("refinement_key") or "default"),
             keep_original_audio=bool(d.get("keep_original_audio", True)),
             audio_tracks=list(d.get("audio_tracks") or []),

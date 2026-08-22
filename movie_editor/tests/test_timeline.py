@@ -438,3 +438,20 @@ def test_projects_store_crud(tmp_path, monkeypatch):
     assert any(x["id"] == created.id for x in projects.list_projects())
     assert projects.delete(created.id) is True
     assert projects.get(created.id) is None
+
+
+def test_active_prompt_template_round_trips():
+    """The Composer marks which template the prompt came from; from_dict reads only known
+    keys, so an unmodelled field would be silently dropped on every save."""
+    from movie_editor.backend.timeline import Project
+    p = Project.from_dict({"id": "p", "name": "n", "active_prompt_template": "Cinematic"})
+    assert p.active_prompt_template == "Cinematic"
+    assert Project.from_dict(p.to_dict()).active_prompt_template == "Cinematic"
+
+
+def test_active_prompt_template_defaults_to_none_applied():
+    from movie_editor.backend.timeline import Project
+    assert Project.from_dict({"id": "p", "name": "n"}).active_prompt_template == ""
+    # A stored null must not become the string "None".
+    assert Project.from_dict({"id": "p", "name": "n",
+                              "active_prompt_template": None}).active_prompt_template == ""

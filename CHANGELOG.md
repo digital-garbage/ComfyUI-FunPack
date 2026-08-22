@@ -86,6 +86,15 @@
   looked exactly like one where the feature was switched off.
 
 ### Fixed
+- **Prompt templates can be renamed, deleted, and turned off.** The Composer's Templates bar
+  applied a template and immediately forgot it, so there was no state to leave and no way to
+  leave it — and clearing the prompt box by hand did nothing, because an empty global prompt
+  is refused (an empty parse would wipe the timeline on a stray keystroke). The bar now shows
+  which template is applied, offers `— None —` to clear the prompt as a deliberate, undoable
+  action, and gives the applied template Rename and Delete. Saving pre-fills the applied
+  name, so updating a template is the default gesture rather than a trick. Deleting one
+  leaves the prompt alone.
+
 - **"No, I'll use my own pipeline" left the setup modal on screen.** Picking a model family
   starts a chain of requests that reopens the modal with fresh prerequisites; dismissing it
   mid-flight closed it, then the reply landed and put it straight back — and since opting out
