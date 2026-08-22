@@ -268,7 +268,7 @@
 
     const sel = el("select", "lib-in compose-tpl-select");
     const ph = new Option("Templates…", ""); ph.disabled = true; sel.append(ph);
-    sel.append(new Option("— None (clear the prompt) —", TPL_NONE));
+    sel.append(new Option("— None (clear all prompts) —", TPL_NONE));
     tpls.forEach((t) => {
       const preview = String(t.prompt || "").replace(/\s+/g, " ").slice(0, 48);
       const o = new Option(`${t.name}${preview ? " — " + preview : ""}`, t.name);
@@ -283,8 +283,8 @@
       if (n === TPL_NONE) {
         if (!confirm(
           "Clear the global prompt and stop using the current template?\n\n"
-          + "This empties every scene's text. Variables are left alone — edit them in "
-          + "Variables below. Undo restores it."
+          + "Empties the anchor, the transitions and every scene's text. The postfix and "
+          + "variables are separate settings and are left alone. Undo restores it."
         )) { render(); return; }
         S.clearGlobalPrompt();
         render();

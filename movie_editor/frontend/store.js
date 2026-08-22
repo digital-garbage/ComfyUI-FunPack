@@ -1144,8 +1144,18 @@
     if (_globalApplyTimer) { clearTimeout(_globalApplyTimer); _globalApplyTimer = null; }
     _pendingGlobalPromptText = null;
     _historyRecord();
-    (state.project.scenes || []).forEach((sc) => { sc.text = ""; });
-    patchProject({ active_prompt_template: "" });
+    // Everything the global prompt is built from — anchor + transitions + scene texts —
+    // so the box really does end up empty rather than empty-looking. The postfix is a
+    // separate project setting that outlives any one prompt, and is left alone.
+    (state.project.scenes || []).forEach((sc) => {
+      sc.text = "";
+      sc.transition_to_next = "";
+    });
+    patchProject({
+      anchor: "",
+      intro_transition: "",
+      active_prompt_template: "",
+    });
     syncGlobalPromptFromTimeline();
     return true;
   }
