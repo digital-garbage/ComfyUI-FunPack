@@ -2619,6 +2619,10 @@
     if (dirty) { try { await persist(); } catch (_) {} }
   }
 
+  // A pinned button can ask for a node before the section has ever mounted, and the slots
+  // only exist after loadAll(). Held here and applied once they do.
+  let _openNodeOnMount = null;
+
   function mount(body, ctx) {
     container = el("div", "models-mount");
     container.append(el("div", "pj-meta models-loading", "Loading models & pipeline…"));
@@ -2633,7 +2637,19 @@
     refresh.onclick = refreshList;
     ctx.setActions([imp, refresh]);
     loadAll()
-      .then(() => { if (container && container.isConnected) render(); })
+      .then(() => {
+        if (!container || !container.isConnected) return;
+        const pending = _openNodeOnMount; _openNodeOnMount = null;
+        if (pending && slotById(pending)) { _setView("node:" + pending); return; }
+        render();
+        if (pending) {
+          // Landing on the pipeline instead, without saying why, would look like the
+          // button simply did the wrong thing.
+          alert("That node is not in this project's pipeline.\n\n"
+                + "The pinned button still points at it — open the node you want and use "
+                + "Pin to a button to repoint the slot.");
+        }
+      })
       .catch(() => {
         if (container && container.isConnected) {
           clear(container);
@@ -2654,10 +2670,30 @@
     iconBg: "linear-gradient(180deg,#b18cff,#7a4fd0)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"><path d="M8 1.8 14 5v6l-6 3.2L2 11V5l6-3.2z"/><path d="M2 5l6 3 6-3M8 8v6.2"/></svg>',
     mount,
+    // Pinning while a node is open should pin THAT node, not the section it lives in —
+    // the node page is the thing that takes several clicks to reach.
+    pinTarget: () => {
+      if (!view.startsWith("node:")) return null;
+      const slot = slotById(view.slice(5));
+      if (!slot) return null;
+      return { kind: "node", id: slot.id, label: slotDisplayLabel(slot) };
+    },
   });
 
   window.ModelsModal = {
     open: () => window.SettingsWindow.open("models"),
+    // Open Models & Pipeline showing ONE node. Used by pinned buttons; safe to call
+    // whether or not the section has been mounted before.
+    openNode: (slotId) => {
+      if (!slotId) return;
+      if (container && container.isConnected && slotById(slotId)) {
+        window.SettingsWindow.open("models");
+        setView("node:" + slotId);
+        return;
+      }
+      _openNodeOnMount = slotId;
+      window.SettingsWindow.open("models");
+    },
     refresh: async () => {
       await ensureRoles().catch(() => {});
       await doFullRefresh().catch(() => {});

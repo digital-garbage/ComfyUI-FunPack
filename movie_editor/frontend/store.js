@@ -52,6 +52,10 @@
     // cycle. Carried here purely so the project can put it back on a new instance;
     // the server copy stays the single source of truth while the app is running.
     revolver: null,   // {enabled, random} | null = never recorded
+    // Up to three toolbar shortcuts: [slot1, slot2, slot3], each null or
+    // {kind:"section"|"node", id, label}. Node ids are project-scoped, which is why these
+    // ride with the project rather than living in the browser alone.
+    pinnedButtons: null,
   };
   function _loadEditorSettings() {
     try {

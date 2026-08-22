@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### Added
+- **Pin up to three shortcuts to the timeline toolbar.** Settings is a window with a sidebar,
+  and its useful places — a specific node's page, one Engine category — are several clicks
+  deep: fine to walk once, tedious while dialling something in. `📌 Pin to a button` in the
+  Settings header puts whatever is open into one of three slots, chosen from a dialog that
+  shows what each slot currently holds and asks before replacing one. Pinning while a node
+  is open pins the NODE, not the section it lives in. Slot 1 is always the leftmost button
+  and slot 3 the one nearest Assets; an empty slot closes up and the remaining buttons keep
+  their own numbers, so a shortcut's position never moves. Hovering says where it leads.
+  Pins ride with the project, like the other editor preferences.
+
 - **Reverse a clip**, audio included, in `+ Add → Effects`. Unlike the other clip effects
   there is no preview-side equivalent, so the monitor switches that clip to a server-rendered
   segment — what you watch is the reversed encode, not a forward one standing in for it.

@@ -119,9 +119,14 @@
     subEl = el("div", "sw-head-sub");
     ht.append(titleEl, subEl);
     actionsEl = el("div", "sw-head-actions");
+    const pin = el("button", "btn ghost tiny sw-pin", "📌 Pin to a button");
+    pin.type = "button";
+    pin.title = "Put a shortcut to whatever is open here on the timeline toolbar";
+    pin.onclick = () => window.PinnedButtons?.pinCurrent();
     const x = el("button", "btn ghost tiny sw-close", "✕");
     x.onclick = close;
-    head.append(ht, actionsEl, x);
+    head.append(ht, actionsEl, pin, x);
+    if (!window.PinnedButtons) pin.hidden = true;
     bodyEl = el("div", "sw-body");
     main.append(head, bodyEl);
 
@@ -171,7 +176,27 @@
 
   function hasSection(id) { return registry.some((s) => s.id === id); }
 
-  window.SettingsWindow = { open, close, register, navItem, mountSection, hasSection };
+  /** What a pinned button should reopen to get back to what is on screen now.
+   *
+   * A section can override this (Models points at the open NODE rather than at itself),
+   * which is the whole value of the feature: the deep places are the slow ones to reach.
+   */
+  function currentTarget() {
+    const spec = registry.find((s) => s.id === activeId);
+    if (!spec) return null;
+    let custom = null;
+    try { custom = typeof spec.pinTarget === "function" ? spec.pinTarget() : null; } catch (_) {}
+    return custom || { kind: "section", id: spec.id, label: spec.title };
+  }
+
+  /** Every section, for the pin dialog's "somewhere else" list. */
+  function sectionList() {
+    return orderedSections().map((s) => ({ id: s.id, title: s.title, group: s.group || "" }));
+  }
+
+  window.SettingsWindow = {
+    open, close, register, navItem, mountSection, hasSection, currentTarget, sectionList,
+  };
 
   // ── shared row builders for settings panels ────────────────────────────
   function actionRow(title, hint, btnLabel, onClick, opts = {}) {

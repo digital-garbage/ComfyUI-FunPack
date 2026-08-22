@@ -445,6 +445,35 @@ a.brand:hover .brand-sub { color: var(--accent-hi); }
 .dock-tab.on { background: var(--accent-soft); color: var(--accent-hi); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .dock-tab:only-child { cursor: default; }
 
+/* Pinned shortcuts: same chip shape as the panel toggles so the row reads as one strip,
+   with a leading dot marking them as "goes somewhere" rather than "shows a panel". */
+.pinned-tabs { margin-left: 0; margin-right: 4px; }
+.pinned-tab { color: var(--muted); border-style: dashed; cursor: pointer; }
+.pinned-tab::before { content: "◆"; margin-right: 5px; color: var(--accent); font-size: 9px; }
+.pinned-tab:hover { color: var(--text); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+/* A lone pin is still a button — the panel-toggle rule that disables the last visible
+   panel must not reach into this nav. */
+.pinned-tab:only-child { cursor: pointer; }
+
+.pin-modal { max-width: 460px; }
+.pin-lead { font-size: 13px; color: var(--text); margin-bottom: 4px; }
+.pin-hint { font-size: 11px; color: var(--faint); line-height: 1.45; margin-bottom: 10px; }
+.pin-slots { display: flex; flex-direction: column; gap: 6px; }
+.pin-slot {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; text-align: left; cursor: pointer;
+  padding: 9px 11px; border-radius: 8px;
+  background: var(--ink-2); border: 1px solid var(--line);
+  transition: border-color .12s, background .12s;
+}
+.pin-slot:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: var(--ink-3); }
+.pin-slot.occupied { border-style: solid; border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+.pin-slot-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.pin-slot-sub { font-size: 11px; color: var(--faint); margin-top: 2px; }
+.pin-slot-pos { font-size: 10px; color: var(--faint); font-family: var(--font-mono); flex-shrink: 0; }
+.pin-clear-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;
+  padding-top: 10px; border-top: 1px solid var(--line); }
+
 .zone-head {
   /* min-height, not height: the right-hand status block wraps when the zone is narrow,
      and a fixed height let it spill over the zone above AND the toolbar below. */
