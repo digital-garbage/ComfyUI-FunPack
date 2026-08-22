@@ -4284,6 +4284,18 @@
       blur: (v) => ({ effects: { ...(sc.effects || {}), blur: v } }),
       fade_in: (v) => ({ effects: { ...(sc.effects || {}), fade_in: v } }),
       fade_out: (v) => ({ effects: { ...(sc.effects || {}), fade_out: v } }),
+      // Geometry ops. The flips and fill are switches, and the Add-effect modal has no
+      // "off" — so applying one again turns it off. Anything else would be a setting the
+      // user can turn on and never turn off.
+      flip_h: () => ({ effects: { ...(sc.effects || {}), flip_h: !sc.effects?.flip_h } }),
+      flip_v: () => ({ effects: { ...(sc.effects || {}), flip_v: !sc.effects?.flip_v } }),
+      fill_frame: () => ({
+        effects: { ...(sc.effects || {}), fit: sc.effects?.fit === "fill" ? "contain" : "fill" },
+      }),
+      crop: (v) => ({
+        effects: { ...(sc.effects || {}), crop_inset: Math.max(0, Math.min(0.4, (+v || 0) / 100)) },
+      }),
+      reset: () => ({ effects: {} }),
     };
     const fn = patches[effectId]; if (!fn) return false;
     patchScene(sc.id, fn(paramValue)); return true;

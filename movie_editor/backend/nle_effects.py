@@ -48,3 +48,47 @@ def zoompan_z_expr(zoom: str, fx: dict[str, Any] | None, nframes: int) -> str:
         f"if(lt(on,{start + length}),{end:.6f}*(1-(on-{start})/{length}),"
         f"1))"
     )
+
+
+def crop_inset_fraction(fx: dict[str, Any] | None) -> float:
+    """Fraction trimmed off EACH edge by the crop effect, clamped to a sane range."""
+    try:
+        v = float((fx or {}).get("crop_inset") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if v != v or v <= 0:  # NaN or nothing to crop
+        return 0.0
+    return min(0.4, v)
+
+
+def geometry_filters(fx: dict[str, Any] | None, cw: int, ch: int) -> list[str]:
+    """ffmpeg filters placing one clip into the ``cw``x``ch`` canvas.
+
+    Mirrors what player.js `_applyFx` does to the live preview, in the same order, so the
+    render matches what was previewed:
+      flips   -> hflip / vflip            (CSS scaleX/scaleY)
+      crop    -> trim each edge, rescale  (a static scale on the clipped viewport)
+      fit     -> letterbox or fill+crop   (object-fit contain / cover)
+
+    Order matters: the crop is of the SOURCE, so it runs before the clip is fitted to the
+    canvas. Flips are mirror-symmetric about the centre and commute with both.
+    """
+    fx = fx or {}
+    out: list[str] = []
+    if fx.get("flip_h"):
+        out.append("hflip")
+    if fx.get("flip_v"):
+        out.append("vflip")
+    inset = crop_inset_fraction(fx)
+    if inset > 0:
+        keep = 1.0 - 2.0 * inset
+        # Even dimensions: yuv420p subsamples chroma 2x2, and an odd intermediate size makes
+        # later filters in the chain reject the frame.
+        out.append(f"crop=trunc(iw*{keep:.6f}/2)*2:trunc(ih*{keep:.6f}/2)*2")
+    if fx.get("fit") == "fill":
+        out.append(f"scale={cw}:{ch}:force_original_aspect_ratio=increase")
+        out.append(f"crop={cw}:{ch}")
+    else:
+        out.append(f"scale={cw}:{ch}:force_original_aspect_ratio=decrease")
+        out.append(f"pad={cw}:{ch}:-1:-1:color=black")
+    return out

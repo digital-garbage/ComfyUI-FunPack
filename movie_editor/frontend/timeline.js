@@ -743,6 +743,17 @@
       clip.append(rated);
     }
 
+    const fxTxt = effectSummary(scene.effects);
+    if (fxTxt) {
+      const fxChip = el("div", "clip-fx", fxTxt);
+      fxChip.title = "Effects on this clip — click to remove them all";
+      fxChip.onclick = (e) => {
+        e.stopPropagation();
+        if (confirm("Remove all effects from this clip?")) S.patchScene(scene.id, { effects: {} });
+      };
+      clip.append(fxChip);
+    }
+
     const vt = videoTransitionState(scene, p);
     if (vt.active) {
       const tail = el("div", "clip-vt-tail vt-" + vt.type);
@@ -866,6 +877,30 @@
 
   function closeAddModal() {
     if (_addModal) { _addModal.remove(); _addModal = null; }
+  }
+
+  // What's actually on this clip. Without it the effects are invisible — and several are
+  // toggles, so "apply again to turn it off" is meaningless if you cannot see what is on.
+  const FX_LABELS = [
+    ["flip_h", () => "⇄ flip"],
+    ["flip_v", () => "⇅ flip"],
+    ["fit", (v) => (v === "fill" ? "fill" : null)],
+    ["crop_inset", (v) => (v > 0 ? `crop ${Math.round(v * 100)}%` : null)],
+    ["zoom", (v) => (v === "in" ? "zoom in" : v === "out" ? "zoom out" : null)],
+    ["blur", (v) => (v > 0 ? `blur ${(+v).toFixed(2)}` : null)],
+    ["fade_in", (v) => (v > 0 ? `fade in ${v}s` : null)],
+    ["fade_out", (v) => (v > 0 ? `fade out ${v}s` : null)],
+  ];
+  function effectSummary(fx) {
+    if (!fx) return "";
+    const out = [];
+    for (const [key, fmt] of FX_LABELS) {
+      const raw = fx[key];
+      if (raw === undefined || raw === null || raw === false || raw === "") continue;
+      const txt = fmt(raw);
+      if (txt) out.push(txt);
+    }
+    return out.join(" · ");
   }
 
   function openNleSettingsModal(kind, st) {

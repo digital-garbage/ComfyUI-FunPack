@@ -1287,6 +1287,12 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
   background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); }
 .clip.has-media .clip-rated { position: relative; z-index: 1; }
+.clip-fx { font-size: 10px; font-family: var(--font-mono); color: var(--muted); line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; cursor: pointer;
+  padding: 2px 6px; border-radius: 4px; border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--line) 30%, transparent); }
+.clip-fx:hover { color: var(--text); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.clip.has-media .clip-fx { position: relative; z-index: 1; }
 .clip-gen-prompt {
   font-size: 10px; line-height: 1.25; flex-shrink: 0; min-height: 0;
   border-top: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));

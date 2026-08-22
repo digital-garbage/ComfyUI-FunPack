@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### Added
+- **Clip geometry on the timeline: flip, crop, and fill-frame**, in `+ Add → Effects`
+  alongside the existing zoom/blur/fades. Flip horizontal and Flip vertical mirror the clip;
+  Crop edges trims a percentage off each side and rescales (a punch-in that composes with
+  Ken Burns rather than replacing it); Fill frame covers the output frame and crops the
+  overflow instead of letterboxing. The preview and the render share one filter definition,
+  so what plays is what renders. Flips and fill are switches — applying one again turns it
+  off — and the timeline clip now shows a chip listing the effects on it, which clears them
+  all when clicked. `Remove all effects` is also a preset, since Ken Burns previously had no
+  way off. Presets are back-filled into libraries created before they existed.
+
 - **SLA block-sparse attention for MiniMax H3**, as a value in the FunPack Diffusion Model
   Loader's `attention` list rather than a node to wire. ComfyUI ships no sparse-attention
   backend for H3, which is why lightx2v's SLA turbo LoRA gives no speedup on its own — the

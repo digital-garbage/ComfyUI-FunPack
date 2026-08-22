@@ -760,7 +760,21 @@
     const dur = (clip && clip.durationSec) || 0;
     const blur = +fx.blur || 0;
     v.style.filter = blur > 0 ? `blur(${(blur * 8).toFixed(1)}px)` : "";
-    const scale = _zoomScale(fx, within, dur, _fpsCur || 25);
+    // Flips: on the element itself, so they compose with the zoom layer's transform rather
+    // than overwrite it. Mirrors ffmpeg hflip/vflip exactly.
+    const flips = [];
+    if (fx.flip_h) flips.push("scaleX(-1)");
+    if (fx.flip_v) flips.push("scaleY(-1)");
+    v.style.transform = flips.join(" ");
+    // Fit: `contain` letterboxes (ffmpeg scale=decrease + pad), `cover` fills the frame and
+    // crops the overflow (ffmpeg scale=increase + crop). Same geometry either way.
+    v.style.objectFit = fx.fit === "fill" ? "cover" : "contain";
+    // Crop-inset punches in by trimming each edge, then rescaling to the frame — which is a
+    // static scale of 1/(1-2f) on the clipped viewport. Multiplied with Ken Burns, so the
+    // two compose instead of one silently winning.
+    const inset = Math.max(0, Math.min(0.4, +fx.crop_inset || 0));
+    const cropScale = inset > 0 ? 1 / (1 - 2 * inset) : 1;
+    const scale = _zoomScale(fx, within, dur, _fpsCur || 25) * cropScale;
     if (fxLayer?.zoom) {
       fxLayer.zoom.style.transform = scale !== 1 ? `scale(${scale.toFixed(4)})` : "";
     }

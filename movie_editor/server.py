@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     PromptServer = None
 
 from .backend import bridge, builder, config, git_update, media, model_probe, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, sysinfo, workflow_import
-from .backend.nle_effects import zoompan_z_expr
+from .backend.nle_effects import geometry_filters, zoompan_z_expr
 from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_export
 from .backend.timeline import (
     Project,
@@ -859,12 +859,10 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
         for i, c in enumerate(clips):
             fx = c.get("fx") or {}
             dur = float(c.get("dur") or 0) or 0.0
-            # Normalize first: fit into the canvas (letterbox), fixed fps + square pixels.
-            vf: list[str] = [
-                f"scale={cw}:{ch}:force_original_aspect_ratio=decrease",
-                f"pad={cw}:{ch}:-1:-1:color=black",
-                "setsar=1", f"fps={cfps:g}",
-            ]
+            # Normalize first: flips, crop, and fit into the canvas (letterbox or fill),
+            # then fixed fps + square pixels. Shared with the live preview so the render
+            # cannot drift from what was shown.
+            vf: list[str] = geometry_filters(fx, cw, ch) + ["setsar=1", f"fps={cfps:g}"]
             zoom = fx.get("zoom")
             if zoom in ("in", "out") and dur > 0:
                 nframes = max(1, round(dur * cfps))
