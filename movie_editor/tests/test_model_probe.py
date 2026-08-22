@@ -148,3 +148,41 @@ def test_an_unidentifiable_checkpoint_proposes_no_family(tmp_path):
     out = model_probe.probe_models({"slots": [slot(model_name="wan.safetensors")]},
                                    resolve=lambda name: str(f))
     assert out["family"] is None
+
+
+def test_gguf_without_the_library_says_so_and_proposes_no_family(tmp_path, monkeypatch):
+    """A .gguf that cannot be read must never fall through to a guess — the previous family
+    stands, and the panel says why plus where to set it by hand."""
+    import movie_editor.backend.model_probe as mp
+    p = tmp_path / "ltx-Q4_K_M.gguf"
+    p.write_bytes(b"GGUF\x03\x00\x00\x00")
+    monkeypatch.setattr(mp, "read_gguf_keys", lambda _p: None)
+    out = mp.detect_family(p)
+    assert out["family"] is None
+    assert out["detected"] is False
+    assert "gguf" in out["reason"].lower()
+    assert "Model family" in out["reason"]
+
+
+def test_gguf_is_identified_from_the_same_signatures(tmp_path, monkeypatch):
+    """The architecture signatures are KEY NAMES, so the container they came out of is
+    irrelevant — a GGUF and a safetensors of the same model must agree."""
+    import movie_editor.backend.model_probe as mp
+    p = tmp_path / "h3-Q8_0.gguf"
+    p.write_bytes(b"GGUF")
+    monkeypatch.setattr(mp, "read_gguf_keys",
+                        lambda _p: ["video_patch_proj.weight", "audio_patch_proj.weight"])
+    out = mp.detect_family(p)
+    assert out["arch"] == "minimax_h3"
+    assert out["family"] == "minimax_h3"
+    assert out["detected"] is True
+
+
+def test_gguf_with_no_known_signature_proposes_nothing(tmp_path, monkeypatch):
+    import movie_editor.backend.model_probe as mp
+    p = tmp_path / "something.gguf"
+    p.write_bytes(b"GGUF")
+    monkeypatch.setattr(mp, "read_gguf_keys", lambda _p: ["blk.0.attn_q.weight"])
+    out = mp.detect_family(p)
+    assert out["family"] is None
+    assert "no LTX or MiniMax H3 signature" in out["reason"]

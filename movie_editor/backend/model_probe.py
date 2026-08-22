@@ -56,6 +56,25 @@ def read_safetensors_keys(path: str | Path) -> Optional[list[str]]:
     return [k for k in header if k != "__metadata__"]
 
 
+def read_gguf_keys(path: str | Path) -> Optional[list[str]]:
+    """Tensor names from a GGUF file, or None when they cannot be read.
+
+    Delegated to llama.cpp's own `gguf` package rather than hand-parsing the container:
+    the header is a typed key-value section of variable-length records, and getting that
+    subtly wrong would misidentify a model rather than fail. The package is optional, so
+    None here means "cannot tell", never "wrong family".
+    """
+    try:
+        import gguf  # noqa: PLC0415
+    except ImportError:
+        return None
+    try:
+        reader = gguf.GGUFReader(str(path))
+        return [str(t.name) for t in reader.tensors]
+    except Exception:  # noqa: BLE001 — any malformed container is simply unreadable
+        return None
+
+
 def detect_arch(keys: Iterable[str]) -> Optional[str]:
     """`minimax_h3` | `ltxav` | `ltxv`, or None when the keys match no architecture we wire.
 
@@ -86,6 +105,13 @@ def detect_family(path: str | Path) -> dict:
     if not p.is_file():
         return {"family": None, "arch": None, "detected": False,
                 "reason": f"{p.name}: file not found"}
+    if p.suffix.lower() == ".gguf":
+        keys = read_gguf_keys(p)
+        if keys is None:
+            return {"family": None, "arch": None, "detected": False,
+                    "reason": f"{p.name}: a .gguf can only be inspected with the `gguf` package "
+                              f"installed — set the family from Models ▸ Model family instead"}
+        return _from_keys(p, keys)
     if p.suffix.lower() != ".safetensors":
         # .ckpt / .pth are pickles; reading them means executing them, which is not worth it
         # for a family probe. The declared family stands and the caller is told why.
@@ -95,6 +121,12 @@ def detect_family(path: str | Path) -> dict:
     if keys is None:
         return {"family": None, "arch": None, "detected": False,
                 "reason": f"{p.name}: not a readable safetensors header"}
+    return _from_keys(p, keys)
+
+
+def _from_keys(p: Path, keys: Iterable[str]) -> dict:
+    """Same verdict from either container: the signatures are key names, so it does not
+    matter which format they were read out of."""
     arch = detect_arch(keys)
     if arch is None:
         return {"family": None, "arch": None, "detected": False,

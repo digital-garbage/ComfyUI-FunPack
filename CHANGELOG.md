@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **FunPack's loaders take `.gguf` files**, for diffusion models and text encoders alike, and
+  a text-encoder list may mix a `.gguf` with `.safetensors` slots (the usual LTX-2.3 shape).
+  Core's extension set has no `.gguf`, so those files were on disk and invisible to every
+  picker. The runtime is whichever backend is present: ComfyUI-GGUF keeps the weights
+  quantized in VRAM, which is the point of GGUF; failing that, the `gguf` package is used to
+  dequantize at load — the file loads, but at full size, and the status output says which of
+  the two happened. With neither, the loader names both remedies instead of failing obscurely.
+  Model-family detection reads GGUF containers too, using the same architecture signatures.
+
 - **Pin up to three shortcuts to the timeline toolbar.** Settings is a window with a sidebar,
   and its useful places — a specific node's page, one Engine category — are several clicks
   deep: fine to walk once, tedious while dialling something in. `📌 Pin to a button` in the

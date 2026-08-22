@@ -19,10 +19,28 @@ import torch
 
 try:
     from .widgets import field, list_widget, parse_rows
-    from . import sla_attention
+    from . import gguf_support, sla_attention
 except ImportError:  # standalone tests import the modules directly
     from widgets import field, list_widget, parse_rows
+    import gguf_support
     import sla_attention
+
+def model_file_choices():
+    """Diffusion model files, `.gguf` included.
+
+    Core's extension set has no `.gguf`, so those files are on disk and invisible to every
+    picker. Appended rather than merged in sorted order, so an existing pipeline's saved
+    choice keeps its position in the list and nothing a user already picked moves.
+    """
+    return list(folder_paths.get_filename_list("diffusion_models")) + \
+        gguf_support.gguf_names("diffusion_models")
+
+
+def encoder_file_choices():
+    """Text encoder files, `.gguf` included. Same reasoning as model_file_choices()."""
+    return list(folder_paths.get_filename_list("text_encoders")) + \
+        gguf_support.gguf_names("text_encoders")
+
 
 WEIGHT_DTYPES = ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2", "fp16", "bf16", "fp32"]
 COMPUTE_DTYPES = ["default", "fp16", "bf16", "fp32"]
@@ -124,8 +142,10 @@ class FunPackDiffusionModelLoader:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model_name": (folder_paths.get_filename_list("diffusion_models"), {
-                    "tooltip": "The diffusion model file, from ComfyUI/models/diffusion_models."}),
+                "model_name": (model_file_choices(), {
+                    "tooltip": "The diffusion model file, from ComfyUI/models/diffusion_models. "
+                               ".gguf files are listed too (see the status output for which "
+                               "GGUF backend loaded it)."}),
                 "weight_dtype": (WEIGHT_DTYPES, {
                     "default": "default",
                     "tooltip": "How weights are stored in VRAM. fp8_e4m3fn roughly halves the "
@@ -220,8 +240,20 @@ class FunPackDiffusionModelLoader:
         model_options = weight_model_options(weight_dtype)
         notes.append(f"weight dtype: {weight_dtype}")
 
-        path = folder_paths.get_full_path_or_raise("diffusion_models", model_name)
-        state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
+        if gguf_support.is_gguf(model_name):
+            path = gguf_support.gguf_path("diffusion_models", model_name)
+            if not path:
+                raise RuntimeError(f"ERROR: {model_name} is no longer where it was listed from.")
+            state_dict, gguf_options, gguf_note = gguf_support.load_state_dict(path)
+            # The quantized path needs its own torch operations, and they must not be lost to
+            # the dtype options merged above — a GGUF loaded with stock ops would try to matmul
+            # block-quantized storage.
+            model_options = {**model_options, **gguf_options}
+            metadata = None
+            notes.append(gguf_note)
+        else:
+            path = folder_paths.get_full_path_or_raise("diffusion_models", model_name)
+            state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
         model = comfy.sd.load_diffusion_model_state_dict(
             state_dict, model_options=model_options, metadata=metadata)
         if model is None:
@@ -283,7 +315,7 @@ class FunPackCLIPLoader:
 
     @classmethod
     def INPUT_TYPES(cls):
-        encoders = folder_paths.get_filename_list("text_encoders")
+        encoders = encoder_file_choices()
         types = cls.clip_types()
         return {
             "required": {
@@ -292,7 +324,8 @@ class FunPackCLIPLoader:
                     [field("clip_name", "combo", label="file", choices=encoders)],
                     add_label="+ Add slot",
                     tooltip="Text encoder files, in load order. One slot for LTX-2.5 (Gemma4); "
-                            "two for LTX-2.3 (Gemma3 + its connector)."),
+                            "two for LTX-2.3 (Gemma3 + its connector). .gguf files are listed "
+                            "too, and may be mixed with .safetensors ones."),
                 "type": (types, {
                     "default": "ltxv" if "ltxv" in types else (types[0] if types else "ltxv"),
                     "tooltip": "Which model family the encoder is for. LTX-2 (all point "
@@ -317,15 +350,43 @@ class FunPackCLIPLoader:
         if device == "cpu":
             model_options["load_device"] = model_options["offload_device"] = torch.device("cpu")
 
-        paths = [folder_paths.get_full_path_or_raise("text_encoders", n) for n in names]
-        clip = comfy.sd.load_clip(
-            ckpt_paths=paths,
-            embedding_directory=folder_paths.get_folder_paths("embeddings"),
-            clip_type=clip_type,
-            model_options=model_options,
-        )
+        gguf_notes = []
+        if any(gguf_support.is_gguf(n) for n in names):
+            # A .gguf encoder cannot go through load_clip(), which reads files itself. Every
+            # slot becomes a state dict instead, so a GGUF and a .safetensors connector can
+            # sit in the same list — which is the normal LTX-2.3 shape.
+            state_dicts = []
+            for n in names:
+                if gguf_support.is_gguf(n):
+                    gpath = gguf_support.gguf_path("text_encoders", n)
+                    if not gpath:
+                        raise RuntimeError(f"FunPack CLIP Loader: {n} is no longer where it "
+                                           f"was listed from.")
+                    sd, gopts, gnote = gguf_support.load_clip_state_dict(gpath)
+                    state_dicts.append(sd)
+                    model_options = {**model_options, **gopts}
+                    gguf_notes.append(f"{n}: {gnote}")
+                else:
+                    state_dicts.append(comfy.utils.load_torch_file(
+                        folder_paths.get_full_path_or_raise("text_encoders", n)))
+            clip = comfy.sd.load_text_encoder_state_dicts(
+                state_dicts,
+                embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                clip_type=clip_type,
+                model_options=model_options,
+            )
+        else:
+            paths = [folder_paths.get_full_path_or_raise("text_encoders", n) for n in names]
+            clip = comfy.sd.load_clip(
+                ckpt_paths=paths,
+                embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                clip_type=clip_type,
+                model_options=model_options,
+            )
         status = "FunPack CLIP Loader | type={} device={}\n{}".format(
             type, device, "\n".join(f"  {i + 1}. {n}" for i, n in enumerate(names)))
+        for gn in gguf_notes:
+            status += f"\n  {gn}"
         return (clip, status)
 
 
