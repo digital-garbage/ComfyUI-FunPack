@@ -18,16 +18,6 @@ def latent_to_pixel_frame(latent_frame: int, time_scale: int) -> int:
     return latent_frame
 
 
-def expected_latent_frames(pixel_frames: int, time_scale: int) -> int:
-    return ((max(1, int(pixel_frames)) - 1) // max(1, int(time_scale))) + 1
-
-
-def latent_overlap_frames(frame_overlap: int, time_scale: int) -> int:
-    if int(frame_overlap) <= 0:
-        return 0
-    return expected_latent_frames(int(frame_overlap) + 1, time_scale) - 1
-
-
 def _boundary_start_pixels(boundaries: list[dict], time_scale: int) -> dict[int, int]:
     out: dict[int, int] = {}
     for entry in boundaries or []:
