@@ -93,3 +93,44 @@ test("JoyAI stays available on LTX", () => {
     assert.ok(!inert.has(k), `${k} must remain reachable on LTX`);
   }
 });
+
+// ── the rest of the H3 audit ──────────────────────────────────────────────────
+
+test("context windowing and its settings disappear on H3", () => {
+  const inert = PC.familyInertInputs(h3);
+  for (const k of ["context_windows", "context_window_length", "context_window_overlap",
+                   "context_window_schedule", "context_window_fuse",
+                   "context_window_freenoise", "context_window_retain_first"]) {
+    assert.ok(inert.has(k), `${k} should be hidden on H3`);
+  }
+});
+
+test("ALG's GUIDE blur goes on H3 but its ANCHOR blur stays", () => {
+  // The guide blur acts on frames appended to the latent, and H3 guides are condition rows
+  // (tail always 0). The anchor blur acts on latent frame 0, which a continuation scene
+  // really does carry — hiding that one would neuter a knob that works.
+  const inert = PC.familyInertInputs(h3);
+  assert.ok(inert.has("alg_blur_guides"));
+  assert.ok(inert.has("alg_guide_blur_strength"));
+  assert.ok(inert.has("alg_guide_blur_sigma_threshold"));
+  assert.ok(!inert.has("alg_anchor"));
+  assert.ok(!inert.has("alg_anchor_strength"));
+});
+
+test("knobs that depend on the INSTALL, not the family, stay visible", () => {
+  // decode noise (which VAE), second pass / detailing (which upsampler) are reported at run
+  // time against the actual object. A family rule here would be a guess about a models folder.
+  const inert = PC.familyInertInputs(h3);
+  for (const k of ["decode_noise_scale", "decode_timestep", "second_pass_op",
+                   "segmented_detailing", "plateau_cache"]) {
+    assert.ok(!inert.has(k), `${k} is install-dependent and must not be hidden by family`);
+  }
+});
+
+test("LTX keeps everything H3 cannot run", () => {
+  const inert = PC.familyInertInputs(ltx);
+  for (const k of ["context_windows", "alg_blur_guides", "joyai_memory",
+                   "bounded_attention_enabled", "identity_transfer_enabled"]) {
+    assert.ok(!inert.has(k), `${k} must remain reachable on LTX`);
+  }
+});

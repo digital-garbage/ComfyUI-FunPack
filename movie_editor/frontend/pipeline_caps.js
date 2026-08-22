@@ -128,12 +128,27 @@
     bounded_attention_enabled:
       "Bounded Attention masks text cross-attention; H3 puts text in the same self-attention "
       + "stream as the video, where the mask would be far too large to hold.",
+    context_windows:
+      "Core's context windowing unpacks the LTXAV stream specifically — mapping each video "
+      + "window onto its audio window and re-slicing the guide entries. H3 packs its sequence "
+      + "by a different layout, and the window length is measured on LTX's 8x latent ratio.",
+    alg_blur_guides:
+      "This blurs the trailing GUIDE frames appended to the latent. On H3 a guide is a "
+      + "condition row rather than an appended frame, so that tail is always empty. "
+      + "(alg_anchor is NOT hidden — a continuation scene does carry real latent frames.)",
     joyai_memory:
       "JoyAI-Echo places memory frame i at sequence position i. H3's packed layout pins only "
       + "the FIRST or LAST frame, so every frame past the first is refused — and the one that "
       + "lands replaces the scene's i2v anchor, because pins are keyed by frame index. This "
       + "one is not merely inert on H3, it is harmful, so the sampler forces it off.",
   };
+
+  // Sub-settings of the two groups above: they configure machinery that cannot run here.
+  const CONTEXT_SUB_INPUTS = [
+    "context_window_length", "context_window_overlap", "context_window_schedule",
+    "context_window_fuse", "context_window_freenoise", "context_window_retain_first",
+  ];
+  const ALG_GUIDE_SUB_INPUTS = ["alg_guide_blur_strength", "alg_guide_blur_sigma_threshold"];
 
   // JoyAI's own sub-settings: they configure a bank that cannot be built here.
   const JOYAI_SUB_INPUTS = [
@@ -182,7 +197,8 @@
     if (!usesChainSampler(st)) return new Set();
     if (!isH3(st)) return new Set(Object.keys(H3_ONLY_SAMPLER_INPUTS));
     return new Set([...Object.keys(H3_DEAD_SAMPLER_INPUTS), ...IDENTITY_SUB_INPUTS,
-                    ...JOYAI_SUB_INPUTS, ...H3_DEAD_VALUE_INPUTS]);
+                    ...JOYAI_SUB_INPUTS, ...CONTEXT_SUB_INPUTS, ...ALG_GUIDE_SUB_INPUTS,
+                    ...H3_DEAD_VALUE_INPUTS]);
   }
 
   // Returns [{short, detail}] for settings that are ON but cannot do anything on H3.

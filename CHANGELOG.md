@@ -99,6 +99,12 @@
   looked exactly like one where the feature was switched off.
 
 ### Fixed
+- **Context windowing and ALG's guide blur are switched off and hidden on MiniMax H3.**
+  Core's windowing unpacks the LTXAV stream specifically and measures its window on LTX's 8x
+  latent ratio; ALG's guide blur acts on guide frames appended to the latent, and an H3 guide
+  is a condition row, so that tail is always empty. Context windowing also reported the wrong
+  reason on H3 — it blamed the ComfyUI version for what is a model difference.
+
 - **JoyAI-Echo is switched off and hidden on MiniMax H3, where it was doing damage.** The
   memory bank places frame *i* at sequence position *i*, but H3's packed layout pins only the
   first or last frame — so every frame past the first was refused, and the one that landed

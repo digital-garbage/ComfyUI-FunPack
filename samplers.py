@@ -6062,6 +6062,16 @@ class FunPackLTXAVSceneChainSampler:
         window the packed tensor blindly and quietly wreck audio and guides — the same class
         of packed-vs-unpacked mistake that killed DynamicConditioning. Refuse instead.
         """
+        if self._is_h3:
+            # Checked BEFORE the capability gate below, which would otherwise report a
+            # missing LTXAV core feature and blame the ComfyUI version for what is really a
+            # model difference. Core's windowing unpacks LTXAV's packed AV stream and
+            # re-slices its guide entries; H3's sequence is packed by a different layout
+            # entirely, and the latent window length here is computed on LTX's 8x temporal
+            # ratio besides.
+            return None, None, ("MiniMax H3 has no context-window support — core's windowing "
+                                "unpacks the LTXAV stream specifically, and the window length "
+                                "is measured on LTX's 8x latent ratio")
         try:
             import comfy.context_windows as _cw
             import comfy.patcher_extension as _pe
@@ -6680,6 +6690,15 @@ class FunPackLTXAVSceneChainSampler:
                              "against LTX's 4096-wide cross-attention context, and the overlap "
                              "tokens need LTX's patchifier; H3's native ref2va reference blocks "
                              "are the equivalent and are not wired yet)")
+            if context_windows:
+                _dead.append("context_windows (core's windowing unpacks the LTXAV stream and "
+                             "re-slices its guide entries; H3 packs its sequence differently, "
+                             "and the window length is measured on LTX's 8x latent ratio)")
+            if alg_blur_guides:
+                _dead.append("alg_blur_guides (it blurs the trailing GUIDE frames appended to "
+                             "the latent; on H3 a guide is a condition row, so the appended "
+                             "tail is always 0 and there is nothing to blur. alg_anchor still "
+                             "works — a continuation scene does carry real latent frames)")
             if joyai_memory:
                 _dead.append("joyai_memory / JoyAI-Echo (the memory bank places frame i at "
                              "sequence position i, and H3's packed layout pins only the FIRST "
@@ -6709,6 +6728,10 @@ class FunPackLTXAVSceneChainSampler:
             # an LTX project must not keep doing that here.
             joyai_memory = False
             joyai_audio_memory = False
+            # These two only ever no-op on H3 — off here so the run report does not list a
+            # mechanism that did nothing.
+            context_windows = False
+            alg_blur_guides = False
             v2a_grad_scale = 1.0
             # second_pass_op is NOT switched off here. It only needs a latent upsampler that
             # matches this model's latent width; which file that is depends on what is
