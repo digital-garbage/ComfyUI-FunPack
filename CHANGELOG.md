@@ -30,6 +30,20 @@
   one is a fixed 2x network and reports that it ignored the value rather than rounding
   quietly. Latent width and height snap to even, since a patchified model cannot take odd.
 
+### Changed
+- **Operations that fail now say so, and standing conditions stop repeating.** Two rules that
+  fight each other unless they share one mechanism, so they now do (`funpack_log.py`). A failure
+  reports what was attempted, why it stopped, and **what the output looks like as a result** —
+  collapsed to one line per run, because these fire inside per-step wrappers. A standing
+  condition ("this model is not LTX", "H3 has no cross-attention to hook") is stated once and
+  restated only when it stops being true, instead of on every generation.
+
+  Newly audible: anchor pin restore, guide and mid-scene-guide append, velocity bias, quality
+  sharpness, the audio-protection mask, the audio clock correction, momentum guidance, template
+  resolution match, learned-direction steering, conditioning memory and repel, Absolute steer,
+  and the temporal-style classifier. Each of those could previously fail and leave a run that
+  looked exactly like one where the feature was switched off.
+
 ### Fixed
 - **A linked input driven by `Project · Prompt (global)` claimed to encode "the same text
   Studio would" and did not.** Studio appends the postfix to every scene itself, so the

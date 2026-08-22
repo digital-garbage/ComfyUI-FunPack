@@ -26,6 +26,11 @@ from hashlib import md5
 
 import torch
 
+try:
+    from . import funpack_log as _log
+except ImportError:  # flat import when ComfyUI loads the pack as a top-level module
+    import funpack_log as _log
+
 TEMPORAL_STYLES = [
     "natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse",
     "rapid_start", "rapid_end", "rapid_start_end",
@@ -1331,7 +1336,11 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         return model
 
     if not _is_ltx_model(model):
-        print("[FunPackEnhancements] Non-LTX model detected - skipping all LTX enhancements, passing model through unchanged.")
+        # A standing condition, not an event: on an H3 project this is true of every run, and
+        # saying it every run buries the lines that ARE news. Restated only if it changes.
+        _log.note_on_change(
+            "ltx_enh:family", "FunPackEnhancements",
+            "non-LTX model — LTX enhancements skipped, model passed through unchanged")
         return model
 
     temporal_style = str(temporal_style or "natural").strip().lower()

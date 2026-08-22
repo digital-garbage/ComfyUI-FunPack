@@ -14,6 +14,11 @@ import comfy.sample
 import comfy.samplers
 import comfy.utils
 
+try:
+    from . import funpack_log as _log
+except ImportError:  # flat import when ComfyUI loads the pack as a top-level module
+    import funpack_log as _log
+
 
 MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
 
@@ -485,7 +490,9 @@ def _apply_velocity_bias(x, refinement_key, target, strength, sigma_ratio=None,
         biased = x + delta
         biased_norm = biased.detach().float().norm().clamp_min(1e-8)
         return biased * (x_norm / biased_norm).to(device=x.device, dtype=x.dtype)
-    except Exception:
+    except Exception as _e:
+        _log.failed("FunPackSceneChain", "velocity bias", _e,
+                    "this step runs unbiased — motion will read as it would with the knob at 0")
         return x
 
 
@@ -598,7 +605,9 @@ def _apply_quality_sharpness(denoised, prev_denoised, sharpness):
             return denoised
         detail = denoised - 0.5 * (denoised + prev)   # 0.5 * (denoised - prev): temporal high-pass
         return denoised + amount * detail
-    except Exception:
+    except Exception as _e:
+        _log.failed("FunPackSceneChain", "quality sharpness", _e,
+                    "this step keeps the unsharpened prediction")
         return denoised
 
 
@@ -801,7 +810,11 @@ def _video_only(x_new, x_old, mask):
         return x_new
     try:
         return x_old + (x_new - x_old) * mask
-    except Exception:
+    except Exception as _e:
+        # The mask is what keeps a video-only perturbation off the audio stream. Losing it
+        # does not fail the render, it lets the perturbation reach the waveform.
+        _log.failed("FunPackSceneChain", "audio-protection mask", _e,
+                    "the perturbation reached the AUDIO stream as well as the video")
         return x_new
 
 
@@ -866,7 +879,9 @@ def _audio_clock_step(x_new, x_old, clock, i):
         # video region -> multiplier 1, audio region -> multiplier `factor`
         scale = mask + (1.0 - mask) * factor
         return x_old + (x_new - x_old) * scale
-    except Exception:
+    except Exception as _e:
+        _log.failed("FunPackSceneChain", "audio clock correction", _e,
+                    "audio integrates on the video schedule for this step (h3_audio_clock inert)")
         return x_new
 
 
@@ -2302,7 +2317,9 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             return d
         try:
             blended = d * (1.0 - mg_strength) + mg_ema.to(device=d.device, dtype=d.dtype) * mg_strength
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackSceneChain", "momentum guidance", _e,
+                        "this step uses the raw derivative, unsmoothed")
             return d
         return _video_only(blended, d, video_mask)
 
@@ -3244,7 +3261,10 @@ class FunPackLTXAVSceneChainSampler:
             tensors = self._latent_tensors(latent)
             video = tensors[0]
             th, tw = self._latent_tensors(template)[0].shape[-2:]
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackSceneChain", "template resolution match", _e,
+                        "the scene is spliced at its own resolution — a mismatch here is the "
+                        "source of a size error later in the chain")
             return latent
         if video.shape[-2:] == (th, tw):
             return latent
@@ -3967,13 +3987,17 @@ class FunPackLTXAVSceneChainSampler:
             return state
         try:
             upscaled = self._latent_spatial_changed(state, chunk)
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackSceneChain", "anchor pin restore", _e,
+                        "the scene keeps its UNPINNED latent — the anchor frame is not held")
             return state
         result = self._clone_latent(state)
         if upscaled:
             try:
                 h, w = self._latent_tensors(result)[0].shape[-2:]
-            except Exception:
+            except Exception as _e:
+                _log.failed("FunPackSceneChain", "anchor pin rescale", _e,
+                            "the scene keeps its UNPINNED latent — the anchor frame is not held")
                 return state
             scaled = self._rescale_mask_to(mask, int(h), int(w))
             if scaled is None:
@@ -3990,7 +4014,9 @@ class FunPackLTXAVSceneChainSampler:
                     result["samples"] = comfy.nested_tensor.NestedTensor(dst)
                 else:
                     result["samples"] = dst[0]
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackSceneChain", "anchor pin copy", _e,
+                        "the scene keeps its UNPINNED latent — the anchor frame is not held")
             return state
         result["noise_mask"] = self._clone_value(mask)
         return result
@@ -4483,7 +4509,9 @@ class FunPackLTXAVSceneChainSampler:
             except ImportError:
                 from conditioning import protect_audio_channels
             return protect_audio_channels(steered, original)
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackSceneChain", "audio channel protection", _e,
+                        "conditioning steering reached the AUDIO channels too")
             return steered
 
     def _load_value_function(self, refinement_key):
@@ -5435,7 +5463,11 @@ class FunPackLTXAVSceneChainSampler:
             return chunk, positive, negative, tail
         try:
             from comfy_extras.nodes_lt import LTXVAddGuide, _append_guide_attention_entry
-        except ImportError:
+        except ImportError as _e:
+            # A PRIVATE upstream symbol. A ComfyUI rename lands here and every LTX guide
+            # stops being applied — until now indistinguishable from having none.
+            _log.failed("FunPackSceneChain", "guide append (ComfyUI LTX guide API)", _e,
+                        "the scene renders with NO guide applied")
             return chunk, positive, negative, 0
 
         chunk_tensors = self._latent_tensors(chunk)
@@ -5797,7 +5829,9 @@ class FunPackLTXAVSceneChainSampler:
         # an LTX-only module importing.
         try:
             from comfy_extras.nodes_lt import LTXVAddGuide, _append_guide_attention_entry
-        except ImportError:
+        except ImportError as _e:
+            _log.failed("FunPackSceneChain", "mid-scene guide (ComfyUI LTX guide API)", _e,
+                        "the scene renders with NO mid-scene guide")
             return chunk, positive, negative, 0
 
         # Target temporal position: middle of current chunk in pixel space
@@ -6579,6 +6613,9 @@ class FunPackLTXAVSceneChainSampler:
         # Which model family is this? Everything downstream that slices a latent stream on
         # its time axis needs to know before it touches a tensor, because LTXAV and MiniMax
         # H3 disagree about which axis that is on the AUDIO stream and both are 4-D.
+        # New generation: per-run log suppression starts over, so a failure that also
+        # happened last run is reported again rather than deduped away forever.
+        _log.begin_run()
         self._is_h3 = self._set_stream_axes(model)
         # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's
         # own base grid; on LTX it stays the absolute-sigma gate it was validated with.
@@ -6608,9 +6645,13 @@ class FunPackLTXAVSceneChainSampler:
         self._h3_clock_unreachable_noted = False
         self._alg_unreachable_noted = False
         if self._is_h3:
-            print("[FunPackSceneChain] MiniMax H3 detected — audio stream time axis is the last "
-                  "dim, frame grid is 17k+5, conditioning is a single packed self-attention "
-                  "stream (no cross-attention).")
+            # A standing property of the model, identical on every run: stated when it
+            # becomes true and again only if the family changes under you.
+            _log.note_on_change(
+                "chain:family", "FunPackSceneChain",
+                "MiniMax H3 detected — audio stream time axis is the last dim, frame grid is "
+                "17k+5, conditioning is a single packed self-attention stream "
+                "(no cross-attention).")
             # Say what cannot run BEFORE sampling starts. Each of these depends on an LTX
             # transformer structure H3 does not have, so left alone they would install
             # cleanly, never fire, and be indistinguishable from "on but not helping".
@@ -6632,8 +6673,11 @@ class FunPackLTXAVSceneChainSampler:
                     and abs(float(v2a_grad_scale) - 1.0) > 1e-6):
                 _dead.append("v2a_grad_scale (hooks LTXAV's video_to_audio_attn submodule; H3 "
                              "has no separate video->audio cross-attention to scale)")
+            # Also standing: the same toggles are inert on every run of an H3 project. Keyed
+            # per feature so turning one off (or switching family) is reported when it happens.
             for _line in _dead:
-                print(f"[FunPackSceneChain] H3: {_line} — SKIPPED.")
+                _log.note_on_change(f"chain:h3dead:{_line.split(' ')[0]}", "FunPackSceneChain",
+                                    f"H3: {_line} — SKIPPED.")
             # Turn them off for real rather than letting each one discover its own missing
             # LTX attribute mid-scene: several would raise rather than no-op, and a scene
             # that dies three minutes in is worse than a knob that says why it is inert.

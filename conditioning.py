@@ -12,6 +12,11 @@ from typing import Optional
 
 import numpy as np
 import torch
+
+try:
+    from . import funpack_log as _log
+except ImportError:  # flat import when ComfyUI loads the pack as a top-level module
+    import funpack_log as _log
 import torch.nn.functional as F
 from PIL import Image, ImageDraw, ImageFont
 from safetensors.torch import load_file
@@ -459,7 +464,9 @@ def protect_audio_channels(steered, original):
         out = steered.clone()
         out[..., v:] = original[..., v:].to(device=out.device, dtype=out.dtype)
         return out
-    except Exception:
+    except Exception as _e:
+        _log.failed("FunPackStudio", "audio channel protection", _e,
+                    "the conditioning edit reached the AUDIO channels too")
         return steered
 
 
@@ -477,7 +484,9 @@ def scale_conditioning_spread(cond, factor):
         m = vid.mean(dim=-1, keepdim=True)
         out[..., :v] = m + (vid - m) * float(factor)
         return out
-    except Exception:
+    except Exception as _e:
+        _log.failed("FunPackStudio", "conditioning spread scaling", _e,
+                    "the conditioning keeps its original spread")
         return cond
 
 
@@ -10050,9 +10059,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except ImportError:
             from minimax_h3 import is_h3_model
         if is_h3_model(model):
-            print("[FunPackStudio] MiniMax H3: skipping the attn2 K/V direction patch — H3 is a "
-                  "single packed self-attention stream with no cross-attention to hook. Learned "
-                  "directions still apply to the conditioning tensor itself.")
+            _log.note_on_change("studio:h3attn2", "FunPackStudio",
+                                "MiniMax H3: skipping the attn2 K/V direction patch — H3 is a single packed "
+                                "self-attention stream with no cross-attention to hook. Learned directions "
+                                "still apply to the conditioning tensor itself.")
             return None
         axis_memory = global_state.get("axis_conditioning_memory", {})
         missing_axes = set(axis_feedback.get("missing_axes", []))
@@ -10229,7 +10239,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # NORM_SCALE=0.3 calibration: strength=1.0 is visible but non-destructive
             delta = direction * (strength * 0.3 * avg_active_norm)
             return torch.where(active_mask, mixed + delta, mixed)
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "learned direction", _e,
+                        "the conditioning is used unsteered — ratings had no effect on this run")
             return mixed
 
     def _v2_store_conditioning_average(self, slot, payload):
@@ -10510,7 +10522,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         try:
             target = serializable_to_tensor(payload).to(device=mixed.device, dtype=mixed.dtype)
             return mixed.lerp(target, strength)
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "conditioning memory", _e,
+                        "the conditioning is used unblended")
             return mixed
 
     def _v2_repel_conditioning_payload(self, mixed, payload, strength):
@@ -10519,7 +10533,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         try:
             target = serializable_to_tensor(payload).to(device=mixed.device, dtype=mixed.dtype)
             return mixed + (mixed - target) * strength
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "conditioning repel", _e,
+                        "the conditioning is not pushed away from the disliked payload")
             return mixed
 
     def _vf_direction_boost(self, slot, vf_grad_dir, alpha=0.5):
@@ -12106,6 +12122,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             from .minimax_h3 import normalize_ref_spec as _normalize_ref_spec
         except ImportError:
             from minimax_h3 import normalize_ref_spec as _normalize_ref_spec
+        # New Studio pass: per-run log suppression starts over, so a failure that also
+        # happened last run is reported again rather than deduped away forever.
+        _log.begin_run()
         _h3_references = _normalize_ref_spec(h3_references) or None
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -13612,7 +13631,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return conditioning_list
         try:
             _, global_state = self._v2_load_absolute_global()
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "Absolute steer store", _e,
+                        "Absolute steer mode is INERT for this run")
             return conditioning_list
         liked = global_state.get("liked_dir", {})
         bad = global_state.get("bad_dir", {})
@@ -13724,7 +13745,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 from .ltx_enhancements import classify_temporal_intent
             except ImportError:
                 from ltx_enhancements import classify_temporal_intent
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "temporal style classifier", _e,
+                        "every scene renders at the natural temporal style")
             return conditioning_list
         out = []
         for entry in conditioning_list or []:
