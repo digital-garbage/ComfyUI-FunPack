@@ -175,47 +175,141 @@ def requirements_changed(before: str, after: str) -> bool:
     return bool((proc.stdout or "").strip())
 
 
+def parse_requirement(line: str):
+    """(name, specifier) for one requirements line, or None for a blank/comment.
+
+    Deliberately small: FunPack's requirements are plain names with at most a version floor.
+    Anything with an environment marker or a URL is handed back name-only, which makes it
+    "install if absent" and never a reason to touch what is already there.
+    """
+    text = (line or "").split("#", 1)[0].strip()
+    if not text or text.startswith("-"):
+        return None
+    text = text.split(";", 1)[0].strip()          # drop environment markers
+    if not text:
+        return None
+    m = re.match(r"^([A-Za-z0-9._-]+)\s*(\[[^\]]*\])?\s*(.*)$", text)
+    if not m:
+        return None
+    return m.group(1), (m.group(3) or "").strip()
+
+
+def _installed_version(name: str):
+    """Installed version of `name` in THIS interpreter, or None. FunPack runs inside ComfyUI,
+    so importlib.metadata already sees the right environment — no pip subprocess needed."""
+    try:
+        from importlib import metadata
+        return metadata.version(name)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def requirement_status() -> dict:
+    """{"missing": [name], "below_floor": [(name, have, spec)], "present": [name]}.
+
+    `below_floor` is REPORTED, never acted on. Upgrading a package the rest of ComfyUI is
+    already built against is how a working install stops working: torch, numpy, transformers
+    and the compiled extensions on top of them do not survive being moved underneath.
+    Deciding to upgrade is the user's call, with the command in hand.
+    """
+    req = REPO_ROOT / REQUIREMENTS
+    out = {"missing": [], "below_floor": [], "present": []}
+    if not req.is_file():
+        return out
+    try:
+        lines = req.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        parsed = parse_requirement(line)
+        if parsed is None:
+            continue
+        name, spec = parsed
+        have = _installed_version(name)
+        if have is None:
+            out["missing"].append(name)
+            continue
+        out["present"].append(name)
+        if spec and not _satisfies(have, spec):
+            out["below_floor"].append((name, have, spec))
+    return out
+
+
+def _satisfies(have: str, spec: str) -> bool:
+    """Whether `have` meets `spec`. Unknown/unparseable -> True, because the fallback of a
+    false "outdated" is a warning about a package that is fine."""
+    try:
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+        return Version(have) in SpecifierSet(spec)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def install_requirements(timeout: int = 900) -> dict:
-    """`pip install -r requirements.txt` into the interpreter ComfyUI is running.
+    """Install ONLY the requirements that are absent. Never upgrades anything.
 
     `sys.executable`, never a bare `pip`: ComfyUI is usually in a venv, and the pip on PATH
-    belongs to whatever else is on it. Installing into the wrong environment succeeds
-    loudly and changes nothing.
+    belongs to whatever else is on it. Installing into the wrong environment succeeds loudly
+    and changes nothing.
 
-    Never raises. A failed install must not turn a completed update into an error — the
-    code IS updated by this point, and the remedy is a command the user can run.
+    A package that is present but below a version floor is reported, not moved. `pip install
+    -r requirements.txt` would upgrade it — and on a rental full of compiled extensions
+    (torch, comfy-kitchen, comfy-aimdo, onnxruntime, opencv) a numpy or transformers bump
+    underneath them does not raise. It segfaults, or corrupts memory, hours later, with
+    nothing in the log connecting it to the update that caused it.
+
+    Never raises. A failed install must not turn a completed update into an error — the code
+    IS updated by this point, and the remedy is a command the user can run.
     """
     req = REPO_ROOT / REQUIREMENTS
     if not req.is_file():
         return {"ran": False, "ok": True, "detail": "no requirements.txt in this checkout"}
-    # What is installed BEFORE, so the update can say what it changed. An update that
-    # silently moves a shared dependency is the worst kind: ComfyUI is full of compiled
-    # extensions (torch, comfy-kitchen, comfy-aimdo, onnxruntime, opencv) and a numpy or
-    # transformers bump under them does not raise — it segfaults, or corrupts memory, hours
-    # later, with nothing in the log connecting it to the update that caused it.
+    status = requirement_status()
+    floor_note = ""
+    if status["below_floor"]:
+        floor_note = ("Present but older than FunPack asks for, and LEFT ALONE — upgrading a "
+                      "package the rest of ComfyUI is built against is not something an "
+                      "update should do behind you:\n"
+                      + "\n".join(f"  {n}: have {h}, wants {sp}"
+                                   for n, h, sp in status["below_floor"])
+                      + f"\n\nTo do it yourself:\n  {sys.executable} -m pip install -r {req}")
+        print(f"[FunPack update] {floor_note}")
+    if not status["missing"]:
+        return {"ran": False, "ok": True, "changed": [],
+                "detail": ("Nothing to install — every requirement is already present."
+                           + (f"\n\n{floor_note}" if floor_note else ""))}
+
     before = _pip_freeze()
+    # Only the absent ones, by name — never `-r requirements.txt`, which would upgrade
+    # anything below its floor. Dependencies are resolved normally: a new package with
+    # nothing under it is not installed, it is broken. The freeze diff below is what says
+    # whether anything already present moved as a result.
     cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-           "-r", str(req)]
+           *status["missing"]]
     try:
         proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True,
                               timeout=timeout)
     except subprocess.TimeoutExpired:
         return {"ran": True, "ok": False,
                 "detail": f"pip did not finish within {timeout}s — run it yourself: "
-                          f"pip install -r {req}"}
+                          f"pip install {' '.join(status['missing'])}"}
     except OSError as e:
         return {"ran": True, "ok": False, "detail": f"could not run pip: {e}"}
     if proc.returncode != 0:
         tail = ((proc.stderr or proc.stdout or "").strip() or "pip failed")[-800:]
         return {"ran": True, "ok": False,
                 "detail": f"pip install failed — run it yourself:\n"
-                          f"  {sys.executable} -m pip install -r {req}\n\n{tail}"}
+                          f"  {sys.executable} -m pip install "
+                          f"{' '.join(status['missing'])}\n\n{tail}"}
     changed = _pip_diff(before, _pip_freeze())
     if changed:
         print("[FunPack update] pip changed these packages: " + ", ".join(changed))
     return {"ran": True, "ok": True, "changed": changed,
-            "detail": (("Changed: " + ", ".join(changed) + "\n\n") if changed else "")
-                      + (proc.stdout or "").strip()[-800:]}
+            "detail": (f"Installed missing: {', '.join(status['missing'])}\n"
+                       + (("Changed: " + ", ".join(changed) + "\n") if changed else "")
+                       + (f"\n{floor_note}\n" if floor_note else "")
+                       + (proc.stdout or "").strip()[-800:])}
 
 
 def _pip_freeze() -> dict:

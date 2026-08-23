@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Fixed
+- **The updater installs only what is MISSING, and never upgrades anything.** It ran
+  `pip install -r requirements.txt`, which upgrades any package below its version floor —
+  and on an install full of compiled extensions (torch, comfy-kitchen, comfy-aimdo,
+  onnxruntime, opencv) a numpy or transformers bump underneath them does not raise, it
+  segfaults hours later with nothing connecting it to the update. Absent packages are now
+  installed by name; a package that is present but older than FunPack asks for is reported
+  with the command to upgrade it yourself, and left alone. Nothing missing means pip is
+  never run at all.
 - **The stand-in tokenizer no longer downloads Gemma for a Qwen model, or reaches the
   network mid-run.** With no CLIP wired, Studio fetched a 12B *Gemma* tokenizer whatever the
   model was — wrong vocabulary for MiniMax H3, which encodes with Qwen3-VL. There is now an

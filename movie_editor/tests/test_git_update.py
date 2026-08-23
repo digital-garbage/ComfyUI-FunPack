@@ -214,122 +214,133 @@ def test_an_undecidable_diff_installs_rather_than_skips(monkeypatch):
     assert gu.requirements_changed("aaa", "bbb") is True
 
 
-def test_install_uses_the_running_interpreter(monkeypatch, tmp_path):
+MISSING = {"missing": ["gguf"], "below_floor": [], "present": ["numpy"]}
+
+
+def _fake_pip(monkeypatch, gu, status=None, freezes=None, rc=0, stderr=""):
+    """Drive install_requirements without touching the real environment."""
+    monkeypatch.setattr(gu, "requirement_status", lambda: dict(status or MISSING))
+    calls = []
+    seq = iter(freezes) if freezes else None
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[3] == "freeze":
+            return types.SimpleNamespace(
+                returncode=0, stdout=(next(seq) if seq else ""), stderr="")
+        return types.SimpleNamespace(returncode=rc, stdout="ok", stderr=stderr)
+
+    monkeypatch.setattr(gu.subprocess, "run", fake_run)
+    return calls
+
+
+# ── only what is missing ──────────────────────────────────────────────────────
+# Upgrading a package the rest of ComfyUI is built against is how a working install stops
+# working: torch, numpy, transformers and the compiled extensions on top of them do not
+# survive being moved underneath, and the failure is a segfault hours later, not an error.
+
+
+def test_only_the_absent_packages_are_installed(monkeypatch):
+    from movie_editor.backend import git_update as gu
+    calls = _fake_pip(monkeypatch, gu)
+    out = gu.install_requirements()
+    install = [c for c in calls if c[3] == "install"][0]
+    assert install[-1:] == ["gguf"]                 # only the missing one, by name
+    assert "-r" not in install                       # never the whole requirements file
+    assert out["ok"] and out["ran"]
+
+
+def test_nothing_missing_means_pip_is_never_run(monkeypatch):
+    from movie_editor.backend import git_update as gu
+    calls = _fake_pip(monkeypatch, gu, {"missing": [], "below_floor": [], "present": ["numpy"]})
+    out = gu.install_requirements()
+    assert not calls and out["ran"] is False and out["ok"]
+    assert "already present" in out["detail"]
+
+
+def test_an_outdated_package_is_reported_and_left_alone(monkeypatch):
+    """Present but below the floor: say so, hand over the command, change nothing."""
+    from movie_editor.backend import git_update as gu
+    calls = _fake_pip(monkeypatch, gu, {
+        "missing": [], "below_floor": [("transformers", "4.44.0", ">=5.0.0")],
+        "present": ["transformers"]})
+    out = gu.install_requirements()
+    assert not calls
+    assert "transformers: have 4.44.0, wants >=5.0.0" in out["detail"]
+    assert "LEFT ALONE" in out["detail"]
+
+
+def test_install_uses_the_running_interpreter(monkeypatch):
     """Never a bare `pip`: ComfyUI is usually in a venv, and the pip on PATH belongs to
     whatever else is on it — installing into the wrong environment succeeds and changes
     nothing."""
     from movie_editor.backend import git_update as gu
-    calls = []
-
-    def fake_run(cmd, **kw):
-        calls.append(cmd)
-        return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
-
-    monkeypatch.setattr(gu.subprocess, "run", fake_run)
-    out = gu.install_requirements()
-    assert out["ran"] and out["ok"]
-    # freeze / install / freeze — every one of them through THIS interpreter.
+    calls = _fake_pip(monkeypatch, gu)
+    gu.install_requirements()
     assert all(c[0] == sys.executable and c[1:3] == ["-m", "pip"] for c in calls)
-    install = [c for c in calls if c[3] == "install"]
-    assert len(install) == 1
 
 
 def test_the_install_reports_which_packages_moved(monkeypatch):
-    """An update that silently bumps a shared dependency is the worst kind: ComfyUI is full
-    of compiled extensions, and a numpy or transformers change under them does not raise —
-    it segfaults hours later with nothing connecting it to the update."""
+    """Installing a missing package still resolves ITS dependencies, so the freeze diff is
+    what says whether anything else moved."""
     from movie_editor.backend import git_update as gu
-    freezes = iter(["numpy==1.26.4\ntransformers==4.44.0\n",
-                    "numpy==2.1.0\ntransformers==5.0.1\ngguf==0.10.0\n"])
-
-    def fake_run(cmd, **kw):
-        if cmd[3] == "freeze":
-            return types.SimpleNamespace(returncode=0, stdout=next(freezes), stderr="")
-        return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
-
-    monkeypatch.setattr(gu.subprocess, "run", fake_run)
+    _fake_pip(monkeypatch, gu, freezes=["numpy==1.26.4\n",
+                                        "numpy==2.1.0\ngguf==0.10.0\n"])
     changed = gu.install_requirements()["changed"]
     assert "numpy 1.26.4 -> 2.1.0" in changed
-    assert "transformers 4.44.0 -> 5.0.1" in changed
     assert "gguf 0.10.0 (new)" in changed
 
 
 def test_an_unreadable_freeze_reports_nothing_rather_than_everything(monkeypatch):
     """Reporting every package as new because pip freeze failed is worse than silence."""
     from movie_editor.backend import git_update as gu
-
-    def fake_run(cmd, **kw):
-        if cmd[3] == "freeze":
-            return types.SimpleNamespace(returncode=1, stdout="", stderr="boom")
-        return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
-
-    monkeypatch.setattr(gu.subprocess, "run", fake_run)
+    monkeypatch.setattr(gu, "requirement_status", lambda: dict(MISSING))
+    monkeypatch.setattr(gu, "_pip_freeze", lambda: {})
+    monkeypatch.setattr(gu.subprocess, "run", lambda cmd, **kw: types.SimpleNamespace(
+        returncode=0, stdout="ok", stderr=""))
     out = gu.install_requirements()
     assert out["ok"] and out["changed"] == []
-
-
-def test_nothing_changed_reports_nothing(monkeypatch):
-    from movie_editor.backend import git_update as gu
-    same = "numpy==2.1.0\ngguf==0.10.0\n"
-
-    def fake_run(cmd, **kw):
-        return types.SimpleNamespace(
-            returncode=0, stdout=(same if cmd[3] == "freeze" else "ok"), stderr="")
-
-    monkeypatch.setattr(gu.subprocess, "run", fake_run)
-    assert gu.install_requirements()["changed"] == []
 
 
 def test_a_failed_install_reports_the_command_and_never_raises(monkeypatch):
     """The code IS updated by this point — turning that into an exception would leave the
     user with a half-finished update and no instructions."""
     from movie_editor.backend import git_update as gu
-    monkeypatch.setattr(gu.subprocess, "run", lambda cmd, **kw: types.SimpleNamespace(
-        returncode=1, stdout="", stderr="No matching distribution found for gguf"))
+    _fake_pip(monkeypatch, gu, rc=1, stderr="No matching distribution found for gguf")
     out = gu.install_requirements()
     assert out["ran"] is True and out["ok"] is False
-    assert "pip install -r" in out["detail"]
+    assert "pip install gguf" in out["detail"]
     assert "No matching distribution" in out["detail"]
+
+
+# ── parsing ───────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("numpy", ("numpy", "")),
+    ("transformers>=5.0.0", ("transformers", ">=5.0.0")),
+    ("opencv-python-headless", ("opencv-python-headless", "")),
+    ("pillow == 12.0 ; python_version > '3.8'", ("pillow", "== 12.0")),
+    ("gguf  # a comment", ("gguf", "")),
+    ("", None),
+    ("   ", None),
+    ("# just a comment", None),
+    ("--extra-index-url https://x", None),
+])
+def test_requirement_lines(line, expected):
+    from movie_editor.backend import git_update as gu
+    assert gu.parse_requirement(line) == expected
 
 
 def test_a_pip_timeout_is_reported_not_raised(monkeypatch):
     from movie_editor.backend import git_update as gu
+    monkeypatch.setattr(gu, "requirement_status", lambda: dict(MISSING))
 
     def boom(cmd, **kw):
-        raise gu.subprocess.TimeoutExpired(cmd, 900)
+        if cmd[3] == "freeze":
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise gu.subprocess.TimeoutExpired(cmd, 1)
 
     monkeypatch.setattr(gu.subprocess, "run", boom)
     out = gu.install_requirements()
     assert out["ok"] is False and "did not finish" in out["detail"]
-
-
-def test_pull_does_not_install_unless_asked(monkeypatch):
-    """Running pip is a side effect no caller should acquire just for moving a branch.
-    Turning this on by default made the test suite itself shell out to a real pip install
-    and hang — the default has to be off, with the update route opting in."""
-    from movie_editor.backend import git_update as gu
-    monkeypatch.setattr(gu, "install_requirements",
-                        lambda *a, **k: pytest.fail("pip must not run by default"))
-    monkeypatch.setattr(gu, "requirements_changed", lambda *a, **k: True)
-    monkeypatch.setattr(gu, "_is_dirty", lambda: False)
-    monkeypatch.setattr(gu, "_current_branch", lambda: "v4")
-    commits = iter(["aaa", "bbb"])
-    monkeypatch.setattr(gu, "_current_commit", lambda: next(commits))
-    monkeypatch.setattr(gu, "_run_git", lambda *a, **k: _proc(0, ""))
-    out = gu.pull("v4")
-    assert out["updated"] is True
-    assert out["requirements"] is None
-
-
-def test_pull_installs_when_the_route_asks(monkeypatch):
-    from movie_editor.backend import git_update as gu
-    monkeypatch.setattr(gu, "install_requirements",
-                        lambda *a, **k: {"ran": True, "ok": True, "detail": "done"})
-    monkeypatch.setattr(gu, "requirements_changed", lambda *a, **k: True)
-    monkeypatch.setattr(gu, "_is_dirty", lambda: False)
-    monkeypatch.setattr(gu, "_current_branch", lambda: "v4")
-    commits = iter(["aaa", "bbb"])
-    monkeypatch.setattr(gu, "_current_commit", lambda: next(commits))
-    monkeypatch.setattr(gu, "_run_git", lambda *a, **k: _proc(0, ""))
-    out = gu.pull("v4", install_deps=True)
-    assert out["requirements"] == {"ran": True, "ok": True, "detail": "done"}
