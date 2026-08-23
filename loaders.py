@@ -11,6 +11,7 @@ SageAttention is installed, flash when flash-attn is, xformers when enabled — 
 lies about the rest.
 """
 import logging
+import os
 
 import comfy.sd
 import comfy.utils
@@ -128,6 +129,31 @@ def set_fp16_accumulation(enabled):
     return bool(enabled)
 
 
+# One loaded checkpoint, so changing an inference setting on the loader does not re-read the
+# file. Replaced whenever the key changes, so this never holds more than one model — the same
+# lifetime ComfyUI's node-output cache already gave it.
+_WEIGHT_CACHE: dict = {"key": None, "model": None}
+
+
+def _weight_cache_key(model_name, weight_dtype, compute_dtype):
+    """Everything that changes the WEIGHTS: the file (by identity, size and mtime) and the
+    dtypes. Not the attention backend, not SLA — those are applied to a clone.
+
+    Size and mtime are in the key so a file replaced under the same name is re-read. An
+    unreadable stat returns None, which never matches and so always reloads: failing to
+    notice a changed file is worse than an occasional extra read.
+    """
+    try:
+        path = gguf_support.gguf_path("diffusion_models", model_name) if gguf_support.is_gguf(model_name) \
+            else folder_paths.get_full_path("diffusion_models", model_name)
+        if not path:
+            return None
+        st = os.stat(path)
+        return (path, st.st_size, st.st_mtime_ns, str(weight_dtype), str(compute_dtype))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class FunPackDiffusionModelLoader:
     """Loads a diffusion model with quantization and an attention backend chosen per node."""
 
@@ -240,6 +266,20 @@ class FunPackDiffusionModelLoader:
         model_options = weight_model_options(weight_dtype)
         notes.append(f"weight dtype: {weight_dtype}")
 
+        # Attention and SLA are INFERENCE settings, but they live on this node, so ComfyUI
+        # invalidates the whole node when one changes and the checkpoint is read from disk
+        # again — a minute of dequantizing a GGUF to alter a sparsity ratio. The weights only
+        # depend on the file and the dtypes, so those are the cache key and everything else
+        # is applied to a clone. One entry, replaced whenever the key changes: this holds no
+        # more than ComfyUI's own node-output cache already did.
+        cache_key = _weight_cache_key(model_name, weight_dtype, compute_dtype)
+        cached = _WEIGHT_CACHE.get("model") if _WEIGHT_CACHE.get("key") == cache_key else None
+        if cached is not None:
+            notes.append("weights: reused (unchanged file and dtypes)")
+            model = cached.clone()
+            return self._finish(model, notes, attention, sla, sla_sparsity, sla_block_size,
+                                sla_min_seq_len, sla_dense_last_steps, sla_protect_audio)
+
         path = None
         misnamed = False
         if gguf_support.is_gguf(model_name):
@@ -280,6 +320,18 @@ class FunPackDiffusionModelLoader:
         elif dtype is not None:
             notes.append("compute dtype: unsupported by this ComfyUI, ignored")
 
+        # Kept BEFORE the attention work, so what is cached is the plain weights. Everything
+        # below is applied to a clone, which is what lets a sparsity change skip the disk.
+        _WEIGHT_CACHE["key"] = cache_key
+        _WEIGHT_CACHE["model"] = model
+        return self._finish(model.clone(), notes, attention, sla, sla_sparsity,
+                            sla_block_size, sla_min_seq_len, sla_dense_last_steps,
+                            sla_protect_audio)
+
+    def _finish(self, model, notes, attention, sla, sla_sparsity, sla_block_size,
+                sla_min_seq_len, sla_dense_last_steps, sla_protect_audio):
+        """Attention + SLA onto an already-loaded model. Separate from the read so it can run
+        against a cached one."""
         override = attention_override(attention)
 
         # SLA wraps the chosen backend rather than replacing it: there is one override

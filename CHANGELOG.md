@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Fixed
+- **Changing an attention or SLA setting no longer re-reads the checkpoint.** They live on
+  the loader node, so ComfyUI invalidated the whole node and the file was loaded again — a
+  minute of dequantizing a GGUF to alter a sparsity ratio. The weights depend only on the
+  file (identity, size, mtime) and the dtypes; everything else is applied to a clone. One
+  entry, replaced whenever the key changes.
+- **GGUF dequantizes across threads instead of one tensor at a time.** The native path
+  expands every quantized tensor at load with numpy, serially, which is where the wait went.
+  numpy releases the GIL for that work, so it now runs on up to 8 threads — bounded rather
+  than one per core, because each worker holds a dequantized tensor and its copy.
 - **The updater installs only what is MISSING, and never upgrades anything.** It ran
   `pip install -r requirements.txt`, which upgrades any package below its version floor —
   and on an install full of compiled extensions (torch, comfy-kitchen, comfy-aimdo,

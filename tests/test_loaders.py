@@ -231,3 +231,73 @@ def test_sla_is_a_toggle_not_a_rival_backend():
     assert sla_attention.SLA_NAME not in loaders.attention_choices()
     spec = loaders.FunPackDiffusionModelLoader.INPUT_TYPES()
     assert spec["optional"]["sla"][1]["default"] is False
+
+
+# ── changing an inference setting must not re-read the checkpoint ─────────────
+# Attention and SLA live on the loader node, so ComfyUI invalidates the whole node when one
+# changes and the file is read again — a minute of dequantizing a GGUF to alter a sparsity
+# ratio. Only the file and the dtypes decide the weights.
+
+
+class _CacheModel:
+    def __init__(self):
+        self.model_options = {}
+        self.clones = 0
+
+    def clone(self):
+        c = _CacheModel()
+        c.clones = self.clones + 1
+        return c
+
+
+def _key_env(tmp_path, monkeypatch):
+    import loaders
+    f = tmp_path / "m.safetensors"
+    f.write_bytes(b"x" * 16)
+    monkeypatch.setattr(loaders.folder_paths, "get_full_path", lambda folder, n: str(f),
+                        raising=False)
+    loaders._WEIGHT_CACHE.update({"key": None, "model": None})
+    return loaders, f
+
+
+def test_the_key_ignores_attention_and_sla(tmp_path, monkeypatch):
+    loaders, _ = _key_env(tmp_path, monkeypatch)
+    a = loaders._weight_cache_key("m.safetensors", "default", "bf16")
+    b = loaders._weight_cache_key("m.safetensors", "default", "bf16")
+    assert a == b and a is not None
+
+
+def test_a_different_dtype_is_a_different_key(tmp_path, monkeypatch):
+    loaders, _ = _key_env(tmp_path, monkeypatch)
+    assert (loaders._weight_cache_key("m.safetensors", "default", "bf16")
+            != loaders._weight_cache_key("m.safetensors", "fp8_e4m3fn", "bf16"))
+
+
+def test_a_replaced_file_is_re_read(tmp_path, monkeypatch):
+    """Same name, different bytes: size and mtime are in the key so the cache misses."""
+    loaders, f = _key_env(tmp_path, monkeypatch)
+    before = loaders._weight_cache_key("m.safetensors", "default", "bf16")
+    f.write_bytes(b"y" * 32)
+    assert loaders._weight_cache_key("m.safetensors", "default", "bf16") != before
+
+
+def test_an_unreadable_file_never_matches(tmp_path, monkeypatch):
+    """Failing to notice a changed file is worse than an occasional extra read."""
+    import loaders
+    monkeypatch.setattr(loaders.folder_paths, "get_full_path", lambda folder, n: None,
+                        raising=False)
+    assert loaders._weight_cache_key("gone.safetensors", "default", "bf16") is None
+
+
+def test_the_cached_model_is_cloned_never_handed_out(tmp_path, monkeypatch):
+    """The cached object must not collect the model_options of every run that reused it."""
+    loaders, _ = _key_env(tmp_path, monkeypatch)
+    base = _CacheModel()
+    key = loaders._weight_cache_key("m.safetensors", "default", "bf16")
+    loaders._WEIGHT_CACHE.update({"key": key, "model": base})
+    node = loaders.FunPackDiffusionModelLoader()
+    out, _status = node._finish(loaders._WEIGHT_CACHE["model"].clone(), [], "default",
+                                False, 0.9, "64", 8192, 0, True)
+    out.model_options.setdefault("transformer_options", {})["marker"] = 1
+    assert base.model_options == {}      # untouched
+    assert out.clones == 1

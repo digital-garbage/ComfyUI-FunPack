@@ -262,18 +262,35 @@ def _load_native(path: str) -> tuple[dict, dict, str]:
     import torch
 
     reader = gguf.GGUFReader(path)
-    sd: dict = {}
-    quantized = 0
-    for tensor in reader.tensors:
-        name = str(tensor.name)
+    tensors = list(reader.tensors)
+    # Dequantizing serially is where the minute goes: gguf.quants.dequantize is numpy, and a
+    # video checkpoint is thousands of tensors. numpy releases the GIL for the array work, so
+    # threads are real parallelism here. Bounded, not one per core: each worker holds a
+    # dequantized tensor AND its copy, so an unbounded pool trades load time for a memory
+    # spike on the largest weights.
+    workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+    quantized = sum(
+        1 for t in tensors
+        if t.tensor_type not in (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16))
+
+    def _dequant(tensor):
         qtype = tensor.tensor_type
         if qtype in (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16):
-            arr = tensor.data
-        else:
-            # gguf.quants.dequantize is the reference implementation for every type the
-            # package knows — do not reimplement it per quant type.
-            arr = gguf.quants.dequantize(tensor.data, qtype)
-            quantized += 1
+            return tensor.data
+        # gguf.quants.dequantize is the reference implementation for every type the
+        # package knows — do not reimplement it per quant type.
+        return gguf.quants.dequantize(tensor.data, qtype)
+
+    if workers > 1 and len(tensors) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            arrays = list(pool.map(_dequant, tensors))
+    else:
+        arrays = [_dequant(t) for t in tensors]
+
+    sd: dict = {}
+    for tensor, arr in zip(tensors, arrays):
+        name = str(tensor.name)
         t = torch.from_numpy(arr.copy())
         # GGUF stores dimensions in the opposite order to torch.
         shape = tuple(int(d) for d in reversed(tensor.shape))
@@ -290,7 +307,8 @@ def _load_native(path: str) -> tuple[dict, dict, str]:
         if shape:
             t = t.reshape(shape)
         sd[name] = t.to(torch.float16) if t.dtype == torch.float32 else t
-    note = (f"gguf: dequantized at load ({quantized} quantized tensors expanded) — the file "
-            f"loads, but it occupies its full size in VRAM. Install ComfyUI-GGUF to keep it "
-            f"quantized.")
+    note = (f"gguf: dequantized at load ({quantized} quantized tensors expanded across "
+            f"{workers} thread(s)) — the file loads, but it occupies its full size in VRAM, "
+            f"and expanding it is why this is slower than a .safetensors. Install "
+            f"ComfyUI-GGUF for a lazy quantized load.")
     return sd, {}, note
