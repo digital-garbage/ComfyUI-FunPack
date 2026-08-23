@@ -605,17 +605,29 @@ def test_a_phrase_that_still_does_not_match_is_simply_skipped(refiner, monkeypat
 
 
 def test_emphasis_is_skipped_when_a_wired_prompt_cannot_be_placed(refiner, monkeypatch):
-    """The fallback places the prompt as `cond_len - tokens measured here`. That holds only
-    when Studio encoded the text. On a wired conditioning another node did, from a string
-    this one never saw — so the arithmetic would bias a window of the wrong words silently."""
+    """Skipped only when no candidate can be the encoded prompt at all. A prompt LONGER than
+    the tensor's text run cannot be the string that produced it, and placing it by arithmetic
+    would bias a window of the wrong words silently."""
     memory = {"rain": {"kind": "phrase", "effective_category_scores": {"details": 0.9}}}
     tag = _apply(refiner, monkeypatch,
                  {"funpack_conditioning_owner": "wired",
-                  "funpack_encode_text": "cinematic rain",
-                  # 40 text tags against a 14-character prompt: not the same string
-                  "minimax_token_tags": torch.ones(40)},
+                  "funpack_encode_text": "cinematic rain",   # 14 tokens
+                  "minimax_token_tags": torch.ones(6),       # a 6-position text run
+                  },
                  memory)
     assert tag is None
+
+
+def test_a_wired_prompt_shorter_than_the_run_is_placed_at_the_end(refiner, monkeypatch):
+    """Label tokens sit in front of the prompt; the prompt is still the tail."""
+    memory = {"rain": {"kind": "phrase", "effective_category_scores": {"details": 0.9}}}
+    tag = _apply(refiner, monkeypatch,
+                 {"funpack_conditioning_owner": "wired",
+                  "funpack_encode_text": "cinematic rain",   # 14 tokens
+                  "minimax_token_tags": torch.ones(40),      # 26 label tokens, then the prompt
+                  },
+                 memory)
+    assert tag is not None and tag["base"] == 26
 
 
 def test_emphasis_still_applies_to_studios_own_encode_via_the_tail(refiner, monkeypatch):
@@ -694,3 +706,23 @@ def test_a_conditioning_shorter_than_its_tags_is_measured_by_the_tensor():
 
 def test_an_all_image_conditioning_has_no_prompt():
     assert tw.prompt_region([0, 0, 0], cond_len=3) is None
+
+
+def test_an_audio_label_in_front_of_the_prompt_does_not_shift_it():
+    """An AUDIO reference contributes "<Audio n>: " and no vision block, so it lands inside
+    the same run of text tags as the prompt. Measuring the prompt from the END of the run
+    places it correctly however many label tokens precede it; requiring the run to nearly
+    equal the prompt refused these runs outright."""
+    # [<Picture 1>: , vision x3, <Audio 1>:  (7 chars), prompt (6 chars)]
+    tags = [1] * 2 + [0] * 3 + [1] * 13
+    text, n, base = tw.choose_encoded_text(_FakeTokenizer(), ["abcdef"], tags, cond_len=18)
+
+    assert text == "abcdef" and n == 6
+    assert base == 12                       # 18 - 6, not the run start at 5
+
+
+def test_the_region_start_is_still_where_the_last_vision_block_ends():
+    """Protection uses the region; placement uses the verified prompt. They differ exactly by
+    the label tokens between them, which belong to the reference, not the prompt."""
+    tags = [1] * 2 + [0] * 3 + [1] * 13
+    assert tw.prompt_region(tags, cond_len=18) == (5, 18)

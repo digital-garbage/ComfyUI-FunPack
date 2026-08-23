@@ -103,3 +103,43 @@ def test_the_stash_is_a_copy_not_a_view(studio):
     cond.zero_()
     out = studio._v2_restore_reference_rows([[cond, meta]])
     assert torch.equal(out[0][0][:, :4], torch.full((1, 4, 4), 7.0))
+
+
+# --- labels are the tokenizer's, not the user's ----------------------------
+
+class _CharTokenizer:
+    def __call__(self, text, add_special_tokens=False, return_offsets_mapping=False):
+        return {"offset_mapping": [(i, i + 1) for i in range(len(text))]}
+
+
+def _clip():
+    return types.SimpleNamespace(
+        tokenizer=types.SimpleNamespace(
+            qwen3vl_32b=types.SimpleNamespace(tokenizer=_CharTokenizer())))
+
+
+def test_an_audio_label_is_protected_even_though_it_is_text(studio):
+    """"<Audio 1>: " carries no vision block, so it sits inside the same run of text tags as
+    the prompt. The user did not write it and it is not theirs to have steered."""
+    # [<Picture 1>: (2), vision (3), <Audio 1>: (7), prompt "abcdef" (6)] = 18
+    tags = torch.tensor([1, 1, 0, 0, 0] + [1] * 13)
+    cond = torch.full((1, 18, 4), 7.0)
+    meta = studio._v2_stash_reference_rows(cond, {"minimax_token_tags": tags})
+
+    out = studio._v2_restore_reference_rows([[torch.zeros_like(cond), meta]],
+                                            clip=_clip(), candidates=["abcdef"])
+
+    assert torch.equal(out[0][0][:, :12], torch.full((1, 12, 4), 7.0))   # label included
+    assert torch.equal(out[0][0][:, 12:], torch.zeros(1, 6, 4))          # the prompt steers
+
+
+def test_without_a_tokenizer_it_falls_back_to_the_vision_block_end(studio):
+    """Never the picture — a label may stay steerable, the reference may not."""
+    tags = torch.tensor([1, 1, 0, 0, 0] + [1] * 13)
+    cond = torch.full((1, 18, 4), 7.0)
+    meta = studio._v2_stash_reference_rows(cond, {"minimax_token_tags": tags})
+
+    out = studio._v2_restore_reference_rows([[torch.zeros_like(cond), meta]])
+
+    assert torch.equal(out[0][0][:, :5], torch.full((1, 5, 4), 7.0))
+    assert torch.equal(out[0][0][:, 5:], torch.zeros(1, 13, 4))

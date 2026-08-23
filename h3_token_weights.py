@@ -422,7 +422,9 @@ def choose_encoded_text(tokenizer, candidates, token_tags, cond_len):
     which is not necessary: `minimax_token_tags` says how many text positions the tensor
     actually holds, so each candidate can be CHECKED against it and the one that fits wins.
 
-    Returns (text, token_count, base) or (None, 0, None) when nothing fits.
+    Returns (text, token_count, base) or (None, 0, None) when nothing fits. `base` is
+    measured back from the END of the text run, so labels sitting in front of the prompt —
+    an audio reference's "<Audio n>: " has no vision block to separate it — do not shift it.
     """
     region = prompt_region(token_tags, cond_len)
     if not region:
@@ -439,8 +441,14 @@ def choose_encoded_text(tokenizer, candidates, token_tags, cond_len):
                               return_offsets_mapping=True)["offset_mapping"])
         except Exception:  # noqa: BLE001
             continue
+        # Anchored at the END, and deliberately not capped: the prompt is the LAST thing the
+        # tokenizer appends, but the text in front of it is not always a vision block. An
+        # AUDIO reference contributes "<Audio n>: " and no vision block at all, so it lands
+        # inside the same run of text tags as the prompt. Requiring the run to nearly equal
+        # the prompt would refuse those runs outright; measuring back from the end places the
+        # prompt correctly however many label tokens precede it.
         gap = run - n
-        if 0 <= gap <= _BASE_SLACK and (best is None or gap < best[0]):
+        if gap >= 0 and (best is None or gap < best[0]):
             best = (gap, text, n)
     if best is None:
         return None, 0, None

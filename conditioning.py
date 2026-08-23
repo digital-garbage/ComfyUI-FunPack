@@ -10680,8 +10680,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             region = _tw.prompt_region(meta.get("minimax_token_tags"), int(cond.shape[1]))
             if not region or region[0] <= 0:
                 return meta
+            # The WHOLE tensor, not just the rows before `region[0]`. Where the prompt really
+            # begins cannot be known yet: "<Audio n>: " labels carry no vision block, so they
+            # sit inside the same run of text tags as the prompt, and the boundary only
+            # becomes exact once the encoded text has been identified — which happens later,
+            # in finalize. A conditioning is a few hundred rows, so keeping all of it costs
+            # single-digit megabytes and is dropped on restore.
             meta = dict(meta)
-            meta[self.REFERENCE_ROWS_KEY] = cond[:, :region[0]].clone()
+            meta[self.REFERENCE_ROWS_KEY] = cond.clone()
             return meta
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackStudio", "reference protection", _e,
@@ -10689,9 +10695,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         "as the character's appearance drifting")
             return meta
 
-    def _v2_restore_reference_rows(self, conditioning_list):
-        """Put the reference back exactly as it arrived, and drop the stash so it never
-        travels on to the sampler."""
+    def _v2_restore_reference_rows(self, conditioning_list, clip=None, candidates=()):
+        """Put everything that is not the PROMPT back exactly as it arrived.
+
+        The user writes the prompt. They do not write "<Picture 1>: " or "<Audio 1>: " —
+        those are the tokenizer's, and neither they nor the vision block are Studio's to
+        steer. The prompt is the tokenizer's last segment, so the boundary is measured back
+        from the end using the text that was actually encoded; without that the vision
+        block's end is used, which leaves a label steerable but never the picture.
+        """
+        try:
+            from . import h3_token_weights as _tw
+        except ImportError:
+            import h3_token_weights as _tw
+        tokenizer = _tw.h3_tokenizer(clip) if clip is not None else None
         out = []
         for entry in conditioning_list or []:
             if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
@@ -10701,11 +10718,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             cond, meta = entry[0], dict(entry[1])
             rows = meta.pop(self.REFERENCE_ROWS_KEY)
             try:
-                n = int(rows.shape[1])
-                if isinstance(cond, torch.Tensor) and cond.dim() >= 2 \
-                        and int(cond.shape[1]) >= n and rows.shape[-1] == cond.shape[-1]:
+                cond_len = int(cond.shape[1]) if isinstance(cond, torch.Tensor) and cond.dim() >= 2 else 0
+                tags = meta.get("minimax_token_tags")
+                start = None
+                if tokenizer is not None:
+                    _t, _n, verified = _tw.choose_encoded_text(
+                        tokenizer, candidates, tags, cond_len)
+                    start = verified
+                if start is None:
+                    region = _tw.prompt_region(tags, cond_len)
+                    start = region[0] if region else None
+                n = int(start) if start else 0
+                if n > 0 and cond_len >= n and rows.shape[-1] == cond.shape[-1] \
+                        and int(rows.shape[1]) >= n:
                     cond = cond.clone()
-                    cond[:, :n] = rows.to(device=cond.device, dtype=cond.dtype)
+                    cond[:, :n] = rows[:, :n].to(device=cond.device, dtype=cond.dtype)
             except Exception as _e:  # noqa: BLE001
                 _log.failed("FunPackStudio", "reference protection", _e,
                             "this scene's reference rows keep whatever steering did to them")
@@ -14186,7 +14213,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                       f"clamped to learned-safe {spread_cap:.3f}.")
         # LAST, after every manipulation above: a reference image's encoded rows go back
         # exactly as Qwen produced them.
-        out = self._v2_restore_reference_rows(out)
+        out = self._v2_restore_reference_rows(
+            out, clip=clip,
+            candidates=[temporal_fallback_text]
+            + [(link_texts or {}).get(k) for k in ("full_prompt", "prompt")])
         # Nothing in this node is allowed to change how many positions a conditioning has.
         # If one does, the prompt has been cut and the only visible symptom downstream is a
         # tag-count mismatch, which reads like housekeeping.
