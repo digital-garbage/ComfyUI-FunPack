@@ -326,8 +326,10 @@ def _adaln_curve_note(model, bad):
     return (f"{n} adaLN adapters do NOT apply: this is a curve-form H3 checkpoint (adaLN "
             f"reads a compact time-curve basis), and the LoRA was trained against the "
             f"full-width form. They cannot be projected onto it — the basis that built the "
-            f"table is not in the checkpoint. The rest of the LoRA still applies. For the "
-            f"full effect use a LoRA converted for ComfyUI's H3 checkpoint.")
+            f"table is not in the checkpoint. They are DROPPED rather than attempted — each "
+            f"attempt builds the full-size delta before discovering it does not fit. The rest "
+            f"of the LoRA still applies. For the full effect use a LoRA converted for "
+            f"ComfyUI's H3 checkpoint.")
 
 
 def resolve_lora_patches(model, lora, clip=None):
@@ -363,18 +365,27 @@ def resolve_lora_patches(model, lora, clip=None):
     # a LoRA that reports success while a third of it never lands is the worst of both.
     bad = _mismatched_lora_keys(model, patches)
     if bad:
+        # DROPPED, not merely reported. Left in, comfy attempts every one of them and fails
+        # per key — and the failure is not free: it materialises the full lora_A @ lora_B
+        # delta first, and only then discovers it cannot be reshaped into the weight. For a
+        # curve-form H3 checkpoint that is a 96768x2688 tensor per block, 51 times, allocated
+        # and thrown away one after another while dynamic VRAM staging streams the model in.
+        # Nothing about the render changes — these adapters could never have applied — so the
+        # only thing keeping them buys is 51 ERROR lines and the memory churn behind them.
+        for key, _, _ in bad:
+            patches.pop(key, None)
         curve = _adaln_curve_note(model, bad)
         if curve:
             _log.note_on_change("lora:adaln_curve", "FunPack", curve)
-            note += f" | {len(bad)} SHAPE MISMATCH (adaLN curve-form — see log)"
+            note += f" | {len(bad)} adaLN adapters DROPPED (curve-form — see log)"
         else:
             sample = ", ".join(k for k, _, _ in bad[:3])
             _log.note_on_change(
                 "lora:shape", "FunPack",
-                f"{len(bad)} LoRA weights match this model by name but not by shape and will "
-                f"NOT be merged (e.g. {sample}). The LoRA was trained against a different "
-                f"variant of this architecture.")
-            note += f" | {len(bad)} SHAPE MISMATCH"
+                f"{len(bad)} LoRA weights match this model by name but not by shape, so they "
+                f"are DROPPED before the merge (e.g. {sample}). The LoRA was trained against "
+                f"a different variant of this architecture.")
+            note += f" | {len(bad)} DROPPED (shape mismatch)"
     return patches, note
 
 

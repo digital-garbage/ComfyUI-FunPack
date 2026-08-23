@@ -99,3 +99,43 @@ def test_a_broken_model_never_breaks_the_load(mm):
         model = types.SimpleNamespace(
             state_dict=lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     assert mm._mismatched_lora_keys(Exploding(), {"k": _Adapter(1, 1)}) == []
+
+
+# --- dropping, not just reporting ------------------------------------------------------
+# Reporting a mismatch and then handing it to comfy anyway means comfy attempts it: it
+# materialises the full lora_A @ lora_B delta and only then discovers it cannot be reshaped
+# into the weight. On a curve-form H3 checkpoint that is a 96768x2688 tensor per block, 51
+# times, while dynamic VRAM staging is streaming the model in.
+
+
+def _patched_resolve(mm, monkeypatch, model, patches):
+    monkeypatch.setattr(mm.comfy.lora, "load_lora", lambda *a, **kw: dict(patches),
+                        raising=False)
+    monkeypatch.setattr(mm.comfy.lora, "model_lora_keys_unet", lambda *a, **kw: {},
+                        raising=False)
+    monkeypatch.setattr(mm.comfy.lora, "model_lora_keys_clip", lambda *a, **kw: {},
+                        raising=False)
+    monkeypatch.setattr(mm.comfy.lora_convert, "convert_lora", lambda sd: sd, raising=False)
+    return mm.resolve_lora_patches(model, {"x": torch.zeros(1)})
+
+
+def test_mismatched_patches_are_removed_from_what_comfy_gets(mm, monkeypatch):
+    model = _Model({"diffusion_model.blocks.0.adaln_proj.linear.weight": (64, 8),
+                    "diffusion_model.blocks.0.attn.qkv_proj.weight": (64, 64)},
+                   use_curves=True)
+    patches = {
+        "diffusion_model.blocks.0.adaln_proj.linear.weight": _Adapter(64, 2688),  # cannot fit
+        "diffusion_model.blocks.0.attn.qkv_proj.weight": _Adapter(64, 64),        # fits
+    }
+    out, note = _patched_resolve(mm, monkeypatch, model, patches)
+    assert "diffusion_model.blocks.0.adaln_proj.linear.weight" not in out
+    assert "diffusion_model.blocks.0.attn.qkv_proj.weight" in out   # the rest still applies
+    assert "DROPPED" in note
+
+
+def test_a_fitting_lora_is_handed_over_whole(mm, monkeypatch):
+    """Dropping is driven by the shape check — not applied to everything on the way past."""
+    model = _Model({"diffusion_model.blocks.0.attn.qkv_proj.weight": (64, 64)})
+    patches = {"diffusion_model.blocks.0.attn.qkv_proj.weight": _Adapter(64, 64)}
+    out, note = _patched_resolve(mm, monkeypatch, model, patches)
+    assert len(out) == 1 and "DROPPED" not in note

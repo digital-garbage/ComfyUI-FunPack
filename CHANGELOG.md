@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Fixed
+- **A LoRA weight that cannot fit is now dropped, not attempted.** FunPack already detected
+  and reported shape mismatches, then handed them to ComfyUI anyway — which builds the full
+  `lora_A @ lora_B` delta and only then discovers it will not reshape into the weight. On a
+  curve-form MiniMax H3 checkpoint that is a 96768x2688 tensor per block, 51 times (~25 GB
+  in bf16, ~49 GB in fp32), allocated and thrown away while dynamic VRAM staging streams the
+  model in. Nothing about the render changes — those adapters could never have applied.
 - **negative_erase could put an amplified-noise vector into the conditioning.** "Keep prompt
   strength" restored each token's norm after the erase — but a token pointing almost exactly
   along the negative is left with nothing but rounding error, and restoring its norm scaled
