@@ -124,12 +124,13 @@ def test_pack_load_passes_custom_operations_through(tmp_path, monkeypatch):
     d = tmp_path / "pack"
     d.mkdir()
     (d / "loader.py").write_text(
-        "def gguf_sd_loader(path):\n    return {'w': 'quantized'}\n")
+        "class _T:\n    shape = (1,)\n\n"
+        "def gguf_sd_loader(path):\n    return {'w': _T()}\n")
     (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
 
     sd, options, note = gguf_support.load_state_dict("/whatever.gguf")
-    assert sd == {"w": "quantized"}
+    assert list(sd) == ["w"]
     assert "custom_operations" in options
     assert type(options["custom_operations"]).__name__ == "GGMLOps"
     assert "quantized" in note
@@ -163,18 +164,19 @@ def test_pack_modules_can_use_relative_imports(tmp_path, monkeypatch):
     d.mkdir()
     (d / "__init__.py").write_text("raise AssertionError('the pack __init__ must not run')")
     (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
-    (d / "dequant.py").write_text("MARKER = 'dequant'\n")
+    (d / "dequant.py").write_text(
+        "class Marker:\n    shape = (1,)\n    name = 'dequant'\n")
     (d / "loader.py").write_text(
         "from .ops import GGMLOps\n"
-        "from .dequant import MARKER\n"
+        "from .dequant import Marker\n"
         "def gguf_sd_loader(path):\n"
-        "    return {'w': MARKER}\n"
+        "    return {'w': Marker()}\n"
     )
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
     monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
 
     sd, options, note = gguf_support.load_state_dict("/whatever.gguf")
-    assert sd == {"w": "dequant"}
+    assert sd["w"].name == "dequant"
     assert type(options["custom_operations"]).__name__ == "GGMLOps"
 
 
@@ -186,15 +188,16 @@ def test_switching_pack_directories_remounts(tmp_path, monkeypatch):
         d.mkdir()
         (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
         (d / "loader.py").write_text(
-            f"def gguf_sd_loader(path):\n    return {{'w': '{marker}'}}\n")
+            f"class _T:\n    shape = (1,)\n    name = '{marker}'\n"
+            f"def gguf_sd_loader(path):\n    return {{'w': _T()}}\n")
     monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
 
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(tmp_path / "a"))
-    assert gguf_support.load_state_dict("/x.gguf")[0] == {"w": "first"}
+    assert gguf_support.load_state_dict("/x.gguf")[0]["w"].name == "first"
 
     # No manual cache clearing: remounting a different directory must purge it by itself.
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(tmp_path / "b"))
-    assert gguf_support.load_state_dict("/x.gguf")[0] == {"w": "second"}
+    assert gguf_support.load_state_dict("/x.gguf")[0]["w"].name == "second"
 
 
 def test_pack_refusing_an_architecture_falls_back(tmp_path, monkeypatch):
@@ -249,76 +252,6 @@ def test_gguf_is_a_declared_requirement():
 # ── expand once, not every launch ─────────────────────────────────────────────
 # The native path has to dequantize every tensor before the model is usable — minutes on a
 # video checkpoint, paid again on every launch for a result that is identical every time.
-
-
-def test_the_cache_sits_beside_the_model(tmp_path):
-    src = str(tmp_path / "m.gguf")
-    assert gguf_support.cache_path(src) == src + gguf_support.CACHE_SUFFIX
-
-
-def test_a_cache_older_than_the_model_is_not_trusted(tmp_path):
-    src = tmp_path / "m.gguf"
-    src.write_bytes(b"GGUF")
-    dst = tmp_path / ("m.gguf" + gguf_support.CACHE_SUFFIX)
-    dst.write_bytes(b"old")
-    os.utime(dst, (1, 1))                       # written before the model
-    assert not gguf_support._cache_is_current(str(src), str(dst))
-
-
-def test_a_cache_newer_than_the_model_is_used(tmp_path, monkeypatch):
-    src = tmp_path / "m.gguf"
-    src.write_bytes(b"GGUF")
-    dst = tmp_path / ("m.gguf" + gguf_support.CACHE_SUFFIX)
-    dst.write_bytes(b"new")
-    os.utime(src, (1, 1))
-    assert gguf_support._cache_is_current(str(src), str(dst))
-
-
-def test_a_missing_cache_is_simply_not_current(tmp_path):
-    src = tmp_path / "m.gguf"
-    src.write_bytes(b"GGUF")
-    assert not gguf_support._cache_is_current(str(src), str(tmp_path / "nope"))
-
-
-def test_the_expansion_is_written_and_reused(tmp_path, monkeypatch):
-    """The whole point: the second load must not dequantize anything."""
-    import torch
-    src = tmp_path / "m.gguf"
-    src.write_bytes(b"GGUF")
-    calls = []
-
-    def fake_native(path):
-        calls.append(path)
-        return {"w": torch.zeros(2, 2)}, {}, "gguf: dequantized at load"
-
-    monkeypatch.setattr(gguf_support, "_load_native", fake_native)
-    # The stub comfy tree has no real loader; the cache is an ordinary safetensors file.
-    import safetensors.torch
-    monkeypatch.setattr("comfy.utils.load_torch_file",
-                        lambda p, **kw: safetensors.torch.load_file(p), raising=False)
-    sd1, _, note1 = gguf_support._load_native_cached(str(src))
-    assert calls == [str(src)] and "Written to" in note1
-    sd2, _, note2 = gguf_support._load_native_cached(str(src))
-    assert calls == [str(src)]                  # never expanded a second time
-    assert "dequantized cache" in note2
-    assert torch.equal(sd1["w"], sd2["w"])
-
-
-def test_an_unwritable_cache_is_a_slow_load_not_a_failed_one(tmp_path, monkeypatch):
-    import torch
-    src = tmp_path / "m.gguf"
-    src.write_bytes(b"GGUF")
-    monkeypatch.setattr(gguf_support, "_load_native",
-                        lambda p: ({"w": torch.zeros(2, 2)}, {}, "expanded"))
-    monkeypatch.setattr("safetensors.torch.save_file",
-                        lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")))
-    sd, _, note = gguf_support._load_native_cached(str(src))
-    assert "w" in sd and "could not write" in note
-    assert not os.path.exists(gguf_support.cache_path(str(src)) + ".part")   # no debris
-
-
-# ── letting the pack read an architecture it has not been told about ──────────
-
 
 class _Loader:
     def __init__(self, arches):
@@ -465,3 +398,63 @@ def test_load_native_rejects_a_tensor_that_contradicts_its_header(monkeypatch):
 
     assert "'wrong'" in str(excinfo.value)
     assert "(25)" in str(excinfo.value)
+
+
+def test_a_state_dict_returned_beside_its_architecture_is_unwrapped(tmp_path, monkeypatch):
+    """Some pack versions return (state_dict, architecture). Passed on whole, ComfyUI iterates
+    the TUPLE and fails with "'dict' object has no attribute 'startswith'" — an error with
+    nothing in it that points back at the loader."""
+    d = tmp_path / "pack"
+    d.mkdir()
+    (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
+    (d / "loader.py").write_text(
+        "class _T:\n    shape = (1,)\n\n"
+        "def gguf_sd_loader(path):\n    return ({'w': _T()}, 'minimax_h3')\n")
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+
+    sd, options, note = gguf_support.load_state_dict("/whatever.gguf")
+
+    assert isinstance(sd, dict) and list(sd) == ["w"]
+    assert "custom_operations" in options
+
+
+def test_a_known_architecture_is_still_validated(tmp_path, monkeypatch):
+    """Validation used to run only when FunPack had overridden the architecture list, so a
+    pack that already knew the architecture returned straight through unchecked."""
+    d = tmp_path / "pack"
+    d.mkdir()
+    (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
+    (d / "loader.py").write_text("def gguf_sd_loader(path):\n    return ['not', 'a', 'dict']\n")
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.setattr(gguf_support, "_allow_architectures", lambda loader, path: "")
+    monkeypatch.setattr(gguf_support, "_load_native",
+                        lambda path: ({"w": 1}, {}, "gguf: dequantized at load"))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+
+    sd, options, note = gguf_support.load_state_dict("/whatever.gguf")
+
+    assert sd == {"w": 1}          # refused, and fell back rather than reaching ComfyUI
+    assert "could not read this file" in note
+
+
+def test_an_old_expansion_cache_is_named_but_never_deleted(tmp_path):
+    """FunPack no longer writes one. Disk is billed on a rental, so a leftover has to be
+    findable — and it is the user's file, in the user's model folder, so it is not removed."""
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"GGUF")
+    leftover = tmp_path / ("m.gguf" + gguf_support.LEFTOVER_SUFFIX)
+    leftover.write_bytes(b"x" * 2048)
+
+    note = gguf_support.note_leftover_cache(str(model))
+
+    assert "m.gguf.dequantized.safetensors" in note
+    assert "delete it" in note
+    assert leftover.exists()
+
+
+def test_no_leftover_cache_says_nothing(tmp_path):
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"GGUF")
+
+    assert gguf_support.note_leftover_cache(str(model)) == ""

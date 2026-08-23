@@ -230,6 +230,7 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
     which = backend()
     if which is None:
         raise RuntimeError(UNAVAILABLE)
+    leftover = note_leftover_cache(path)
     if which == "pack":
         d = _pack_dir()
         try:
@@ -240,86 +241,53 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
             if clip:
                 read = getattr(loader, "gguf_clip_loader", None) or read
             sd = read(path)
-            # The pack's own guard is what we just stepped around, so the check it was doing
-            # has to happen here instead: an untested architecture can return something that
-            # is not a state dict at all, and handing that to ComfyUI fails deep inside core
-            # with a message that makes no sense out here. Anything unexpected raises, which
-            # the fallback below turns into the slow-but-working path.
-            if allowed:
-                _assert_state_dict(sd, path)
+            # Some versions hand back (state_dict, architecture) rather than the dict alone.
+            # Passed on as-is, ComfyUI iterates the TUPLE, gets the dict as its first element
+            # and fails with "'dict' object has no attribute 'startswith'" — an error with
+            # nothing in it that points back here.
+            if isinstance(sd, (tuple, list)) and len(sd) == 2 and isinstance(sd[0], dict):
+                sd = sd[0]
+            # Checked on every path, not just when the architecture list was overridden: the
+            # shape of what the pack returns is a moving target across its versions, and
+            # anything unexpected fails deep inside core where the message makes no sense out
+            # here. Raising turns it into the fallback below instead.
+            _assert_state_dict(sd, path)
             options = {}
             ggml_ops = getattr(ops, "GGMLOps", None)
             if ggml_ops is not None:
                 options["custom_operations"] = ggml_ops()
             return sd, options, (f"gguf: quantized (ComfyUI-GGUF at {os.path.basename(d)})"
-                                 + (f"; {allowed}" if allowed else ""))
+                                 + (f"; {allowed}" if allowed else "")
+                                 + (f"; {leftover}" if leftover else ""))
         except Exception as e:  # noqa: BLE001 — any refusal is a reason to fall back
             if importlib.util.find_spec("gguf") is None:
                 raise
-            sd, options, note = _load_native_cached(path)
+            sd, options, note = _load_native(path)
             return sd, options, (f"gguf: ComfyUI-GGUF could not read this file ({e}) — "
-                                 f"fell back. {note}")
-    return _load_native_cached(path)
-
-
-CACHE_SUFFIX = ".dequantized.safetensors"
-
-
-def cache_path(path: str) -> str:
-    """Where a dequantized copy of `path` lives. Beside the original, so it is obvious what
-    it belongs to and deleting the model takes it with you."""
-    return path + CACHE_SUFFIX
-
-
-def _cache_is_current(src: str, dst: str) -> bool:
-    """Only trust a cache written AFTER the file it came from."""
-    try:
-        return os.path.isfile(dst) and os.path.getmtime(dst) >= os.path.getmtime(src)
-    except OSError:
-        return False
-
-
-def _load_native_cached(path: str) -> tuple[dict, dict, str]:
-    """`_load_native`, but the expansion happens once and is kept on disk.
-
-    The native path has to expand every quantized tensor before the model can be used, and
-    that is minutes on a video checkpoint — paid again on every launch, for a result that is
-    identical every time. Written next to the file as an ordinary safetensors, which then
-    loads at safetensors speed (memory-mapped, no dequantization at all).
-
-    It costs the model's dequantized size in DISK. That is the same size it was going to
-    occupy in VRAM on this path anyway, so nothing is being traded that was not already
-    spent — but it is real disk, and it is stated rather than left to be discovered.
-    """
-    import comfy.utils
-
-    dst = cache_path(path)
-    if _cache_is_current(path, dst):
-        try:
-            sd = comfy.utils.load_torch_file(dst)
-            return sd, {}, (f"gguf: loaded the dequantized cache beside it "
-                            f"({os.path.basename(dst)}) — delete that file to rebuild it")
-        except Exception as e:  # noqa: BLE001
-            print(f"[FunPack] gguf: the dequantized cache could not be read ({e}) — "
-                  f"expanding the .gguf again")
-
+                                 f"fell back. {note}"
+                                 + (f" {leftover}" if leftover else ""))
     sd, options, note = _load_native(path)
+    return sd, options, note + (f" {leftover}" if leftover else "")
+
+
+LEFTOVER_SUFFIX = ".dequantized.safetensors"
+
+
+def note_leftover_cache(path: str) -> str:
+    """FunPack used to keep an expanded copy of a .gguf beside it. It no longer does — on a
+    rented box disk is billed, and the copy is the size of the whole model. Any file left
+    over from that is dead weight the user has no reason to guess at, so name it and its
+    size once. Never deleted here: it is a big file in the user's model folder."""
+    leftover = path + LEFTOVER_SUFFIX
     try:
-        import safetensors.torch
-        tmp = dst + ".part"
-        safetensors.torch.save_file({k: v.contiguous() for k, v in sd.items()}, tmp)
-        os.replace(tmp, dst)          # atomic: a half-written cache is never left behind
-        note += (f" Written to {os.path.basename(dst)} so the next load skips this "
-                 f"(costs its dequantized size in disk; delete it to reclaim).")
-    except Exception as e:  # noqa: BLE001
-        # A cache that cannot be written is a slow load, not a failed one.
-        note += f" (could not write the dequantized cache: {e})"
-        try:
-            if os.path.exists(dst + ".part"):
-                os.remove(dst + ".part")
-        except OSError:
-            pass
-    return sd, options, note
+        if not os.path.isfile(leftover):
+            return ""
+        gb = os.path.getsize(leftover) / 1024 ** 3
+    except OSError:
+        return ""
+    return (f"an old FunPack expansion cache is still beside this model "
+            f"({os.path.basename(leftover)}, {gb:.1f} GB) — nothing reads it any more, "
+            f"delete it to reclaim the space")
 
 
 def _assert_state_dict(sd, path: str) -> None:
@@ -420,11 +388,11 @@ def _load_native(path: str) -> tuple[dict, dict, str]:
     # Bounded, and deliberately small: the window below keeps `workers * 2` float32 tensors
     # alive at once, and the largest weight in a video model is around a gigabyte at that
     # width. More threads would expand faster and spike higher; the durable speed win is the
-    # dequantized cache in `_load_native_cached`, not this pool.
+    # ComfyUI-GGUF pack's quantized path, not this pool.
     workers = max(1, min(4, (os.cpu_count() or 2) - 1))
     print(f"[FunPack] gguf: expanding {quantized} of {len(tensors)} tensors from "
           f"{os.path.basename(path)} across {workers} thread(s). This is the slow path — "
-          f"minutes on a video checkpoint, and the result is cached beside the file.",
+          f"minutes on a video checkpoint. Install ComfyUI-GGUF to skip it entirely.",
           flush=True)
 
     def _expand(tensor):
