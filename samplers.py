@@ -6627,12 +6627,17 @@ class FunPackLTXAVSceneChainSampler:
             patched = model.clone()
             to = patched.model_options.get("transformer_options", {}).copy()
             inner = to.get("optimized_attention_override")
+            base = meta.get("base")
             to["optimized_attention_override"] = _tw.make_override(
-                spans, prompt_tokens, cond_len, inner=inner)
+                spans, prompt_tokens, cond_len, inner=inner,
+                base=int(base) if base is not None else None)
             patched.model_options["transformer_options"] = to
+            strongest = max((w for _, _, w in spans), default=1.0)
+            placed = "modality tags" if base is not None else "conditioning tail"
             print(f"[FunPackStudio] H3 phrase emphasis: {len(spans)} token span(s) biased in "
-                  f"the packed attention stream. This is an attention mask, so SLA runs "
-                  f"DENSE for this generation.")
+                  f"the packed attention stream (strongest x{strongest:.2f}, placed from the "
+                  f"{placed}). This is an attention mask, so SLA runs DENSE for this "
+                  f"generation.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackStudio", "H3 phrase emphasis", _e,

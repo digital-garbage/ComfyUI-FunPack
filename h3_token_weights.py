@@ -83,7 +83,8 @@ def bias_value(weight: float) -> float:
     return max(-MAX_ABS_BIAS, min(MAX_ABS_BIAS, math.log(weight)))
 
 
-def build_bias(spans, prompt_tokens: int, cond_len: int, seq_len: int, device, dtype):
+def build_bias(spans, prompt_tokens: int, cond_len: int, seq_len: int, device, dtype,
+               base: Optional[int] = None):
     """An additive [1, 1, 1, seq_len] attention bias, or None if nothing applies.
 
     The prompt is the LAST thing the H3 tokenizer appends — reference pictures, audio and
@@ -96,8 +97,9 @@ def build_bias(spans, prompt_tokens: int, cond_len: int, seq_len: int, device, d
 
     if not spans or prompt_tokens <= 0 or cond_len <= 0 or seq_len < cond_len:
         return None
-    base = cond_len - prompt_tokens
-    if base < 0:
+    if base is None:
+        base = cond_len - prompt_tokens
+    if base < 0 or base + prompt_tokens > cond_len:
         return None
     bias = None
     for start, end, weight in spans:
@@ -113,7 +115,8 @@ def build_bias(spans, prompt_tokens: int, cond_len: int, seq_len: int, device, d
     return bias
 
 
-def make_override(spans, prompt_tokens: int, cond_len: int, inner=None, on_apply=None):
+def make_override(spans, prompt_tokens: int, cond_len: int, inner=None, on_apply=None,
+                  base: Optional[int] = None):
     """An `optimized_attention_override` that adds the bias, then delegates.
 
     `inner` is the override this one displaces (SLA's, or the mask-safe one) so installing
@@ -144,7 +147,7 @@ def make_override(spans, prompt_tokens: int, cond_len: int, inner=None, on_apply
             key = (seq_len, k.device, k.dtype)
             if key not in cache:
                 cache[key] = build_bias(spans, prompt_tokens, cond_len, seq_len,
-                                        k.device, k.dtype)
+                                        k.device, k.dtype, base=base)
                 if on_apply is not None and cache[key] is not None:
                     on_apply(seq_len)
             bias = cache[key]
@@ -219,14 +222,34 @@ def weights_from_memory(phrases, phrase_memory=None, missing_axes=(), wrong_axes
         delta = up - (down if damp else 0.0)
         if delta <= 0.0:
             continue
-        weight = 1.0 + float(strength) * scale(entry.get("kind", unit.get("kind"))) * delta
+        out.append((text, delta * scale(entry.get("kind", unit.get("kind")))))
+    if not out:
+        return []
+    # RELATIVE, not absolute. Category scores are confidences in the 0..1 range and a phrase
+    # rarely carries much of any one axis, so `1 + strength * score` put a whole prompt at
+    # x1.03 — measurably applied and doing nothing. Normalising against the strongest
+    # candidate makes `strength` mean "how much the best phrase gets", which is a number
+    # worth setting, and keeps the ordering the memory learned.
+    top = max(score for _, score in out)
+    if top <= 0.0:
+        return []
+    scored = []
+    for text, score in out:
+        weight = 1.0 + float(strength) * (score / top)
         weight = max(MIN_LEARNED_WEIGHT, min(MAX_LEARNED_WEIGHT, weight))
         if abs(weight - 1.0) > 1e-3:
-            out.append((text, weight))
-    # Longest first: a phrase and one of its own words can both be weighted, and applying the
-    # phrase first means the word's bias lands on top of it rather than instead of it.
-    out.sort(key=lambda p: -len(p[0]))
-    return out
+            scored.append((text, weight))
+    # Strongest first, so a cap downstream keeps the phrases the rating cared MOST about —
+    # taking the longest instead meant an arbitrary eight out of ninety-four.
+    scored.sort(key=lambda p: -p[1])
+    return scored
+
+
+def order_for_application(weighted):
+    """Longest first. A phrase and one of its own words can both be weighted, and applying
+    the phrase first means the word's bias lands on top of it rather than instead of it.
+    Separate from the ranking above, which decides WHICH phrases survive a cap."""
+    return sorted(weighted or [], key=lambda p: -len(p[0]))
 
 
 def spans_from_ranges(ranges, weight):
@@ -278,6 +301,45 @@ def token_spans_from_offsets(offsets, char_spans):
         if toks:
             out.append((toks[0], toks[-1] + 1, float(weight)))
     return out
+
+
+def prompt_base(token_tags, cond_len, prompt_tokens):
+    """Index of the prompt's first token inside the conditioning block, or None.
+
+    The fallback is arithmetic: the tokenizer appends the prompt LAST, so it is the final
+    `prompt_tokens` rows. That holds only if the text tokenized here is exactly the text that
+    was encoded, and a run whose conditioning is 367 rows against 368 modality tags shows how
+    easily that bookkeeping drifts.
+
+    `minimax_token_tags` removes the assumption. Tags are 1 for text and 0 for a vision
+    block, and references are `<Picture N>: ` + vision BEFORE the prompt, so the prompt is
+    the last unbroken run of 1s. Using it means a reference or a trimmed tag shifts the
+    prompt and the spans follow.
+    """
+    if prompt_tokens <= 0 or cond_len <= 0:
+        return None
+    tags = _as_list(token_tags)
+    if tags:
+        end = min(len(tags), cond_len)
+        run_end = end
+        while run_end > 0 and int(tags[run_end - 1]) != 1:
+            run_end -= 1                      # trailing non-text (should not happen; cheap)
+        run_start = run_end
+        while run_start > 0 and int(tags[run_start - 1]) == 1:
+            run_start -= 1
+        if run_end - run_start >= prompt_tokens:
+            return run_end - prompt_tokens
+    base = cond_len - prompt_tokens
+    return base if base >= 0 else None
+
+
+def _as_list(tags):
+    if tags is None:
+        return []
+    try:
+        return tags.reshape(-1).tolist()
+    except AttributeError:
+        return list(tags) if isinstance(tags, (list, tuple)) else []
 
 
 def h3_tokenizer(clip):

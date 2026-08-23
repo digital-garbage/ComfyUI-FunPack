@@ -13814,10 +13814,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 from . import h3_token_weights as _tw
             except ImportError:
                 import h3_token_weights as _tw
-            spans, prompt_tokens = _tw.locate(tokenizer, text, weighted[:8])
+            # Capped AFTER ranking by weight, so the eight that survive are the eight the
+            # rating cared most about; ordered longest-first only for application, so a
+            # phrase's bias lands before one of its own words adds to it.
+            chosen = _tw.order_for_application(weighted[:8])
+            spans, prompt_tokens = _tw.locate(tokenizer, text, chosen)
             if spans and prompt_tokens:
-                meta["funpack_h3_token_weights"] = {
-                    "spans": spans, "prompt_tokens": int(prompt_tokens)}
+                entry_meta = {"spans": spans, "prompt_tokens": int(prompt_tokens)}
+                # Where the prompt SITS is read from the modality tags when they are here,
+                # rather than assumed to be the tail of the conditioning.
+                base = _tw.prompt_base(meta.get("minimax_token_tags"),
+                                       int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0,
+                                       int(prompt_tokens))
+                if base is not None:
+                    entry_meta["base"] = int(base)
+                meta["funpack_h3_token_weights"] = entry_meta
                 applied += 1
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         if applied:

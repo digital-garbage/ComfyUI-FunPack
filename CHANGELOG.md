@@ -12,6 +12,10 @@
   by the weight. Boost only; damping a phrase you typed is opt-in. Phrases are located with
   the tokenizer's offset mapping rather than re-encoded through a 32B text encoder.
   A weighted run is a dense run — the bias is a mask, and SLA cannot carry one.
+  Weights are relative to the strongest candidate, so `strength` means "how much the best
+  phrase gets": an absolute scale put a whole prompt at x1.03, applied and doing nothing.
+  Phrases are ranked by weight before the cap, and the prompt is located from
+  `minimax_token_tags` rather than assumed to be the tail of the conditioning.
 
 ### Reverted
 - **GGUF loading is back to expanding the checkpoint at load.** The quantized path through

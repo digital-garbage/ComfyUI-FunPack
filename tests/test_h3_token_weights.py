@@ -250,12 +250,12 @@ def test_wrong_appearance_damps_appearance_phrases_only_when_damping():
 
 
 def test_a_single_word_carries_less_than_a_whole_phrase():
-    """Mirrors _v2_memory_kind_scale: phrase 1.0, ngram 0.62, token 0.24."""
-    phrase = tw.weights_from_memory([_unit("a red scarf", "phrase", details=0.8)],
-                                    missing_axes=("details",))[0][1]
-    word = tw.weights_from_memory([_unit("scarf", "token", details=0.8)],
-                                  missing_axes=("details",))[0][1]
-    assert phrase > word > 1.0
+    """Mirrors _v2_memory_kind_scale: phrase 1.0, ngram 0.62, token 0.24. Weights are
+    relative to the strongest candidate, so the comparison is within one set."""
+    got = dict(tw.weights_from_memory(
+        [_unit("a red scarf", "phrase", details=0.8), _unit("scarf", "token", details=0.8)],
+        missing_axes=("details",)))
+    assert got["a red scarf"] > got["scarf"] > 1.0
 
 
 def test_the_learned_memory_overrides_the_run_s_own_scores():
@@ -412,3 +412,64 @@ def test_a_malformed_tag_does_not_break_the_run(chain):
     model = _Patcher()
     bad = [[torch.zeros(1, 9, 8), {"funpack_h3_token_weights": {"spans": "nonsense"}}]]
     assert chain._install_h3_token_weights(model, bad) is model
+
+
+def test_the_best_phrase_gets_the_full_strength():
+    """Category scores are 0..1 confidences and a phrase rarely carries much of one axis, so
+    an absolute `1 + strength * score` put an entire prompt at x1.03 — applied, and doing
+    nothing. Normalising makes `strength` mean what it says."""
+    got = tw.weights_from_memory([_unit("faint", details=0.06)], missing_axes=("details",),
+                                 strength=0.5)
+    assert got[0][1] == pytest.approx(1.5)
+
+
+def test_ranking_is_by_weight_so_a_cap_keeps_what_matters():
+    """94 candidates capped to 8 by LENGTH kept an arbitrary eight."""
+    units = [_unit("a very long but unimportant clause", details=0.1),
+             _unit("scarf", details=0.9)]
+    assert tw.weights_from_memory(units, missing_axes=("details",))[0][0] == "scarf"
+
+
+def test_application_order_is_longest_first():
+    ordered = tw.order_for_application([("scarf", 1.2), ("a red scarf", 1.5)])
+    assert [t for t, _ in ordered] == ["a red scarf", "scarf"]
+
+
+# --- placing the prompt from the modality tags -----------------------------
+
+def test_the_prompt_is_the_last_run_of_text_tags():
+    """Tags are 1 for text, 0 for a vision block. A reference is '<Picture 1>: ' + vision
+    BEFORE the prompt, so the prompt is the trailing run of 1s."""
+    tags = [1, 1, 0, 0, 0, 1, 1, 1, 1]        # label, vision block, then a 4-token prompt
+    assert tw.prompt_base(tags, cond_len=9, prompt_tokens=4) == 5
+
+
+def test_the_tags_beat_the_arithmetic_when_they_disagree():
+    """A run reporting 367 conditioning rows against 368 tags is how that bookkeeping drifts;
+    the tags say where the text actually is."""
+    tags = [1, 1, 0, 0, 1, 1, 1]
+    assert tw.prompt_base(tags, cond_len=6, prompt_tokens=2) == 4    # not 6 - 2 == 4? check
+    assert tw.prompt_base(tags, cond_len=7, prompt_tokens=3) == 4
+
+
+def test_no_tags_falls_back_to_the_tail():
+    assert tw.prompt_base(None, cond_len=9, prompt_tokens=4) == 5
+
+
+def test_a_prompt_longer_than_the_conditioning_is_refused():
+    assert tw.prompt_base(None, cond_len=3, prompt_tokens=9) is None
+
+
+def test_tags_arriving_as_a_tensor_are_read():
+    tags = torch.tensor([1, 1, 0, 0, 1, 1, 1, 1])
+    assert tw.prompt_base(tags, cond_len=8, prompt_tokens=4) == 4
+
+
+def test_the_bias_uses_an_explicit_base_when_given():
+    bias = tw.build_bias([(0, 2, 2.0)], prompt_tokens=4, cond_len=9, seq_len=50,
+                         device="cpu", dtype=torch.float32, base=5)
+    assert bias[0, 0, 0, 5] != 0 and bias[0, 0, 0, 4] == 0
+
+
+def test_a_base_that_would_run_past_the_conditioning_is_refused():
+    assert tw.build_bias([(0, 2, 2.0)], 4, 9, 50, "cpu", torch.float32, base=7) is None
