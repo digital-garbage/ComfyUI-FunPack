@@ -130,8 +130,12 @@ def set_fp16_accumulation(enabled):
 
 
 # One loaded checkpoint, so changing an inference setting on the loader does not re-read the
-# file. Replaced whenever the key changes, so this never holds more than one model — the same
-# lifetime ComfyUI's node-output cache already gave it.
+# file. Replaced whenever the key changes, so this never holds more than one model.
+#
+# The reference is strong on purpose: ComfyUI drops this node's cached output BEFORE it
+# re-runs it, which is exactly the moment a weak one would be dead. The cost is that this
+# entry outlives a "free model and node cache", so one checkpoint stays resident until a
+# different file or dtype replaces it. Loading anything else releases it.
 _WEIGHT_CACHE: dict = {"key": None, "model": None}
 
 

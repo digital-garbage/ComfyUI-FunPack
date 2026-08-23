@@ -5,11 +5,14 @@ which backend gets picked, what happens when none is available, and whether .ggu
 are found at all (core's extension set excludes them, which is the whole reason this
 module exists).
 """
+import gc
 import os
 import sys
 import types
+import weakref
 
 import pytest
+import torch
 
 sys.path.insert(0, ".")
 import gguf_support  # noqa: E402
@@ -370,3 +373,95 @@ def test_a_non_tensor_value_is_named(tmp_path):
 def test_a_real_state_dict_passes():
     import torch
     gguf_support._assert_state_dict({"w": torch.zeros(2)}, "m.gguf")
+
+
+def _fake_gguf(monkeypatch, tensors):
+    """A stand-in for the `gguf` package over `tensors` — (name, shape, values) triples.
+
+    Every tensor is reported as quantized, so `_load_native` takes its dequantize path for
+    all of them, and each dequantize hands back a fresh float32 array whose lifetime the
+    caller can track.
+    """
+    import numpy as np
+
+    fake = types.ModuleType("gguf")
+
+    class _QType:
+        F32 = "F32"
+        F16 = "F16"
+        Q8 = "Q8"
+
+    class _Tensor:
+        def __init__(self, name, shape, values):
+            self.name = name
+            # GGUF reports dimensions in the opposite order to torch.
+            self.shape = tuple(reversed(shape))
+            self.tensor_type = _QType.Q8
+            self.data = np.asarray(values, dtype=np.float32)
+
+    class _Reader:
+        def __init__(self, path):
+            self.tensors = [_Tensor(n, s, v) for n, s, v in tensors]
+
+    produced = []
+    live = []
+
+    def _dequantize(data, qtype):
+        # Sampled BEFORE this call's own array exists, so it counts what the loader is still
+        # holding on to. Peak is the whole point: every array is freed by the time the load
+        # returns no matter how it was written.
+        live.append(sum(1 for ref in produced if ref() is not None))
+        arr = np.asarray(data, dtype=np.float32).copy()
+        produced.append(weakref.ref(arr))
+        return arr
+
+    quants = types.ModuleType("gguf.quants")
+    quants.dequantize = _dequantize
+    fake.GGMLQuantizationType = _QType
+    fake.GGUFReader = _Reader
+    fake.quants = quants
+    monkeypatch.setitem(sys.modules, "gguf", fake)
+    monkeypatch.setitem(sys.modules, "gguf.quants", quants)
+    return produced, live
+
+
+def test_load_native_returns_half_width_tensors_in_torch_order(monkeypatch):
+    monkeypatch.setattr(gguf_support.os, "cpu_count", lambda: 2)   # forces the serial path
+    _fake_gguf(monkeypatch, [("a", (2, 3), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])])
+
+    sd, options, note = gguf_support._load_native("/models/m.gguf")
+
+    assert options == {}
+    assert list(sd) == ["a"]
+    assert tuple(sd["a"].shape) == (2, 3)
+    assert sd["a"].dtype is torch.float16
+    assert sd["a"][1][2].item() == 6.0
+    assert "1 quantized tensors" in note
+
+
+def test_load_native_does_not_keep_every_expanded_tensor_alive(monkeypatch):
+    """The float32 form is four times the finished weight, so holding all of them at once
+    peaks at several times the model in host RAM — enough to take a machine down on a video
+    checkpoint. Each one must be cast and released as it is produced."""
+    monkeypatch.setattr(gguf_support.os, "cpu_count", lambda: 2)   # forces the serial path
+    produced, live = _fake_gguf(
+        monkeypatch, [(f"t{i}", (4, 4), [[float(i)] * 4] * 4) for i in range(24)])
+
+    gguf_support._load_native("/models/m.gguf")
+
+    assert len(produced) == 24
+    # Collecting them all before converting any would climb 0, 1, 2, ... 23.
+    assert max(live) <= 2, f"{max(live)} expanded tensors were held at once"
+    gc.collect()
+    assert [ref for ref in produced if ref() is not None] == []
+
+
+def test_load_native_rejects_a_tensor_that_contradicts_its_header(monkeypatch):
+    monkeypatch.setattr(gguf_support.os, "cpu_count", lambda: 2)
+    _fake_gguf(monkeypatch, [("wrong", (5, 5), [1.0, 2.0, 3.0])])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        gguf_support._load_native("/models/m.gguf")
+
+    assert "'wrong'" in str(excinfo.value)
+    assert "(25)" in str(excinfo.value)

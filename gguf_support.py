@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import itertools
 import os
 import sys
 import types
@@ -400,41 +401,44 @@ def _load_native(path: str) -> tuple[dict, dict, str]:
 
     Correct but not thrifty: the model ends up at its dequantized size, so this buys the
     ability to LOAD a .gguf, not GGUF's memory saving. The caller states that.
+
+    Expansion is STREAMED. Dequantizing produces float32 — four times the size the weight
+    will occupy once it is cast — so collecting every tensor before converting any of them
+    peaks at several times the finished model in host RAM. On a video checkpoint that is
+    tens of gigabytes of transient allocation, which is enough to take the machine down
+    rather than merely the load. Each tensor is therefore cast and released as it is
+    produced, and only a small window is ever in flight.
     """
     import gguf
+    import numpy as np
     import torch
 
     reader = gguf.GGUFReader(path)
     tensors = list(reader.tensors)
-    # Dequantizing serially is where the minute goes: gguf.quants.dequantize is numpy, and a
-    # video checkpoint is thousands of tensors. numpy releases the GIL for the array work, so
-    # threads are real parallelism here. Bounded, not one per core: each worker holds a
-    # dequantized tensor AND its copy, so an unbounded pool trades load time for a memory
-    # spike on the largest weights.
-    workers = max(1, min(8, (os.cpu_count() or 2) - 1))
-    quantized = sum(
-        1 for t in tensors
-        if t.tensor_type not in (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16))
+    raw = (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16)
+    quantized = sum(1 for t in tensors if t.tensor_type not in raw)
+    # Bounded, and deliberately small: the window below keeps `workers * 2` float32 tensors
+    # alive at once, and the largest weight in a video model is around a gigabyte at that
+    # width. More threads would expand faster and spike higher; the durable speed win is the
+    # dequantized cache in `_load_native_cached`, not this pool.
+    workers = max(1, min(4, (os.cpu_count() or 2) - 1))
+    print(f"[FunPack] gguf: expanding {quantized} of {len(tensors)} tensors from "
+          f"{os.path.basename(path)} across {workers} thread(s). This is the slow path — "
+          f"minutes on a video checkpoint, and the result is cached beside the file.",
+          flush=True)
 
-    def _dequant(tensor):
+    def _expand(tensor):
+        """One tensor, fully finished: nothing float32 outlives this call."""
         qtype = tensor.tensor_type
-        if qtype in (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16):
-            return tensor.data
-        # gguf.quants.dequantize is the reference implementation for every type the
-        # package knows — do not reimplement it per quant type.
-        return gguf.quants.dequantize(tensor.data, qtype)
-
-    if workers > 1 and len(tensors) > 1:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            arrays = list(pool.map(_dequant, tensors))
-    else:
-        arrays = [_dequant(t) for t in tensors]
-
-    sd: dict = {}
-    for tensor, arr in zip(tensors, arrays):
+        arr = tensor.data if qtype in raw else gguf.quants.dequantize(tensor.data, qtype)
+        if arr.dtype == np.float32:
+            # `.to` allocates the half-width copy and the float32 array is freed on return,
+            # so the wide form never accumulates.
+            t = torch.from_numpy(arr).to(torch.float16)
+        else:
+            # Detach from the memory-mapped file; the reader's mapping does not outlive us.
+            t = torch.from_numpy(arr.copy())
         name = str(tensor.name)
-        t = torch.from_numpy(arr.copy())
         # GGUF stores dimensions in the opposite order to torch.
         shape = tuple(int(d) for d in reversed(tensor.shape))
         expected = 1
@@ -447,9 +451,30 @@ def _load_native(path: str) -> tuple[dict, dict, str]:
                 f"{os.path.basename(path)}: tensor {name!r} dequantized to {t.numel()} "
                 f"elements but its header declares {shape} ({expected}). This container is "
                 f"not laid out the way the gguf package describes it.")
-        if shape:
-            t = t.reshape(shape)
-        sd[name] = t.to(torch.float16) if t.dtype == torch.float32 else t
+        return name, t.reshape(shape) if shape else t
+
+    sd: dict = {}
+    if workers > 1 and len(tensors) > 1:
+        from collections import deque
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            remaining = iter(tensors)
+            # A fixed window rather than `pool.map`, which submits every tensor at once and
+            # buffers each result until the one before it is consumed — the whole model in
+            # float32, which is the allocation this function exists to avoid.
+            flight = deque(pool.submit(_expand, t)
+                           for t in itertools.islice(remaining, workers * 2))
+            while flight:
+                name, t = flight.popleft().result()
+                sd[name] = t
+                nxt = next(remaining, None)
+                if nxt is not None:
+                    flight.append(pool.submit(_expand, nxt))
+    else:
+        for tensor in tensors:
+            name, t = _expand(tensor)
+            sd[name] = t
+
     note = (f"gguf: dequantized at load ({quantized} quantized tensors expanded across "
             f"{workers} thread(s)) — the file loads, but it occupies its full size in VRAM, "
             f"and expanding it is why this is slower than a .safetensors. Install "
