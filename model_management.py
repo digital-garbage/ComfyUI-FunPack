@@ -264,16 +264,26 @@ def _strip_key_prefix(lora, prefix):
 
 
 def _lora_pair_dims(adapter):
-    """(out_dim, in_dim) a plain LoRA entry expects of the weight it names, else None.
+    """(rows, cols) of the delta a plain LoRA entry produces, else None.
 
-    comfy's LoRAAdapter holds `weights = (up[out, rank], down[rank, in], alpha, ...)`.
-    Anything that is not that shape (LoKr, LoHa, a plain "diff") is left to comfy.
+    comfy's LoRAAdapter holds `weights = (mat1, mat2, alpha, mid, dora_scale, reshape)` and
+    merges with `mm(mat1.flatten(1), mat2.flatten(1)).reshape(weight.shape)`, so the delta is
+    flattened the same way here rather than assuming a 2-D pair.
+
+    Returns None — abstaining, so nothing is dropped — for the two entries whose merge this
+    does not model: a locon `mid` rebuilds mat2 into a different shape, and a `reshape` pads
+    the target weight before merging, so the weight it lands in is not the one in the model.
+    Anything that is not a plain LoRA at all (LoKr, LoHa, a plain "diff") is left to comfy.
     """
     w = getattr(adapter, "weights", None)
     if not w or len(w) < 2:
         return None
+    if len(w) > 3 and w[3] is not None:      # locon mid
+        return None
+    if len(w) > 5 and w[5] is not None:      # target weight is padded before the merge
+        return None
     try:
-        return int(w[0].shape[0]), int(w[1].shape[-1])
+        return int(w[0].flatten(start_dim=1).shape[0]), int(w[1].flatten(start_dim=1).shape[-1])
     except (AttributeError, IndexError, TypeError):
         return None
 
@@ -285,6 +295,12 @@ def _mismatched_lora_keys(model, patches):
     A mismatch is only discovered later, inside comfy's merge, as one generic warning per
     key — 51 of them for the case below, mixed into everything else a load prints. Checked
     here so the count reaches the status line the user actually reads.
+
+    The test is comfy's ACTUAL constraint: the delta is reshaped into the weight, so what has
+    to agree is the element count, not the two dimensions. Requiring the dimensions to match
+    was stricter than the merge, and being stricter than the merge means dropping adapters
+    that would have applied. Dimensions are still recorded, because a pair that fits by count
+    and not by shape is worth seeing even though comfy accepts it.
     """
     try:
         sd = model.model.state_dict()
@@ -302,7 +318,7 @@ def _mismatched_lora_keys(model, patches):
             want = (int(target.shape[0]), int(target.shape[1:].numel()))
         except Exception:  # noqa: BLE001
             continue
-        if dims != want:
+        if dims[0] * dims[1] != int(target.numel()):
             bad.append((key, dims, want))
     return bad
 
@@ -379,12 +395,17 @@ def resolve_lora_patches(model, lora, clip=None):
             _log.note_on_change("lora:adaln_curve", "FunPack", curve)
             note += f" | {len(bad)} adaLN adapters DROPPED (curve-form — see log)"
         else:
-            sample = ", ".join(k for k, _, _ in bad[:3])
+            # WITH the numbers. "trained against a different variant" is not actionable on
+            # its own; the two shapes say which variant, and whether every layer is off by the
+            # same factor (a different width — nothing to do) or only some are (a fusion or
+            # naming difference — fixable).
+            sample = "; ".join(f"{k}: LoRA {d[0]}x{d[1]} into weight {w[0]}x{w[1]}"
+                               for k, d, w in bad[:3])
             _log.note_on_change(
                 "lora:shape", "FunPack",
-                f"{len(bad)} LoRA weights match this model by name but not by shape, so they "
-                f"are DROPPED before the merge (e.g. {sample}). The LoRA was trained against "
-                f"a different variant of this architecture.")
+                f"{len(bad)} LoRA weights name a weight in this model that they cannot be "
+                f"reshaped into, so they are DROPPED before the merge. {sample}. The LoRA was "
+                f"trained against a different variant of this architecture.")
             note += f" | {len(bad)} DROPPED (shape mismatch)"
     return patches, note
 

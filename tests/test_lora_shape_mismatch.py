@@ -139,3 +139,58 @@ def test_a_fitting_lora_is_handed_over_whole(mm, monkeypatch):
     patches = {"diffusion_model.blocks.0.attn.qkv_proj.weight": _Adapter(64, 64)}
     out, note = _patched_resolve(mm, monkeypatch, model, patches)
     assert len(out) == 1 and "DROPPED" not in note
+
+
+class _MidAdapter(_Adapter):
+    """A locon entry: comfy rebuilds mat2 from the mid weight, so the plain pair is not what
+    the merge will require."""
+    def __init__(self, out_dim, in_dim, rank=8):
+        super().__init__(out_dim, in_dim, rank)
+        self.weights = (self.weights[0], self.weights[1], 1.0, torch.zeros(rank, rank, 1, 1),
+                        None, None)
+
+
+class _ReshapeAdapter(_Adapter):
+    """A `reshape` entry: comfy PADS the target weight before merging, so the weight in the
+    model is not the shape the delta has to fit."""
+    def __init__(self, out_dim, in_dim, target, rank=8):
+        super().__init__(out_dim, in_dim, rank)
+        self.weights = (self.weights[0], self.weights[1], 1.0, None, None, target)
+
+
+def test_a_locon_mid_entry_is_left_to_comfy(mm):
+    """Dropping it here would lose an adapter that merges correctly — the check has no model
+    of what mat2 becomes, so it must abstain rather than guess."""
+    model = _Model({"w": (768, 768)})
+    assert mm._mismatched_lora_keys(model, {"w": _MidAdapter(768, 512)}) == []
+
+
+def test_a_padded_target_is_left_to_comfy(mm):
+    model = _Model({"w": (768, 768)})
+    assert mm._mismatched_lora_keys(model, {"w": _ReshapeAdapter(1024, 768, (1024, 768))}) == []
+
+
+def test_a_delta_that_reshapes_into_the_weight_is_kept(mm):
+    """comfy merges with mm(...).reshape(weight.shape), so the element count is the real
+    constraint. Requiring the two dimensions to match was stricter than the merge itself."""
+    model = _Model({"w": (768, 768)})           # 589824 elements
+    assert mm._mismatched_lora_keys(model, {"w": _Adapter(384, 1536)}) == []
+
+
+def test_a_conv_weight_is_measured_the_way_comfy_flattens_it(mm):
+    model = _Model({"w": (64, 32, 3, 3)})       # comfy flattens to (64, 288)
+    assert mm._mismatched_lora_keys(model, {"w": _Adapter(64, 288)}) == []
+    assert mm._mismatched_lora_keys(model, {"w": _Adapter(64, 32)}) != []
+
+
+def test_the_dropped_message_carries_both_shapes(mm, monkeypatch, capsys):
+    """"trained against a different variant" is not actionable on its own. The numbers say
+    whether every layer is off by the same factor or only some are."""
+    model = _Model({"diffusion_model.blocks.0.attn.qkv_proj.weight": (16128, 5376)})
+    patches = {"diffusion_model.blocks.0.attn.qkv_proj.weight": _Adapter(5376, 5376)}
+    bad = mm._mismatched_lora_keys(model, patches)
+
+    assert len(bad) == 1
+    key, dims, want = bad[0]
+    assert dims == (5376, 5376)
+    assert want == (16128, 5376)
