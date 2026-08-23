@@ -243,9 +243,78 @@ def install_log_capture():
         pass
 
 
+# ComfyUI's own log file, read only to backfill the panel after a restart. Cached briefly:
+# recent_log is polled every 1.5s and this must not become a file read per poll.
+_LOG_FILE_CACHE: dict = {"at": 0.0, "lines": []}
+_LOG_FILE_TTL = 5.0
+_LOG_FILE_MAX_BYTES = 512 * 1024
+
+
+def _comfy_log_file():
+    """Path to ComfyUI's log, or None. It is `<user directory>/comfyui.log` — the same path
+    the startup banner prints."""
+    try:
+        import folder_paths
+        from pathlib import Path
+        path = Path(folder_paths.get_user_directory()) / "comfyui.log"
+        return path if path.is_file() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _log_file_tail(limit: int) -> list:
+    """The last `limit` lines of ComfyUI's log file, or []. Never raises."""
+    import time
+    now = time.monotonic()
+    if now - _LOG_FILE_CACHE["at"] < _LOG_FILE_TTL:
+        return _LOG_FILE_CACHE["lines"][-int(limit):]
+    try:
+        path = _comfy_log_file()
+    except Exception:  # noqa: BLE001
+        path = None
+    if path is None:
+        return []
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > _LOG_FILE_MAX_BYTES:
+                fh.seek(size - _LOG_FILE_MAX_BYTES)
+                fh.readline()           # drop the partial first line
+            lines = fh.read().decode("utf-8", errors="replace").splitlines()
+    except Exception:  # noqa: BLE001
+        lines = []
+    _LOG_FILE_CACHE["at"] = now
+    _LOG_FILE_CACHE["lines"] = lines
+    return lines[-int(limit):]
+
+
 def recent_log(limit: int = 500) -> list:
+    """Recent backend output, newest last.
+
+    The in-memory buffer only holds what this process printed, so a CRASH-AND-RESTART leaves
+    the panel empty — exactly when the lines before the crash are the ones worth reading.
+    ComfyUI's own log file survives that, so it backfills whatever the buffer is missing.
+    Only consulted while the buffer is short: once this process has produced `limit` lines of
+    its own, the file is never touched again.
+    """
+    limit = int(limit)
     with _LOG_LOCK:
-        return list(_LOG)[-int(limit):]
+        live = list(_LOG)[-limit:]
+    if len(live) >= limit:
+        return live
+    older = _log_file_tail(limit - len(live))
+    if not older:
+        return live
+    if not live:
+        return older
+    # The file also contains what is in the buffer. Cut the overlap so the panel does not
+    # show the same lines twice across the seam.
+    first = live[0]
+    for i in range(len(older) - 1, -1, -1):
+        if older[i].endswith(first):
+            older = older[:i]
+            break
+    return older + live
 
 
 def rating_labels() -> dict:
