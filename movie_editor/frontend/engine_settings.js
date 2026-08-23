@@ -112,8 +112,10 @@
     { name: "negative_erase_renorm", label: "Keep prompt strength", kind: "bool", default: true,
       dependsOn: "negative_erase", dependsVals: [true],
       hint: "Puts each word back to its original strength after the change, so the result reads as 'less of that thing' rather than 'quieter prompt'. Off is the raw result." },
-    { name: "prefer_wired_conditioning", label: "Skip Studio's positive processing", kind: "bool", default: false,
-      hint: "When a positive CONDITIONING is wired into Studio, use it as-is instead of Studio's own prompt path — while CLIP keeps encoding the negative and the references. A conditioning carrying a reference image already wins on its own. What this changes is text-only scenes: they lose Studio's per-scene split, so every scene is encoded from the whole combined prompt. Shortcuts and $variables still apply — a linked node receives them already expanded." },
+    { name: "clip_owns_prompt", label: "Let CLIP re-encode a wired conditioning", kind: "bool", default: false,
+      hint: "OFF: a wired positive CONDITIONING owns the prompt and Studio steers it — the node that built it may have shown Qwen a reference image, which Studio has no way to reproduce. ON restores the old behaviour, where CLIP re-encodes from text and the wired conditioning is discarded. Text-only scenes lose Studio's per-scene split either way; shortcuts and $variables still apply." },
+    { name: "h3_phrase_emphasis", label: "Rating-driven phrase emphasis (H3)", kind: "bool", default: false,
+      hint: "EXPERIMENTAL, unvalidated. Boosts the attention paid to phrases the rating said were MISSING, by biasing their attention logits in H3's packed stream. Needs a rated run first. Turn it off if generations drift away from the prompt — and note it forces SLA to run dense." }
   ];
 
   function parseStudioSettings(p) {

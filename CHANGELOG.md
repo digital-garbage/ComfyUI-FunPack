@@ -17,6 +17,18 @@
   Phrases are ranked by weight before the cap, and the prompt is located from
   `minimax_token_tags` rather than assumed to be the tail of the conditioning.
 
+### Changed
+- **A wired positive CONDITIONING now owns the prompt.** CLIP used to win whenever both were
+  connected, so Studio re-encoded from text and discarded what the node built — which on an
+  i2v/r2v graph is not the same tensor, because Studio's encode never sees the reference
+  image (nothing wires `h3_references` or `source_image`). CLIP keeps the negative, the
+  references and phrase classification. "Let CLIP re-encode a wired conditioning" restores
+  the old order. Replaces "Skip Studio's positive processing".
+- **Rating-driven phrase emphasis is OFF by default.** It changes what the model sees on
+  every rated run; unvalidated work that does that is something to turn on, not to discover.
+  Overlapping spans are also bounded — their biases add, and three overlapping x1.5 spans
+  compounded to an effective x3.4 on one token. A lone span is untouched.
+
 ### Fixed
 - **A reference image is no longer thrown away by Studio.** With CLIP and a positive
   CONDITIONING both connected, CLIP won and Studio re-encoded the prompt from text. On H3

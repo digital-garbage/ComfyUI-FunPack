@@ -1584,7 +1584,7 @@ def test_refiner_v2_accepts_conditioning_without_clip_and_loads_gemma3_tokenizer
     assert modified[0][0].shape == positive_conditioning[0][0].shape
 
 
-def test_refiner_v2_prefers_clip_when_both_clip_and_conditioning_are_connected(tmp_path, monkeypatch):
+def test_refiner_v2_keeps_the_wired_conditioning_when_both_are_connected(tmp_path, monkeypatch):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"
     refiner._v2_state_path = lambda refinement_key: str(state_path)
@@ -1599,8 +1599,9 @@ def test_refiner_v2_prefers_clip_when_both_clip_and_conditioning_are_connected(t
         positive_conditioning=positive_conditioning,
     )
 
-    assert not torch.allclose(modified[0][0], torch.full((1, 4, 3), 9.0))
-    assert torch.allclose(modified[0][0], torch.ones(1, 4, 3))
+    # The wired tensor survives: re-encoding it from text is not the same conditioning when
+    # the node that built it saw a reference image Studio cannot reach.
+    assert torch.allclose(modified[0][0], torch.full((1, 4, 3), 9.0))
 
 
 def test_refiner_v2_errors_without_clip_or_conditioning(tmp_path):

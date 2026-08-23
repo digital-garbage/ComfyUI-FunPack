@@ -37,6 +37,10 @@ MAX_ABS_BIAS = 6.0
 # How far the text run may exceed the measured prompt before placement is refused. A couple
 # of tokens is a separator or a trimmed tag; more than that means a different string.
 _BASE_SLACK = 4
+# How far overlapping spans may reinforce each other, as a multiple of the STRONGEST single
+# span at that position. A lone span is never touched — an explicit (word:2.0) means 2.0 —
+# but three overlapping x1.5 spans stop at x1.75 instead of compounding to x3.4.
+OVERLAP_HEADROOM = 1.5
 
 
 def parse(text: str):
@@ -105,6 +109,7 @@ def build_bias(spans, prompt_tokens: int, cond_len: int, seq_len: int, device, d
     if base < 0 or base + prompt_tokens > cond_len:
         return None
     bias = None
+    strongest = 0.0
     for start, end, weight in spans:
         b = bias_value(weight)
         if b == 0.0:
@@ -115,6 +120,18 @@ def build_bias(spans, prompt_tokens: int, cond_len: int, seq_len: int, device, d
         if bias is None:
             bias = torch.zeros(1, 1, 1, seq_len, device=device, dtype=dtype)
         bias[..., lo:hi] += b
+        strongest = max(strongest, abs(b))
+    if bias is not None and strongest > 0.0:
+        # Spans OVERLAP — a phrase and one of its own words both match the same tokens, and
+        # their biases ADD. That is intended, so the word reinforces the phrase. Unbounded it
+        # compounds: three overlapping x1.5 spans is an effective x3.4 on one token, which is
+        # far past anything weights_from_memory would ever return and reads as the prompt
+        # collapsing onto a few words.
+        #
+        # Bounded against the strongest SINGLE span rather than a constant, so a lone span is
+        # never touched: an explicit (word:2.0) still means 2.0.
+        limit = min(MAX_ABS_BIAS, strongest * OVERLAP_HEADROOM)
+        bias.clamp_(min=-limit, max=limit)
     return bias
 
 

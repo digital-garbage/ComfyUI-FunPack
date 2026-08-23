@@ -490,3 +490,21 @@ def test_an_exact_text_run_places_at_its_start():
 def test_a_small_overshoot_is_tolerated():
     """A separator token or a trimmed tag, not a different string."""
     assert tw.prompt_base([0, 0, 1, 1, 1, 1, 1], cond_len=7, prompt_tokens=4) == 3
+
+
+def test_overlapping_spans_cannot_compound_without_limit():
+    """A phrase and its own word both match the same tokens and their biases add. Intended —
+    but three overlapping x1.5 spans is an effective x3.4 on one token, well past anything
+    weights_from_memory would ever return."""
+    spans = [(0, 4, 1.5), (0, 4, 1.5), (0, 4, 1.5)]
+    bias = tw.build_bias(spans, prompt_tokens=4, cond_len=4, seq_len=20,
+                         device="cpu", dtype=torch.float32)
+    assert bias.max().item() == pytest.approx(math.log(1.5) * tw.OVERLAP_HEADROOM)
+    assert math.exp(bias.max().item()) < 1.9
+
+
+def test_a_single_span_is_never_clamped():
+    """An explicit (word:2.0) has to still mean 2.0 — bounding the overlap must not quietly
+    weaken a weight the user asked for."""
+    bias = tw.build_bias([(0, 4, 2.0)], 4, 4, 20, "cpu", torch.float32)
+    assert bias.max().item() == pytest.approx(math.log(2.0))

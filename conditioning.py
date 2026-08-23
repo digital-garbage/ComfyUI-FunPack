@@ -7091,71 +7091,39 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         source = str(getattr(tokenizer, "name_or_path", "") or "").strip()
         return f"stand-in tokenizer: {source}" if source else "stand-in tokenizer loaded"
 
-    def _wired_conditioning_saw_a_reference(self, positive_conditioning) -> bool:
-        """True when a wired CONDITIONING contains a vision block.
-
-        `minimax_token_tags` marks every position: 1 for text, 0 for a whole vision block
-        (see comfy/text_encoders/minimax.py). A 0 anywhere therefore means an image was
-        tokenized INTO this sequence, which only the node that held the image could do.
-        Absent tags -> False, so nothing changes for a text-only or non-H3 graph.
-        """
-        try:
-            entry = positive_conditioning[0]
-            meta = entry[1] if isinstance(entry, (list, tuple)) and len(entry) >= 2 else None
-            tags = meta.get("minimax_token_tags") if isinstance(meta, dict) else None
-            if tags is None:
-                return False
-            try:
-                return bool((tags.reshape(-1) == 0).any().item())
-            except AttributeError:
-                return any(int(t) == 0 for t in tags)
-        except Exception:  # noqa: BLE001 — a detector must never fail a load
-            return False
-
     def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning, encode_cache=None,
-                                reference_image=None, h3_references=None, prefer_wired=False):
-        # `prefer_wired` inverts the usual precedence. CLIP normally wins because that is what
-        # a graph with both connected almost always means — but CLIP is also what encodes the
-        # negative, the references and Bounded Attention's spans, so "I built the positive
-        # myself" previously cost all of those. With this on, the wired CONDITIONING owns the
-        # positive and CLIP keeps every other job.
-        if prefer_wired and positive_conditioning is not None:
-            clip_note = ("positive CONDITIONING is wired and owns the prompt (Skip Studio's "
-                         "positive processing is on)"
+                                reference_image=None, h3_references=None,
+                                clip_owns_prompt=False):
+        # A wired positive CONDITIONING OWNS the prompt. CLIP used to win here, on the theory
+        # that a graph with both connected meant CLIP — but wiring a conditioning is an
+        # explicit act, and discarding it in favour of a re-encode is the surprising half.
+        #
+        # It is also wrong more often than not. The node that built that conditioning may
+        # have seen a reference image (Qwen3-VL is causal, so its vision block precedes the
+        # prompt and every prompt row has already read the picture) or applied its own
+        # preparation. Studio cannot reproduce either: nothing wires h3_references or
+        # source_image in the editor pipeline, so its encode never sees a picture. The
+        # re-encode is a different tensor, and an i2v/r2v sampler gets handed a text-only one.
+        #
+        # CLIP keeps every OTHER job — the negative, the references, phrase classification —
+        # which is why both stay connected. `clip_owns_prompt` restores the old precedence.
+        if positive_conditioning is not None and not clip_owns_prompt:
+            clip_note = ("positive CONDITIONING is wired and owns the prompt"
                          + ("; CLIP still encodes the negative and references"
-                            if clip is not None else ""))
+                            if clip is not None
+                            # No CLIP at all: the tokenizer report is the only thing left
+                            # saying what would have encoded the text, and it was part of
+                            # this status before the precedence changed.
+                            else f"; {self._v2_text_tokenizer_status()}"))
             cond, meta = self._v2_extract_conditioning(positive_conditioning)
             if isinstance(cond, torch.Tensor):
-                if not getattr(self, "_funpack_prefer_wired_noted", False):
-                    self._funpack_prefer_wired_noted = True
+                if not getattr(self, "_funpack_wired_cond_noted", False):
+                    self._funpack_wired_cond_noted = True
                     print(f"[FunPackStudio] {clip_note}")
                 return cond, meta, clip_note, "CONDITIONING-owned"
-            # Falling through to CLIP silently would look like the switch did nothing.
-            print("[FunPackStudio] Skip Studio's positive processing is on, but the wired "
-                  "positive CONDITIONING is invalid — falling back to the CLIP prompt path.")
-        # A conditioning that SAW a reference image cannot be reproduced from the prompt
-        # alone, and re-encoding it is not a near-miss — it is a different tensor. Qwen is a
-        # causal VLM, so the image tokens sit BEFORE the prompt and every prompt row is a
-        # hidden state that has already read the picture. Studio's own encode gets no image
-        # (nothing wires h3_references or source_image in the editor pipeline), so replacing
-        # the wired conditioning throws the reference away and hands an i2v/r2v sampler a
-        # text-only conditioning. That is the "strange" in reference runs.
-        #
-        # Detected, not guessed: the H3 encoder tags every position, 0 for a vision block and
-        # 1 for text, so a 0 in the wired conditioning's tags means it carries an image.
-        if positive_conditioning is not None and self._wired_conditioning_saw_a_reference(
-                positive_conditioning):
-            cond, meta = self._v2_extract_conditioning(positive_conditioning)
-            if isinstance(cond, torch.Tensor):
-                note = ("positive CONDITIONING carries a reference image and owns the prompt "
-                        "— re-encoding it from text would drop the reference"
-                        + ("; CLIP still encodes the negative and references"
-                           if clip is not None else ""))
-                if not getattr(self, "_funpack_ref_cond_noted", False):
-                    self._funpack_ref_cond_noted = True
-                    print(f"[FunPackStudio] {note}")
-                return cond, meta, note, "CONDITIONING-owned"
-
+            # Falling through to CLIP silently would look like the wire did nothing.
+            print("[FunPackStudio] the wired positive CONDITIONING is invalid — falling back "
+                  "to the CLIP prompt path.")
         if clip is not None:
             cond, meta, encode_status = self._v2_encode_prompt(
                 clip, prompt_text, encode_cache=encode_cache, reference_image=reference_image,
@@ -12083,7 +12051,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
-                  prefer_wired_conditioning=False,
+                  clip_owns_prompt=False, h3_phrase_emphasis=False,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
@@ -12542,7 +12510,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             encode_cache=encode_cache,
             reference_image=source_image,
             h3_references=_h3_references,
-            prefer_wired=prefer_wired_conditioning,
+            clip_owns_prompt=clip_owns_prompt,
         )
         fallback_graph = render_refinement_loss_graph(refinement_key, "v2", "clip", 0, 0.0, [])
         if not isinstance(cond, torch.Tensor):
@@ -13109,7 +13077,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis),
                         status,
                         training_info,
                         loss_graph,
@@ -13127,7 +13095,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -13801,7 +13769,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return out
 
     def _v2_apply_h3_token_weights(self, conditioning_list, clip, phrase_memory=None,
-                                   axis_feedback=None, fallback_text=""):
+                                   axis_feedback=None, fallback_text="", enabled=False):
         """Tag each scene with the token spans the RATING says deserve more attention.
 
         Studio has decomposed and scored every phrase, word and n-gram since 2.0
@@ -13813,10 +13781,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         attention-logit bias. Text-only and cheap: phrases are located with the tokenizer's
         offset mapping, not by re-encoding each one through a 32B text encoder.
 
-        There is no toggle. It is gated on having something to say: an H3 CLIP, a phrase
-        memory, and a rating that named a missing axis. Before the first rating it produces
-        nothing, and a Perfect clears the axes and switches it off again.
+        OFF by default. It changes what the model sees on every rated run, and an
+        unvalidated feature that does that should be something you turn on to try, not
+        something you discover. Also gated on having anything to say: an H3 CLIP, a phrase
+        memory, and a rating that named a missing axis.
         """
+        if not enabled:
+            return conditioning_list
         if clip is None or not isinstance(phrase_memory, dict) or not phrase_memory:
             return conditioning_list
         try:
@@ -13890,7 +13861,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                   temporal_style="natural", temporal_fallback_text="",
                                   scene_refinement_keys=None, learning_profile=None,
                                   conditioning_plan=None, clip=None, encode_cache=None,
-                                  phrase_memory=None, axis_feedback=None):
+                                  phrase_memory=None, axis_feedback=None,
+                                  h3_phrase_emphasis=False):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
@@ -13906,7 +13878,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         out = self._v2_apply_bounded_attention(out, clip, fallback_text=temporal_fallback_text, encode_cache=encode_cache)
         out = self._v2_apply_h3_token_weights(out, clip, phrase_memory=phrase_memory,
                                               axis_feedback=axis_feedback,
-                                              fallback_text=temporal_fallback_text)
+                                              fallback_text=temporal_fallback_text,
+                                              enabled=h3_phrase_emphasis)
         if mode in ("relative", "both"):
             out = self._v2_apply_scene_refinement_keys(
                 out, scene_refinement_keys, refinement_key,
@@ -15152,7 +15125,8 @@ class FunPackStudio:
             user_intent_prompt=effective_intent,
             refinement_key_input=refinement_key_input,
             positive_conditioning=positive_conditioning,
-            prefer_wired_conditioning=bool(rf.get("prefer_wired_conditioning", False)),
+            clip_owns_prompt=bool(rf.get("clip_owns_prompt", False)),
+            h3_phrase_emphasis=bool(rf.get("h3_phrase_emphasis", False)),
             clip_vision_output=clip_vision_output,
             source_image=source_image if vision_conditioning else None,
             model=model,
