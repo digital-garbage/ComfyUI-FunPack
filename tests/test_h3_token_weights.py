@@ -210,3 +210,205 @@ def test_a_tokenizer_without_offsets_turns_weighting_off_rather_than_guessing():
             raise ValueError("slow tokenizer")
 
     assert tw.token_spans(_NoOffsets(), "a bc d", [(2, 4, 1.5)]) == []
+
+
+# --- rating-derived weights ------------------------------------------------
+
+def _unit(text, kind="phrase", **scores):
+    return {"text": text, "kind": kind, "effective_category_scores": scores}
+
+
+def test_a_phrase_carrying_a_missing_axis_is_boosted():
+    """This is the signal that already existed and had nowhere to go on H3."""
+    got = tw.weights_from_memory([_unit("red scarf", details=0.8)], missing_axes=("details",))
+    assert len(got) == 1
+    text, weight = got[0]
+    assert text == "red scarf" and weight > 1.0
+
+
+def test_a_phrase_the_rating_is_neutral_about_is_omitted():
+    """Returned at 1.0 it would still enter the bias tensor and cost a branch for nothing."""
+    assert tw.weights_from_memory([_unit("red scarf", action=0.9)],
+                                  missing_axes=("details",)) == []
+
+
+def test_damping_is_off_unless_asked_for():
+    """Suppressing a phrase the user typed is a knob going inert on its own."""
+    units = [_unit("red scarf", details=0.1, quality=0.9)]
+    assert tw.weights_from_memory(units, missing_axes=("details",), wrong_axes=("quality",)) \
+        != []
+    assert tw.weights_from_memory(units, missing_axes=("details",), wrong_axes=("quality",),
+                                  damp=True) == []
+
+
+def test_wrong_appearance_damps_appearance_phrases_only_when_damping():
+    units = [_unit("blonde hair", appearance=0.9, details=0.5)]
+    assert tw.weights_from_memory(units, missing_axes=("details",),
+                                  wrong_appearance=True, damp=True) == []
+    assert tw.weights_from_memory(units, missing_axes=("details",),
+                                  wrong_appearance=True) != []
+
+
+def test_a_single_word_carries_less_than_a_whole_phrase():
+    """Mirrors _v2_memory_kind_scale: phrase 1.0, ngram 0.62, token 0.24."""
+    phrase = tw.weights_from_memory([_unit("a red scarf", "phrase", details=0.8)],
+                                    missing_axes=("details",))[0][1]
+    word = tw.weights_from_memory([_unit("scarf", "token", details=0.8)],
+                                  missing_axes=("details",))[0][1]
+    assert phrase > word > 1.0
+
+
+def test_the_learned_memory_overrides_the_run_s_own_scores():
+    """The point of phrase_memory is that it accumulates across ratings."""
+    units = [_unit("red scarf", details=0.0)]
+    memory = {"red scarf": {"kind": "phrase", "effective_category_scores": {"details": 0.9}}}
+    assert tw.weights_from_memory(units, memory, missing_axes=("details",)) != []
+
+
+def test_weights_are_clamped():
+    got = tw.weights_from_memory([_unit("x", details=99.0)], missing_axes=("details",),
+                                 strength=50.0)
+    assert got[0][1] == tw.MAX_LEARNED_WEIGHT
+
+
+def test_longer_phrases_are_applied_first():
+    """A phrase and one of its own words can both be weighted; the word's bias should land
+    on top of the phrase's, not instead of it."""
+    units = [_unit("scarf", "token", details=0.8), _unit("a red scarf", "phrase", details=0.8)]
+    assert [t for t, _ in tw.weights_from_memory(units, missing_axes=("details",))] \
+        == ["a red scarf", "scarf"]
+
+
+def test_malformed_units_are_skipped_not_fatal():
+    units = [None, {}, {"text": "ok", "effective_category_scores": "not a dict"},
+             {"text": "fine", "effective_category_scores": {"details": 0.5}}]
+    assert [t for t, _ in tw.weights_from_memory(units, missing_axes=("details",))] == ["fine"]
+
+
+def test_ranges_become_weighted_spans():
+    assert tw.spans_from_ranges([(4, 7), (9, 9)], 1.5) == [(4, 7, 1.5)]
+
+
+# --- locating phrases in the prompt ---------------------------------------
+
+def test_locate_finds_a_phrase_case_insensitively():
+    """Phrase memory stores everything lowercased; the prompt keeps the user's caps."""
+    spans, total = tw.locate(_FakeTokenizer(), "A Red Scarf", [("red scarf", 1.5)])
+    assert total == 11
+    assert spans == [(2, 11, 1.5)]
+
+
+def test_locate_weights_every_occurrence():
+    spans, _ = tw.locate(_FakeTokenizer(), "cat and cat", [("cat", 1.5)])
+    assert spans == [(0, 3, 1.5), (8, 11, 1.5)]
+
+
+def test_locate_reports_the_prompt_length_even_with_nothing_to_weight():
+    """The length is what places the bias in the packed sequence, so it is needed whether or
+    not any phrase matched."""
+    assert tw.locate(_FakeTokenizer(), "a cat", []) == ([], 5)
+
+
+def test_a_phrase_that_is_not_in_the_prompt_is_skipped():
+    spans, _ = tw.locate(_FakeTokenizer(), "a dog", [("red scarf", 1.5)])
+    assert spans == []
+
+
+def test_locate_survives_a_tokenizer_without_offsets():
+    class _NoOffsets:
+        def __call__(self, *a, **kw):
+            raise ValueError("slow tokenizer")
+
+    assert tw.locate(_NoOffsets(), "a cat", [("cat", 1.5)]) == ([], 0)
+
+
+def test_the_real_h3_vocabulary_returns_usable_offsets():
+    """The mechanism rests on this. Qwen's is a SLOW tokenizer, where offset mapping is not
+    guaranteed — checked against the actual vocabulary ComfyUI ships for H3."""
+    from transformers import Qwen2Tokenizer
+    path = ("/Users/dex/Documents/ComfyUI/comfy/text_encoders/qwen25_tokenizer")
+    try:
+        tok = Qwen2Tokenizer.from_pretrained(path)
+    except Exception:
+        pytest.skip("ComfyUI's H3 tokenizer vocabulary is not present")
+
+    spans, total = tw.locate(tok, "a fluffy cat", [("fluffy", 2.0)])
+
+    assert total == 3
+    assert spans == [(1, 2, 2.0)]      # 'fluffy' is exactly token 1
+
+
+def test_the_tokenizer_is_reached_through_the_clip_wrapper():
+    import types
+    tok = _FakeTokenizer()
+    clip = types.SimpleNamespace(
+        tokenizer=types.SimpleNamespace(qwen3vl_32b=types.SimpleNamespace(tokenizer=tok)))
+    assert tw.h3_tokenizer(clip) is tok
+    assert tw.h3_tokenizer(types.SimpleNamespace(tokenizer=None)) is None
+
+
+# --- sampler install -------------------------------------------------------
+
+@pytest.fixture
+def chain():
+    import samplers
+    for name in dir(samplers):
+        obj = getattr(samplers, name)
+        if isinstance(obj, type) and hasattr(obj, "_install_h3_token_weights"):
+            return obj()
+    pytest.skip("no sampler exposes _install_h3_token_weights")
+
+
+class _Patcher:
+    def __init__(self):
+        self.model_options = {}
+
+    def clone(self):
+        c = _Patcher()
+        c.model_options = dict(self.model_options)
+        return c
+
+
+def _tagged(spans=((0, 2, 2.0),), prompt_tokens=5, cond_len=9):
+    return [[torch.zeros(1, cond_len, 8),
+             {"funpack_h3_token_weights": {"spans": list(spans),
+                                           "prompt_tokens": prompt_tokens}}]]
+
+
+def test_an_untagged_run_is_left_completely_alone(chain):
+    """Every non-H3 run, and every H3 run before the first rating."""
+    model = _Patcher()
+    assert chain._install_h3_token_weights(model, [[torch.zeros(1, 9, 8), {}]]) is model
+    assert chain._install_h3_token_weights(model, None) is model
+
+
+def test_a_tagged_run_gets_an_override(chain):
+    out = chain._install_h3_token_weights(_Patcher(), _tagged())
+    assert "optimized_attention_override" in out.model_options["transformer_options"]
+
+
+def test_the_existing_override_is_chained_not_replaced(chain):
+    """One slot. Taking it outright would silently discard SLA or the chosen backend."""
+    model = _Patcher()
+    sentinel = lambda *a, **kw: "inner ran"
+    model.model_options["transformer_options"] = {"optimized_attention_override": sentinel}
+
+    out = chain._install_h3_token_weights(model, _tagged())
+    ov = out.model_options["transformer_options"]["optimized_attention_override"]
+
+    assert ov is not sentinel
+    q = torch.zeros(1, 2, 100, 8)
+    assert ov(lambda *a, **kw: None, q, q, q, 2, skip_reshape=True) == "inner ran"
+
+
+def test_the_original_model_options_are_not_mutated(chain):
+    model = _Patcher()
+    model.model_options["transformer_options"] = {}
+    chain._install_h3_token_weights(model, _tagged())
+    assert "optimized_attention_override" not in model.model_options["transformer_options"]
+
+
+def test_a_malformed_tag_does_not_break_the_run(chain):
+    model = _Patcher()
+    bad = [[torch.zeros(1, 9, 8), {"funpack_h3_token_weights": {"spans": "nonsense"}}]]
+    assert chain._install_h3_token_weights(model, bad) is model

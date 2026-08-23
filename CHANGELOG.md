@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+- **The rating's per-phrase emphasis now reaches MiniMax H3.** Studio has decomposed every
+  run into phrases, words and n-grams and scored each against the rating since 2.0, but the
+  only thing reading that was the attn2 K/V patch — which H3 skips, having one packed
+  self-attention stream and no cross-attention. The learning ran every generation and landed
+  nowhere. It is now applied where H3 can act on it: `log(weight)` added to the attention
+  logits at that phrase's token positions, so its share of the attention mass is multiplied
+  by the weight. Boost only; damping a phrase you typed is opt-in. Phrases are located with
+  the tokenizer's offset mapping rather than re-encoded through a 32B text encoder.
+  A weighted run is a dense run — the bias is a mask, and SLA cannot carry one.
+
 ### Reverted
 - **GGUF loading is back to expanding the checkpoint at load.** The quantized path through
   ComfyUI-GGUF loaded in seconds instead of a minute, and produced a model the sampler could

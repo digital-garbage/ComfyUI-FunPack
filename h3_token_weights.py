@@ -73,12 +73,7 @@ def token_spans(tokenizer, clean_text: str, char_spans):
         offsets = enc["offset_mapping"]
     except Exception:  # noqa: BLE001 — a slow tokenizer has no offsets; weighting is off
         return []
-    out = []
-    for c_start, c_end, weight in char_spans:
-        toks = [i for i, (a, b) in enumerate(offsets) if a < c_end and b > c_start]
-        if toks:
-            out.append((toks[0], toks[-1] + 1, weight))
-    return out
+    return token_spans_from_offsets(offsets, char_spans)
 
 
 def bias_value(weight: float) -> float:
@@ -160,3 +155,144 @@ def make_override(spans, prompt_tokens: int, cond_len: int, inner=None, on_apply
             return run(mask)
 
     return override
+
+
+# --- rating-derived weights ------------------------------------------------
+#
+# Studio already knows which words to weight. `_v2_concept_units_for_run` decomposes every
+# run into phrases, single words and n-grams; `_v2_update_phrase_memory` trains each one's
+# category scores against the rating's missing / satisfied / regressed / wrong axes. What
+# was missing was a CONSUMER: the only thing reading that signal was the attn2 K/V patch,
+# which H3 skips outright (one packed self-attention stream, no cross-attention). So the
+# learning ran every generation and landed nowhere.
+#
+# This turns an entry into a multiplicative weight, which `bias_value` turns into the logit
+# bias. Nothing here decides what a phrase MEANS — that is already decided upstream.
+
+# Boost only. A phrase carrying an axis the rating said was MISSING gets more attention;
+# nothing is taken away unless damping is asked for explicitly. Damping can suppress a
+# phrase the user typed, which is a knob going inert on its own — an opt-in, not a default.
+MIN_LEARNED_WEIGHT = 0.25
+MAX_LEARNED_WEIGHT = 3.0
+
+_KIND_SCALE = {"prompt_phrase": 1.0, "phrase": 1.0, "auto_phrase": 0.72,
+               "repair_candidate": 0.64, "ngram": 0.62, "token": 0.24}
+
+
+def _kind_scale(kind):
+    return _KIND_SCALE.get(str(kind or "phrase"), 0.5)
+
+
+def weights_from_memory(phrases, phrase_memory=None, missing_axes=(), wrong_axes=(),
+                        wrong_appearance=False, strength=0.5, damp=False,
+                        kind_scale=None):
+    """[(text, weight), ...] for the phrases the rating has something to say about.
+
+    `phrases` are this run's classified units (each with `text`, `kind` and
+    `effective_category_scores`); `phrase_memory` is the learned store, which overrides a
+    unit's own scores when it has seen the phrase before. Phrases the rating is neutral
+    about are omitted rather than returned at 1.0, so nothing is biased by accident.
+    """
+    scale = kind_scale or _kind_scale
+    missing = tuple(missing_axes or ())
+    wrong = tuple(wrong_axes or ())
+    memory = phrase_memory if isinstance(phrase_memory, dict) else {}
+    out = []
+    for unit in phrases or []:
+        if not isinstance(unit, dict):
+            continue
+        text = str(unit.get("text", "")).strip().lower()
+        if not text:
+            continue
+        entry = memory.get(text) if isinstance(memory.get(text), dict) else {}
+        scores = entry.get("effective_category_scores") or unit.get("effective_category_scores") \
+            or unit.get("category_scores") or {}
+        if not isinstance(scores, dict):
+            continue
+        try:
+            up = sum(float(scores.get(a, 0.0)) for a in missing)
+            down = sum(float(scores.get(a, 0.0)) for a in wrong)
+            if wrong_appearance:
+                down += float(scores.get("appearance", 0.0))
+        except (TypeError, ValueError):
+            continue
+        delta = up - (down if damp else 0.0)
+        if delta <= 0.0:
+            continue
+        weight = 1.0 + float(strength) * scale(entry.get("kind", unit.get("kind"))) * delta
+        weight = max(MIN_LEARNED_WEIGHT, min(MAX_LEARNED_WEIGHT, weight))
+        if abs(weight - 1.0) > 1e-3:
+            out.append((text, weight))
+    # Longest first: a phrase and one of its own words can both be weighted, and applying the
+    # phrase first means the word's bias lands on top of it rather than instead of it.
+    out.sort(key=lambda p: -len(p[0]))
+    return out
+
+
+def spans_from_ranges(ranges, weight):
+    """`_v2_find_phrase_token_ranges` gives (start, end) pairs; pair them with a weight."""
+    return [(int(s), int(e), float(weight)) for s, e in ranges or [] if int(e) > int(s)]
+
+
+def locate(tokenizer, prompt_text, weighted_phrases):
+    """Weighted phrases -> ([(start_tok, end_tok, weight)], prompt_token_count).
+
+    Deliberately NOT `_v2_find_phrase_token_ranges`, which finds a phrase by cosine
+    similarity against the encoded sequence and so re-encodes every phrase it is given. On
+    H3 the text encoder is Qwen3-VL-32B, making that up to eight extra 32B forward passes
+    per generation for something the tokenizer answers exactly and for free.
+
+    Matching is case-insensitive because phrase memory stores everything lowercased while
+    the prompt keeps the user's capitalisation. Every occurrence is weighted, not just the
+    first: a word repeated for emphasis meant it both times.
+    """
+    text = str(prompt_text or "")
+    if not text:
+        return [], 0
+    try:
+        enc = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+        offsets = list(enc["offset_mapping"])
+    except Exception:  # noqa: BLE001 — no offsets means no weighting, not a broken run
+        return [], 0
+    total = len(offsets)
+    if not weighted_phrases:
+        return [], total
+    haystack = text.lower()
+    char_spans = []
+    for phrase, weight in weighted_phrases:
+        needle = str(phrase or "").strip().lower()
+        if not needle:
+            continue
+        start = haystack.find(needle)
+        while start != -1:
+            char_spans.append((start, start + len(needle), float(weight)))
+            start = haystack.find(needle, start + len(needle))
+    return token_spans_from_offsets(offsets, char_spans), total
+
+
+def token_spans_from_offsets(offsets, char_spans):
+    """Character spans -> token index ranges, given a tokenizer's offset mapping."""
+    out = []
+    for c_start, c_end, weight in char_spans:
+        toks = [i for i, (a, b) in enumerate(offsets) if a < c_end and b > c_start]
+        if toks:
+            out.append((toks[0], toks[-1] + 1, float(weight)))
+    return out
+
+
+def h3_tokenizer(clip):
+    """The raw HF tokenizer behind an H3 CLIP, or None.
+
+    `clip.tokenizer` is a MiniMaxH3Tokenizer, which holds a Qwen3VLSDTokenizer under the
+    encoder's name, which holds the transformers tokenizer. Verified to return real offset
+    mappings for this vocabulary; anything else here returns None and weighting stays off.
+    """
+    try:
+        inner = getattr(getattr(clip, "tokenizer", None), "qwen3vl_32b", None)
+        tok = getattr(inner, "tokenizer", None)
+        if tok is None:
+            return None
+        tok("probe", add_special_tokens=False, return_offsets_mapping=True)
+        return tok
+    except Exception:  # noqa: BLE001
+        return None

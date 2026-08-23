@@ -13065,7 +13065,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback),
                         status,
                         training_info,
                         loss_graph,
@@ -13083,7 +13083,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -13756,11 +13756,83 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         return out
 
+    def _v2_apply_h3_token_weights(self, conditioning_list, clip, phrase_memory=None,
+                                   axis_feedback=None, fallback_text=""):
+        """Tag each scene with the token spans the RATING says deserve more attention.
+
+        Studio has decomposed and scored every phrase, word and n-gram since 2.0
+        (_v2_concept_units_for_run, _v2_update_phrase_memory). Until now the only consumer
+        was the attn2 K/V patch, which H3 skips outright — one packed self-attention stream,
+        no cross-attention — so on H3 that learning ran every generation and landed nowhere.
+
+        This writes it as (start, end, weight) token spans for the sampler to turn into an
+        attention-logit bias. Text-only and cheap: phrases are located with the tokenizer's
+        offset mapping, not by re-encoding each one through a 32B text encoder. No behaviour
+        change unless the sampler's toggle is on.
+        """
+        if clip is None or not isinstance(phrase_memory, dict) or not phrase_memory:
+            return conditioning_list
+        try:
+            try:                        # matches how this file reaches its siblings
+                from . import minimax_h3 as _h3
+                from . import h3_token_weights as _tw
+            except ImportError:
+                import minimax_h3 as _h3
+                import h3_token_weights as _tw
+            if not _h3.is_h3_clip(clip):
+                return conditioning_list
+            tokenizer = _tw.h3_tokenizer(clip)
+            if tokenizer is None:
+                return conditioning_list
+            feedback = axis_feedback or {}
+            units = [{"text": text, "kind": entry.get("kind"),
+                      "effective_category_scores": entry.get("effective_category_scores")}
+                     for text, entry in phrase_memory.items() if isinstance(entry, dict)]
+            weighted = _tw.weights_from_memory(
+                units, phrase_memory,
+                missing_axes=feedback.get("missing_axes", ()),
+                wrong_axes=feedback.get("wrong_axes", ()))
+            if not weighted:
+                return conditioning_list
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackStudio", "H3 token weighting", _e,
+                        "the rating's per-phrase emphasis is NOT being applied")
+            return conditioning_list
+
+        out = []
+        applied = 0
+        for entry in conditioning_list or []:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict)):
+                out.append(entry)
+                continue
+            cond, meta = entry[0], dict(entry[1])
+            text = str(meta.get("funpack_scene_text") or "").strip() or str(fallback_text or "")
+            try:
+                from . import h3_token_weights as _tw
+            except ImportError:
+                import h3_token_weights as _tw
+            spans, prompt_tokens = _tw.locate(tokenizer, text, weighted[:8])
+            if spans and prompt_tokens:
+                meta["funpack_h3_token_weights"] = {
+                    "spans": spans, "prompt_tokens": int(prompt_tokens)}
+                applied += 1
+            out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+        if applied:
+            _log.note_on_change(
+                "h3:token_weights", "FunPackStudio",
+                f"rating-derived phrase emphasis: {len(weighted)} phrase(s) weighted across "
+                f"{applied} scene(s) (e.g. "
+                + ", ".join(f"{t!r} x{w:.2f}" for t, w in weighted[:3])
+                + ") — applied as an attention bias on H3's packed stream, where the attn2 "
+                  "K/V emphasis has nothing to hook.")
+        return out
+
     def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
                                   steer_mode, absolute_strength, spread_cap=None,
                                   temporal_style="natural", temporal_fallback_text="",
                                   scene_refinement_keys=None, learning_profile=None,
-                                  conditioning_plan=None, clip=None, encode_cache=None):
+                                  conditioning_plan=None, clip=None, encode_cache=None,
+                                  phrase_memory=None, axis_feedback=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
@@ -13774,6 +13846,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         out = self._v2_apply_rapid_temporal(out, temporal_style)
         out = self._v2_apply_auto_temporal(out, temporal_style, fallback_text=temporal_fallback_text)
         out = self._v2_apply_bounded_attention(out, clip, fallback_text=temporal_fallback_text, encode_cache=encode_cache)
+        out = self._v2_apply_h3_token_weights(out, clip, phrase_memory=phrase_memory,
+                                              axis_feedback=axis_feedback,
+                                              fallback_text=temporal_fallback_text)
         if mode in ("relative", "both"):
             out = self._v2_apply_scene_refinement_keys(
                 out, scene_refinement_keys, refinement_key,

@@ -3912,6 +3912,7 @@ class FunPackLTXAVSceneChainSampler:
         # the toggles above which only work on Distilled Flow), so install/remove here rather
         # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
         _ba_handles = self._install_bounded_attention(model, latent, positive) if bounded_attention_enabled else []
+        model = self._install_h3_token_weights(model, positive)
 
         try:
             sampled = comfy.sample.sample_custom(
@@ -6590,6 +6591,53 @@ class FunPackLTXAVSceneChainSampler:
         idx = torch.arange(t * h * w, device=device)
         w_idx = idx % w
         return (w_idx >= (w // 2)).long()
+
+    def _install_h3_token_weights(self, model, positive):
+        """Apply the rating-derived phrase emphasis Studio tagged onto the conditioning.
+
+        Returns `model` untouched when there is no tag, which is every non-H3 run and every
+        H3 run before the first rating. Never raises: this is a refinement, not a
+        prerequisite.
+
+        The bias is an attention MASK, and SLA routes masked calls to dense
+        (sla_attention.py) because a block-sparse kernel cannot carry a per-key bias. So a
+        weighted run is a dense run — said out loud, once, rather than discovered as a
+        slowdown.
+        """
+        try:
+            meta = None
+            if isinstance(positive, list) and positive and isinstance(positive[0], (list, tuple)) \
+                    and len(positive[0]) >= 2 and isinstance(positive[0][1], dict):
+                meta = positive[0][1].get("funpack_h3_token_weights")
+            if not isinstance(meta, dict):
+                return model
+            spans = meta.get("spans") or []
+            prompt_tokens = int(meta.get("prompt_tokens") or 0)
+            if not spans or prompt_tokens <= 0:
+                return model
+            cond = positive[0][0]
+            cond_len = int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0
+            if cond_len <= 0:
+                return model
+            try:
+                from . import h3_token_weights as _tw
+            except ImportError:
+                import h3_token_weights as _tw
+
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            inner = to.get("optimized_attention_override")
+            to["optimized_attention_override"] = _tw.make_override(
+                spans, prompt_tokens, cond_len, inner=inner)
+            patched.model_options["transformer_options"] = to
+            print(f"[FunPackStudio] H3 phrase emphasis: {len(spans)} token span(s) biased in "
+                  f"the packed attention stream. This is an attention mask, so SLA runs "
+                  f"DENSE for this generation.")
+            return patched
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackStudio", "H3 phrase emphasis", _e,
+                        "the rating's per-phrase weighting is NOT being applied")
+            return model
 
     def _install_bounded_attention(self, model, latent, positive):
         """EXPERIMENTAL (arXiv:2403.16990-inspired, see [[project_bounded_attention]]): mask the
