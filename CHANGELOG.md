@@ -38,6 +38,13 @@
   `$style` while the encoded prompt had it resolved.
 
 ### Fixed
+- **Bounded Attention no longer replaces a wired conditioning with a text-only re-encode.**
+  It is always-on, and it works by re-encoding the prompt through CLIP and swapping the
+  tensor for the result — which contains no reference image, because Studio was never given
+  one. On a reference run that turned 512 positions into 197: the picture and the prompt were
+  never both in the tensor the sampler received. Entries that arrived on a wire are now
+  marked, and no step that rebuilds a conditioning by encoding text touches them. Every stage
+  of `_v2_finalize_conditioning` is also length-checked and names itself if it changes one.
 - **A wired reference conditioning is no longer thrown away by the scene split.** The split
   re-encodes every scene from text and its entries replace the output wholesale. It
   re-establishes H3's visual conditioning from `source_image` / `h3_references` — neither of

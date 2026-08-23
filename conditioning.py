@@ -7165,6 +7165,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             # this status before the precedence changed.
                             else f"; {self._v2_text_tokenizer_status()}"))
             if isinstance(cond, torch.Tensor):
+                # Marked so every LATER step can tell this tensor is not Studio's own encode.
+                # Anything that rebuilds a conditioning by encoding text — the scene split,
+                # Bounded Attention's exact-boundary split — produces something with no
+                # reference in it, and replacing a wired conditioning with that silently
+                # deletes the prompt or the picture depending on which half it kept.
+                meta = dict(meta)
+                meta["funpack_conditioning_owner"] = "wired"
                 if not getattr(self, "_funpack_wired_cond_noted", False):
                     self._funpack_wired_cond_noted = True
                     print(f"[FunPackStudio] {clip_note}")
@@ -13906,6 +13913,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 out.append(entry)
                 continue
             cond, meta = entry[0], dict(entry[1])
+            if meta.get("funpack_conditioning_owner") == "wired":
+                # This entry came in on a wire. The split below RE-ENCODES the text and
+                # replaces the tensor with the result — which has no reference image in it,
+                # because this node was never given one. On a reference run that swaps the
+                # whole conditioning for a text-only encode.
+                _log.note_on_change(
+                    "studio:ba_vs_wired", "FunPackStudio",
+                    "Bounded Attention's exact-boundary split is SKIPPED for the wired "
+                    "positive CONDITIONING — it works by re-encoding the prompt, and this "
+                    "node cannot put back a reference it never received.")
+                out.append(entry)
+                continue
             text = str(meta.get("funpack_scene_text") or "").strip() or str(fallback_text or "")
             combined, n1 = self._v2_bounded_attention_split_encode(text, clip, encode_cache=encode_cache)
             if combined is not None:
@@ -14057,10 +14076,43 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         relative steering for those scenes with the merged per-key steering (see
         _v2_apply_scene_refinement_keys); scenes without bound keys keep the project key."""
         mode = str(steer_mode or "relative").lower()
-        out = self._v2_apply_pulse_temporal(conditioning_list, temporal_style)
-        out = self._v2_apply_rapid_temporal(out, temporal_style)
-        out = self._v2_apply_auto_temporal(out, temporal_style, fallback_text=temporal_fallback_text)
-        out = self._v2_apply_bounded_attention(out, clip, fallback_text=temporal_fallback_text, encode_cache=encode_cache)
+
+        def _lengths(entries):
+            got = []
+            for e in entries or []:
+                try:
+                    got.append(int(e[0].shape[1]))
+                except Exception:  # noqa: BLE001
+                    got.append(None)
+            return got
+
+        def _step(name, entries, fn):
+            """Run one stage and name it if it changed how many positions a conditioning has.
+
+            No stage here is allowed to. One did — Bounded Attention, which rebuilds the
+            tensor by re-encoding — and the only downstream symptom was a tag-count mismatch
+            three functions away that read like housekeeping.
+            """
+            before = _lengths(entries)
+            result = fn(entries)
+            after = _lengths(result)
+            if before != after:
+                _log.note_on_change(
+                    f"studio:len:{name}", "FunPackStudio",
+                    f"'{name}' changed the conditioning length: {before} -> {after}. Part of "
+                    f"the prompt is no longer in the tensor the sampler receives. This is a "
+                    f"bug in that step, not a setting.")
+            return result
+
+        out = _step("pulse temporal", conditioning_list,
+                    lambda c: self._v2_apply_pulse_temporal(c, temporal_style))
+        out = _step("rapid temporal", out, lambda c: self._v2_apply_rapid_temporal(c, temporal_style))
+        out = _step("auto temporal", out,
+                    lambda c: self._v2_apply_auto_temporal(c, temporal_style,
+                                                           fallback_text=temporal_fallback_text))
+        out = _step("bounded attention", out,
+                    lambda c: self._v2_apply_bounded_attention(
+                        c, clip, fallback_text=temporal_fallback_text, encode_cache=encode_cache))
         out = self._v2_apply_h3_token_weights(out, clip, phrase_memory=phrase_memory,
                                               axis_feedback=axis_feedback,
                                               fallback_text=temporal_fallback_text,
@@ -14068,13 +14120,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                               auto_strength=auto_strength,
                                               variables=variables)
         if mode in ("relative", "both"):
-            out = self._v2_apply_scene_refinement_keys(
-                out, scene_refinement_keys, refinement_key,
+            out = _step("relative steering", out, lambda c: self._v2_apply_scene_refinement_keys(
+                c, scene_refinement_keys, refinement_key,
                 value_guidance=value_guidance, learning_profile=learning_profile,
                 conditioning_plan=conditioning_plan,
-            )
+            ))
         if mode in ("absolute", "both"):
-            out = self._v2_apply_absolute(out, float(absolute_strength))
+            out = _step("absolute steering", out,
+                        lambda c: self._v2_apply_absolute(c, float(absolute_strength)))
         if spread_cap and spread_cap > 0:
             capped = []
             clamped_any = False

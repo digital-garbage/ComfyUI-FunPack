@@ -144,3 +144,52 @@ def test_the_tag_surplus_message_names_the_prompt_as_the_missing_half():
     src = inspect.getsource(conditioning)
     assert "are the encoded PROMPT" in src
     assert "The prompt has been cut, not the tags." in src
+
+
+# --- nothing re-encodes a conditioning it did not build --------------------
+
+def test_a_wired_entry_is_marked_so_later_steps_can_tell(studio):
+    _cond, meta, _note, _owner = studio._v2_conditioning_source(object(), "a cat", _wired())
+    assert meta["funpack_conditioning_owner"] == "wired"
+
+
+def test_bounded_attention_skips_a_wired_entry(studio, monkeypatch):
+    """It replaces the tensor with a re-encode of the text — which has no reference in it,
+    because this node was never given one. 512 positions became 197: the whole conditioning
+    swapped for a text-only encode."""
+    import conditioning
+    monkeypatch.setattr(conditioning, "_log",
+                        types.SimpleNamespace(failed=lambda *a, **k: None,
+                                              note_on_change=lambda *a, **k: None),
+                        raising=False)
+    monkeypatch.setattr(studio, "_v2_bounded_attention_split_encode",
+                        lambda *a, **k: (torch.ones(1, 197, 8), 40), raising=False)
+
+    wired = [[torch.zeros(1, 512, 8),
+              {"funpack_conditioning_owner": "wired", "funpack_scene_text": "One. Two."}]]
+    out = studio._v2_apply_bounded_attention(wired, object())
+
+    assert int(out[0][0].shape[1]) == 512
+    assert "funpack_bound_split_tokens" not in out[0][1]
+
+
+def test_bounded_attention_still_runs_on_studios_own_encode(studio, monkeypatch):
+    """Skipping it everywhere would neuter the feature for the graphs it was built for."""
+    monkeypatch.setattr(studio, "_v2_bounded_attention_split_encode",
+                        lambda *a, **k: (torch.ones(1, 197, 8), 40), raising=False)
+
+    own = [[torch.zeros(1, 512, 8), {"funpack_scene_text": "One. Two."}]]
+    out = studio._v2_apply_bounded_attention(own, object())
+
+    assert out[0][1]["funpack_bound_split_tokens"] == 40
+
+
+def test_every_finalize_stage_is_length_checked():
+    """A stage that rebuilds the tensor showed up only as a tag mismatch three functions
+    away, which read like housekeeping."""
+    import conditioning
+    src = inspect.getsource(conditioning.FunPackVideoRefinerV2._v2_finalize_conditioning)
+    for name in ("pulse temporal", "rapid temporal", "auto temporal", "bounded attention",
+                 "relative steering", "absolute steering"):
+        assert f'_step("{name}"' in src
+    assert "changed the conditioning length" in src
