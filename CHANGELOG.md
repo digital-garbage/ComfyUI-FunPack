@@ -15,6 +15,17 @@
   past 40vh, can be selected, and carries a copy button. The running readout is unchanged.
 
 ### Added
+- **The negative prompt does something at CFG 1 (experimental).** MiniMax H3 always runs at
+  CFG 1.0, so the negative branch is never evaluated and the negative prompt is dead weight.
+  Studio ▸ "Use the negative prompt" encodes it anyway, pools it to one direction, and takes
+  that direction out of the positive conditioning. Default mode is `project` — it removes
+  only the part of each word that points at the negative and leaves the rest alone — with
+  `subtract` kept for comparison. The vision span of an H3 conditioning is never touched.
+  Off by default and unproven: expect concrete things to behave better than quality words.
+- **Studio ▸ "Skip Studio's positive processing".** With both CLIP and a positive CONDITIONING
+  wired, CLIP has always won and the wired conditioning was ignored. This inverts that: the
+  wired conditioning owns the positive while CLIP keeps encoding the negative and the
+  references. It skips shortcuts, $variables and the scene split, which is the point.
 - **A different sampler for the second pass.** The Scene Chain Sampler takes an optional
   `second_pass_sampler`; unwired, pass 2 reuses pass 1's, which is the old behaviour. In the
   Editor, Second pass ▸ Own sampler reveals the full algorithm panel for pass 2 — what

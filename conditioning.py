@@ -7068,7 +7068,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return f"stand-in tokenizer: {source}" if source else "stand-in tokenizer loaded"
 
     def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning, encode_cache=None,
-                                reference_image=None, h3_references=None):
+                                reference_image=None, h3_references=None, prefer_wired=False):
+        # `prefer_wired` inverts the usual precedence. CLIP normally wins because that is what
+        # a graph with both connected almost always means — but CLIP is also what encodes the
+        # negative, the references and Bounded Attention's spans, so "I built the positive
+        # myself" previously cost all of those. With this on, the wired CONDITIONING owns the
+        # positive and CLIP keeps every other job.
+        if prefer_wired and positive_conditioning is not None:
+            clip_note = ("positive CONDITIONING is wired and owns the prompt (Skip Studio's "
+                         "positive processing is on)"
+                         + ("; CLIP still encodes the negative and references"
+                            if clip is not None else ""))
+            cond, meta = self._v2_extract_conditioning(positive_conditioning)
+            if isinstance(cond, torch.Tensor):
+                if not getattr(self, "_funpack_prefer_wired_noted", False):
+                    self._funpack_prefer_wired_noted = True
+                    print(f"[FunPackStudio] {clip_note}")
+                return cond, meta, clip_note, "CONDITIONING-owned"
+            # Falling through to CLIP silently would look like the switch did nothing.
+            print("[FunPackStudio] Skip Studio's positive processing is on, but the wired "
+                  "positive CONDITIONING is invalid — falling back to the CLIP prompt path.")
         if clip is not None:
             cond, meta, encode_status = self._v2_encode_prompt(
                 clip, prompt_text, encode_cache=encode_cache, reference_image=reference_image,
@@ -11996,6 +12015,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
+                  prefer_wired_conditioning=False,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
@@ -12454,6 +12474,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             encode_cache=encode_cache,
             reference_image=source_image,
             h3_references=_h3_references,
+            prefer_wired=prefer_wired_conditioning,
         )
         fallback_graph = render_refinement_loss_graph(refinement_key, "v2", "clip", 0, 0.0, [])
         if not isinstance(cond, torch.Tensor):
@@ -14960,6 +14981,7 @@ class FunPackStudio:
             user_intent_prompt=effective_intent,
             refinement_key_input=refinement_key_input,
             positive_conditioning=positive_conditioning,
+            prefer_wired_conditioning=bool(rf.get("prefer_wired_conditioning", False)),
             clip_vision_output=clip_vision_output,
             source_image=source_image if vision_conditioning else None,
             model=model,
@@ -15022,6 +15044,29 @@ class FunPackStudio:
             # model's model_sampling, so the schedule follows whatever model is loaded.
             model=out_model,
         )
+
+        # Give the negative prompt a job at CFG 1. H3 never evaluates the negative branch, so
+        # the text you wrote there is otherwise dead weight; this takes its direction out of
+        # the positive conditioning instead. Last, so it operates on the conditioning the DiT
+        # will actually receive rather than on something later steering would move again.
+        if bool(rf.get("negative_erase", False)):
+            try:
+                try:
+                    from . import negative_erase as _neg
+                except ImportError:
+                    import negative_erase as _neg
+                cond, _neg_note = _neg.apply(
+                    cond, out_negative,
+                    float(rf.get("negative_erase_strength", 0.5) or 0.0),
+                    mode=str(rf.get("negative_erase_mode", "project") or "project"),
+                    renorm=bool(rf.get("negative_erase_renorm", True)),
+                )
+                if _neg_note:
+                    status = f"{status}\n{_neg_note}"
+                    print(f"[FunPackStudio] {_neg_note}")
+            except Exception as _e:  # noqa: BLE001
+                status = f"{status}\nnegative_erase failed: {_e}"
+                print(f"[FunPackStudio] negative_erase failed ({_e}) — conditioning unchanged")
 
         cond = _h3_reconcile_token_tags(cond, "positive")
         out_negative = _h3_reconcile_token_tags(out_negative, "negative")

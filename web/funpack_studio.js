@@ -85,7 +85,7 @@ function defaultSettings() {
   return {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6 },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6, negative_erase: false, negative_erase_strength: 0.5, negative_erase_mode: "project", negative_erase_renorm: true, prefer_wired_conditioning: false },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -1096,6 +1096,53 @@ function openPanel(node) {
     body.append(el("div", "funpack-studio-hint",
       "How hard Absolute/Both pull toward the global taste direction. 0.6 is visible but non-destructive; raise to override the prompt more strongly."));
     body.append(row("Absolute strength", absStrengthInput));
+
+    // Using the negative prompt at CFG 1. H3 never evaluates the negative branch, so the text
+    // is otherwise dead; this takes its direction out of the positive conditioning instead.
+    const negOn = el("input"); negOn.type = "checkbox";
+    negOn.checked = !!settings.refiner.negative_erase;
+    negOn.addEventListener("change", () => {
+      settings.refiner.negative_erase = negOn.checked; renderRefiner();
+    });
+    body.append(row("Use the negative prompt", negOn));
+    body.append(el("div", "funpack-studio-hint",
+      "EXPERIMENTAL. At CFG 1 the negative prompt is never read and does nothing. This encodes "
+      + "it and removes its direction from the positive conditioning instead. Unproven — "
+      + "concrete things ('a hat', 'red') should behave better than vague quality words."));
+    if (settings.refiner.negative_erase) {
+      const negStr = numInput(settings.refiner.negative_erase_strength ?? 0.5, 0, 2, 0.05);
+      negStr.addEventListener("change", () => {
+        const v = parseFloat(negStr.value);
+        settings.refiner.negative_erase_strength = Number.isFinite(v) ? Math.max(0, Math.min(2, v)) : 0.5;
+      });
+      body.append(row("Negative strength", negStr));
+      body.append(el("div", "funpack-studio-hint",
+        "1.0 removes the negative's component completely; below is partial, above pushes into "
+        + "the opposite. Start at 0.5 — this changes the prompt the model sees, so it can lose "
+        + "the prompt as well as the thing you did not want."));
+      const negMode = selectEl(["project", "subtract"], settings.refiner.negative_erase_mode || "project");
+      negMode.addEventListener("change", () => { settings.refiner.negative_erase_mode = negMode.value; });
+      body.append(row("Negative mode", negMode));
+      body.append(el("div", "funpack-studio-hint",
+        "'project' removes only the part of each word that points at the negative. 'subtract' "
+        + "moves every word by the same amount either way — closer to CFG, and blunter."));
+      const negRe = el("input"); negRe.type = "checkbox";
+      negRe.checked = settings.refiner.negative_erase_renorm !== false;
+      negRe.addEventListener("change", () => { settings.refiner.negative_erase_renorm = negRe.checked; });
+      body.append(row("Keep prompt strength", negRe));
+    }
+
+    // Who owns the positive when both CLIP and a CONDITIONING are wired.
+    const preferWired = el("input"); preferWired.type = "checkbox";
+    preferWired.checked = !!settings.refiner.prefer_wired_conditioning;
+    preferWired.addEventListener("change", () => {
+      settings.refiner.prefer_wired_conditioning = preferWired.checked;
+    });
+    body.append(row("Skip Studio's positive processing", preferWired));
+    body.append(el("div", "funpack-studio-hint",
+      "Normally CLIP wins and a wired positive CONDITIONING is ignored. With this on the wired "
+      + "one owns the positive and CLIP keeps encoding the negative and the references. It "
+      + "skips shortcuts, $variables and the scene split — for building the positive yourself."));
 
     const vfActiveKey = () => settings.refinement_key || linkedRefinementKey(node);
     const vfExportBtn = btn("Export", "secondary");

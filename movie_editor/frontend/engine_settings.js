@@ -101,6 +101,19 @@
     { name: "split_transition_placement", label: "Transition placement", kind: "combo",
       choices: ["start", "end", "silent"], default: "start",
       hint: "Where a transition sentence lands when a prompt is split into scenes: the start of the next scene, the end of the previous one, or neither." },
+    { name: "negative_erase", label: "Use the negative prompt", kind: "bool", default: false,
+      hint: "EXPERIMENTAL. MiniMax H3 runs at CFG 1, so it never reads the negative prompt and what you type there does nothing. This encodes it anyway and takes its direction out of the positive conditioning instead. Unproven: expect concrete things ('a hat', 'red') to work better than vague quality words." },
+    { name: "negative_erase_strength", label: "Negative strength", kind: "float", default: 0.5, min: 0, max: 2, step: 0.05,
+      dependsOn: "negative_erase", dependsVals: [true],
+      hint: "1.0 removes the negative's component completely; below that is partial, above pushes past it into the opposite. Start at 0.5 — this changes the prompt the model sees, so it can lose the prompt as well as the thing you did not want." },
+    { name: "negative_erase_mode", label: "Negative mode", kind: "combo", choices: ["project", "subtract"], default: "project",
+      dependsOn: "negative_erase", dependsVals: [true],
+      hint: "'project' removes only the part of each word that points at the negative and leaves the rest alone. 'subtract' moves every word by the same amount whether or not it had anything to do with it — closer to what CFG does, and blunter." },
+    { name: "negative_erase_renorm", label: "Keep prompt strength", kind: "bool", default: true,
+      dependsOn: "negative_erase", dependsVals: [true],
+      hint: "Puts each word back to its original strength after the change, so the result reads as 'less of that thing' rather than 'quieter prompt'. Off is the raw result." },
+    { name: "prefer_wired_conditioning", label: "Skip Studio's positive processing", kind: "bool", default: false,
+      hint: "When a positive CONDITIONING is wired into Studio, use it as-is instead of Studio's own prompt path — while CLIP keeps encoding the negative and the references. Normally CLIP wins and the wired conditioning is ignored. For building the positive yourself; it skips shortcuts, $variables and the scene split." },
   ];
 
   function parseStudioSettings(p) {
