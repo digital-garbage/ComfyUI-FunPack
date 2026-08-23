@@ -1270,3 +1270,13 @@ def test_the_editor_negative_reaches_studios_settings_too():
     settings = json.loads(graph["studio"]["inputs"]["studio_settings"])
     assert settings["refiner"]["negative_prompt"] == "no hats"
     assert graph["neg"]["inputs"]["value"] == "no hats"
+
+
+def test_an_imported_negative_does_not_survive_an_empty_box():
+    """`neg` is seeded from the imported workflow's widget values. Overwriting it only when
+    the editor sent a non-None negative meant an imported one kept encoding forever, with an
+    empty editable box on screen claiming otherwise."""
+    params = dict(PARAMS)
+    params.pop("negative_prompt", None)
+    graph, _report = builder.build(OI, {"slots": []}, params)
+    assert graph["neg"]["inputs"]["value"] == ""

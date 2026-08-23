@@ -22,7 +22,9 @@
   a negative stored in its own settings whenever the wired one is blank, and the editor has
   no field for that stored copy — so emptying the visible box left an earlier negative in
   force with nothing on screen saying so. The editor's box is authoritative, empty included.
-  The log now names which of the two supplied the text.
+  The log now names which of the two supplied the text. The negative primitive is also
+  written unconditionally, like the positive beside it — guarded, it kept the widget value
+  harvested from an IMPORTED workflow, so someone else's negative encoded on every run.
 
 ### Reverted
 - **GGUF loading is back to expanding the checkpoint at load.** The quantized path through

@@ -421,8 +421,12 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
 
         # 2. param overrides on the primitives + sampler seed.
         graph["pos"]["inputs"]["value"] = params.get("prompt", "")
-        if params.get("negative_prompt") is not None:
-            graph["neg"]["inputs"]["value"] = params["negative_prompt"]
+        # Unconditional, like the positive above it. Guarded on `is not None`, an absent key
+        # left the node holding the widget value harvested from the IMPORTED workflow — so a
+        # negative that came in with someone else's graph kept encoding on every run while
+        # the editor's Negative prompt box sat empty and editable. The box is the only
+        # negative the editor has; empty has to mean empty.
+        graph["neg"]["inputs"]["value"] = params.get("negative_prompt") or ""
         if params.get("num_frames_per_scene") is not None:
             graph["frames"]["inputs"]["value"] = family_frames(family, params["num_frames_per_scene"])
         if params.get("frame_rate") is not None:
