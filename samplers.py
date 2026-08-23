@@ -6699,6 +6699,30 @@ class FunPackLTXAVSceneChainSampler:
             parts.append(f"VRAM {comfy.model_management.get_free_memory() / 1024 ** 3:.1f} GB free")
         except Exception:  # noqa: BLE001
             pass
+        # Pinned host memory is the number that actually kills a Linux box. Page-locked pages
+        # cannot be swapped or reclaimed, so once the budget is committed the kernel has
+        # nothing left to give and goes into unrecoverable direct reclaim — the machine stops
+        # responding rather than the process being killed. ComfyUI's default budget is up to
+        # 90% of RAM (comfy/model_management.py), which leaves very little for the OS, the
+        # page cache, ffmpeg and the decode itself. Launch with --disable-pinned-memory when
+        # this line shows the budget close to total RAM.
+        try:
+            mm = comfy.model_management
+            cap = float(getattr(mm, "MAX_PINNED_MEMORY", -1) or -1)
+            if cap > 0:
+                used = float(getattr(mm, "TOTAL_PINNED_MEMORY", 0) or 0)
+                note = f"pinned {used / 1024 ** 3:.0f}/{cap / 1024 ** 3:.0f} GB budget"
+                try:
+                    import psutil
+                    if cap > psutil.virtual_memory().total * 0.80:
+                        note += " — budget is >80% of RAM; pinned pages cannot be swapped, " \
+                                "so this is the usual cause of a host that stops responding " \
+                                "(launch with --disable-pinned-memory)"
+                except Exception:  # noqa: BLE001
+                    pass
+                parts.append(note)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             held = []
             for lm in comfy.model_management.current_loaded_models:
