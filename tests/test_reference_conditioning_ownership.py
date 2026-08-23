@@ -115,3 +115,32 @@ def test_the_skip_is_reported_not_silent():
     src = inspect.getsource(conditioning.FunPackVideoRefinerV2.refine_v2)
     assert "the scene split is SKIPPED" in src
     assert "Disconnect it to let Studio split and encode per scene." in src
+
+
+# --- a multi-entry wired conditioning keeps all of its entries --------------
+
+def test_entries_past_the_first_are_not_discarded():
+    """An r2v node emits the reference block and the encoded prompt as SEPARATE entries.
+    `_v2_extract_conditioning` reads entry 0 and Studio rebuilt a single-entry list around
+    it, so the character survived and the prompt did not — a tensor holding a vision block
+    and nothing to say. Symptom: the right face speaking invented syllables."""
+    import conditioning
+    src = inspect.getsource(conditioning.FunPackVideoRefinerV2.refine_v2)
+    assert 'conditioning_owner == "CONDITIONING-owned" and isinstance(positive_conditioning, list)' in src
+    assert "output_conditioning + list(positive_conditioning[1:])" in src
+
+
+def test_the_extra_entries_are_reported():
+    import conditioning
+    src = inspect.getsource(conditioning.FunPackVideoRefinerV2.refine_v2)
+    assert "pass through unchanged" in src
+
+
+def test_the_tag_surplus_message_names_the_prompt_as_the_missing_half():
+    """The first version of this message said the REFERENCE was missing. It is the opposite:
+    a leading run that is almost all image marks IS the reference, and what was trimmed is
+    the prompt."""
+    import conditioning
+    src = inspect.getsource(conditioning)
+    assert "are the encoded PROMPT" in src
+    assert "The prompt has been cut, not the tags." in src

@@ -6386,10 +6386,12 @@ def _h3_reconcile_token_tags(conditioning, label=""):
             if have - want > _TAG_SURPLUS_IS_ROUTINE:
                 text_n, vision_n = _tag_composition(meta, want)
                 note += (f"\n[FunPackStudio] That surplus is far past the one spare tag a "
-                         f"vision block leaves — the tags describe {have} positions and the "
-                         f"conditioning holds {want}, so the reference's embeddings are "
-                         f"probably NOT in this tensor. After trimming, the kept marks are "
-                         f"{text_n} text and {vision_n} image.")
+                         f"vision block leaves. The tags describe {have} positions and the "
+                         f"conditioning holds only the first {want} — of which {text_n} are "
+                         f"marked text and {vision_n} image. A leading run that is almost "
+                         f"all image is the REFERENCE block; the {have - want} positions "
+                         f"trimmed away are the encoded PROMPT, and they are not in this "
+                         f"tensor. The prompt has been cut, not the tags.")
             print(note)
         out.append([cond, meta] + list(entry[2:]))
     return out
@@ -13128,6 +13130,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
 
         output_conditioning = [(refined, meta)]
+        # A wired CONDITIONING can be a MULTI-ENTRY list — an r2v node emits the reference
+        # block and the encoded prompt as separate entries. `_v2_extract_conditioning` reads
+        # entry 0 and Studio rebuilt a single-entry list around it, so everything after the
+        # first entry was dropped on the floor: the character survived and the prompt did
+        # not, which is a tensor holding the vision block and nothing to say.
+        #
+        # The extra entries pass through UNCHANGED. Steering is fitted to the entry Studio
+        # measured; applying it blind to a companion entry of a different length and purpose
+        # would be a guess, and dropping them is the bug being fixed here.
+        if conditioning_owner == "CONDITIONING-owned" and isinstance(positive_conditioning, list) \
+                and len(positive_conditioning) > 1:
+            output_conditioning = output_conditioning + list(positive_conditioning[1:])
+            _log.note_on_change(
+                "studio:wired_extra_entries", "FunPackStudio",
+                f"the wired positive CONDITIONING has {len(positive_conditioning)} entries; "
+                f"entry 1 is steered and the other "
+                f"{len(positive_conditioning) - 1} pass through unchanged. They used to be "
+                f"discarded, which cut everything after the first entry out of the prompt.")
         # Batch Training packs N variant entries (tagged 'funpack_batch_variant') onto the FINAL
         # conditioning just before each return below — so it wraps whatever output_conditioning
         # ends up being: single-scene OR multi-scene (transition split). Works WITH transitions.
