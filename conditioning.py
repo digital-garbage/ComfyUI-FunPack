@@ -13767,8 +13767,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         This writes it as (start, end, weight) token spans for the sampler to turn into an
         attention-logit bias. Text-only and cheap: phrases are located with the tokenizer's
-        offset mapping, not by re-encoding each one through a 32B text encoder. No behaviour
-        change unless the sampler's toggle is on.
+        offset mapping, not by re-encoding each one through a 32B text encoder.
+
+        There is no toggle. It is gated on having something to say: an H3 CLIP, a phrase
+        memory, and a rating that named a missing axis. Before the first rating it produces
+        nothing, and a Perfect clears the axes and switches it off again.
         """
         if clip is None or not isinstance(phrase_memory, dict) or not phrase_memory:
             return conditioning_list
