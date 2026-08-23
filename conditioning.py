@@ -13094,7 +13094,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         if _conditioning_plan_reason:
             print(f"[FunPackVideoRefinerV2] {_conditioning_plan_reason}")
-        if split_by_transitions:
+        # The split RE-ENCODES every scene from text and its entries replace
+        # `output_conditioning` wholesale. It re-establishes H3's visual conditioning from
+        # `source_image` / `h3_references` — but a wired CONDITIONING carries a reference this
+        # node never received: nothing in the editor pipeline sets either of those, so the
+        # re-encode is textually blind to the picture and the identity is simply gone. Not
+        # drift — a different person. Studio cannot split a conditioning it did not build, so
+        # it keeps the one it was given.
+        if split_by_transitions and conditioning_owner == "CONDITIONING-owned":
+            _log.note_on_change(
+                "studio:split_vs_wired", "FunPackStudio",
+                "the positive CONDITIONING is wired, so the scene split is SKIPPED — "
+                "splitting means re-encoding each scene from text, and this node cannot "
+                "reproduce a reference it never received. Every scene uses the wired "
+                "conditioning. Disconnect it to let Studio split and encode per scene.")
+            status = status + ("\nTransition split: skipped — the wired positive "
+                               "CONDITIONING owns the prompt") + enhancement_status
+        elif split_by_transitions:
             try:
                 scene_texts = split_scene_texts
                 if scene_texts:

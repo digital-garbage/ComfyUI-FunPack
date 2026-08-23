@@ -7,6 +7,7 @@ so the vision block precedes the prompt and every prompt row is a hidden state t
 already read the picture. Studio cannot reproduce that: nothing in the editor pipeline wires
 `h3_references` or `source_image`, so its encode never sees an image at all.
 """
+import inspect
 import sys
 import types
 
@@ -83,3 +84,34 @@ def test_an_invalid_wired_conditioning_falls_back_to_clip(studio, monkeypatch, c
     assert owner == "CLIP-owned"
     assert torch.equal(cond, torch.ones(1, 4, 8))
     assert "invalid" in capsys.readouterr().out
+
+
+# --- the scene split cannot rebuild what it did not encode -----------------
+
+def test_the_split_is_skipped_when_the_conditioning_is_wired(monkeypatch, capsys):
+    """The split re-encodes every scene from text and its entries replace the output
+    WHOLESALE. It re-establishes H3's visual conditioning from source_image /
+    h3_references — neither of which the editor pipeline ever sets — so a wired reference
+    conditioning was replaced by text-only encodes and the character became someone else.
+
+    With CLIP disconnected the split returns None and the wired conditioning survived, which
+    is exactly why disconnecting CLIP 'fixed' it.
+    """
+    import conditioning
+    node = conditioning.FunPackVideoRefinerV2()
+    called = []
+    monkeypatch.setattr(node, "_v2_transition_scene_conditionings",
+                        lambda *a, **k: called.append(a) or None, raising=False)
+
+    src = inspect.getsource(conditioning.FunPackVideoRefinerV2.refine_v2)
+    # The guard is on ownership, not on CLIP being absent.
+    assert 'split_by_transitions and conditioning_owner == "CONDITIONING-owned"' in src
+    assert "elif split_by_transitions:" in src
+
+
+def test_the_skip_is_reported_not_silent():
+    """A silently unsplit multi-scene run looks like the scene texts were ignored."""
+    import conditioning
+    src = inspect.getsource(conditioning.FunPackVideoRefinerV2.refine_v2)
+    assert "the scene split is SKIPPED" in src
+    assert "Disconnect it to let Studio split and encode per scene." in src

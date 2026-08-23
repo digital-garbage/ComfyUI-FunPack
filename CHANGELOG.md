@@ -38,6 +38,14 @@
   `$style` while the encoded prompt had it resolved.
 
 ### Fixed
+- **A wired reference conditioning is no longer thrown away by the scene split.** The split
+  re-encodes every scene from text and its entries replace the output wholesale. It
+  re-establishes H3's visual conditioning from `source_image` / `h3_references` — neither of
+  which anything in the editor pipeline sets — so on a reference run the identity was
+  replaced by text-only encodes and the character came out as a different person entirely.
+  With CLIP disconnected the split returned None and the wired conditioning survived, which
+  is why disconnecting CLIP appeared to fix it. Studio cannot split a conditioning it did not
+  build, so it now keeps the one it was given and says so.
 - **A reference image's encoded rows are no longer steered.** H3 tokenizes a reference INTO
   the conditioning — comfy marks the whole vision block as 0 in `minimax_token_tags` and text
   as 1 — and those rows are Qwen's encoding of the picture. Every steering path (learned
