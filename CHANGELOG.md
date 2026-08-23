@@ -32,7 +32,10 @@
   compounded to an effective x3.4 on one token. A lone span is untouched. And how hard it
   pushes now comes from Studio's existing machinery rather than a new scale: the ceiling is
   the same 1.25 `_v2_build_attn2_patch` has used on LTX all along, and the ramp toward it is
-  `_v2_auto_strength`, so one Awful reaches about 1.13 instead of jumping to maximum.
+  `_v2_auto_strength`, so one Awful reaches about 1.13 instead of jumping to maximum. It also
+  measures the text that was ENCODED rather than the raw one, and resolves `$variables` in a
+  phrase before matching it — phrase memory stores raw text, so a phrase could still carry
+  `$style` while the encoded prompt had it resolved.
 
 ### Fixed
 - **A reference image is no longer thrown away by Studio.** With CLIP and a positive

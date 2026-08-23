@@ -13076,7 +13076,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state)),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables),
                         status,
                         training_info,
                         loss_graph,
@@ -13094,7 +13094,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state)),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -13769,7 +13769,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
     def _v2_apply_h3_token_weights(self, conditioning_list, clip, phrase_memory=None,
                                    axis_feedback=None, fallback_text="", enabled=False,
-                                   auto_strength=None):
+                                   auto_strength=None, variables=None):
         """Tag each scene with the token spans the RATING says deserve more attention.
 
         Studio has decomposed and scored every phrase, word and n-gram since 2.0
@@ -13820,6 +13820,31 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         "the rating's per-phrase emphasis is NOT being applied")
             return conditioning_list
 
+        def _resolve_phrase_variables(pairs):
+            """Phrase memory stores the RAW prompt text, so a phrase can still carry `$style`
+            while the encoded prompt has it resolved — and then it matches nothing.
+            Variables are a plain substitution, so both sides can be put in the same form.
+
+            Shortcuts are NOT expanded here. A `/trigger` rolls per seed, and peeking would
+            produce a different roll from the one that was encoded — a phrase carrying an
+            unrolled shortcut failing to match is the honest outcome."""
+            if not variables:
+                return list(pairs)
+            try:
+                try:
+                    from .templates import resolve_variables as _rv
+                except ImportError:
+                    from templates import resolve_variables as _rv
+            except Exception:  # noqa: BLE001
+                return list(pairs)
+            done = []
+            for phrase, weight in pairs:
+                try:
+                    done.append((_rv(str(phrase), variables)[0], weight))
+                except Exception:  # noqa: BLE001
+                    done.append((phrase, weight))
+            return done
+
         out = []
         applied = 0
         for entry in conditioning_list or []:
@@ -13827,7 +13852,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 out.append(entry)
                 continue
             cond, meta = entry[0], dict(entry[1])
-            text = str(meta.get("funpack_scene_text") or "").strip() or str(fallback_text or "")
+            # funpack_encode_text is the string that was actually ENCODED — shortcuts rolled
+            # and $variables resolved. funpack_scene_text is the RAW one, and tokenizing that
+            # measures a different string from the one inside the conditioning: every span
+            # lands on the wrong words, or the placement guard rejects the run outright.
+            text = (str(meta.get("funpack_encode_text") or "").strip()
+                    or str(meta.get("funpack_scene_text") or "").strip()
+                    or str(fallback_text or ""))
             try:
                 from . import h3_token_weights as _tw
             except ImportError:
@@ -13835,7 +13866,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # Capped AFTER ranking by weight, so the eight that survive are the eight the
             # rating cared most about; ordered longest-first only for application, so a
             # phrase's bias lands before one of its own words adds to it.
-            chosen = _tw.order_for_application(weighted[:8])
+            chosen = _tw.order_for_application(_resolve_phrase_variables(weighted[:8]))
             spans, prompt_tokens = _tw.locate(tokenizer, text, chosen)
             if spans and prompt_tokens:
                 entry_meta = {"spans": spans, "prompt_tokens": int(prompt_tokens)}
@@ -13865,7 +13896,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                   scene_refinement_keys=None, learning_profile=None,
                                   conditioning_plan=None, clip=None, encode_cache=None,
                                   phrase_memory=None, axis_feedback=None,
-                                  h3_phrase_emphasis=False, auto_strength=None):
+                                  h3_phrase_emphasis=False, auto_strength=None,
+                                  variables=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
@@ -13883,7 +13915,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                               axis_feedback=axis_feedback,
                                               fallback_text=temporal_fallback_text,
                                               enabled=h3_phrase_emphasis,
-                                              auto_strength=auto_strength)
+                                              auto_strength=auto_strength,
+                                              variables=variables)
         if mode in ("relative", "both"):
             out = self._v2_apply_scene_refinement_keys(
                 out, scene_refinement_keys, refinement_key,

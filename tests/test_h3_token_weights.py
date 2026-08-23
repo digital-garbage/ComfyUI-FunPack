@@ -6,6 +6,7 @@ the prompt's key positions in the packed self-attention stream.
 """
 import math
 import sys
+import types
 
 import pytest
 import torch
@@ -536,3 +537,68 @@ def test_a_single_span_is_never_clamped():
     weaken a weight the user asked for."""
     bias = tw.build_bias([(0, 4, 2.0)], 4, 4, 20, "cpu", torch.float32)
     assert bias.max().item() == pytest.approx(math.log(2.0))
+
+
+# --- the text that was actually encoded ------------------------------------
+
+@pytest.fixture
+def refiner():
+    import conditioning
+    return conditioning.FunPackVideoRefinerV2.__new__(conditioning.FunPackVideoRefinerV2)
+
+
+class _H3Clip:
+    def __init__(self):
+        self.tokenizer = types.SimpleNamespace(
+            qwen3vl_32b=types.SimpleNamespace(tokenizer=_FakeTokenizer()))
+
+
+def _apply(refiner, monkeypatch, meta, memory, variables=None):
+    import conditioning
+    import minimax_h3
+    monkeypatch.setattr(minimax_h3, "is_h3_clip", lambda c: True)
+    monkeypatch.setattr(conditioning, "_log",
+                        types.SimpleNamespace(failed=lambda *a, **k: None,
+                                              note_on_change=lambda *a, **k: None),
+                        raising=False)
+    out = refiner._v2_apply_h3_token_weights(
+        [[torch.zeros(1, 40, 8), dict(meta)]], _H3Clip(), phrase_memory=memory,
+        axis_feedback={"missing_axes": ["details"]}, enabled=True,
+        auto_strength=0.0435, variables=variables)
+    return out[0][1].get("funpack_h3_token_weights")
+
+
+def test_the_encoded_text_is_measured_not_the_raw_one(refiner, monkeypatch):
+    """funpack_scene_text still holds `$style`; the conditioning was built from the resolved
+    string. Measuring the raw one puts every span on the wrong words."""
+    memory = {"neon rain": {"kind": "phrase",
+                            "effective_category_scores": {"details": 0.9}}}
+    tag = _apply(refiner, monkeypatch,
+                 {"funpack_scene_text": "$style neon rain",
+                  "funpack_encode_text": "cinematic neon rain"}, memory)
+
+    assert tag is not None
+    assert tag["prompt_tokens"] == len("cinematic neon rain")
+    start, end, _w = tag["spans"][0]
+    assert "cinematic neon rain"[start:end] == "neon rain"
+
+
+def test_a_phrase_still_carrying_a_variable_is_resolved_before_matching(refiner, monkeypatch):
+    """Phrase memory stores the RAW text, so `$style` survives in the phrase while the
+    encoded prompt has it resolved — and then it matches nothing."""
+    memory = {"$style rain": {"kind": "phrase",
+                              "effective_category_scores": {"details": 0.9}}}
+    tag = _apply(refiner, monkeypatch,
+                 {"funpack_encode_text": "cinematic rain"}, memory,
+                 variables=[{"name": "style", "value": "cinematic"}])
+
+    assert tag is not None
+    start, end, _w = tag["spans"][0]
+    assert "cinematic rain"[start:end] == "cinematic rain"
+
+
+def test_a_phrase_that_still_does_not_match_is_simply_skipped(refiner, monkeypatch):
+    memory = {"nothing like it": {"kind": "phrase",
+                                  "effective_category_scores": {"details": 0.9}}}
+    assert _apply(refiner, monkeypatch, {"funpack_encode_text": "cinematic rain"},
+                  memory) is None
