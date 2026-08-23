@@ -26,34 +26,43 @@ def studio():
     return conditioning.FunPackVideoRefinerV2.__new__(conditioning.FunPackVideoRefinerV2)
 
 
-TAGS = torch.tensor([1, 0, 0, 0, 1, 1])          # a 3-row vision block at 1..3
+# The real r2v layout: "<Picture 1>: " label (text), the vision block, then the prompt.
+TAGS = torch.tensor([1, 0, 0, 0, 1, 1])
 
 
 def _entry(studio, value=1.0):
     cond = torch.full((1, 6, 4), value)
-    cond[:, 1:4] = 7.0                            # the picture's own rows
+    cond[:, :4] = 7.0                             # label + vision block = the reference
     meta = studio._v2_stash_reference_rows(cond, {"minimax_token_tags": TAGS})
     return cond, meta
 
 
-def test_the_vision_rows_are_put_back_after_steering(studio):
+def test_everything_before_the_prompt_is_put_back_after_steering(studio):
     cond, meta = _entry(studio)
     steered = torch.zeros_like(cond)              # as if every row had been lerped away
 
     out = studio._v2_restore_reference_rows([[steered, meta]])
 
-    assert torch.equal(out[0][0][:, 1:4], torch.full((1, 3, 4), 7.0))
+    assert torch.equal(out[0][0][:, :4], torch.full((1, 4, 4), 7.0))
 
 
-def test_the_text_rows_keep_whatever_steering_did(studio):
-    """Protection is for the picture, not a veto on refinement."""
+def test_the_prompt_rows_keep_whatever_steering_did(studio):
+    """Protection is for the reference, not a veto on refinement. The prompt is still
+    Studio's to steer — that is the whole job."""
     cond, meta = _entry(studio)
     steered = torch.zeros_like(cond)
 
     out = studio._v2_restore_reference_rows([[steered, meta]])
 
-    assert torch.equal(out[0][0][:, 0], torch.zeros(1, 4))
     assert torch.equal(out[0][0][:, 4:], torch.zeros(1, 2, 4))
+
+
+def test_the_picture_s_label_is_protected_too(studio):
+    """The `<Picture 1>: ` label sits between the two and is not part of anything Studio
+    wrote. Protecting only the image-tagged rows would leave it steerable."""
+    cond, meta = _entry(studio)
+    out = studio._v2_restore_reference_rows([[torch.zeros_like(cond), meta]])
+    assert torch.equal(out[0][0][:, 0], torch.full((1, 4), 7.0))
 
 
 def test_the_stash_never_travels_on_to_the_sampler(studio):
@@ -63,7 +72,7 @@ def test_the_stash_never_travels_on_to_the_sampler(studio):
 
 
 def test_a_text_only_conditioning_is_not_stashed_at_all(studio):
-    """Every non-reference run: no tensor kept, nothing to restore."""
+    """The prompt starts at row 0 and there is nothing in front of it."""
     cond = torch.ones(1, 6, 4)
     meta = studio._v2_stash_reference_rows(cond, {"minimax_token_tags": torch.ones(6)})
     assert studio.REFERENCE_ROWS_KEY not in meta
@@ -93,4 +102,4 @@ def test_the_stash_is_a_copy_not_a_view(studio):
     cond, meta = _entry(studio)
     cond.zero_()
     out = studio._v2_restore_reference_rows([[cond, meta]])
-    assert torch.equal(out[0][0][:, 1:4], torch.full((1, 3, 4), 7.0))
+    assert torch.equal(out[0][0][:, :4], torch.full((1, 4, 4), 7.0))

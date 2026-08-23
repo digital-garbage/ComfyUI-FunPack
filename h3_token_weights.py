@@ -349,6 +349,29 @@ def token_spans_from_offsets(offsets, char_spans):
     return out
 
 
+def prompt_region(token_tags, cond_len):
+    """(start, end) of the PROMPT inside an H3 conditioning, or None.
+
+    An r2v conditioning is laid out reference-first: the `<Picture n>: ` label, the vision
+    block, then the encoded prompt. `minimax_token_tags` marks a vision block 0 and text 1,
+    so the prompt is the trailing unbroken run of 1s and everything before it belongs to the
+    reference.
+
+    That boundary is the only thing Studio needs. Rows before it are the picture and are not
+    Studio's to touch; rows from it on are the prompt and are.
+    """
+    tags = _as_list(token_tags)
+    if not tags or cond_len <= 0:
+        return None
+    end = min(len(tags), cond_len)
+    while end > 0 and int(tags[end - 1]) != 1:
+        end -= 1                      # trailing non-text; should not happen, cheap to allow
+    start = end
+    while start > 0 and int(tags[start - 1]) == 1:
+        start -= 1
+    return (start, end) if end > start else None
+
+
 def prompt_base(token_tags, cond_len, prompt_tokens):
     """Index of the prompt's first token inside the conditioning block, or None.
 
@@ -364,15 +387,9 @@ def prompt_base(token_tags, cond_len, prompt_tokens):
     """
     if prompt_tokens <= 0 or cond_len <= 0:
         return None
-    tags = _as_list(token_tags)
-    if tags:
-        end = min(len(tags), cond_len)
-        run_end = end
-        while run_end > 0 and int(tags[run_end - 1]) != 1:
-            run_end -= 1                      # trailing non-text (should not happen; cheap)
-        run_start = run_end
-        while run_start > 0 and int(tags[run_start - 1]) == 1:
-            run_start -= 1
+    region = prompt_region(token_tags, cond_len)
+    if region:
+        run_start, run_end = region
         run = run_end - run_start
         # The prompt is the tokenizer's LAST segment, so the tail of the text run is the
         # prompt — but only if the text measured here is the text that was encoded. When a
@@ -407,19 +424,11 @@ def choose_encoded_text(tokenizer, candidates, token_tags, cond_len):
 
     Returns (text, token_count, base) or (None, 0, None) when nothing fits.
     """
-    tags = _as_list(token_tags)
-    if not tags:
+    region = prompt_region(token_tags, cond_len)
+    if not region:
         return None, 0, None
-    end = min(len(tags), cond_len)
-    run_end = end
-    while run_end > 0 and int(tags[run_end - 1]) != 1:
-        run_end -= 1
-    run_start = run_end
-    while run_start > 0 and int(tags[run_start - 1]) == 1:
-        run_start -= 1
+    run_start, run_end = region
     run = run_end - run_start
-    if run <= 0:
-        return None, 0, None
     best = None
     for text in candidates:
         text = str(text or "").strip()

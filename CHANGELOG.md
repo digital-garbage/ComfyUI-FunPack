@@ -59,7 +59,11 @@
   directions, taste pull, concept deltas, the absolute store, negative_erase) lerps over the
   WHOLE tensor, so the picture was being moved toward a direction learned from text and the
   character's appearance drifted. Nothing read the tag map. The vision rows are now restored
-  exactly as encoded, after every manipulation. Text rows still steer.
+  exactly as encoded, after every manipulation. Text rows still steer. Protection runs to
+  the reference/prompt BOUNDARY rather than the image-tagged rows alone, so the
+  `<Picture n>: ` label between them is covered too: an r2v conditioning is laid out
+  reference-first, and everything before the trailing run of text tags belongs to the
+  picture.
 - **A reference image is no longer thrown away by Studio.** With CLIP and a positive
   CONDITIONING both connected, CLIP won and Studio re-encoded the prompt from text. On H3
   that is not a near-miss: Qwen3-VL is a causal VLM and a reference's vision block sits

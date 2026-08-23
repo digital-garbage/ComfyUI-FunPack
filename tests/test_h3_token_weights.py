@@ -670,3 +670,27 @@ def test_the_editor_link_texts_are_offered_as_candidates():
 def inspect_source(fn):
     import inspect
     return inspect.getsource(fn)
+
+
+# --- the reference / prompt boundary ---------------------------------------
+
+def test_the_prompt_is_the_trailing_run_of_text_tags():
+    """An r2v conditioning is laid out reference-first: label, vision block, prompt."""
+    assert tw.prompt_region([1, 0, 0, 0, 1, 1, 1], cond_len=7) == (4, 7)
+
+
+def test_a_text_only_conditioning_is_all_prompt():
+    assert tw.prompt_region([1, 1, 1], cond_len=3) == (0, 3)
+
+
+def test_no_tags_means_no_boundary():
+    assert tw.prompt_region(None, cond_len=7) is None
+    assert tw.prompt_region([], cond_len=7) is None
+
+
+def test_a_conditioning_shorter_than_its_tags_is_measured_by_the_tensor():
+    assert tw.prompt_region([1, 0, 0, 1, 1, 1, 1], cond_len=5) == (3, 5)
+
+
+def test_an_all_image_conditioning_has_no_prompt():
+    assert tw.prompt_region([0, 0, 0], cond_len=3) is None

@@ -10658,33 +10658,40 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     REFERENCE_ROWS_KEY = "funpack_pristine_reference_rows"
 
     def _v2_stash_reference_rows(self, cond, meta):
-        """Keep a pristine copy of the vision rows so they can be put back after steering.
+        """Keep a pristine copy of everything BEFORE the prompt.
 
-        Cheap: a conditioning is a few hundred rows, so this is single-digit megabytes, and
-        it is dropped again in `_v2_restore_reference_rows`. Returns `meta` unchanged when
-        there is no vision block, which is every text-only and non-H3 run.
+        An r2v conditioning is laid out reference-first — `<Picture n>: ` label, vision
+        block, then the encoded prompt — so the boundary is all that is needed: rows before
+        it are the picture and are not Studio's to touch, rows from it on are the prompt and
+        are. Protecting by that boundary rather than by the image tags alone also covers the
+        label, which sits between the two and is not part of anything Studio wrote.
+
+        Cheap: a conditioning is a few hundred rows. Dropped again in
+        `_v2_restore_reference_rows`. No-op on a text-only or non-H3 conditioning, where the
+        prompt starts at row 0 and there is nothing in front of it.
         """
         try:
-            tags = meta.get("minimax_token_tags") if isinstance(meta, dict) else None
-            if tags is None or not isinstance(cond, torch.Tensor) or cond.dim() < 2:
+            if not isinstance(cond, torch.Tensor) or cond.dim() < 2 or not isinstance(meta, dict):
                 return meta
-            flat = tags.reshape(-1)
-            n = min(int(flat.shape[0]), int(cond.shape[1]))
-            mask = (flat[:n] == 0)
-            if not bool(mask.any().item()):
+            try:
+                from . import h3_token_weights as _tw
+            except ImportError:
+                import h3_token_weights as _tw
+            region = _tw.prompt_region(meta.get("minimax_token_tags"), int(cond.shape[1]))
+            if not region or region[0] <= 0:
                 return meta
             meta = dict(meta)
-            meta[self.REFERENCE_ROWS_KEY] = (mask, cond[:, :n][:, mask].clone())
+            meta[self.REFERENCE_ROWS_KEY] = cond[:, :region[0]].clone()
             return meta
         except Exception as _e:  # noqa: BLE001
-            _log.failed("FunPackStudio", "reference row protection", _e,
-                        "a reference image's encoded rows CAN be moved by steering, which "
-                        "shows up as the character's appearance drifting")
+            _log.failed("FunPackStudio", "reference protection", _e,
+                        "a reference image's rows CAN be moved by steering, which shows up "
+                        "as the character's appearance drifting")
             return meta
 
     def _v2_restore_reference_rows(self, conditioning_list):
-        """Put the reference's vision rows back exactly as Qwen encoded them, and drop the
-        stash so it never travels on to the sampler."""
+        """Put the reference back exactly as it arrived, and drop the stash so it never
+        travels on to the sampler."""
         out = []
         for entry in conditioning_list or []:
             if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
@@ -10692,15 +10699,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 out.append(entry)
                 continue
             cond, meta = entry[0], dict(entry[1])
-            mask, rows = meta.pop(self.REFERENCE_ROWS_KEY)
+            rows = meta.pop(self.REFERENCE_ROWS_KEY)
             try:
-                if isinstance(cond, torch.Tensor) and cond.dim() >= 2:
-                    n = int(mask.shape[0])
-                    if int(cond.shape[1]) >= n and rows.shape[-1] == cond.shape[-1]:
-                        cond = cond.clone()
-                        cond[:, :n][:, mask] = rows.to(device=cond.device, dtype=cond.dtype)
+                n = int(rows.shape[1])
+                if isinstance(cond, torch.Tensor) and cond.dim() >= 2 \
+                        and int(cond.shape[1]) >= n and rows.shape[-1] == cond.shape[-1]:
+                    cond = cond.clone()
+                    cond[:, :n] = rows.to(device=cond.device, dtype=cond.dtype)
             except Exception as _e:  # noqa: BLE001
-                _log.failed("FunPackStudio", "reference row protection", _e,
+                _log.failed("FunPackStudio", "reference protection", _e,
                             "this scene's reference rows keep whatever steering did to them")
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         return out
