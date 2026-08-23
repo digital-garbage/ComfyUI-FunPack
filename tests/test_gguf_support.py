@@ -5,14 +5,10 @@ which backend gets picked, what happens when none is available, and whether .ggu
 are found at all (core's extension set excludes them, which is the whole reason this
 module exists).
 """
-import gc
-import os
 import sys
 import types
-import weakref
 
 import pytest
-import torch
 
 sys.path.insert(0, ".")
 import gguf_support  # noqa: E402
@@ -124,13 +120,12 @@ def test_pack_load_passes_custom_operations_through(tmp_path, monkeypatch):
     d = tmp_path / "pack"
     d.mkdir()
     (d / "loader.py").write_text(
-        "class _T:\n    shape = (1,)\n\n"
-        "def gguf_sd_loader(path):\n    return {'w': _T()}\n")
+        "def gguf_sd_loader(path):\n    return {'w': 'quantized'}\n")
     (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
 
     sd, options, note = gguf_support.load_state_dict("/whatever.gguf")
-    assert list(sd) == ["w"]
+    assert sd == {"w": "quantized"}
     assert "custom_operations" in options
     assert type(options["custom_operations"]).__name__ == "GGMLOps"
     assert "quantized" in note
@@ -164,19 +159,18 @@ def test_pack_modules_can_use_relative_imports(tmp_path, monkeypatch):
     d.mkdir()
     (d / "__init__.py").write_text("raise AssertionError('the pack __init__ must not run')")
     (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
-    (d / "dequant.py").write_text(
-        "class Marker:\n    shape = (1,)\n    name = 'dequant'\n")
+    (d / "dequant.py").write_text("MARKER = 'dequant'\n")
     (d / "loader.py").write_text(
         "from .ops import GGMLOps\n"
-        "from .dequant import Marker\n"
+        "from .dequant import MARKER\n"
         "def gguf_sd_loader(path):\n"
-        "    return {'w': Marker()}\n"
+        "    return {'w': MARKER}\n"
     )
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
     monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
 
     sd, options, note = gguf_support.load_state_dict("/whatever.gguf")
-    assert sd["w"].name == "dequant"
+    assert sd == {"w": "dequant"}
     assert type(options["custom_operations"]).__name__ == "GGMLOps"
 
 
@@ -188,16 +182,15 @@ def test_switching_pack_directories_remounts(tmp_path, monkeypatch):
         d.mkdir()
         (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
         (d / "loader.py").write_text(
-            f"class _T:\n    shape = (1,)\n    name = '{marker}'\n"
-            f"def gguf_sd_loader(path):\n    return {{'w': _T()}}\n")
+            f"def gguf_sd_loader(path):\n    return {{'w': '{marker}'}}\n")
     monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
 
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(tmp_path / "a"))
-    assert gguf_support.load_state_dict("/x.gguf")[0]["w"].name == "first"
+    assert gguf_support.load_state_dict("/x.gguf")[0] == {"w": "first"}
 
     # No manual cache clearing: remounting a different directory must purge it by itself.
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(tmp_path / "b"))
-    assert gguf_support.load_state_dict("/x.gguf")[0]["w"].name == "second"
+    assert gguf_support.load_state_dict("/x.gguf")[0] == {"w": "second"}
 
 
 def test_pack_refusing_an_architecture_falls_back(tmp_path, monkeypatch):
@@ -247,214 +240,3 @@ def test_gguf_is_a_declared_requirement():
     reqs = pathlib.Path("requirements.txt").read_text(encoding="utf-8")
     lines = [ln.strip() for ln in reqs.splitlines() if ln.strip() and not ln.startswith("#")]
     assert any(ln == "gguf" or ln.startswith("gguf") for ln in lines)
-
-
-# ── expand once, not every launch ─────────────────────────────────────────────
-# The native path has to dequantize every tensor before the model is usable — minutes on a
-# video checkpoint, paid again on every launch for a result that is identical every time.
-
-class _Loader:
-    def __init__(self, arches):
-        self.IMG_ARCH_LIST = set(arches)
-
-
-def test_an_unknown_architecture_is_added_so_the_file_loads_quantized(monkeypatch):
-    monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "minimax_h3")
-    loader = _Loader({"flux", "sd3"})
-    note = gguf_support._allow_architectures(loader, "x.gguf")
-    assert "minimax_h3" in loader.IMG_ARCH_LIST
-    assert "minimax_h3" in note and "FunPack added" in note
-
-
-def test_a_known_architecture_is_left_alone_and_says_nothing(monkeypatch):
-    monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "flux")
-    loader = _Loader({"flux"})
-    assert gguf_support._allow_architectures(loader, "x.gguf") == ""
-
-
-def test_an_unreadable_architecture_changes_nothing(monkeypatch):
-    monkeypatch.setattr(gguf_support, "read_architecture", lambda p: None)
-    loader = _Loader({"flux"})
-    assert gguf_support._allow_architectures(loader, "x.gguf") == ""
-    assert loader.IMG_ARCH_LIST == {"flux"}
-
-
-def test_the_text_encoder_list_is_never_touched(monkeypatch):
-    """Image and text architectures steer different key renaming in the pack; guessing a
-    text arch into the image list is one thing, the reverse is another."""
-    monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "minimax_h3")
-    loader = _Loader({"flux"})
-    loader.TXT_ARCH_LIST = {"t5"}
-    gguf_support._allow_architectures(loader, "x.gguf")
-    assert loader.TXT_ARCH_LIST == {"t5"}
-
-
-def test_a_backend_that_returns_something_else_is_refused(tmp_path):
-    """The pack's own guard is what we stepped around, so the check it was doing happens
-    here: handing a non-state-dict to ComfyUI fails deep in core with a message that makes no
-    sense out here. Raising instead drops to the slow path that works."""
-    for bad in (None, [], "sd", {}, {1: object()}):
-        with pytest.raises(RuntimeError):
-            gguf_support._assert_state_dict(bad, "m.gguf")
-
-
-def test_a_non_tensor_value_is_named(tmp_path):
-    with pytest.raises(RuntimeError, match="not a tensor"):
-        gguf_support._assert_state_dict({"w": {"nested": 1}}, "m.gguf")
-
-
-def test_a_real_state_dict_passes():
-    import torch
-    gguf_support._assert_state_dict({"w": torch.zeros(2)}, "m.gguf")
-
-
-def _fake_gguf(monkeypatch, tensors):
-    """A stand-in for the `gguf` package over `tensors` — (name, shape, values) triples.
-
-    Every tensor is reported as quantized, so `_load_native` takes its dequantize path for
-    all of them, and each dequantize hands back a fresh float32 array whose lifetime the
-    caller can track.
-    """
-    import numpy as np
-
-    fake = types.ModuleType("gguf")
-
-    class _QType:
-        F32 = "F32"
-        F16 = "F16"
-        Q8 = "Q8"
-
-    class _Tensor:
-        def __init__(self, name, shape, values):
-            self.name = name
-            # GGUF reports dimensions in the opposite order to torch.
-            self.shape = tuple(reversed(shape))
-            self.tensor_type = _QType.Q8
-            self.data = np.asarray(values, dtype=np.float32)
-
-    class _Reader:
-        def __init__(self, path):
-            self.tensors = [_Tensor(n, s, v) for n, s, v in tensors]
-
-    produced = []
-    live = []
-
-    def _dequantize(data, qtype):
-        # Sampled BEFORE this call's own array exists, so it counts what the loader is still
-        # holding on to. Peak is the whole point: every array is freed by the time the load
-        # returns no matter how it was written.
-        live.append(sum(1 for ref in produced if ref() is not None))
-        arr = np.asarray(data, dtype=np.float32).copy()
-        produced.append(weakref.ref(arr))
-        return arr
-
-    quants = types.ModuleType("gguf.quants")
-    quants.dequantize = _dequantize
-    fake.GGMLQuantizationType = _QType
-    fake.GGUFReader = _Reader
-    fake.quants = quants
-    monkeypatch.setitem(sys.modules, "gguf", fake)
-    monkeypatch.setitem(sys.modules, "gguf.quants", quants)
-    return produced, live
-
-
-def test_load_native_returns_half_width_tensors_in_torch_order(monkeypatch):
-    monkeypatch.setattr(gguf_support.os, "cpu_count", lambda: 2)   # forces the serial path
-    _fake_gguf(monkeypatch, [("a", (2, 3), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])])
-
-    sd, options, note = gguf_support._load_native("/models/m.gguf")
-
-    assert options == {}
-    assert list(sd) == ["a"]
-    assert tuple(sd["a"].shape) == (2, 3)
-    assert sd["a"].dtype is torch.float16
-    assert sd["a"][1][2].item() == 6.0
-    assert "1 quantized tensors" in note
-
-
-def test_load_native_does_not_keep_every_expanded_tensor_alive(monkeypatch):
-    """The float32 form is four times the finished weight, so holding all of them at once
-    peaks at several times the model in host RAM — enough to take a machine down on a video
-    checkpoint. Each one must be cast and released as it is produced."""
-    monkeypatch.setattr(gguf_support.os, "cpu_count", lambda: 2)   # forces the serial path
-    produced, live = _fake_gguf(
-        monkeypatch, [(f"t{i}", (4, 4), [[float(i)] * 4] * 4) for i in range(24)])
-
-    gguf_support._load_native("/models/m.gguf")
-
-    assert len(produced) == 24
-    # Collecting them all before converting any would climb 0, 1, 2, ... 23.
-    assert max(live) <= 2, f"{max(live)} expanded tensors were held at once"
-    gc.collect()
-    assert [ref for ref in produced if ref() is not None] == []
-
-
-def test_load_native_rejects_a_tensor_that_contradicts_its_header(monkeypatch):
-    monkeypatch.setattr(gguf_support.os, "cpu_count", lambda: 2)
-    _fake_gguf(monkeypatch, [("wrong", (5, 5), [1.0, 2.0, 3.0])])
-
-    with pytest.raises(RuntimeError) as excinfo:
-        gguf_support._load_native("/models/m.gguf")
-
-    assert "'wrong'" in str(excinfo.value)
-    assert "(25)" in str(excinfo.value)
-
-
-def test_a_state_dict_returned_beside_its_architecture_is_unwrapped(tmp_path, monkeypatch):
-    """Some pack versions return (state_dict, architecture). Passed on whole, ComfyUI iterates
-    the TUPLE and fails with "'dict' object has no attribute 'startswith'" — an error with
-    nothing in it that points back at the loader."""
-    d = tmp_path / "pack"
-    d.mkdir()
-    (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
-    (d / "loader.py").write_text(
-        "class _T:\n    shape = (1,)\n\n"
-        "def gguf_sd_loader(path):\n    return ({'w': _T()}, 'minimax_h3')\n")
-    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
-    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
-
-    sd, options, note = gguf_support.load_state_dict("/whatever.gguf")
-
-    assert isinstance(sd, dict) and list(sd) == ["w"]
-    assert "custom_operations" in options
-
-
-def test_a_known_architecture_is_still_validated(tmp_path, monkeypatch):
-    """Validation used to run only when FunPack had overridden the architecture list, so a
-    pack that already knew the architecture returned straight through unchecked."""
-    d = tmp_path / "pack"
-    d.mkdir()
-    (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
-    (d / "loader.py").write_text("def gguf_sd_loader(path):\n    return ['not', 'a', 'dict']\n")
-    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
-    monkeypatch.setattr(gguf_support, "_allow_architectures", lambda loader, path: "")
-    monkeypatch.setattr(gguf_support, "_load_native",
-                        lambda path: ({"w": 1}, {}, "gguf: dequantized at load"))
-    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
-
-    sd, options, note = gguf_support.load_state_dict("/whatever.gguf")
-
-    assert sd == {"w": 1}          # refused, and fell back rather than reaching ComfyUI
-    assert "could not read this file" in note
-
-
-def test_an_old_expansion_cache_is_named_but_never_deleted(tmp_path):
-    """FunPack no longer writes one. Disk is billed on a rental, so a leftover has to be
-    findable — and it is the user's file, in the user's model folder, so it is not removed."""
-    model = tmp_path / "m.gguf"
-    model.write_bytes(b"GGUF")
-    leftover = tmp_path / ("m.gguf" + gguf_support.LEFTOVER_SUFFIX)
-    leftover.write_bytes(b"x" * 2048)
-
-    note = gguf_support.note_leftover_cache(str(model))
-
-    assert "m.gguf.dequantized.safetensors" in note
-    assert "delete it" in note
-    assert leftover.exists()
-
-
-def test_no_leftover_cache_says_nothing(tmp_path):
-    model = tmp_path / "m.gguf"
-    model.write_bytes(b"GGUF")
-
-    assert gguf_support.note_leftover_cache(str(model)) == ""

@@ -2,30 +2,13 @@
 
 ## [Unreleased]
 
+### Reverted
+- **GGUF loading is back to expanding the checkpoint at load.** The quantized path through
+  ComfyUI-GGUF loaded in seconds instead of a minute, and produced a model the sampler could
+  not run: a packed sequence one 1344-token unit short of what the model built. Reverted
+  whole rather than patched further.
+
 ### Fixed
-- **Changing an attention or SLA setting no longer re-reads the checkpoint.** They live on
-  the loader node, so ComfyUI invalidated the whole node and the file was loaded again — a
-  minute of dequantizing a GGUF to alter a sparsity ratio. The weights depend only on the
-  file (identity, size, mtime) and the dtypes; everything else is applied to a clone. One
-  entry, replaced whenever the key changes.
-- **A GGUF architecture ComfyUI-GGUF has not been told about now loads quantized anyway.**
-  The pack refuses anything off its tested list — `Unexpected architecture type in GGUF file:
-  'minimax_h3'` — which cost the quantized path entirely and expanded the whole checkpoint
-  instead. The name is added to its IMAGE list (never the text one) for a file whose header
-  declares it. Since that steps around the pack's own guard, what the backend hands back is
-  checked here instead: anything that is not a state dict of named tensors raises, and the
-  existing fallback turns that into the slow-but-working path. The status line says the
-  override is in effect, because a wrong generation should be traceable to it.
-- **When it does have to expand a GGUF, it expands ONCE.** The dequantized weights are
-  written beside the file as an ordinary safetensors and reused on every later load, which
-  then runs at safetensors speed. It costs the model's dequantized size in disk — the same
-  size that path was already going to occupy in VRAM — and the status line names the file to
-  delete. A cache older than the model is ignored; one that cannot be written is a slow
-  load, not a failed one.
-- **GGUF dequantizes across threads instead of one tensor at a time.** The native path
-  expands every quantized tensor at load with numpy, serially, which is where the wait went.
-  numpy releases the GIL for that work, so it now runs on up to 8 threads — bounded rather
-  than one per core, because each worker holds a dequantized tensor and its copy.
 - **The updater installs only what is MISSING, and never upgrades anything.** It ran
   `pip install -r requirements.txt`, which upgrades any package below its version floor —
   and on an install full of compiled extensions (torch, comfy-kitchen, comfy-aimdo,

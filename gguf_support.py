@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import itertools
 import os
 import sys
 import types
@@ -230,138 +229,27 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
     which = backend()
     if which is None:
         raise RuntimeError(UNAVAILABLE)
-    leftover = note_leftover_cache(path)
     if which == "pack":
         d = _pack_dir()
         try:
             loader = _load_pack_module(d, "loader")
             ops = _load_pack_module(d, "ops")
-            allowed = _allow_architectures(loader, path)
             read = loader.gguf_sd_loader
             if clip:
                 read = getattr(loader, "gguf_clip_loader", None) or read
             sd = read(path)
-            # Some versions hand back (state_dict, architecture) rather than the dict alone.
-            # Passed on as-is, ComfyUI iterates the TUPLE, gets the dict as its first element
-            # and fails with "'dict' object has no attribute 'startswith'" — an error with
-            # nothing in it that points back here.
-            if isinstance(sd, (tuple, list)) and len(sd) == 2 and isinstance(sd[0], dict):
-                sd = sd[0]
-            # Checked on every path, not just when the architecture list was overridden: the
-            # shape of what the pack returns is a moving target across its versions, and
-            # anything unexpected fails deep inside core where the message makes no sense out
-            # here. Raising turns it into the fallback below instead.
-            _assert_state_dict(sd, path)
             options = {}
             ggml_ops = getattr(ops, "GGMLOps", None)
             if ggml_ops is not None:
                 options["custom_operations"] = ggml_ops()
-            return sd, options, (f"gguf: quantized (ComfyUI-GGUF at {os.path.basename(d)})"
-                                 + (f"; {allowed}" if allowed else "")
-                                 + (f"; {leftover}" if leftover else ""))
+            return sd, options, f"gguf: quantized (ComfyUI-GGUF at {os.path.basename(d)})"
         except Exception as e:  # noqa: BLE001 — any refusal is a reason to fall back
             if importlib.util.find_spec("gguf") is None:
                 raise
             sd, options, note = _load_native(path)
             return sd, options, (f"gguf: ComfyUI-GGUF could not read this file ({e}) — "
-                                 f"fell back. {note}"
-                                 + (f" {leftover}" if leftover else ""))
-    sd, options, note = _load_native(path)
-    return sd, options, note + (f" {leftover}" if leftover else "")
-
-
-LEFTOVER_SUFFIX = ".dequantized.safetensors"
-
-
-def note_leftover_cache(path: str) -> str:
-    """FunPack used to keep an expanded copy of a .gguf beside it. It no longer does — on a
-    rented box disk is billed, and the copy is the size of the whole model. Any file left
-    over from that is dead weight the user has no reason to guess at, so name it and its
-    size once. Never deleted here: it is a big file in the user's model folder."""
-    leftover = path + LEFTOVER_SUFFIX
-    try:
-        if not os.path.isfile(leftover):
-            return ""
-        gb = os.path.getsize(leftover) / 1024 ** 3
-    except OSError:
-        return ""
-    return (f"an old FunPack expansion cache is still beside this model "
-            f"({os.path.basename(leftover)}, {gb:.1f} GB) — nothing reads it any more, "
-            f"delete it to reclaim the space")
-
-
-def _assert_state_dict(sd, path: str) -> None:
-    """Raise unless `sd` is a usable state dict. Cheap, and only shape — nothing here can
-    tell whether the NUMBERS are right, which is why the status line says to suspect this
-    first if a generation comes out wrong."""
-    if not isinstance(sd, dict) or not sd:
-        raise RuntimeError(
-            f"{os.path.basename(path)}: the GGUF backend returned "
-            f"{type(sd).__name__} instead of a state dict")
-    for key, value in sd.items():
-        if not isinstance(key, str):
-            raise RuntimeError(
-                f"{os.path.basename(path)}: the GGUF backend returned a state dict keyed by "
-                f"{type(key).__name__}, not by tensor name")
-        if not hasattr(value, "shape"):
-            raise RuntimeError(
-                f"{os.path.basename(path)}: {key!r} came back as {type(value).__name__}, "
-                f"which is not a tensor")
-
-
-def read_architecture(path: str) -> Optional[str]:
-    """`general.architecture` out of a GGUF header, or None. Header only — no tensor data."""
-    try:
-        import gguf
-        reader = gguf.GGUFReader(path)
-        field = reader.fields.get("general.architecture")
-        if field is None:
-            return None
-        return str(bytes(field.parts[field.data[0]]), encoding="utf-8")
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _allow_architectures(loader, path: str) -> str:
-    """Let ComfyUI-GGUF read an architecture its allowlist does not name. Returns a note.
-
-    The pack keeps a list of architectures it has been tested against and refuses anything
-    else. That is the right default for the pack and a dead end here: the refusal costs the
-    QUANTIZED path, and the fallback expands the whole checkpoint at load — minutes of
-    dequantizing, and the file's full size in VRAM, which is the entire reason someone chose
-    a GGUF.
-
-    The reading itself is generic: the pack walks the tensors and wraps them, and the
-    architecture only steers the key renaming that image models do not use. So the name is
-    added to the IMAGE list, never the text one, and only for a file whose header actually
-    declares it. Announced, because it is an override of another project's own guard and a
-    wrong result here should be traceable to this line.
-    """
-    arch = read_architecture(path)
-    if not arch:
-        return ""
-    added = []
-    for attr in ("IMG_ARCH_LIST", "ARCH_LIST"):
-        lst = getattr(loader, attr, None)
-        if lst is None:
-            continue
-        try:
-            if arch in lst:
-                return ""              # the pack already knows it; nothing to override
-            if isinstance(lst, set):
-                lst.add(arch)
-            elif isinstance(lst, list):
-                lst.append(arch)
-            else:
-                continue
-            added.append(attr)
-        except Exception:  # noqa: BLE001
-            continue
-    if not added:
-        return ""
-    return (f"architecture {arch!r} is not on ComfyUI-GGUF's tested list and FunPack added "
-            f"it, so the file loads quantized instead of being expanded — if the weights come "
-            f"out wrong, this is the first thing to suspect")
+                                 f"fell back. {note}")
+    return _load_native(path)
 
 
 def _load_native(path: str) -> tuple[dict, dict, str]:
@@ -369,44 +257,24 @@ def _load_native(path: str) -> tuple[dict, dict, str]:
 
     Correct but not thrifty: the model ends up at its dequantized size, so this buys the
     ability to LOAD a .gguf, not GGUF's memory saving. The caller states that.
-
-    Expansion is STREAMED. Dequantizing produces float32 — four times the size the weight
-    will occupy once it is cast — so collecting every tensor before converting any of them
-    peaks at several times the finished model in host RAM. On a video checkpoint that is
-    tens of gigabytes of transient allocation, which is enough to take the machine down
-    rather than merely the load. Each tensor is therefore cast and released as it is
-    produced, and only a small window is ever in flight.
     """
     import gguf
-    import numpy as np
     import torch
 
     reader = gguf.GGUFReader(path)
-    tensors = list(reader.tensors)
-    raw = (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16)
-    quantized = sum(1 for t in tensors if t.tensor_type not in raw)
-    # Bounded, and deliberately small: the window below keeps `workers * 2` float32 tensors
-    # alive at once, and the largest weight in a video model is around a gigabyte at that
-    # width. More threads would expand faster and spike higher; the durable speed win is the
-    # ComfyUI-GGUF pack's quantized path, not this pool.
-    workers = max(1, min(4, (os.cpu_count() or 2) - 1))
-    print(f"[FunPack] gguf: expanding {quantized} of {len(tensors)} tensors from "
-          f"{os.path.basename(path)} across {workers} thread(s). This is the slow path — "
-          f"minutes on a video checkpoint. Install ComfyUI-GGUF to skip it entirely.",
-          flush=True)
-
-    def _expand(tensor):
-        """One tensor, fully finished: nothing float32 outlives this call."""
-        qtype = tensor.tensor_type
-        arr = tensor.data if qtype in raw else gguf.quants.dequantize(tensor.data, qtype)
-        if arr.dtype == np.float32:
-            # `.to` allocates the half-width copy and the float32 array is freed on return,
-            # so the wide form never accumulates.
-            t = torch.from_numpy(arr).to(torch.float16)
-        else:
-            # Detach from the memory-mapped file; the reader's mapping does not outlive us.
-            t = torch.from_numpy(arr.copy())
+    sd: dict = {}
+    quantized = 0
+    for tensor in reader.tensors:
         name = str(tensor.name)
+        qtype = tensor.tensor_type
+        if qtype in (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16):
+            arr = tensor.data
+        else:
+            # gguf.quants.dequantize is the reference implementation for every type the
+            # package knows — do not reimplement it per quant type.
+            arr = gguf.quants.dequantize(tensor.data, qtype)
+            quantized += 1
+        t = torch.from_numpy(arr.copy())
         # GGUF stores dimensions in the opposite order to torch.
         shape = tuple(int(d) for d in reversed(tensor.shape))
         expected = 1
@@ -419,32 +287,10 @@ def _load_native(path: str) -> tuple[dict, dict, str]:
                 f"{os.path.basename(path)}: tensor {name!r} dequantized to {t.numel()} "
                 f"elements but its header declares {shape} ({expected}). This container is "
                 f"not laid out the way the gguf package describes it.")
-        return name, t.reshape(shape) if shape else t
-
-    sd: dict = {}
-    if workers > 1 and len(tensors) > 1:
-        from collections import deque
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            remaining = iter(tensors)
-            # A fixed window rather than `pool.map`, which submits every tensor at once and
-            # buffers each result until the one before it is consumed — the whole model in
-            # float32, which is the allocation this function exists to avoid.
-            flight = deque(pool.submit(_expand, t)
-                           for t in itertools.islice(remaining, workers * 2))
-            while flight:
-                name, t = flight.popleft().result()
-                sd[name] = t
-                nxt = next(remaining, None)
-                if nxt is not None:
-                    flight.append(pool.submit(_expand, nxt))
-    else:
-        for tensor in tensors:
-            name, t = _expand(tensor)
-            sd[name] = t
-
-    note = (f"gguf: dequantized at load ({quantized} quantized tensors expanded across "
-            f"{workers} thread(s)) — the file loads, but it occupies its full size in VRAM, "
-            f"and expanding it is why this is slower than a .safetensors. Install "
-            f"ComfyUI-GGUF for a lazy quantized load.")
+        if shape:
+            t = t.reshape(shape)
+        sd[name] = t.to(torch.float16) if t.dtype == torch.float32 else t
+    note = (f"gguf: dequantized at load ({quantized} quantized tensors expanded) — the file "
+            f"loads, but it occupies its full size in VRAM. Install ComfyUI-GGUF to keep it "
+            f"quantized.")
     return sd, {}, note
