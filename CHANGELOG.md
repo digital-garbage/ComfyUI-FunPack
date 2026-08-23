@@ -38,6 +38,10 @@
   Numbered per kind, so marking an audio file never shifts the image slots. The picker
   offers one past the highest number that node already uses, and an unmarked slot leaves its
   socket unconnected in silence — never auto-wired to some other image, never reported.
+- **Export settings… now covers the sampling too** — render geometry, the sampler and its
+  schedule, the second pass when it is running, and the Studio / Chain Sampler overrides.
+  Only the selected algorithm's settings are printed: a pass config always carries the
+  hybrid / distilled / normalizing blocks and just one of them is live.
 - **Models & Pipeline ▸ Export settings…** renders the loaded pipeline as a PNG: every
   loader with its full filename, every LoRA with its weight, the typed-in values of any
   custom node, and the host's PyTorch / CUDA / attention / GPU. Only inputs that were typed

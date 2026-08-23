@@ -2504,11 +2504,27 @@ if web is not None and PromptServer is not None:
         models_cfg = _project_models(p) if pid else nodes.load_models()
         name = getattr(p, "name", None) if p else None
 
+        # The sampling settings matter at least as much as the model files: two runs on the
+        # same checkpoint with different schedules are different renders. Read off the project
+        # so the card describes THIS project, not the global defaults.
+        render = studio_in = sampler_in = None
+        if p is not None:
+            render = {
+                "size": f"{getattr(p, 'width', '?')}x{getattr(p, 'height', '?')}",
+                "frames per scene": getattr(p, "num_frames_per_scene", None),
+                "frame rate": getattr(p, "frame_rate", None),
+                "max scenes": getattr(p, "max_scenes", None),
+                "mode": getattr(p, "generation_mode", None),
+            }
+            studio_in = dict(getattr(p, "studio_inputs", None) or {})
+            sampler_in = dict(getattr(p, "sampler_inputs", None) or {})
+
         def _build():
             st = git_update.status()
             report = settings_card.collect(
                 models_cfg, sysinfo.collect(), project_name=name,
-                version=st.get("version"), codename=st.get("codename"))
+                version=st.get("version"), codename=st.get("codename"),
+                render=render, studio_inputs=studio_in, sampler_inputs=sampler_in)
             return settings_card.render_png(report, theme)
 
         try:

@@ -205,3 +205,109 @@ def test_long_values_wrap_instead_of_running_off_the_card():
     lines = sc._wrap("a" * 200, 40)
     assert all(len(x) <= 40 for x in lines)
     assert "".join(lines) == "a" * 200
+
+
+# ── sampling settings ─────────────────────────────────────────────────────────
+# Two runs on the same checkpoint with different schedules are different renders, so the
+# model files alone do not answer "what produced this".
+
+
+STUDIO = {"studio_settings": json.dumps({
+    "samplers": {
+        "high": {"type": "Hybrid Euler 2S", "sigmas": "1.0, 0.5, 0.0",
+                 "hybrid": {"eta": 0.7, "quality_sharpness": 0.3},
+                 "distilled": {"order": 2}, "normalizing": {"normalize_strength": 0.5}},
+        "low": {"type": "KSampler", "sigmas": "0.4, 0.0", "ksampler_name": "res_multistep"},
+    },
+    "refiner": {"mode": "Refine", "negative_erase": True, "negative_erase_strength": 0.5},
+})}
+
+
+def _card(**kw):
+    return sc.collect(_models(), HOST, **kw)
+
+
+def _titles(rep):
+    return [s["title"] for s in rep["sections"]]
+
+
+def test_the_sampler_and_its_schedule_are_on_the_card():
+    rows = dict(next(s for s in _card(studio_inputs=STUDIO)["sections"]
+                     if s["title"] == "Sampler")["rows"])
+    assert rows["algorithm"] == "Hybrid Euler 2S"
+    assert rows["sigmas"] == "1.0, 0.5, 0.0"
+
+
+def test_only_the_selected_algorithms_settings_are_shown():
+    """A pass config always carries hybrid/distilled/normalizing blocks; only one is live.
+    Printing all three is the same lie as printing a wired input's stale widget."""
+    rows = dict(next(s for s in _card(studio_inputs=STUDIO)["sections"]
+                     if s["title"] == "Sampler")["rows"])
+    assert rows["    eta"] == "0.7"
+    assert not any("order" in k for k in rows)              # Distilled Flow is not selected
+    assert not any("normalize_strength" in k for k in rows)
+
+
+def test_a_computed_schedule_shows_steps_instead_of_sigmas():
+    studio = {"studio_settings": json.dumps({"samplers": {"high": {
+        "type": "KSampler", "scheduler": "karras", "steps": 12, "ksampler_name": "euler"}}})}
+    rows = dict(next(s for s in _card(studio_inputs=studio)["sections"]
+                     if s["title"] == "Sampler")["rows"])
+    assert rows["schedule"] == "karras" and rows["steps"] == "12"
+    assert "sigmas" not in rows
+
+
+def test_ksampler_sharpness_is_only_listed_when_it_is_on():
+    on = {"studio_settings": json.dumps({"samplers": {"high": {
+        "type": "KSampler", "ksampler_sharpness": 0.3}}})}
+    off = {"studio_settings": json.dumps({"samplers": {"high": {"type": "KSampler"}}})}
+    assert any("quality_sharpness" in k for k, _ in
+               next(s for s in _card(studio_inputs=on)["sections"]
+                    if s["title"] == "Sampler")["rows"])
+    assert not any("quality_sharpness" in k for k, _ in
+                   next(s for s in _card(studio_inputs=off)["sections"]
+                        if s["title"] == "Sampler")["rows"])
+
+
+def test_the_second_pass_appears_only_when_it_is_running():
+    """An off feature's settings on the card read as if they were in effect."""
+    assert "Second pass" not in _titles(_card(studio_inputs=STUDIO))
+    on = _card(studio_inputs=STUDIO, sampler_inputs={"second_pass": True})
+    assert "Second pass" in _titles(on)
+    rows = dict(next(s for s in on["sections"] if s["title"] == "Second pass")["rows"])
+    assert rows["own sampler"].startswith("no")             # own_sampler not set
+    assert rows["sigmas"] == "0.4, 0.0"
+
+
+def test_a_second_pass_with_its_own_sampler_says_which():
+    studio = {"studio_settings": json.dumps({"samplers": {
+        "high": {"type": "Hybrid Euler 2S"},
+        "low": {"type": "KSampler", "own_sampler": True, "ksampler_name": "res_multistep"}}})}
+    rows = dict(next(s for s in _card(studio_inputs=studio,
+                                      sampler_inputs={"second_pass": True})["sections"]
+                     if s["title"] == "Second pass")["rows"])
+    assert rows["own sampler"] == "yes"
+    assert rows["sampler_name"] == "res_multistep"
+
+
+def test_studio_and_chain_sampler_overrides_are_listed():
+    rep = _card(studio_inputs=STUDIO, sampler_inputs={"alg_anchor": True, "second_pass": False})
+    assert dict(next(s for s in rep["sections"]
+                     if s["title"] == "Studio")["rows"])["negative_erase"] == "on"
+    assert dict(next(s for s in rep["sections"]
+                     if s["title"] == "Chain Sampler")["rows"])["alg_anchor"] == "on"
+
+
+def test_the_render_geometry_leads_the_card():
+    rep = _card(render={"size": "768x512", "frame rate": 25})
+    assert rep["sections"][0]["title"] == "Render"
+    assert dict(rep["sections"][0]["rows"])["size"] == "768x512"
+
+
+def test_a_project_with_no_sampling_settings_adds_no_empty_sections():
+    assert _titles(_card()) == _titles(sc.collect(_models(), HOST))
+
+
+def test_unparseable_studio_settings_do_not_break_the_card():
+    rep = _card(studio_inputs={"studio_settings": "{not json"})
+    assert sc.render_png(rep, "dark")[:8] == b"\x89PNG\r\n\x1a\n"

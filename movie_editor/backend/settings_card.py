@@ -116,8 +116,86 @@ def _host_rows(host: dict) -> list:
     return rows
 
 
+# The algorithm sub-blocks a pass config always carries. Only the one matching `type` is
+# live; printing the other two would be the same lie as printing a wired input's stale widget.
+_PASS_BLOCKS = {"Hybrid Euler 2S": "hybrid", "Distilled Flow": "distilled",
+                "Normalizing": "normalizing"}
+
+# Widget names that say nothing about the render, or that are stored elsewhere on the card.
+_SKIP_STUDIO_KEYS = {"studio_settings"}
+
+
+def _pass_rows(cfg: dict) -> list:
+    """One sampling pass: its schedule, then only the settings its own algorithm reads."""
+    cfg = cfg or {}
+    kind = str(cfg.get("type") or "Hybrid Euler 2S")
+    rows = [("algorithm", kind)]
+    scheduler = cfg.get("scheduler", cfg.get("ksampler_scheduler"))
+    if scheduler and scheduler != "use_user_sigmas":
+        rows.append(("schedule", _short(scheduler)))
+        rows.append(("steps", _short(cfg.get("steps", cfg.get("ksampler_steps")))))
+    else:
+        rows.append(("sigmas", _short(cfg.get("sigmas"))))
+    if kind == "KSampler":
+        rows.append(("sampler_name", _short(cfg.get("ksampler_name", "euler"))))
+        if float(cfg.get("ksampler_sharpness") or 0) > 0:
+            rows.append(("quality_sharpness", _short(cfg.get("ksampler_sharpness"))))
+            rows.append(("sharpen_last_pct", _short(cfg.get("ksampler_sharpen_start_pct", 0.35))))
+        return rows
+    block = cfg.get(_PASS_BLOCKS.get(kind, "")) or {}
+    for k, v in block.items():
+        rows.append((f"    {k}", _short(v)))
+    return rows
+
+
+def _sampling_sections(studio_inputs: dict, sampler_inputs: dict) -> list:
+    """Everything that decided HOW it was sampled, as card sections.
+
+    The two dictionaries are different in kind: `studio_settings` holds a full config, while
+    `sampler_inputs` holds only the widgets the Editor overrode — so the first is filtered
+    down to what is live and the second is printed whole.
+    """
+    out = []
+    studio_inputs = studio_inputs or {}
+    sampler_inputs = sampler_inputs or {}
+    settings = {}
+    raw = studio_inputs.get("studio_settings")
+    if isinstance(raw, str):
+        try:
+            settings = json.loads(raw)
+        except Exception:
+            settings = {}
+    elif isinstance(raw, dict):
+        settings = raw
+
+    samplers = settings.get("samplers") if isinstance(settings.get("samplers"), dict) else {}
+    if samplers.get("high"):
+        out.append({"title": "Sampler", "node_class": "", "rows": _pass_rows(samplers["high"])})
+    # Pass 2 only when it is actually running — an off feature's settings on the card read
+    # as if they were in effect.
+    if sampler_inputs.get("second_pass") and samplers.get("low"):
+        low = samplers["low"]
+        rows = ([("own sampler", "yes")] + _pass_rows(low)) if low.get("own_sampler") else \
+               [("own sampler", "no — reuses pass 1")] + _pass_rows(low)[1:2]
+        out.append({"title": "Second pass", "node_class": "", "rows": rows})
+
+    refiner = settings.get("refiner") if isinstance(settings.get("refiner"), dict) else {}
+    if refiner:
+        out.append({"title": "Studio", "node_class": "",
+                    "rows": [(k, _short(v)) for k, v in refiner.items()]})
+
+    extras = {k: v for k, v in studio_inputs.items() if k not in _SKIP_STUDIO_KEYS}
+    if extras:
+        out.append({"title": "Studio inputs", "node_class": "",
+                    "rows": [(k, _short(v)) for k, v in extras.items()]})
+    if sampler_inputs:
+        out.append({"title": "Chain Sampler", "node_class": "",
+                    "rows": [(k, _short(v)) for k, v in sampler_inputs.items()]})
+    return out
+
+
 def collect(models: dict, host: dict, *, project_name=None, version=None,
-            codename=None) -> dict:
+            codename=None, render=None, studio_inputs=None, sampler_inputs=None) -> dict:
     """The card's content, as data. Rendering is a separate step so this is testable."""
     slots = (models or {}).get("slots") or []
     sections = []
@@ -146,11 +224,16 @@ def collect(models: dict, host: dict, *, project_name=None, version=None,
             "node_class": str(slot.get("node_class") or ""),
             "rows": rows,
         })
+    head = []
+    if render:
+        head.append({"title": "Render", "node_class": "",
+                     "rows": [(k, _short(v)) for k, v in render.items()]})
+    head.extend(_sampling_sections(studio_inputs, sampler_inputs))
     return {
         "project": project_name or None,
         "family": (models or {}).get("model_family") or None,
         "host": _host_rows(host),
-        "sections": sections,
+        "sections": head + sections,
         "version": version or "",
         "codename": codename or "",
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
