@@ -22,6 +22,10 @@ Pure tensor math, no ComfyUI imports, so it is testable without a model.
 
 MODES = ("project", "subtract")
 
+# How far a token may be scaled back up after the erase. See the note in `erase`: without a
+# cap, a token that WAS the unwanted concept comes back as amplified rounding error.
+RENORM_MAX_GAIN = 2.0
+
 
 def _torch():
     import torch
@@ -107,8 +111,20 @@ def erase(pos_tensor, unit, strength, meta=None, mode="project", renorm=True):
         rows = rows - float(strength) * before * u
 
     if renorm:
-        after = rows.norm(dim=-1, keepdim=True).clamp_min(1e-6)
-        rows = rows * (before / after)
+        # The gain is CAPPED, and that cap is the whole safety of this operation. A token
+        # pointing almost exactly along the negative is left with nothing but rounding error
+        # after projection; scaling that back to its original norm multiplies noise by
+        # thousands and puts a garbage vector at full prompt strength into the conditioning.
+        # Past the cap the honest answer is that the token really was mostly the thing you
+        # asked to remove, so it stays quiet instead of being refilled with residue.
+        after = rows.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+        rows = rows * (before / after).clamp(max=RENORM_MAX_GAIN)
+
+    # Never hand a non-finite conditioning onward. It does not fail here — it fails deep in
+    # the model, and worse, a run that captures conditioning for the refinement key would
+    # bank the bad vector and keep steering toward it long after this setting was turned off.
+    if not bool(torch.isfinite(rows).all()):
+        return pos_tensor
 
     if idx is None:
         work = rows

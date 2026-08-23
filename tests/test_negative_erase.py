@@ -155,3 +155,44 @@ def test_a_dimension_mismatch_leaves_the_conditioning_alone():
     out, note = ne.apply(pos, _cond(torch.tensor([[[1.0, 0.0]]])), 1.0)
     assert "no conditioning entry could be modified" in note
     assert out is pos
+
+
+# --- the renorm gain cap ---------------------------------------------------------------
+# Restoring a token's norm after projection is fine until the projection removed almost all
+# of it. Then what is left is rounding error, and "restore the original norm" means putting
+# amplified noise into the conditioning at full prompt strength — which the sampler will
+# happily bank into the refinement key and keep steering toward afterwards.
+
+
+def test_a_token_that_WAS_the_negative_goes_quiet_instead_of_exploding():
+    u = torch.tensor([1.0, 0.0])
+    pos = torch.tensor([[[5.0, 0.001]]])          # almost exactly the negative's direction
+    out = ne.erase(pos, u, 1.0, renorm=True)
+    assert float(out.norm()) < 0.01               # not 5.0 of amplified residue
+    assert float(out[0, 0, 1]) == pytest.approx(0.002, abs=1e-4)   # capped at 2x, no more
+
+
+def test_an_ordinary_token_still_gets_its_norm_back():
+    """The cap must not break the normal case it exists to serve."""
+    u = torch.tensor([1.0, 0.0])
+    out = ne.erase(torch.tensor([[[3.0, 4.0]]]), u, 1.0, renorm=True)
+    assert float(out.norm()) == pytest.approx(5.0, abs=1e-4)
+
+
+def test_the_gain_never_exceeds_the_cap():
+    u = torch.tensor([1.0, 0.0])
+    for orth in (0.001, 0.01, 0.1, 1.0, 4.0):
+        pos = torch.tensor([[[5.0, orth]]])
+        before = float(pos.norm())
+        after = float(ne.erase(pos, u, 1.0, renorm=True).norm())
+        residue = float(torch.tensor([0.0, orth]).norm())
+        assert after <= residue * ne.RENORM_MAX_GAIN + 1e-4
+        assert after <= before + 1e-4
+
+
+def test_a_non_finite_result_is_refused_rather_than_passed_on():
+    """It would not fail here — it fails deep in the model, and a run that captures
+    conditioning for the refinement key would bank the bad vector first."""
+    u = torch.tensor([float("nan"), 0.0])
+    pos = torch.tensor([[[3.0, 4.0]]])
+    assert ne.erase(pos, u, 1.0) is pos

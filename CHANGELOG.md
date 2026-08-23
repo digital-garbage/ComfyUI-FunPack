@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Fixed
+- **negative_erase could put an amplified-noise vector into the conditioning.** "Keep prompt
+  strength" restored each token's norm after the erase — but a token pointing almost exactly
+  along the negative is left with nothing but rounding error, and restoring its norm scaled
+  that residue by thousands. The gain is now capped: past it the token stays quiet, because
+  it really was mostly the thing you asked to remove. A non-finite result is refused outright
+  rather than passed on, since the sampler captures conditioning for the refinement key and
+  would have banked the bad vector.
 - **Bypass now works as an A/B switch.** Wire two alternatives at one input — MiniMax H3's
   ref-to-video and first-last-to-video both feeding the sampler's latent — and bypass the
   one you are not using. A bypassed slot no longer claims the input, no longer counts as a
