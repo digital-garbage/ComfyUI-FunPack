@@ -565,6 +565,15 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # sockets fed from the same reference share it instead of decoding it twice.
     references = {str(r.get("id")): r for r in (params.get("references") or []) if r.get("id")}
 
+    # References by SLOT rather than by id: "Reference image 1" is whatever is marked first
+    # among the image references, so re-ordering marks in the bin re-points every socket
+    # wired this way without opening a single node page. Numbered per kind, so marking an
+    # audio file never shifts the image slots out from under you.
+    def _reference_by_slot(kind: str, n: int):
+        same_kind = [r for r in references.values() if (r.get("kind") or "image") == kind]
+        same_kind.sort(key=lambda r: int(r.get("index") or 0))
+        return same_kind[n - 1] if 1 <= n <= len(same_kind) else None
+
     def _reference_link(ref_id: str, want_type: Optional[str], where: str):
         ref = references.get(ref_id)
         if not ref or not ref.get("filename"):
@@ -583,6 +592,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                                "inputs": {**_widget_defaults(object_info.get(cls)),
                                           file_input: ref["filename"]}})
         return [nid, oidx]
+
+    # Sockets the user pointed at an empty reference slot. Left alone by auto-wire: the
+    # answer to "Reference image 2 is not marked" is an unconnected socket, not a different
+    # image silently substituted for it.
+    deliberately_empty: set = set()
 
     # 3b. explicit input sources: user-chosen source for a slot's connection input.
     # Runs before auto-wire so these pre-empt the uniqueness heuristic.
@@ -604,6 +618,32 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     graph[sid]["inputs"][ci_name] = ["media_load", 0]
                     protected_edges.add((sid, ci_name))
                     report["wired"].append(f"timeline image -> {sid}.{ci_name}")
+                continue
+            if source.startswith("ref#"):
+                # "ref#image:2" — the second image reference, whichever that currently is.
+                kind, _, num = source[4:].partition(":")
+                try:
+                    n = int(num)
+                except ValueError:
+                    n = 0
+                ref = _reference_by_slot(kind, n) if n > 0 else None
+                if ref is None:
+                    # Nothing marked in that slot. The socket is simply left unconnected —
+                    # an unused reference slot is a normal state, not a setup mistake, so it
+                    # is neither auto-wired to something else nor reported as missing.
+                    deliberately_empty.add((sid, ci_name))
+                    report["wired"].append(
+                        f"Reference {kind} {n} -> {sid}.{ci_name}: none marked, left unconnected")
+                    continue
+                want = next((ci["type"] for ci in connection_inputs(nd_s or {})
+                             if ci["name"] == ci_name), None)
+                link = _reference_link(str(ref.get("id")), want,
+                                       f"{s.get('node_class')}.{ci_name}")
+                if link:
+                    graph[sid]["inputs"][ci_name] = link
+                    protected_edges.add((sid, ci_name))
+                    report["wired"].append(
+                        f"Reference {kind} {n} ({ref.get('name')}) -> {sid}.{ci_name}")
                 continue
             if source.startswith("ref:"):
                 want = next((ci["type"] for ci in connection_inputs(nd_s or {})
@@ -825,7 +865,8 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     quiet_nodes = {slot_node_id[s["id"]] for s in slots
                    if s.get("bypassed") and s["id"] in slot_node_id}
     _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots,
-              open_ports=OPEN_PORTS, core=CORE, quiet_nodes=quiet_nodes)
+              open_ports=OPEN_PORTS, core=CORE, quiet_nodes=quiet_nodes,
+              skip_inputs=deliberately_empty)
 
     # 5b. bypass: drop a slot's node from the graph and rewire its consumers straight to
     # whatever fed its matching-type input, so the node's effect is skipped without losing
@@ -1188,7 +1229,8 @@ def _node_labels(slots, slot_node_id, object_info, core=None):
 
 
 def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report,
-              active_slots=None, open_ports=None, core=None, quiet_nodes=None):
+              active_slots=None, open_ports=None, core=None, quiet_nodes=None,
+              skip_inputs=None):
     label = _node_labels(slots, slot_node_id, object_info, core=core)
     L = lambda nid: label.get(nid, nid)
 
@@ -1206,9 +1248,12 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
             targets.append((slot_node_id[s["id"]], ci["name"], ci["type"], ci.get("required", False)))
 
     quiet_nodes = quiet_nodes or set()
+    skip_inputs = skip_inputs or set()
     for node_id, inp, t, required in targets:
         node = graph.get(node_id)
         if not node:
+            continue
+        if (node_id, inp) in skip_inputs:
             continue
         if node_id in quiet_nodes:
             # Fill it if there is exactly one obvious source, then stop. No ambiguity note,

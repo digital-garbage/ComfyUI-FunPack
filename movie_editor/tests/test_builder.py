@@ -797,6 +797,97 @@ def test_two_sockets_on_one_reference_share_a_single_loader():
     assert ins["ref_images.ref_image0"] == ins["ref_images.ref_image1"] == [loaders[0], 0]
 
 
+# ── numbered reference SLOTS ("Reference image 1") ────────────────────────────
+# Wiring a socket to a particular media id means re-opening the node page every time you
+# change your mind about which reference goes where. A slot is wired once and re-points
+# itself: "Reference image 1" is whatever is marked first among the image references.
+
+
+def _slot_models(**srcs):
+    return {"slots": [
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": dict(srcs)},
+    ]}
+
+
+def _ref_problems(report):
+    """Complaints about the reference wiring only — these fixtures are deliberately partial
+    pipelines, so unrelated core inputs are expected to be unsatisfied."""
+    return [m for m in report["blocking"] + report["unsatisfied"]
+            if "ref" in m.lower()]
+
+
+def _img(mid, name):
+    return {"id": mid, "kind": "image", "name": name, "filename": f"funpack_movie_{mid}.png"}
+
+
+def test_reference_slot_one_resolves_to_the_first_marked_image():
+    graph, report = builder.build(
+        REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:1"}),
+        _ref_params(_img("m1", "a.png"), _img("m2", "b.png")))
+    load = graph[graph["slot_r"]["inputs"]["ref_images.ref_image0"][0]]
+    assert load["inputs"]["image"] == "funpack_movie_m1.png"
+    assert not _ref_problems(report)
+
+
+def test_reordering_the_marks_repoints_the_same_wiring():
+    """The whole point: shuffle references in the bin, touch no node settings."""
+    models = _slot_models(**{"ref_images.ref_image0": "ref#image:1"})
+    first, second = _img("m1", "a.png"), _img("m2", "b.png")
+    g1, _ = builder.build(REF_OI, models, _ref_params(first, second))
+    g2, _ = builder.build(REF_OI, models, _ref_params(second, first))
+    assert (g1[g1["slot_r"]["inputs"]["ref_images.ref_image0"][0]]["inputs"]["image"]
+            == "funpack_movie_m1.png")
+    assert (g2[g2["slot_r"]["inputs"]["ref_images.ref_image0"][0]]["inputs"]["image"]
+            == "funpack_movie_m2.png")
+
+
+def test_slots_are_numbered_per_kind():
+    """Marking an audio file must not shift the image slots out from under the wiring."""
+    audio = {"id": "a1", "kind": "audio", "name": "v.wav", "filename": "funpack_movie_a1.wav"}
+    graph, _ = builder.build(
+        REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:1"}),
+        _ref_params(audio, _img("m1", "a.png")))
+    load = graph[graph["slot_r"]["inputs"]["ref_images.ref_image0"][0]]
+    assert load["inputs"]["image"] == "funpack_movie_m1.png"
+
+
+def test_an_unmarked_slot_leaves_the_socket_empty_and_says_nothing():
+    """An unused reference slot is a normal state, not a setup mistake."""
+    graph, report = builder.build(
+        REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:1",
+                                "ref_images.ref_image1": "ref#image:2"}),
+        _ref_params(_img("m1", "a.png")))
+    ins = graph["slot_r"]["inputs"]
+    assert isinstance(ins["ref_images.ref_image0"], list)
+    assert not isinstance(ins.get("ref_images.ref_image1"), list)
+    assert not _ref_problems(report)
+
+
+def test_no_references_at_all_is_silent():
+    _graph, report = builder.build(
+        REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:1"}), _ref_params())
+    assert not _ref_problems(report)
+
+
+def test_an_empty_slot_is_not_quietly_filled_with_something_else():
+    """Auto-wire must not substitute a different image for the reference you asked for."""
+    models = {"slots": [
+        {"id": "img", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": {"ref_images.ref_image0": "ref#image:1"}},
+    ]}
+    graph, _ = builder.build(REF_OI, models, _ref_params())
+    assert not isinstance(graph["slot_r"]["inputs"].get("ref_images.ref_image0"), list)
+
+
+def test_a_malformed_slot_reference_does_not_crash_the_build():
+    _graph, report = builder.build(
+        REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:nope"}),
+        _ref_params(_img("m1", "a.png")))
+    assert not _ref_problems(report)
+
+
 def test_the_loader_matches_what_the_destination_socket_asks_for():
     """An audio reference feeding an AUDIO socket needs LoadAudio, not LoadImage — the
     loader is chosen by the socket's type, not by guessing from the file."""

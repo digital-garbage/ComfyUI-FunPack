@@ -15,6 +15,12 @@
   past 40vh, can be selected, and carries a copy button. The running readout is unchanged.
 
 ### Added
+- **Numbered reference slots.** A node input can be wired to "Reference image 1" instead of
+  to a particular file — it resolves to whatever is marked first among the image references,
+  so re-ordering marks in the Media Bin re-points every socket without opening a node page.
+  Numbered per kind, so marking an audio file never shifts the image slots. The picker
+  offers one past the highest number that node already uses, and an unmarked slot leaves its
+  socket unconnected in silence — never auto-wired to some other image, never reported.
 - **Models & Pipeline ▸ Export settings…** renders the loaded pipeline as a PNG: every
   loader with its full filename, every LoRA with its weight, the typed-in values of any
   custom node, and the host's PyTorch / CUDA / attention / GPU. Only inputs that were typed

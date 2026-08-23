@@ -1101,9 +1101,36 @@
       (ci) => ci.type === out.type && !inputIsFed(slot, ci.name));
   }
 
+  // Numbered reference SLOTS — "Reference image 1" is whatever is marked first among the
+  // image references, not a particular file. Wire a socket to a slot once and re-ordering
+  // marks in the bin re-points it, with no node page involved. Numbered per kind so marking
+  // an audio file never shifts the image slots.
+  //
+  // Offered up to one past the highest slot this node already uses, which is what makes the
+  // next free number the obvious pick: with 1 taken you see 1 (in use) and 2.
+  function referenceSlots(slot, type) {
+    const used = {};
+    Object.values(slot?.input_sources || {}).forEach((src) => {
+      const m = /^ref#([a-z]+):(\d+)$/.exec(String(src || ""));
+      if (m) used[m[1]] = Math.max(used[m[1]] || 0, +m[2]);
+    });
+    const out = [];
+    Object.keys(REF_KIND_TYPES).forEach((kind) => {
+      if (!REF_KIND_TYPES[kind].some((t) => typeAccepts(type, t))) return;
+      const top = Math.max(1, (used[kind] || 0) + 1);
+      for (let n = 1; n <= top; n++) {
+        out.push({ value: `ref#${kind}:${n}`,
+                   label: `Reference ${REF_KIND_LABEL[kind] || kind} ${n}`
+                        + ((used[kind] || 0) >= n ? " · in use" : "") });
+      }
+    });
+    return out;
+  }
+
   function sources(slot, type) {
     const out = [{ value: "", label: "(auto-wire)" }];
     if (typeAccepts(type, "IMAGE")) out.push({ value: "timeline", label: "Timeline (scene image)" });
+    referenceSlots(slot, type).forEach((r) => out.push(r));
     referenceSources(type).forEach((r) => out.push(r));
     coreProducers.filter((p) => typeAccepts(type, p.type)).forEach((p) =>
       out.push({ value: p.id, label: p.label }));
