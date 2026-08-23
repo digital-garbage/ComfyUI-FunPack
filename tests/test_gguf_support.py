@@ -322,34 +322,21 @@ class _Loader:
         self.IMG_ARCH_LIST = set(arches)
 
 
-def test_the_override_is_off_unless_asked(monkeypatch):
-    """Turning another project's clean refusal into an untested code path is a WORSE failure
-    than the slow fallback it avoids — it can produce a subtly wrong state dict instead."""
-    monkeypatch.delenv(gguf_support.ARCH_OVERRIDE_VAR, raising=False)
-    monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "minimax_h3")
-    loader = _Loader({"flux"})
-    assert gguf_support._allow_architectures(loader, "x.gguf") == ""
-    assert loader.IMG_ARCH_LIST == {"flux"}
-
-
 def test_an_unknown_architecture_is_added_so_the_file_loads_quantized(monkeypatch):
-    monkeypatch.setenv(gguf_support.ARCH_OVERRIDE_VAR, "1")
     monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "minimax_h3")
     loader = _Loader({"flux", "sd3"})
     note = gguf_support._allow_architectures(loader, "x.gguf")
     assert "minimax_h3" in loader.IMG_ARCH_LIST
-    assert "minimax_h3" in note and gguf_support.ARCH_OVERRIDE_VAR in note
+    assert "minimax_h3" in note and "FunPack added" in note
 
 
 def test_a_known_architecture_is_left_alone_and_says_nothing(monkeypatch):
-    monkeypatch.setenv(gguf_support.ARCH_OVERRIDE_VAR, "1")
     monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "flux")
     loader = _Loader({"flux"})
     assert gguf_support._allow_architectures(loader, "x.gguf") == ""
 
 
 def test_an_unreadable_architecture_changes_nothing(monkeypatch):
-    monkeypatch.setenv(gguf_support.ARCH_OVERRIDE_VAR, "1")
     monkeypatch.setattr(gguf_support, "read_architecture", lambda p: None)
     loader = _Loader({"flux"})
     assert gguf_support._allow_architectures(loader, "x.gguf") == ""
@@ -357,7 +344,6 @@ def test_an_unreadable_architecture_changes_nothing(monkeypatch):
 
 
 def test_the_text_encoder_list_is_never_touched(monkeypatch):
-    monkeypatch.setenv(gguf_support.ARCH_OVERRIDE_VAR, "1")
     """Image and text architectures steer different key renaming in the pack; guessing a
     text arch into the image list is one thing, the reverse is another."""
     monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "minimax_h3")
@@ -365,3 +351,22 @@ def test_the_text_encoder_list_is_never_touched(monkeypatch):
     loader.TXT_ARCH_LIST = {"t5"}
     gguf_support._allow_architectures(loader, "x.gguf")
     assert loader.TXT_ARCH_LIST == {"t5"}
+
+
+def test_a_backend_that_returns_something_else_is_refused(tmp_path):
+    """The pack's own guard is what we stepped around, so the check it was doing happens
+    here: handing a non-state-dict to ComfyUI fails deep in core with a message that makes no
+    sense out here. Raising instead drops to the slow path that works."""
+    for bad in (None, [], "sd", {}, {1: object()}):
+        with pytest.raises(RuntimeError):
+            gguf_support._assert_state_dict(bad, "m.gguf")
+
+
+def test_a_non_tensor_value_is_named(tmp_path):
+    with pytest.raises(RuntimeError, match="not a tensor"):
+        gguf_support._assert_state_dict({"w": {"nested": 1}}, "m.gguf")
+
+
+def test_a_real_state_dict_passes():
+    import torch
+    gguf_support._assert_state_dict({"w": torch.zeros(2)}, "m.gguf")

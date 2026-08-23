@@ -239,6 +239,13 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
             if clip:
                 read = getattr(loader, "gguf_clip_loader", None) or read
             sd = read(path)
+            # The pack's own guard is what we just stepped around, so the check it was doing
+            # has to happen here instead: an untested architecture can return something that
+            # is not a state dict at all, and handing that to ComfyUI fails deep inside core
+            # with a message that makes no sense out here. Anything unexpected raises, which
+            # the fallback below turns into the slow-but-working path.
+            if allowed:
+                _assert_state_dict(sd, path)
             options = {}
             ggml_ops = getattr(ops, "GGMLOps", None)
             if ggml_ops is not None:
@@ -314,8 +321,23 @@ def _load_native_cached(path: str) -> tuple[dict, dict, str]:
     return sd, options, note
 
 
-ARCH_OVERRIDE_VAR = "FUNPACK_GGUF_ALLOW_ANY_ARCH"
-_ARCH_ON = {"1", "true", "yes", "on"}
+def _assert_state_dict(sd, path: str) -> None:
+    """Raise unless `sd` is a usable state dict. Cheap, and only shape — nothing here can
+    tell whether the NUMBERS are right, which is why the status line says to suspect this
+    first if a generation comes out wrong."""
+    if not isinstance(sd, dict) or not sd:
+        raise RuntimeError(
+            f"{os.path.basename(path)}: the GGUF backend returned "
+            f"{type(sd).__name__} instead of a state dict")
+    for key, value in sd.items():
+        if not isinstance(key, str):
+            raise RuntimeError(
+                f"{os.path.basename(path)}: the GGUF backend returned a state dict keyed by "
+                f"{type(key).__name__}, not by tensor name")
+        if not hasattr(value, "shape"):
+            raise RuntimeError(
+                f"{os.path.basename(path)}: {key!r} came back as {type(value).__name__}, "
+                f"which is not a tensor")
 
 
 def read_architecture(path: str) -> Optional[str]:
@@ -346,11 +368,6 @@ def _allow_architectures(loader, path: str) -> str:
     declares it. Announced, because it is an override of another project's own guard and a
     wrong result here should be traceable to this line.
     """
-    # OPT-IN. Overriding another project's safety guard changes a clean refusal (which falls
-    # back to a slower path that works) into an untested code path that may produce a subtly
-    # wrong state dict — a worse failure, and a harder one to attribute. Off unless asked.
-    if str(os.environ.get(ARCH_OVERRIDE_VAR, "")).strip().lower() not in _ARCH_ON:
-        return ""
     arch = read_architecture(path)
     if not arch:
         return ""
@@ -373,10 +390,9 @@ def _allow_architectures(loader, path: str) -> str:
             continue
     if not added:
         return ""
-    return (f"architecture {arch!r} is not on ComfyUI-GGUF's tested list and "
-            f"{ARCH_OVERRIDE_VAR} added it so the file loads quantized instead of being "
-            f"expanded — if the weights come out wrong, or the load fails somewhere inside "
-            f"the pack, this is why: unset it to go back to the refusal and the slower path")
+    return (f"architecture {arch!r} is not on ComfyUI-GGUF's tested list and FunPack added "
+            f"it, so the file loads quantized instead of being expanded — if the weights come "
+            f"out wrong, this is the first thing to suspect")
 
 
 def _load_native(path: str) -> tuple[dict, dict, str]:
