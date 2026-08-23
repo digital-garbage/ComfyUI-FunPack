@@ -382,6 +382,12 @@ def validate_models_wiring(models: Any) -> list[str]:
         sid = slot.get("id") or "?"
         label = slot.get("label") or slot.get("node_class") or sid
         wires = slot.get("wires") or {}
+        # A bypassed slot claims nothing. Wiring two alternatives at one port and bypassing
+        # the one you are not using is how you switch between them (H3's ref-to-video vs
+        # first-last-to-video both feed the latent port); refusing that as a double-claim
+        # would make bypass useless for the case it is most wanted for. Its wires are still
+        # validated for shape — a wire that is wrong stays wrong when you switch back on.
+        claims_ports = not slot.get("bypassed")
         for out_name, raw in wires.items():
             targets = raw if isinstance(raw, list) else ([raw] if raw else [])
             out_type = _infer_output_type(slot, out_name)
@@ -393,7 +399,7 @@ def validate_models_wiring(models: Any) -> list[str]:
                 if err:
                     errors.append(f"{label}: {err}")
                     continue
-                if t.startswith("port:"):
+                if t.startswith("port:") and claims_ports:
                     prev = port_owners.get(t[5:])
                     if prev:
                         errors.append(

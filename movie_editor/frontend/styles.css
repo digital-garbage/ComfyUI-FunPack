@@ -809,7 +809,26 @@ input[type=number] { font-family: var(--font-mono); }
 .pm-gen-label { font-size: var(--fs-body); line-height: var(--lh-body); color: var(--muted); }
 .gen-readout { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); font-family: var(--font-mono); font-size: 12px; color: var(--accent-hi); background: var(--scrim-2); border: 1px solid var(--line); padding: 5px 12px; border-radius: 20px; display: flex; align-items: center; gap: 8px; z-index: 2; white-space: nowrap; }
 .gen-readout .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1s infinite; flex: 0 0 auto; }
-.gen-readout.error { color: var(--danger); }
+/* An error is a paragraph, not a status word. The busy readout stays a compact nowrap pill
+   because it updates every second and must not reflow the canvas; the error state gets to
+   wrap, scroll and be selected, because it is the thing the user has to read and act on. */
+.gen-readout.error {
+  color: var(--danger);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: left;
+  align-items: flex-start;
+  max-width: min(760px, 92%);
+  max-height: 40vh;
+  overflow-y: auto;
+  border-radius: 12px;
+  padding: 9px 14px;
+  line-height: 1.5;
+  user-select: text;
+  cursor: text;
+}
+.gen-readout.error .pulse { margin-top: 5px; }
+.gen-readout .gen-copy { flex: 0 0 auto; align-self: flex-start; margin-top: 1px; }
 .gen-readout.error .pulse { background: var(--danger); animation: none; }
 .gen-bar { width: 90px; height: 5px; background: var(--overlay-4); border-radius: 3px; overflow: hidden; flex: 0 0 auto; }
 .gen-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .2s; }

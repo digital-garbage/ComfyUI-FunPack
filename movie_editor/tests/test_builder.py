@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
@@ -1059,3 +1061,99 @@ def test_an_unwired_pass_through_is_not_counted_as_a_source():
     by_class = {n["class_type"]: nid for nid, n in graph.items()}
     assert graph[by_class["CLIPTextEncode"]]["inputs"]["clip"] == [by_class["FunPackCLIPLoader"], 0]
     assert report["ambiguous"] == []
+
+
+# ── bypass as an A/B switch ───────────────────────────────────────────────────
+# Wiring two alternatives at one input and bypassing the one you are not using is the
+# natural way to switch between them (MiniMax H3's ref-to-video and first-last-to-video
+# both produce the sampler's LATENT). Before this, bypassing either one failed: the
+# bypassed node still won the input, and then could not pass anything through it.
+
+# Two distinct i2v-shaped classes, so a message can be attributed to ONE of them. Both have
+# a LATENT output and no LATENT input — exactly the node that cannot pass its own output
+# through, which is what made this case fail.
+OI_AB = dict(OI, **{
+    "RefToVideo": {"input": {"required": {"vae": ["VAE"], "image": ["IMAGE"]}},
+                   "output": ["LATENT"], "output_name": ["latent"]},
+    "FirstLastToVideo": {"input": {"required": {"vae": ["VAE"], "image": ["IMAGE"]}},
+                         "output": ["LATENT"], "output_name": ["latent"]},
+})
+
+
+def _two_alternatives(bypassed):
+    return {"full_control": True, "slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {},
+         "wires": {"MODEL": "port:FunPackStudio.model"}},
+        {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {}},
+        {"id": "img", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r2v", "node_class": "RefToVideo", "inputs": {}, "bypassed": bypassed == "r2v",
+         "wires": {"latent": "port:FunPackStudio.latent"}},
+        {"id": "fl2v", "node_class": "FirstLastToVideo", "inputs": {},
+         "bypassed": bypassed == "fl2v",
+         "wires": {"latent": "port:FunPackStudio.latent"}},
+    ]}
+
+
+def _bypass_blocks(report):
+    return [b for b in report["blocking"] if "bypass" in b]
+
+
+@pytest.mark.parametrize("off,on", [("r2v", "fl2v"), ("fl2v", "r2v")])
+def test_bypassing_one_of_two_alternatives_hands_the_input_to_the_other(off, on):
+    graph, report = builder.build(OI_AB, _two_alternatives(off), PARAMS)
+    assert f"slot_{off}" not in graph
+    assert f"slot_{on}" in graph
+    assert graph["studio"]["inputs"]["latent"] == [f"slot_{on}", 0]
+    assert _bypass_blocks(report) == []
+
+
+def test_bypassing_the_only_producer_of_a_required_input_still_blocks():
+    """The relaxation is 'somebody else feeds it', not 'stop checking'. With no alternative
+    the bypass is still the thing that would silently empty a required input."""
+    models = {"full_control": True, "slots": [
+        {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {}},
+        {"id": "img", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r2v", "node_class": "RefToVideo", "inputs": {}, "bypassed": True,
+         "wires": {"latent": "port:LTXVConcatAVLatent.video_latent"}},
+    ]}
+    _graph, report = builder.build(OI_AB, models, PARAMS)
+    assert any("bypass needs exactly one input" in b for b in report["blocking"])
+
+
+def test_a_bypassed_nodes_own_unwired_inputs_are_not_demanded():
+    """Telling someone to wire a node they explicitly switched off is asking them to fix
+    something they already decided not to use."""
+    models = _two_alternatives("r2v")
+    models["slots"] = [s for s in models["slots"] if s["id"] != "img"]   # no IMAGE producer
+    _graph, report = builder.build(OI_AB, models, PARAMS)
+    assert not any("RefToVideo" in b for b in report["blocking"]), report["blocking"]
+    # the ACTIVE alternative is still held to the same standard
+    assert any("FirstLastToVideo" in b for b in report["blocking"]), report["blocking"]
+
+
+def test_a_bypassed_node_feeding_an_optional_input_needs_no_passthrough():
+    """Studio's source_image is optional. Losing it means Studio runs without it — which is
+    what bypassing the node that fed it means, not a graph to repair."""
+    models = {"full_control": True, "slots": [
+        {"id": "um", "node_class": "UpscaleModelLoader", "inputs": {}, "wires": {}},
+        {"id": "img", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "up", "node_class": "ImageUpscaleWithModel", "inputs": {}, "bypassed": True,
+         "wires": {"IMAGE": "port:FunPackStudio.source_image"}},
+    ]}
+    _graph, report = builder.build(OI, models, PARAMS)
+    assert _bypass_blocks(report) == []
+
+
+def test_two_alternatives_at_one_port_are_not_a_double_claim_when_one_is_bypassed():
+    """Guided mode allows one source per built-in input. A bypassed slot is not a source."""
+    from movie_editor.backend import pipeline_wiring
+    models = {k: v for k, v in _two_alternatives("r2v").items() if k != "full_control"}
+    assert not any("already wired from" in e
+                   for e in pipeline_wiring.validate_models_wiring(models))
+
+
+def test_two_ACTIVE_sources_on_one_port_are_still_refused():
+    from movie_editor.backend import pipeline_wiring
+    models = {k: v for k, v in _two_alternatives("none").items() if k != "full_control"}
+    assert any("already wired from" in e
+               for e in pipeline_wiring.validate_models_wiring(models))

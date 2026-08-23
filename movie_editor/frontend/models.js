@@ -658,7 +658,9 @@
     // explicit input source, an incoming wire from another node, or a unique auto-wire
     // producer. Only checked for ACTIVE slots (wired into the pipeline) — an unused node
     // that feeds nothing must not be flagged or block generation.
-    if (slotIsActive(slot)) (spec.connection_inputs || []).forEach((ci) => {
+    // A bypassed slot is on its way out of the graph, so its own inputs are not something
+    // to fix — matches the builder, which auto-wires it if it can and otherwise stays quiet.
+    if (slotIsActive(slot) && !slot.bypassed) (spec.connection_inputs || []).forEach((ci) => {
       if (!ci.required) return;
       if (typeAccepts(ci.type, "IMAGE")) return;  // a scene/timeline image can always feed an IMAGE input
       const src = (slot.input_sources || {})[ci.name];
@@ -2369,6 +2371,17 @@
   // every output something CONSUMES there must be exactly one input that can carry it
   // through. Checked here so a group's bypass button is never offered when pressing it
   // would stop the run instead — the builder still has the last word, and still explains.
+  // Whether a wire target lands on an OPTIONAL input, and so needs no pass-through when the
+  // node feeding it goes away. Core ports are never treated as optional here — the editor
+  // does not model their requiredness, and guessing wrong would hide a real block.
+  function targetIsOptional(t) {
+    if (!t || !t.startsWith("node:")) return false;
+    const [, sid, inName] = t.split(":");
+    const s2 = slotById(sid);
+    const ci = s2 && (specFor(s2)?.connection_inputs || []).find((c) => c.name === inName);
+    return !!ci && !ci.required;
+  }
+
   function bypassBlockers(slot, alsoGoing) {
     const cand = specFor(slot);
     if (!cand) return [];                            // spec unknown: let the builder decide
@@ -2376,19 +2389,33 @@
     // pass-through, because after the bypass nothing reads it — which is the whole
     // difference between bypassing a node and bypassing the group it lives in.
     const leaving = new Set([slot.id, ...(alsoGoing || [])]);
+    // Targets an ACTIVE slot also feeds. Wiring two alternatives at one port and bypassing
+    // the one you are not using is the point of bypass here, so a target somebody else
+    // still drives is not a consumer this node has to satisfy.
+    const covered = new Set();
+    (config.slots || []).forEach((s2) => {
+      if (leaving.has(s2.id) || s2.bypassed) return;
+      Object.values(s2.wires || {}).forEach((tg) => wireTargets(tg).filter(Boolean)
+        .forEach((t) => covered.add(t)));
+    });
     const consumed = new Set();
     Object.keys(slot.wires || {}).forEach((outName) => {
       const targets = wireTargets(slot.wires[outName]).filter(Boolean);
       // A wire onto a core port or a global output is always an outside consumer; a wire
-      // onto another node counts only when that node is staying.
-      if (targets.some((t) => !t.startsWith("node:") || !leaving.has(t.split(":")[1])))
+      // onto another node counts only when that node is staying — and never when something
+      // active feeds the same place, or when the input it lands on is optional.
+      if (targets.some((t) => !covered.has(t) && !targetIsOptional(t)
+                            && (!t.startsWith("node:") || !leaving.has(t.split(":")[1]))))
         consumed.add(outName);
     });
     config.slots.forEach((s2) => {
-      if (leaving.has(s2.id)) return;
-      Object.values(s2.input_sources || {}).forEach((src) => {
+      if (leaving.has(s2.id) || s2.bypassed) return;
+      Object.entries(s2.input_sources || {}).forEach(([inName, src]) => {
         const hit = _parseOutSource(src);
-        if (hit && hit.slotId === slot.id) consumed.add(hit.out);
+        if (!hit || hit.slotId !== slot.id) return;
+        const ci = (specFor(s2)?.connection_inputs || []).find((c) => c.name === inName);
+        if (ci && !ci.required) return;   // optional: the consumer runs without it
+        consumed.add(hit.out);
       });
     });
     const out = [];

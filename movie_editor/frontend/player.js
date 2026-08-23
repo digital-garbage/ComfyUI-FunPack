@@ -1383,6 +1383,21 @@
       const ro = el("div", "gen-readout" + (gen.state === "error" ? " error" : ""));
       ro.append(el("span", "pulse"));
       _genMsgEl = el("span", null, gen.msg || gen.state); ro.append(_genMsgEl);
+      if (!busy) {
+        // A blocking message names a node, an input and a fix. Being able to take it
+        // somewhere — a note, a bug report — beats retyping it from a screenshot.
+        const copy = el("button", "btn ghost tiny gen-copy", "⧉");
+        copy.title = "Copy this message";
+        copy.onclick = async (e) => {
+          e.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(gen.msg || "");
+            copy.textContent = "✓";
+            setTimeout(() => { copy.textContent = "⧉"; }, 1200);
+          } catch (_) { copy.textContent = "✕"; }
+        };
+        ro.append(copy);
+      }
       if (busy) {
         const bar = el("div", "gen-bar"); _genBarEl = bar;
         _genFillEl = el("div", "gen-bar-fill");

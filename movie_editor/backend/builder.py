@@ -698,6 +698,21 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
 
     # 4. explicit wires (slot OUTPUT -> port:<id> | node:<slotId>:<input>).
     # target may be a string (legacy single) or a list of strings (multi-wire).
+    #
+    # Targets an ACTIVE slot claims. A bypassed slot yields any of these rather than
+    # overwriting them: wiring two alternatives at one input (H3's ref-to-video and
+    # first-last-to-video both feeding the latent port) and bypassing the one you are not
+    # using is how you switch between them, and it only works if bypassing actually gets
+    # out of the way. Without this the bypassed node still won the input, and the bypass
+    # then failed for having nothing to pass through.
+    active_targets = set()
+    for s in slots:
+        if s.get("bypassed"):
+            continue
+        for target in (s.get("wires") or {}).values():
+            for t in (target if isinstance(target, list) else [target]):
+                if t:
+                    active_targets.add(t)
     for s in slots:
         sid = slot_node_id[s["id"]]
         nd = slot_def[s["id"]]
@@ -713,6 +728,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             is_default = role_defaults.get(out_type) == target
             for t in targets:
                 if not t:
+                    continue
+                if s.get("bypassed") and t in active_targets:
+                    report["wired"].append(
+                        f"{s.get('node_class')}.{out_name} -> {t} skipped (bypassed; an active "
+                        f"node feeds it)")
                     continue
                 # Global editor outputs: feed the synthesized combine node. global:video ->
                 # its IMAGE frames, global:audio -> its AUDIO (muxed into the same video+audio
@@ -797,13 +817,20 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         for src in (ovs or {}).values():
             if isinstance(src, str) and src.startswith("out:"):
                 active_slots.add(src.split(":", 2)[1])
+    # A bypassed node is leaving the graph. Auto-wire it if that is unambiguous — the
+    # pass-through reads its input — but never demand it: telling someone to wire a node
+    # they have explicitly switched off is asking them to fix something they already
+    # decided not to use. If the pass-through then genuinely has nothing to carry,
+    # _apply_bypass says so precisely, naming the consumer that would lose its source.
+    quiet_nodes = {slot_node_id[s["id"]] for s in slots
+                   if s.get("bypassed") and s["id"] in slot_node_id}
     _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots,
-              open_ports=OPEN_PORTS, core=CORE)
+              open_ports=OPEN_PORTS, core=CORE, quiet_nodes=quiet_nodes)
 
     # 5b. bypass: drop a slot's node from the graph and rewire its consumers straight to
     # whatever fed its matching-type input, so the node's effect is skipped without losing
     # its saved configuration (vs. removing the node or zeroing a strength widget every time).
-    _apply_bypass(graph, slots, slot_node_id, slot_def, report)
+    _apply_bypass(graph, slots, slot_node_id, slot_def, report, object_info)
 
     # Cycle-guard: a default/auto wire that loops (e.g. an upscale node whose IMAGE both feeds the
     # export AND defaults back to Studio · source_image while it consumes the decoded frames) is
@@ -1161,7 +1188,7 @@ def _node_labels(slots, slot_node_id, object_info, core=None):
 
 
 def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report,
-              active_slots=None, open_ports=None, core=None):
+              active_slots=None, open_ports=None, core=None, quiet_nodes=None):
     label = _node_labels(slots, slot_node_id, object_info, core=core)
     L = lambda nid: label.get(nid, nid)
 
@@ -1178,9 +1205,19 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
                 continue
             targets.append((slot_node_id[s["id"]], ci["name"], ci["type"], ci.get("required", False)))
 
+    quiet_nodes = quiet_nodes or set()
     for node_id, inp, t, required in targets:
         node = graph.get(node_id)
         if not node:
+            continue
+        if node_id in quiet_nodes:
+            # Fill it if there is exactly one obvious source, then stop. No ambiguity note,
+            # no unsatisfied entry, no block — this node is on its way out.
+            if not isinstance(node["inputs"].get(inp), list):
+                cands = [p for p in _matching_producers(producers, t)
+                         if p[0] != node_id and not _reaches_upstream(graph, p[0], node_id)]
+                if len(cands) == 1:
+                    node["inputs"][inp] = [cands[0][0], cands[0][1]]
             continue
         if isinstance(node["inputs"].get(inp), list):
             continue  # already wired (explicit/core)
@@ -1220,7 +1257,25 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
                 report["blocking"].append(msg)
 
 
-def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
+def _input_is_required(graph, object_info, node_id, inp_name) -> bool:
+    """Whether `node_id.inp_name` is a REQUIRED connection input.
+
+    An optional input that loses its source is not a broken graph — it is a node running
+    without that option, which is exactly what bypassing the thing that fed it means. Unknown
+    class or unknown input errs on the side of required, because silently dropping a link the
+    node did need is the failure that produces a wrong render rather than a message.
+    """
+    node = graph.get(node_id) or {}
+    nd = (object_info or {}).get(node.get("class_type"))
+    if not nd:
+        return True
+    for ci in connection_inputs(nd):
+        if ci["name"] == inp_name:
+            return bool(ci.get("required", False))
+    return True
+
+
+def _apply_bypass(graph, slots, slot_node_id, slot_def, report, object_info=None):
     """Drop each bypassed slot's node, rewiring its consumers to whatever already feeds its
     matching-type input (same idea as ComfyUI's node bypass) — only when that mapping is
     unambiguous (exactly one connection_input per output type) AND that input actually has
@@ -1250,12 +1305,16 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
         # FLOAT (latent_downscale_factor) alongside its MODEL, and the editor's graph wires
         # only the MODEL — and demanding a matching input for an output that feeds nothing
         # would refuse a bypass that is completely unambiguous for every link that exists.
+        # Only links a surviving node actually NEEDS count as consumption. A bypassed node
+        # feeding an OPTIONAL input is not a problem to solve: the link goes away with the
+        # node and the consumer runs without that option, which is what was asked for.
         consumed = set()
         for nid, ndata in graph.items():
             if nid == sid or nid in leaving:
                 continue
-            for val in (ndata.get("inputs") or {}).values():
-                if isinstance(val, list) and len(val) == 2 and val[0] == sid:
+            for inp_name, val in (ndata.get("inputs") or {}).items():
+                if (isinstance(val, list) and len(val) == 2 and val[0] == sid
+                        and _input_is_required(graph, object_info, nid, inp_name)):
                     consumed.add(val[1])
         passthrough = {}
         blocked = None
@@ -1295,6 +1354,12 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
                     elif nid in leaving:
                         # The consumer is being bypassed too, so there is nothing to repair
                         # and nothing to warn about — it will not be in the graph either.
+                        del ndata["inputs"][inp_name]
+                    elif not _input_is_required(graph, object_info, nid, inp_name):
+                        # Optional: the consumer runs without it. Noted, not blocked.
+                        report["wired"].append(
+                            f"{s.get('node_class')} bypassed — {nid}.{inp_name} (optional) left "
+                            f"unconnected")
                         del ndata["inputs"][inp_name]
                     else:
                         # The bypassed node's own matching input was never wired — passing

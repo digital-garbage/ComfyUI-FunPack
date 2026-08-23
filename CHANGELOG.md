@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Bypass now works as an A/B switch.** Wire two alternatives at one input — MiniMax H3's
+  ref-to-video and first-last-to-video both feeding the sampler's latent — and bypass the
+  one you are not using. A bypassed slot no longer claims the input, no longer counts as a
+  second source in guided mode, and no longer has to pass a value through for a consumer
+  something else already feeds or that does not require one. Its own unwired inputs are also
+  no longer demanded: it is auto-wired if that is unambiguous, and otherwise left alone.
+  Bypassing the ONLY source of a required input still blocks, with the same message.
+- **Blocking messages are no longer cropped.** The generation readout kept a long error on
+  one unwrapped line, so most of it ran off the canvas. The error state now wraps, scrolls
+  past 40vh, can be selected, and carries a copy button. The running readout is unchanged.
+
 ### Added
 - **Models & Pipeline ▸ Export settings…** renders the loaded pipeline as a PNG: every
   loader with its full filename, every LoRA with its weight, the typed-in values of any
