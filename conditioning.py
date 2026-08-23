@@ -6313,6 +6313,23 @@ class FunPackVideoRefiner:
 FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
 
 
+# A vision block leaves exactly one tag spare (the tags come from the tokenizer's INPUT
+# sequence, the conditioning is what came back). More than a couple means the two describe
+# different sequences, not a rounding difference.
+_TAG_SURPLUS_IS_ROUTINE = 2
+
+
+def _tag_composition(meta, count):
+    """(text positions, image positions) among the first `count` tags. Best-effort."""
+    try:
+        tags = meta.get("minimax_token_tags")
+        flat = tags.reshape(-1)[:count]
+        vision = int((flat == 0).sum().item())
+        return int(flat.shape[0]) - vision, vision
+    except Exception:  # noqa: BLE001
+        return -1, -1
+
+
 def _h3_reconcile_token_tags(conditioning, label=""):
     """Keep MiniMax H3's `minimax_token_tags` aligned with the conditioning it rides on.
 
@@ -6356,9 +6373,24 @@ def _h3_reconcile_token_tags(conditioning, label=""):
                   f"{have} -> {want} tokens; extended minimax_token_tags to match.")
         else:
             meta = trim_token_tags(meta, want)
-            print(f"[FunPackStudio] MiniMax H3: {label} conditioning is {want} tokens but "
-                  f"minimax_token_tags describes {have} — trimmed the {have - want} spare "
-                  f"tag(s) off the tail. Modality marks for the kept positions are unchanged.")
+            note = (f"[FunPackStudio] MiniMax H3: {label} conditioning is {want} tokens but "
+                    f"minimax_token_tags describes {have} — trimmed the {have - want} spare "
+                    f"tag(s) off the tail. Modality marks for the kept positions are "
+                    f"unchanged.")
+            # A vision block leaves ONE tag spare. A surplus larger than that is not the
+            # routine case this trim was written for: the tags describe a sequence with room
+            # for a picture and the conditioning does not, which means the reference's
+            # embeddings are not in this tensor. Trimming the tail then leaves the kept marks
+            # claiming the PROMPT positions are an image. Report what survived, because
+            # "trimmed N tags" alone reads like housekeeping.
+            if have - want > _TAG_SURPLUS_IS_ROUTINE:
+                text_n, vision_n = _tag_composition(meta, want)
+                note += (f"\n[FunPackStudio] That surplus is far past the one spare tag a "
+                         f"vision block leaves — the tags describe {have} positions and the "
+                         f"conditioning holds {want}, so the reference's embeddings are "
+                         f"probably NOT in this tensor. After trimming, the kept marks are "
+                         f"{text_n} text and {vision_n} image.")
+            print(note)
         out.append([cond, meta] + list(entry[2:]))
     return out
 
@@ -7108,14 +7140,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # which is why both stay connected. No setting selects between them: WIRING the input
         # is the instruction. Wanting CLIP to own the prompt means not wiring a conditioning.
         if positive_conditioning is not None:
-            clip_note = ("positive CONDITIONING is wired and owns the prompt"
+            cond, meta = self._v2_extract_conditioning(positive_conditioning)
+            entries = len(positive_conditioning) if isinstance(positive_conditioning, list) else 1
+            arrived = (f"{int(cond.shape[1])} positions"
+                       if hasattr(cond, "shape") and getattr(cond, "dim", lambda: 0)() >= 2
+                       else "unreadable")
+            tag_n = None
+            try:
+                _t = meta.get("minimax_token_tags")
+                tag_n = int(_t.reshape(-1).shape[0]) if _t is not None else None
+            except Exception:  # noqa: BLE001
+                tag_n = None
+            clip_note = (f"positive CONDITIONING is wired and owns the prompt "
+                         f"({arrived}"
+                         + (f", {tag_n} modality tags" if tag_n is not None else "")
+                         + (f", {entries} entries — only the FIRST is used" if entries > 1 else "")
+                         + ")"
                          + ("; CLIP still encodes the negative and references"
                             if clip is not None
                             # No CLIP at all: the tokenizer report is the only thing left
                             # saying what would have encoded the text, and it was part of
                             # this status before the precedence changed.
                             else f"; {self._v2_text_tokenizer_status()}"))
-            cond, meta = self._v2_extract_conditioning(positive_conditioning)
             if isinstance(cond, torch.Tensor):
                 if not getattr(self, "_funpack_wired_cond_noted", False):
                     self._funpack_wired_cond_noted = True
@@ -13926,6 +13972,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     done.append((phrase, weight))
             return done
 
+        # Resolved ONCE, up front: the matching below needs it, and so does the status line.
+        # Reporting the raw text made it look like `$style` was reaching the encoder.
+        weighted = _resolve_phrase_variables(weighted)
         out = []
         applied = 0
         for entry in conditioning_list or []:
@@ -13947,7 +13996,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # Capped AFTER ranking by weight, so the eight that survive are the eight the
             # rating cared most about; ordered longest-first only for application, so a
             # phrase's bias lands before one of its own words adds to it.
-            chosen = _tw.order_for_application(_resolve_phrase_variables(weighted[:8]))
+            chosen = _tw.order_for_application(weighted[:8])
             spans, prompt_tokens = _tw.locate(tokenizer, text, chosen)
             if spans and prompt_tokens:
                 entry_meta = {"spans": spans, "prompt_tokens": int(prompt_tokens)}
@@ -14022,7 +14071,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                       f"clamped to learned-safe {spread_cap:.3f}.")
         # LAST, after every manipulation above: a reference image's encoded rows go back
         # exactly as Qwen produced them.
-        return self._v2_restore_reference_rows(out)
+        out = self._v2_restore_reference_rows(out)
+        # Nothing in this node is allowed to change how many positions a conditioning has.
+        # If one does, the prompt has been cut and the only visible symptom downstream is a
+        # tag-count mismatch, which reads like housekeeping.
+        for before, after in zip(conditioning_list or [], out):
+            try:
+                a = int(before[0].shape[1])
+                b = int(after[0].shape[1])
+            except Exception:  # noqa: BLE001
+                continue
+            if a != b:
+                _log.note_on_change(
+                    "studio:length_changed", "FunPackStudio",
+                    f"the conditioning changed length inside Studio: {a} -> {b} positions. "
+                    f"Part of the prompt is no longer in the tensor the sampler receives. "
+                    f"This is a bug, not a setting.")
+                break
+        return out
 
 
 class FunPackSaveRefinementLatent:
