@@ -234,6 +234,7 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
         try:
             loader = _load_pack_module(d, "loader")
             ops = _load_pack_module(d, "ops")
+            allowed = _allow_architectures(loader, path)
             read = loader.gguf_sd_loader
             if clip:
                 read = getattr(loader, "gguf_clip_loader", None) or read
@@ -242,14 +243,130 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
             ggml_ops = getattr(ops, "GGMLOps", None)
             if ggml_ops is not None:
                 options["custom_operations"] = ggml_ops()
-            return sd, options, f"gguf: quantized (ComfyUI-GGUF at {os.path.basename(d)})"
+            return sd, options, (f"gguf: quantized (ComfyUI-GGUF at {os.path.basename(d)})"
+                                 + (f"; {allowed}" if allowed else ""))
         except Exception as e:  # noqa: BLE001 — any refusal is a reason to fall back
             if importlib.util.find_spec("gguf") is None:
                 raise
-            sd, options, note = _load_native(path)
+            sd, options, note = _load_native_cached(path)
             return sd, options, (f"gguf: ComfyUI-GGUF could not read this file ({e}) — "
                                  f"fell back. {note}")
-    return _load_native(path)
+    return _load_native_cached(path)
+
+
+CACHE_SUFFIX = ".dequantized.safetensors"
+
+
+def cache_path(path: str) -> str:
+    """Where a dequantized copy of `path` lives. Beside the original, so it is obvious what
+    it belongs to and deleting the model takes it with you."""
+    return path + CACHE_SUFFIX
+
+
+def _cache_is_current(src: str, dst: str) -> bool:
+    """Only trust a cache written AFTER the file it came from."""
+    try:
+        return os.path.isfile(dst) and os.path.getmtime(dst) >= os.path.getmtime(src)
+    except OSError:
+        return False
+
+
+def _load_native_cached(path: str) -> tuple[dict, dict, str]:
+    """`_load_native`, but the expansion happens once and is kept on disk.
+
+    The native path has to expand every quantized tensor before the model can be used, and
+    that is minutes on a video checkpoint — paid again on every launch, for a result that is
+    identical every time. Written next to the file as an ordinary safetensors, which then
+    loads at safetensors speed (memory-mapped, no dequantization at all).
+
+    It costs the model's dequantized size in DISK. That is the same size it was going to
+    occupy in VRAM on this path anyway, so nothing is being traded that was not already
+    spent — but it is real disk, and it is stated rather than left to be discovered.
+    """
+    import comfy.utils
+
+    dst = cache_path(path)
+    if _cache_is_current(path, dst):
+        try:
+            sd = comfy.utils.load_torch_file(dst)
+            return sd, {}, (f"gguf: loaded the dequantized cache beside it "
+                            f"({os.path.basename(dst)}) — delete that file to rebuild it")
+        except Exception as e:  # noqa: BLE001
+            print(f"[FunPack] gguf: the dequantized cache could not be read ({e}) — "
+                  f"expanding the .gguf again")
+
+    sd, options, note = _load_native(path)
+    try:
+        import safetensors.torch
+        tmp = dst + ".part"
+        safetensors.torch.save_file({k: v.contiguous() for k, v in sd.items()}, tmp)
+        os.replace(tmp, dst)          # atomic: a half-written cache is never left behind
+        note += (f" Written to {os.path.basename(dst)} so the next load skips this "
+                 f"(costs its dequantized size in disk; delete it to reclaim).")
+    except Exception as e:  # noqa: BLE001
+        # A cache that cannot be written is a slow load, not a failed one.
+        note += f" (could not write the dequantized cache: {e})"
+        try:
+            if os.path.exists(dst + ".part"):
+                os.remove(dst + ".part")
+        except OSError:
+            pass
+    return sd, options, note
+
+
+def read_architecture(path: str) -> Optional[str]:
+    """`general.architecture` out of a GGUF header, or None. Header only — no tensor data."""
+    try:
+        import gguf
+        reader = gguf.GGUFReader(path)
+        field = reader.fields.get("general.architecture")
+        if field is None:
+            return None
+        return str(bytes(field.parts[field.data[0]]), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _allow_architectures(loader, path: str) -> str:
+    """Let ComfyUI-GGUF read an architecture its allowlist does not name. Returns a note.
+
+    The pack keeps a list of architectures it has been tested against and refuses anything
+    else. That is the right default for the pack and a dead end here: the refusal costs the
+    QUANTIZED path, and the fallback expands the whole checkpoint at load — minutes of
+    dequantizing, and the file's full size in VRAM, which is the entire reason someone chose
+    a GGUF.
+
+    The reading itself is generic: the pack walks the tensors and wraps them, and the
+    architecture only steers the key renaming that image models do not use. So the name is
+    added to the IMAGE list, never the text one, and only for a file whose header actually
+    declares it. Announced, because it is an override of another project's own guard and a
+    wrong result here should be traceable to this line.
+    """
+    arch = read_architecture(path)
+    if not arch:
+        return ""
+    added = []
+    for attr in ("IMG_ARCH_LIST", "ARCH_LIST"):
+        lst = getattr(loader, attr, None)
+        if lst is None:
+            continue
+        try:
+            if arch in lst:
+                return ""              # the pack already knows it; nothing to override
+            if isinstance(lst, set):
+                lst.add(arch)
+            elif isinstance(lst, list):
+                lst.append(arch)
+            else:
+                continue
+            added.append(attr)
+        except Exception:  # noqa: BLE001
+            continue
+    if not added:
+        return ""
+    return (f"architecture {arch!r} is not on ComfyUI-GGUF's tested list and FunPack added it "
+            f"so the file loads quantized instead of being expanded — if the weights come out "
+            f"wrong, this is why")
 
 
 def _load_native(path: str) -> tuple[dict, dict, str]:

@@ -5,6 +5,7 @@ which backend gets picked, what happens when none is available, and whether .ggu
 are found at all (core's extension set excludes them, which is the whole reason this
 module exists).
 """
+import os
 import sys
 import types
 
@@ -240,3 +241,113 @@ def test_gguf_is_a_declared_requirement():
     reqs = pathlib.Path("requirements.txt").read_text(encoding="utf-8")
     lines = [ln.strip() for ln in reqs.splitlines() if ln.strip() and not ln.startswith("#")]
     assert any(ln == "gguf" or ln.startswith("gguf") for ln in lines)
+
+
+# ── expand once, not every launch ─────────────────────────────────────────────
+# The native path has to dequantize every tensor before the model is usable — minutes on a
+# video checkpoint, paid again on every launch for a result that is identical every time.
+
+
+def test_the_cache_sits_beside_the_model(tmp_path):
+    src = str(tmp_path / "m.gguf")
+    assert gguf_support.cache_path(src) == src + gguf_support.CACHE_SUFFIX
+
+
+def test_a_cache_older_than_the_model_is_not_trusted(tmp_path):
+    src = tmp_path / "m.gguf"
+    src.write_bytes(b"GGUF")
+    dst = tmp_path / ("m.gguf" + gguf_support.CACHE_SUFFIX)
+    dst.write_bytes(b"old")
+    os.utime(dst, (1, 1))                       # written before the model
+    assert not gguf_support._cache_is_current(str(src), str(dst))
+
+
+def test_a_cache_newer_than_the_model_is_used(tmp_path, monkeypatch):
+    src = tmp_path / "m.gguf"
+    src.write_bytes(b"GGUF")
+    dst = tmp_path / ("m.gguf" + gguf_support.CACHE_SUFFIX)
+    dst.write_bytes(b"new")
+    os.utime(src, (1, 1))
+    assert gguf_support._cache_is_current(str(src), str(dst))
+
+
+def test_a_missing_cache_is_simply_not_current(tmp_path):
+    src = tmp_path / "m.gguf"
+    src.write_bytes(b"GGUF")
+    assert not gguf_support._cache_is_current(str(src), str(tmp_path / "nope"))
+
+
+def test_the_expansion_is_written_and_reused(tmp_path, monkeypatch):
+    """The whole point: the second load must not dequantize anything."""
+    import torch
+    src = tmp_path / "m.gguf"
+    src.write_bytes(b"GGUF")
+    calls = []
+
+    def fake_native(path):
+        calls.append(path)
+        return {"w": torch.zeros(2, 2)}, {}, "gguf: dequantized at load"
+
+    monkeypatch.setattr(gguf_support, "_load_native", fake_native)
+    # The stub comfy tree has no real loader; the cache is an ordinary safetensors file.
+    import safetensors.torch
+    monkeypatch.setattr("comfy.utils.load_torch_file",
+                        lambda p, **kw: safetensors.torch.load_file(p), raising=False)
+    sd1, _, note1 = gguf_support._load_native_cached(str(src))
+    assert calls == [str(src)] and "Written to" in note1
+    sd2, _, note2 = gguf_support._load_native_cached(str(src))
+    assert calls == [str(src)]                  # never expanded a second time
+    assert "dequantized cache" in note2
+    assert torch.equal(sd1["w"], sd2["w"])
+
+
+def test_an_unwritable_cache_is_a_slow_load_not_a_failed_one(tmp_path, monkeypatch):
+    import torch
+    src = tmp_path / "m.gguf"
+    src.write_bytes(b"GGUF")
+    monkeypatch.setattr(gguf_support, "_load_native",
+                        lambda p: ({"w": torch.zeros(2, 2)}, {}, "expanded"))
+    monkeypatch.setattr("safetensors.torch.save_file",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")))
+    sd, _, note = gguf_support._load_native_cached(str(src))
+    assert "w" in sd and "could not write" in note
+    assert not os.path.exists(gguf_support.cache_path(str(src)) + ".part")   # no debris
+
+
+# ── letting the pack read an architecture it has not been told about ──────────
+
+
+class _Loader:
+    def __init__(self, arches):
+        self.IMG_ARCH_LIST = set(arches)
+
+
+def test_an_unknown_architecture_is_added_so_the_file_loads_quantized(monkeypatch):
+    monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "minimax_h3")
+    loader = _Loader({"flux", "sd3"})
+    note = gguf_support._allow_architectures(loader, "x.gguf")
+    assert "minimax_h3" in loader.IMG_ARCH_LIST
+    assert "minimax_h3" in note and "FunPack added it" in note
+
+
+def test_a_known_architecture_is_left_alone_and_says_nothing(monkeypatch):
+    monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "flux")
+    loader = _Loader({"flux"})
+    assert gguf_support._allow_architectures(loader, "x.gguf") == ""
+
+
+def test_an_unreadable_architecture_changes_nothing(monkeypatch):
+    monkeypatch.setattr(gguf_support, "read_architecture", lambda p: None)
+    loader = _Loader({"flux"})
+    assert gguf_support._allow_architectures(loader, "x.gguf") == ""
+    assert loader.IMG_ARCH_LIST == {"flux"}
+
+
+def test_the_text_encoder_list_is_never_touched(monkeypatch):
+    """Image and text architectures steer different key renaming in the pack; guessing a
+    text arch into the image list is one thing, the reverse is another."""
+    monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "minimax_h3")
+    loader = _Loader({"flux"})
+    loader.TXT_ARCH_LIST = {"t5"}
+    gguf_support._allow_architectures(loader, "x.gguf")
+    assert loader.TXT_ARCH_LIST == {"t5"}

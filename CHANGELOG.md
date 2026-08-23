@@ -8,6 +8,18 @@
   minute of dequantizing a GGUF to alter a sparsity ratio. The weights depend only on the
   file (identity, size, mtime) and the dtypes; everything else is applied to a clone. One
   entry, replaced whenever the key changes.
+- **A GGUF architecture ComfyUI-GGUF has not been told about now loads quantized anyway.**
+  The pack refuses anything off its tested list — `Unexpected architecture type in GGUF file:
+  'minimax_h3'` — which cost the quantized path entirely and fell back to expanding the whole
+  checkpoint. The name is now added to its IMAGE list (never the text one) for a file whose
+  header actually declares it, and the status line says so, because it is an override of
+  another project's own guard.
+- **When it does have to expand a GGUF, it expands ONCE.** The dequantized weights are
+  written beside the file as an ordinary safetensors and reused on every later load, which
+  then runs at safetensors speed. It costs the model's dequantized size in disk — the same
+  size that path was already going to occupy in VRAM — and the status line names the file to
+  delete. A cache older than the model is ignored; one that cannot be written is a slow
+  load, not a failed one.
 - **GGUF dequantizes across threads instead of one tensor at a time.** The native path
   expands every quantized tensor at load with numpy, serially, which is where the wait went.
   numpy releases the GIL for that work, so it now runs on up to 8 threads — bounded rather
