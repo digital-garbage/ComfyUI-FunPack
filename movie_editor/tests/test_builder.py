@@ -881,11 +881,14 @@ def test_an_empty_slot_is_not_quietly_filled_with_something_else():
     assert not isinstance(graph["slot_r"]["inputs"].get("ref_images.ref_image0"), list)
 
 
-def test_a_malformed_slot_reference_does_not_crash_the_build():
+def test_a_malformed_slot_says_it_is_malformed_not_that_nothing_is_marked():
+    """"No reference marked" sends the user to the Media Bin to fix a value that is wrong in
+    the node. The two are different problems and must not read the same."""
     _graph, report = builder.build(
         REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:nope"}),
         _ref_params(_img("m1", "a.png")))
-    assert not _ref_problems(report)
+    assert any("not a reference slot" in u for u in report["unsatisfied"])
+    assert not any("none marked" in w for w in report["wired"])
 
 
 def test_the_loader_matches_what_the_destination_socket_asks_for():

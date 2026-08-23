@@ -628,7 +628,15 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     n = int(num)
                 except ValueError:
                     n = 0
-                ref = _reference_by_slot(kind, n) if n > 0 else None
+                if n <= 0:
+                    # A malformed slot is not "no reference marked" — reporting it as that
+                    # sends the user to the Media Bin to fix a value that is wrong in the
+                    # node. Say which it is.
+                    report["unsatisfied"].append(
+                        f"{s.get('node_class')}.{ci_name}: input source '{source}' is not a "
+                        f"reference slot (expected e.g. 'ref#image:1').")
+                    continue
+                ref = _reference_by_slot(kind, n)
                 if ref is None:
                     # Nothing marked in that slot. The socket is simply left unconnected —
                     # an unused reference slot is a normal state, not a setup mistake, so it

@@ -50,7 +50,13 @@ def _text_positions(meta, length):
             return None          # tags and conditioning disagree — touch nothing selectively
         idx = (flat == 1).nonzero(as_tuple=False).reshape(-1)
         return idx if int(idx.numel()) else None
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        # NOT silent: returning None here widens the operation from "text positions only" to
+        # "every position", which on H3 means erasing a text direction out of the reference
+        # image's conditioning. A caller that cannot see this happen cannot explain the
+        # result it gets.
+        print(f"[FunPack] negative_erase: could not read the modality tags ({exc}) — the "
+              f"erase applies to EVERY position, including any image span")
         return None
 
 
@@ -154,7 +160,7 @@ def apply(positive, negative, strength, mode="project", renorm=True):
     if unit is None:
         return positive, "negative_erase: the negative conditioning has no usable direction"
 
-    out, touched = [], 0
+    out, touched, failed = [], 0, []
     for entry in positive:
         try:
             tensor, meta = entry[0], (entry[1] if len(entry) > 1 else {})
@@ -162,8 +168,15 @@ def apply(positive, negative, strength, mode="project", renorm=True):
             if new is not tensor:
                 touched += 1
             out.append((new, meta) + tuple(entry[2:]))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            failed.append(str(exc))
             out.append(entry)
+    if failed:
+        return positive, (f"negative_erase: {len(failed)} conditioning entr"
+                          f"{'y' if len(failed) == 1 else 'ies'} could not be modified "
+                          f"({failed[0]}) — NOTHING was changed, because a prompt where only "
+                          f"some scenes had the negative removed is worse than one where none "
+                          f"did")
     if not touched:
         return positive, "negative_erase: no conditioning entry could be modified"
     return out, (f"negative_erase: {mode} {float(strength):.2f} on {touched} "

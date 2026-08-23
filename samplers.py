@@ -1379,7 +1379,12 @@ class _SharpenDenoiser:
         denoised = self._inner(x, sigma, **kwargs)
         try:
             s = float(sigma.flatten()[0]) if hasattr(sigma, "flatten") else float(sigma)
-        except Exception:  # noqa: BLE001
+        except Exception as _e:  # noqa: BLE001
+            # Once, not per evaluation — but never nothing. Silently returning here would
+            # leave quality_sharpness switched on, reported as active, and doing nothing for
+            # the whole run.
+            _log.failed("FunPackStudio", "quality sharpness (unreadable sigma)", _e,
+                        "this sampler's steps are NOT being sharpened")
             return denoised
         if s > self._thr:
             # Outside the window: nothing to sharpen, but the prediction is still KEPT. The
