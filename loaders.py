@@ -255,6 +255,24 @@ class FunPackDiffusionModelLoader:
                    fp16_accumulation=False, sla_sparsity=None, sla_block_size=None,
                    sla_protect_audio=None, sla_min_seq_len=None, sla_dense_last_steps=None,
                    sla=False):
+        # ComfyUI reports a node failure as "<node>: <message>" with the traceback going to
+        # the console. A bare "'dict' object has no attribute 'startswith'" names neither the
+        # step it came from nor the file it was reading, which is most of what you need. Each
+        # stage sets `stage`, and the re-raise says which one.
+        stage = {"at": "starting"}
+        try:
+            return self._load_model(stage, model_name, weight_dtype, compute_dtype, attention,
+                                    fp16_accumulation, sla_sparsity, sla_block_size,
+                                    sla_protect_audio, sla_min_seq_len, sla_dense_last_steps,
+                                    sla)
+        except Exception as e:
+            raise type(e)(f"{e} [while {stage['at']}: {model_name}]").with_traceback(
+                e.__traceback__) from e
+
+    def _load_model(self, stage, model_name, weight_dtype, compute_dtype, attention,
+                    fp16_accumulation=False, sla_sparsity=None, sla_block_size=None,
+                    sla_protect_audio=None, sla_min_seq_len=None, sla_dense_last_steps=None,
+                    sla=False):
         notes = [f"FunPack Diffusion Model Loader | {model_name}"]
 
         accum = set_fp16_accumulation(fp16_accumulation)
@@ -272,6 +290,7 @@ class FunPackDiffusionModelLoader:
         # depend on the file and the dtypes, so those are the cache key and everything else
         # is applied to a clone. One entry, replaced whenever the key changes: this holds no
         # more than ComfyUI's own node-output cache already did.
+        stage["at"] = "checking the weight cache"
         cache_key = _weight_cache_key(model_name, weight_dtype, compute_dtype)
         cached = _WEIGHT_CACHE.get("model") if _WEIGHT_CACHE.get("key") == cache_key else None
         if cached is not None:
@@ -280,6 +299,7 @@ class FunPackDiffusionModelLoader:
             return self._finish(model, notes, attention, sla, sla_sparsity, sla_block_size,
                                 sla_min_seq_len, sla_dense_last_steps, sla_protect_audio)
 
+        stage["at"] = "locating the file"
         path = None
         misnamed = False
         if gguf_support.is_gguf(model_name):
@@ -296,6 +316,7 @@ class FunPackDiffusionModelLoader:
             if misnamed:
                 notes.append(f"{model_name} is named .safetensors but is a GGUF container — "
                              f"loaded as GGUF")
+            stage["at"] = "reading the GGUF container"
             state_dict, gguf_options, gguf_note = gguf_support.load_state_dict(path)
             # The quantized path needs its own torch operations, and they must not be lost to
             # the dtype options merged above — a GGUF loaded with stock ops would try to matmul
@@ -304,7 +325,9 @@ class FunPackDiffusionModelLoader:
             metadata = None
             notes.append(gguf_note)
         else:
+            stage["at"] = "reading the safetensors file"
             state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
+        stage["at"] = "handing the state dict to ComfyUI"
         model = comfy.sd.load_diffusion_model_state_dict(
             state_dict, model_options=model_options, metadata=metadata)
         if model is None:
@@ -324,6 +347,7 @@ class FunPackDiffusionModelLoader:
         # below is applied to a clone, which is what lets a sparsity change skip the disk.
         _WEIGHT_CACHE["key"] = cache_key
         _WEIGHT_CACHE["model"] = model
+        stage["at"] = "applying attention / SLA"
         return self._finish(model.clone(), notes, attention, sla, sla_sparsity,
                             sla_block_size, sla_min_seq_len, sla_dense_last_steps,
                             sla_protect_audio)

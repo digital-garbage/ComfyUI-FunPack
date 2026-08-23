@@ -314,6 +314,10 @@ def _load_native_cached(path: str) -> tuple[dict, dict, str]:
     return sd, options, note
 
 
+ARCH_OVERRIDE_VAR = "FUNPACK_GGUF_ALLOW_ANY_ARCH"
+_ARCH_ON = {"1", "true", "yes", "on"}
+
+
 def read_architecture(path: str) -> Optional[str]:
     """`general.architecture` out of a GGUF header, or None. Header only — no tensor data."""
     try:
@@ -342,6 +346,11 @@ def _allow_architectures(loader, path: str) -> str:
     declares it. Announced, because it is an override of another project's own guard and a
     wrong result here should be traceable to this line.
     """
+    # OPT-IN. Overriding another project's safety guard changes a clean refusal (which falls
+    # back to a slower path that works) into an untested code path that may produce a subtly
+    # wrong state dict — a worse failure, and a harder one to attribute. Off unless asked.
+    if str(os.environ.get(ARCH_OVERRIDE_VAR, "")).strip().lower() not in _ARCH_ON:
+        return ""
     arch = read_architecture(path)
     if not arch:
         return ""
@@ -364,9 +373,10 @@ def _allow_architectures(loader, path: str) -> str:
             continue
     if not added:
         return ""
-    return (f"architecture {arch!r} is not on ComfyUI-GGUF's tested list and FunPack added it "
-            f"so the file loads quantized instead of being expanded — if the weights come out "
-            f"wrong, this is why")
+    return (f"architecture {arch!r} is not on ComfyUI-GGUF's tested list and "
+            f"{ARCH_OVERRIDE_VAR} added it so the file loads quantized instead of being "
+            f"expanded — if the weights come out wrong, or the load fails somewhere inside "
+            f"the pack, this is why: unset it to go back to the refusal and the slower path")
 
 
 def _load_native(path: str) -> tuple[dict, dict, str]:

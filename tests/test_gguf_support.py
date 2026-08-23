@@ -322,21 +322,34 @@ class _Loader:
         self.IMG_ARCH_LIST = set(arches)
 
 
+def test_the_override_is_off_unless_asked(monkeypatch):
+    """Turning another project's clean refusal into an untested code path is a WORSE failure
+    than the slow fallback it avoids — it can produce a subtly wrong state dict instead."""
+    monkeypatch.delenv(gguf_support.ARCH_OVERRIDE_VAR, raising=False)
+    monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "minimax_h3")
+    loader = _Loader({"flux"})
+    assert gguf_support._allow_architectures(loader, "x.gguf") == ""
+    assert loader.IMG_ARCH_LIST == {"flux"}
+
+
 def test_an_unknown_architecture_is_added_so_the_file_loads_quantized(monkeypatch):
+    monkeypatch.setenv(gguf_support.ARCH_OVERRIDE_VAR, "1")
     monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "minimax_h3")
     loader = _Loader({"flux", "sd3"})
     note = gguf_support._allow_architectures(loader, "x.gguf")
     assert "minimax_h3" in loader.IMG_ARCH_LIST
-    assert "minimax_h3" in note and "FunPack added it" in note
+    assert "minimax_h3" in note and gguf_support.ARCH_OVERRIDE_VAR in note
 
 
 def test_a_known_architecture_is_left_alone_and_says_nothing(monkeypatch):
+    monkeypatch.setenv(gguf_support.ARCH_OVERRIDE_VAR, "1")
     monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "flux")
     loader = _Loader({"flux"})
     assert gguf_support._allow_architectures(loader, "x.gguf") == ""
 
 
 def test_an_unreadable_architecture_changes_nothing(monkeypatch):
+    monkeypatch.setenv(gguf_support.ARCH_OVERRIDE_VAR, "1")
     monkeypatch.setattr(gguf_support, "read_architecture", lambda p: None)
     loader = _Loader({"flux"})
     assert gguf_support._allow_architectures(loader, "x.gguf") == ""
@@ -344,6 +357,7 @@ def test_an_unreadable_architecture_changes_nothing(monkeypatch):
 
 
 def test_the_text_encoder_list_is_never_touched(monkeypatch):
+    monkeypatch.setenv(gguf_support.ARCH_OVERRIDE_VAR, "1")
     """Image and text architectures steer different key renaming in the pack; guessing a
     text arch into the image list is one thing, the reverse is another."""
     monkeypatch.setattr(gguf_support, "read_architecture", lambda p: "minimax_h3")
