@@ -6667,6 +6667,52 @@ class FunPackLTXAVSceneChainSampler:
                             "an attention hook may still be installed — RESTART ComfyUI before "
                             "trusting later generations")
 
+    @staticmethod
+    def _mem_report(label):
+        """RSS, system RAM and what ComfyUI is holding — one line, at a phase boundary.
+
+        This exists because of a failure with no traceback: the box stops responding after
+        sampling and has to be power-cycled. The suspect is where a video model's memory GOES
+        rather than how much of it there is. ComfyUI frees VRAM by moving weights back to HOST
+        RAM, and the VAE decode is the call that triggers that eviction — so the moment the
+        picture is finished is exactly when tens of GB can land in system memory. On H3 the
+        text encoder alone (Qwen3-VL-32B) is ~64 GB in bf16, and it is DONE by then: its
+        conditioning was built before sampling started. If the host has no room for what gets
+        evicted, Linux swaps, and a swapping box looks hung long before the OOM killer fires.
+
+        Everything is best-effort. This must never be the thing that fails a run.
+        """
+        parts = []
+        try:
+            import psutil
+            proc = psutil.Process()
+            vm = psutil.virtual_memory()
+            parts.append(f"RSS {proc.memory_info().rss / 1024 ** 3:.1f} GB")
+            parts.append(f"RAM {vm.available / 1024 ** 3:.1f} GB free of "
+                         f"{vm.total / 1024 ** 3:.0f}")
+            swap = psutil.swap_memory()
+            if swap.total:
+                parts.append(f"swap {swap.used / 1024 ** 3:.1f}/{swap.total / 1024 ** 3:.0f} GB")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            parts.append(f"VRAM {comfy.model_management.get_free_memory() / 1024 ** 3:.1f} GB free")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            held = []
+            for lm in comfy.model_management.current_loaded_models:
+                name = type(getattr(lm.model, "model", lm.model)).__name__
+                size = float(lm.model_memory()) / 1024 ** 3
+                off = float(lm.model_offloaded_memory()) / 1024 ** 3
+                held.append(f"{name} {size:.0f}G" + (f" ({off:.0f}G on CPU)" if off > 0.5 else ""))
+            if held:
+                parts.append("holding " + ", ".join(held))
+        except Exception:  # noqa: BLE001
+            pass
+        if parts:
+            print(f"[FunPackSceneChain] mem @ {label}: " + " | ".join(parts))
+
     def _log_decode_plan(self, vae, video_tensor):
         """One line naming what the decode needs and what is free, before it needs it.
 
@@ -7885,6 +7931,7 @@ class FunPackLTXAVSceneChainSampler:
             # is merely SLOW (an fp32 VAE, a CPU fallback, a box that started swapping) is
             # indistinguishable from one that is hung.
             self._set_phase("decoding")
+            self._mem_report("sampling done, before decode")
             self._log_decode_plan(vae, video_tensor)
             # Hand back everything sampling was holding first. The banks (dynashift negatives,
             # guide frames, per-scene wrappers) are dead by now but their blocks are still
@@ -7908,6 +7955,9 @@ class FunPackLTXAVSceneChainSampler:
             _phase_decode = _time.perf_counter() - _t_dec0
             self._set_phase("")
             print(f"[FunPackSceneChain] decoded in {_phase_decode:.1f}s")
+            # After, not just before: the eviction happens DURING the decode, so the two
+            # lines together show what moved and where it went.
+            self._mem_report("after decode")
 
         # cut_opening_frames, LTX path. Applied HERE, after a decode that saw every latent
         # frame in its sampled context, rather than on the latent inside the loop — a latent
