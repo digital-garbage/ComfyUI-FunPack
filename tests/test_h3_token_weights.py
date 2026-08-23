@@ -726,3 +726,27 @@ def test_the_region_start_is_still_where_the_last_vision_block_ends():
     the label tokens between them, which belong to the reference, not the prompt."""
     tags = [1] * 2 + [0] * 3 + [1] * 13
     assert tw.prompt_region(tags, cond_len=18) == (5, 18)
+
+
+def test_every_learned_phrase_in_the_prompt_is_weighted(refiner, monkeypatch):
+    """No cap. Locating a phrase is a substring find plus an offset scan — the 8 this
+    inherited belongs to _v2_find_phrase_token_ranges, which re-encodes each phrase through
+    a 32B text encoder."""
+    words = [f"w{i:02d}" for i in range(20)]      # fixed width: no phrase contains another
+    memory = {w: {"kind": "phrase", "effective_category_scores": {"details": 0.9}}
+              for w in words}
+    tag = _apply(refiner, monkeypatch, {"funpack_encode_text": " ".join(words)}, memory)
+
+    assert tag is not None
+    assert len(tag["spans"]) == 20
+
+
+def test_a_phrase_no_longer_in_the_prompt_is_not_weighted(refiner, monkeypatch):
+    """Phrase memory keeps everything the session rated, including phrases from prompts
+    since edited away. They matched nothing and were still named as weighted."""
+    memory = {"gone": {"kind": "phrase", "effective_category_scores": {"details": 0.9}},
+              "here": {"kind": "phrase", "effective_category_scores": {"details": 0.9}}}
+    tag = _apply(refiner, monkeypatch, {"funpack_encode_text": "here"}, memory)
+
+    assert tag is not None
+    assert len(tag["spans"]) == 1

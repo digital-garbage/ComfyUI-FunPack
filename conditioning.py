@@ -14055,6 +14055,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         weighted = _resolve_phrase_variables(weighted)
         out = []
         applied = 0
+        landed: dict = {}
         for entry in conditioning_list or []:
             if not (isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict)):
                 out.append(entry)
@@ -14088,7 +14089,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 # the prompt sits. Biasing by arithmetic would land on the wrong words.
                 text = str(next((c for c in candidates if str(c or "").strip()), ""))
                 verified_base = None
-            chosen = _tw.order_for_application(weighted[:8])
+            # Every learned phrase that is IN this prompt, with no cap. Phrase memory
+            # accumulates everything the session has rated, including phrases from prompts
+            # since edited away — those match nothing and are dropped here rather than
+            # counted, which is also why they used to appear in the status line.
+            #
+            # There is no limit because there is no cost to lift: locating a phrase is a
+            # substring find and a scan of the tokenizer's offset map. The 8 this inherited
+            # belongs to `_v2_find_phrase_token_ranges`, which finds a phrase by RE-ENCODING
+            # it through the text encoder — eight of those is eight Qwen3-VL-32B forward
+            # passes, and capping them is the whole point there.
+            lowered = text.lower()
+            present = [pair for pair in weighted if pair[0] and pair[0] in lowered]
+            chosen = _tw.order_for_application(present)
             spans, prompt_tokens = _tw.locate(tokenizer, text, chosen)
             if spans and prompt_tokens:
                 entry_meta = {"spans": spans, "prompt_tokens": int(prompt_tokens)}
@@ -14116,14 +14129,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     entry_meta["base"] = int(base)
                 meta["funpack_h3_token_weights"] = entry_meta
                 applied += 1
+                for _t, _w in chosen:
+                    if _t in lowered:
+                        landed[_t] = _w
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         if applied:
+            # Names what was APPLIED. Reporting the candidate list meant phrases that are no
+            # longer in the prompt were named as weighted when they had matched nothing.
+            top = sorted(landed.items(), key=lambda p: -p[1])[:3]
             _log.note_on_change(
                 "h3:token_weights", "FunPackStudio",
-                f"rating-derived phrase emphasis: {len(weighted)} phrase(s) weighted across "
-                f"{applied} scene(s) (e.g. "
-                + ", ".join(f"{t!r} x{w:.2f}" for t, w in weighted[:3])
-                + ") — applied as an attention bias on H3's packed stream, where the attn2 "
+                f"rating-derived phrase emphasis: {len(landed)} of {len(weighted)} learned "
+                f"phrase(s) are in this prompt and were weighted across {applied} scene(s)"
+                + (" (e.g. " + ", ".join(f"{t!r} x{w:.2f}" for t, w in top) + ")" if top else "")
+                + " — applied as an attention bias on H3's packed stream, where the attn2 "
                   "K/V emphasis has nothing to hook.")
         return out
 
