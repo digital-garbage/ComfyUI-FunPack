@@ -6,6 +6,13 @@ if __package__:
     # staged (custom nodes, so not yet) — this import sits in the only window where the
     # number can still be lowered. No-op unless FUNPACK_PINNED_MEMORY is set.
     try:
+        from . import diagnostics as _fp_diagnostics
+        _fp_diag_note = _fp_diagnostics.enable()
+        if _fp_diag_note:
+            print(f"[FunPack] {_fp_diag_note}")
+    except Exception as _e:  # noqa: BLE001
+        print(f"[FunPack] could not enable faulthandler: {_e}")
+    try:
         from . import host_memory as _fp_host_memory
         _fp_mem_note = _fp_host_memory.apply()
         if _fp_mem_note:

@@ -35,6 +35,10 @@
   past 40vh, can be selected, and carries a copy button. The running readout is unchanged.
 
 ### Added
+- **`FUNPACK_FAULTHANDLER=1` makes a silent death talk.** Installs Python's faulthandler, so
+  a crash in native code prints every thread's stack instead of nothing — and registers
+  SIGUSR1, so `kill -USR1 <pid>` dumps where a HUNG ComfyUI actually is, from another
+  terminal, without py-spy, gdb or a restart. Off by default; costs nothing while idle.
 - **`FUNPACK_PINNED_MEMORY` caps ComfyUI's pinned host-memory budget.** ComfyUI page-locks up
   to 90% of system RAM for weight streaming; pinned pages cannot be swapped or reclaimed, so
   once that budget is committed a further allocation wedges the host instead of killing the
