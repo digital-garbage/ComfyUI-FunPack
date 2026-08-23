@@ -1,6 +1,17 @@
 # ComfyUI-FunPack/__init__.py
 
 if __package__:
+    # BEFORE anything loads a model. ComfyUI computes its pinned-memory budget when
+    # model_management is imported (core, so already done) and commits it as models are
+    # staged (custom nodes, so not yet) — this import sits in the only window where the
+    # number can still be lowered. No-op unless FUNPACK_PINNED_MEMORY is set.
+    try:
+        from . import host_memory as _fp_host_memory
+        _fp_mem_note = _fp_host_memory.apply()
+        if _fp_mem_note:
+            print(f"[FunPack] {_fp_mem_note}")
+    except Exception as _e:  # noqa: BLE001
+        print(f"[FunPack] could not adjust pinned memory: {_e}")
     from .conditioning import (
         FunPackAdvisorLLM,
         FunPackConditioningAdjust,

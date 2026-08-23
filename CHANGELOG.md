@@ -22,6 +22,14 @@
   past 40vh, can be selected, and carries a copy button. The running readout is unchanged.
 
 ### Added
+- **`FUNPACK_PINNED_MEMORY` caps ComfyUI's pinned host-memory budget.** ComfyUI page-locks up
+  to 90% of system RAM for weight streaming; pinned pages cannot be swapped or reclaimed, so
+  once that budget is committed a further allocation wedges the host instead of killing the
+  process — no traceback, nothing in the log. `--disable-pinned-memory` is the supported
+  switch, but a rented image often bakes its launch command in where it cannot be edited.
+  FunPack is imported after the budget is computed and before any model is staged, so the
+  same control works from here: `off` to disable, `64` for 64 GB, `50%` for half the RAM.
+  It only ever lowers the number, and says what it did.
 - **The negative prompt does something at CFG 1 (experimental).** MiniMax H3 always runs at
   CFG 1.0, so the negative branch is never evaluated and the negative prompt is dead weight.
   Studio ▸ "Use the negative prompt" encodes it anyway, pools it to one direction, and takes
