@@ -271,6 +271,34 @@ def test_weights_are_clamped():
     assert got[0][1] == tw.MAX_LEARNED_WEIGHT
 
 
+def test_the_ceiling_matches_studios_own_emphasis_constant():
+    """_v2_build_attn2_patch has boosted an emphasised phrase by exactly 1.25 on LTX since
+    long before this existed, and that path works. A different mechanism for the same intent
+    has no business pushing harder."""
+    assert tw.MAX_LEARNED_WEIGHT == pytest.approx(1.25)
+
+
+def test_one_bad_rating_does_not_reach_the_ceiling():
+    """The complaint that produced this: an Awful first generation is one data point."""
+    one_bad = tw.strength_from_auto(0.030 * 1.45)      # _v2_auto_strength, bad_streak == 1
+    assert 1.10 < 1 + one_bad < 1.15
+
+
+def test_a_sustained_bad_streak_pushes_harder_but_still_short_of_the_ceiling():
+    sustained = tw.strength_from_auto(0.030 * 2.20)    # bad_streak >= 3
+    assert 1 + sustained > 1.18
+    assert 1 + sustained < tw.MAX_LEARNED_WEIGHT
+
+
+def test_a_good_streak_barely_emphasises_anything():
+    assert 1 + tw.strength_from_auto(0.030 * 0.42) < 1.05
+
+
+def test_an_unreadable_strength_lands_mid_scale_rather_than_at_the_top():
+    assert tw.strength_from_auto(None) == pytest.approx(tw.EMPHASIS_CEILING * 0.5)
+    assert tw.strength_from_auto(99.0) == pytest.approx(tw.EMPHASIS_CEILING)
+
+
 def test_longer_phrases_are_applied_first():
     """A phrase and one of its own words can both be weighted; the word's bias should land
     on top of the phrase's, not instead of it."""
@@ -419,8 +447,8 @@ def test_the_best_phrase_gets_the_full_strength():
     an absolute `1 + strength * score` put an entire prompt at x1.03 — applied, and doing
     nothing. Normalising makes `strength` mean what it says."""
     got = tw.weights_from_memory([_unit("faint", details=0.06)], missing_axes=("details",),
-                                 strength=0.5)
-    assert got[0][1] == pytest.approx(1.5)
+                                 strength=0.2)
+    assert got[0][1] == pytest.approx(1.2)
 
 
 def test_ranking_is_by_weight_so_a_cap_keeps_what_matters():

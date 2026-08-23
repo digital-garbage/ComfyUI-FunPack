@@ -13077,7 +13077,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state)),
                         status,
                         training_info,
                         loss_graph,
@@ -13095,7 +13095,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state)),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -13769,7 +13769,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return out
 
     def _v2_apply_h3_token_weights(self, conditioning_list, clip, phrase_memory=None,
-                                   axis_feedback=None, fallback_text="", enabled=False):
+                                   axis_feedback=None, fallback_text="", enabled=False,
+                                   auto_strength=None):
         """Tag each scene with the token spans the RATING says deserve more attention.
 
         Studio has decomposed and scored every phrase, word and n-gram since 2.0
@@ -13809,7 +13810,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             weighted = _tw.weights_from_memory(
                 units, phrase_memory,
                 missing_axes=feedback.get("missing_axes", ()),
-                wrong_axes=feedback.get("wrong_axes", ()))
+                wrong_axes=feedback.get("wrong_axes", ()),
+                # Studio's own evidence ramp decides how hard, not this module. One Awful is
+                # one data point and must not boost a phrase to the ceiling.
+                strength=_tw.strength_from_auto(auto_strength))
             if not weighted:
                 return conditioning_list
         except Exception as _e:  # noqa: BLE001
@@ -13862,7 +13866,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                   scene_refinement_keys=None, learning_profile=None,
                                   conditioning_plan=None, clip=None, encode_cache=None,
                                   phrase_memory=None, axis_feedback=None,
-                                  h3_phrase_emphasis=False):
+                                  h3_phrase_emphasis=False, auto_strength=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
@@ -13879,7 +13883,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         out = self._v2_apply_h3_token_weights(out, clip, phrase_memory=phrase_memory,
                                               axis_feedback=axis_feedback,
                                               fallback_text=temporal_fallback_text,
-                                              enabled=h3_phrase_emphasis)
+                                              enabled=h3_phrase_emphasis,
+                                              auto_strength=auto_strength)
         if mode in ("relative", "both"):
             out = self._v2_apply_scene_refinement_keys(
                 out, scene_refinement_keys, refinement_key,

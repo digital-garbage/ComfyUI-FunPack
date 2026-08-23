@@ -27,7 +27,10 @@
 - **Rating-driven phrase emphasis is OFF by default.** It changes what the model sees on
   every rated run; unvalidated work that does that is something to turn on, not to discover.
   Overlapping spans are also bounded — their biases add, and three overlapping x1.5 spans
-  compounded to an effective x3.4 on one token. A lone span is untouched.
+  compounded to an effective x3.4 on one token. A lone span is untouched. And how hard it
+  pushes now comes from Studio's existing machinery rather than a new scale: the ceiling is
+  the same 1.25 `_v2_build_attn2_patch` has used on LTX all along, and the ramp toward it is
+  `_v2_auto_strength`, so one Awful reaches about 1.13 instead of jumping to maximum.
 
 ### Fixed
 - **A reference image is no longer thrown away by Studio.** With CLIP and a positive

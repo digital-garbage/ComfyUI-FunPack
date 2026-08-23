@@ -195,8 +195,33 @@ def make_override(spans, prompt_tokens: int, cond_len: int, inner=None, on_apply
 # Boost only. A phrase carrying an axis the rating said was MISSING gets more attention;
 # nothing is taken away unless damping is asked for explicitly. Damping can suppress a
 # phrase the user typed, which is a knob going inert on its own — an opt-in, not a default.
+#
+# The ceiling is Studio's OWN emphasis constant. `_v2_build_attn2_patch` has boosted an
+# emphasised phrase's K/V by exactly 1.25 on LTX since long before this existed, and that
+# path works. There is no reason a different mechanism for the same intent should push
+# harder, so 1.25 is the most any phrase can reach here too.
+EMPHASIS_CEILING = 0.25
 MIN_LEARNED_WEIGHT = 0.25
-MAX_LEARNED_WEIGHT = 3.0
+MAX_LEARNED_WEIGHT = 1.0 + EMPHASIS_CEILING
+# The top of _v2_auto_strength's own clamp. Used to read that strength as a 0..1 fraction of
+# how much evidence there is, rather than re-deriving a confidence scale here.
+MAX_AUTO_STRENGTH = 0.085
+
+
+def strength_from_auto(auto_strength):
+    """Studio's `_v2_auto_strength` -> how hard to emphasise, in 0..EMPHASIS_CEILING.
+
+    That function already answers "how much evidence is there": it ramps with bad_streak and
+    the reward EMA off a 0.030 base and clamps to [0.008, 0.085], so a SINGLE bad rating
+    lands near the middle rather than at the top. Reusing it means one Awful nudges a phrase
+    to about 1.13 and a sustained bad streak approaches 1.19 — never the full 1.25, and never
+    a jump to maximum off one data point.
+    """
+    try:
+        frac = float(auto_strength) / MAX_AUTO_STRENGTH
+    except (TypeError, ValueError, ZeroDivisionError):
+        return EMPHASIS_CEILING * 0.5
+    return EMPHASIS_CEILING * max(0.0, min(1.0, frac))
 
 _KIND_SCALE = {"prompt_phrase": 1.0, "phrase": 1.0, "auto_phrase": 0.72,
                "repair_candidate": 0.64, "ngram": 0.62, "token": 0.24}
@@ -207,7 +232,7 @@ def _kind_scale(kind):
 
 
 def weights_from_memory(phrases, phrase_memory=None, missing_axes=(), wrong_axes=(),
-                        wrong_appearance=False, strength=0.5, damp=False,
+                        wrong_appearance=False, strength=EMPHASIS_CEILING * 0.5, damp=False,
                         kind_scale=None):
     """[(text, weight), ...] for the phrases the rating has something to say about.
 
@@ -248,8 +273,9 @@ def weights_from_memory(phrases, phrase_memory=None, missing_axes=(), wrong_axes
     # RELATIVE, not absolute. Category scores are confidences in the 0..1 range and a phrase
     # rarely carries much of any one axis, so `1 + strength * score` put a whole prompt at
     # x1.03 — measurably applied and doing nothing. Normalising against the strongest
-    # candidate makes `strength` mean "how much the best phrase gets", which is a number
-    # worth setting, and keeps the ordering the memory learned.
+    # candidate makes `strength` mean "how much the best phrase gets", and keeps the ordering
+    # the memory learned. How big `strength` itself may be is decided by `strength_from_auto`
+    # off Studio's existing evidence ramp, NOT by the size of one rating.
     top = max(score for _, score in out)
     if top <= 0.0:
         return []
