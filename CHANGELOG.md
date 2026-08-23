@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Fixed
+- **The stand-in tokenizer no longer downloads Gemma for a Qwen model, or reaches the
+  network mid-run.** With no CLIP wired, Studio fetched a 12B *Gemma* tokenizer whatever the
+  model was — wrong vocabulary for MiniMax H3, which encodes with Qwen3-VL. There is now an
+  H3 entry, and every source is tried from the local HuggingFace cache FIRST. Only if nothing
+  is cached does it go online, and it says so: `from_pretrained` has no token, no timeout and
+  no progress, and it runs on ComfyUI's execution thread, so an uncached fetch is an
+  unbounded stall in the middle of a generation with nothing in the log to explain it.
 - **A LoRA weight that cannot fit is now dropped, not attempted.** FunPack already detected
   and reported shape mismatches, then handed them to ComfyUI anyway — which builds the full
   `lora_A @ lora_B` delta and only then discovers it will not reshape into the weight. On a

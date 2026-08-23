@@ -189,3 +189,54 @@ def test_no_vision_when_the_encoder_has_none():
     outer = types.SimpleNamespace(gemma3_12b=types.SimpleNamespace(transformer=types.SimpleNamespace()))
     assert FunPackVideoRefinerV2._encoder_has_vision(types.SimpleNamespace(cond_stage_model=outer)) is False
     assert FunPackVideoRefinerV2._encoder_has_vision(types.SimpleNamespace()) is False
+
+
+# ── the tokenizer must not reach the network mid-run ──────────────────────────
+# `from_pretrained` calls HuggingFace with no token, no timeout and no progress, on
+# ComfyUI's execution thread. Mid-generation that is an unbounded stall with nothing in the
+# log to explain it — and unauthenticated requests are rate limited.
+
+
+def _tok_calls(monkeypatch, results):
+    """Record every from_pretrained call; `results` maps (id, local_only) -> value or Exception."""
+    calls = []
+
+    def fake(model_id, **kw):
+        local = kw.get("local_files_only", False)
+        calls.append((model_id, local))
+        out = results.get((model_id, local), FileNotFoundError("not cached"))
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+    monkeypatch.setattr("conditioning.AutoTokenizer.from_pretrained", fake)
+    FunPackVideoRefinerV2._tokenizers.clear()
+    return calls
+
+
+def test_the_local_cache_is_tried_before_any_network_call(monkeypatch):
+    sentinel = object()
+    calls = _tok_calls(monkeypatch, {("DreamFast/gemma-3-12b-it-heretic-v2", True): sentinel})
+    assert FunPackVideoRefinerV2._get_tokenizer("ltx2") is sentinel
+    assert calls == [("DreamFast/gemma-3-12b-it-heretic-v2", True)]   # never went online
+
+
+def test_it_falls_back_to_the_network_only_when_nothing_is_cached(monkeypatch, capsys):
+    sentinel = object()
+    calls = _tok_calls(monkeypatch, {("DreamFast/gemma-3-12b-it-heretic-v2", False): sentinel})
+    assert FunPackVideoRefinerV2._get_tokenizer("ltx2") is sentinel
+    assert [c[1] for c in calls] == [True, False]        # cache first, then network
+    assert "DOWNLOADING" in capsys.readouterr().out      # and it says so
+
+
+def test_minimax_h3_asks_for_a_qwen_tokenizer_not_gemma(monkeypatch):
+    """H3 encodes with Qwen3-VL. Falling through to the ltx2 entry measured every token span
+    with a Gemma vocabulary, and fetched a 12B model's tokenizer to do it."""
+    sources = FunPackVideoRefinerV2._get_tokenizer_sources("minimax_h3")
+    assert sources and all("qwen" in mid.lower() for mid, _ in sources)
+    assert not any("gemma" in mid.lower() for mid, _ in sources)
+
+
+def test_an_unknown_family_still_falls_back_to_ltx2():
+    sources = FunPackVideoRefinerV2._get_tokenizer_sources("nonesuch")
+    assert any("gemma" in mid.lower() for mid, _ in sources)

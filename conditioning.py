@@ -1191,6 +1191,13 @@ class FunPackVideoRefiner:
                 "use_fast": True,
             }),
         ],
+        # MiniMax H3 encodes with Qwen3-VL, not Gemma. Falling through to the ltx2 entry
+        # downloaded a 12B Gemma tokenizer for a Qwen model: every token span it produced was
+        # measured with the wrong vocabulary, and it fetched ~50 MB over the network to do it.
+        "minimax_h3": [
+            ("Qwen/Qwen3-VL-32B-Instruct", {"use_fast": True}),
+            ("Qwen/Qwen3-32B", {"use_fast": True}),
+        ],
         "wan": [
             ("Wan-AI/Wan2.2-T2V-A14B", {
                 "subfolder": "google/umt5-xxl",
@@ -1287,12 +1294,25 @@ class FunPackVideoRefiner:
             return cls._tokenizers[mode]
 
         sources = cls._get_tokenizer_sources(mode)
-        for model_id, kwargs in sources:
-            try:
-                cls._tokenizers[mode] = AutoTokenizer.from_pretrained(model_id, **kwargs)
-                return cls._tokenizers[mode]
-            except Exception as e:
-                print(f"[FunPackVideoRefiner] Tokenizer load failed for mode '{mode}' from '{model_id}': {e}")
+        # Local cache FIRST, every source, before any network call. `from_pretrained` reaches
+        # HuggingFace with no token, no timeout and no progress, on ComfyUI's execution
+        # thread — mid-run that is an unbounded stall with nothing in the log to explain it,
+        # and on a rate-limited unauthenticated request it can be a long one. A tokenizer
+        # that is already on disk should never pay for that.
+        for local_only in (True, False):
+            for model_id, kwargs in sources:
+                if not local_only:
+                    print(f"[FunPackVideoRefiner] tokenizer for '{mode}' is not in the local "
+                          f"HuggingFace cache — DOWNLOADING '{model_id}'. This blocks the run "
+                          f"until it finishes; set HF_TOKEN to avoid unauthenticated rate limits.")
+                try:
+                    cls._tokenizers[mode] = AutoTokenizer.from_pretrained(
+                        model_id, **dict(kwargs, local_files_only=local_only))
+                    return cls._tokenizers[mode]
+                except Exception as e:
+                    if not local_only:
+                        print(f"[FunPackVideoRefiner] Tokenizer load failed for mode '{mode}' "
+                              f"from '{model_id}': {e}")
 
         return None
 
@@ -7057,11 +7077,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             encode_cache[cache_key] = result
         return result
 
-    def _v2_text_tokenizer_status(self):
+    def _v2_text_tokenizer_status(self, mode="ltx2"):
         """Only reached with no CLIP connected, so the encoder's own tokenizer is out of reach
         and a downloaded stand-in is all there is. Says which one, because on LTX-2.5 it is the
-        wrong family and the concept spans it produces are approximate."""
-        tokenizer = self._get_tokenizer("ltx2")
+        wrong family and the concept spans it produces are approximate.
+
+        `mode` is the model family. It used to be hardcoded to "ltx2", which fetched a 12B
+        Gemma tokenizer for a MiniMax H3 run — wrong vocabulary, and a network round trip in
+        the middle of a generation to get it."""
+        tokenizer = self._get_tokenizer(mode)
         if tokenizer is None:
             return "no text tokenizer available"
         source = str(getattr(tokenizer, "name_or_path", "") or "").strip()
