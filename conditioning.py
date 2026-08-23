@@ -10739,11 +10739,45 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         return out
 
+    def _v2_payload_like(self, payload, mixed):
+        """A stored conditioning as a tensor the CURRENT one can be blended with, or None.
+
+        `_v2_shape_compatible` checks the channel width and the batch, deliberately not the
+        sequence length — and on H3 that length changes with every prompt edit, because Qwen
+        does not pad (`pad_to_max_length=False`). So a payload learned at 499 positions met a
+        conditioning of 492 and the blend threw, taking the whole learned direction with it.
+        On LTX the encoder pads to a fixed length and this never came up.
+
+        `_resize_conditioning_sequence_like` was written for exactly this and never wired to
+        anything. It interpolates along the sequence, which is what keeps a learned direction
+        applicable to a prompt whose length has since changed.
+        """
+        try:
+            target = serializable_to_tensor(payload).to(device=mixed.device, dtype=mixed.dtype)
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(target, torch.Tensor):
+            return None
+        if list(target.shape) == list(mixed.shape):
+            return target
+        resized = self._resize_conditioning_sequence_like(target, mixed)
+        if resized is None:
+            return None
+        _log.note_on_change(
+            "studio:payload_resize", "FunPackStudio",
+            f"a stored conditioning was learned at {int(target.shape[-2])} positions and this "
+            f"prompt is {int(mixed.shape[-2])} — resampled along the sequence so the learned "
+            f"direction still applies. H3's encoder does not pad, so this happens on any "
+            f"prompt edit.")
+        return resized
+
     def _v2_apply_conditioning_payload(self, mixed, payload, strength):
         if not self._v2_shape_compatible(payload, mixed):
             return mixed
         try:
-            target = serializable_to_tensor(payload).to(device=mixed.device, dtype=mixed.dtype)
+            target = self._v2_payload_like(payload, mixed)
+            if target is None:
+                return mixed
             return mixed.lerp(target, strength)
         except Exception as _e:
             _log.failed("FunPackStudio", "conditioning memory", _e,
@@ -10754,7 +10788,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if not self._v2_shape_compatible(payload, mixed):
             return mixed
         try:
-            target = serializable_to_tensor(payload).to(device=mixed.device, dtype=mixed.dtype)
+            target = self._v2_payload_like(payload, mixed)
+            if target is None:
+                return mixed
             return mixed + (mixed - target) * strength
         except Exception as _e:
             _log.failed("FunPackStudio", "conditioning repel", _e,

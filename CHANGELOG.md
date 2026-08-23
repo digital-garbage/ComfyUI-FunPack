@@ -38,6 +38,14 @@
   `$style` while the encoded prompt had it resolved.
 
 ### Fixed
+- **Learned conditioning directions survive a prompt edit on H3.** The compatibility check
+  covers the channel width and the batch, not the sequence length — which was fine on LTX,
+  whose encoder pads to a fixed length. Qwen does not pad, so H3's conditioning changes
+  length with every prompt edit, a direction learned at 499 positions met a conditioning of
+  492, and the blend threw: "conditioning memory failed ... used unblended". The whole
+  learned direction was lost on any edited prompt. The payload is now resampled along the
+  sequence with `_resize_conditioning_sequence_like`, which was written for exactly this and
+  had no callers.
 - **Bounded Attention no longer replaces a wired conditioning with a text-only re-encode.**
   It is always-on, and it works by re-encoding the prompt through CLIP and swapping the
   tensor for the result — which contains no reference image, because Studio was never given
