@@ -18,6 +18,14 @@
   `minimax_token_tags` rather than assumed to be the tail of the conditioning.
 
 ### Fixed
+- **A reference image is no longer thrown away by Studio.** With CLIP and a positive
+  CONDITIONING both connected, CLIP won and Studio re-encoded the prompt from text. On H3
+  that is not a near-miss: Qwen3-VL is a causal VLM and a reference's vision block sits
+  BEFORE the prompt, so every prompt row has already read the picture — and Studio's own
+  encode gets no image, because nothing in the editor pipeline wires `h3_references` or
+  `source_image`. R2V and I2V runs were handed a text-only conditioning. A wired
+  conditioning whose `minimax_token_tags` contain a vision block now owns the prompt; CLIP
+  keeps the negative and the references. Text-only graphs are unchanged.
 - **Clearing the editor's Negative prompt box now actually clears it.** Studio falls back to
   a negative stored in its own settings whenever the wired one is blank, and the editor has
   no field for that stored copy — so emptying the visible box left an earlier negative in

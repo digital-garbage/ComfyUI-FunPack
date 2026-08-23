@@ -7091,6 +7091,27 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         source = str(getattr(tokenizer, "name_or_path", "") or "").strip()
         return f"stand-in tokenizer: {source}" if source else "stand-in tokenizer loaded"
 
+    def _wired_conditioning_saw_a_reference(self, positive_conditioning) -> bool:
+        """True when a wired CONDITIONING contains a vision block.
+
+        `minimax_token_tags` marks every position: 1 for text, 0 for a whole vision block
+        (see comfy/text_encoders/minimax.py). A 0 anywhere therefore means an image was
+        tokenized INTO this sequence, which only the node that held the image could do.
+        Absent tags -> False, so nothing changes for a text-only or non-H3 graph.
+        """
+        try:
+            entry = positive_conditioning[0]
+            meta = entry[1] if isinstance(entry, (list, tuple)) and len(entry) >= 2 else None
+            tags = meta.get("minimax_token_tags") if isinstance(meta, dict) else None
+            if tags is None:
+                return False
+            try:
+                return bool((tags.reshape(-1) == 0).any().item())
+            except AttributeError:
+                return any(int(t) == 0 for t in tags)
+        except Exception:  # noqa: BLE001 — a detector must never fail a load
+            return False
+
     def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning, encode_cache=None,
                                 reference_image=None, h3_references=None, prefer_wired=False):
         # `prefer_wired` inverts the usual precedence. CLIP normally wins because that is what
@@ -7112,6 +7133,29 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # Falling through to CLIP silently would look like the switch did nothing.
             print("[FunPackStudio] Skip Studio's positive processing is on, but the wired "
                   "positive CONDITIONING is invalid — falling back to the CLIP prompt path.")
+        # A conditioning that SAW a reference image cannot be reproduced from the prompt
+        # alone, and re-encoding it is not a near-miss — it is a different tensor. Qwen is a
+        # causal VLM, so the image tokens sit BEFORE the prompt and every prompt row is a
+        # hidden state that has already read the picture. Studio's own encode gets no image
+        # (nothing wires h3_references or source_image in the editor pipeline), so replacing
+        # the wired conditioning throws the reference away and hands an i2v/r2v sampler a
+        # text-only conditioning. That is the "strange" in reference runs.
+        #
+        # Detected, not guessed: the H3 encoder tags every position, 0 for a vision block and
+        # 1 for text, so a 0 in the wired conditioning's tags means it carries an image.
+        if positive_conditioning is not None and self._wired_conditioning_saw_a_reference(
+                positive_conditioning):
+            cond, meta = self._v2_extract_conditioning(positive_conditioning)
+            if isinstance(cond, torch.Tensor):
+                note = ("positive CONDITIONING carries a reference image and owns the prompt "
+                        "— re-encoding it from text would drop the reference"
+                        + ("; CLIP still encodes the negative and references"
+                           if clip is not None else ""))
+                if not getattr(self, "_funpack_ref_cond_noted", False):
+                    self._funpack_ref_cond_noted = True
+                    print(f"[FunPackStudio] {note}")
+                return cond, meta, note, "CONDITIONING-owned"
+
         if clip is not None:
             cond, meta, encode_status = self._v2_encode_prompt(
                 clip, prompt_text, encode_cache=encode_cache, reference_image=reference_image,
