@@ -14812,6 +14812,15 @@ class FunPackStudio:
             effective_negative = str(negative_prompt or "").strip() or rf_neg
             if effective_negative and clip is not None:
                 try:
+                    # Named, because on H3 this is a Qwen3-VL-32B forward pass whose output the
+                    # sampler will never read: CFG is fixed at 1.0, so the negative branch is
+                    # not evaluated. It still has to be encoded (the output is a real port, and
+                    # negative_erase reads it), but it is a full text-encoder pass and it has to
+                    # be visible when accounting for what a run loaded and when.
+                    print(f"[FunPackStudio] encoding the negative prompt with the wired CLIP "
+                          f"({len(effective_negative)} chars)"
+                          + (" — nothing else in this run supplies one"
+                             if negative_conditioning is None else ""))
                     neg_encoded = clip.encode_from_tokens_scheduled(clip.tokenize(effective_negative))
                     if neg_encoded:
                         out_negative = neg_encoded
