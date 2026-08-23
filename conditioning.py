@@ -7242,6 +7242,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             scene_meta["funpack_scene_count"] = scene_count
             scene_meta["funpack_scene_text"] = scene_text
             scene_meta["funpack_encode_text"] = encode_text
+            scene_meta = self._v2_stash_reference_rows(cond, scene_meta)
             effect = scene_effects[scene_index] if scene_index < len(scene_effects) else None
             if effect and effect != "none":
                 scene_meta["funpack_transition_effect"] = effect
@@ -10588,6 +10589,67 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             strength *= 1.45
         return max(0.008, min(0.085, strength))
 
+    # --- reference vision rows are not steerable -----------------------------------
+    # MiniMax H3 tokenizes a reference image INTO the conditioning: comfy's
+    # token_tags_from_embeds_info marks the whole vision block (and its flanking
+    # <|vision_start|>/<|vision_end|>) as 0 and leaves text at 1. Those rows are Qwen's
+    # encoding of the picture itself.
+    #
+    # Every steering path here — learned directions, taste pull, concept deltas, the absolute
+    # store, negative_erase — is a lerp or an add over the WHOLE tensor. Applied to the vision
+    # rows it moves the encoded picture toward a direction learned from TEXT, and the
+    # character comes out looking like someone else. Nothing read the tag map before this.
+
+    REFERENCE_ROWS_KEY = "funpack_pristine_reference_rows"
+
+    def _v2_stash_reference_rows(self, cond, meta):
+        """Keep a pristine copy of the vision rows so they can be put back after steering.
+
+        Cheap: a conditioning is a few hundred rows, so this is single-digit megabytes, and
+        it is dropped again in `_v2_restore_reference_rows`. Returns `meta` unchanged when
+        there is no vision block, which is every text-only and non-H3 run.
+        """
+        try:
+            tags = meta.get("minimax_token_tags") if isinstance(meta, dict) else None
+            if tags is None or not isinstance(cond, torch.Tensor) or cond.dim() < 2:
+                return meta
+            flat = tags.reshape(-1)
+            n = min(int(flat.shape[0]), int(cond.shape[1]))
+            mask = (flat[:n] == 0)
+            if not bool(mask.any().item()):
+                return meta
+            meta = dict(meta)
+            meta[self.REFERENCE_ROWS_KEY] = (mask, cond[:, :n][:, mask].clone())
+            return meta
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackStudio", "reference row protection", _e,
+                        "a reference image's encoded rows CAN be moved by steering, which "
+                        "shows up as the character's appearance drifting")
+            return meta
+
+    def _v2_restore_reference_rows(self, conditioning_list):
+        """Put the reference's vision rows back exactly as Qwen encoded them, and drop the
+        stash so it never travels on to the sampler."""
+        out = []
+        for entry in conditioning_list or []:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
+                    and isinstance(entry[1], dict) and self.REFERENCE_ROWS_KEY in entry[1]):
+                out.append(entry)
+                continue
+            cond, meta = entry[0], dict(entry[1])
+            mask, rows = meta.pop(self.REFERENCE_ROWS_KEY)
+            try:
+                if isinstance(cond, torch.Tensor) and cond.dim() >= 2:
+                    n = int(mask.shape[0])
+                    if int(cond.shape[1]) >= n and rows.shape[-1] == cond.shape[-1]:
+                        cond = cond.clone()
+                        cond[:, :n][:, mask] = rows.to(device=cond.device, dtype=cond.dtype)
+            except Exception as _e:  # noqa: BLE001
+                _log.failed("FunPackStudio", "reference row protection", _e,
+                            "this scene's reference rows keep whatever steering did to them")
+            out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+        return out
+
     def _v2_apply_conditioning_payload(self, mixed, payload, strength):
         if not self._v2_shape_compatible(payload, mixed):
             return mixed
@@ -12511,6 +12573,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             reference_image=source_image,
             h3_references=_h3_references,
         )
+        # Before any steering runs: the reference's vision rows are Qwen's encoding of the
+        # picture and must come out of this node exactly as they went in.
+        meta = self._v2_stash_reference_rows(cond, meta)
         fallback_graph = render_refinement_loss_graph(refinement_key, "v2", "clip", 0, 0.0, [])
         if not isinstance(cond, torch.Tensor):
             status = f"ERROR: V2 could not prepare conditioning | {encode_status}"
@@ -13939,7 +14004,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if clamped_any:
                 print(f"[FunPackRefiner] Interactive-Guessing cap: output conditioning spread "
                       f"clamped to learned-safe {spread_cap:.3f}.")
-        return out
+        # LAST, after every manipulation above: a reference image's encoded rows go back
+        # exactly as Qwen produced them.
+        return self._v2_restore_reference_rows(out)
 
 
 class FunPackSaveRefinementLatent:

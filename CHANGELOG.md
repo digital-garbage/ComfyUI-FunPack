@@ -38,6 +38,13 @@
   `$style` while the encoded prompt had it resolved.
 
 ### Fixed
+- **A reference image's encoded rows are no longer steered.** H3 tokenizes a reference INTO
+  the conditioning — comfy marks the whole vision block as 0 in `minimax_token_tags` and text
+  as 1 — and those rows are Qwen's encoding of the picture. Every steering path (learned
+  directions, taste pull, concept deltas, the absolute store, negative_erase) lerps over the
+  WHOLE tensor, so the picture was being moved toward a direction learned from text and the
+  character's appearance drifted. Nothing read the tag map. The vision rows are now restored
+  exactly as encoded, after every manipulation. Text rows still steer.
 - **A reference image is no longer thrown away by Studio.** With CLIP and a positive
   CONDITIONING both connected, CLIP won and Studio re-encoded the prompt from text. On H3
   that is not a near-miss: Qwen3-VL is a causal VLM and a reference's vision block sits
