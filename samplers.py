@@ -7880,6 +7880,11 @@ class FunPackLTXAVSceneChainSampler:
             # is indistinguishable from any other sudden death. comfy's own OOM recovery is
             # spatial tiling; it does not shrink the full-size CPU output buffer, which is the
             # host-RAM allocation that a machine actually dies on.
+            # The decode is one uninterruptible call with no progress of its own, so without
+            # this the UI shows the last sampling phase and a frozen timer — and a decode that
+            # is merely SLOW (an fp32 VAE, a CPU fallback, a box that started swapping) is
+            # indistinguishable from one that is hung.
+            self._set_phase("decoding")
             self._log_decode_plan(vae, video_tensor)
             # Hand back everything sampling was holding first. The banks (dynashift negatives,
             # guide frames, per-scene wrappers) are dead by now but their blocks are still
@@ -7901,6 +7906,8 @@ class FunPackLTXAVSceneChainSampler:
                 decoded = decoded.reshape(b * t, h, w, c)
             images = self._apply_transitions_pixel(decoded, boundary_entries, transition_duration)
             _phase_decode = _time.perf_counter() - _t_dec0
+            self._set_phase("")
+            print(f"[FunPackSceneChain] decoded in {_phase_decode:.1f}s")
 
         # cut_opening_frames, LTX path. Applied HERE, after a decode that saw every latent
         # frame in its sampled context, rather than on the latent inside the loop — a latent
