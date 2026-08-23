@@ -15,6 +15,12 @@
   past 40vh, can be selected, and carries a copy button. The running readout is unchanged.
 
 ### Added
+- **A different sampler for the second pass.** The Scene Chain Sampler takes an optional
+  `second_pass_sampler`; unwired, pass 2 reuses pass 1's, which is the old behaviour. In the
+  Editor, Second pass ▸ Own sampler reveals the full algorithm panel for pass 2 — what
+  builds a shot well is often not what finishes it. Off, Studio mirrors the high pass's
+  algorithm into that output, so a project that already used a second pass is unchanged.
+  The console names the pass-2 sampler when it differs.
 - **Numbered reference slots.** A node input can be wired to "Reference image 1" instead of
   to a particular file — it resolves to whatever is marked first among the image references,
   so re-ordering marks in the Media Bin re-points every socket without opening a node page.

@@ -59,9 +59,11 @@ CORE_LINKS: dict[str, dict[str, tuple[str, int]]] = {
                  # Studio has always emitted a second schedule (low_pass_sigmas, output 7);
                  # the Editor just never wired it. second_pass reads it as pass 2's schedule
                  # and ignores it when empty, so this link costs nothing when the feature is
-                 # off. Only the SIGMAS is taken — pass 2 reuses the main sampler object, so
-                 # the low pass's sampler-type settings deliberately do not apply.
+                 # off. The low pass's SAMPLER (output 6) is wired too — but Studio mirrors
+                 # the high pass's algorithm into it unless the pass is explicitly given its
+                 # own, so this link changes nothing for a project that had one already.
                  "second_pass_sigmas": ("studio", 7),
+                 "second_pass_sampler": ("studio", 6),
                  "latent_template": ("concat", 0), "refinement_key_input": ("keyloader", 0),
                  "num_frames_per_scene": ("frames", 0)},
     "concat":   {"video_latent": ("studio", 12)},

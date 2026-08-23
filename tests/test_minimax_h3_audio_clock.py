@@ -455,14 +455,14 @@ def test_the_documented_sampler_buckets_do_not_overlap():
     assert "sample_res_multistep" in _AUDIO_CLOCK_HARMED
 
 
-def test_the_toggle_stays_behind_the_second_pass_sigmas_socket():
+def test_the_toggle_stays_behind_the_trailing_sockets():
     """The builder maps a reference workflow's widget values positionally, so a new WIDGET
-    has to be appended after the last widget but before the trailing SIGMAS socket — which
-    is an input, not a widget, and shifts nothing."""
+    has to be appended after the last widget but before the trailing connection sockets —
+    which are inputs, not widgets, and shift nothing. Sockets may be added after each other
+    freely; a widget added after one of them would silently re-read every saved workflow."""
     from samplers import FunPackLTXAVSceneChainSampler
 
     names = list(FunPackLTXAVSceneChainSampler.INPUT_TYPES()["optional"])
-    # The socket stays LAST, and the toggle stays behind it — later widgets (alg_anchor and
-    # friends) append between the two, which is exactly where a new widget belongs.
-    assert names[-1] == "second_pass_sigmas"
+    trailing = ["second_pass_sigmas", "second_pass_sampler"]
+    assert names[-len(trailing):] == trailing
     assert names.index("h3_audio_clock") < names.index("second_pass_sigmas")

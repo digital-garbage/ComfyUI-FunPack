@@ -15199,6 +15199,17 @@ class FunPackStudio:
     def _build_samplers(cls, samplers_cfg, prompt_sig=None, refinement_key="", model=None):
         if not isinstance(samplers_cfg, dict):
             samplers_cfg = {}
-        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}), prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
-        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}), prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
+        high_cfg = samplers_cfg.get("high", {}) if isinstance(samplers_cfg.get("high"), dict) else {}
+        low_cfg = samplers_cfg.get("low", {}) if isinstance(samplers_cfg.get("low"), dict) else {}
+        high_sampler, high_sigmas = cls._build_one_sampler(high_cfg, prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
+        # The low pass's SAMPLER drives the chain sampler's second pass. Off by default it
+        # mirrors the high pass's algorithm — the wire has always existed, and turning it into
+        # a live second sampler for every project that already uses second_pass would change
+        # what those runs do without anyone asking. `own_sampler` is the explicit opt-in; the
+        # low pass's SIGMAS is unaffected either way, because that was always pass 2's own.
+        if not low_cfg.get("own_sampler"):
+            low_cfg = dict(high_cfg, **{k: v for k, v in low_cfg.items()
+                                        if k in ("sigmas", "steps", "scheduler",
+                                                 "ksampler_steps", "ksampler_scheduler")})
+        low_sampler, low_sigmas = cls._build_one_sampler(low_cfg, prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
         return high_sampler, high_sigmas, low_sampler, low_sigmas

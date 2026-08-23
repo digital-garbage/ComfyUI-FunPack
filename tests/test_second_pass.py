@@ -386,3 +386,71 @@ def test_sharpen_uses_the_factor_and_still_comes_back_to_size():
 def test_only_an_upsampler_that_takes_a_factor_is_asked_for_one():
     assert detailing.upsampler_takes_a_scale(_ScalingUpsampler()) is True
     assert detailing.upsampler_takes_a_scale(_FixedTwoX()) is False
+
+
+# ── a different sampler for pass 2 ────────────────────────────────────────────
+# What builds a shot well is often not what finishes it. The socket is optional and
+# unwired means "reuse pass 1", so nothing changes for a graph that already had one.
+
+
+def test_second_pass_sampler_is_the_last_optional_socket():
+    """Widget values are mapped positionally from a saved workflow: a new SOCKET is safe at
+    the end, a new WIDGET after one would re-read every saved graph one slot off."""
+    from samplers import FunPackLTXAVSceneChainSampler
+    opt = FunPackLTXAVSceneChainSampler.INPUT_TYPES()["optional"]
+    assert opt["second_pass_sampler"][0] == "SAMPLER"
+    assert list(opt)[-1] == "second_pass_sampler"
+
+
+def test_studio_mirrors_the_high_pass_algorithm_unless_asked_otherwise():
+    """The low pass's SAMPLER output is wired to second_pass_sampler now. Without this, every
+    project that already used a second pass would silently switch pass 2 to whatever its
+    low-pass panel happened to say."""
+    import comfy.samplers as _cs
+    import torch as _t
+    from conditioning import FunPackStudio
+
+    seen = []
+    _orig = FunPackStudio._build_one_sampler
+
+    def _spy(cfg, **kw):
+        seen.append(dict(cfg))
+        return ("S", _t.linspace(1.0, 0.0, 3))
+
+    FunPackStudio._build_one_sampler = staticmethod(_spy)
+    try:
+        FunPackStudio._build_samplers({
+            "high": {"type": "Hybrid Euler 2S", "hybrid": {"eta": 0.7}},
+            "low": {"type": "Distilled Flow", "sigmas": "0.4, 0.0"},
+        })
+    finally:
+        FunPackStudio._build_one_sampler = _orig
+    high, low = seen
+    assert low["type"] == high["type"] == "Hybrid Euler 2S"
+    assert low["hybrid"] == {"eta": 0.7}
+    assert low["sigmas"] == "0.4, 0.0"        # the SCHEDULE is always the low pass's own
+
+
+def test_own_sampler_lets_pass_two_use_its_own_algorithm():
+    import torch as _t
+    from conditioning import FunPackStudio
+
+    seen = []
+    _orig = FunPackStudio._build_one_sampler
+    FunPackStudio._build_one_sampler = staticmethod(
+        lambda cfg, **kw: (seen.append(dict(cfg)), ("S", _t.linspace(1.0, 0.0, 3)))[1])
+    try:
+        FunPackStudio._build_samplers({
+            "high": {"type": "Hybrid Euler 2S"},
+            "low": {"type": "KSampler", "own_sampler": True, "ksampler_name": "res_multistep"},
+        })
+    finally:
+        FunPackStudio._build_one_sampler = _orig
+    assert seen[1]["type"] == "KSampler"
+    assert seen[1]["ksampler_name"] == "res_multistep"
+
+
+def test_the_editor_wires_the_low_pass_sampler_to_pass_two():
+    from movie_editor.backend import builder
+    assert builder.CORE_LINKS["sampler"]["second_pass_sampler"] == ("studio", 6)
+    assert builder.CORE_LINKS["sampler"]["second_pass_sigmas"] == ("studio", 7)

@@ -3094,6 +3094,9 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "The schedule pass 2 runs — required for second_pass, and it is run EXACTLY as written, high to low, ending at 0. Wire any scheduler here, or type sigmas in the Editor. Pass 1 has already finished the main schedule by this point, so pass 2 starts from a clean clip and re-enters by re-noising it up to this schedule's FIRST sigma: that value is the strength dial (near 1.0 reworks the shot, low values only polish it), and the rest of the schedule sets how many steps it gets. A schedule that ascends, or that stops above 0, is refused with the reason — both would silently produce a distorted or under-denoised clip rather than fail loudly.",
 
                 }),
+                "second_pass_sampler": ("SAMPLER", {
+                    "tooltip": "Optional: a DIFFERENT sampler for pass 2. Left unwired, pass 2 reuses the sampler above — the old behaviour. Wiring one lets the two passes use different algorithms, usually because what builds a shot well is not what finishes it: a distilled few-step sampler for pass 1 and an ordinary KSampler with more steps for the polish, or the reverse. It changes the algorithm only; pass 2's schedule is still second_pass_sigmas. No effect when second_pass is off.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -6730,6 +6733,7 @@ class FunPackLTXAVSceneChainSampler:
                context_window_freenoise=True, context_window_retain_first=False,
                cut_opening_frames=0,
                second_pass=False, second_pass_op="none", second_pass_sigmas=None,
+               second_pass_sampler=None,
                h3_audio_clock=False,
                audio_vae=None, h3_keyframes=None,
                unique_id=None, prompt=None):
@@ -6925,6 +6929,7 @@ class FunPackLTXAVSceneChainSampler:
                 cut_opening_frames=cut_opening_frames,
                 second_pass=second_pass, second_pass_op=second_pass_op,
                 second_pass_sigmas=second_pass_sigmas,
+                second_pass_sampler=second_pass_sampler,
                 h3_audio_clock=h3_audio_clock,
             )
 
@@ -7633,17 +7638,28 @@ class FunPackLTXAVSceneChainSampler:
                     # Announced BEFORE it runs: the after-the-fact run_mechanisms line says
                     # a second pass happened, which is no help while you are waiting on one.
                     self._set_phase(f"{_scene_label}{' · ' if _scene_label else ''}pass 2 of 2")
+                    # A second sampler is an algorithm change mid-scene, so it is named on
+                    # the console: "why does pass 2 look different" needs a visible answer,
+                    # and an unwired socket reusing pass 1's sampler looks identical from
+                    # the outside.
+                    _sp_sampler = sampler if second_pass_sampler is None else second_pass_sampler
+                    _sp_which = "" if second_pass_sampler is None else (
+                        " using its own sampler ("
+                        + getattr(getattr(_sp_sampler, "sampler_function", None), "__name__", "?")
+                        + ")")
                     print(f"[FunPack AV] second pass starting"
                           f"{' on ' + _scene_label if _scene_label else ''}: "
-                          f"{int(_sp_b.numel()) - 1} steps from sigma {float(_sp_b[0].item()):g}")
+                          f"{int(_sp_b.numel()) - 1} steps from sigma {float(_sp_b[0].item()):g}"
+                          f"{_sp_which}")
                     sampled = self._sample_chunk(
-                        model, sampler, _sp_b, scene_seed + 4242, cfg, _sp_positive,
+                        model, _sp_sampler, _sp_b, scene_seed + 4242, cfg, _sp_positive,
                         _sp_negative, _sp_state, **_sp_kw)
                     run_mechanisms.append(
                         f"second_pass({int(sigmas.numel()) - 1} steps + "
                         f"{int(_sp_b.numel()) - 1} steps = "
                         f"{int(sigmas.numel()) + int(_sp_b.numel()) - 2} total, "
-                        f"pass 2 from {float(_sp_b[0].item()):g})")
+                        f"pass 2 from {float(_sp_b[0].item()):g}"
+                        f"{', own sampler' if second_pass_sampler is not None else ''})")
                 _scene_sample_s = _time.perf_counter() - _t_sample0
                 _phase_sampling += _scene_sample_s
                 if _plateau_stats is not None:
@@ -8098,7 +8114,8 @@ class FunPackLTXAVSceneChainSampler:
                             context_window_retain_first=False,
                             cut_opening_frames=0,
                             second_pass=False, second_pass_op="none",
-                            second_pass_sigmas=None, h3_audio_clock=False):
+                            second_pass_sigmas=None, second_pass_sampler=None,
+                            h3_audio_clock=False):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -8163,6 +8180,7 @@ class FunPackLTXAVSceneChainSampler:
                 cut_opening_frames=cut_opening_frames,
                 second_pass=second_pass, second_pass_op=second_pass_op,
                 second_pass_sigmas=second_pass_sigmas,
+                second_pass_sampler=second_pass_sampler,
                 h3_audio_clock=h3_audio_clock,
                 unique_id=None, prompt=None,
             )

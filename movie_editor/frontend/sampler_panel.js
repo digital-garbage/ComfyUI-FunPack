@@ -246,6 +246,12 @@
       hint(container, "8 suits the distilled LTX model; a non-distilled one wants 20-30.");
     }
 
+    renderAlgorithm(container, dk, cfg, save, saveNow);
+  }
+
+  // The algorithm-specific block of a pass, split out so the second pass can show it
+  // too — it has its own sigmas and schedule controls already, and only needed this.
+  function renderAlgorithm(container, dk, cfg, save, saveNow) {
     if (cfg.type === "Hybrid Euler 2S") {
       const hc = cfg.hybrid;
       sectionTag(container, "Hybrid Euler 2S");
@@ -415,11 +421,11 @@
     // The high-pass sampler is the one the Movie Editor graph runs (studio outputs 4+5).
     renderPass(container, "high", "Sampler", s.high, mkSave(true), mkSave(false));
 
-    // Second pass schedule. Studio's low-pass SIGMAS (output 7) is wired to the chain
-    // sampler's second_pass_sigmas, so this field alone is pass 2's schedule — deliberately
-    // NOT the whole low-pass sampler panel, because only its sigmas are connected: pass 2
-    // reuses the sampler configured above, and rendering its algorithm settings here would
-    // offer knobs that quietly do nothing.
+    // Second pass. Studio's low-pass SIGMAS (output 7) and SAMPLER (output 6) are both wired
+    // to the chain sampler now, so this section can offer the whole pass: its schedule
+    // always, and its algorithm once "Own sampler" is on. Off, Studio mirrors the high
+    // pass's algorithm into that output, so a project that already used a second pass keeps
+    // doing exactly what it did.
     sectionTag(container, "Second pass");
     const spOn = !!(window.Store?.get()?.project?.sampler_inputs || {}).second_pass;
     row(container, "Enable", checkCtrl(spOn, "sp-second-on", (v) => {
@@ -435,8 +441,7 @@
                   + "dial: 0.8 reworks the shot, 0.4 polishes, 0.2 is detail work. The rest sets "
                   + "how many steps pass 2 gets.");
 
-    // Pass 2 can be computed instead of typed, same switch as pass 1 — its SIGMAS is the
-    // only thing of the low pass that is wired, so a schedule chosen here IS pass 2.
+    // Pass 2 can be computed instead of typed, same switch as pass 1.
     if (s.low.scheduler === undefined) s.low.scheduler = s.low.ksampler_scheduler || KSAMPLER_USER_SIGMAS;
     if (s.low.steps === undefined) s.low.steps = s.low.ksampler_steps === undefined ? 4 : s.low.ksampler_steps;
     const spScheds = ksamplerSchedulers(mkSave(false));
@@ -452,6 +457,20 @@
     }
     if (spOn && spSchedCur === KSAMPLER_USER_SIGMAS && !String(s.low.sigmas || "").trim()) {
       hint(container, "Pass 2 is on but has no schedule — give it one above, or pick a computed one.");
+    }
+
+    // A different ALGORITHM for pass 2. Opt-in, because Studio otherwise mirrors pass 1's
+    // sampler into the socket and every existing second-pass project keeps its behaviour.
+    row(container, "Own sampler", checkCtrl(!!s.low.own_sampler, "sp-second-own",
+      (v) => { s.low.own_sampler = v; mkSave(false)(); }));
+    hint(container, "Off, pass 2 uses the sampler configured above. On, it gets its own — what "
+                  + "builds a shot well is often not what finishes it: few-step distilled to "
+                  + "build, an ordinary KSampler with more steps to polish, or the reverse.");
+    if (s.low.own_sampler) {
+      const spType = selCtrl(SAMPLER_TYPES, s.low.type || "Distilled Flow", "sp-second-type",
+        (v) => { s.low.type = v; mkSave(false)(); });
+      row(container, "Algorithm", spType);
+      renderAlgorithm(container, "sp-low", s.low, mkSave(true), mkSave(false));
     }
   }
 

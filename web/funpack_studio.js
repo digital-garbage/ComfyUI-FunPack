@@ -1251,6 +1251,23 @@ function openPanel(node) {
       const cfg = settings.samplers[passKey];
       body.append(sectionTitle(label));
 
+      // The low pass drives the Scene Chain Sampler's second_pass_sampler. Off, Studio
+      // mirrors the HIGH pass's algorithm into that output, so a graph that already used a
+      // second pass keeps doing exactly what it did; on, the settings below are pass 2's.
+      if (passKey === "low") {
+        const own = el("input"); own.type = "checkbox"; own.checked = !!cfg.own_sampler;
+        own.addEventListener("change", () => { cfg.own_sampler = own.checked; renderSampler(); });
+        body.append(row("Own sampler", own));
+        body.append(el("div", "funpack-studio-hint",
+          "Off, the second pass reuses the high pass's sampler and only its schedule below "
+          + "applies. On, it gets its own algorithm — what builds a shot well is often not "
+          + "what finishes it."));
+        if (!cfg.own_sampler) {
+          body.append(el("div", "funpack-studio-hint",
+            "Mirroring the high pass. Only Sigmas / Schedule / Steps below are in effect."));
+        }
+      }
+
       // Type selector
       const typeSelect = selectEl(SAMPLER_TYPES, cfg.type || "Hybrid Euler 2S");
       typeSelect.addEventListener("change", () => { cfg.type = typeSelect.value; renderSampler(); });
