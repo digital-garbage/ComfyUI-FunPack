@@ -397,6 +397,48 @@ def _as_list(tags):
         return list(tags) if isinstance(tags, (list, tuple)) else []
 
 
+def choose_encoded_text(tokenizer, candidates, token_tags, cond_len):
+    """Pick the candidate string whose token count matches the conditioning's text run.
+
+    A wired conditioning was encoded by ANOTHER node, from a string the editor expanded for
+    it — Studio keeps the raw prompt and expands per scene, so its copy can differ. Guessing
+    which is not necessary: `minimax_token_tags` says how many text positions the tensor
+    actually holds, so each candidate can be CHECKED against it and the one that fits wins.
+
+    Returns (text, token_count, base) or (None, 0, None) when nothing fits.
+    """
+    tags = _as_list(token_tags)
+    if not tags:
+        return None, 0, None
+    end = min(len(tags), cond_len)
+    run_end = end
+    while run_end > 0 and int(tags[run_end - 1]) != 1:
+        run_end -= 1
+    run_start = run_end
+    while run_start > 0 and int(tags[run_start - 1]) == 1:
+        run_start -= 1
+    run = run_end - run_start
+    if run <= 0:
+        return None, 0, None
+    best = None
+    for text in candidates:
+        text = str(text or "").strip()
+        if not text:
+            continue
+        try:
+            n = len(tokenizer(text, add_special_tokens=False,
+                              return_offsets_mapping=True)["offset_mapping"])
+        except Exception:  # noqa: BLE001
+            continue
+        gap = run - n
+        if 0 <= gap <= _BASE_SLACK and (best is None or gap < best[0]):
+            best = (gap, text, n)
+    if best is None:
+        return None, 0, None
+    _gap, text, n = best
+    return text, n, run_end - n
+
+
 def h3_tokenizer(clip):
     """The raw HF tokenizer behind an H3 CLIP, or None.
 

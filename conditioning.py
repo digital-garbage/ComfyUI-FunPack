@@ -12172,7 +12172,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
-                  variables=None, h3_references=None):
+                  variables=None, h3_references=None, link_texts=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         # Project-scoped `$name` variables, resolved DEAD LAST (after shortcut-expand + split)
         # so they can never affect scene-cut detection. Empty/None = no-op.
@@ -12181,6 +12181,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except ImportError:
             from templates import resolve_variables as _resolve_variables
         _prompt_variables = variables or None
+        # Exactly what the editor handed to nodes OUTSIDE Studio (server._expanded_link_texts):
+        # shortcuts rolled and $variables resolved. When a wired conditioning owns the prompt,
+        # one of these IS the string that was encoded, so the emphasis can be placed on the
+        # real tokens instead of on Studio's own copy of a prompt it did not encode.
+        _link_texts = link_texts if isinstance(link_texts, dict) else None
         # MiniMax H3 ref2va reference media, in the order the user listed it. No other model
         # family has the tokenizer kwarg it feeds, so it is inert when unset or on LTX.
         # minimax_h3.resolve_ref_spec explains why the ORDER is load-bearing.
@@ -13230,7 +13235,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
                         status,
                         training_info,
                         loss_graph,
@@ -13248,7 +13253,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -13935,7 +13940,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
     def _v2_apply_h3_token_weights(self, conditioning_list, clip, phrase_memory=None,
                                    axis_feedback=None, fallback_text="", enabled=False,
-                                   auto_strength=None, variables=None):
+                                   auto_strength=None, variables=None, link_texts=None):
         """Tag each scene with the token spans the RATING says deserve more attention.
 
         Studio has decomposed and scored every phrase, word and n-gram since 2.0
@@ -14025,9 +14030,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # and $variables resolved. funpack_scene_text is the RAW one, and tokenizing that
             # measures a different string from the one inside the conditioning: every span
             # lands on the wrong words, or the placement guard rejects the run outright.
-            text = (str(meta.get("funpack_encode_text") or "").strip()
-                    or str(meta.get("funpack_scene_text") or "").strip()
-                    or str(fallback_text or ""))
+            # Candidates for "the string this tensor was encoded from", best first. On a
+            # wired conditioning that string came from the editor's expansion for linked
+            # nodes, not from Studio's own copy — which is why this does not simply trust
+            # one. `choose_encoded_text` CHECKS each against the tensor's own text-tag run
+            # and takes the one that fits, so the placement is verified rather than assumed.
+            candidates = [meta.get("funpack_encode_text"), meta.get("funpack_scene_text"),
+                          fallback_text]
+            if isinstance(link_texts, dict):
+                candidates += [link_texts.get(k) for k in ("full_prompt", "prompt")]
             try:
                 from . import h3_token_weights as _tw
             except ImportError:
@@ -14035,16 +14046,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # Capped AFTER ranking by weight, so the eight that survive are the eight the
             # rating cared most about; ordered longest-first only for application, so a
             # phrase's bias lands before one of its own words adds to it.
+            cond_len = int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0
+            text, _n, verified_base = _tw.choose_encoded_text(
+                tokenizer, candidates, meta.get("minimax_token_tags"), cond_len)
+            if text is None:
+                # No candidate matches the text the tensor holds, so nothing here knows where
+                # the prompt sits. Biasing by arithmetic would land on the wrong words.
+                text = str(next((c for c in candidates if str(c or "").strip()), ""))
+                verified_base = None
             chosen = _tw.order_for_application(weighted[:8])
             spans, prompt_tokens = _tw.locate(tokenizer, text, chosen)
             if spans and prompt_tokens:
                 entry_meta = {"spans": spans, "prompt_tokens": int(prompt_tokens)}
                 # Where the prompt SITS is read from the modality tags when they are here,
                 # rather than assumed to be the tail of the conditioning.
-                base = _tw.prompt_base(meta.get("minimax_token_tags"),
-                                       int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0,
-                                       int(prompt_tokens))
+                base = verified_base if verified_base is not None else _tw.prompt_base(
+                    meta.get("minimax_token_tags"), cond_len, int(prompt_tokens))
                 if base is None and meta.get("funpack_conditioning_owner") == "wired":
+                    # Only reachable when NO candidate matched the tensor's text run.
                     # The fallback places the prompt by arithmetic — cond_len minus the
                     # tokens measured HERE. That only holds when Studio encoded the text. On
                     # a wired conditioning another node did, from a string this one never
@@ -14053,10 +14072,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     # them the honest result is no emphasis.
                     _log.note_on_change(
                         "h3:emphasis_placement", "FunPackStudio",
-                        "phrase emphasis is SKIPPED for the wired positive CONDITIONING: the "
-                        "modality tags do not agree with the prompt measured here, and this "
-                        "node did not encode that text, so there is no way to place the bias "
-                        "on the right tokens.")
+                        "phrase emphasis is SKIPPED for the wired positive CONDITIONING: "
+                        "none of the prompt texts this node holds tokenizes to the number of "
+                        "text positions the tensor actually has, so the string it was encoded "
+                        "from is not among them and the bias cannot be placed.")
                     out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
                     continue
                 if base is not None:
@@ -14081,7 +14100,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                   conditioning_plan=None, clip=None, encode_cache=None,
                                   phrase_memory=None, axis_feedback=None,
                                   h3_phrase_emphasis=False, auto_strength=None,
-                                  variables=None):
+                                  variables=None, link_texts=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
@@ -14133,7 +14152,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                               fallback_text=temporal_fallback_text,
                                               enabled=h3_phrase_emphasis,
                                               auto_strength=auto_strength,
-                                              variables=variables)
+                                              variables=variables,
+                                              link_texts=link_texts)
         if mode in ("relative", "both"):
             out = _step("relative steering", out, lambda c: self._v2_apply_scene_refinement_keys(
                 c, scene_refinement_keys, refinement_key,
@@ -15423,6 +15443,7 @@ class FunPackStudio:
             movie_editor_scene_ratings=_me_scene_ratings,
             scene_segments=(rf.get("scenes") if isinstance(rf.get("scenes"), dict) else None),
             variables=(rf.get("variables") if isinstance(rf.get("variables"), (list, dict)) else None),
+            link_texts=(rf.get("link_texts") if isinstance(rf.get("link_texts"), dict) else None),
             h3_references=rf.get("h3_references"),
         )
 

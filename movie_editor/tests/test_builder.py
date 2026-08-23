@@ -1280,3 +1280,15 @@ def test_an_imported_negative_does_not_survive_an_empty_box():
     params.pop("negative_prompt", None)
     graph, _report = builder.build(OI, {"slots": []}, params)
     assert graph["neg"]["inputs"]["value"] == ""
+
+
+def test_studio_receives_the_texts_linked_nodes_were_given():
+    """Studio keeps the RAW prompt on its own port and expands per scene, so without this it
+    cannot know what string a wired conditioning was built from — and anything that has to
+    line up with those tokens is guessing."""
+    import json
+    params = {**PARAMS, "expanded": {"prompt": "cinematic rain", "full_prompt": "cinematic rain now"}}
+    graph, _report = builder.build(OI, {"slots": []}, params)
+    settings = json.loads(graph["studio"]["inputs"]["studio_settings"])
+    assert settings["refiner"]["link_texts"]["prompt"] == "cinematic rain"
+    assert settings["refiner"]["link_texts"]["full_prompt"] == "cinematic rain now"

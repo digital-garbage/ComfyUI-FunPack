@@ -514,6 +514,13 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         # setting whenever the wired negative is blank, which meant clearing the box left a
         # negative from a previous session in force with nothing on screen saying so.
         _rf["negative_prompt"] = str(params.get("negative_prompt") or "")
+        # The strings a node OUTSIDE Studio actually received — shortcuts rolled, $variables
+        # resolved. Studio keeps the raw prompt on its own port and expands per scene, so
+        # without this it cannot know what text a wired conditioning was built from, and
+        # anything that has to line up with those tokens is guessing.
+        _exp = params.get("expanded")
+        if isinstance(_exp, dict) and _exp:
+            _rf["link_texts"] = {k: str(v) for k, v in _exp.items() if isinstance(v, str)}
         # Project `$name` variables — Studio resolves them dead-last (after split), per scene.
         _vars = params.get("variables")
         if isinstance(_vars, (list, dict)) and _vars:

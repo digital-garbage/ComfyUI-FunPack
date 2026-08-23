@@ -623,3 +623,50 @@ def test_emphasis_still_applies_to_studios_own_encode_via_the_tail(refiner, monk
     memory = {"rain": {"kind": "phrase", "effective_category_scores": {"details": 0.9}}}
     tag = _apply(refiner, monkeypatch, {"funpack_encode_text": "cinematic rain"}, memory)
     assert tag is not None
+
+
+# --- finding the string the tensor was actually encoded from ---------------
+
+def test_the_candidate_matching_the_text_run_is_chosen():
+    """A wired conditioning was encoded by another node from the editor's expansion, not from
+    Studio's copy. The tag map says how many text positions the tensor holds, so the right
+    candidate can be CHECKED rather than guessed."""
+    tags = [0] * 5 + [1] * 6                       # a vision block, then 6 text positions
+    text, n, base = tw.choose_encoded_text(
+        _FakeTokenizer(), ["a much longer prompt", "abcdef"], tags, cond_len=11)
+
+    assert text == "abcdef"
+    assert n == 6
+    assert base == 5
+
+
+def test_the_closest_fit_wins_when_several_are_close():
+    tags = [0, 0] + [1] * 8
+    text, _n, _b = tw.choose_encoded_text(
+        _FakeTokenizer(), ["abcdef", "abcdefgh"], tags, cond_len=10)
+    assert text == "abcdefgh"
+
+
+def test_a_candidate_longer_than_the_run_is_never_chosen():
+    """It cannot be what was encoded — the tensor has nowhere to put the extra tokens."""
+    tags = [0, 0] + [1] * 4
+    assert tw.choose_encoded_text(_FakeTokenizer(), ["abcdefgh"], tags, cond_len=6) \
+        == (None, 0, None)
+
+
+def test_no_tags_means_no_verified_choice():
+    assert tw.choose_encoded_text(_FakeTokenizer(), ["abc"], None, cond_len=6) \
+        == (None, 0, None)
+
+
+def test_the_editor_link_texts_are_offered_as_candidates():
+    """server._expanded_link_texts is what a node outside Studio actually received."""
+    import conditioning
+    src = inspect_source(conditioning.FunPackVideoRefinerV2._v2_apply_h3_token_weights)
+    assert 'link_texts.get(k) for k in ("full_prompt", "prompt")' in src
+    assert "choose_encoded_text" in src
+
+
+def inspect_source(fn):
+    import inspect
+    return inspect.getsource(fn)
