@@ -14930,10 +14930,15 @@ class FunPackStudio:
                     # not evaluated. It still has to be encoded (the output is a real port, and
                     # negative_erase reads it), but it is a full text-encoder pass and it has to
                     # be visible when accounting for what a run loaded and when.
+                    # WHICH of the two supplied it. They are different boxes in different
+                    # places, and a stored one silently outranking an empty wired one reads
+                    # as the field on screen having no effect.
+                    source = ("the wired negative_prompt input"
+                              if str(negative_prompt or "").strip()
+                              else "Studio's SAVED setting (the wired negative_prompt input "
+                                   "is empty)")
                     print(f"[FunPackStudio] encoding the negative prompt with the wired CLIP "
-                          f"({len(effective_negative)} chars)"
-                          + (" — nothing else in this run supplies one"
-                             if negative_conditioning is None else ""))
+                          f"({len(effective_negative)} chars) from {source}")
                     neg_encoded = clip.encode_from_tokens_scheduled(clip.tokenize(effective_negative))
                     if neg_encoded:
                         out_negative = neg_encoded

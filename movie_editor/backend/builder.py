@@ -505,6 +505,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         # (first run after the user clicks "Reset Studio session"); explicit so it's never
         # left on from a previous run.
         _rf["reset_session"] = bool(params.get("reset_session"))
+        # The editor's Negative prompt box is the ONLY negative in the editor, so it is
+        # authoritative — including when it is empty. Studio falls back to this stored
+        # setting whenever the wired negative is blank, which meant clearing the box left a
+        # negative from a previous session in force with nothing on screen saying so.
+        _rf["negative_prompt"] = str(params.get("negative_prompt") or "")
         # Project `$name` variables — Studio resolves them dead-last (after split), per scene.
         _vars = params.get("variables")
         if isinstance(_vars, (list, dict)) and _vars:

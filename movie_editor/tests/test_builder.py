@@ -1251,3 +1251,22 @@ def test_two_ACTIVE_sources_on_one_port_are_still_refused():
     models = {k: v for k, v in _two_alternatives("none").items() if k != "full_control"}
     assert any("already wired from" in e
                for e in pipeline_wiring.validate_models_wiring(models))
+
+
+def test_an_empty_editor_negative_clears_studios_saved_one():
+    """Studio falls back to studio_settings.refiner.negative_prompt whenever the wired
+    negative is blank. The editor has no field for that stored copy, so clearing the visible
+    Negative prompt box left an old negative in force with nothing on screen saying so."""
+    import json
+    graph, _report = builder.build(OI, {"slots": []}, {**PARAMS, "negative_prompt": ""})
+    settings = json.loads(graph["studio"]["inputs"]["studio_settings"])
+    assert settings["refiner"]["negative_prompt"] == ""
+
+
+def test_the_editor_negative_reaches_studios_settings_too():
+    import json
+    graph, _report = builder.build(OI, {"slots": []},
+                                   {**PARAMS, "negative_prompt": "no hats"})
+    settings = json.loads(graph["studio"]["inputs"]["studio_settings"])
+    assert settings["refiner"]["negative_prompt"] == "no hats"
+    assert graph["neg"]["inputs"]["value"] == "no hats"

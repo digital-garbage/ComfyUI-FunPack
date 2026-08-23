@@ -17,6 +17,13 @@
   Phrases are ranked by weight before the cap, and the prompt is located from
   `minimax_token_tags` rather than assumed to be the tail of the conditioning.
 
+### Fixed
+- **Clearing the editor's Negative prompt box now actually clears it.** Studio falls back to
+  a negative stored in its own settings whenever the wired one is blank, and the editor has
+  no field for that stored copy — so emptying the visible box left an earlier negative in
+  force with nothing on screen saying so. The editor's box is authoritative, empty included.
+  The log now names which of the two supplied the text.
+
 ### Reverted
 - **GGUF loading is back to expanding the checkpoint at load.** The quantized path through
   ComfyUI-GGUF loaded in seconds instead of a minute, and produced a model the sampler could
