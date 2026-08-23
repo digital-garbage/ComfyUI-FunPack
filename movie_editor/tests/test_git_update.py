@@ -219,17 +219,65 @@ def test_install_uses_the_running_interpreter(monkeypatch, tmp_path):
     whatever else is on it — installing into the wrong environment succeeds and changes
     nothing."""
     from movie_editor.backend import git_update as gu
-    seen = {}
+    calls = []
 
     def fake_run(cmd, **kw):
-        seen["cmd"] = cmd
+        calls.append(cmd)
         return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(gu.subprocess, "run", fake_run)
     out = gu.install_requirements()
     assert out["ran"] and out["ok"]
-    assert seen["cmd"][0] == sys.executable
-    assert seen["cmd"][1:4] == ["-m", "pip", "install"]
+    # freeze / install / freeze — every one of them through THIS interpreter.
+    assert all(c[0] == sys.executable and c[1:3] == ["-m", "pip"] for c in calls)
+    install = [c for c in calls if c[3] == "install"]
+    assert len(install) == 1
+
+
+def test_the_install_reports_which_packages_moved(monkeypatch):
+    """An update that silently bumps a shared dependency is the worst kind: ComfyUI is full
+    of compiled extensions, and a numpy or transformers change under them does not raise —
+    it segfaults hours later with nothing connecting it to the update."""
+    from movie_editor.backend import git_update as gu
+    freezes = iter(["numpy==1.26.4\ntransformers==4.44.0\n",
+                    "numpy==2.1.0\ntransformers==5.0.1\ngguf==0.10.0\n"])
+
+    def fake_run(cmd, **kw):
+        if cmd[3] == "freeze":
+            return types.SimpleNamespace(returncode=0, stdout=next(freezes), stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(gu.subprocess, "run", fake_run)
+    changed = gu.install_requirements()["changed"]
+    assert "numpy 1.26.4 -> 2.1.0" in changed
+    assert "transformers 4.44.0 -> 5.0.1" in changed
+    assert "gguf 0.10.0 (new)" in changed
+
+
+def test_an_unreadable_freeze_reports_nothing_rather_than_everything(monkeypatch):
+    """Reporting every package as new because pip freeze failed is worse than silence."""
+    from movie_editor.backend import git_update as gu
+
+    def fake_run(cmd, **kw):
+        if cmd[3] == "freeze":
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="boom")
+        return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(gu.subprocess, "run", fake_run)
+    out = gu.install_requirements()
+    assert out["ok"] and out["changed"] == []
+
+
+def test_nothing_changed_reports_nothing(monkeypatch):
+    from movie_editor.backend import git_update as gu
+    same = "numpy==2.1.0\ngguf==0.10.0\n"
+
+    def fake_run(cmd, **kw):
+        return types.SimpleNamespace(
+            returncode=0, stdout=(same if cmd[3] == "freeze" else "ok"), stderr="")
+
+    monkeypatch.setattr(gu.subprocess, "run", fake_run)
+    assert gu.install_requirements()["changed"] == []
 
 
 def test_a_failed_install_reports_the_command_and_never_raises(monkeypatch):

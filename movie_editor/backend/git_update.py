@@ -188,6 +188,12 @@ def install_requirements(timeout: int = 900) -> dict:
     req = REPO_ROOT / REQUIREMENTS
     if not req.is_file():
         return {"ran": False, "ok": True, "detail": "no requirements.txt in this checkout"}
+    # What is installed BEFORE, so the update can say what it changed. An update that
+    # silently moves a shared dependency is the worst kind: ComfyUI is full of compiled
+    # extensions (torch, comfy-kitchen, comfy-aimdo, onnxruntime, opencv) and a numpy or
+    # transformers bump under them does not raise — it segfaults, or corrupts memory, hours
+    # later, with nothing in the log connecting it to the update that caused it.
+    before = _pip_freeze()
     cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
            "-r", str(req)]
     try:
@@ -204,7 +210,49 @@ def install_requirements(timeout: int = 900) -> dict:
         return {"ran": True, "ok": False,
                 "detail": f"pip install failed — run it yourself:\n"
                           f"  {sys.executable} -m pip install -r {req}\n\n{tail}"}
-    return {"ran": True, "ok": True, "detail": (proc.stdout or "").strip()[-800:]}
+    changed = _pip_diff(before, _pip_freeze())
+    if changed:
+        print("[FunPack update] pip changed these packages: " + ", ".join(changed))
+    return {"ran": True, "ok": True, "changed": changed,
+            "detail": (("Changed: " + ", ".join(changed) + "\n\n") if changed else "")
+                      + (proc.stdout or "").strip()[-800:]}
+
+
+def _pip_freeze() -> dict:
+    """{name: version} for the environment ComfyUI is running in. {} if pip cannot be read —
+    an unreadable freeze must never block the install it was only meant to describe."""
+    try:
+        out = subprocess.run([sys.executable, "-m", "pip", "freeze",
+                              "--disable-pip-version-check"],
+                             capture_output=True, text=True, timeout=120)
+        if out.returncode != 0:
+            return {}
+        found = {}
+        for line in (out.stdout or "").splitlines():
+            if "==" in line:
+                name, _, ver = line.partition("==")
+                found[name.strip().lower()] = ver.strip()
+        return found
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _pip_diff(before: dict, after: dict) -> list[str]:
+    """Human-readable list of what moved. Empty when nothing did, or when either side is
+    unknown — reporting every package as "new" because the freeze failed would be worse
+    than saying nothing."""
+    if not before or not after:
+        return []
+    out = []
+    for name, ver in sorted(after.items()):
+        was = before.get(name)
+        if was is None:
+            out.append(f"{name} {ver} (new)")
+        elif was != ver:
+            out.append(f"{name} {was} -> {ver}")
+    for name in sorted(set(before) - set(after)):
+        out.append(f"{name} {before[name]} (removed)")
+    return out
 
 
 def pull(branch: str | None = None, *, install_deps: bool = False) -> dict:

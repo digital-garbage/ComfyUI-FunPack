@@ -1,3 +1,9 @@
+# Version floors ONLY where FunPack needs one, and never a bare upgrade of anything the
+# rest of ComfyUI compiles against. `pip install -r` upgrades a package whose floor is not
+# met — on a rental full of native extensions (torch, comfy-kitchen, comfy-aimdo,
+# onnxruntime, opencv) a numpy or transformers bump under them does not raise, it segfaults
+# hours later. The updater now prints exactly which packages moved; check that line first
+# when a machine starts misbehaving after an update.
 transformers>=5.0.0
 huggingface_hub
 safetensors
