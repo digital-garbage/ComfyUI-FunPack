@@ -1379,18 +1379,38 @@ class _SharpenDenoiser:
         denoised = self._inner(x, sigma, **kwargs)
         try:
             s = float(sigma.flatten()[0]) if hasattr(sigma, "flatten") else float(sigma)
-            if s <= self._thr:
-                denoised = _video_only(
-                    _apply_quality_sharpness(denoised, self._prev, self._amount),
-                    denoised, self._mask)
-        except Exception as _e:
+        except Exception:  # noqa: BLE001
+            return denoised
+        if s > self._thr:
+            # Outside the window: nothing to sharpen, but the prediction is still KEPT. The
+            # in-loop samplers carry prev_denoised across the phase boundary, so the first
+            # quality step sharpens against the last pre-quality one; dropping it here would
+            # make the same setting mean something different on a KSampler. The cost is one
+            # latent (~40 MB on a 97-frame 768x512 H3 clip) for the length of the run, which
+            # is not a memory problem worth breaking parity over.
+            try:
+                self._prev = denoised.detach()
+            except Exception:  # noqa: BLE001
+                self._prev = None
+            return denoised
+        try:
+            denoised = _video_only(
+                _apply_quality_sharpness(denoised, self._prev, self._amount),
+                denoised, self._mask)
+        except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackStudio", "quality sharpness", _e,
                         "this evaluation keeps the unsharpened prediction")
         try:
             self._prev = denoised.detach()
-        except Exception:
+        except Exception:  # noqa: BLE001
             self._prev = None
         return denoised
+
+    def release(self):
+        """Drop the retained prediction. Called when the sampler returns, so the tensor is
+        gone before the decode asks for its peak rather than waiting on garbage collection."""
+        self._prev = None
+        self._mask = None
 
 
 def _sharpen_wrap_sampler(sampler, sharpness, start_pct):
@@ -1426,8 +1446,11 @@ def _sharpen_wrap_sampler(sampler, sharpness, start_pct):
               f"each model call"
               f"{'' if mask is not None else '; single-stream latent, no audio to protect'}")
         proxy = _SharpenDenoiser(model, sharpness, thr, mask)
-        return fn(proxy, x, sigmas, extra_args=extra_args, callback=callback,
-                  disable=disable, **options)
+        try:
+            return fn(proxy, x, sigmas, extra_args=extra_args, callback=callback,
+                      disable=disable, **options)
+        finally:
+            proxy.release()
 
     _wrapped.__name__ = getattr(fn, "__name__", "sampler") + "_sharpen"
     return comfy.samplers.KSAMPLER(
@@ -6644,6 +6667,39 @@ class FunPackLTXAVSceneChainSampler:
                             "an attention hook may still be installed — RESTART ComfyUI before "
                             "trusting later generations")
 
+    def _log_decode_plan(self, vae, video_tensor):
+        """One line naming what the decode needs and what is free, before it needs it.
+
+        Every number here is best-effort: this runs at the most fragile moment of the run and
+        must never be the thing that fails it.
+        """
+        try:
+            shape = tuple(video_tensor.shape)
+            frames = int(shape[2]) if len(shape) >= 5 else None
+            px = None
+            if frames is not None:
+                # LTX/H3 latents are 8x spatial, 8x temporal (plus the origin frame).
+                h, w = int(shape[-2]) * 8, int(shape[-1]) * 8
+                n = (frames - 1) * 8 + 1
+                px = n * h * w * 3 * 4 / (1024 ** 3)      # float32 pixels, on the CPU
+            free_vram = free_ram = None
+            try:
+                free_vram = comfy.model_management.get_free_memory() / (1024 ** 3)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                import psutil
+                free_ram = psutil.virtual_memory().available / (1024 ** 3)
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"[FunPackSceneChain] decoding {shape} -> "
+                  f"{f'~{px:.1f} GB of pixels' if px else 'pixels'} on the CPU"
+                  f"{f' | {free_vram:.1f} GB VRAM free' if free_vram else ''}"
+                  f"{f' | {free_ram:.1f} GB RAM free' if free_ram else ''}"
+                  f"{'' if px is None or free_ram is None or px < free_ram * 0.6 else ' — this is close to the RAM available; set decode_tile_size or lower the frame count if the run dies here'}")
+        except Exception:  # noqa: BLE001
+            pass
+
     def _decode_tile_latent(self, vae, decode_tile_size):
         """`decode_tile_size` is in PIXELS; decode_tiled wants latent units.
 
@@ -7819,6 +7875,19 @@ class FunPackLTXAVSceneChainSampler:
         if want_image:
             _t_dec0 = _time.perf_counter()
             video_tensor = self._latent_tensors(output)[0]
+            # Say what the decode is about to ask for, BEFORE asking. A decode that takes the
+            # process (or the box) down leaves no traceback, so without this line a crash here
+            # is indistinguishable from any other sudden death. comfy's own OOM recovery is
+            # spatial tiling; it does not shrink the full-size CPU output buffer, which is the
+            # host-RAM allocation that a machine actually dies on.
+            self._log_decode_plan(vae, video_tensor)
+            # Hand back everything sampling was holding first. The banks (dynashift negatives,
+            # guide frames, per-scene wrappers) are dead by now but their blocks are still
+            # reserved by torch's allocator, and the decode is the peak of the whole run.
+            try:
+                comfy.model_management.soft_empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
             if decode_tile_size > 0:
                 try:
                     _tile = self._decode_tile_latent(vae, decode_tile_size)
