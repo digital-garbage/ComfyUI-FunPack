@@ -602,3 +602,24 @@ def test_a_phrase_that_still_does_not_match_is_simply_skipped(refiner, monkeypat
                                   "effective_category_scores": {"details": 0.9}}}
     assert _apply(refiner, monkeypatch, {"funpack_encode_text": "cinematic rain"},
                   memory) is None
+
+
+def test_emphasis_is_skipped_when_a_wired_prompt_cannot_be_placed(refiner, monkeypatch):
+    """The fallback places the prompt as `cond_len - tokens measured here`. That holds only
+    when Studio encoded the text. On a wired conditioning another node did, from a string
+    this one never saw — so the arithmetic would bias a window of the wrong words silently."""
+    memory = {"rain": {"kind": "phrase", "effective_category_scores": {"details": 0.9}}}
+    tag = _apply(refiner, monkeypatch,
+                 {"funpack_conditioning_owner": "wired",
+                  "funpack_encode_text": "cinematic rain",
+                  # 40 text tags against a 14-character prompt: not the same string
+                  "minimax_token_tags": torch.ones(40)},
+                 memory)
+    assert tag is None
+
+
+def test_emphasis_still_applies_to_studios_own_encode_via_the_tail(refiner, monkeypatch):
+    """Studio measured the text it encoded, so the arithmetic is sound there."""
+    memory = {"rain": {"kind": "phrase", "effective_category_scores": {"details": 0.9}}}
+    tag = _apply(refiner, monkeypatch, {"funpack_encode_text": "cinematic rain"}, memory)
+    assert tag is not None

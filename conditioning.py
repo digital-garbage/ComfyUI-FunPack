@@ -14044,6 +14044,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 base = _tw.prompt_base(meta.get("minimax_token_tags"),
                                        int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0,
                                        int(prompt_tokens))
+                if base is None and meta.get("funpack_conditioning_owner") == "wired":
+                    # The fallback places the prompt by arithmetic — cond_len minus the
+                    # tokens measured HERE. That only holds when Studio encoded the text. On
+                    # a wired conditioning another node did, from a string this one never
+                    # saw, so the arithmetic would bias a window of the wrong words with no
+                    # sign of it. The tags are the only trustworthy placement, and without
+                    # them the honest result is no emphasis.
+                    _log.note_on_change(
+                        "h3:emphasis_placement", "FunPackStudio",
+                        "phrase emphasis is SKIPPED for the wired positive CONDITIONING: the "
+                        "modality tags do not agree with the prompt measured here, and this "
+                        "node did not encode that text, so there is no way to place the bias "
+                        "on the right tokens.")
+                    out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+                    continue
                 if base is not None:
                     entry_meta["base"] = int(base)
                 meta["funpack_h3_token_weights"] = entry_meta
