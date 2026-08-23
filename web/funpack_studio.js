@@ -1140,9 +1140,10 @@ function openPanel(node) {
     });
     body.append(row("Skip Studio's positive processing", preferWired));
     body.append(el("div", "funpack-studio-hint",
-      "Normally CLIP wins and a wired positive CONDITIONING is ignored. With this on the wired "
-      + "one owns the positive and CLIP keeps encoding the negative and the references. It "
-      + "skips shortcuts, $variables and the scene split — for building the positive yourself."));
+      "A conditioning carrying a reference image already wins on its own. With this on, a "
+      + "TEXT-ONLY wired conditioning wins too — it loses Studio's per-scene split, so "
+      + "every scene is encoded from the whole combined prompt. Shortcuts and $variables "
+      + "still apply: a linked node receives them already expanded."));
 
     const vfActiveKey = () => settings.refinement_key || linkedRefinementKey(node);
     const vfExportBtn = btn("Export", "secondary");

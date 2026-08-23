@@ -34,6 +34,9 @@ MASKED_BIAS = -30.0
 # A guard, not a preference: bias is added to raw logits, and past this the phrase wins
 # every query regardless of content, which reads as the prompt collapsing onto one word.
 MAX_ABS_BIAS = 6.0
+# How far the text run may exceed the measured prompt before placement is refused. A couple
+# of tokens is a separator or a trimmed tag; more than that means a different string.
+_BASE_SLACK = 4
 
 
 def parse(text: str):
@@ -327,8 +330,17 @@ def prompt_base(token_tags, cond_len, prompt_tokens):
         run_start = run_end
         while run_start > 0 and int(tags[run_start - 1]) == 1:
             run_start -= 1
-        if run_end - run_start >= prompt_tokens:
+        run = run_end - run_start
+        # The prompt is the tokenizer's LAST segment, so the tail of the text run is the
+        # prompt — but only if the text measured here is the text that was encoded. When a
+        # reference node owns the conditioning it encoded the whole combined prompt while
+        # this may be one scene's, and taking the tail then would bias a window of the wrong
+        # words. A run that does not match the measurement is not something to place by.
+        if run == prompt_tokens:
+            return run_start
+        if run > prompt_tokens and run - prompt_tokens <= _BASE_SLACK:
             return run_end - prompt_tokens
+        return None
     base = cond_len - prompt_tokens
     return base if base >= 0 else None
 

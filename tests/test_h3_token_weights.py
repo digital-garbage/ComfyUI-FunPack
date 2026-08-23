@@ -473,3 +473,20 @@ def test_the_bias_uses_an_explicit_base_when_given():
 
 def test_a_base_that_would_run_past_the_conditioning_is_refused():
     assert tw.build_bias([(0, 2, 2.0)], 4, 9, 50, "cpu", torch.float32, base=7) is None
+
+
+def test_a_text_run_that_does_not_match_the_measurement_refuses_to_place():
+    """When a reference node owns the conditioning it encoded the WHOLE combined prompt,
+    while the text measured here may be one scene's. Taking the tail then would bias a
+    window of the wrong words — better to weight nothing than the wrong thing."""
+    tags = [1] * 40                     # 40 text tokens encoded
+    assert tw.prompt_base(tags, cond_len=40, prompt_tokens=6) is None
+
+
+def test_an_exact_text_run_places_at_its_start():
+    assert tw.prompt_base([1, 1, 0, 0, 1, 1, 1], cond_len=7, prompt_tokens=3) == 4
+
+
+def test_a_small_overshoot_is_tolerated():
+    """A separator token or a trimmed tag, not a different string."""
+    assert tw.prompt_base([0, 0, 1, 1, 1, 1, 1], cond_len=7, prompt_tokens=4) == 3

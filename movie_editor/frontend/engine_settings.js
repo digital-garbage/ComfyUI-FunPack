@@ -113,7 +113,7 @@
       dependsOn: "negative_erase", dependsVals: [true],
       hint: "Puts each word back to its original strength after the change, so the result reads as 'less of that thing' rather than 'quieter prompt'. Off is the raw result." },
     { name: "prefer_wired_conditioning", label: "Skip Studio's positive processing", kind: "bool", default: false,
-      hint: "When a positive CONDITIONING is wired into Studio, use it as-is instead of Studio's own prompt path — while CLIP keeps encoding the negative and the references. Normally CLIP wins and the wired conditioning is ignored. For building the positive yourself; it skips shortcuts, $variables and the scene split." },
+      hint: "When a positive CONDITIONING is wired into Studio, use it as-is instead of Studio's own prompt path — while CLIP keeps encoding the negative and the references. A conditioning carrying a reference image already wins on its own. What this changes is text-only scenes: they lose Studio's per-scene split, so every scene is encoded from the whole combined prompt. Shortcuts and $variables still apply — a linked node receives them already expanded." },
   ];
 
   function parseStudioSettings(p) {
