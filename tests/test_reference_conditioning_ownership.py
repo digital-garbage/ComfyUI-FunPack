@@ -60,11 +60,13 @@ def test_clip_keeps_every_other_job(studio):
     assert "CLIP still encodes the negative and references" in note
 
 
-def test_clip_owns_the_prompt_when_asked(studio):
-    cond, _meta, _note, owner = studio._v2_conditioning_source(
-        object(), "a cat", _wired(), clip_owns_prompt=True)
-    assert owner == "CLIP-owned"
-    assert torch.equal(cond, torch.ones(1, 4, 8))
+def test_no_setting_selects_between_them(studio):
+    """The wire IS the instruction. Wanting CLIP to own the prompt means not wiring a
+    conditioning, so there is nothing here to configure."""
+    import inspect
+    params = inspect.signature(studio._v2_conditioning_source).parameters
+    assert "clip_owns_prompt" not in params
+    assert "prefer_wired" not in params
 
 
 def test_no_conditioning_wired_still_uses_clip(studio):

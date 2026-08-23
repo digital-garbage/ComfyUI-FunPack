@@ -22,8 +22,10 @@
   connected, so Studio re-encoded from text and discarded what the node built — which on an
   i2v/r2v graph is not the same tensor, because Studio's encode never sees the reference
   image (nothing wires `h3_references` or `source_image`). CLIP keeps the negative, the
-  references and phrase classification. "Let CLIP re-encode a wired conditioning" restores
-  the old order. Replaces "Skip Studio's positive processing".
+  references and phrase classification. No setting selects between them — wiring the input
+  is the instruction, the same way a wired negative CONDITIONING has always won. "Skip
+  Studio's positive processing" is gone; it was a switch for something the graph already
+  said.
 - **Rating-driven phrase emphasis is OFF by default.** It changes what the model sees on
   every rated run; unvalidated work that does that is something to turn on, not to discover.
   Overlapping spans are also bounded — their biases add, and three overlapping x1.5 spans

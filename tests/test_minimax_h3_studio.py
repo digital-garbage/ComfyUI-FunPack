@@ -168,7 +168,7 @@ class _StubClip:
     pass
 
 
-def _source(node, clip, wired, monkeypatch, clip_owns_prompt=False):
+def _source(node, clip, wired, monkeypatch):
     monkeypatch.setattr(
         node, "_v2_encode_prompt",
         lambda *a, **k: (torch.ones(1, 4, 8), {"pooled_output": None}, "encoded"),
@@ -177,8 +177,7 @@ def _source(node, clip, wired, monkeypatch, clip_owns_prompt=False):
         node, "_v2_extract_conditioning",
         lambda c: (torch.zeros(1, 4, 8), {"pooled_output": None}), raising=False)
     monkeypatch.setattr(node, "_v2_text_tokenizer_status", lambda: "tokenizer ok", raising=False)
-    return node._v2_conditioning_source(clip, "a prompt", wired,
-                                        clip_owns_prompt=clip_owns_prompt)
+    return node._v2_conditioning_source(clip, "a prompt", wired)
 
 
 def test_a_wired_conditioning_owns_the_prompt_even_with_clip_connected(monkeypatch, capsys):
@@ -192,16 +191,6 @@ def test_a_wired_conditioning_owns_the_prompt_even_with_clip_connected(monkeypat
     assert torch.equal(cond, torch.zeros(1, 4, 8))     # the wired tensor, not a re-encode
     assert "owns the prompt" in status
     assert "CLIP still encodes the negative" in status
-
-
-def test_clip_still_owns_the_prompt_when_asked_to(monkeypatch):
-    """The old precedence, on request rather than by default."""
-    node = FunPackVideoRefinerV2()
-    wired = [[torch.zeros(1, 4, 8), {}]]
-    cond, _meta, _status, owner = _source(node, _StubClip(), wired, monkeypatch,
-                                          clip_owns_prompt=True)
-    assert owner == "CLIP-owned"
-    assert torch.equal(cond, torch.ones(1, 4, 8))
 
 
 def test_the_ownership_note_is_said_once_not_once_per_scene(monkeypatch, capsys):

@@ -85,7 +85,7 @@ function defaultSettings() {
   return {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6, negative_erase: false, negative_erase_strength: 0.5, negative_erase_mode: "project", negative_erase_renorm: true, clip_owns_prompt: false, h3_phrase_emphasis: false },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6, negative_erase: false, negative_erase_strength: 0.5, negative_erase_mode: "project", negative_erase_renorm: true, h3_phrase_emphasis: false },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -1131,19 +1131,6 @@ function openPanel(node) {
       negRe.addEventListener("change", () => { settings.refiner.negative_erase_renorm = negRe.checked; });
       body.append(row("Keep prompt strength", negRe));
     }
-
-    // Who owns the positive when both CLIP and a CONDITIONING are wired.
-    const clipOwns = el("input"); clipOwns.type = "checkbox";
-    clipOwns.checked = !!settings.refiner.clip_owns_prompt;
-    clipOwns.addEventListener("change", () => {
-      settings.refiner.clip_owns_prompt = clipOwns.checked;
-    });
-    body.append(row("Let CLIP re-encode a wired conditioning", clipOwns));
-    body.append(el("div", "funpack-studio-hint",
-      "Off: a wired positive CONDITIONING owns the prompt and Studio steers it — the node "
-      + "that built it may have shown Qwen a reference image, which Studio cannot reproduce. "
-      + "On restores the old behaviour, where CLIP re-encodes from text and the wired "
-      + "conditioning is discarded."));
 
     const phraseEmph = el("input"); phraseEmph.type = "checkbox";
     phraseEmph.checked = !!settings.refiner.h3_phrase_emphasis;

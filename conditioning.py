@@ -7092,8 +7092,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return f"stand-in tokenizer: {source}" if source else "stand-in tokenizer loaded"
 
     def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning, encode_cache=None,
-                                reference_image=None, h3_references=None,
-                                clip_owns_prompt=False):
+                                reference_image=None, h3_references=None):
         # A wired positive CONDITIONING OWNS the prompt. CLIP used to win here, on the theory
         # that a graph with both connected meant CLIP — but wiring a conditioning is an
         # explicit act, and discarding it in favour of a re-encode is the surprising half.
@@ -7106,8 +7105,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # re-encode is a different tensor, and an i2v/r2v sampler gets handed a text-only one.
         #
         # CLIP keeps every OTHER job — the negative, the references, phrase classification —
-        # which is why both stay connected. `clip_owns_prompt` restores the old precedence.
-        if positive_conditioning is not None and not clip_owns_prompt:
+        # which is why both stay connected. No setting selects between them: WIRING the input
+        # is the instruction. Wanting CLIP to own the prompt means not wiring a conditioning.
+        if positive_conditioning is not None:
             clip_note = ("positive CONDITIONING is wired and owns the prompt"
                          + ("; CLIP still encodes the negative and references"
                             if clip is not None
@@ -12051,7 +12051,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
-                  clip_owns_prompt=False, h3_phrase_emphasis=False,
+                  h3_phrase_emphasis=False,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
@@ -12510,7 +12510,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             encode_cache=encode_cache,
             reference_image=source_image,
             h3_references=_h3_references,
-            clip_owns_prompt=clip_owns_prompt,
         )
         fallback_graph = render_refinement_loss_graph(refinement_key, "v2", "clip", 0, 0.0, [])
         if not isinstance(cond, torch.Tensor):
@@ -15130,7 +15129,6 @@ class FunPackStudio:
             user_intent_prompt=effective_intent,
             refinement_key_input=refinement_key_input,
             positive_conditioning=positive_conditioning,
-            clip_owns_prompt=bool(rf.get("clip_owns_prompt", False)),
             h3_phrase_emphasis=bool(rf.get("h3_phrase_emphasis", False)),
             clip_vision_output=clip_vision_output,
             source_image=source_image if vision_conditioning else None,
