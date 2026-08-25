@@ -7326,11 +7326,13 @@ class FunPackLTXAVSceneChainSampler:
                              "tail is always 0 and there is nothing to blur. alg_anchor still "
                              "works — a continuation scene does carry real latent frames)")
             if joyai_memory:
-                _dead.append("joyai_memory / JoyAI-Echo (the memory bank places frame i at "
-                             "sequence position i, and H3's packed layout pins only the FIRST "
-                             "or LAST frame — so every frame past the first is refused, and "
-                             "the one that lands REPLACES the scene's i2v anchor, since pins "
-                             "are keyed by frame index. Not inert on H3: harmful)")
+                _dead.append("joyai_memory / JoyAI-Echo (a LoRA-driven technique — the base "
+                             "weights were never trained to read the injected memory frames "
+                             "as memory, the LoRA teaches that, and no JoyAI-Echo LoRA exists "
+                             "for H3. Inaccessible by design, not merely unwired. It would "
+                             "also actively hurt output if forced on: the bank places memory "
+                             "frame i at sequence position i, and writing index 0 twice "
+                             "REPLACES whatever was there, evicting the scene's i2v anchor)")
             # Gated on joyai_audio_memory, not on the value alone: v2a_grad_scale is that
             # feature's coupling knob and is never installed without it (see the call site),
             # so reporting a left-over value as an H3 limitation blames the model for a knob

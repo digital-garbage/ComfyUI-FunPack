@@ -137,10 +137,12 @@
       + "condition row rather than an appended frame, so that tail is always empty. "
       + "(alg_anchor is NOT hidden — a continuation scene does carry real latent frames.)",
     joyai_memory:
-      "JoyAI-Echo places memory frame i at sequence position i. H3's packed layout pins only "
-      + "the FIRST or LAST frame, so every frame past the first is refused — and the one that "
-      + "lands replaces the scene's i2v anchor, because pins are keyed by frame index. This "
-      + "one is not merely inert on H3, it is harmful, so the sampler forces it off.",
+      "JoyAI-Echo is a LoRA-driven technique: the base weights were never trained to read the "
+      + "injected memory frames as memory, the LoRA is what teaches that, and no JoyAI-Echo "
+      + "LoRA exists for H3. There is nothing to load, so this is inaccessible on H3 by "
+      + "design, not merely unwired. It would also actively hurt output if forced on: the "
+      + "bank places memory frame i at sequence position i, and writing index 0 twice "
+      + "replaces whatever was there — evicting the scene's own i2v anchor.",
   };
 
   // Sub-settings of the two groups above: they configure machinery that cannot run here.
