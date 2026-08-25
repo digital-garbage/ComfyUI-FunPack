@@ -1472,8 +1472,10 @@ def test_refiner_v2_advisor_skips_when_no_generation_clip_is_available(tmp_path)
     )
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert "Advisor: unavailable; connected CLIP does not expose text generation" in status
-    assert "Advisor: unavailable; connected CLIP does not expose text generation" in training_info
+    assert "does not expose text generation" in status
+    # the message names the socket to wire a generator into, not just the fault
+    assert "advisor_clip" in status
+    assert "does not expose text generation" in training_info
     assert state["last_run"]["encoded_prompt"] == "person smoking"
     assert state["last_run"]["advisor"]["applied"] is False
 

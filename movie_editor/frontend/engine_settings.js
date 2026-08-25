@@ -114,6 +114,25 @@
       hint: "Puts each word back to its original strength after the change, so the result reads as 'less of that thing' rather than 'quieter prompt'. Off is the raw result." },
     { name: "h3_phrase_emphasis", label: "Rating-driven phrase emphasis (H3)", kind: "bool", default: false,
       hint: "EXPERIMENTAL, unvalidated. Boosts the attention paid to phrases the rating said were MISSING, by biasing their attention logits in H3's packed stream. Needs a rated run first. Turn it off if generations drift away from the prompt — and note it forces SLA to run dense." },
+    { name: "prompt_enhance", label: "Enhance the prompt with an LLM", kind: "bool", default: false,
+      hint: "Before anything is generated, the fully expanded prompt is rewritten by a language model and the result is what the video is made from. Needs a text encoder that can GENERATE text wired into the Studio node's advisor_clip (or a FunPack Advisor LLM node); without one it says so and leaves the prompt alone.",
+      detail: "Runs after shortcuts and $variables resolve, before encoding — so the model is handed exactly the text that would otherwise have been used, and nothing downstream needs to know it happened. On a multi-scene timeline each scene is enhanced separately: the scene list is authoritative on count, and rewriting them as one paragraph could come back with a different number of scenes. One generation per distinct scene text, so a long timeline costs real time." },
+    { name: "prompt_enhance_system", label: "Enhancer instructions", kind: "textarea", rows: 10, default: "",
+      dependsOn: "prompt_enhance", dependsVals: [true],
+      placeholder: "Leave empty to use the built-in instructions.",
+      hint: "The system prompt the enhancer runs under. Empty uses FunPack's built-in one, which expands detail and adds a soundscape without inventing characters, camera moves or speech." },
+    { name: "prompt_enhance_max_length", label: "Enhancer length limit", kind: "int", default: 400, min: 32, max: 4096, step: 32,
+      dependsOn: "prompt_enhance", dependsVals: [true],
+      hint: "Maximum tokens the enhancer may write. Higher allows a richer prompt and costs more time." },
+    { name: "prompt_enhance_temperature", label: "Enhancer temperature", kind: "float", default: 0.7, min: 0.01, max: 2.0, step: 0.05,
+      dependsOn: "prompt_enhance", dependsVals: [true],
+      hint: "How freely the enhancer writes. Lower sticks closer to your wording, higher invents more detail." },
+    { name: "prompt_enhance_top_p", label: "Enhancer top-p", kind: "float", default: 0.92, min: 0.0, max: 1.0, step: 0.01,
+      dependsOn: "prompt_enhance", dependsVals: [true],
+      hint: "Nucleus sampling cutoff for the enhancer. Lower is more predictable wording." },
+    { name: "prompt_enhance_thinking", label: "Enhancer thinking mode", kind: "bool", default: false,
+      dependsOn: "prompt_enhance", dependsVals: [true],
+      hint: "Let the model reason before answering, if it supports it. Slower, and the reasoning is stripped from the result." },
     { name: "h3_render_gains", label: "Rating-learned render gains (H3)", kind: "bool", default: true,
       hint: "Learns five render strengths from your ratings alone: how hard each block writes into the picture, the prompt and the soundtrack, how loudly the prompt is read, and how far to push the prompt toward what you have rated well. Five numbers is a smaller search than the sigma schedule already learns, so there is nothing to tune by hand — each run is rendered slightly off the learned values so the next rating has something to credit. The taste push needs at least 3 liked runs on the key before it does anything. Free. Off leaves the model at its trained strengths; the Chain Sampler's h3_gain_* and h3_taste_bias widgets then do nothing unless its h3_gain_mode is set to manual." }
   ];
@@ -191,6 +210,17 @@
     } else if (f.kind === "combo") {
       ctrl = el("select"); ctrl.dataset.k = "rf-" + f.name;
       (f.choices || []).forEach((c) => { const o = new Option(c, c); if (c === val) o.selected = true; ctrl.append(o); });
+      ctrl.onchange = () => persistStudioRefiner({ [f.name]: ctrl.value }, true);
+    } else if (f.kind === "textarea") {
+      // A system prompt is paragraphs, not a value. Quiet while typing (no repaint under the
+      // caret, same rule the sampler's text knobs follow), committed on blur.
+      ctrl = el("textarea"); ctrl.dataset.k = "rf-" + f.name;
+      ctrl.rows = f.rows || 8;
+      ctrl.value = val != null ? String(val) : "";
+      if (f.placeholder) ctrl.placeholder = f.placeholder;
+      ctrl.style.width = "100%";
+      ctrl.style.resize = "vertical";
+      ctrl.style.fontFamily = "inherit";
       ctrl.onchange = () => persistStudioRefiner({ [f.name]: ctrl.value }, true);
     } else {
       ctrl = el("input"); ctrl.type = "number";

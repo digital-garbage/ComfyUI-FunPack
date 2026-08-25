@@ -85,7 +85,7 @@ function defaultSettings() {
   return {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6, negative_erase: false, negative_erase_strength: 0.5, negative_erase_mode: "project", negative_erase_renorm: true, h3_phrase_emphasis: false, h3_render_gains: true },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6, negative_erase: false, negative_erase_strength: 0.5, negative_erase_mode: "project", negative_erase_renorm: true, h3_phrase_emphasis: false, h3_render_gains: true, prompt_enhance: false, prompt_enhance_system: "", prompt_enhance_temperature: 0.7, prompt_enhance_top_p: 0.92, prompt_enhance_max_length: 400, prompt_enhance_thinking: false },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
