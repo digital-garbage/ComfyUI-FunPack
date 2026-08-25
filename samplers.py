@@ -2308,6 +2308,18 @@ class FunPackHybridEuler2SSampler:
         return (sampler, prepared_sigmas)
 
 
+def _rf_ancestral(model):
+    """True when this model is a rectified-flow (CONST) one — H3 and LTXAV both are.
+
+    Decides which ancestral formulation is correct; a wrong answer only changes how noise is
+    added, never whether sampling runs, so an unreadable model falls back to the eps form.
+    """
+    try:
+        return isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST)
+    except Exception:
+        return False
+
+
 def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, order=2, s_noise=0.0,
                                    final_correction_steps=0, ab2_ramp=False,
@@ -2377,7 +2389,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     sched_steps = max(1, int(len(sigmas)) - 1)
 
     order = max(1, min(2, int(order)))
-    s_noise = max(0.0, min(0.5, float(s_noise)))
+    s_noise = max(0.0, min(1.0, float(s_noise)))
     # The TERMINAL step (sigma_next == 0) cannot be Heun-corrected: the corrector evaluates
     # the model at sigma_next, and sigma 0 is degenerate. It also returns early below, so a
     # window measured from the end of the schedule started ON that step and the corrector was
@@ -2569,12 +2581,41 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             else:
                 d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
                 d = _mg_step(d, video_mask)
-                x = _audio_clock_step(x + d * dt, x, audio_clock, i)
-                if s_noise > 0.0:
+                x_det = _audio_clock_step(x + d * dt, x, audio_clock, i)
+                if s_noise > 0.0 and float(sigma_next) > 0 and _rf_ancestral(model):
+                    # Rectified-flow ancestral step, identical to comfy's
+                    # sample_euler_ancestral_RF (which is what `euler_ancestral` becomes on a
+                    # CONST model such as MiniMax H3 or LTXAV).
+                    #
+                    # The previous version stepped the FULL distance to sigma_next and then
+                    # added sqrt(sigma^2 - sigma_next^2) of noise on top. Both halves are wrong
+                    # for a flow model: that variance formula is the VP one, and adding noise
+                    # without shortening the deterministic step leaves the latent noisier than
+                    # the schedule says it should be at sigma_next. It over-noised, which is
+                    # why s_noise here never behaved like euler_ancestral.
+                    #
+                    # The correct step lands SHORT (sigma_down), then renoises with the alpha
+                    # rescaling flow matching requires. At s_noise=1.0 this is euler_ancestral.
+                    downstep_ratio = 1 + (sigma_next / sigma - 1) * s_noise
+                    sigma_down = sigma_next * downstep_ratio
+                    alpha_ip1 = 1 - sigma_next
+                    alpha_down = 1 - sigma_down
+                    ratio = sigma_down / sigma
+                    x_anc = ratio * x + (1 - ratio) * denoised_eff
+                    renoise = (sigma_next ** 2
+                               - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
+                    x_anc = ((alpha_ip1 / alpha_down) * x_anc
+                             + noise_sampler(sigma, sigma_next) * renoise)
+                    # Video only: ancestral noise on the audio stream corrupts it, and the
+                    # audio half of x_det already carries the clock correction.
+                    x = _video_only(x_anc, x_det, video_mask)
+                elif s_noise > 0.0 and float(sigma_next) > 0:
+                    # Non-CONST (eps/VP) model: the original formulation, unchanged.
                     sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
-                    if sigma_up > 0.0:
-                        # Diversity noise on video only — ancestral-style noise corrupts audio.
-                        x = _video_only(x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up, x, video_mask)
+                    x = _video_only(x_det + noise_sampler(sigma, sigma_next) * s_noise * sigma_up,
+                                    x_det, video_mask) if sigma_up > 0.0 else x_det
+                else:
+                    x = x_det
     finally:
         if alg_active:
             model.latent_image = alg_sharp_latent_image
@@ -2610,9 +2651,9 @@ class FunPackDistilledFlowSampler:
                 "s_noise": ("FLOAT", {
                     "default": 0.0,
                     "min": 0.0,
-                    "max": 0.50,
+                    "max": 1.00,
                     "step": 0.01,
-                    "tooltip": "Optional stochastic noise for diversity. 0 = fully deterministic ODE (recommended). Small values (0.05–0.15) add variation without strongly disrupting the distilled trajectory.",
+                    "tooltip": "Ancestral noise: the fraction of each step that is taken stochastically rather than deterministically (comfy calls this eta). 0 = fully deterministic ODE. 1.0 on a rectified-flow model (MiniMax H3, LTXAV) is exactly euler_ancestral. Free — no extra model calls. BEHAVIOUR CHANGED: this used to step the full distance and then add sqrt(sigma^2-sigma_next^2) of noise ON TOP, which is the VP variance formula and leaves the latent noisier than the schedule says — it never matched euler_ancestral at any value. It now lands short (sigma_down) and renoises with the alpha rescaling flow matching needs. A value carried over from before does NOT mean what it used to: re-tune it. If you liked euler_ancestral, start at 1.0.",
                 }),
                 "velocity_bias_mode": (VELOCITY_BIAS_MODES, {
                     "default": "off",
