@@ -2229,3 +2229,36 @@ def test_appearance_anchor_not_applied_on_non_wrong_appearance_rating():
     )
 
     assert "appearance-anchor idle" in status
+
+
+def _lora_relation(name, lora_type, phrase_text, phrase_category):
+    """The relevance the suggester assigns one LoRA for one prompt phrase."""
+    refiner = FunPackVideoRefinerV2()
+    history = {}
+    profile = normalize_refiner_v2_rating("Like")
+    refiner._v2_update_lora_suggestions(
+        {"loras": [{"id": "x", "name": name, "type": lora_type, "base_model_weight": 1.0}]},
+        history,
+        {"lora_weight_memory": {}},
+        [{"text": phrase_text, "primary": phrase_category}],
+        profile,
+        refiner._v2_axis_feedback(profile, []),
+    )
+    return history["lora_weight_suggestions"]["x"]["relation"]
+
+
+def test_a_loras_filename_does_not_decide_how_relevant_it_is():
+    """Splitting the file's NAME into words and matching them against the prompt guessed at
+    what a LoRA does from what someone happened to call it. Two identical LoRAs must score
+    the same whether or not the filename echoes the prompt."""
+    echoes = _lora_relation("running_motion.safetensors", "general", "running", "action")
+    opaque = _lora_relation("v3_final_ep12.safetensors", "general", "running", "action")
+    assert echoes == opaque
+
+
+def test_relevance_still_comes_from_the_type_and_the_prompt():
+    """The replacement must not be inert: a LoRA typed 'action' is still more relevant to an
+    action prompt than an untyped one."""
+    typed = _lora_relation("v3_final_ep12.safetensors", "action", "running", "action")
+    untyped = _lora_relation("v3_final_ep12.safetensors", "general", "running", "action")
+    assert typed > untyped
