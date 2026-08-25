@@ -1184,3 +1184,103 @@ def apply_adaln_gains(model, gains):
     named = ", ".join(f"{n}={v:g}" for n, v in sorted((gains or {}).items()) if float(v) != 1.0)
     return patched, (f"AdaLN modality gain on {count} blocks ({named}). Keyframe pins and "
                      f"reference images ride the VIDEO tag, so the video gain moves them too.")
+
+
+# ── token-refiner output ─────────────────────────────────────────────────────
+#
+# `context` (Qwen, [1, L, 5120]) reaches the DiT through
+# ``condition_proj`` (Linear 5120 -> 5376) then ``token_refiner`` (2 blocks + RMSNorm).
+# Everything FunPack steers today happens BEFORE that, on the Qwen tensor, which means the
+# refiner then processes the edit — its two attention blocks mix it across tokens and its
+# final RMSNorm renormalizes the magnitude away. The direction that lands is not the
+# direction that was learned.
+#
+# Editing the refiner's OUTPUT lands unchanged, and lands in the space the 50 blocks
+# actually consume. Two edits are supported:
+#
+#   scale — multiply the rows. The blocks read text through attention, so magnitude is how
+#           loudly the prompt competes with the picture for attention. Distinct from
+#           h3_gain_prompt, which controls how much each block WRITES BACK into these rows.
+#   bias  — add a direction. A single [hidden] vector added to every prompt row is
+#           PROMPT-LENGTH INDEPENDENT, which per-position edits are not (Qwen does not pad,
+#           so H3's sequence length changes with every prompt edit). That is the shape a
+#           learned direction has to have here to transfer between prompts.
+#
+# Both are confined to a row range: the `<Picture N>` label and vision-block rows sit at the
+# head of this span and are not ours to steer.
+
+
+class TokenRefinerEdit(torch.nn.Module):
+    """Wraps ``token_refiner`` and edits its output over a row range."""
+
+    def __init__(self, inner, scale=1.0, bias=None, row_start=0, row_end=None):
+        super().__init__()
+        self.inner = inner
+        self.scale = float(scale)
+        self.bias = bias
+        self.row_start = int(row_start)
+        self.row_end = row_end
+
+    def forward(self, x, *args, **kwargs):
+        out = self.inner(x, *args, **kwargs)
+        try:
+            rows = out.shape[-2]
+            start = max(0, min(int(self.row_start), rows))
+            end = rows if self.row_end is None else max(start, min(int(self.row_end), rows))
+            if end <= start:
+                return out
+            out = out.clone()
+            span = out[..., start:end, :]
+            if self.scale != 1.0:
+                span = span * self.scale
+            if self.bias is not None:
+                span = span + self.bias.to(device=span.device, dtype=span.dtype)
+            out[..., start:end, :] = span
+        except Exception:      # a refiner shape we do not recognise: leave it alone
+            return self.inner(x, *args, **kwargs)
+        return out
+
+
+def project_into_refiner_space(model, direction):
+    """Map a conditioning-space (Qwen) direction into refiner space with ``condition_proj``.
+
+    The bias, not just the weight, would move the origin — a DIRECTION is a difference of two
+    points, so only the linear part carries over. Returns None when the projection cannot be
+    read or the width does not match.
+    """
+    try:
+        proj = model.get_model_object("diffusion_model.condition_proj")
+        weight = proj.weight
+    except Exception:
+        return None
+    try:
+        vector = direction.reshape(-1).to(dtype=weight.dtype, device=weight.device)
+        if vector.shape[0] != weight.shape[1]:
+            return None
+        return torch.mv(weight, vector)
+    except Exception:
+        return None
+
+
+def apply_token_refiner_edit(model, scale=1.0, bias=None, row_start=0, row_end=None):
+    """Attach a scale and/or bias to the token refiner's output. Returns (model, note).
+
+    ``add_object_patch`` again, so ComfyUI restores it on unpatch and nothing outlives the
+    run. A scale of 1.0 with no bias returns the model unchanged rather than cloning it.
+    """
+    if float(scale) == 1.0 and bias is None:
+        return model, None
+    key = "diffusion_model.token_refiner"
+    try:
+        inner = model.get_model_object(key)
+    except Exception as error:
+        return model, f"token-refiner edit skipped — no token_refiner to patch ({error})."
+    patched = model.clone()
+    patched.add_object_patch(key, TokenRefinerEdit(inner, scale, bias, row_start, row_end))
+    parts = []
+    if float(scale) != 1.0:
+        parts.append(f"scale={float(scale):g}")
+    if bias is not None:
+        parts.append("bias")
+    where = f"rows {row_start}:{row_end if row_end is not None else 'end'}"
+    return patched, f"token-refiner edit ({', '.join(parts)}) on {where}."
