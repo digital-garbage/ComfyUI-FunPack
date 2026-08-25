@@ -3171,7 +3171,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "h3_gain_mode": (["learned", "manual"], {
                     "default": "learned",
-                    "tooltip": "Where the four H3 render strengths come from. 'learned' (default) takes them from the refinement key: Studio learns them from your ratings alone and tags them onto the conditioning, and the four widgets below are IGNORED — nothing to tune by hand, which is the point. Four scalars is a smaller search than the sigma schedule already learns from ratings, so it converges in tens of rated runs. With no key wired, or before the first rating, 'learned' renders at the model's trained strengths (all 1.0). 'manual' ignores the learned values and uses the widgets below exactly as set — for deliberately probing one strength, or for a graph with no Refiner in it.",
+                    "tooltip": "Where the five H3 render strengths come from. 'learned' (default) takes them from the refinement key: Studio learns them from your ratings alone and tags them onto the conditioning, and the five widgets below are IGNORED — nothing to tune by hand, which is the point. Five scalars is a smaller search than the sigma schedule already learns from ratings, so it converges in tens of rated runs. With no key wired, or before the first rating, 'learned' renders at the model's trained strengths (untouched, and the taste push at 0). 'manual' ignores the learned values and uses the widgets below exactly as set — for deliberately probing one strength, or for a graph with no Refiner in it.",
                 }),
                 "h3_prompt_scale": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
