@@ -4272,6 +4272,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return None
 
+    def _v2_note_train_device(self, vf, what):
+        """Say once per run where the value functions trained, and how big they are.
+
+        "training is slow" and "training is slow ON THE CPU with four million parameters" are
+        different problems with different fixes, and nothing else in the log tells them apart.
+        """
+        try:
+            device = str(getattr(vf, "last_train_device", None) or "?")
+            params = vf.parameter_count()
+        except Exception:  # noqa: BLE001
+            return
+        _log.note_on_change(
+            f"vf:device:{what}", "FunPackRefiner",
+            f"value function ({what}) trained on {device} — {params:,} parameters"
+            + ("" if device.startswith("cuda") else
+               ", on the CPU: twenty Adam steps over that is the cost of a rated run"))
+
     def _v2_stage(self, name):
         """Time one named stage of a run. Used on the handful that can dominate it.
 
@@ -11250,6 +11267,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if vf is not None:
                     with self._v2_stage("  vf: train"):
                         vf.train_on(cond_tensor, float(reward))
+                    self._v2_note_train_device(vf, "conditioning")
                     with self._v2_stage("  vf: save"):
                         vf.save(vf_path)
                     return vf.n_trained
@@ -11284,6 +11302,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if vf is not None:
                     with self._v2_stage("  x0 vf: train"):
                         vf.train_on(snapshot, float(reward))
+                    self._v2_note_train_device(vf, "x0 snapshot")
                     with self._v2_stage("  x0 vf: save"):
                         vf.save(vf_path)
                     return vf.n_trained

@@ -90,3 +90,18 @@ def test_without_a_gpu_it_stays_home(monkeypatch):
     monkeypatch.setattr(V.torch.cuda, "is_available", lambda: False)
     home = torch.device("cpu")
     assert V.OnlineValueFunction._training_device(torch.zeros(4), home) is home
+
+
+def test_the_device_it_trained_on_is_recorded():
+    """Reported once per run: "training is slow" and "training is slow ON THE CPU with four
+    million parameters" are different problems with different fixes."""
+    vf = _trained()
+    assert vf.last_train_device is None
+    vf.train_on(torch.randn(1, 8, 32), 0.5)
+    assert vf.last_train_device == "cpu"
+
+
+def test_a_run_too_short_to_train_records_nothing():
+    vf = OnlineValueFunction(hidden_dim=32)
+    vf.train_on(torch.randn(1, 8, 32), 0.5)      # one sample: no pair to rank
+    assert vf.last_train_device is None

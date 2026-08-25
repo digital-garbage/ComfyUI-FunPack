@@ -41,6 +41,10 @@ class OnlineValueFunction(nn.Module):
             )
 
         self.nets = nn.ModuleList([_make_net() for _ in range(self.ENSEMBLE_SIZE)])
+        # Where the last train_on actually ran. Reported once per run: "training is slow" and
+        # "training is slow ON THE CPU" are different problems, and nothing else in the log
+        # distinguishes them.
+        self.last_train_device = None
         self._optimizer = None
         self.buffer_c = []  # compressed conditioning tensors [hidden_dim]
         self.buffer_r = []  # reward floats
@@ -130,6 +134,7 @@ class OnlineValueFunction(nn.Module):
                 # rebuilt lazily and never persisted, so a run starts from fresh moments
                 # either way.
                 self._optimizer = None
+            self.last_train_device = str(device)
             try:
                 self._train_steps(device)
             finally:
