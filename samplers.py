@@ -2310,7 +2310,7 @@ class FunPackHybridEuler2SSampler:
 
 def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, order=2, s_noise=0.0,
-                                   final_correction_steps=1, ab2_ramp=False,
+                                   final_correction_steps=0, ab2_ramp=False,
                                    normalize_strength=0.0, normalize_start_sigma=0.9,
                                    velocity_bias_mode="off", velocity_bias_strength=0.0,
                                    velocity_bias_source="mean", velocity_refinement_key="default",
@@ -2378,8 +2378,16 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
 
     order = max(1, min(2, int(order)))
     s_noise = max(0.0, min(0.5, float(s_noise)))
-    final_correction_steps = max(0, min(sched_steps // 2, int(final_correction_steps)))
-    correction_start_idx = sched_steps - final_correction_steps
+    # The TERMINAL step (sigma_next == 0) cannot be Heun-corrected: the corrector evaluates
+    # the model at sigma_next, and sigma 0 is degenerate. It also returns early below, so a
+    # window measured from the end of the schedule started ON that step and the corrector was
+    # never reached — `final_correction_steps=1` did nothing at all on any schedule ending at
+    # 0, which is all of them. The window is measured over the CORRECTABLE steps instead, so
+    # N means N. Sharing the index with quality_sharpness is deliberate: its own tooltip
+    # defines its window as the Heun-correction steps.
+    correctable = sum(1 for i in range(sched_steps) if float(sigmas[i + 1]) > 0)
+    final_correction_steps = max(0, min(correctable, int(final_correction_steps)))
+    correction_start_idx = correctable - final_correction_steps
 
     _RESCUE_LOG["warned_no_memory"] = False
     _RESCUE_LOG["warned_no_prompt_match"] = False
@@ -2593,11 +2601,11 @@ class FunPackDistilledFlowSampler:
                     "tooltip": "Multistep order. 1 = standard Euler ODE. 2 = Adams-Bashforth 2-step: extrapolates the denoised direction from two consecutive steps for better accuracy at no extra model-call cost.",
                 }),
                 "final_correction_steps": ("INT", {
-                    "default": 1,
+                    "default": 0,
                     "min": 0,
                     "max": 3,
                     "step": 1,
-                    "tooltip": "Number of final steps that use a Heun predictor-corrector pass. Each costs one extra model call but significantly improves final-step detail. 1 is usually enough for 8-step runs.",
+                    "tooltip": "Number of correctable steps that use a Heun predictor-corrector pass. EACH COSTS ONE EXTRA MODEL CALL (on a 7-step run, 1 = ~14% more time). Counted over the steps that CAN be corrected: the terminal step lands on sigma 0, where the corrector has nothing to evaluate, so it is never one of them. Was 1 by default and did nothing — the window used to start on that terminal step, which returns before the corrector runs — so 0 is what every run has actually been doing. Set it to 1 to get the correction the knob always advertised, on the last real step. quality_sharpness shares this window and needs this above 0.",
                 }),
                 "s_noise": ("FLOAT", {
                     "default": 0.0,
@@ -2701,7 +2709,7 @@ class FunPackDistilledFlowSampler:
         "Guidance smoothing for the complementary (fine-motion) sigma window."
     )
 
-    def get_sampler(self, order=2, final_correction_steps=1, s_noise=0.0,
+    def get_sampler(self, order=2, final_correction_steps=0, s_noise=0.0,
                     velocity_bias_mode="off", velocity_bias_strength=0.0,
                     velocity_bias_source="mean", velocity_refinement_key="default",
                     rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
