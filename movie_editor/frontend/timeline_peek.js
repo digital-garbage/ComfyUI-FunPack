@@ -53,7 +53,7 @@
       // Leaving the preference while a drag happened to be open would strand the class on
       // the zone, and it only means anything alongside the attribute.
       const zone = d.getElementById && d.getElementById("timeline-zone");
-      if (zone) zone.classList.remove(DRAG_CLASS);
+      if (zone) { zone.classList.remove(DRAG_CLASS); zone.classList.remove(OPEN_CLASS); }
     }
     return !!on;
   }
@@ -63,7 +63,7 @@
   function set(on) {
     persist(!!on);
     const result = apply(!!on);
-    if (on) measure();          // turning it on is the first time the strip height matters
+    if (on) { ensureStrip(); measure(); }   // first time the strip and its height matter
     return result;
   }
 
@@ -79,6 +79,10 @@
       get depth() { return depth; },
     };
   }
+
+  const STRIP_ID = "timeline-peek-strip";
+  const OPEN_CLASS = "peek-open";
+  const STRIP_LABEL = "Timeline — hover to show";
 
   // The header's height, measured rather than assumed: .zone-head WRAPS when the zone is
   // narrow (34px min-height, 138px in practice on a normal window). The zone itself sizes to
@@ -96,11 +100,57 @@
     return h;
   }
 
+  // A real element, not a ::before on the body. Showing a sliver of the closed timeline read
+  // as a broken timeline — a lane label and a cut-off clip — so the closed state shows a
+  // labelled bar instead and the body is hidden outright. It also has to be its own element
+  // because the pointer must be able to be ON the strip without being on the header.
+  function ensureStrip(doc) {
+    const d = doc || document;
+    const zone = d.getElementById("timeline-zone");
+    const body = d.getElementById("timeline-body");
+    if (!zone || !body) return null;
+    let strip = d.getElementById(STRIP_ID);
+    if (!strip) {
+      strip = d.createElement("div");
+      strip.id = STRIP_ID;
+      strip.className = "tl-peek-strip";
+      strip.textContent = STRIP_LABEL;
+      body.parentNode.insertBefore(strip, body);
+    }
+    return strip;
+  }
+
+  // Which part of the zone the pointer is over decides everything: the header is never a
+  // trigger (reaching for Generate must not open the timeline), the strip and the timeline
+  // itself both are — the body has to keep it open or it would shut the moment it opened
+  // under the cursor.
+  function opensOnPointer(target, doc) {
+    const d = doc || document;
+    const zone = d.getElementById("timeline-zone");
+    if (!zone || !target || !target.closest) return false;
+    if (!zone.contains(target)) return false;
+    return !target.closest(".zone-head");
+  }
+
+  // The closed body is display:none, so the lanes have no width to lay out against while it
+  // is shut. Telling the app to re-measure on the way open costs one resize handler and
+  // avoids clips drawn at a stale width for the first frame after it appears.
+  let reflowQueued = false;
+  function markReflow(doc) {
+    if (reflowQueued || typeof window === "undefined" || !window.dispatchEvent) return;
+    reflowQueued = true;
+    (window.requestAnimationFrame || setTimeout)(() => {
+      reflowQueued = false;
+      try { window.dispatchEvent(new Event("resize")); } catch (_) { /* older engines */ }
+    });
+  }
+
   function install(doc) {
     const d = doc || document;
     const zone = d.getElementById("timeline-zone");
     if (!zone) return () => {};
     const track = makeDragTracker();
+    ensureStrip(d);
     // Measured now and on resize: the header re-wraps as the window changes width, and a
     // stale strip height would either clip it or leave a gap under it.
     measure(d);
@@ -114,6 +164,18 @@
     const onLeave = (e) => { if (isDrag(e)) paint(track.leave()); };
     const onEnd = () => paint(track.end());
 
+    // Hover is driven from script rather than :hover because the two halves of "open" are
+    // different elements — the strip you point at and the timeline that replaces it — and a
+    // CSS rule on either one alone flickers as the other takes the pointer.
+    const openIf = (e) => {
+      const want = opensOnPointer(e.target, d);
+      zone.classList.toggle(OPEN_CLASS, want);
+      if (want) markReflow(d);
+    };
+    const closeAll = () => zone.classList.remove(OPEN_CLASS);
+    zone.addEventListener("mouseover", openIf);
+    zone.addEventListener("mouseleave", closeAll);
+
     zone.addEventListener("dragenter", onEnter);
     zone.addEventListener("dragleave", onLeave);
     zone.addEventListener("drop", onEnd);
@@ -124,6 +186,8 @@
     d.addEventListener("dragend", onEnd);
     d.addEventListener("drop", onEnd);
     return () => {
+      zone.removeEventListener("mouseover", openIf);
+      zone.removeEventListener("mouseleave", closeAll);
       zone.removeEventListener("dragenter", onEnter);
       zone.removeEventListener("dragleave", onLeave);
       zone.removeEventListener("drop", onEnd);
@@ -135,5 +199,6 @@
     };
   }
 
-  return { get, set, apply, install, measure, isDrag, makeDragTracker, LS_KEY, ATTR, DRAG_CLASS };
+  return { get, set, apply, install, measure, ensureStrip, opensOnPointer, isDrag,
+           makeDragTracker, LS_KEY, ATTR, DRAG_CLASS, OPEN_CLASS, STRIP_ID, STRIP_LABEL };
 }));

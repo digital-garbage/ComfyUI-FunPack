@@ -56,3 +56,30 @@ test("apply is safe without a document", () => {
   assert.equal(P.apply(true, null), true);
   assert.equal(P.apply(false, null), false);
 });
+
+
+test("the header is never a trigger", () => {
+  // Reaching for Generate, a pinned button or the Composer must not open the timeline.
+  const inHead = { closest: (sel) => (sel === ".zone-head" ? {} : null) };
+  const doc = { getElementById: () => ({ contains: () => true }) };
+  assert.equal(P.opensOnPointer(inHead, doc), false);
+});
+
+test("the strip and the timeline itself both keep it open", () => {
+  // The body has to count, or it would shut the instant it opened under the cursor.
+  const inBody = { closest: () => null };
+  const doc = { getElementById: () => ({ contains: () => true }) };
+  assert.equal(P.opensOnPointer(inBody, doc), true);
+});
+
+test("something outside the zone opens nothing", () => {
+  const elsewhere = { closest: () => null };
+  const doc = { getElementById: () => ({ contains: () => false }) };
+  assert.equal(P.opensOnPointer(elsewhere, doc), false);
+});
+
+test("the closed strip says what it is", () => {
+  // The previous closed state was a 3px handle over a clipped lane, which read as breakage.
+  assert.match(P.STRIP_LABEL, /timeline/i);
+  assert.match(P.STRIP_LABEL, /hover/i);
+});
