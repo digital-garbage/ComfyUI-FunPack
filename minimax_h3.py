@@ -1103,3 +1103,84 @@ def extend_token_tags(meta, added_tokens, tag=1):
     pad = torch.full((int(added_tokens),), int(tag), dtype=tags.dtype, device=tags.device)
     out["minimax_token_tags"] = torch.cat([tags, pad], dim=0)
     return out
+
+
+# ── per-modality AdaLN gain ──────────────────────────────────────────────────
+#
+# Every DiT block carries its own ``AdalnProj(t_dim, hidden, expand=6, modalities=3)``:
+# six modulation vectors — shift/scale/gate for attention, the same three for the MLP —
+# and THREE copies of each, one per modality. Rows are indexed ``t_row * 3 + tag``, so a
+# modality's rows across every timestep are the slice ``[tag::3]``.
+#
+# The GATE is what scales a block's output as it is written back into a row range. Scaling
+# one modality's gate is therefore per-block, per-stream write gain: how much all 50 blocks
+# are allowed to say about the prompt rows, or the audio rows, independently of the video.
+# At 1.0 nothing is touched and the tuple is returned as it arrived.
+#
+# WHAT THIS CANNOT SEPARATE: keyframe pins and reference images carry the VIDEO tag (0).
+# They differ from the target video by TIMESTEP row, not by tag — and only while the
+# condition's noise-augmentation timestep is above the video's, which stops being true
+# later in the schedule. So the video gain moves the anchor with it. Splitting them needs
+# the layout's row mapping, which AdalnProj never sees.
+MODALITY_TAGS = {"video": 0, "text": 1, "audio": 2}
+_ADALN_GATE_CHUNKS = (2, 5)          # shift_msa scale_msa GATE_msa shift_mlp scale_mlp GATE_mlp
+_ADALN_MODALITIES = 3
+
+
+class AdalnModalityGain(torch.nn.Module):
+    """Wraps one block's ``adaln_proj`` and scales its gates per modality."""
+
+    def __init__(self, inner, gains):
+        super().__init__()
+        self.inner = inner
+        self.gains = {int(t): float(g) for t, g in (gains or {}).items() if float(g) != 1.0}
+
+    def forward(self, t_emb):
+        out = self.inner(t_emb)
+        if not self.gains or getattr(self.inner, "modalities", 1) != _ADALN_MODALITIES:
+            return out
+        out = list(out)
+        for idx in _ADALN_GATE_CHUNKS:
+            gate = out[idx]
+            # chunk() returns views onto one buffer — never scale in place.
+            scaled = gate.clone()
+            for tag, factor in self.gains.items():
+                scaled[tag::_ADALN_MODALITIES] = gate[tag::_ADALN_MODALITIES] * factor
+            out[idx] = scaled
+        return tuple(out)
+
+
+def apply_adaln_gains(model, gains):
+    """Attach per-modality gate gains to every DiT block. Returns (model, note).
+
+    Uses ``add_object_patch`` rather than replacing methods by name: ComfyUI restores
+    object patches on unpatch, so nothing survives the run. Degradation that outlives a
+    reset has been a real bug here before, and this is the mechanism that prevents it.
+
+    `gains` maps a name in MODALITY_TAGS to a float. 1.0 (or absent) means untouched, and
+    an all-1.0 request returns the model unchanged rather than cloning it.
+    """
+    live = {MODALITY_TAGS[name]: float(value)
+            for name, value in (gains or {}).items()
+            if name in MODALITY_TAGS and float(value) != 1.0}
+    if not live:
+        return model, None
+    try:
+        blocks = model.get_model_object("diffusion_model.blocks")
+    except Exception as error:                       # not H3, or a layout we do not know
+        return model, f"AdaLN gain skipped — no DiT blocks to patch ({error})."
+    patched = model.clone()
+    count = 0
+    for index in range(len(blocks)):
+        key = f"diffusion_model.blocks.{index}.adaln_proj"
+        try:
+            inner = patched.get_model_object(key)
+        except Exception:
+            continue
+        patched.add_object_patch(key, AdalnModalityGain(inner, live))
+        count += 1
+    if not count:
+        return model, "AdaLN gain skipped — no adaln_proj found on the blocks."
+    named = ", ".join(f"{n}={v:g}" for n, v in sorted((gains or {}).items()) if float(v) != 1.0)
+    return patched, (f"AdaLN modality gain on {count} blocks ({named}). Keyframe pins and "
+                     f"reference images ride the VIDEO tag, so the video gain moves them too.")

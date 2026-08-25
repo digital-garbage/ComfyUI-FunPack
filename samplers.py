@@ -3153,6 +3153,18 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "EXPERIMENTAL, MiniMax H3 only: integrate the audio stream on its OWN flow schedule. H3 denoises video and audio on two different schedules (the MiniMax H3 Sigma Shift node's shift_video 12 / shift_audio 3), but only one sigma grid reaches a sampler, so the model reconciles them by scaling the audio velocity by the slope between the two schedules at the START of each step. That is exact for infinitesimal steps and increasingly wrong as steps get bigger: on a 4-step schedule the last step drives audio roughly 2.5x past where its own schedule puts it, which is heard as distortion. This replaces that start-of-step slope with the one that actually spans the step, so audio lands where its schedule says. Costs one scalar multiply per step — no extra model call. Aimed at few-step schedules (turbo/distilled LoRAs, 4-8 steps), where nothing else fixes this. NO-OP when shift_video and shift_audio are EQUAL — the streams are then on one schedule and there is nothing to correct (it says so on the console). SAMPLER MATTERS, measured against a perfect predictor so the numbers are pure schedule error (audio error as a % of the stream's full range, 4/8/20 steps): WORKS BEST — FunPack Distilled Flow and Hybrid Euler 2S (runs inside their step loop, exact), and stock `euler` (85/38/14% -> 0/0/0%, exact at every step count). PERFORMS POORLY — the higher-order multistep family (`res_multistep`, `dpmpp_2m`, `gradient_estimation`, `ipndm`, `lms`, `deis`): they already absorb most of this error themselves, so the clock helps them at 4 steps (69% -> 21%) but HURTS at 20 (1% -> 15%); leave it off there. NO EFFECT — two-evals-per-step samplers (`heun`, `dpm_2`, `dpmpp_2s_ancestral`, `dpmpp_sde`, `seeds_2`): a model call cannot be tied to a step from outside their loop, so the wrapper detects that on the first call and switches itself off with a console note rather than guessing. Ancestral/SDE samplers additionally add noise to the audio stream, which this does not address. The clock never touches the video stream directly, though on H3 the two share one attention sequence, so a changed audio latent can still shift the video slightly.",
                 }),
+                "h3_gain_video": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Per-block write gain on the VIDEO rows. Every DiT block carries three sets of AdaLN modulation — one per modality (video / prompt / audio) — and the GATE is what scales that block's attention and MLP output as it is written back into a row range. This multiplies the video gate on all 50 blocks: below 1.0 each block contributes less to the picture (softer, calmer, less detail and less motion), above 1.0 more (harder, busier, and past ~1.3 it overcooks). 1.0 = untouched, and the model is not even cloned. Free — one small vector multiply per block, no extra model calls. KEYFRAME PINS AND REFERENCE IMAGES RIDE THE VIDEO TAG, so this moves them with the picture; they are separated from the target video by timestep row, not by modality, and only early in the schedule. Attached with add_object_patch, which ComfyUI restores on unpatch, so nothing survives the run.",
+                }),
+                "h3_gain_prompt": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Per-block write gain on the PROMPT rows (see h3_gain_video for the mechanism). H3 keeps the text in the same sequence as the picture and lets every block rewrite it, so the prompt the model reads at block 50 is not the one the encoder produced. 0.0 freezes the text at its encoded value for the whole forward — the video still attends to it, but it can no longer drift toward what is being drawn. Lower values are the lever to try when a scene slowly stops matching what you asked for; higher values let the text move further with the picture. 1.0 = untouched. Free. The <Picture N> vision rows inside the text span carry the VIDEO tag, not this one, so a reference is not affected.",
+                }),
+                "h3_gain_audio": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Per-block write gain on the AUDIO rows (see h3_gain_video for the mechanism). This is the one modality whose gate can be moved without touching the other two at the point of writing — though the streams still share one attention pass, so a changed audio row is read by the video on the NEXT block. Below 1.0 the soundtrack is built more conservatively. Free. 1.0 = untouched.",
+                }),
                 "alg_anchor": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "EXPERIMENTAL: run ALG's i2v anchor blur (arXiv:2506.08456) on WHATEVER sampler is wired — a stock KSampler with any sampler_name, Hybrid Euler 2S, a two-evals-per-step sampler like heun, anything. The blur de-statics an anchored scene by hiding the anchor's high-frequency detail during the near-pure-noise steps, so the model cannot shortcut to a video that just matches the still. It is the same guidance as the FunPack Distilled Flow sampler's own alg_enabled, and this switch drives that one too when Distilled Flow is the wired sampler, so there is one control wherever you are. The swap is decided by the step's sigma alone, which is an argument of every model call, so it does not need to run inside a sampler's loop. No effect on a scene with no i2v anchor.",
@@ -3962,6 +3974,10 @@ class FunPackLTXAVSceneChainSampler:
         # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
         _ba_handles = self._install_bounded_attention(model, latent, positive) if bounded_attention_enabled else []
         model = self._install_h3_token_weights(model, positive)
+        # Per-modality AdaLN gain. Sampler-side and self-contained: it reads no refinement
+        # key, no rating and no Studio state, so it works on a graph with the Refiner absent
+        # entirely. 1.0 on all three does not even clone the model.
+        model = self._install_h3_adaln_gains(model)
 
         try:
             sampled = comfy.sample.sample_custom(
@@ -6668,6 +6684,45 @@ class FunPackLTXAVSceneChainSampler:
         w_idx = idx % w
         return (w_idx >= (w // 2)).long()
 
+    def _install_h3_adaln_gains(self, model):
+        """Scale every DiT block's AdaLN gates per modality, from the three sampler widgets.
+
+        Deliberately NOT part of the refinement path. This is a visual-behaviour op, so it
+        lives on the sampler (Studio produces conditioning; the sampler decides how the model
+        renders it) and it reads only its own widgets. Nothing here consults a refinement key,
+        a rating, or a learned direction — turning conditioning steering off does not turn
+        this off, and turning this on does not require the Refiner to be wired at all.
+
+        Returns `model` untouched when all three gains are 1.0, which is every default run.
+        """
+        gains = {"video": float(getattr(self, "_h3_gain_video", 1.0)),
+                 "prompt": float(getattr(self, "_h3_gain_prompt", 1.0)),
+                 "audio": float(getattr(self, "_h3_gain_audio", 1.0))}
+        if all(value == 1.0 for value in gains.values()):
+            return model
+        try:
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import minimax_h3 as h3mod
+        if not h3mod.is_h3_model(model):
+            _log.note_on_change(
+                "h3:adaln_gain_family",
+                "[FunPackSceneChain] h3_gain_* is set but this is not a MiniMax H3 model — "
+                "the per-modality AdaLN gates only exist there. Not applied.")
+            return model
+        # MODALITY_TAGS names the text modality "text"; the widget says "prompt" because that
+        # is what it is to the person setting it.
+        tagged = {"video": gains["video"], "text": gains["prompt"], "audio": gains["audio"]}
+        try:
+            patched, note = h3mod.apply_adaln_gains(model, tagged)
+        except Exception as error:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "AdaLN modality gain", error,
+                        "the blocks write at their trained strength for every modality")
+            return model
+        if note:
+            print(f"[FunPackSceneChain] {note}")
+        return patched
+
     def _install_h3_token_weights(self, model, positive):
         """Apply the rating-derived phrase emphasis Studio tagged onto the conditioning.
 
@@ -6995,6 +7050,7 @@ class FunPackLTXAVSceneChainSampler:
                second_pass=False, second_pass_op="none", second_pass_sigmas=None,
                second_pass_sampler=None,
                h3_audio_clock=False,
+               h3_gain_video=1.0, h3_gain_prompt=1.0, h3_gain_audio=1.0,
                audio_vae=None, h3_keyframes=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
@@ -7009,6 +7065,10 @@ class FunPackLTXAVSceneChainSampler:
         # happened last run is reported again rather than deduped away forever.
         _log.begin_run()
         self._is_h3 = self._set_stream_axes(model)
+        # Read once per run, consumed by _install_h3_adaln_gains at each scene's sample call.
+        self._h3_gain_video = max(0.0, min(2.0, float(h3_gain_video)))
+        self._h3_gain_prompt = max(0.0, min(2.0, float(h3_gain_prompt)))
+        self._h3_gain_audio = max(0.0, min(2.0, float(h3_gain_audio)))
         # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's
         # own base grid; on LTX it stays the absolute-sigma gate it was validated with.
         _steer_ramp = _make_steer_ramp(sigmas, self._is_h3)
