@@ -121,11 +121,34 @@ def test_no_edit_returns_the_model_unpatched():
     assert out is model and note is None and model.patched == {}
 
 
-def test_it_patches_the_refiner_object():
+def test_it_patches_the_forward_not_the_module():
+    """The module itself must stay in place: swapping it for a wrapper MODULE renames every
+    weight under it (token_refiner.blocks.* -> token_refiner.inner.blocks.*), and ComfyUI
+    records weight names off the live tree while the patch is applied. An unwrap by any
+    other patcher sharing the model then leaves a restore walking a `.inner` that is gone —
+    'TokenRefiner object has no attribute inner', mid-sample."""
     model = FakePatcher()
     out, note = h3.apply_token_refiner_edit(model, scale=1.2, row_start=4)
-    assert isinstance(out.patched["diffusion_model.token_refiner"], h3.TokenRefinerEdit)
+    assert "diffusion_model.token_refiner" not in out.patched
+    assert isinstance(out.patched["diffusion_model.token_refiner.forward"], h3.TokenRefinerEdit)
     assert "scale=1.2" in note and "rows 4:end" in note
+
+
+def test_the_edit_is_not_a_module_so_the_state_dict_is_untouched():
+    assert not isinstance(h3.TokenRefinerEdit(FakeRefiner()), torch.nn.Module)
+    assert not isinstance(h3.AdalnModalityGain(FakeRefiner(), {}), torch.nn.Module)
+
+
+def test_reinstalling_unwraps_instead_of_nesting():
+    """Per scene we install again off a shared model. ComfyUI restores an object patch by
+    writing the previous value back, so the previous `forward` can be a live wrapper — and
+    capturing that would stack another scale on every scene."""
+    inner = FakeRefiner()
+    first = h3.TokenRefinerEdit(inner, scale=2.0)
+    inner.forward = first                       # as patch_model would leave it
+    second = h3.TokenRefinerEdit(inner, scale=2.0)
+    assert second.original is not first
+    assert torch.allclose(second(torch.zeros(1, 4, 4)), torch.full((4, HID), 2.0))
 
 
 def test_object_patches_so_nothing_outlives_the_run():
@@ -248,3 +271,61 @@ def test_the_note_says_the_bias_is_relative():
     model = FakePatcher()
     _out, note = h3.apply_token_refiner_edit(model, bias=torch.zeros(HID), bias_relative=True)
     assert "bias (relative)" in note
+
+
+# ── the state-dict hazard that crashed a real run ───────────────────────────
+#
+# Reported from a rental: manual gain mode with the refinement keys deleted, sampling dies
+# with "'TokenRefiner' object has no attribute 'inner'". Learned mode was fine, because with
+# no key the gains are neutral and the installer returns before building anything.
+#
+# The chain: a wrapper MODULE renames every weight under it, ComfyUI's patch_model applies
+# object patches BEFORE loading weights (so names are recorded WITH `.inner`), and
+# unpatch_model restores weights BEFORE unwrapping. With more than one patcher alive off one
+# shared model — one clone per scene, plus one for the AdaLN gains — another patcher can
+# unwrap first, and the weight restore then walks `.inner` on a real TokenRefiner.
+
+class _Refiner(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.blocks = torch.nn.Linear(4, 4)
+
+    def forward(self, x, *a, **k):
+        return torch.ones(x.shape[-2], HID)
+
+
+class _DiT(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.token_refiner = _Refiner()
+
+
+class _Base(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.diffusion_model = _DiT()
+
+
+def test_the_patch_never_renames_a_checkpoint_weight():
+    """The whole bug in one assertion: no weight key may gain an `.inner` segment."""
+    model = _Base()
+    before = list(dict(model.named_parameters()))
+    edit = h3.TokenRefinerEdit(model.diffusion_model.token_refiner, scale=1.2)
+    model.diffusion_model.token_refiner.forward = edit      # as patch_model installs it
+    assert list(dict(model.named_parameters())) == before
+    assert not any(".inner." in k for k in dict(model.named_parameters()))
+
+
+def test_the_module_itself_stays_in_place():
+    model = _Base()
+    original = model.diffusion_model.token_refiner
+    edit = h3.TokenRefinerEdit(original, scale=1.2)
+    model.diffusion_model.token_refiner.forward = edit
+    assert model.diffusion_model.token_refiner is original
+    assert isinstance(model.diffusion_model.token_refiner, _Refiner)
+
+
+def test_the_adaln_gain_patches_a_forward_too():
+    """Same hazard, same shape: adaln_proj.weight must not become adaln_proj.inner.weight."""
+    src = inspect.getsource(h3.apply_adaln_gains)
+    assert "patch_module_forward" in src

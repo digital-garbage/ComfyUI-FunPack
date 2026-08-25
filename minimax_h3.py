@@ -1328,16 +1328,56 @@ _ADALN_GATE_CHUNKS = (2, 5)          # shift_msa scale_msa GATE_msa shift_mlp sc
 _ADALN_MODALITIES = 3
 
 
-class AdalnModalityGain(torch.nn.Module):
-    """Wraps one block's ``adaln_proj`` and scales its gates per modality."""
+def unwrapped_forward(module):
+    """The module's own ``forward``, never a FunPack wrapper already sitting on it.
+
+    ComfyUI restores an object patch by writing the previous value back, and the previous
+    value of ``<module>.forward`` may itself be one of our wrappers from a run that is still
+    winding down. Capturing that would nest wrappers on every scene and eventually stack a
+    scale per scene, so the chain is followed back to the real bound method every time.
+    """
+    fn = getattr(module, "forward", module)
+    seen = 0
+    while getattr(fn, "_funpack_wrapper", False) and seen < 16:
+        fn = getattr(fn, "original", fn)
+        seen += 1
+    return fn
+
+
+def patch_module_forward(patcher, key, wrapper):
+    """Install `wrapper` as `<key>.forward` through ComfyUI's own object-patch mechanism.
+
+    Patching the FORWARD rather than replacing the module is what keeps the state dict
+    intact: a wrapper module would rename every weight under `key` to `<key>.inner.*`, and
+    ComfyUI captures weight names off the live tree, so an unwrap by any other patcher
+    sharing this model would leave a restore walking a `.inner` that no longer exists.
+    """
+    patcher.add_object_patch(f"{key}.forward", wrapper)
+
+
+class AdalnModalityGain:
+    """Wraps one block's ``adaln_proj.forward`` and scales its gates per modality.
+
+    Deliberately NOT an ``nn.Module``. Replacing a module with a wrapper module renames
+    every weight beneath it in the state dict (``adaln_proj.weight`` becomes
+    ``adaln_proj.inner.weight``), and ComfyUI records weight keys off the LIVE tree while
+    the patch is applied — so an unwrap by any other patcher sharing this model leaves a
+    restore walking a ``.inner`` that is no longer there. Patching ``forward`` leaves the
+    tree and the state dict exactly as the checkpoint built them.
+    """
+
+    #: marks an already-installed wrapper, so a re-install unwraps instead of nesting
+    _funpack_wrapper = True
 
     def __init__(self, inner, gains):
-        super().__init__()
         self.inner = inner
+        # The ORIGINAL callable, captured before the patch is applied. Calling
+        # ``inner.forward`` at call time would re-enter this wrapper once it is installed.
+        self.original = unwrapped_forward(inner)
         self.gains = {int(t): float(g) for t, g in (gains or {}).items() if float(g) != 1.0}
 
-    def forward(self, t_emb):
-        out = self.inner(t_emb)
+    def __call__(self, t_emb):
+        out = self.original(t_emb)
         if not self.gains or getattr(self.inner, "modalities", 1) != _ADALN_MODALITIES:
             return out
         out = list(out)
@@ -1378,7 +1418,7 @@ def apply_adaln_gains(model, gains):
             inner = patched.get_model_object(key)
         except Exception:
             continue
-        patched.add_object_patch(key, AdalnModalityGain(inner, live))
+        patch_module_forward(patched, key, AdalnModalityGain(inner, live))
         count += 1
     if not count:
         return model, "AdaLN gain skipped — no adaln_proj found on the blocks."
@@ -1411,13 +1451,28 @@ def apply_adaln_gains(model, gains):
 # head of this span and are not ours to steer.
 
 
-class TokenRefinerEdit(torch.nn.Module):
-    """Wraps ``token_refiner`` and edits its output over a row range."""
+class TokenRefinerEdit:
+    """Wraps ``token_refiner.forward`` and edits its output over a row range.
+
+    Deliberately NOT an ``nn.Module``. Replacing the module with a wrapper module renames
+    the checkpoint's own keys — ``token_refiner.blocks.*`` becomes
+    ``token_refiner.inner.blocks.*`` — and ComfyUI's ``patch_model`` applies object patches
+    BEFORE it loads weights, so every weight gets recorded under the ``.inner`` name. On the
+    way out it restores weights before it unwraps, and with several patchers alive off one
+    shared model (one clone per scene, plus one for the AdaLN gains) another patcher can
+    unwrap first — leaving a restore that walks ``.inner`` on a real ``TokenRefiner``.
+    Patching the forward leaves the tree and the state dict as the checkpoint built them.
+    """
+
+    #: marks an already-installed wrapper, so a re-install unwraps instead of nesting
+    _funpack_wrapper = True
 
     def __init__(self, inner, scale=1.0, bias=None, row_start=0, row_end=None,
                  bias_relative=False):
-        super().__init__()
         self.inner = inner
+        # The ORIGINAL callable, captured before the patch is applied. Calling
+        # ``inner.forward`` at call time would re-enter this wrapper once installed.
+        self.original = unwrapped_forward(inner)
         self.scale = float(scale)
         self.bias = bias
         self.row_start = int(row_start)
@@ -1430,8 +1485,8 @@ class TokenRefinerEdit(torch.nn.Module):
         # prompt row", which is the same thing on every prompt and every checkpoint.
         self.bias_relative = bool(bias_relative)
 
-    def forward(self, x, *args, **kwargs):
-        out = self.inner(x, *args, **kwargs)
+    def __call__(self, x, *args, **kwargs):
+        out = self.original(x, *args, **kwargs)
         try:
             rows = out.shape[-2]
             start = max(0, min(int(self.row_start), rows))
@@ -1450,7 +1505,7 @@ class TokenRefinerEdit(torch.nn.Module):
                 span = span + bias
             out[..., start:end, :] = span
         except Exception:      # a refiner shape we do not recognise: leave it alone
-            return self.inner(x, *args, **kwargs)
+            return self.original(x, *args, **kwargs)
         return out
 
 
@@ -1490,8 +1545,8 @@ def apply_token_refiner_edit(model, scale=1.0, bias=None, row_start=0, row_end=N
     except Exception as error:
         return model, f"token-refiner edit skipped — no token_refiner to patch ({error})."
     patched = model.clone()
-    patched.add_object_patch(key, TokenRefinerEdit(inner, scale, bias, row_start, row_end,
-                                                  bias_relative=bias_relative))
+    patch_module_forward(patched, key, TokenRefinerEdit(inner, scale, bias, row_start,
+                                                        row_end, bias_relative=bias_relative))
     parts = []
     if float(scale) != 1.0:
         parts.append(f"scale={float(scale):g}")
