@@ -24,7 +24,14 @@ except ImportError:  # standalone tests import the modules directly
 
 LORA_TYPES = ["general", "action", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
-TRANSFORMER_BLOCK_PATTERN = re.compile(r"(?:^|\.)transformer_blocks\.(\d+)\.")
+# Any numbered block container a diffusion transformer might use. Per-block application
+# reads the LoRA's own deltas, which is a property of the adapter and not of the
+# architecture — so the container name is the only thing that was ever model-specific, and
+# it is a list rather than a gate. Longest names first so `transformer_blocks` is not
+# matched as `blocks` (it cannot be, the preceding char is `_`, but the order says so).
+TRANSFORMER_BLOCK_PATTERN = re.compile(
+    r"(?:^|\.)(transformer_blocks|double_blocks|single_blocks|joint_blocks|blocks|layers)"
+    r"\.(\d+)\.")
 LTX_IMAGE_MODELS = {"ltxv", "ltxav"}
 LORA_RAW_CACHE_SIZE = 12
 LORA_PATCH_CACHE_SIZE = 24
@@ -48,9 +55,27 @@ LORA_TYPE_BLOCK_ZONES = {
 }
 LORA_ZONE_BOOST = 1.12
 LORA_ZONE_SCALE_CAP = 1.75
-# Blocks confirmed as primary semantic focal points (PAG default=14, STG defaults=14,19).
+# Primary semantic focal points, as a POSITION along the stack rather than an index.
+# PAG's default is block 14 and STG's are 14 and 19, both measured on LTX's 28-block DiT;
+# 14/27 and 19/27 are those same blocks expressed as a fraction, so a 28-block model still
+# resolves to exactly 14 and 19 while a model of any other depth gets the proportionally
+# equivalent blocks instead of two indices that mean nothing there.
 # These are never zeroed by type-zone suppression and never damped by stack pressure.
-SEMANTIC_ANCHOR_BLOCKS = frozenset({14, 19})
+SEMANTIC_ANCHOR_POSITIONS = (14.0 / 27.0, 19.0 / 27.0)
+
+
+def semantic_anchor_blocks(block_indices):
+    """The blocks nearest SEMANTIC_ANCHOR_POSITIONS in this model's own stack."""
+    indices = sorted(int(i) for i in block_indices)
+    if len(indices) < 2:
+        return frozenset(indices)
+    max_idx = max(indices)
+    if max_idx <= 0:
+        return frozenset(indices)
+    return frozenset(
+        min(indices, key=lambda i: abs(i / max_idx - pos))
+        for pos in SEMANTIC_ANCHOR_POSITIONS
+    )
 
 
 @PromptServer.instance.routes.get("/funpack/loras")
@@ -170,7 +195,21 @@ def transformer_block_index(patch_key):
     match = TRANSFORMER_BLOCK_PATTERN.search(target_key)
     if not match:
         return None
-    return int(match.group(1))
+    return int(match.group(2))
+
+
+def block_container_name(patch_key):
+    """Which numbered container this patch lives in, or None.
+
+    Two containers in one model (Flux's double_blocks/single_blocks) both start at 0, so
+    their indices would collide into one bucket and one scale would be applied to two
+    unrelated blocks. Per-block declines in that case rather than averaging them.
+    """
+    target_key = patch_target_key(patch_key)
+    if not isinstance(target_key, str):
+        return None
+    match = TRANSFORMER_BLOCK_PATTERN.search(target_key)
+    return match.group(1) if match else None
 
 
 def patch_energy(value):
@@ -755,13 +794,17 @@ class FunPackLoraLoader:
         return coerce_bool(entry.get("per_block", lora_stack.get("per_block", False)))
 
     def _per_block_supported(self, model, lora_stack, entry):
-        if not self._per_block_requested(entry, lora_stack):
-            return False
+        """Whether to TRY per-block for this entry. Not a model whitelist any more.
 
-        if (lora_stack.get("mode") or "ltx2").lower() != "ltx2":
-            return False
-
-        return self._model_image_model(model) in LTX_IMAGE_MODELS
+        Per-block scaling is derived from the LoRA's own deltas — which blocks it actually
+        put energy into — so what decides whether it can run is whether this adapter names
+        numbered blocks, not which architecture it was trained for. That is discovered from
+        the patches themselves in _lora_block_profile, which returns None when there are
+        fewer than two blocks to compare; the caller then falls back to global and says so.
+        Refusing here by image_model meant a model FunPack had never heard of got the
+        fallback without anyone ever looking at its deltas.
+        """
+        return self._per_block_requested(entry, lora_stack)
 
     def _model_cache_key(self, model):
         model_wrapper = getattr(model, "model", None)
@@ -857,6 +900,20 @@ class FunPackLoraLoader:
             if cached is not None:
                 return cached
 
+        containers = {block_container_name(k) for k in loaded}
+        containers.discard(None)
+        if len(containers) > 1:
+            # Both containers number from 0, so their blocks would share buckets and one
+            # scale would land on two unrelated blocks. Declining is the honest answer; the
+            # caller falls back to global at the plain weight.
+            _log.note_on_change(
+                "lora:block_containers", "FunPack",
+                f"per-block declined: this model numbers its blocks in {len(containers)} "
+                f"separate stacks ({', '.join(sorted(containers))}), which start at 0 each, "
+                f"so a block index does not identify one block. The LoRA applies globally "
+                f"at its plain weight instead.")
+            return None
+
         global_patches, block_patches = self._split_model_patches_by_block(loaded)
         block_scores = self._block_scores_from_patches(block_patches)
         base_scales = self._block_scales_from_scores(block_scores)
@@ -894,10 +951,11 @@ class FunPackLoraLoader:
 
         result = dict(scales)
         suppressed = 0
+        anchors = semantic_anchor_blocks(block_indices)
         for block_index, scale in scales.items():
             pos = block_index / max_idx
             if bad and bad[0] <= pos <= bad[1]:
-                if block_index in SEMANTIC_ANCHOR_BLOCKS:
+                if block_index in anchors:
                     continue
                 result[block_index] = 0.0
                 suppressed += 1
@@ -909,9 +967,10 @@ class FunPackLoraLoader:
         total = sum(block_scores.values())
         if total <= 0.0:
             return 1.0
-        anchor_energy = sum(block_scores.get(b, 0.0) for b in SEMANTIC_ANCHOR_BLOCKS)
+        anchors = semantic_anchor_blocks(block_scores.keys())
+        anchor_energy = sum(block_scores.get(b, 0.0) for b in anchors)
         anchor_share = anchor_energy / total
-        expected = len(SEMANTIC_ANCHOR_BLOCKS) / max(len(block_scores), 1)
+        expected = len(anchors) / max(len(block_scores), 1)
         ratio = anchor_share / max(expected, 1e-9)
         return max(0.92, min(1.08, 1.0 + (ratio - 1.0) * 0.08))
 
@@ -968,6 +1027,7 @@ class FunPackLoraLoader:
             return
 
         block_indices = sorted({block_index for profile in profiles for block_index in profile["normalized_scores"]})
+        anchors = semantic_anchor_blocks(block_indices)
         for block_index in block_indices:
             contributors = [
                 profile
@@ -1003,7 +1063,7 @@ class FunPackLoraLoader:
                 advantage = (own_signal - strongest_other) / max(own_signal + strongest_other, 1e-9)
                 if advantage >= 0.0:
                     multiplier = 1.0 + min(0.18, advantage * 0.14) * min(1.0, overlap_ratio * 1.25)
-                elif block_index in SEMANTIC_ANCHOR_BLOCKS:
+                elif block_index in anchors:
                     continue
                 else:
                     pressure = min(1.0, overlap_ratio * 1.35)
