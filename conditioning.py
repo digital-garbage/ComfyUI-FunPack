@@ -3073,6 +3073,120 @@ class FunPackVideoRefiner:
     # SIGMA REFINEMENT
     # =========================================================================
 
+    # ── rating-learned H3 render gains ──────────────────────────────────────
+    #
+    # Four scalars — how hard each block writes into the video, prompt and audio rows, and
+    # how loudly the prompt is read. They are learned rather than typed: four dimensions is
+    # SMALLER than the sigma profile's search space, which already converges on ratings
+    # alone, so asking the user to hand-tune them would be asking them to do a search the
+    # machine can do.
+    #
+    # Same update as the sigma profile — perturb, generate, rate, move toward the
+    # perturbation that earned reward — with one difference: the sigma profile is centred on
+    # 0, so its applied value IS its perturbation. These are centred on 1.0, so the
+    # perturbation is `applied - value` and that is what the reward is credited to.
+    #
+    # Unlike anything in conditioning space these transfer between prompts: 0.85 means the
+    # same thing on every prompt, so a value learned on one run is worth something on the
+    # next. That is the property that makes them worth learning at all.
+    H3_GAIN_KEYS = ("video", "prompt", "audio", "prompt_scale")
+    H3_GAIN_MIN = 0.60
+    H3_GAIN_MAX = 1.40
+    H3_GAIN_LR = 0.08
+    H3_GAIN_EXPLORE_BASE = 0.05
+    H3_GAIN_EXPLORE_MIN = 0.012
+    H3_GAIN_EXPLORE_MAX = 0.09
+
+    def _ensure_h3_gain_state(self, global_state: dict):
+        state = global_state.setdefault("h3_gains", {})
+        state.setdefault("values", {k: 1.0 for k in self.H3_GAIN_KEYS})
+        state.setdefault("last_applied", {k: 1.0 for k in self.H3_GAIN_KEYS})
+        state.setdefault("iterations", 0)
+        state.setdefault("reward_ema", 0.0)
+        state.setdefault("explore", self.H3_GAIN_EXPLORE_BASE)
+        for key in self.H3_GAIN_KEYS:            # a key added later starts neutral
+            state["values"].setdefault(key, 1.0)
+            state["last_applied"].setdefault(key, 1.0)
+        return state
+
+    def _v2_update_h3_gains(self, global_state: dict, rating_profile: dict):
+        """Credit this rating to the perturbation that was actually rendered."""
+        if not isinstance(global_state, dict) or not isinstance(rating_profile, dict):
+            return None
+        if rating_profile.get("skip_learning"):
+            return None
+        state = self._ensure_h3_gain_state(global_state)
+        reward = float(rating_profile.get("reward", 0.0) or 0.0)
+        values, applied = state["values"], state["last_applied"]
+        moved = []
+        for key in self.H3_GAIN_KEYS:
+            centre = float(values.get(key, 1.0))
+            perturbation = float(applied.get(key, centre)) - centre
+            if perturbation == 0.0:
+                continue
+            updated = min(self.H3_GAIN_MAX, max(
+                self.H3_GAIN_MIN, centre + perturbation * reward * self.H3_GAIN_LR))
+            if updated != centre:
+                values[key] = updated
+                moved.append(f"{key}={updated:.3f}")
+        state["reward_ema"] = 0.85 * float(state.get("reward_ema", 0.0)) + 0.15 * reward
+        # Landing well narrows the search; landing badly widens it.
+        decay = 0.97 if reward > 0 else 1.02
+        state["explore"] = min(self.H3_GAIN_EXPLORE_MAX, max(
+            self.H3_GAIN_EXPLORE_MIN, float(state.get("explore", self.H3_GAIN_EXPLORE_BASE)) * decay))
+        state["iterations"] = int(state.get("iterations", 0)) + 1
+        return ", ".join(moved) if moved else None
+
+    def _v2_h3_gains_for_run(self, global_state: dict, seed=0, explore=True):
+        """The gains to render with, and the record of what was rendered.
+
+        Exploration is what makes the next rating informative — without a perturbation there
+        is nothing for the reward to be credited to, and the profile can never move. Seeded
+        from the run's seed so a repeated run repeats its perturbation.
+        """
+        if not isinstance(global_state, dict):
+            return {k: 1.0 for k in self.H3_GAIN_KEYS}
+        state = self._ensure_h3_gain_state(global_state)
+        values = state["values"]
+        out = {}
+        if explore:
+            rng = np.random.RandomState(int(seed) % (2 ** 32))
+        for key in self.H3_GAIN_KEYS:
+            centre = float(values.get(key, 1.0))
+            if explore:
+                centre += float(rng.normal(0.0, float(state.get("explore", self.H3_GAIN_EXPLORE_BASE))))
+            out[key] = min(self.H3_GAIN_MAX, max(self.H3_GAIN_MIN, centre))
+        state["last_applied"] = dict(out)
+        return out
+
+    def _v2_tag_h3_gains(self, conditioning_list, global_state, seed=0):
+        """Attach this run's render gains to entry 0 so the sampler can apply them."""
+        try:
+            gains = self._v2_h3_gains_for_run(global_state, seed=seed)
+        except Exception as error:  # noqa: BLE001
+            _log.failed("FunPackStudio", "H3 render gains", error,
+                        "this run renders at the model's trained strengths")
+            return conditioning_list
+        if not gains or all(abs(v - 1.0) < 1e-6 for v in gains.values()):
+            return conditioning_list
+        out = []
+        for index, entry in enumerate(conditioning_list or []):
+            if index == 0 and isinstance(entry, (list, tuple)) and len(entry) >= 2 \
+                    and isinstance(entry[1], dict):
+                meta = dict(entry[1])
+                meta["funpack_h3_gains"] = dict(gains)
+                out.append([entry[0], meta])
+            else:
+                out.append(entry)
+        _log.note_on_change(
+            "studio:h3gains",
+            "FunPackStudio",
+            "H3 render gains this run: "
+            + ", ".join(f"{k}={gains[k]:.3f}" for k in self.H3_GAIN_KEYS if k in gains)
+            + " (learned from ratings, perturbed to keep learning; the Chain Sampler applies "
+              "them and its h3_gain_* widgets are ignored unless h3_gain_mode is manual)")
+        return out
+
     def _ensure_sigma_state_defaults(self, global_adaptive: dict):
         global_adaptive.setdefault("sigma_profile", [0.0] * 32)
         global_adaptive.setdefault("last_applied_sigma_profile", [0.0] * 32)
@@ -4750,6 +4864,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         successful-seed-memory status string. Shared by the project key and every non-default
         key bound to the scene's shortcuts (multi-key rating)."""
         self._v2_update_phrase_memory(target_global, scene_run, profile, iter_num, axis_feedback)
+        self._v2_update_h3_gains(target_global, profile)
         self._v2_update_concept_delta_memory(target_global, scene_run, profile)
         self._v2_update_concept_pair_dirs(target_global, scene_run, profile)
         seed_memory_status = self._v2_update_successful_seed_memory(
@@ -9745,6 +9860,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
                   h3_phrase_emphasis=False,
+                  h3_render_gains=True,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
@@ -10767,6 +10883,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"entry 1 is steered and the other "
                 f"{len(positive_conditioning) - 1} pass through unchanged. They used to be "
                 f"discarded, which cut everything after the first entry out of the prompt.")
+        # Rating-learned render gains ride the conditioning to the sampler, the same bridge
+        # H3 token weighting uses: Studio owns the key and the learning, the sampler owns the
+        # application. Perturbed here, once per run, so the NEXT rating has something to
+        # credit — a run with no perturbation teaches nothing.
+        if h3_render_gains:
+            output_conditioning = self._v2_tag_h3_gains(
+                output_conditioning, global_state, seed=int(_seed or 0))
+
         # Batch Training packs N variant entries (tagged 'funpack_batch_variant') onto the FINAL
         # conditioning just before each return below — so it wraps whatever output_conditioning
         # ends up being: single-scene OR multi-scene (transition split). Works WITH transitions.
@@ -13072,6 +13196,7 @@ class FunPackStudio:
             refinement_key_input=refinement_key_input,
             positive_conditioning=positive_conditioning,
             h3_phrase_emphasis=bool(rf.get("h3_phrase_emphasis", False)),
+            h3_render_gains=bool(rf.get("h3_render_gains", True)),
             clip_vision_output=clip_vision_output,
             source_image=source_image if vision_conditioning else None,
             model=model,

@@ -113,7 +113,9 @@
       dependsOn: "negative_erase", dependsVals: [true],
       hint: "Puts each word back to its original strength after the change, so the result reads as 'less of that thing' rather than 'quieter prompt'. Off is the raw result." },
     { name: "h3_phrase_emphasis", label: "Rating-driven phrase emphasis (H3)", kind: "bool", default: false,
-      hint: "EXPERIMENTAL, unvalidated. Boosts the attention paid to phrases the rating said were MISSING, by biasing their attention logits in H3's packed stream. Needs a rated run first. Turn it off if generations drift away from the prompt — and note it forces SLA to run dense." }
+      hint: "EXPERIMENTAL, unvalidated. Boosts the attention paid to phrases the rating said were MISSING, by biasing their attention logits in H3's packed stream. Needs a rated run first. Turn it off if generations drift away from the prompt — and note it forces SLA to run dense." },
+    { name: "h3_render_gains", label: "Rating-learned render gains (H3)", kind: "bool", default: true,
+      hint: "Learns four render strengths from your ratings alone: how hard each block writes into the picture, the prompt and the soundtrack, and how loudly the prompt is read. Four numbers is a smaller search than the sigma schedule already learns, so there is nothing to tune by hand — each run is rendered slightly off the learned values so the next rating has something to credit. Free. Off leaves the model at its trained strengths; the Chain Sampler's h3_gain_* widgets then do nothing unless its h3_gain_mode is set to manual." }
   ];
 
   function parseStudioSettings(p) {

@@ -182,16 +182,75 @@ def test_the_installer_reads_no_rating_or_key():
     doc = inspect.getdoc(fn) or ""
     for line in doc.splitlines():
         src = src.replace(line, "")
-    for forbidden in ("refinement_key", "rating", "value_fn", "phrase_memory",
-                      "global_state", "conditioning_deltas", "positive"):
+    for forbidden in ("refinement_key", "value_fn", "phrase_memory",
+                      "global_state", "conditioning_deltas", "refine_v2"):
         assert forbidden not in src, f"{forbidden} leaked into a sampler-side op"
 
 
-def test_the_installer_takes_only_the_model():
+def test_the_installer_takes_the_model_and_the_conditioning_only():
+    """The conditioning is the bridge: Studio tags the learned gains onto it. The sampler
+    never opens a refinement key — that is the Studio/Sampler boundary."""
     import samplers
     params = inspect.signature(
         samplers.FunPackLTXAVSceneChainSampler._install_h3_adaln_gains).parameters
-    assert list(params) == ["self", "model"]
+    assert list(params) == ["self", "model", "positive"]
+
+
+def _sampler(mode="learned", **widgets):
+    import samplers
+    node = samplers.FunPackLTXAVSceneChainSampler.__new__(
+        samplers.FunPackLTXAVSceneChainSampler)
+    node._h3_gain_mode = mode
+    for key, value in {"video": 1.0, "prompt": 1.0, "audio": 1.0}.items():
+        setattr(node, f"_h3_gain_{key}", widgets.get(key, value))
+    node._h3_prompt_scale = widgets.get("prompt_scale", 1.0)
+    return node
+
+
+def _tagged(gains):
+    return [[torch.zeros(1, 4, 8), {"funpack_h3_gains": gains}]]
+
+
+def test_learned_gains_win_over_the_widgets():
+    node = _sampler(video=1.3, prompt=0.7)
+    out = node._h3_render_gains(_tagged({"video": 0.9, "prompt": 1.1,
+                                         "audio": 1.0, "prompt_scale": 1.2}))
+    assert out["video"] == pytest.approx(0.9)
+    assert out["prompt"] == pytest.approx(1.1)
+    assert out["prompt_scale"] == pytest.approx(1.2)
+
+
+def test_manual_mode_uses_the_widgets_and_ignores_the_key():
+    node = _sampler(mode="manual", video=1.3)
+    out = node._h3_render_gains(_tagged({"video": 0.5}))
+    assert out["video"] == pytest.approx(1.3)
+
+
+def test_manual_mode_works_with_no_conditioning_at_all():
+    """The explicit override has to survive a graph with no Refiner in it."""
+    assert _sampler(mode="manual", video=0.8)._h3_render_gains(None)["video"] == pytest.approx(0.8)
+
+
+def test_learned_mode_before_any_rating_renders_at_trained_strength():
+    """Not the widgets: in learned mode those are not what the user is steering with, and
+    silently honouring them would make an unrated run look like a learned one."""
+    node = _sampler(video=1.3, prompt=0.6)
+    out = node._h3_render_gains([[torch.zeros(1, 4, 8), {}]])
+    assert all(value == 1.0 for value in out.values())
+
+
+def test_a_missing_key_in_the_learned_dict_falls_back_to_neutral():
+    out = _sampler()._h3_render_gains(_tagged({"video": 0.9}))
+    assert out["video"] == pytest.approx(0.9)
+    assert out["audio"] == 1.0 and out["prompt_scale"] == 1.0
+
+
+def test_learned_is_the_default_mode():
+    import samplers
+    spec = samplers.FunPackLTXAVSceneChainSampler.INPUT_TYPES()
+    fields = {**spec.get("required", {}), **spec.get("optional", {})}
+    assert fields["h3_gain_mode"][0] == ["learned", "manual"]
+    assert fields["h3_gain_mode"][1]["default"] == "learned"
 
 
 def test_the_widgets_exist_and_default_to_untouched():

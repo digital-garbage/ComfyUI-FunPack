@@ -3165,6 +3165,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
                     "tooltip": "EXPERIMENTAL, MiniMax H3 only. Per-block write gain on the AUDIO rows (see h3_gain_video for the mechanism). This is the one modality whose gate can be moved without touching the other two at the point of writing — though the streams still share one attention pass, so a changed audio row is read by the video on the NEXT block. Below 1.0 the soundtrack is built more conservatively. Free. 1.0 = untouched.",
                 }),
+                "h3_gain_mode": (["learned", "manual"], {
+                    "default": "learned",
+                    "tooltip": "Where the four H3 render strengths come from. 'learned' (default) takes them from the refinement key: Studio learns them from your ratings alone and tags them onto the conditioning, and the four widgets below are IGNORED — nothing to tune by hand, which is the point. Four scalars is a smaller search than the sigma schedule already learns from ratings, so it converges in tens of rated runs. With no key wired, or before the first rating, 'learned' renders at the model's trained strengths (all 1.0). 'manual' ignores the learned values and uses the widgets below exactly as set — for deliberately probing one strength, or for a graph with no Refiner in it.",
+                }),
                 "h3_prompt_scale": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
                     "tooltip": "EXPERIMENTAL, MiniMax H3 only. How LOUD the prompt is when the picture reads it. H3 puts the Qwen text through condition_proj + a 2-block token refiner (ending in an RMSNorm) before the DiT sees it, and the blocks then read the text through attention — so the magnitude of those refined rows is how strongly the prompt competes for attention against the picture and the reference. This multiplies them: above 1.0 the prompt is harder to ignore, below 1.0 it recedes and the reference or the anchor gets more say. Applied AFTER the refiner's final norm, so it lands as set rather than being renormalized away. 1.0 = untouched, and the model is not cloned. Free — one multiply on the text rows, no extra model calls. Confined to the PROMPT rows: the <Picture N> label and vision block sit ahead of them and are left alone (read from minimax_token_tags; if those cannot be read the whole text span is scaled and the console says so). DIFFERENT from h3_gain_prompt, which controls how much each block WRITES BACK into the text rows — this controls how loudly they are READ.",
@@ -3981,7 +3985,7 @@ class FunPackLTXAVSceneChainSampler:
         # Per-modality AdaLN gain. Sampler-side and self-contained: it reads no refinement
         # key, no rating and no Studio state, so it works on a graph with the Refiner absent
         # entirely. 1.0 on all three does not even clone the model.
-        model = self._install_h3_adaln_gains(model)
+        model = self._install_h3_adaln_gains(model, positive)
         model = self._install_h3_prompt_scale(model, positive)
 
         try:
@@ -5597,8 +5601,8 @@ class FunPackLTXAVSceneChainSampler:
             return positive, negative, 0
         if not keyframe_is_endpoint(at, frame_count):
             _log.note_on_change(
-                "h3:interior_pin",
-                f"[FunPackSceneChain] H3: guide pinned mid-clip at pixel frame {at} of "
+                "h3:interior_pin", "FunPackSceneChain",
+                f"H3: guide pinned mid-clip at pixel frame {at} of "
                 f"{frame_count}. EXPERIMENTAL — the checkpoint was trained on first/last pins "
                 f"only; if the frame does not land, move the guide to 0 or {frame_count - 1}.")
 
@@ -6689,6 +6693,49 @@ class FunPackLTXAVSceneChainSampler:
         w_idx = idx % w
         return (w_idx >= (w // 2)).long()
 
+    #: what Studio tags onto entry 0 when it has learned gains for this key
+    H3_GAINS_META = "funpack_h3_gains"
+
+    def _h3_render_gains(self, positive):
+        """The four render strengths for this run: learned from ratings, or the widgets.
+
+        Learned is the default because rating is the only input the user wants to give — four
+        scalars is a smaller search than the sigma profile already runs on ratings alone, so a
+        hand-tuned value here is the user doing work the loop can do. `manual` is the explicit
+        override, and it still works with no Refiner in the graph at all.
+
+        Reading the CONDITIONING META rather than a refinement key keeps the boundary intact:
+        Studio owns the key and the learning, the sampler owns the application — the same
+        bridge H3 token weighting already uses.
+        """
+        manual = {"video": float(getattr(self, "_h3_gain_video", 1.0)),
+                  "prompt": float(getattr(self, "_h3_gain_prompt", 1.0)),
+                  "audio": float(getattr(self, "_h3_gain_audio", 1.0)),
+                  "prompt_scale": float(getattr(self, "_h3_prompt_scale", 1.0))}
+        if str(getattr(self, "_h3_gain_mode", "learned")).lower() == "manual":
+            return manual
+        learned = None
+        try:
+            entry = positive[0] if isinstance(positive, list) and positive else None
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict):
+                candidate = entry[1].get(self.H3_GAINS_META)
+                if isinstance(candidate, dict):
+                    learned = {k: float(v) for k, v in candidate.items()}
+        except Exception:  # noqa: BLE001
+            learned = None
+        if learned is None:
+            # No key, or nothing rated yet. Trained strengths — NOT the widgets, which in
+            # this mode are not what the user is steering with.
+            if any(value != 1.0 for value in manual.values()):
+                _log.note_on_change(
+                    "h3:gains_mode", "FunPackSceneChain",
+                    "h3_gain_mode is 'learned' and the conditioning "
+                    "carries no learned gains yet, so the h3_gain_* widgets are IGNORED and "
+                    "this run renders at the model's trained strengths. Set h3_gain_mode to "
+                    "'manual' to use them as typed.")
+            return {k: 1.0 for k in manual}
+        return {k: learned.get(k, 1.0) for k in manual}
+
     def _install_h3_prompt_scale(self, model, positive):
         """Scale the token refiner's OUTPUT over the prompt rows.
 
@@ -6696,7 +6743,7 @@ class FunPackLTXAVSceneChainSampler:
         direction. The row range comes from the conditioning's own `minimax_token_tags`,
         which H3 carries on every run — Studio is not involved.
         """
-        scale = float(getattr(self, "_h3_prompt_scale", 1.0))
+        scale = float(self._h3_render_gains(positive).get("prompt_scale", 1.0))
         if scale == 1.0:
             return model
         try:
@@ -6707,8 +6754,8 @@ class FunPackLTXAVSceneChainSampler:
             import h3_token_weights as _tw
         if not h3mod.is_h3_model(model):
             _log.note_on_change(
-                "h3:prompt_scale_family",
-                "[FunPackSceneChain] h3_prompt_scale is set but this is not a MiniMax H3 "
+                "h3:prompt_scale_family", "FunPackSceneChain",
+                "h3_prompt_scale is set but this is not a MiniMax H3 "
                 "model — there is no token refiner to edit. Not applied.")
             return model
         start = 0
@@ -6722,8 +6769,8 @@ class FunPackLTXAVSceneChainSampler:
                 start = int(region[0])
             elif cond_len:
                 _log.note_on_change(
-                    "h3:prompt_scale_span",
-                    "[FunPackSceneChain] h3_prompt_scale: the prompt/reference boundary could "
+                    "h3:prompt_scale_span", "FunPackSceneChain",
+                    "h3_prompt_scale: the prompt/reference boundary could "
                     "not be read from the token tags, so the WHOLE text span is scaled — "
                     "including a reference's vision block, if one is wired.")
         except Exception as error:  # noqa: BLE001
@@ -6739,7 +6786,7 @@ class FunPackLTXAVSceneChainSampler:
             print(f"[FunPackSceneChain] {note}")
         return patched
 
-    def _install_h3_adaln_gains(self, model):
+    def _install_h3_adaln_gains(self, model, positive):
         """Scale every DiT block's AdaLN gates per modality, from the three sampler widgets.
 
         Deliberately NOT part of the refinement path. This is a visual-behaviour op, so it
@@ -6750,10 +6797,8 @@ class FunPackLTXAVSceneChainSampler:
 
         Returns `model` untouched when all three gains are 1.0, which is every default run.
         """
-        gains = {"video": float(getattr(self, "_h3_gain_video", 1.0)),
-                 "prompt": float(getattr(self, "_h3_gain_prompt", 1.0)),
-                 "audio": float(getattr(self, "_h3_gain_audio", 1.0))}
-        if all(value == 1.0 for value in gains.values()):
+        gains = self._h3_render_gains(positive)
+        if all(gains.get(k, 1.0) == 1.0 for k in ("video", "prompt", "audio")):
             return model
         try:
             from . import minimax_h3 as h3mod
@@ -6761,8 +6806,8 @@ class FunPackLTXAVSceneChainSampler:
             import minimax_h3 as h3mod
         if not h3mod.is_h3_model(model):
             _log.note_on_change(
-                "h3:adaln_gain_family",
-                "[FunPackSceneChain] h3_gain_* is set but this is not a MiniMax H3 model — "
+                "h3:adaln_gain_family", "FunPackSceneChain",
+                "h3_gain_* is set but this is not a MiniMax H3 model — "
                 "the per-modality AdaLN gates only exist there. Not applied.")
             return model
         # MODALITY_TAGS names the text modality "text"; the widget says "prompt" because that
@@ -7106,7 +7151,7 @@ class FunPackLTXAVSceneChainSampler:
                second_pass_sampler=None,
                h3_audio_clock=False,
                h3_gain_video=1.0, h3_gain_prompt=1.0, h3_gain_audio=1.0,
-               h3_prompt_scale=1.0,
+               h3_prompt_scale=1.0, h3_gain_mode="learned",
                audio_vae=None, h3_keyframes=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
@@ -7126,6 +7171,7 @@ class FunPackLTXAVSceneChainSampler:
         self._h3_gain_prompt = max(0.0, min(2.0, float(h3_gain_prompt)))
         self._h3_gain_audio = max(0.0, min(2.0, float(h3_gain_audio)))
         self._h3_prompt_scale = max(0.0, min(2.0, float(h3_prompt_scale)))
+        self._h3_gain_mode = str(h3_gain_mode or "learned").strip().lower()
         # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's
         # own base grid; on LTX it stays the absolute-sigma gate it was validated with.
         _steer_ramp = _make_steer_ramp(sigmas, self._is_h3)
