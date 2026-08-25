@@ -7,6 +7,7 @@ import os
 import random
 import re
 import time
+import weakref
 from datetime import datetime, timezone
 from hashlib import md5
 from typing import Optional
@@ -5175,12 +5176,29 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             scores[category] = float(((sim.item() + 1.0) * 0.5))
         return scores
 
+    # Eight fixed strings embedded to classify phrases by cosine similarity. They are
+    # CONSTANT — CATEGORY_DESCRIPTIONS is a class attribute, so the result depends only on the
+    # encoder. Held for the process rather than the run, keyed by the encoder object, because
+    # re-embedding them every run costs eight full encoder passes to arrive at the same eight
+    # vectors. This is not a cache of generated content: nothing user-typed goes into it, and
+    # a different encoder gets a different key.
+    _V2_CATEGORY_VECTOR_CACHE = {}
+
     def _v2_category_vectors(self, clip, encode_cache=None):
         if isinstance(encode_cache, dict):
             cache_key = ("category_vectors", id(clip))
             cached = encode_cache.get(cache_key)
             if cached is not None:
                 return cached
+        held = type(self)._V2_CATEGORY_VECTOR_CACHE.get(id(clip))
+        if held is not None and held[0]() is clip:
+            # A WEAK ref, and `is clip` on top of it. Weak so the entry never keeps an encoder
+            # alive — pinning a text encoder in VRAM to save eight passes would be a bad
+            # trade. The identity check guards the id() key, since ids are reused once a
+            # model is freed and a stale entry would classify against another encoder.
+            if isinstance(encode_cache, dict):
+                encode_cache[cache_key] = held[1]
+            return held[1]
         vectors = {}
         for category, description in self.CATEGORY_DESCRIPTIONS.items():
             cond, _, _ = self._v2_encode_prompt(clip, description, encode_cache=encode_cache,
@@ -5188,6 +5206,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             vector = self._v2_conditioning_vector(cond)
             if vector is not None:
                 vectors[category] = vector.cpu()
+        if vectors:
+            try:
+                ref = weakref.ref(clip)
+            except TypeError:      # not weak-referenceable: hold nothing rather than hold hard
+                ref = None
+            if ref is not None:
+                type(self)._V2_CATEGORY_VECTOR_CACHE.clear()
+                type(self)._V2_CATEGORY_VECTOR_CACHE[id(clip)] = (ref, vectors)
         if isinstance(encode_cache, dict):
             encode_cache[cache_key] = vectors
         return vectors
