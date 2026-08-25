@@ -5501,22 +5501,36 @@ class FunPackLTXAVSceneChainSampler:
         condition rows into the sequence itself — they are never denoised and never rendered,
         so there is no latent to append and no tail to crop (the returned tail is 0).
 
-        The layout only accepts a pin at the FIRST or LAST pixel frame; ``PackedLayout`` raises
-        for anything else. A mid-clip request is refused here, loudly, rather than crashing
-        several seconds into the sample.
+        Stock ``PackedLayout`` places a pin only at the FIRST or LAST pixel frame and raises
+        for anything else. Those two are the endpoints of ONE straight line — the packed
+        sequence's time axis advances at a fixed rate per pixel frame — so
+        ``install_interior_keyframes`` (attempted by ``keyframe_indices_supported``) extends
+        the same rule to the frames between them. When it cannot install, a mid-clip request
+        is refused here, loudly, rather than crashing several seconds into the sample.
+
+        An interior pin is EXPERIMENTAL in a way the endpoints are not: fl2va was trained with
+        condition rows at the two ends and nowhere between, so the coordinate is representable
+        (MM-RoPE is continuous in t) without being something the weights have seen. It costs no
+        extra model call either way.
         """
         try:
-            from .minimax_h3 import keyframe_indices_supported
+            from .minimax_h3 import keyframe_indices_supported, keyframe_is_endpoint
         except ImportError:
-            from minimax_h3 import keyframe_indices_supported
+            from minimax_h3 import keyframe_indices_supported, keyframe_is_endpoint
 
         frame_count = max(1, int(self._h3_frame_count))
         at = self._resolve_frame_index(frame_count, int(apply_at))
         if not keyframe_indices_supported(at, frame_count):
-            print(f"[FunPackSceneChain] H3: guide at pixel frame {at} skipped — the packed layout "
+            print(f"[FunPackSceneChain] H3: guide at pixel frame {at} skipped — this ComfyUI "
                   f"pins only the first (0) or last ({frame_count - 1}) frame. Use a reference "
                   f"image (ref2va) for mid-clip guidance instead.")
             return positive, negative, 0
+        if not keyframe_is_endpoint(at, frame_count):
+            _log.note_on_change(
+                "h3:interior_pin",
+                f"[FunPackSceneChain] H3: guide pinned mid-clip at pixel frame {at} of "
+                f"{frame_count}. EXPERIMENTAL — the checkpoint was trained on first/last pins "
+                f"only; if the frame does not land, move the guide to 0 or {frame_count - 1}.")
 
         pins = [{"resolved_frame_index": int(at), "latent": guide_frame}]
         # strength maps onto the DiT's condition noise augmentation: 1.0 pins the clean latent,

@@ -506,15 +506,152 @@ def checkpoint_mode_note(has_keyframes: bool, has_refs: bool):
     return None
 
 
-def keyframe_indices_supported(frame_index, frame_count):
-    """H3's packed layout only places a pin at the FIRST or LAST pixel frame.
+# ── interior keyframe pins ────────────────────────────────────────────────────
+#
+# A pin is a block of condition rows carrying ONE time coordinate (``cond_t``) on the
+# same spatial grid as the target video, never denoised (``img_update=False``). Upstream
+# ``PackedLayout`` computes that coordinate in two hard-coded branches and raises for
+# anything else:
+#
+#     pixel_index == 0                -> cond_t = text_len
+#     pixel_index == frame_count - 1  -> cond_t = text_len + sum(_video_t_spans(latent_t))
+#                                                 - FRAME_RESCALE
+#
+# Those are not two special cases. They are the two ENDPOINTS of one straight line: the
+# video time axis advances exactly ``FRAME_RESCALE`` per PIXEL frame, so
+#
+#     cond_t = text_len + FRAME_RESCALE * pixel_index
+#
+# reproduces both, exactly, at every clip length — including the irregular
+# ``FRAME_PER_TOKEN = (1, 4, 4, 4, 4)`` latent grouping, because the grouping changes how
+# many pixel frames a LATENT frame covers without changing the per-pixel-frame rate.
+# :func:`_linear_rule_matches_upstream` re-derives that equality from upstream's own
+# constants before anything is patched, so an upstream change to the grid turns this
+# feature off instead of silently mis-placing pins.
+#
+# What this does NOT establish is that the WEIGHTS were trained on interior pins. fl2va
+# saw condition rows at t=0 and t=end and nowhere between. MM-RoPE is continuous in t, so
+# an interior coordinate is representable rather than undefined, and the pin reaches the
+# target through ordinary self-attention with no special-cased path — but "representable"
+# is not "learned". Treat an interior pin as experimental until a run shows the frame
+# actually landing.
+KEYFRAME_T_PER_FRAME = 5.0 / 3.0     # upstream FRAME_RESCALE, re-checked before patching
 
-    ``PackedLayout`` raises for anything else, so callers must check rather than
-    discover it mid-sample. Mid-clip guidance has to go through a reference block
-    (identity/style, not frame-pinned) instead.
+_INTERIOR_PINS = {"state": None}     # None = not tried, True/False = patch verdict
+
+
+def keyframe_cond_t(text_len, pixel_index):
+    """The packed-sequence time coordinate of a pin at ``pixel_index``."""
+    return float(text_len) + KEYFRAME_T_PER_FRAME * float(int(pixel_index))
+
+
+def _linear_rule_matches_upstream():
+    """True when :func:`keyframe_cond_t` reproduces upstream's own two branches.
+
+    Checked against ``_video_t_spans`` and ``FRAME_RESCALE`` themselves rather than
+    against remembered numbers, so a changed frame grid is caught here instead of
+    becoming pins placed at the wrong instant.
+    """
+    from comfy.ldm.minimax.model import FRAME_PER_TOKEN, FRAME_RESCALE, _video_t_spans
+
+    if abs(float(FRAME_RESCALE) - KEYFRAME_T_PER_FRAME) > 1e-9:
+        return False
+    text_len = 7                                     # any value; it cancels
+    for latent_t in (1, 2, 5, 6, 11, 24, 25, 26):
+        spans = _video_t_spans(latent_t)
+        frame_count = sum(FRAME_PER_TOKEN[k % 5] for k in range(latent_t))
+        first = float(text_len)
+        last = float(text_len) + sum(spans) - FRAME_RESCALE
+        if abs(first - keyframe_cond_t(text_len, 0)) > 1e-9:
+            return False
+        if abs(last - keyframe_cond_t(text_len, frame_count - 1)) > 1e-9:
+            return False
+    return True
+
+
+def install_interior_keyframes():
+    """Let a keyframe pin sit at any pixel frame, not only the first or the last.
+
+    Deliberately NOT a re-implementation of ``PackedLayout.__init__``. Upstream builds the
+    layout exactly as it always has — with every interior pin declared at index 0, which is
+    always legal — and this rewrites the ``t`` column of the resulting condition rows to the
+    coordinate the pin actually wants. Everything else about the layout (row order, latent
+    placement, ``img_update``, the segment table, refs, audio) is upstream's, so upstream
+    changes are inherited rather than frozen into a copy here.
+
+    A run whose pins are all endpoints never enters the rewrite at all: it calls straight
+    through to the original, so existing behaviour is bit-identical.
+
+    Returns True when interior pins are available.
+    """
+    if _INTERIOR_PINS["state"] is not None:
+        return _INTERIOR_PINS["state"]
+    try:
+        from comfy.ldm.minimax.model import PackedLayout
+    except Exception as error:                                    # no H3 in this ComfyUI
+        _INTERIOR_PINS["state"] = False
+        print(f"[FunPack H3] interior keyframe pins unavailable ({error}).")
+        return False
+    if not _linear_rule_matches_upstream():
+        _INTERIOR_PINS["state"] = False
+        print("[FunPack H3] interior keyframe pins DISABLED: this ComfyUI's video time grid "
+              "no longer matches the rule FunPack derives pin coordinates from. Pins stay "
+              "first/last only. (Upstream comfy/ldm/minimax/model.py changed.)")
+        return False
+    if getattr(PackedLayout.__init__, "_funpack_interior_pins", False):
+        _INTERIOR_PINS["state"] = True
+        return True
+
+    original = PackedLayout.__init__
+
+    def __init__(self, text_len, latent_t, latent_h, latent_w, audio_t,
+                 keyframes=None, refs=None, frame_count=None):
+        pins = list(keyframes or ())
+        interior = [kf for kf in pins
+                    if not keyframe_is_endpoint(kf.get("resolved_frame_index"), frame_count)]
+        if not interior:
+            original(self, text_len, latent_t, latent_h, latent_w, audio_t,
+                     keyframes=keyframes, refs=refs, frame_count=frame_count)
+            return
+        # Declared at 0 so upstream's branch accepts them; the coordinate is corrected below.
+        safe = [dict(kf, resolved_frame_index=0) for kf in pins]
+        original(self, text_len, latent_t, latent_h, latent_w, audio_t,
+                 keyframes=safe, refs=refs, frame_count=frame_count)
+        # Condition segments are emitted in `keyframes` order, immediately after text.
+        spans = [(a, b) for a, b, kind in self.segments if kind == "cond"]
+        for (start, stop), kf in zip(spans, pins):
+            self.position_ids[start:stop, 0] = keyframe_cond_t(
+                text_len, kf.get("resolved_frame_index", 0))
+
+    __init__._funpack_interior_pins = True
+    PackedLayout.__init__ = __init__
+    _INTERIOR_PINS["state"] = True
+    return True
+
+
+def keyframe_is_endpoint(frame_index, frame_count):
+    """True for the first or last pixel frame — the two pins upstream places unaided."""
+    if frame_index is None:
+        return False
+    idx = int(frame_index)
+    if idx == 0:
+        return True
+    return frame_count is not None and idx == int(frame_count) - 1
+
+
+def keyframe_indices_supported(frame_index, frame_count):
+    """Can a pin be placed at this pixel frame?
+
+    The first and last frames always can. Anything between them needs
+    :func:`install_interior_keyframes`, which is attempted here rather than assumed, so a
+    ComfyUI whose frame grid has moved refuses the pin instead of mis-placing it.
     """
     idx = int(frame_index)
-    return idx == 0 or idx == int(frame_count) - 1
+    if idx < 0 or idx > int(frame_count) - 1:
+        return False
+    if keyframe_is_endpoint(idx, frame_count):
+        return True
+    return install_interior_keyframes()
 
 
 def encode_keyframe(vae, image, width, height, frame_index, crop="disabled"):
