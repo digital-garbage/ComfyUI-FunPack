@@ -11727,14 +11727,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         landed[_t] = _w
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         if applied:
-            # Names what was APPLIED. Reporting the candidate list meant phrases that are no
-            # longer in the prompt were named as weighted when they had matched nothing.
-            top = sorted(landed.items(), key=lambda p: -p[1])[:3]
+            # COUNTS AND WEIGHTS ONLY — never the phrases themselves. The log is the thing
+            # the user copies out to send somewhere, and the phrases are their prompt: naming
+            # three of them puts prompt text into every paste. The strongest weight is what
+            # the number is for, and it says the same thing about whether emphasis is doing
+            # too much without quoting anything.
+            strongest = max(landed.values()) if landed else 0.0
             _log.note_on_change(
                 "h3:token_weights", "FunPackStudio",
                 f"rating-derived phrase emphasis: {len(landed)} of {len(weighted)} learned "
                 f"phrase(s) are in this prompt and were weighted across {applied} scene(s)"
-                + (" (e.g. " + ", ".join(f"{t!r} x{w:.2f}" for t, w in top) + ")" if top else "")
+                + (f", strongest x{strongest:.2f}" if landed else "")
                 + " — applied as an attention bias on H3's packed stream, where the attn2 "
                   "K/V emphasis has nothing to hook.")
         return out
