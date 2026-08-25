@@ -224,3 +224,70 @@ def test_the_built_in_instructions_forbid_inventing_speech():
     puts words in a character's mouth the user never asked for."""
     text = C.V2_PROMPT_ENHANCER_SYSTEM_PROMPT.lower()
     assert "do not invent" in text and "speech" in text
+
+
+# ── the model that will not stop ────────────────────────────────────────────
+#
+# Reported from a rental: with the cap raised to 8192 the enhancer used all of it. The H3
+# encoder has no trained decoder head, so it may never emit a stop token — `max_length` stops
+# being a ceiling and becomes the actual length. Nothing downstream would notice: it would
+# just encode 8000 tokens of rambling as the prompt.
+
+def test_a_prompt_that_never_ended_is_cut(studio):
+    long = "A cat sits. " * 900
+    out, cut = C.FunPackVideoRefinerV2._v2_trim_runaway_prompt(long)
+    assert cut is True
+    assert len(out) <= C.FunPackVideoRefinerV2.V2_ENHANCED_PROMPT_CHAR_CAP
+
+
+def test_the_cut_lands_on_a_finished_sentence(studio):
+    long = "A cat sits on the sill. " * 900
+    out, _cut = C.FunPackVideoRefinerV2._v2_trim_runaway_prompt(long)
+    assert out.endswith(".")
+
+
+def test_a_normal_prompt_is_not_cut(studio):
+    text = "A ginger cat sits on a sunlit sill."
+    out, cut = C.FunPackVideoRefinerV2._v2_trim_runaway_prompt(text)
+    assert out == text and cut is False
+
+
+def test_a_runaway_never_ends_mid_word(studio):
+    """A fragment handed to the encoder is worse than a shorter prompt."""
+    out, _cut = C.FunPackVideoRefinerV2._v2_trim_runaway_prompt("supercalifragilistic " * 500)
+    assert not out.endswith("supercalifragilis")
+    assert out == out.strip()
+
+
+def test_the_user_is_told_the_model_did_not_stop(studio):
+    clip = FakeClip(reply="A cat sits. " * 900)
+    _out, status = studio._v2_enhance_prompt(clip, "a cat", "sys")
+    assert "did not stop" in status
+
+
+# ── where it ran ────────────────────────────────────────────────────────────
+
+def test_the_status_says_which_device_generated(studio):
+    """A 32B encoder sharing a card with the DiT can execute on the CPU — minutes per call,
+    and nothing in the returned text says so."""
+    clip = FakeClip()
+    clip.patcher = types.SimpleNamespace(load_device="cuda:0")
+    _out, status = studio._v2_enhance_prompt(clip, "a cat", "sys")
+    assert "cuda:0" in status
+
+
+def test_a_wrapper_device_is_found_too(studio):
+    clip = FakeClip()
+    clip._device = "cpu"
+    _out, status = studio._v2_enhance_prompt(clip, "a cat", "sys")
+    assert "cpu" in status
+
+
+def test_an_unreported_device_says_so_rather_than_guessing(studio):
+    _out, status = studio._v2_enhance_prompt(FakeClip(), "a cat", "sys")
+    assert "unreported" in status
+
+
+def test_the_status_reports_the_cap_that_was_applied(studio):
+    _out, status = studio._v2_enhance_prompt(FakeClip(), "a cat", "sys", max_length=256)
+    assert "256" in status

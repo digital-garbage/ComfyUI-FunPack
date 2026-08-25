@@ -242,3 +242,124 @@ def causal_rollout(*, chunks, sigmas, forward, commit, draw_noise,
             on_chunk(index, video_xt, audio_xt, False)
 
     return video_out, audio_out
+
+
+def build_session(model, positive, latent, *, sink=2, window=2, storage="cpu_pinned",
+                  device=None, compute_dtype=None):
+    """Assemble everything one causal run needs, or explain why it cannot be assembled.
+
+    Returns (session, reason). `session` is None when the run cannot be built, and `reason` is
+    written for the person who has to fix it, not for a log parser.
+
+    The pieces are the RAVEN package's own — its contracts parse the sockets, its layout cuts
+    the chunks, its cache holds the K/V, its causal model does the per-chunk forward. FunPack
+    supplies only the schedule and the step rule, which is the whole point of the split.
+    """
+    module, reason = locate_raven()
+    if module is None:
+        return None, reason
+    try:
+        from raven_streaming import cache as cache_mod
+        from raven_streaming import contracts
+    except Exception as error:                       # installed but not importable
+        return None, f"the RAVEN package is present but its modules did not load ({error})"
+    try:
+        resolved = contracts.resolve_model(model)
+        conditioning = contracts.parse_conditioning(positive)
+        request = contracts.parse_latent(latent, warn_experimental=False)
+        layout = request.layout(conditioning.text_len, warn_experimental=False)
+    except Exception as error:
+        return None, f"this run is not one the causal lane can take: {error}"
+
+    diffusion = resolved.diffusion_model
+    if not hasattr(diffusion, "forward_chunk") or not hasattr(diffusion, "prefill_text"):
+        return None, ("the loaded model is a stock bidirectional H3. The causal lane needs the "
+                      "chunk-causal DiT — load it through RAVEN Model Loader, which also "
+                      "attaches the RAVEN LoRA the causal attention pattern was trained for.")
+    blocks = getattr(diffusion, "blocks", None)
+    if not blocks:
+        return None, "the loaded model exposes no DiT blocks to cache"
+
+    if device is None:
+        device = resolved.load_device if resolved.load_device is not None else request.device
+    if compute_dtype is None:
+        # One dtype for the prefill AND every chunk: the cache is filled in one and read in
+        # the other otherwise, and the attention module refuses that mid-rollout.
+        compute_dtype = getattr(diffusion, "dtype", None) or request.dtype
+
+    kv = cache_mod.ChunkKVCache(len(blocks), sink=int(sink),
+                                window=None if window is None else int(window),
+                                storage=str(storage))
+    return {
+        "module": module,
+        "model": diffusion,
+        "patcher": resolved.patcher,
+        "conditioning": conditioning,
+        "request": request,
+        "layout": layout,
+        "cache": kv,
+        "device": torch.device(device),
+        "compute_dtype": compute_dtype,
+    }, ""
+
+
+def run_session(session, *, sigmas, step_rule="consistency", eta=1.0, seed=0,
+                known_chunks=0, known_video=None, known_audio=None,
+                on_chunk=None, cancel=None, transformer_options=None):
+    """Drive one causal rollout over an assembled session. Returns (video, audio).
+
+    The text is written into the cache as chunk 0, alone and once. Folding it into the first
+    media chunk would let text rows attend media rows, and every later chunk assumes the text
+    keys it cached are the ones the model saw.
+    """
+    layout = session["layout"]
+    model = session["model"]
+    cache = session["cache"]
+    device = session["device"]
+    compute_dtype = session["compute_dtype"]
+    conditioning = session["conditioning"]
+    options = transformer_options or {}
+
+    model.prefill_text(
+        conditioning.cross_attn.to(device=device, dtype=compute_dtype),
+        cache=cache,
+        transformer_options=options,
+        text_token_tags=(None if conditioning.token_tags is None
+                         else conditioning.token_tags.to(device)),
+        compute_dtype=compute_dtype,
+    )
+
+    generator = torch.Generator(device="cpu").manual_seed(int(seed))
+
+    def draw_noise(shape):
+        return torch.randn(tuple(shape), generator=generator, dtype=torch.float32).to(device)
+
+    request = session["request"]
+    video_noise = draw_noise(layout.video_latent_shape(request.video_channels)
+                             if hasattr(layout, "video_latent_shape") else known_video.shape)
+    audio_noise = draw_noise(layout.audio_latent_shape(request.audio_channels)
+                             if hasattr(layout, "audio_latent_shape") else known_audio.shape)
+
+    chunks = [(c.video_start, c.video_stop, c.audio_start, c.audio_stop) for c in layout.chunks]
+
+    def forward(video_xt, audio_xt, index, sigma):
+        return model.forward_chunk(
+            video_latent=video_xt, audio_latent=audio_xt, layout=layout, chunk_index=index,
+            cache=cache, role="noise", video_sigma=float(sigma), audio_sigma=float(sigma),
+            update_cache=False, transformer_options=options, compute_dtype=compute_dtype,
+        )
+
+    def commit(video_x0, audio_x0, index):
+        model.forward_chunk(
+            video_latent=video_x0, audio_latent=audio_x0, layout=layout, chunk_index=index,
+            cache=cache, role="clean",
+            video_eps=draw_noise(video_x0.shape), audio_eps=draw_noise(audio_x0.shape),
+            update_cache=True, transformer_options=options, compute_dtype=compute_dtype,
+        )
+
+    return causal_rollout(
+        chunks=chunks, sigmas=sigmas, forward=forward, commit=commit, draw_noise=draw_noise,
+        video_noise=video_noise, audio_noise=audio_noise, step_rule=step_rule, eta=eta,
+        known_chunks=known_chunks, known_video=known_video, known_audio=known_audio,
+        on_chunk=on_chunk, cancel=cancel,
+    )

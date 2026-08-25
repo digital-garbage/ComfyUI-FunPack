@@ -9119,6 +9119,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         f"generation. Wire a generation-capable text encoder (or a FunPack "
                         f"Advisor LLM) into advisor_clip.")
         max_length = max(int(min_floor), int(max_length or 800))
+        _started = time.time()
         try:
             # Tokenization: three layers in order of preference.
             # Layer 1: wrapper natively accepts system_prompt kwarg.
@@ -9173,7 +9174,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 generate_kwargs.pop("no_repeat_ngram_size", None)
                 generated_ids = clip.generate(tokens, **generate_kwargs)
             text = clip.decode(generated_ids, skip_special_tokens=True)
-            return str(text or "").strip(), f"{label}: generated."
+            elapsed = time.time() - _started
+            where = self._v2_generation_device(clip)
+            # A text encoder with no trained decoder head often never emits a stop token and
+            # runs to the cap, and a 32B on the CPU is minutes per call. Both are invisible
+            # from the result alone, so every generation says where it ran and how long.
+            return str(text or "").strip(), (
+                f"{label}: generated {len(str(text or ''))} chars in {elapsed:.1f}s on {where}"
+                f" (cap {max_length} tokens).")
         except Exception as error:
             return "", f"{label}: generation failed: {error}"
 
@@ -9203,13 +9211,59 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             max_length=max_length, temperature=temperature, top_p=top_p,
             min_floor=32, label="Prompt enhancer",
         )
-        enhanced = self._v2_clean_enhanced_prompt(raw)
+        enhanced, overran = self._v2_trim_runaway_prompt(self._v2_clean_enhanced_prompt(raw))
+        if overran:
+            status += (" The model did not stop on its own and was cut at a sentence — lower "
+                       "the length limit, or use a model with a trained chat head.")
         if not enhanced:
             return original, (status if "failed" in status or "unavailable" in status
                               else "Prompt enhancer: model returned nothing; prompt unchanged.")
         if cache is not None:
             cache[key] = enhanced
-        return enhanced, f"Prompt enhancer: {len(original)} -> {len(enhanced)} chars."
+        # `status` carries where it ran, how long it took and whether the model stopped on its
+        # own — all invisible from the text alone, and all of it is what a slow or runaway run
+        # needs in order to be diagnosed instead of guessed at.
+        return enhanced, f"{status} Prompt {len(original)} -> {len(enhanced)} chars."
+
+    @staticmethod
+    def _v2_generation_device(clip):
+        """Where the text generation actually ran — reported, not assumed.
+
+        ComfyUI decides how much of a text encoder fits on the card; a 32B encoder sharing a
+        GPU with the DiT can end up executing on the CPU, which is minutes per call rather
+        than seconds. Nothing in the returned text says so, hence this.
+        """
+        for path in (("patcher", "load_device"), ("_device",), ("device",)):
+            probe = clip
+            for name in path:
+                probe = getattr(probe, name, None)
+                if probe is None:
+                    break
+            if probe is not None:
+                return str(probe)
+        return "an unreported device"
+
+    #: A model with no trained decoder head may never emit a stop token, so `max_length` stops
+    #: being a ceiling and becomes the actual length. A prompt is a paragraph; anything past
+    #: this many characters is the model failing to stop, not detail worth keeping.
+    V2_ENHANCED_PROMPT_CHAR_CAP = 2000
+
+    @classmethod
+    def _v2_trim_runaway_prompt(cls, text, cap=None):
+        """Cut a prompt that never ended back to its last COMPLETE sentence.
+
+        Cutting mid-word would hand the encoder a fragment; cutting at a sentence keeps the
+        prompt readable and keeps whatever the model got right before it started rambling.
+        """
+        cap = int(cap or cls.V2_ENHANCED_PROMPT_CHAR_CAP)
+        text = str(text or "")
+        if len(text) <= cap:
+            return text, False
+        head = text[:cap]
+        cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+        if cut > cap // 4:                     # a sentence end late enough to be worth using
+            return head[:cut + 1].strip(), True
+        return head.rsplit(" ", 1)[0].strip(), True
 
     @staticmethod
     def _v2_clean_enhanced_prompt(raw):
