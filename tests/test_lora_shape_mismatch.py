@@ -170,11 +170,12 @@ def test_a_padded_target_is_left_to_comfy(mm):
     assert mm._mismatched_lora_keys(model, {"w": _ReshapeAdapter(1024, 768, (1024, 768))}) == []
 
 
-def test_a_delta_that_reshapes_into_the_weight_is_kept(mm):
-    """comfy merges with mm(...).reshape(weight.shape), so the element count is the real
-    constraint. Requiring the two dimensions to match was stricter than the merge itself."""
-    model = _Model({"w": (768, 768)})           # 589824 elements
-    assert mm._mismatched_lora_keys(model, {"w": _Adapter(384, 1536)}) == []
+def test_a_delta_that_fits_by_count_but_not_by_shape_is_dropped(mm):
+    """The dangerous case, and the reason the count alone is not the test. comfy's
+    reshape(weight.shape) SUCCEEDS here and adds a transposed delta without erroring — the
+    weight is corrupted silently and the run dies later with an all-NaN latent."""
+    model = _Model({"w": (768, 768)})           # 589824 elements, same as 384x1536
+    assert mm._mismatched_lora_keys(model, {"w": _Adapter(384, 1536)}) != []
 
 
 def test_a_conv_weight_is_measured_the_way_comfy_flattens_it(mm):

@@ -296,11 +296,13 @@ def _mismatched_lora_keys(model, patches):
     key — 51 of them for the case below, mixed into everything else a load prints. Checked
     here so the count reaches the status line the user actually reads.
 
-    The test is comfy's ACTUAL constraint: the delta is reshaped into the weight, so what has
-    to agree is the element count, not the two dimensions. Requiring the dimensions to match
-    was stricter than the merge, and being stricter than the merge means dropping adapters
-    that would have applied. Dimensions are still recorded, because a pair that fits by count
-    and not by shape is worth seeing even though comfy accepts it.
+    Both dimensions have to agree, not just the element count. comfy merges with
+    `mm(mat1.flatten(1), mat2.flatten(1)).reshape(weight.shape)` and adds the result — the
+    reshape succeeds on ANY pair with the right number of elements, so a pair that is right
+    by count and wrong by shape is merged in silence, scrambled. A correctly trained adapter
+    always produces (weight.shape[0], weight.shape[1:].numel()) exactly; anything else fitting
+    by count is a transposed or differently fused variant, and merging it corrupts the weight.
+    That corruption is invisible at load and surfaces as an all-NaN latent mid-render.
     """
     try:
         sd = model.model.state_dict()
@@ -318,7 +320,7 @@ def _mismatched_lora_keys(model, patches):
             want = (int(target.shape[0]), int(target.shape[1:].numel()))
         except Exception:  # noqa: BLE001
             continue
-        if dims[0] * dims[1] != int(target.numel()):
+        if dims != want:
             bad.append((key, dims, want))
     return bad
 
@@ -403,9 +405,11 @@ def resolve_lora_patches(model, lora, clip=None):
                                for k, d, w in bad[:3])
             _log.note_on_change(
                 "lora:shape", "FunPack",
-                f"{len(bad)} LoRA weights name a weight in this model that they cannot be "
-                f"reshaped into, so they are DROPPED before the merge. {sample}. The LoRA was "
-                f"trained against a different variant of this architecture.")
+                f"{len(bad)} LoRA weights do not have the shape of the weight they name, so "
+                f"they are DROPPED before the merge. {sample}. The LoRA was trained against a "
+                f"different variant of this architecture. Kept, they would not error — comfy "
+                f"reshapes any delta with the right element count and adds it scrambled, which "
+                f"shows up later as an all-NaN latent, not as a load failure.")
             note += f" | {len(bad)} DROPPED (shape mismatch)"
     return patches, note
 
