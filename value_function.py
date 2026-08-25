@@ -112,7 +112,43 @@ class OnlineValueFunction(nn.Module):
                 self.buffer_r = self.buffer_r[-self.BUFFER_SIZE:]
             if len(self.buffer_c) < 2:
                 return
-            device = next(self.parameters()).device
+            # Train where the sample already is. These nets are tiny in FLOPs but not in
+            # PARAMETERS — a 5120-wide input makes the first layer 94% of ~4M weights, and
+            # twenty Adam steps over that on a CPU measured at ~1.1s locally and around 7.5s
+            # on a rental's vCPU, per rated generation, three times over. On the GPU the
+            # conditioning is already sitting on it is a few milliseconds.
+            #
+            # The buffer and the checkpoint stay on the CPU: the file has to stay portable,
+            # and inference elsewhere still expects a CPU module, so the device is restored
+            # before returning.
+            home = next(self.parameters()).device
+            device = self._training_device(conditioning, home)
+            if device != home:
+                self.to(device)
+                # Adam's state tensors do not follow module.to(), so a moved optimizer steps
+                # against buffers on the old device. Dropped rather than migrated — it is
+                # rebuilt lazily and never persisted, so a run starts from fresh moments
+                # either way.
+                self._optimizer = None
+            try:
+                self._train_steps(device)
+            finally:
+                if device != home:
+                    self.to(home)
+                    self._optimizer = None
+
+    @staticmethod
+    def _training_device(conditioning, home):
+        """Where to run the twenty training steps: the sample's GPU if it is on one."""
+        try:
+            if isinstance(conditioning, torch.Tensor) and conditioning.is_cuda:
+                return conditioning.device
+        except Exception:  # noqa: BLE001
+            pass
+        return home
+
+    def _train_steps(self, device):
+        with torch.inference_mode(False), torch.enable_grad():
             n = len(self.buffer_c)
             for _ in range(self.TRAIN_STEPS):
                 self.optimizer.zero_grad()
