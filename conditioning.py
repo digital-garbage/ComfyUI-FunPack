@@ -6,6 +6,7 @@ import math
 import os
 import random
 import re
+import time
 from datetime import datetime, timezone
 from hashlib import md5
 from typing import Optional
@@ -4100,8 +4101,53 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return None
 
+    def _v2_reset_encode_tally(self):
+        """Start this run's text-encoder accounting. One dict, reset per run, never persisted."""
+        self._v2_encode_tally = {}
+
+    def _v2_tally_encode(self, purpose, seconds, cached=False):
+        """Record one text-encoder pass, or one avoided by the cache.
+
+        The encoder is the single most expensive thing Studio touches — on H3 it is
+        Qwen3-VL-32B — and most calls to it are bookkeeping (classifying a phrase, matching a
+        memory to the scene) rather than the prompt. Counting them by PURPOSE is what turns
+        "generation takes 26 seconds before it starts" into a list of things to remove.
+        """
+        tally = getattr(self, "_v2_encode_tally", None)
+        if tally is None:
+            tally = self._v2_encode_tally = {}
+        slot = tally.setdefault(str(purpose), {"passes": 0, "seconds": 0.0, "cached": 0})
+        if cached:
+            slot["cached"] += 1
+        else:
+            slot["passes"] += 1
+            slot["seconds"] += max(0.0, float(seconds))
+
+    def _v2_encode_tally_status(self, total_seconds=None):
+        """One line: where the time before sampling went. Empty when nothing was encoded."""
+        tally = getattr(self, "_v2_encode_tally", None) or {}
+        rows = [(name, s) for name, s in tally.items() if s["passes"] or s["cached"]]
+        if not rows:
+            return ""
+        rows.sort(key=lambda r: r[1]["seconds"], reverse=True)
+        passes = sum(s["passes"] for _, s in rows)
+        seconds = sum(s["seconds"] for _, s in rows)
+        cached = sum(s["cached"] for _, s in rows)
+        parts = []
+        for name, s in rows:
+            bit = f"{name} {s['passes']}x {s['seconds']:.1f}s"
+            if s["cached"]:
+                bit += f" (+{s['cached']} cached)"
+            parts.append(bit)
+        head = f"text encoder: {passes} pass(es) in {seconds:.1f}s"
+        if cached:
+            head += f", {cached} served from cache"
+        if total_seconds:
+            head += f" — {seconds / max(total_seconds, 1e-6) * 100:.0f}% of Studio's {total_seconds:.1f}s"
+        return head + " | " + " | ".join(parts)
+
     def _v2_encode_prompt(self, clip, prompt_text, encode_cache=None, reference_image=None,
-                          h3_references=None):
+                          h3_references=None, purpose="prompt"):
         if clip is None:
             return None, {"pooled_output": None}, "CLIP missing"
         prompt_text = str(prompt_text or "").strip()
@@ -4144,7 +4190,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if isinstance(encode_cache, dict):
             cached = encode_cache.get(cache_key)
             if cached is not None:
+                self._v2_tally_encode(purpose, 0.0, cached=True)
                 return cached
+        _encode_started = time.perf_counter()
         try:
             if h3 and ref_items:
                 # ref2va takes over the presentation: a first-frame anchor and free-floating
@@ -4165,6 +4213,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             else:
                 tokens = clip.tokenize(prompt_text)
             encoded = clip.encode_from_tokens_scheduled(tokens)
+            self._v2_tally_encode(purpose, time.perf_counter() - _encode_started)
         except Exception as error:
             if use_vision:
                 print(f"[FunPackStudio] Vision encoding failed: {error}")
@@ -5113,7 +5162,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return True
 
     def _v2_clip_similarity_scores(self, clip, phrase, category_vectors, encode_cache=None):
-        phrase_cond, _, _ = self._v2_encode_prompt(clip, phrase, encode_cache=encode_cache)
+        phrase_cond, _, _ = self._v2_encode_prompt(clip, phrase, encode_cache=encode_cache,
+                                                   purpose="phrase classification")
         phrase_vector = self._v2_conditioning_vector(phrase_cond)
         if phrase_vector is None:
             return {}
@@ -5133,7 +5183,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 return cached
         vectors = {}
         for category, description in self.CATEGORY_DESCRIPTIONS.items():
-            cond, _, _ = self._v2_encode_prompt(clip, description, encode_cache=encode_cache)
+            cond, _, _ = self._v2_encode_prompt(clip, description, encode_cache=encode_cache,
+                                                purpose="category vectors")
             vector = self._v2_conditioning_vector(cond)
             if vector is not None:
                 vectors[category] = vector.cpu()
@@ -5992,8 +6043,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         right = self._v2_clean_phrase_text(right)
         if not left or not right:
             return 0.0
-        left_cond, _, _ = self._v2_encode_prompt(clip, left, encode_cache=encode_cache)
-        right_cond, _, _ = self._v2_encode_prompt(clip, right, encode_cache=encode_cache)
+        left_cond, _, _ = self._v2_encode_prompt(clip, left, encode_cache=encode_cache,
+                                                 purpose="memory/scene matching")
+        right_cond, _, _ = self._v2_encode_prompt(clip, right, encode_cache=encode_cache,
+                                                  purpose="memory/scene matching")
         left_vector = self._v2_conditioning_vector(left_cond)
         right_vector = self._v2_conditioning_vector(right_cond)
         if left_vector is None or right_vector is None or left_vector.shape != right_vector.shape:
@@ -7187,7 +7240,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             full_norm = full_cond[0].float()
             full_norm = full_norm / full_norm.norm(dim=-1, keepdim=True).clamp_min(1e-8)
             for text in phrase_texts[:8]:
-                phrase_cond, _, _ = self._v2_encode_prompt(clip, str(text), encode_cache=encode_cache)
+                phrase_cond, _, _ = self._v2_encode_prompt(clip, str(text), encode_cache=encode_cache,
+                                                          purpose="emphasis ranges")
                 if not isinstance(phrase_cond, torch.Tensor):
                     continue
                 phrase_mean = phrase_cond[0].float().mean(dim=0)
@@ -9373,6 +9427,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # New Studio pass: per-run log suppression starts over, so a failure that also
         # happened last run is reported again rather than deduped away forever.
         _log.begin_run()
+        _run_started = time.perf_counter()
+        self._v2_reset_encode_tally()
         _h3_references = _normalize_ref_spec(h3_references) or None
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -10430,6 +10486,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 encode_cache, source_image, prompt_to_encode, global_state, learning_profile,
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
+        _encode_line = self._v2_encode_tally_status(time.perf_counter() - _run_started)
+        if _encode_line:
+            print(f"[FunPackStudio] {_encode_line}")
         return (
             self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
             status + enhancement_status,
@@ -11071,8 +11130,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         mid = (len(sentences) + 1) // 2
         span1 = " ".join(sentences[:mid])
         span2 = " ".join(sentences[mid:])
-        cond1, _, _ = self._v2_encode_prompt(clip, span1, encode_cache=encode_cache)
-        cond2, _, _ = self._v2_encode_prompt(clip, span2, encode_cache=encode_cache)
+        cond1, _, _ = self._v2_encode_prompt(clip, span1, encode_cache=encode_cache,
+                                             purpose="bounded attention")
+        cond2, _, _ = self._v2_encode_prompt(clip, span2, encode_cache=encode_cache,
+                                             purpose="bounded attention")
         if not isinstance(cond1, torch.Tensor) or not isinstance(cond2, torch.Tensor):
             return None, None
         try:
