@@ -424,6 +424,60 @@ a.brand:hover .brand-sub { color: var(--accent-hi); }
 .inspector { width: var(--properties-w); flex: 0 0 auto; border-left: 1px solid var(--line); }
 .timeline { height: var(--timeline-h); min-height: 200px; border-top: 1px solid var(--line); }
 
+/* Timeline peek (Settings > Appearance): the timeline sits as a strip showing only its
+   header — title, transport, Composer — and opens to its full height when pointed at.
+   It grows UPWARD because it is the last row of a column, so the strip stays under the
+   cursor as it opens and the pointer never falls out of what it just opened.
+   .peek-drag-open is held by timeline_peek.js for the length of a drag: during one the
+   pointer is in drag mode and a strip that stays shut is a target you cannot hit. */
+:root[data-timeline-peek="1"] .zone.timeline {
+  /* flex: 0 0 auto is the load-bearing part. .zone is a shrinkable column child, so a
+     height with min-height: 0 let the workspace squeeze the strip to 1px. It must not
+     shrink; the strip is exactly as tall as its own header.
+     --timeline-peek-h is measured from that header by timeline_peek.js rather than guessed:
+     .zone-head WRAPS when the zone is narrow (measured at 138px on a normal window, not the
+     34px min-height), so any fixed number here clips the transport and Composer it exists
+     to keep visible. The fallback only covers the moment before the first measurement. */
+  height: var(--timeline-peek-h, 34px);
+  min-height: 0;
+  flex: 0 0 auto;
+  transition: height .14s ease;
+}
+:root[data-timeline-peek="1"] .zone.timeline:hover,
+:root[data-timeline-peek="1"] .zone.timeline:focus-within,
+:root[data-timeline-peek="1"] .zone.timeline.peek-drag-open {
+  height: var(--timeline-h);
+  min-height: 200px;
+}
+/* The body collapses rather than disappearing: display:none would tear down and rebuild the
+   lanes on every open, and the timeline measures itself to lay them out. */
+:root[data-timeline-peek="1"] .zone.timeline .zone-body {
+  flex: 0 0 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .1s ease;
+}
+:root[data-timeline-peek="1"] .zone.timeline:hover .zone-body,
+:root[data-timeline-peek="1"] .zone.timeline:focus-within .zone-body,
+:root[data-timeline-peek="1"] .zone.timeline.peek-drag-open .zone-body {
+  flex: 1;
+  overflow: auto;
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Dragging the splitter would fight the strip for the height, so it goes with it. The
+   preference IS the height decision while it is on. */
+:root[data-timeline-peek="1"] #split-bottom { display: none; }
+/* Anything anchored to the timeline's height follows the strip, not the open height. */
+:root[data-timeline-peek="1"] { --timeline-anchor: var(--timeline-peek-h, 34px); }
+/* Reduced motion: open and close, just without the slide. */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-timeline-peek="1"] .zone.timeline,
+  :root[data-timeline-peek="1"] .zone.timeline .zone-body { transition: none; }
+}
+}
+
 /* degrade gracefully as columns are toggled off — preview takes the slack, else properties, else media */
 .main-row[data-preview="0"][data-settings="1"] .inspector { flex: 1; width: auto; }
 .main-row[data-preview="0"][data-settings="0"] .media,
@@ -1882,7 +1936,7 @@ body.tour-mode { overflow: hidden; }
 .tour-banner-label { font-family: var(--font-display); font-weight: 700; color: var(--accent-hi); }
 .tour-banner-note { color: var(--muted); font-size: 11px; }
 .tour-toast {
-  position: fixed; bottom: calc(var(--timeline-h) + 20px); left: 50%; transform: translateX(-50%) translateY(8px);
+  position: fixed; bottom: calc(var(--timeline-anchor, var(--timeline-h)) + 20px); left: 50%; transform: translateX(-50%) translateY(8px);
   z-index: 200001; pointer-events: none; opacity: 0; transition: opacity .2s, transform .2s;
   padding: 10px 14px; border-radius: 10px; max-width: min(480px, 92vw);
   background: var(--accent-dim-3); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); color: var(--text); font-size: 12px;

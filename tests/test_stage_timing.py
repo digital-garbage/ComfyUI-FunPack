@@ -67,3 +67,14 @@ def test_a_raising_stage_is_still_timed(refiner):
         with refiner._v2_stage("value function"):
             raise ValueError("boom")
     assert refiner._v2_stage_times["value function"]["calls"] == 1
+
+
+def test_a_sub_stage_is_not_counted_twice(refiner):
+    """A sub-stage runs INSIDE its parent, so adding both reported 153% of the run."""
+    for name, secs in (("value function", 10.0), ("  vf: train", 9.8)):
+        with refiner._v2_stage(name):
+            pass
+        refiner._v2_stage_times[name]["seconds"] = secs
+    line = refiner._v2_stage_status(total_seconds=20.0)
+    assert "50% of 20.0s" in line
+    assert "vf: train 9.8s" in line          # still shown, just not counted again

@@ -4309,7 +4309,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                  for n, v in rows]
         head = "stages"
         if total_seconds:
-            named = sum(v["seconds"] for _, v in rows)
+            # Only top-level stages count toward the share. A sub-stage (indented name) is
+            # measured INSIDE its parent, so adding both reported 153% of a 31.7s run.
+            named = sum(v["seconds"] for n, v in rows if not n.startswith(" "))
             head += f" ({named / max(total_seconds, 1e-6) * 100:.0f}% of {total_seconds:.1f}s)"
         return head + ": " + " | ".join(parts)
 

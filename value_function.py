@@ -139,10 +139,19 @@ class OnlineValueFunction(nn.Module):
 
     @staticmethod
     def _training_device(conditioning, home):
-        """Where to run the twenty training steps: the sample's GPU if it is on one."""
+        """Where to run the twenty training steps: a GPU if there is one at all.
+
+        Not "the sample's device". The x0 value function's sample is a snapshot loaded with
+        map_location="cpu", so keying on the sample left it training on the CPU — measured at
+        10.1s a run against 46ms for the same net locally. What has to move is the ensemble
+        and one stacked batch out of the buffer, and both are small; where the sample happens
+        to have been read from says nothing about where the arithmetic belongs.
+        """
         try:
             if isinstance(conditioning, torch.Tensor) and conditioning.is_cuda:
                 return conditioning.device
+            if torch.cuda.is_available():
+                return torch.device("cuda")
         except Exception:  # noqa: BLE001
             pass
         return home

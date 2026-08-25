@@ -74,3 +74,19 @@ def test_the_latent_value_function_inherits_the_same_path():
         vf.buffer_r.append(float(i % 2))
     vf.train_on(torch.randn(1, 1, 4096), 0.7)
     assert vf.n_trained == 1
+
+
+def test_a_cpu_snapshot_still_goes_to_the_gpu(monkeypatch):
+    """The x0 value function's sample is loaded with map_location="cpu". Keying the device on
+    the sample left it training on the CPU — 10.1s a run against 46ms for the same net."""
+    import value_function as V
+    monkeypatch.setattr(V.torch.cuda, "is_available", lambda: True)
+    home = torch.device("cpu")
+    assert V.OnlineValueFunction._training_device(torch.zeros(4), home) == torch.device("cuda")
+
+
+def test_without_a_gpu_it_stays_home(monkeypatch):
+    import value_function as V
+    monkeypatch.setattr(V.torch.cuda, "is_available", lambda: False)
+    home = torch.device("cpu")
+    assert V.OnlineValueFunction._training_device(torch.zeros(4), home) is home

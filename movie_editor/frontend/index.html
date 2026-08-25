@@ -7,6 +7,9 @@
   <!-- Before the stylesheet on purpose: data-theme has to be on <html> for the
        first paint, or a light-theme user gets a dark flash on every load. -->
   <script src="theme.js"></script>
+  <!-- Beside the theme for the same reason: both are browser preferences that decide
+       what the first paint looks like, so neither may load after the layout does. -->
+  <script src="timeline_peek.js"></script>
   <script src="ui_mode.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
