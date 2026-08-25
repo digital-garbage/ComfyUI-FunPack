@@ -3958,8 +3958,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 fresh["encoder_family"] = encoder_family
             return fresh, "fresh"
         try:
+            _started = time.perf_counter()
             with open(path, "r", encoding="utf-8") as file:
                 data = json.load(file)
+            self._v2_note_state_io("load", time.perf_counter() - _started,
+                                   os.path.getsize(path), data)
             if not isinstance(data, dict) or int(data.get("version", 0)) != 2:
                 return self._v2_empty_state(refinement_key), "reset invalid"
             # Everything learned here is conditioning tensors and token positions from one
@@ -4027,8 +4030,57 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_save_state(self, data, refinement_key):
         path = self._v2_state_path(refinement_key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        _started = time.perf_counter()
         with open(path, "w", encoding="utf-8") as file:
             json.dump(self._v2_json_safe(data), file, indent=2)
+        try:
+            self._v2_note_state_io("save", time.perf_counter() - _started,
+                                   os.path.getsize(path), data)
+        except OSError:
+            pass
+
+    # The collections that can grow without bound, and are therefore the ones worth naming
+    # when a key gets slow. Each is re-parsed and rewritten in full on every run.
+    _V2_STATE_COLLECTIONS = ("phrase_memory", "conditioning_deltas", "concept_delta_memory",
+                             "path_outcomes", "intent_family_memory", "lora_weight_memory")
+
+    def _v2_note_state_io(self, phase, seconds, size_bytes, data=None):
+        """Record one read or write of the refinement key, with what was in it.
+
+        The key is read and rewritten IN FULL every run, and it holds base64 conditioning
+        tensors, so its cost grows with everything ever learned. When a key gets slow this is
+        the first thing to look at, and "which collection got big" is the actionable half.
+        """
+        io = getattr(self, "_v2_state_io", None)
+        if io is None:
+            io = self._v2_state_io = {}
+        io[phase] = {"seconds": max(0.0, float(seconds)), "bytes": int(size_bytes)}
+        if isinstance(data, dict):
+            g = data.get("global") if isinstance(data.get("global"), dict) else {}
+            counts = {name: len(g[name]) for name in self._V2_STATE_COLLECTIONS
+                      if isinstance(g.get(name), (dict, list)) and len(g[name])}
+            hist = data.get("prompt_histories")
+            if isinstance(hist, dict) and hist:
+                counts["prompt_histories"] = len(hist)
+            io["counts"] = counts
+
+    def _v2_state_io_status(self):
+        """One line: what the refinement key costs this run, and what is making it big."""
+        io = getattr(self, "_v2_state_io", None) or {}
+        parts = []
+        for phase in ("load", "save"):
+            slot = io.get(phase)
+            if slot:
+                parts.append(f"{phase} {slot['seconds']:.2f}s")
+        if not parts:
+            return ""
+        size = (io.get("save") or io.get("load") or {}).get("bytes", 0)
+        counts = io.get("counts") or {}
+        biggest = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:4]
+        line = f"refinement key: {size / 1_048_576:.1f} MB, " + " + ".join(parts)
+        if biggest:
+            line += " | " + ", ".join(f"{n} {c}" for n, c in biggest)
+        return line
 
     def _v2_json_safe(self, value):
         if isinstance(value, dict):
@@ -9538,6 +9590,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         _log.begin_run()
         _run_started = time.perf_counter()
         self._v2_reset_encode_tally()
+        self._v2_state_io = {}
         _h3_references = _normalize_ref_spec(h3_references) or None
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -10598,6 +10651,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         _encode_line = self._v2_encode_tally_status(time.perf_counter() - _run_started)
         if _encode_line:
             print(f"[FunPackStudio] {_encode_line}")
+        _state_line = self._v2_state_io_status()
+        if _state_line:
+            print(f"[FunPackStudio] {_state_line}")
         return (
             self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
             status + enhancement_status,
