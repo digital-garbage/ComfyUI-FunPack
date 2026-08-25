@@ -44,6 +44,15 @@
     parent.append(el("div", "insp-hint", isMixed
       ? "Starting frame for this scene; prior-scene guides stay active (◐+⇥ on the timeline)."
       : "Image-to-video anchor for this scene. Drag from the Media bin onto the clip, or Browse here."));
+    // Only on H3: the region lock is a property of the anchor FILE, so there is no toggle to
+    // find and nothing announces it. On any other family a transparent anchor is just an
+    // anchor, so the line would be a lie.
+    if (window.PipelineCaps && window.PipelineCaps.isH3(st)) {
+      parent.append(el("div", "insp-hint",
+        "Transparent parts of the anchor are not conditioned — the model invents them. "
+        + "Use a PNG with the background erased to keep a character and let the scene change "
+        + "around it. Experimental."));
+    }
   }
 
   // "Anchor as guide": the image still feeds the pipeline (it's the anchor — e.g. an Image

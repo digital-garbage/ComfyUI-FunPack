@@ -163,13 +163,19 @@ def test_no_projection_available_returns_none():
 
 # ── independence from the refinement path ───────────────────────────────────
 
-def test_the_installer_reads_no_key_or_rating():
+def test_the_installer_never_reaches_past_the_conditioning():
+    """The refiner edit is now partly rating-learned, but the SAMPLER still only applies.
+
+    Studio owns the refinement key, the state file and the learning; the sampler reads what
+    Studio tagged onto the conditioning and nothing else. Reaching for the key here would put
+    learning on both sides of the bridge, which is the boundary this project keeps.
+    """
     import samplers
-    fn = samplers.FunPackLTXAVSceneChainSampler._install_h3_prompt_scale
-    src = inspect.getsource(fn)
-    for line in (inspect.getdoc(fn) or "").splitlines():
-        src = src.replace(line, "")
-    for forbidden in ("refinement_key", "rating", "value_fn", "global_state", "phrase_memory"):
+    cls = samplers.FunPackLTXAVSceneChainSampler
+    src = "".join(inspect.getsource(fn) for fn in
+                  (cls._install_h3_token_refiner, cls._h3_taste_bias_vector, cls._h3_prompt_rows))
+    for forbidden in ("refinement_key", "_v2_load_state", "value_fn", "global_state",
+                      "phrase_memory"):
         assert forbidden not in src
 
 
@@ -179,3 +185,66 @@ def test_the_widget_defaults_to_untouched():
     fields = {**spec.get("required", {}), **spec.get("optional", {})}
     assert fields["h3_prompt_scale"][1]["default"] == 1.0
     assert "h3_gain_prompt" in fields["h3_prompt_scale"][1]["tooltip"]   # says how they differ
+
+
+# ── the learned taste bias ──────────────────────────────────────────────────
+#
+# The direction comes from ratings (Studio's `liked_dir`), the magnitude does not. A learned
+# direction has no natural scale in the refiner's space — those norms belong to the
+# checkpoint — so the bias is a UNIT vector rescaled at apply time to a fraction of the
+# span's own mean row norm. "10% of a typical prompt row" means the same thing on every
+# prompt and every checkpoint; an absolute vector would be inert or catastrophic with no way
+# to tell which in advance.
+
+class ScaledRefiner(torch.nn.Module):
+    """Rows with a known norm, so the relative rescale can be checked exactly."""
+
+    def __init__(self, value):
+        super().__init__()
+        self.value = float(value)
+
+    def forward(self, x, *a, **k):
+        return torch.full((x.shape[-2], HID), self.value)
+
+
+def test_a_relative_bias_scales_to_the_rows_it_lands_on():
+    unit = torch.zeros(HID)
+    unit[0] = 1.0
+    out = h3.TokenRefinerEdit(ScaledRefiner(2.0), bias=unit * 0.5,
+                              bias_relative=True)(torch.zeros(1, 4, 4))
+    row_norm = (torch.full((HID,), 2.0)).norm()             # every row has this norm
+    assert out[0, 0] == pytest.approx(2.0 + 0.5 * float(row_norm), rel=1e-5)
+    assert out[0, 1] == pytest.approx(2.0)                  # off-direction untouched
+
+
+def test_the_same_strength_means_the_same_thing_at_a_different_scale():
+    """The property the relative mode exists for: transferable between checkpoints."""
+    unit = torch.zeros(HID)
+    unit[0] = 1.0
+    small = h3.TokenRefinerEdit(ScaledRefiner(1.0), bias=unit * 0.25,
+                                bias_relative=True)(torch.zeros(1, 4, 4))
+    big = h3.TokenRefinerEdit(ScaledRefiner(100.0), bias=unit * 0.25,
+                              bias_relative=True)(torch.zeros(1, 4, 4))
+    assert (small[0, 0] / 1.0) == pytest.approx(big[0, 0] / 100.0, rel=1e-4)
+
+
+def test_an_absolute_bias_still_ignores_the_row_scale():
+    unit = torch.zeros(HID)
+    unit[0] = 1.0
+    out = h3.TokenRefinerEdit(ScaledRefiner(5.0), bias=unit * 0.5)(torch.zeros(1, 4, 4))
+    assert out[0, 0] == pytest.approx(5.5)
+
+
+def test_a_negative_strength_pushes_the_other_way():
+    """Away from what was liked has to be reachable, or the loop can only ever agree."""
+    unit = torch.zeros(HID)
+    unit[0] = 1.0
+    out = h3.TokenRefinerEdit(ScaledRefiner(2.0), bias=unit * -0.5,
+                              bias_relative=True)(torch.zeros(1, 4, 4))
+    assert out[0, 0] < 2.0
+
+
+def test_the_note_says_the_bias_is_relative():
+    model = FakePatcher()
+    _out, note = h3.apply_token_refiner_edit(model, bias=torch.zeros(HID), bias_relative=True)
+    assert "bias (relative)" in note

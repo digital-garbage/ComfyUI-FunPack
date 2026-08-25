@@ -1,9 +1,15 @@
-"""The four H3 render gains are learned from ratings, not typed.
+"""The H3 render gains are learned from ratings, not typed.
 
-Four scalars is a SMALLER search than the sigma profile, which already converges on ratings
-alone — so a hand-tuned value here is the user doing work the loop can do. Same update as
-the sigma profile with one difference: that profile is centred on 0, so its applied value IS
-its perturbation; these are centred on 1.0, so the perturbation is `applied - value`.
+A handful of scalars is a SMALLER search than the sigma profile, which already converges on
+ratings alone — so a hand-tuned value here is the user doing work the loop can do. Same
+update as the sigma profile with one difference: that profile is centred on 0, so its applied
+value IS its perturbation; most of these are centred on 1.0, so the perturbation is
+`applied - value`.
+
+`refiner_bias` is the exception on both counts: it is centred on 0.0 (a signed push along the
+learned taste direction, where 0 means no push) and it explores a narrower band, so its
+exploration width scales down to match or its perturbations would clip against the bounds and
+the reward would be credited to a move that never fully happened.
 """
 import sys
 import types
@@ -28,7 +34,8 @@ def profile(reward, **kw):
 def test_a_fresh_key_starts_neutral(studio):
     state = studio._ensure_h3_gain_state({})
     assert set(state["values"]) == set(studio.H3_GAIN_KEYS)
-    assert all(v == 1.0 for v in state["values"].values())
+    # Not all neutrals are 1.0: refiner_bias is a signed push, so its neutral is 0.0.
+    assert state["values"] == {k: studio._h3_gain_centre(k) for k in studio.H3_GAIN_KEYS}
 
 
 def test_a_liked_perturbation_is_moved_toward(studio):
@@ -60,7 +67,7 @@ def test_no_perturbation_teaches_nothing(studio):
     g = {}
     studio._ensure_h3_gain_state(g)                      # last_applied == values
     studio._v2_update_h3_gains(g, profile(1.0))
-    assert all(v == 1.0 for v in g["h3_gains"]["values"].values())
+    assert g["h3_gains"]["values"] == {k: studio._h3_gain_centre(k) for k in studio.H3_GAIN_KEYS}
 
 
 def test_values_stay_inside_the_band(studio):
@@ -115,7 +122,8 @@ def test_the_same_seed_repeats_the_same_perturbation(studio):
 
 
 def test_exploration_can_be_switched_off(studio):
-    assert all(v == 1.0 for v in studio._v2_h3_gains_for_run({}, explore=False).values())
+    assert (studio._v2_h3_gains_for_run({}, explore=False)
+            == {k: studio._h3_gain_centre(k) for k in studio.H3_GAIN_KEYS})
 
 
 def test_rendered_values_stay_inside_the_band(studio):
@@ -123,7 +131,9 @@ def test_rendered_values_stay_inside_the_band(studio):
     studio._ensure_h3_gain_state(g)
     g["h3_gains"]["explore"] = 5.0                       # absurd, to prove the clamp
     out = studio._v2_h3_gains_for_run(g, seed=3)
-    assert all(studio.H3_GAIN_MIN <= v <= studio.H3_GAIN_MAX for v in out.values())
+    for key, value in out.items():
+        low, high = studio._h3_gain_bounds(key)
+        assert low <= value <= high
 
 
 # ── the bridge to the sampler ──────────────────────────────────────────────
@@ -141,7 +151,8 @@ def test_the_gains_ride_entry_zero_of_the_conditioning(studio, monkeypatch):
 def test_neutral_gains_tag_nothing(studio, monkeypatch):
     import torch
     monkeypatch.setattr(studio, "_v2_h3_gains_for_run",
-                        lambda *a, **k: {k: 1.0 for k in studio.H3_GAIN_KEYS}, raising=False)
+                        lambda *a, **k: {key: studio._h3_gain_centre(key)
+                                         for key in studio.H3_GAIN_KEYS}, raising=False)
     cond = [[torch.zeros(1, 4, 8), {}]]
     assert studio._v2_tag_h3_gains(cond, {}, seed=5) is cond
 
@@ -232,3 +243,120 @@ def test_axis_credit_actually_drives_the_update(studio):
 
 def test_every_gain_key_has_an_axis_entry(studio):
     assert set(studio.H3_GAIN_AXES) == set(studio.H3_GAIN_KEYS)
+
+
+# ── the learned taste direction ────────────────────────────────────────────
+#
+# `refiner_bias` says HOW FAR to push; this is WHICH WAY. The direction is the same
+# `liked_dir` conditioning ascent already steers along — the difference is where it lands.
+# Studio hands it over as a unit vector and the sampler decides the magnitude, because the
+# magnitude belongs to the refiner's space and Studio cannot see it.
+
+def _tensor(values):
+    import torch
+    return torch.tensor(values, dtype=torch.float32)
+
+
+def _liked(count, direction=(3.0, 4.0)):
+    return {"liked_dir": {"direction": C.tensor_to_serializable(_tensor(direction)),
+                          "direction_count": count}}
+
+
+def test_no_direction_before_enough_liked_runs(studio):
+    """Two liked runs is a coincidence. The threshold is the one liked_dir's existing
+    conditioning-space consumers already use — not a new number invented here."""
+    assert studio.H3_TASTE_DIR_MIN_COUNT == 3
+    assert studio._h3_taste_direction(_liked(2)) is None
+
+
+def test_the_direction_arrives_once_the_threshold_is_met(studio):
+    assert studio._h3_taste_direction(_liked(3)) is not None
+
+
+def test_the_direction_is_a_unit_vector(studio):
+    out = studio._h3_taste_direction(_liked(5, (3.0, 4.0)))
+    assert float(out.norm()) == pytest.approx(1.0)
+    assert out.tolist() == pytest.approx([0.6, 0.8])
+
+
+def test_a_zero_direction_is_refused(studio):
+    """Dividing by its norm would produce NaN and poison every prompt row."""
+    assert studio._h3_taste_direction(_liked(9, (0.0, 0.0))) is None
+
+
+def test_an_empty_state_has_no_direction(studio):
+    assert studio._h3_taste_direction({}) is None
+    assert studio._h3_taste_direction(None) is None
+
+
+def test_the_direction_rides_entry_zero_with_the_gains(studio, monkeypatch):
+    import torch
+    monkeypatch.setattr(C, "_log", types.SimpleNamespace(
+        failed=lambda *a, **k: None, note_on_change=lambda *a, **k: None), raising=False)
+    cond = [[torch.zeros(1, 4, 8), {}], [torch.zeros(1, 4, 8), {}]]
+    out = studio._v2_tag_h3_gains(cond, _liked(4), seed=5)
+    assert studio.H3_TASTE_DIR_META in out[0][1]
+    assert studio.H3_TASTE_DIR_META not in out[1][1]
+
+
+def test_a_direction_alone_is_worth_tagging(studio, monkeypatch):
+    """Neutral gains used to mean "tag nothing" — but a direction with a zero push is still
+    worth carrying, because the sampler's manual mode can supply the push itself."""
+    import torch
+    monkeypatch.setattr(C, "_log", types.SimpleNamespace(
+        failed=lambda *a, **k: None, note_on_change=lambda *a, **k: None), raising=False)
+    monkeypatch.setattr(studio, "_v2_h3_gains_for_run",
+                        lambda *a, **k: {key: studio._h3_gain_centre(key)
+                                         for key in studio.H3_GAIN_KEYS}, raising=False)
+    cond = [[torch.zeros(1, 4, 8), {}]]
+    out = studio._v2_tag_h3_gains(cond, _liked(4), seed=5)
+    assert out is not cond and studio.H3_TASTE_DIR_META in out[0][1]
+
+
+# ── the bias explores its own band ─────────────────────────────────────────
+
+def test_the_bias_is_centred_on_no_push(studio):
+    assert studio._h3_gain_centre("refiner_bias") == 0.0
+    assert studio._h3_gain_centre("video") == 1.0
+
+
+def test_the_bias_can_be_learned_negative(studio):
+    """Pushing AWAY from the liked direction must be reachable, or the loop can only agree."""
+    low, high = studio._h3_gain_bounds("refiner_bias")
+    assert low < 0.0 < high
+
+
+def test_exploration_scales_to_the_band_it_explores(studio):
+    """One stored `explore` drives every gain; a narrower band has to shrink it or its
+    perturbations clip against the bounds and the credit goes to a move that never happened."""
+    wide = studio._h3_gain_explore("video", 0.05)
+    narrow = studio._h3_gain_explore("refiner_bias", 0.05)
+    assert narrow < wide
+    low, high = studio._h3_gain_bounds("refiner_bias")
+    assert narrow == pytest.approx(0.05 * (high - low) / (studio.H3_GAIN_MAX - studio.H3_GAIN_MIN))
+
+
+def test_a_liked_bias_perturbation_is_moved_toward(studio):
+    g = {}
+    studio._ensure_h3_gain_state(g)
+    g["h3_gains"]["last_applied"]["refiner_bias"] = 0.10
+    studio._v2_update_h3_gains(g, profile(1.0))
+    assert g["h3_gains"]["values"]["refiner_bias"] > 0.0
+
+
+def test_a_disliked_bias_perturbation_is_moved_away_from(studio):
+    g = {}
+    studio._ensure_h3_gain_state(g)
+    g["h3_gains"]["last_applied"]["refiner_bias"] = 0.10
+    studio._v2_update_h3_gains(g, profile(-1.0))
+    assert g["h3_gains"]["values"]["refiner_bias"] < 0.0
+
+
+def test_the_bias_stays_inside_its_own_band_not_the_shared_one(studio):
+    g = {}
+    studio._ensure_h3_gain_state(g)
+    low, high = studio._h3_gain_bounds("refiner_bias")
+    for _ in range(400):
+        g["h3_gains"]["last_applied"]["refiner_bias"] = high
+        studio._v2_update_h3_gains(g, profile(1.0))
+    assert low <= g["h3_gains"]["values"]["refiner_bias"] <= high

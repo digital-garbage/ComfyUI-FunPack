@@ -538,6 +538,11 @@ def checkpoint_mode_note(has_keyframes: bool, has_refs: bool):
 KEYFRAME_T_PER_FRAME = 5.0 / 3.0     # upstream FRAME_RESCALE, re-checked before patching
 
 _INTERIOR_PINS = {"state": None}     # None = not tried, True/False = patch verdict
+_REGION_LOCKS = {"state": None}      # same, for partial-frame pins
+_LAYOUT_PATCH = {"state": None}      # is PackedLayout.__init__ wrapped at all
+
+#: key a keyframe pin carries its keep-mask under (bool tensor over the frame's patch rows)
+REGION_META = "funpack_region"
 
 
 def keyframe_cond_t(text_len, pixel_index):
@@ -569,37 +574,114 @@ def _linear_rule_matches_upstream():
     return True
 
 
-def install_interior_keyframes():
-    """Let a keyframe pin sit at any pixel frame, not only the first or the last.
+def _region_keep(region, n_rows):
+    """The keep-mask to actually apply to a pin's ``n_rows`` patch rows, or None.
 
-    Deliberately NOT a re-implementation of ``PackedLayout.__init__``. Upstream builds the
-    layout exactly as it always has — with every interior pin declared at index 0, which is
-    always legal — and this rewrites the ``t`` column of the resulting condition rows to the
-    coordinate the pin actually wants. Everything else about the layout (row order, latent
-    placement, ``img_update``, the segment table, refs, audio) is upstream's, so upstream
-    changes are inherited rather than frozen into a copy here.
-
-    A run whose pins are all endpoints never enters the rewrite at all: it calls straight
-    through to the original, so existing behaviour is bit-identical.
-
-    Returns True when interior pins are available.
+    None means "keep every row", and it is returned for every case that is not an
+    unambiguous partial selection: no region, a mask whose length disagrees with the rows it
+    would filter, an empty selection, or a full one. Both sides of the patch — the layout and
+    the condition rows — go through this one function with the same mask and the same row
+    count, so they cannot disagree about which rows survive.
     """
-    if _INTERIOR_PINS["state"] is not None:
-        return _INTERIOR_PINS["state"]
+    if region is None:
+        return None
+    try:
+        mask = region.reshape(-1).to(torch.bool)
+    except Exception:
+        return None
+    if mask.numel() != int(n_rows) or not bool(mask.any()) or bool(mask.all()):
+        return None
+    return mask
+
+
+def region_rows_from_alpha(image, grid_h, grid_w, threshold=0.5):
+    """An RGBA guide image's alpha channel as a keep-mask over one frame's patch rows.
+
+    Transparent means "I have nothing to say about this part of the frame". Alpha is used
+    rather than a separate MASK input because it needs no new wire: the Editor's fixed graph
+    has no mask source, so a MASK socket would be a sampler-only feature, and the standing
+    rule is that a new sampler capability reaches the Editor in the same change.
+
+    Returns None unless the alpha is a genuine PARTIAL selection — a fully opaque image (the
+    overwhelmingly common case) behaves exactly as it did before this existed.
+    """
+    try:
+        if getattr(image, "ndim", 0) != 4 or image.shape[-1] < 4:
+            return None
+        alpha = image[:1, ..., 3].float()                       # [1, H, W]
+        pooled = torch.nn.functional.adaptive_avg_pool2d(
+            alpha.unsqueeze(0), (int(grid_h), int(grid_w)))      # [1, 1, gh, gw]
+    except Exception:
+        return None
+    mask = (pooled.reshape(-1) >= float(threshold))
+    if not bool(mask.any()) or bool(mask.all()):
+        return None
+    return mask
+
+
+def _apply_region_locks(layout, spans, regions):
+    """Drop the condition rows a pin's region excludes, and re-derive the layout around them.
+
+    A region lock is a row DELETION, not a blanked or noised row. A blanked row still says
+    something ("this part is flat grey") and a noised one still occupies a position the
+    picture attends to; a row that does not exist says nothing at all, which is what "I only
+    care about this part of the frame" means. Attention is dense, so the removed rows also
+    stop costing anything.
+
+    Everything here is re-derived from upstream's own outputs rather than rebuilt, so a
+    change to how upstream lays the sequence out is inherited. ``img_pos``/``audio_pos`` are
+    renumbered even though the current forward never reads them — they are part of the
+    layout's contract, and a stale one would be a trap for whatever reads them next.
+    """
+    keep = torch.ones(layout.seq_len, dtype=torch.bool)
+    for (start, stop), region in zip(spans, regions):
+        mask = _region_keep(region, stop - start)
+        if mask is not None:
+            keep[start:stop] = mask
+    if bool(keep.all()):
+        return False
+    new_index = keep.cumsum(0) - 1
+    img_keep = keep[layout.img_pos]
+    audio_keep = keep[layout.audio_pos]
+    layout.position_ids = layout.position_ids[keep]
+    layout.img_update = layout.img_update[img_keep]
+    layout.audio_update = layout.audio_update[audio_keep]
+    layout.img_pos = new_index[layout.img_pos[img_keep]]
+    layout.audio_pos = new_index[layout.audio_pos[audio_keep]]
+    segments, offset = [], 0
+    for a, b, kind in layout.segments:
+        n = int(keep[a:b].sum())
+        if n:
+            segments.append((offset, offset + n, kind))
+            offset += n
+    layout.segments = segments
+    layout.seq_len = offset
+    return True
+
+
+def _install_layout_patch():
+    """Wrap ``PackedLayout.__init__`` once, for both interior pins and region locks.
+
+    Deliberately NOT a re-implementation of it. Upstream builds the layout exactly as it
+    always has — with every interior pin declared at index 0, which is always legal — and
+    this corrects the ``t`` column of the resulting condition rows afterwards, then removes
+    the rows a region excludes. Row order, latent placement, ``img_update``, the segment
+    table, refs and audio all stay upstream's, so upstream changes are inherited rather than
+    frozen into a copy here.
+
+    A run with no interior pin and no region never enters either rewrite: it calls straight
+    through to the original, so existing behaviour is bit-identical.
+    """
+    if _LAYOUT_PATCH["state"] is not None:
+        return _LAYOUT_PATCH["state"]
     try:
         from comfy.ldm.minimax.model import PackedLayout
     except Exception as error:                                    # no H3 in this ComfyUI
-        _INTERIOR_PINS["state"] = False
-        print(f"[FunPack H3] interior keyframe pins unavailable ({error}).")
+        _LAYOUT_PATCH["state"] = False
+        print(f"[FunPack H3] packed-layout extensions unavailable ({error}).")
         return False
-    if not _linear_rule_matches_upstream():
-        _INTERIOR_PINS["state"] = False
-        print("[FunPack H3] interior keyframe pins DISABLED: this ComfyUI's video time grid "
-              "no longer matches the rule FunPack derives pin coordinates from. Pins stay "
-              "first/last only. (Upstream comfy/ldm/minimax/model.py changed.)")
-        return False
-    if getattr(PackedLayout.__init__, "_funpack_interior_pins", False):
-        _INTERIOR_PINS["state"] = True
+    if getattr(PackedLayout.__init__, "_funpack_layout", False):
+        _LAYOUT_PATCH["state"] = True
         return True
 
     original = PackedLayout.__init__
@@ -607,25 +689,121 @@ def install_interior_keyframes():
     def __init__(self, text_len, latent_t, latent_h, latent_w, audio_t,
                  keyframes=None, refs=None, frame_count=None):
         pins = list(keyframes or ())
-        interior = [kf for kf in pins
-                    if not keyframe_is_endpoint(kf.get("resolved_frame_index"), frame_count)]
-        if not interior:
+        # Each rewrite is gated on ITS OWN verdict, not on the patch being installed. The
+        # two share this wrapper, so region locks can install it while the interior-pin rule
+        # has been refused — and a refused rule must not then start moving pins.
+        interior = ([kf for kf in pins
+                     if not keyframe_is_endpoint(kf.get("resolved_frame_index"), frame_count)]
+                    if _INTERIOR_PINS["state"] else [])
+        regions = ([kf.get(REGION_META) for kf in pins]
+                   if _REGION_LOCKS["state"] else [None] * len(pins))
+        if not interior and not any(r is not None for r in regions):
             original(self, text_len, latent_t, latent_h, latent_w, audio_t,
                      keyframes=keyframes, refs=refs, frame_count=frame_count)
             return
         # Declared at 0 so upstream's branch accepts them; the coordinate is corrected below.
-        safe = [dict(kf, resolved_frame_index=0) for kf in pins]
+        safe = [dict(kf, resolved_frame_index=0) for kf in pins] if interior else keyframes
         original(self, text_len, latent_t, latent_h, latent_w, audio_t,
                  keyframes=safe, refs=refs, frame_count=frame_count)
         # Condition segments are emitted in `keyframes` order, immediately after text.
         spans = [(a, b) for a, b, kind in self.segments if kind == "cond"]
-        for (start, stop), kf in zip(spans, pins):
-            self.position_ids[start:stop, 0] = keyframe_cond_t(
-                text_len, kf.get("resolved_frame_index", 0))
+        if interior:
+            for (start, stop), kf in zip(spans, pins):
+                self.position_ids[start:stop, 0] = keyframe_cond_t(
+                    text_len, kf.get("resolved_frame_index", 0))
+        if any(r is not None for r in regions):
+            _apply_region_locks(self, spans, regions)
 
-    __init__._funpack_interior_pins = True
+    __init__._funpack_layout = True
+    __init__._funpack_interior_pins = True          # kept: the old marker name
     PackedLayout.__init__ = __init__
+    _LAYOUT_PATCH["state"] = True
+    return True
+
+
+def install_interior_keyframes():
+    """Let a keyframe pin sit at any pixel frame, not only the first or the last.
+
+    Returns True when interior pins are available.
+    """
+    if _INTERIOR_PINS["state"] is not None:
+        return _INTERIOR_PINS["state"]
+    if not _install_layout_patch():
+        _INTERIOR_PINS["state"] = False
+        return False
+    if not _linear_rule_matches_upstream():
+        _INTERIOR_PINS["state"] = False
+        print("[FunPack H3] interior keyframe pins DISABLED: this ComfyUI's video time grid "
+              "no longer matches the rule FunPack derives pin coordinates from. Pins stay "
+              "first/last only. (Upstream comfy/ldm/minimax/model.py changed.)")
+        return False
     _INTERIOR_PINS["state"] = True
+    return True
+
+
+def install_region_locks():
+    """Let a keyframe pin cover PART of a frame instead of all of it.
+
+    Needs two patches that must agree exactly on which rows survive: the layout drops the
+    excluded rows from the packed sequence, and ``_cond_video_rows`` drops the same rows from
+    the condition latents. Both go through :func:`_region_keep` with the same mask, so they
+    cannot diverge — and if either patch cannot be installed, neither is used.
+
+    EXPERIMENTAL for the same reason interior pins are: fl2va saw whole condition frames, so
+    a partial one is representable (nothing in the layout or the attention requires a cond
+    segment to be a complete frame) without being something the weights have seen.
+    """
+    if _REGION_LOCKS["state"] is not None:
+        return _REGION_LOCKS["state"]
+    if not _install_layout_patch():
+        _REGION_LOCKS["state"] = False
+        return False
+    try:
+        from comfy.ldm.minimax.model import MiniMaxH3Model
+    except Exception as error:
+        _REGION_LOCKS["state"] = False
+        print(f"[FunPack H3] region locks unavailable ({error}).")
+        return False
+    if getattr(MiniMaxH3Model._cond_video_rows, "_funpack_regions", False):
+        _REGION_LOCKS["state"] = True
+        return True
+
+    original = MiniMaxH3Model._cond_video_rows
+
+    def _cond_video_rows(self, payload, device):
+        rows = original(self, payload, device)
+        try:
+            if rows is None or payload.get("refs"):
+                # With refs present upstream rebuilds cond_video_latents from the REFS, so
+                # the pins no longer line up with the rows. Regions are a pin feature.
+                return rows
+            pins = payload.get("keyframes") or []
+            latents = payload.get("cond_video_latents") or []
+            if len(pins) != len(latents):
+                return rows
+            if not any(pin.get(REGION_META) is not None for pin in pins):
+                return rows
+            kept, offset = [], 0
+            for pin, latent in zip(pins, latents):
+                b, _c, t, h, w = latent.shape
+                n = b * t * (h // 2) * (w // 2)
+                span = rows[offset:offset + n]
+                offset += n
+                mask = _region_keep(pin.get(REGION_META), n)
+                kept.append(span if mask is None else span[mask.to(span.device)])
+            if offset != rows.shape[0]:
+                # Our row accounting disagrees with upstream's: change nothing rather than
+                # hand the layout a set of rows it did not plan for.
+                return rows
+            return torch.cat(kept, dim=0)
+        except Exception as error:                     # noqa: BLE001
+            print(f"[FunPack H3] region lock skipped on the condition rows ({error}); "
+                  f"the pin covers the whole frame.")
+            return rows
+
+    _cond_video_rows._funpack_regions = True
+    MiniMaxH3Model._cond_video_rows = _cond_video_rows
+    _REGION_LOCKS["state"] = True
     return True
 
 
@@ -663,10 +841,33 @@ def encode_keyframe(vae, image, width, height, frame_index, crop="disabled"):
     import comfy.utils
     # one frame only: a pin is a single condition frame, and an IMAGE batch here would
     # otherwise encode into a latent with a batch dimension the packed layout cannot place.
-    samples = image[:1, ..., :3].movedim(-1, 1)
+    # Alpha rides through the SAME resize as the colour so a cover-cropped pin's region ends
+    # up over the part of the frame it was painted on, not over the pre-crop coordinates.
+    channels = 4 if image.shape[-1] >= 4 else 3
+    samples = image[:1, ..., :channels].movedim(-1, 1)
     samples = comfy.utils.common_upscale(samples, int(width), int(height), "lanczos", crop)
-    pixels = samples.movedim(1, -1)
-    return {"resolved_frame_index": int(frame_index), "latent": vae.encode(pixels)}
+    resized = samples.movedim(1, -1)
+    pixels = resized[..., :3]
+    region = None
+    if channels == 4 and install_region_locks():
+        grid_h = int(height) // SPATIAL_DOWNSCALE // 2
+        grid_w = int(width) // SPATIAL_DOWNSCALE // 2
+        region = region_rows_from_alpha(resized, grid_h, grid_w)
+    if region is not None:
+        # The excluded ROWS are dropped, but the VAE is convolutional: whatever colour sits
+        # under the transparent area still bleeds into the latent cells that are kept. An
+        # unpainted PNG leaves black there, which would print a hard edge into the kept
+        # boundary. Filling with the kept area's own mean colour makes that edge as quiet as
+        # the encoder can make it.
+        alpha = resized[..., 3:4]
+        keep = (alpha >= 0.5).float()
+        weight = keep.sum().clamp_min(1.0)
+        fill = (pixels * keep).sum(dim=(0, 1, 2), keepdim=True) / weight
+        pixels = pixels * keep + fill * (1.0 - keep)
+    pin = {"resolved_frame_index": int(frame_index), "latent": vae.encode(pixels)}
+    if region is not None:
+        pin[REGION_META] = region
+    return pin
 
 
 def image_ref_block(vae, image, width, height, size_mode="match"):
@@ -1213,13 +1414,21 @@ def apply_adaln_gains(model, gains):
 class TokenRefinerEdit(torch.nn.Module):
     """Wraps ``token_refiner`` and edits its output over a row range."""
 
-    def __init__(self, inner, scale=1.0, bias=None, row_start=0, row_end=None):
+    def __init__(self, inner, scale=1.0, bias=None, row_start=0, row_end=None,
+                 bias_relative=False):
         super().__init__()
         self.inner = inner
         self.scale = float(scale)
         self.bias = bias
         self.row_start = int(row_start)
         self.row_end = row_end
+        # A RELATIVE bias is a unit vector rescaled, at apply time, to a fraction of the
+        # span's own mean row norm. A learned direction has no natural magnitude in this
+        # space — the norms here belong to the checkpoint, not to anything the loop measured
+        # — so an absolute vector would be either inert or catastrophic with no way to tell
+        # which in advance. Relative makes the strength mean "this fraction of a typical
+        # prompt row", which is the same thing on every prompt and every checkpoint.
+        self.bias_relative = bool(bias_relative)
 
     def forward(self, x, *args, **kwargs):
         out = self.inner(x, *args, **kwargs)
@@ -1234,7 +1443,11 @@ class TokenRefinerEdit(torch.nn.Module):
             if self.scale != 1.0:
                 span = span * self.scale
             if self.bias is not None:
-                span = span + self.bias.to(device=span.device, dtype=span.dtype)
+                bias = self.bias.to(device=span.device, dtype=span.dtype)
+                if self.bias_relative:
+                    scale = span.float().norm(dim=-1).mean()
+                    bias = bias * scale.to(bias.dtype)
+                span = span + bias
             out[..., start:end, :] = span
         except Exception:      # a refiner shape we do not recognise: leave it alone
             return self.inner(x, *args, **kwargs)
@@ -1262,7 +1475,8 @@ def project_into_refiner_space(model, direction):
         return None
 
 
-def apply_token_refiner_edit(model, scale=1.0, bias=None, row_start=0, row_end=None):
+def apply_token_refiner_edit(model, scale=1.0, bias=None, row_start=0, row_end=None,
+                             bias_relative=False):
     """Attach a scale and/or bias to the token refiner's output. Returns (model, note).
 
     ``add_object_patch`` again, so ComfyUI restores it on unpatch and nothing outlives the
@@ -1276,11 +1490,12 @@ def apply_token_refiner_edit(model, scale=1.0, bias=None, row_start=0, row_end=N
     except Exception as error:
         return model, f"token-refiner edit skipped — no token_refiner to patch ({error})."
     patched = model.clone()
-    patched.add_object_patch(key, TokenRefinerEdit(inner, scale, bias, row_start, row_end))
+    patched.add_object_patch(key, TokenRefinerEdit(inner, scale, bias, row_start, row_end,
+                                                  bias_relative=bias_relative))
     parts = []
     if float(scale) != 1.0:
         parts.append(f"scale={float(scale):g}")
     if bias is not None:
-        parts.append("bias")
+        parts.append("bias (relative)" if bias_relative else "bias")
     where = f"rows {row_start}:{row_end if row_end is not None else 'end'}"
     return patched, f"token-refiner edit ({', '.join(parts)}) on {where}."

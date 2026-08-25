@@ -236,7 +236,7 @@ def test_learned_mode_before_any_rating_renders_at_trained_strength():
     silently honouring them would make an unrated run look like a learned one."""
     node = _sampler(video=1.3, prompt=0.6)
     out = node._h3_render_gains([[torch.zeros(1, 4, 8), {}]])
-    assert all(value == 1.0 for value in out.values())
+    assert out == node.H3_GAIN_NEUTRAL
 
 
 def test_a_missing_key_in_the_learned_dict_falls_back_to_neutral():

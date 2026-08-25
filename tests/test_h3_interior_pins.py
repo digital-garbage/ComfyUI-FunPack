@@ -83,6 +83,8 @@ def upstream(monkeypatch):
     for name in ("comfy.ldm.minimax", "comfy.ldm.minimax.model"):
         monkeypatch.setitem(sys.modules, name, mod)
     monkeypatch.setitem(h3._INTERIOR_PINS, "state", None)
+    monkeypatch.setitem(h3._REGION_LOCKS, "state", None)
+    monkeypatch.setitem(h3._LAYOUT_PATCH, "state", None)
     return mod
 
 
@@ -119,6 +121,7 @@ def test_a_changed_frame_grid_disables_the_feature(upstream, capsys):
 
 def test_a_comfy_without_h3_declines_quietly(monkeypatch, capsys):
     monkeypatch.setitem(h3._INTERIOR_PINS, "state", None)
+    monkeypatch.setitem(h3._LAYOUT_PATCH, "state", None)
     monkeypatch.setitem(sys.modules, "comfy.ldm.minimax.model", None)
     assert h3.install_interior_keyframes() is False
     assert "unavailable" in capsys.readouterr().out
