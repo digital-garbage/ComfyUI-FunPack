@@ -233,36 +233,74 @@ def test_the_built_in_instructions_forbid_inventing_speech():
 # being a ceiling and becomes the actual length. Nothing downstream would notice: it would
 # just encode 8000 tokens of rambling as the prompt.
 
-def test_a_prompt_that_never_ended_is_cut(studio):
-    long = "A cat sits. " * 900
-    out, cut = C.FunPackVideoRefinerV2._v2_trim_runaway_prompt(long)
+def _trim(text, **kw):
+    return C.FunPackVideoRefinerV2._v2_trim_runaway_prompt(text, **kw)
+
+
+def test_a_looping_model_is_cut_at_the_repeat(studio):
+    """Repetition, not length, is what distinguishes a stuck model from a detailed one."""
+    out, cut = _trim("A ginger cat sits on the sunlit sill. " * 40)
     assert cut is True
-    assert len(out) <= C.FunPackVideoRefinerV2.V2_ENHANCED_PROMPT_CHAR_CAP
+    assert out.count("A ginger cat sits on the sunlit sill.") < 3
+
+
+def test_a_long_prompt_that_never_repeats_survives(studio):
+    """H3 has no padding — every prompt token is a real sequence row, so a long prompt is a
+    legitimate thing to want and must not be cut for being long."""
+    text = " ".join(f"Shot {i}: a different thing happens in this room." for i in range(200))
+    out, cut = _trim(text)
+    assert cut is False and out == text
+
+
+def test_length_alone_never_cuts_without_a_token_limit(studio):
+    out, cut = _trim("Unique sentence number %d here. " % 0 + "".join(
+        f"Sentence {i} describes something new. " for i in range(500)))
+    assert cut is False
+
+
+def test_the_length_bound_comes_from_the_users_token_limit(studio):
+    """The limit the user set IS the control; no character cap is invented next to it."""
+    text = "".join(f"Sentence {i} describes something new and distinct. " for i in range(500))
+    out, cut = _trim(text, max_length=64)
+    assert cut is True
+    assert len(out) <= 64 * C.FunPackVideoRefinerV2.V2_ENHANCED_PROMPT_CHARS_PER_TOKEN
+
+
+def test_a_generous_token_limit_keeps_a_generous_prompt(studio):
+    text = "".join(f"Sentence {i} describes something new and distinct. " for i in range(200))
+    _out, cut = _trim(text, max_length=8192)
+    assert cut is False
 
 
 def test_the_cut_lands_on_a_finished_sentence(studio):
-    long = "A cat sits on the sill. " * 900
-    out, _cut = C.FunPackVideoRefinerV2._v2_trim_runaway_prompt(long)
+    out, _cut = _trim("A ginger cat sits on the sunlit sill. " * 40)
     assert out.endswith(".")
 
 
 def test_a_normal_prompt_is_not_cut(studio):
     text = "A ginger cat sits on a sunlit sill."
-    out, cut = C.FunPackVideoRefinerV2._v2_trim_runaway_prompt(text)
+    out, cut = _trim(text, max_length=400)
     assert out == text and cut is False
 
 
+def test_a_short_recurring_line_is_not_treated_as_a_loop(studio):
+    """"She smiles." legitimately recurs in a long shot list."""
+    text = " ".join(f"The {w} moves across the room. She smiles." for w in
+                    ("cat", "dog", "bird", "fox", "owl"))
+    _out, cut = _trim(text)
+    assert cut is False
+
+
 def test_a_runaway_never_ends_mid_word(studio):
-    """A fragment handed to the encoder is worse than a shorter prompt."""
-    out, _cut = C.FunPackVideoRefinerV2._v2_trim_runaway_prompt("supercalifragilistic " * 500)
+    out, _cut = _trim("supercalifragilistic " * 500, max_length=64)
     assert not out.endswith("supercalifragilis")
     assert out == out.strip()
 
 
-def test_the_user_is_told_the_model_did_not_stop(studio):
-    clip = FakeClip(reply="A cat sits. " * 900)
+def test_the_user_is_told_the_model_repeated_itself(studio):
+    clip = FakeClip(reply="A ginger cat sits on the sunlit sill. " * 40)
     _out, status = studio._v2_enhance_prompt(clip, "a cat", "sys")
-    assert "did not stop" in status
+    assert "repeated itself" in status
 
 
 # ── where it ran ────────────────────────────────────────────────────────────

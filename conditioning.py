@@ -9211,10 +9211,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             max_length=max_length, temperature=temperature, top_p=top_p,
             min_floor=32, label="Prompt enhancer",
         )
-        enhanced, overran = self._v2_trim_runaway_prompt(self._v2_clean_enhanced_prompt(raw))
+        enhanced, overran = self._v2_trim_runaway_prompt(
+            self._v2_clean_enhanced_prompt(raw), max_length=max_length)
         if overran:
-            status += (" The model did not stop on its own and was cut at a sentence — lower "
-                       "the length limit, or use a model with a trained chat head.")
+            status += (" The model repeated itself rather than stopping, and was cut at a "
+                       "sentence — a model with a trained chat head will not do this.")
         if not enhanced:
             return original, (status if "failed" in status or "unavailable" in status
                               else "Prompt enhancer: model returned nothing; prompt unchanged.")
@@ -9243,20 +9244,48 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 return str(probe)
         return "an unreported device"
 
-    #: A model with no trained decoder head may never emit a stop token, so `max_length` stops
-    #: being a ceiling and becomes the actual length. A prompt is a paragraph; anything past
-    #: this many characters is the model failing to stop, not detail worth keeping.
-    V2_ENHANCED_PROMPT_CHAR_CAP = 2000
+    #: Rough chars per token, to turn the user's TOKEN limit into a character bound. There is
+    #: no fixed character cap: H3 has no padding, so every prompt token is a real sequence row
+    #: and a long prompt is a legitimate thing to want. The length the user asked for is the
+    #: length they get — this only stops output that overshoots the tokenizer's own ceiling.
+    V2_ENHANCED_PROMPT_CHARS_PER_TOKEN = 4
+    #: How many times a phrase may repeat before it is a stuck model rather than a style.
+    V2_ENHANCED_PROMPT_REPEAT_LIMIT = 3
 
     @classmethod
-    def _v2_trim_runaway_prompt(cls, text, cap=None):
-        """Cut a prompt that never ended back to its last COMPLETE sentence.
+    def _v2_trim_runaway_prompt(cls, text, max_length=None):
+        """Cut a prompt that never ended — by REPETITION first, length second.
 
-        Cutting mid-word would hand the encoder a fragment; cutting at a sentence keeps the
-        prompt readable and keeps whatever the model got right before it started rambling.
+        A model with no trained decoder head may never emit a stop token, so it fills whatever
+        budget it is given. But length alone cannot tell "long and detailed" from "stuck": on
+        H3 a long prompt is often exactly what is wanted. What distinguishes the two is that a
+        stuck model repeats itself, so that is what is detected — and the length bound is
+        derived from the user's own token limit rather than a number invented here.
+
+        Cutting lands on a complete sentence; a fragment handed to the encoder is worse than a
+        shorter prompt.
         """
-        cap = int(cap or cls.V2_ENHANCED_PROMPT_CHAR_CAP)
-        text = str(text or "")
+        text = str(text or "").strip()
+        if not text:
+            return text, False
+
+        # 1. repetition: the honest signal that the model stopped writing and started looping
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        seen = {}
+        for index, sentence in enumerate(sentences):
+            key = " ".join(sentence.lower().split())
+            if len(key) < 12:                        # too short to judge; "She smiles." recurs
+                continue
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] >= cls.V2_ENHANCED_PROMPT_REPEAT_LIMIT:
+                kept = " ".join(sentences[:index]).strip()
+                if kept:
+                    return kept, True
+
+        # 2. length: only the ceiling the user's own token limit implies
+        if max_length is None:
+            return text, False
+        cap = max(64, int(max_length) * cls.V2_ENHANCED_PROMPT_CHARS_PER_TOKEN)
         if len(text) <= cap:
             return text, False
         head = text[:cap]
