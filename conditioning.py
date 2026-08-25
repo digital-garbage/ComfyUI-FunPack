@@ -5162,19 +5162,92 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return False
         return True
 
-    def _v2_clip_similarity_scores(self, clip, phrase, category_vectors, encode_cache=None):
-        phrase_cond, _, _ = self._v2_encode_prompt(clip, phrase, encode_cache=encode_cache,
-                                                   purpose="phrase classification")
-        phrase_vector = self._v2_conditioning_vector(phrase_cond)
+    def _v2_phrase_vectors_in_one_pass(self, clip, texts, encode_cache=None):
+        """{phrase: vector} for many phrases from ONE encode, or None if that cannot be done.
+
+        Classifying a phrase means comparing its vector to eight category vectors. Getting
+        that vector by encoding the phrase on its own costs a full pass of the text encoder
+        EACH — on H3 that is Qwen3-VL-32B, once per phrase the heuristic was unsure about.
+
+        The phrases are encoded together instead, as one comma-joined text, and each phrase's
+        vector is the mean of the rows its own tokens occupy. The tokenizer's offset mapping
+        says which rows those are exactly, so this is a lookup rather than a guess. A phrase
+        also gets a little of its neighbours' context this way, which is closer to how it
+        appears in a real prompt than the phrase standing alone.
+
+        Returns None — caller falls back to one encode per phrase — when the tokenizer offers
+        no offsets, or when the spans do not line up with the conditioning that came back.
+        Nothing here is worth a wrong classification.
+        """
+        texts = [t for t in dict.fromkeys(str(t or "").strip() for t in texts) if t]
+        if len(texts) < 2:
+            return None
+        try:
+            from . import h3_token_weights as _tw
+        except ImportError:
+            import h3_token_weights as _tw
+        tokenizer = _tw.h3_tokenizer(clip)
+        if tokenizer is None:
+            return None
+
+        joined = ", ".join(texts)
+        cond, meta, _ = self._v2_encode_prompt(clip, joined, encode_cache=encode_cache,
+                                               purpose="phrase classification (batched)")
+        if not isinstance(cond, torch.Tensor) or cond.dim() < 3:
+            return None
+        try:
+            offsets = list(tokenizer(joined, add_special_tokens=False,
+                                     return_offsets_mapping=True)["offset_mapping"])
+        except Exception:  # noqa: BLE001 — no offsets, no batching; fall back to one each
+            return None
+        prompt_tokens = len(offsets)
+        if prompt_tokens <= 0:
+            return None
+        cond_len = int(cond.shape[1])
+        base = _tw.prompt_base((meta or {}).get("minimax_token_tags"), cond_len, prompt_tokens)
+        if base is None:
+            return None
+
+        # Each phrase is located at the offset it was JOINED at, not by searching the text:
+        # one phrase can be a substring of another ("dress" inside "red dress"), and a search
+        # would hand both the same rows. The join is ours, so the positions are known.
+        rows = cond[0]
+        out = {}
+        cursor = 0
+        for text in texts:
+            c_start, c_end = cursor, cursor + len(text)
+            cursor = c_end + 2                       # the ", " this was joined with
+            span = _tw.token_spans_from_offsets(offsets, [(c_start, c_end, 1.0)])
+            if not span:
+                return None
+            a, b = base + int(span[0][0]), base + int(span[0][1])
+            if a < 0 or b > cond_len or b <= a:
+                return None
+            out[text] = rows[a:b].float().mean(dim=0)
+        return out if len(out) == len(texts) else None
+
+    def _v2_scores_against_categories(self, phrase_vector, category_vectors):
+        """Cosine similarity of one phrase vector against each category vector, 0..1.
+
+        Shared by both ways of getting that vector — the batched span pool and the per-phrase
+        encode — so a phrase scores the same however its vector was obtained.
+        """
         if phrase_vector is None:
             return {}
         scores = {}
-        for category, vector in category_vectors.items():
+        for category, vector in (category_vectors or {}).items():
             if not isinstance(vector, torch.Tensor) or vector.shape != phrase_vector.shape:
                 continue
-            sim = F.cosine_similarity(phrase_vector.unsqueeze(0), vector.to(phrase_vector.device).unsqueeze(0), dim=-1)
+            sim = F.cosine_similarity(phrase_vector.unsqueeze(0),
+                                      vector.to(phrase_vector.device).unsqueeze(0), dim=-1)
             scores[category] = float(((sim.item() + 1.0) * 0.5))
         return scores
+
+    def _v2_clip_similarity_scores(self, clip, phrase, category_vectors, encode_cache=None):
+        phrase_cond, _, _ = self._v2_encode_prompt(clip, phrase, encode_cache=encode_cache,
+                                                   purpose="phrase classification")
+        return self._v2_scores_against_categories(
+            self._v2_conditioning_vector(phrase_cond), category_vectors)
 
     # Eight fixed strings embedded to classify phrases by cosine similarity. They are
     # CONSTANT — CATEGORY_DESCRIPTIONS is a class attribute, so the result depends only on the
@@ -5664,8 +5737,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         if uncertain and clip is not None:
             category_vectors = self._v2_category_vectors(clip, encode_cache=encode_cache)
+            # One encode for every uncertain phrase, rather than one EACH. None means the
+            # batch could not be trusted (no offsets, or spans that did not line up), and the
+            # per-phrase path below runs unchanged.
+            batched = self._v2_phrase_vectors_in_one_pass(
+                clip, [i["text"] for i in uncertain], encode_cache=encode_cache)
             for item in uncertain:
-                clip_scores = self._v2_clip_similarity_scores(clip, item["text"], category_vectors, encode_cache=encode_cache)
+                vector = (batched or {}).get(item["text"])
+                clip_scores = (
+                    self._v2_scores_against_categories(vector, category_vectors)
+                    if vector is not None else
+                    self._v2_clip_similarity_scores(clip, item["text"], category_vectors, encode_cache=encode_cache)
+                )
                 if not clip_scores:
                     continue
                 merged = self._v2_merge_clip_category_scores(item["category_scores"], clip_scores)
