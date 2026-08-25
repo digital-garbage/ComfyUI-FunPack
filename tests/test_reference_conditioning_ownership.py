@@ -127,7 +127,10 @@ def test_entries_past_the_first_are_not_discarded():
     import conditioning
     src = inspect.getsource(conditioning.FunPackVideoRefinerV2.refine_v2)
     assert 'conditioning_owner == "CONDITIONING-owned" and isinstance(positive_conditioning, list)' in src
-    assert "output_conditioning + list(positive_conditioning[1:])" in src
+    # Kept AND tagged: the Chain Sampler counts one entry per scene, so an untagged extra
+    # entry becomes a second scene instead of riding with the first.
+    assert 'meta_copy["funpack_companion_conditioning"] = True' in src
+    assert "output_conditioning + companions" in src
 
 
 def test_the_extra_entries_are_reported():

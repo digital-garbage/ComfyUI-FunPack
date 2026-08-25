@@ -74,3 +74,20 @@ def test_a_broken_payload_leaves_the_conditioning_alone(studio):
     mixed = torch.zeros(1, 64, 8)
     assert torch.equal(studio._v2_apply_conditioning_payload(mixed, {"shape": [1, 64, 8]}, 0.5),
                        mixed)
+
+
+def test_the_liked_blend_survives_a_prompt_whose_length_changed(monkeypatch):
+    """The Absolute/liked pull was the one payload path still doing a raw lerp. On H3 the
+    encoder does not pad, so a direction learned at 586 positions met a 494-position prompt
+    and the blend threw — silently dropping the pull toward what the user rated well."""
+    import torch
+    from conditioning import FunPackVideoRefinerV2, tensor_to_serializable
+
+    refiner = FunPackVideoRefinerV2()
+    mixed = torch.zeros(1, 494, 16)
+    liked = torch.ones(1, 586, 16)
+    out = refiner._v2_payload_like(tensor_to_serializable(liked), mixed)
+
+    assert out is not None
+    assert list(out.shape) == [1, 494, 16]
+    assert float(mixed.lerp(out, 0.5).mean()) > 0.0

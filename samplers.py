@@ -3960,6 +3960,19 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return 0
 
+    @staticmethod
+    def _is_companion_conditioning(entry):
+        """True for an entry that rides WITH a scene rather than being one.
+
+        Studio tags every entry past the first of a wired multi-entry CONDITIONING: an r2v
+        node emits the reference block and the encoded prompt separately, and both describe
+        one generation. Untagged, each would be counted as its own scene.
+        """
+        try:
+            return bool(entry[1].get("funpack_companion_conditioning"))
+        except (AttributeError, IndexError, KeyError, TypeError):
+            return False
+
     def _second_pass_schedule(self, alt_sigmas):
         """Validate the pass-2 schedule. Returns (sigmas, reason); one of them is None.
 
@@ -7118,8 +7131,20 @@ class FunPackLTXAVSceneChainSampler:
             )
 
         max_scene_count = max(1, int(max_scenes))
-        scene_conditionings = positive[:max_scene_count]
+        # An entry here is a SCENE — except a companion. A wired r2v conditioning arrives as
+        # several entries that all describe ONE generation (the reference block and the
+        # encoded prompt); Studio tags everything after the first so they are not counted as
+        # scenes. They ride with every scene instead, below.
+        _companions = [c for c in positive if self._is_companion_conditioning(c)]
+        scene_conditionings = [c for c in positive
+                               if not self._is_companion_conditioning(c)][:max_scene_count]
+        if not scene_conditionings and positive:
+            scene_conditionings = positive[:1]     # all companions: still sample something
         scene_count = len(scene_conditionings)
+        if _companions:
+            print(f"[FunPackSceneChain] {len(_companions)} companion conditioning entr"
+                  f"{'y' if len(_companions) == 1 else 'ies'} ride with every scene "
+                  f"(a wired reference conditioning); {scene_count} scene(s) to sample.")
         # Keyframe pins wired in from a MiniMax H3 Image to Video node, read once for the run.
         _h3_wired_pins = self._h3_external_pins(h3_keyframes) if self._is_h3 else None
         # Did the opening scene get an anchor pin? cut_opening_frames' H3 path needs it.
@@ -7290,7 +7315,7 @@ class FunPackLTXAVSceneChainSampler:
         _ctx_unsupported_reported = False  # print the "core too old" line once, not per scene
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
-            scene_positive = [scene_cond]
+            scene_positive = [scene_cond] + _companions
             scene_negative = negative
 
             h3_ref_count = 0

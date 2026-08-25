@@ -8353,11 +8353,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if int(liked_dir_slot.get("direction_count", 0)) >= 3:
             mixed = self._v2_apply_direction(mixed, liked_dir_slot, strength * liked_boost)
         elif self._v2_shape_compatible(liked_payload, mixed):
-            try:
-                liked = serializable_to_tensor(liked_payload).to(device=mixed.device, dtype=mixed.dtype)
+            # Through _v2_payload_like, which resizes along the sequence. _v2_shape_compatible
+            # deliberately ignores the sequence length, and on H3 that length changes with
+            # every prompt edit because Qwen does not pad — so this branch used to admit a
+            # payload the lerp could not take, throw, and drop the learned direction entirely.
+            liked = self._v2_payload_like(liked_payload, mixed)
+            if liked is not None:
                 mixed = mixed.lerp(liked, strength)
-            except Exception as _e:
-                _log.failed("FunPackStudio", "liked-conditioning blend", _e,
+            else:
+                _log.failed("FunPackStudio", "liked-conditioning blend",
+                            "the stored conditioning could not be matched to this one",
                             "the conditioning is NOT pulled toward what you rated well")
 
         mixed, family_delta_status = self._v2_apply_intent_family_delta(mixed, intent_family_slot, strength)
@@ -9889,32 +9894,36 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             self._v2_update_concept_delta_memory(global_state, previous_run, learning_profile)
             self._v2_update_concept_pair_dirs(global_state, previous_run, learning_profile)
-            seed_memory_status = self._v2_update_successful_seed_memory(
-                global_state,
-                previous_run,
-                learning_profile,
-                int(global_state.get("total_iterations", 0)) + 1,
-                seed_output_connected=bool(seed_output_connected),
-            )
-            self._v2_update_path_outcomes(
-                global_state,
-                previous_run,
-                learning_profile,
-                int(global_state.get("total_iterations", 0)) + 1,
-            )
-            intent_family_status, _ = self._v2_update_intent_family_memory(
-                global_state,
-                previous_run,
-                learning_profile,
-                int(global_state.get("total_iterations", 0)) + 1,
-                axis_feedback,
-            )
-            self._v2_update_appearance_anchor(
-                global_state,
-                previous_run,
-                learning_profile,
-                int(global_state.get("total_iterations", 0)) + 1,
-            )
+            with self._v2_stage("seed memory"):
+                seed_memory_status = self._v2_update_successful_seed_memory(
+                    global_state,
+                    previous_run,
+                    learning_profile,
+                    int(global_state.get("total_iterations", 0)) + 1,
+                    seed_output_connected=bool(seed_output_connected),
+                )
+            with self._v2_stage("path outcomes"):
+                self._v2_update_path_outcomes(
+                    global_state,
+                    previous_run,
+                    learning_profile,
+                    int(global_state.get("total_iterations", 0)) + 1,
+                )
+            with self._v2_stage("intent family"):
+                intent_family_status, _ = self._v2_update_intent_family_memory(
+                    global_state,
+                    previous_run,
+                    learning_profile,
+                    int(global_state.get("total_iterations", 0)) + 1,
+                    axis_feedback,
+                )
+            with self._v2_stage("appearance anchor"):
+                self._v2_update_appearance_anchor(
+                    global_state,
+                    previous_run,
+                    learning_profile,
+                    int(global_state.get("total_iterations", 0)) + 1,
+                )
             negative_memory_status = self._v2_update_negative_prompt_memory(
                 global_state,
                 previous_run,
@@ -10004,19 +10013,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     fired_keys |= set(ks or [])
                 fired_keys.discard(str(refinement_key or "").strip())
                 if fired_keys:
-                    trained_keys = self._v2_learn_scene_into_keys(
-                        sorted(fired_keys), refinement_key, previous_run, learning_profile,
-                        int(global_state.get("total_iterations", 0)) + 1, axis_feedback,
-                        bool(seed_output_connected),
-                    )
+                    with self._v2_stage("scene keys"):
+                        trained_keys = self._v2_learn_scene_into_keys(
+                            sorted(fired_keys), refinement_key, previous_run, learning_profile,
+                            int(global_state.get("total_iterations", 0)) + 1, axis_feedback,
+                            bool(seed_output_connected),
+                        )
                     if trained_keys:
                         memory_status += f"\nTrained custom key(s): {', '.join(trained_keys)}"
 
-        vision_context, vision_status = self._v2_update_vision_memory(
-            global_state,
-            clip_vision_output=clip_vision_output,
-            source_image=source_image,
-        )
+        with self._v2_stage("vision memory"):
+            vision_context, vision_status = self._v2_update_vision_memory(
+                global_state,
+                clip_vision_output=clip_vision_output,
+                source_image=source_image,
+            )
         _sc_path = refinement_state_path(refinement_key, "sampler_ctx", prefix=self.V2_STATE_PREFIX)
         _last_sampler_context = {}
         if os.path.exists(_sc_path):
@@ -10032,20 +10043,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         intent_prompt = self._v2_prompt_key(user_intent_prompt)
         intent_prompt_is_vague = self._v2_user_intent_prompt_is_vague(intent_prompt)
         current_prompt_refusal = self._prompt_looks_like_refusal(analysis_prompt)
-        phrases = [] if current_prompt_refusal else self._v2_classify_phrases(
-            clip,
-            self._ordered_prompt_phrases(analysis_prompt),
-            global_state,
-            encode_cache=encode_cache,
-        )
-        intent_phrases = []
-        if intent_prompt and not intent_prompt_is_vague and not current_prompt_refusal:
-            intent_phrases = self._v2_classify_phrases(
+        with self._v2_stage("classify phrases"):
+            phrases = [] if current_prompt_refusal else self._v2_classify_phrases(
                 clip,
-                self._ordered_prompt_phrases(intent_prompt),
+                self._ordered_prompt_phrases(analysis_prompt),
                 global_state,
                 encode_cache=encode_cache,
             )
+        intent_phrases = []
+        if intent_prompt and not intent_prompt_is_vague and not current_prompt_refusal:
+            with self._v2_stage("classify intent phrases"):
+                intent_phrases = self._v2_classify_phrases(
+                    clip,
+                    self._ordered_prompt_phrases(intent_prompt),
+                    global_state,
+                    encode_cache=encode_cache,
+                )
         intent_source_prompt = self._v2_intent_source_prompt(analysis_prompt, intent_prompt, intent_prompt_is_vague)
         current_family_key, current_family_slot, current_family_similarity = self._v2_intent_family_slot(
             global_state,
@@ -10148,26 +10161,27 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             intent_expansions = self._v2_format_intent_expansions(global_state, intent_source_prompt)
             pre_advisor_prompt = prompt_to_encode
             advisor_rating_label = rating_label if has_previous_run else "No previous output (first run or session reset)"
-            prompt_to_encode, advisor_status, advisor_diagnostic, advisor_applied, advisor_suggested = self._v2_prompt_advisor(
-                advisor_clip,
-                advisor_mode,
-                prompt_to_encode,
-                intent_source_prompt,
-                repair_feedback,
-                repair_candidates,
-                previous_run=previous_run,
-                intent_phrases=intent_phrases,
-                allow_prompt_change=not learning_mode and advisor_mode in {"Only prompt", "Full"},
-                seed=seed,
-                image=source_image,
-                thinking=advisor_thinking,
-                encode_cache=encode_cache,
-                feedback_prompt=feedback_prompt,
-                feedback_history=feedback_history,
-                max_length=self._V2_ADVISOR_MAX_TOKENS,
-                rating_profile=learning_profile,
-                intent_expansions=intent_expansions,
-            )
+            with self._v2_stage("advisor"):
+                prompt_to_encode, advisor_status, advisor_diagnostic, advisor_applied, advisor_suggested = self._v2_prompt_advisor(
+                    advisor_clip,
+                    advisor_mode,
+                    prompt_to_encode,
+                    intent_source_prompt,
+                    repair_feedback,
+                    repair_candidates,
+                    previous_run=previous_run,
+                    intent_phrases=intent_phrases,
+                    allow_prompt_change=not learning_mode and advisor_mode in {"Only prompt", "Full"},
+                    seed=seed,
+                    image=source_image,
+                    thinking=advisor_thinking,
+                    encode_cache=encode_cache,
+                    feedback_prompt=feedback_prompt,
+                    feedback_history=feedback_history,
+                    max_length=self._V2_ADVISOR_MAX_TOKENS,
+                    rating_profile=learning_profile,
+                    intent_expansions=intent_expansions,
+                )
             if advisor_applied:
                 encoded_role = "advisor repaired prompt"
             if advisor_diagnostic:
@@ -10715,7 +10729,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # would be a guess, and dropping them is the bug being fixed here.
         if conditioning_owner == "CONDITIONING-owned" and isinstance(positive_conditioning, list) \
                 and len(positive_conditioning) > 1:
-            output_conditioning = output_conditioning + list(positive_conditioning[1:])
+            # TAGGED as companions. The Chain Sampler reads one entry per SCENE
+            # (scene_conditionings = positive[:max_scenes]), so appending an r2v companion
+            # untagged made it a second scene and the run sampled twice for no reason the
+            # user asked for. The tag says "ride with the scene, do not be one".
+            companions = []
+            for entry in positive_conditioning[1:]:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict):
+                    meta_copy = dict(entry[1])
+                    meta_copy["funpack_companion_conditioning"] = True
+                    companions.append([entry[0], meta_copy])
+                else:
+                    companions.append(entry)
+            output_conditioning = output_conditioning + companions
             _log.note_on_change(
                 "studio:wired_extra_entries", "FunPackStudio",
                 f"the wired positive CONDITIONING has {len(positive_conditioning)} entries; "
