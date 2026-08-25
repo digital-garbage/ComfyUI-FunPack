@@ -152,3 +152,83 @@ def test_learning_runs_on_every_rating_not_behind_a_toggle():
     import inspect
     src = inspect.getsource(C.FunPackVideoRefinerV2._v2_learn_scene_into_state)
     assert "_v2_update_h3_gains(target_global, profile)" in src
+
+
+# ── axis-aware credit assignment ───────────────────────────────────────────
+#
+# A rating carries three per-axis signals in [-1, +1] as well as its scalar reward, and
+# they disagree with it in exactly the cases that matter. "Missing concept" is reward
+# +0.10 — quality was fine — but concept_signal -1.00. Read as the scalar it nudges every
+# gain toward the run that missed the prompt; read per axis it pushes the prompt gains
+# away from it and leaves the audio gain out of it.
+
+def test_missing_concept_punishes_the_prompt_gains(studio):
+    prof = C.RATING_PROFILES["Missing concept"]
+    assert prof["reward"] > 0                       # the scalar says "slightly good"
+    assert studio._h3_gain_credit("prompt", prof) == pytest.approx(-1.0)
+    assert studio._h3_gain_credit("prompt_scale", prof) == pytest.approx(-1.0)
+
+
+def test_missing_concept_does_not_drag_the_video_gain_down_with_it(studio):
+    prof = C.RATING_PROFILES["Missing concept"]
+    assert studio._h3_gain_credit("video", prof) > 0     # detail and quality were fine
+
+
+def test_missing_details_punishes_the_video_gain(studio):
+    prof = C.RATING_PROFILES["Missing details"]
+    assert studio._h3_gain_credit("video", prof) < 0
+    assert studio._h3_gain_credit("prompt", prof) > 0     # the prompt landed
+
+
+def test_audio_has_no_rated_axis_so_it_uses_the_overall_reward(studio):
+    for label in ("Perfect", "Awful", "Missing concept"):
+        prof = C.RATING_PROFILES[label]
+        assert studio._h3_gain_credit("audio", prof) == pytest.approx(prof["reward"])
+
+
+def test_perfect_credits_everything_fully(studio):
+    prof = C.RATING_PROFILES["Perfect"]
+    for key in studio.H3_GAIN_KEYS:
+        assert studio._h3_gain_credit(key, prof) == pytest.approx(1.0)
+
+
+def test_awful_punishes_everything(studio):
+    prof = C.RATING_PROFILES["Awful"]
+    for key in studio.H3_GAIN_KEYS:
+        assert studio._h3_gain_credit(key, prof) < 0
+
+
+def test_a_profile_with_no_signals_falls_back_to_the_scalar(studio):
+    assert studio._h3_gain_credit("prompt", {"reward": 0.4}) == pytest.approx(0.4)
+
+
+def test_a_satisfied_axis_cannot_mask_a_failed_one(studio):
+    """Averaging let it: detail -1.00 with quality +0.85 came out at -0.08, so a rating that
+    said details were missing barely moved the gain that governs detail."""
+    prof = {"reward": 0.0, "detail_signal": -1.0, "quality_signal": 1.0}
+    assert studio._h3_gain_credit("video", prof) == pytest.approx(-1.0)
+
+
+def test_missing_details_now_moves_the_video_gain_decisively(studio):
+    assert studio._h3_gain_credit("video", C.RATING_PROFILES["Missing details"]) \
+        == pytest.approx(-1.0)
+
+
+def test_both_axes_satisfied_still_credits_fully(studio):
+    prof = {"reward": 1.0, "detail_signal": 1.0, "quality_signal": 1.0}
+    assert studio._h3_gain_credit("video", prof) == pytest.approx(1.0)
+
+
+def test_axis_credit_actually_drives_the_update(studio):
+    """The end-to-end consequence: one rating moves two gains in OPPOSITE directions."""
+    g = {}
+    studio._ensure_h3_gain_state(g)
+    for key in ("prompt", "video"):
+        g["h3_gains"]["last_applied"][key] = 1.10        # both rendered above centre
+    studio._v2_update_h3_gains(g, dict(C.RATING_PROFILES["Missing concept"]))
+    assert g["h3_gains"]["values"]["prompt"] < 1.0       # prompt missed -> back off
+    assert g["h3_gains"]["values"]["video"] > 1.0        # picture was fine -> keep
+
+
+def test_every_gain_key_has_an_axis_entry(studio):
+    assert set(studio.H3_GAIN_AXES) == set(studio.H3_GAIN_KEYS)

@@ -3090,6 +3090,22 @@ class FunPackVideoRefiner:
     # same thing on every prompt, so a value learned on one run is worth something on the
     # next. That is the property that makes them worth learning at all.
     H3_GAIN_KEYS = ("video", "prompt", "audio", "prompt_scale")
+    # Which rated AXIS each gain answers to. A rating carries three per-axis signals in
+    # [-1, +1] alongside its overall reward, and they say far more than the scalar does:
+    # "Missing concept" is reward +0.10 (quality was fine) but concept_signal -1.00. Read as
+    # the scalar, that rating nudges every gain slightly TOWARD the run that missed the
+    # prompt. Read per axis, it pushes the two prompt gains hard away from it and leaves the
+    # audio gain alone, which is what the user actually said.
+    #
+    # Signals share the reward's [-1, +1] scale, so they drop straight into the same update.
+    # An empty tuple means no axis is rated for that gain — audio has none — so it falls back
+    # to the overall reward rather than inventing a signal for it.
+    H3_GAIN_AXES = {
+        "video": ("detail_signal", "quality_signal"),
+        "prompt": ("concept_signal",),
+        "prompt_scale": ("concept_signal",),
+        "audio": (),
+    }
     H3_GAIN_MIN = 0.60
     H3_GAIN_MAX = 1.40
     H3_GAIN_LR = 0.08
@@ -3109,6 +3125,34 @@ class FunPackVideoRefiner:
             state["last_applied"].setdefault(key, 1.0)
         return state
 
+    def _h3_gain_credit(self, key, rating_profile):
+        """The reward THIS gain should be credited with, from the axes it answers to.
+
+        Recovering four parameters from one scalar works, but slowly — it relies on the
+        random perturbations decorrelating over many runs. The per-axis signals are already
+        on every rating, so each rating can teach the parameter it is actually about.
+
+        Falls back to the overall reward when a gain has no rated axis (audio), or when a
+        profile carries no signals at all.
+        """
+        axes = self.H3_GAIN_AXES.get(key, ())
+        signals = []
+        for axis in axes:
+            value = rating_profile.get(axis)
+            if value is None:
+                continue
+            try:
+                signals.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        if not signals:
+            return float(rating_profile.get("reward", 0.0) or 0.0)
+        # The WORST axis, not the average. These axes are conjunctive — the video gain has to
+        # satisfy detail AND quality — so a satisfied axis must not mask a failed one.
+        # Averaging let it: "Missing details" is detail -1.00 with quality +0.85, which
+        # averages to -0.08 and barely moves the gain the rating is actually about.
+        return min(signals)
+
     def _v2_update_h3_gains(self, global_state: dict, rating_profile: dict):
         """Credit this rating to the perturbation that was actually rendered."""
         if not isinstance(global_state, dict) or not isinstance(rating_profile, dict):
@@ -3124,8 +3168,9 @@ class FunPackVideoRefiner:
             perturbation = float(applied.get(key, centre)) - centre
             if perturbation == 0.0:
                 continue
+            credit = self._h3_gain_credit(key, rating_profile)
             updated = min(self.H3_GAIN_MAX, max(
-                self.H3_GAIN_MIN, centre + perturbation * reward * self.H3_GAIN_LR))
+                self.H3_GAIN_MIN, centre + perturbation * credit * self.H3_GAIN_LR))
             if updated != centre:
                 values[key] = updated
                 moved.append(f"{key}={updated:.3f}")
