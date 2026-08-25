@@ -11243,10 +11243,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 from value_function import OnlineValueFunction
             with _torch.inference_mode(False), _torch.enable_grad():
                 cond_tensor = serializable_to_tensor(payload).clone()
-                vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=cond_tensor.shape[-1])
+                with self._v2_stage("  vf: load"):
+                    vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=cond_tensor.shape[-1])
                 if vf is not None:
-                    vf.train_on(cond_tensor, float(reward))
-                    vf.save(vf_path)
+                    with self._v2_stage("  vf: train"):
+                        vf.train_on(cond_tensor, float(reward))
+                    with self._v2_stage("  vf: save"):
+                        vf.save(vf_path)
                     return vf.n_trained
         except Exception as e:
             print(f"[FunPackRefiner] Value function training failed: {e}")
@@ -11272,11 +11275,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 return None
             vf_path = refinement_state_path(refinement_key, "value_fn_x0", prefix="refine_v2", extension="pt")
             with _torch.inference_mode(False), _torch.enable_grad():
-                snapshot = _torch.load(snap_path, map_location="cpu", weights_only=False)
-                vf = LatentValueFunction.load_or_create(vf_path, hidden_dim=LatentValueFunction.DEFAULT_HIDDEN_DIM)
+                with self._v2_stage("  x0 vf: load snapshot"):
+                    snapshot = _torch.load(snap_path, map_location="cpu", weights_only=False)
+                with self._v2_stage("  x0 vf: load"):
+                    vf = LatentValueFunction.load_or_create(vf_path, hidden_dim=LatentValueFunction.DEFAULT_HIDDEN_DIM)
                 if vf is not None:
-                    vf.train_on(snapshot, float(reward))
-                    vf.save(vf_path)
+                    with self._v2_stage("  x0 vf: train"):
+                        vf.train_on(snapshot, float(reward))
+                    with self._v2_stage("  x0 vf: save"):
+                        vf.save(vf_path)
                     return vf.n_trained
         except Exception as e:
             print(f"[FunPackRefiner] Output value function training failed: {e}")

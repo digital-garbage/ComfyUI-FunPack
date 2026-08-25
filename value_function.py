@@ -219,6 +219,9 @@ class OnlineValueFunction(nn.Module):
     def is_ready(self):
         return len(self.buffer_c) >= self.MIN_SAMPLES
 
+    def parameter_count(self):
+        return sum(p.numel() for p in self.parameters())
+
     def save(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         buf = torch.stack(self.buffer_c) if self.buffer_c else torch.zeros(0, self.hidden_dim)
