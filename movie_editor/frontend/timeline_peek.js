@@ -4,11 +4,14 @@
 // take is a property of the screen you are sitting at, which is why it lives beside the
 // colour scheme rather than in settings that travel with a project.
 //
-// The hover half is CSS (:hover on the zone). The part that needs script is the DRAG: while
-// a file is being dragged from the media browser or the desktop, the pointer is in drag mode
-// and a strip that stays shut is a target you cannot hit. dragenter opens it and holds it
-// open for the whole drag, so dropping onto a lane works exactly as it does when the timeline
-// is pinned open.
+// The header is NOT part of the strip: it carries Generate, the pinned buttons and the
+// Composer, and reaching for any of them must not throw the timeline open under the cursor.
+// Only the body below it collapses, and only the body reacts to a pointer.
+//
+// The hover half is CSS. The part that needs script is the DRAG: while a file is being
+// dragged from the media browser or the desktop, the pointer is in drag mode and a strip that
+// stays shut is a target you cannot hit. dragenter opens it and holds it open for the whole
+// drag, so dropping onto a lane works exactly as it does when the timeline is pinned open.
 (function (root, factory) {
   const api = factory();
   if (typeof module === "object" && module.exports) module.exports = api;      // node --test
@@ -77,9 +80,11 @@
     };
   }
 
-  // The strip is exactly its own header, measured rather than guessed: .zone-head wraps when
-  // the zone is narrow (34px min-height, 138px in practice on a normal window), and a fixed
-  // strip height clips the transport and Composer the strip exists to keep visible.
+  // The header's height, measured rather than assumed: .zone-head WRAPS when the zone is
+  // narrow (34px min-height, 138px in practice on a normal window). The zone itself sizes to
+  // its contents now, so this is only what anything anchored to the timeline's height reads
+  // to find the closed edge — a constant there would float a toast over the strip or leave a
+  // gap under it.
   function measure(doc) {
     const d = doc || (typeof document !== "undefined" ? document : null);
     if (!d || !d.getElementById) return 0;

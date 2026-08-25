@@ -431,50 +431,70 @@ a.brand:hover .brand-sub { color: var(--accent-hi); }
    .peek-drag-open is held by timeline_peek.js for the length of a drag: during one the
    pointer is in drag mode and a strip that stays shut is a target you cannot hit. */
 :root[data-timeline-peek="1"] .zone.timeline {
-  /* flex: 0 0 auto is the load-bearing part. .zone is a shrinkable column child, so a
-     height with min-height: 0 let the workspace squeeze the strip to 1px. It must not
-     shrink; the strip is exactly as tall as its own header.
-     --timeline-peek-h is measured from that header by timeline_peek.js rather than guessed:
-     .zone-head WRAPS when the zone is narrow (measured at 138px on a normal window, not the
-     34px min-height), so any fixed number here clips the transport and Composer it exists
-     to keep visible. The fallback only covers the moment before the first measurement. */
-  height: var(--timeline-peek-h, 34px);
+  /* The zone sizes to its contents: the header at its natural height plus whatever the body
+     is currently worth. flex: 0 0 auto is load-bearing — .zone is a shrinkable column child,
+     and a fixed height with min-height: 0 let the workspace squeeze it to 1px. */
+  height: auto;
   min-height: 0;
   flex: 0 0 auto;
-  transition: height .14s ease;
 }
-:root[data-timeline-peek="1"] .zone.timeline:hover,
-:root[data-timeline-peek="1"] .zone.timeline:focus-within,
-:root[data-timeline-peek="1"] .zone.timeline.peek-drag-open {
-  height: var(--timeline-h);
-  min-height: 200px;
-}
-/* The body collapses rather than disappearing: display:none would tear down and rebuild the
-   lanes on every open, and the timeline measures itself to lay them out. */
+/* THE HEADER IS NOT THE TRIGGER. It carries Generate, the pinned buttons and the Composer,
+   and reaching for any of them must not throw the timeline open under the cursor. Only the
+   strip below it reacts, so the header behaves exactly as it does with the setting off. */
 :root[data-timeline-peek="1"] .zone.timeline .zone-body {
-  flex: 0 0 0;
+  /* Longhands, not the `flex` shorthand: var() inside a shorthand is substituted at
+     computed-value time and a browser that cannot resolve it discards the WHOLE
+     declaration, taking flex-grow and flex-shrink with it. Spelled out, a bad custom
+     property can only cost the basis. */
+  flex-grow: 0;
+  flex-shrink: 0;
+  flex-basis: var(--timeline-strip-h, 18px);
+  height: var(--timeline-strip-h, 18px);
+  min-height: 0;
   overflow: hidden;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .1s ease;
+  position: relative;          /* the grab-handle below is drawn against this */
+  transition: flex-basis .14s ease, height .14s ease;
 }
-:root[data-timeline-peek="1"] .zone.timeline:hover .zone-body,
-:root[data-timeline-peek="1"] .zone.timeline:focus-within .zone-body,
+/* Hovering the strip grows it under the cursor, which keeps the pointer inside the thing it
+   just opened. focus-within is on the BODY, not the zone, for the same reason as above:
+   tabbing into a clip should open it, tabbing onto Generate should not. */
+:root[data-timeline-peek="1"] .zone.timeline .zone-body:hover,
+:root[data-timeline-peek="1"] .zone.timeline .zone-body:focus-within,
 :root[data-timeline-peek="1"] .zone.timeline.peek-drag-open .zone-body {
-  flex: 1;
+  flex-grow: 0;
+  flex-shrink: 0;
+  flex-basis: var(--timeline-h);
+  height: var(--timeline-h);
   overflow: auto;
-  opacity: 1;
-  pointer-events: auto;
 }
+/* The closed strip reads as a grabbable edge rather than a clipped timeline. */
+:root[data-timeline-peek="1"] .zone.timeline .zone-body::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 46px;
+  height: 3px;
+  margin-top: 7px;
+  border-radius: 2px;
+  background: var(--line);
+  pointer-events: none;
+}
+:root[data-timeline-peek="1"] .zone.timeline .zone-body:hover::before,
+:root[data-timeline-peek="1"] .zone.timeline .zone-body:focus-within::before,
+:root[data-timeline-peek="1"] .zone.timeline.peek-drag-open .zone-body::before { display: none; }
 /* Dragging the splitter would fight the strip for the height, so it goes with it. The
    preference IS the height decision while it is on. */
 :root[data-timeline-peek="1"] #split-bottom { display: none; }
-/* Anything anchored to the timeline's height follows the strip, not the open height. */
-:root[data-timeline-peek="1"] { --timeline-anchor: var(--timeline-peek-h, 34px); }
+/* Anything anchored to the timeline's height follows the CLOSED size: the measured header
+   plus the strip under it. */
+:root[data-timeline-peek="1"] {
+  --timeline-anchor: calc(var(--timeline-peek-h, 34px) + var(--timeline-strip-h, 18px));
+}
 /* Reduced motion: open and close, just without the slide. */
 @media (prefers-reduced-motion: reduce) {
-  :root[data-timeline-peek="1"] .zone.timeline,
   :root[data-timeline-peek="1"] .zone.timeline .zone-body { transition: none; }
+}
 }
 }
 
