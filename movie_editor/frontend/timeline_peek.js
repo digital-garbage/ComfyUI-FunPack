@@ -80,6 +80,11 @@
     };
   }
 
+  // Long enough that crossing the strip on the way to the Dock is not a trigger, short
+  // enough that aiming at it does not feel like waiting. A drag skips it entirely: dragging
+  // something onto the timeline is not an accident.
+  const OPEN_DELAY_MS = 220;
+
   const STRIP_ID = "timeline-peek-strip";
   const OPEN_CLASS = "peek-open";
   const STRIP_LABEL = "Timeline — hover to show";
@@ -132,8 +137,46 @@
     return !target.closest(".zone-head");
   }
 
-  // The closed body is display:none, so the lanes have no width to lay out against while it
-  // is shut. Telling the app to re-measure on the way open costs one resize handler and
+  // Hover INTENT, not hover. The pointer crossing the strip on its way somewhere else — the
+  // Mac Dock is right under it in a windowed layout — used to flash the timeline open for a
+  // frame. Opening waits for the pointer to still be there after a beat; leaving cancels a
+  // pending open rather than queueing a close, so a pass-through costs nothing at all.
+  //
+  // Timers are injected so this is testable without waiting in real time.
+  function makeHoverIntent(opts) {
+    const o = opts || {};
+    const delay = o.delay == null ? OPEN_DELAY_MS : o.delay;
+    const setT = o.setTimer || ((fn, ms) => setTimeout(fn, ms));
+    const clearT = o.clearTimer || ((id) => clearTimeout(id));
+    let pending = null;
+    let open = false;
+    return {
+      // Pointer is over something that opens the timeline.
+      point() {
+        if (open || pending !== null) return false;
+        pending = setT(() => { pending = null; open = true; o.onOpen && o.onOpen(); }, delay);
+        return false;
+      },
+      // Pointer is over the header, or has left the zone.
+      away() {
+        if (pending !== null) { clearT(pending); pending = null; }
+        if (!open) return false;
+        open = false;
+        o.onClose && o.onClose();
+        return false;
+      },
+      // A drag: deliberate, so no waiting.
+      now() {
+        if (pending !== null) { clearT(pending); pending = null; }
+        open = true;
+        return true;
+      },
+      get isOpen() { return open; },
+      get isPending() { return pending !== null; },
+    };
+  }
+
+  // The closed body has no height to lay out against while it is shut. Telling the app to re-measure on the way open costs one resize handler and
   // avoids clips drawn at a stale width for the first frame after it appears.
   let reflowQueued = false;
   function markReflow(doc) {
@@ -158,21 +201,25 @@
     if (typeof window !== "undefined" && window.addEventListener) {
       window.addEventListener("resize", onResize);
     }
-    const paint = (open) => zone.classList.toggle(DRAG_CLASS, !!open);
-
-    const onEnter = (e) => { if (isDrag(e)) paint(track.enter()); };
-    const onLeave = (e) => { if (isDrag(e)) paint(track.leave()); };
-    const onEnd = () => paint(track.end());
-
     // Hover is driven from script rather than :hover because the two halves of "open" are
     // different elements — the strip you point at and the timeline that replaces it — and a
     // CSS rule on either one alone flickers as the other takes the pointer.
+    const intent = makeHoverIntent({
+      onOpen: () => { zone.classList.add(OPEN_CLASS); markReflow(d); },
+      onClose: () => zone.classList.remove(OPEN_CLASS),
+    });
     const openIf = (e) => {
-      const want = opensOnPointer(e.target, d);
-      zone.classList.toggle(OPEN_CLASS, want);
-      if (want) markReflow(d);
+      if (opensOnPointer(e.target, d)) intent.point();
+      else intent.away();
     };
-    const closeAll = () => zone.classList.remove(OPEN_CLASS);
+    const closeAll = () => intent.away();
+
+    const paint = (open) => zone.classList.toggle(DRAG_CLASS, !!open);
+    const onEnter = (e) => { if (isDrag(e)) paint(track.enter()); };
+    const onLeave = (e) => { if (isDrag(e)) paint(track.leave()); };
+    // A drag ending also clears any hover state it overlapped with, so an open armed just
+    // before the drag cannot fire after the drop and leave the timeline standing open.
+    const onEnd = () => { paint(track.end()); intent.away(); };
     zone.addEventListener("mouseover", openIf);
     zone.addEventListener("mouseleave", closeAll);
 
@@ -200,5 +247,6 @@
   }
 
   return { get, set, apply, install, measure, ensureStrip, opensOnPointer, isDrag,
-           makeDragTracker, LS_KEY, ATTR, DRAG_CLASS, OPEN_CLASS, STRIP_ID, STRIP_LABEL };
+           makeDragTracker, makeHoverIntent, LS_KEY, ATTR, DRAG_CLASS, OPEN_CLASS,
+           STRIP_ID, STRIP_LABEL, OPEN_DELAY_MS };
 }));

@@ -83,3 +83,85 @@ test("the closed strip says what it is", () => {
   assert.match(P.STRIP_LABEL, /timeline/i);
   assert.match(P.STRIP_LABEL, /hover/i);
 });
+
+// --- hover intent: crossing the strip on the way to the Dock is not a request -----
+
+function fakeTimers() {
+  let queue = [], id = 0;
+  return {
+    setTimer: (fn) => { queue.push({ id: ++id, fn }); return id; },
+    clearTimer: (t) => { queue = queue.filter((q) => q.id !== t); },
+    run: () => { const q = queue; queue = []; q.forEach((x) => x.fn()); },
+    get pending() { return queue.length; },
+  };
+}
+
+test("passing over the strip and leaving never opens it", () => {
+  const T = fakeTimers();
+  let opened = 0;
+  const hi = P.makeHoverIntent({ ...T, onOpen: () => opened++ });
+  hi.point();                 // pointer crosses the strip
+  hi.away();                  // ...and carries on to the Dock
+  T.run();                    // whatever was queued fires
+  assert.equal(opened, 0);
+  assert.equal(hi.isOpen, false);
+});
+
+test("staying on it opens it once the delay elapses", () => {
+  const T = fakeTimers();
+  let opened = 0;
+  const hi = P.makeHoverIntent({ ...T, onOpen: () => opened++ });
+  hi.point();
+  assert.equal(hi.isPending, true);
+  T.run();
+  assert.equal(opened, 1);
+  assert.equal(hi.isOpen, true);
+});
+
+test("moving around inside it does not re-arm the delay", () => {
+  const T = fakeTimers();
+  let opened = 0;
+  const hi = P.makeHoverIntent({ ...T, onOpen: () => opened++ });
+  hi.point(); T.run();
+  hi.point(); hi.point();     // strip -> timeline -> a clip
+  T.run();
+  assert.equal(opened, 1);
+});
+
+test("leaving closes what is open", () => {
+  const T = fakeTimers();
+  let closed = 0;
+  const hi = P.makeHoverIntent({ ...T, onClose: () => closed++ });
+  hi.point(); T.run();
+  hi.away();
+  assert.equal(closed, 1);
+  assert.equal(hi.isOpen, false);
+});
+
+test("leaving when nothing is open closes nothing", () => {
+  const T = fakeTimers();
+  let closed = 0;
+  const hi = P.makeHoverIntent({ ...T, onClose: () => closed++ });
+  hi.away();
+  assert.equal(closed, 0);
+});
+
+test("a drag skips the delay", () => {
+  // Dragging a file onto the timeline is deliberate; waiting for it would be wrong.
+  const T = fakeTimers();
+  const hi = P.makeHoverIntent(T);
+  assert.equal(hi.now(), true);
+  assert.equal(hi.isOpen, true);
+  assert.equal(T.pending, 0);
+});
+
+test("a drag cancels a pending hover rather than opening twice", () => {
+  const T = fakeTimers();
+  let opened = 0;
+  const hi = P.makeHoverIntent({ ...T, onOpen: () => opened++ });
+  hi.point();
+  hi.now();
+  T.run();
+  assert.equal(opened, 0);    // the hover open never fired; the drag already opened it
+  assert.equal(hi.isOpen, true);
+});
