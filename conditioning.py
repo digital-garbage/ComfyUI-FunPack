@@ -9512,7 +9512,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return "LoRA suggestions: no FunPack LoRA stack connected."
         memory = global_state.setdefault("lora_weight_memory", {})
         phrase_by_category = {}
-        all_phrase_words = set()
         for phrase in phrases:
             scores = (
                 phrase.get("effective_category_scores", phrase.get("category_scores", {})) or
@@ -9520,7 +9519,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             primary, confidence = self._v2_scores_primary(scores)
             words = self._v2_lora_words(phrase.get("text", ""))
-            all_phrase_words |= words
             phrase_by_category.setdefault(primary, set()).update(words)
             for category, score in scores.items():
                 if category != primary and float(score or 0.0) >= max(0.30, confidence * 0.72):
@@ -9540,10 +9538,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             raw_type = entry.get("type", "general")
             lora_type = self._v2_lora_type(raw_type)
             lora_id = entry.get("id") or self._lora_state_id(name, raw_type)
-            lora_words = self._v2_lora_words(name)
+            # Relevance comes from the type the user set on the LoRA and the categories
+            # present in the prompt — NOT from the file's name. Matching prompt words against
+            # the filename guessed at what a LoRA does from what someone happened to call it,
+            # which is a different feature from learning its weight, and a worse one.
             relation = 0.20 if lora_type == "general" else 0.0
-            if lora_words and all_phrase_words:
-                relation = max(relation, len(lora_words & all_phrase_words) / max(1, len(lora_words)))
             if lora_type == "action":
                 relation = max(relation, 0.62 if phrase_by_category.get("action") else 0.0)
             elif lora_type == "quality":
