@@ -165,3 +165,48 @@ test("a drag cancels a pending hover rather than opening twice", () => {
   assert.equal(opened, 0);    // the hover open never fired; the drag already opened it
   assert.equal(hi.isOpen, true);
 });
+
+// --- a modal that belongs to the timeline holds it open --------------------------
+
+test("a hold keeps it open when the pointer leaves", () => {
+  // The rating picker mounts on document.body, so opening it leaves the zone.
+  const T = fakeTimers();
+  let closed = 0;
+  let held = false;
+  const hi = P.makeHoverIntent({ ...T, onClose: () => closed++, held: () => held });
+  hi.point(); T.run();
+  held = true;
+  hi.away();
+  assert.equal(closed, 0);
+  assert.equal(hi.isOpen, true);
+});
+
+test("it closes once the hold is gone", () => {
+  const T = fakeTimers();
+  let closed = 0;
+  let held = true;
+  const hi = P.makeHoverIntent({ ...T, onClose: () => closed++, held: () => held });
+  hi.now();
+  hi.away();
+  assert.equal(closed, 0);
+  held = false;
+  hi.away();
+  assert.equal(closed, 1);
+});
+
+test("two holders do not release each other", () => {
+  assert.equal(P.hold("rating-picker"), 1);
+  assert.equal(P.hold("something-else"), 2);
+  assert.equal(P.release("something-else"), 1);
+  assert.equal(P.isHeld(), true);
+  assert.equal(P.release("rating-picker"), 0);
+  assert.equal(P.isHeld(), false);
+});
+
+test("releasing something that never held is not a release", () => {
+  P.hold("rating-picker");
+  P.release("never-held-this");
+  assert.equal(P.isHeld(), true);
+  P.release("rating-picker");
+  assert.equal(P.isHeld(), false);
+});

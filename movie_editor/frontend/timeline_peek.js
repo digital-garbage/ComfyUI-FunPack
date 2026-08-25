@@ -54,6 +54,7 @@
       // the zone, and it only means anything alongside the attribute.
       const zone = d.getElementById && d.getElementById("timeline-zone");
       if (zone) { zone.classList.remove(DRAG_CLASS); zone.classList.remove(OPEN_CLASS); }
+      holds.clear();          // the preference is off; nothing is holding anything open
     }
     return !!on;
   }
@@ -137,6 +138,33 @@
     return !target.closest(".zone-head");
   }
 
+  // Something on screen that BELONGS to the timeline but does not live inside it can hold it
+  // open. The rating picker is the case: it mounts on document.body and is opened from a
+  // button in the timeline, so moving onto it leaves the zone and the timeline would shut
+  // underneath the thing you just opened.
+  //
+  // Reasons rather than a boolean, so two holders cannot release each other's hold.
+  const holds = new Set();
+
+  function hold(reason) {
+    holds.add(String(reason || "hold"));
+    if (installedIntent && installedZone) {
+      installedIntent.now();
+      installedZone.classList.add(OPEN_CLASS);
+    }
+    return holds.size;
+  }
+
+  function release(reason) {
+    holds.delete(String(reason || "hold"));
+    // Released with the pointer elsewhere, the timeline should go back to being shut. The
+    // next pointer event over it reopens it by the usual rule if it is still there.
+    if (!holds.size && installedIntent) installedIntent.away();
+    return holds.size;
+  }
+
+  function isHeld() { return holds.size > 0; }
+
   // Hover INTENT, not hover. The pointer crossing the strip on its way somewhere else — the
   // Mac Dock is right under it in a windowed layout — used to flash the timeline open for a
   // frame. Opening waits for the pointer to still be there after a beat; leaving cancels a
@@ -160,7 +188,9 @@
       // Pointer is over the header, or has left the zone.
       away() {
         if (pending !== null) { clearT(pending); pending = null; }
-        if (!open) return false;
+        // A hold outranks the pointer: whatever is holding it open is on screen because of
+        // the timeline, and closing it out from under that is the bug this prevents.
+        if (!open || (o.held && o.held())) return open;
         open = false;
         o.onClose && o.onClose();
         return false;
@@ -188,6 +218,10 @@
     });
   }
 
+  // The live intent, so hold()/release() can act on it from outside install().
+  let installedIntent = null;
+  let installedZone = null;
+
   function install(doc) {
     const d = doc || document;
     const zone = d.getElementById("timeline-zone");
@@ -207,7 +241,12 @@
     const intent = makeHoverIntent({
       onOpen: () => { zone.classList.add(OPEN_CLASS); markReflow(d); },
       onClose: () => zone.classList.remove(OPEN_CLASS),
+      held: isHeld,
     });
+    // A hold taken while the timeline is shut has to open it, not merely keep it open: the
+    // rating picker can be reached from the strip's own row.
+    installedIntent = intent;
+    installedZone = zone;
     const openIf = (e) => {
       if (opensOnPointer(e.target, d)) intent.point();
       else intent.away();
@@ -247,6 +286,7 @@
   }
 
   return { get, set, apply, install, measure, ensureStrip, opensOnPointer, isDrag,
+           hold, release, isHeld,
            makeDragTracker, makeHoverIntent, LS_KEY, ATTR, DRAG_CLASS, OPEN_CLASS,
            STRIP_ID, STRIP_LABEL, OPEN_DELAY_MS };
 }));
