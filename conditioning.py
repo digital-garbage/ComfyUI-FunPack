@@ -4272,6 +4272,47 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return None
 
+    def _v2_stage(self, name):
+        """Time one named stage of a run. Used on the handful that can dominate it.
+
+        The encoder tally answered "is it the encoder"; when the answer is no, the next
+        question is which of the learning stages it is, and that is not something to guess at
+        from the outside — 2.4s at three samples and 24.9s at five is not smooth growth, and
+        the shape of the curve says nothing about which stage draws it.
+        """
+        refiner = self
+
+        class _Stage:
+            def __enter__(self_inner):
+                self_inner.started = time.perf_counter()
+                return self_inner
+
+            def __exit__(self_inner, *_exc):
+                times = getattr(refiner, "_v2_stage_times", None)
+                if times is None:
+                    times = refiner._v2_stage_times = {}
+                slot = times.setdefault(name, {"seconds": 0.0, "calls": 0})
+                slot["seconds"] += time.perf_counter() - self_inner.started
+                slot["calls"] += 1
+                return False
+
+        return _Stage()
+
+    def _v2_stage_status(self, total_seconds=None, floor=0.05):
+        """One line naming the stages that actually cost something this run."""
+        times = getattr(self, "_v2_stage_times", None) or {}
+        rows = sorted(((n, v) for n, v in times.items() if v["seconds"] >= floor),
+                      key=lambda r: r[1]["seconds"], reverse=True)
+        if not rows:
+            return ""
+        parts = [f"{n} {v['seconds']:.1f}s" + (f" x{v['calls']}" if v["calls"] > 1 else "")
+                 for n, v in rows]
+        head = "stages"
+        if total_seconds:
+            named = sum(v["seconds"] for _, v in rows)
+            head += f" ({named / max(total_seconds, 1e-6) * 100:.0f}% of {total_seconds:.1f}s)"
+        return head + ": " + " | ".join(parts)
+
     def _v2_reset_encode_tally(self):
         """Start this run's text-encoder accounting. One dict, reset per run, never persisted."""
         self._v2_encode_tally = {}
@@ -4801,7 +4842,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 global_state, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
             )
             if refinement_key and self._v2_reward_admissible(profile):
-                n = self._v2_train_value_function(
+                with self._v2_stage("value function"):
+                    n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
                     scene_run.get("conditioning"),
                     float(profile.get("reward", 0.0)),
@@ -9709,6 +9751,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         _run_started = time.perf_counter()
         self._v2_reset_encode_tally()
         self._v2_state_io = {}
+        self._v2_stage_times = {}
         _h3_references = _normalize_ref_spec(h3_references) or None
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -9836,7 +9879,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         else:
             axis_feedback = self._v2_axis_feedback(learning_profile, previous_missing_axes)
 
-            memory_status = self._v2_update_phrase_memory(
+            with self._v2_stage("phrase memory"):
+                memory_status = self._v2_update_phrase_memory(
                 global_state,
                 previous_run,
                 learning_profile,
@@ -9885,7 +9929,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 axis_feedback,
             )
             memory_status = f"{memory_status}\n{seed_memory_status}\n{intent_family_status}\n{intent_learning_status}"
-            self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
+            with self._v2_stage("conditioning memory"):
+                self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
             # Always train the value function in the background (cheap: a small MLP, no diffusion
             # calls) so the reward asset accumulates regardless of whether guidance is applied.
             # value_guidance only controls APPLICATION (ascent below) - a user who runs with it
@@ -9902,7 +9947,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 # output_guidance's value function, trained on the sampler's x0_snapshot from the
                 # run this rating scores (whole-run granularity — see _v2_train_output_value_function
                 # for why this sits at the single overall-reward call site, not the per-scene ones).
-                n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
+                with self._v2_stage("output value function"):
+                    n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
                 if n_out is not None:
                     print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
             # DynaShift negative memory: pair the sampler's pending raw latent with this
@@ -9933,7 +9979,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure
             # quality, so a 0.0/low repair reward on a good gen would push it into the global bad_dir.
             if has_previous_run:
-                self._v2_learn_absolute(previous_run, learning_profile)
+                with self._v2_stage("absolute taste"):
+                    self._v2_learn_absolute(previous_run, learning_profile)
             if has_previous_run and not learning_profile.get("skip_learning"):
                 self._v2_update_streaks(global_state, learning_profile, update_conditioning_strength=not prompt_only_mode)
             repair_feedback, repair_persistence_status = self._v2_active_repair_feedback(
@@ -10201,7 +10248,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             _concept_dir, _concept_strength = self._v2_concept_delta_direction(
                 global_state, _current_final, _prev_final
             )
-            refined, adaptation_status = self._v2_apply_conditioning_memory(
+            with self._v2_stage("apply conditioning memory"):
+                refined, adaptation_status = self._v2_apply_conditioning_memory(
                 cond,
                 global_state,
                 learning_profile,
@@ -10772,6 +10820,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         _state_line = self._v2_state_io_status()
         if _state_line:
             print(f"[FunPackStudio] {_state_line}")
+        _stage_line = self._v2_stage_status(time.perf_counter() - _run_started)
+        if _stage_line:
+            print(f"[FunPackStudio] {_stage_line}")
         return (
             self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
             status + enhancement_status,
