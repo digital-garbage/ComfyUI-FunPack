@@ -252,12 +252,71 @@ def tensor_to_serializable(t: torch.Tensor) -> dict:
         "dtype": str(arr.dtype)
     }
 
+# A tensor inside the refinement key is one of three things:
+#   {"data","shape","dtype"}   an inline base64 blob — the original format, still read
+#   {"__tensor__": Tensor}     loaded from the sidecar, in memory only
+#   {"__tensor_ref__": id}     what an externalised tensor looks like ON DISK
+# The blob form is what makes a key slow: it is base64 inside a JSON that is fully parsed and
+# fully rewritten every run, and one conditioning delta is several megabytes of it.
+TENSOR_SIDECAR_SUFFIX = ".tensors.pt"
+
+
 def serializable_to_tensor(d: dict) -> torch.Tensor:
+    held = d.get("__tensor__") if isinstance(d, dict) else None
+    if isinstance(held, torch.Tensor):
+        tensor = held.to(dtype=torch.float32)
+        return tensor.cuda() if torch.cuda.is_available() else tensor
     arr = np.frombuffer(base64.b64decode(d["data"]), dtype=d["dtype"]).reshape(d["shape"]).copy()
     tensor = torch.from_numpy(arr).to(dtype=torch.float32)
     if torch.cuda.is_available():
         tensor = tensor.cuda()
     return tensor
+
+def _is_tensor_blob(value):
+    return isinstance(value, dict) and "data" in value and "shape" in value and "dtype" in value
+
+
+def externalize_tensors(value, store, path="state"):
+    """Replace every tensor in a state tree with a reference, collecting them into `store`.
+
+    Ids are the tensor's PATH in the tree ("state.global.liked_dir.direction"), so the JSON
+    stays readable and diffable and a reader can see what a reference points at. Returns the
+    tree with references in place of blobs; the caller writes `store` beside the JSON.
+    """
+    if isinstance(value, dict):
+        held = value.get("__tensor__")
+        if isinstance(held, torch.Tensor):
+            store[path] = held.detach().cpu()
+            return {"__tensor_ref__": path, "shape": list(held.shape), "dtype": str(held.dtype)}
+        if _is_tensor_blob(value):
+            arr = np.frombuffer(base64.b64decode(value["data"]),
+                                dtype=value["dtype"]).reshape(value["shape"]).copy()
+            store[path] = torch.from_numpy(arr)
+            return {"__tensor_ref__": path, "shape": list(value["shape"]),
+                    "dtype": str(value["dtype"])}
+        return {k: externalize_tensors(v, store, f"{path}.{k}") for k, v in value.items()}
+    if isinstance(value, list):
+        return [externalize_tensors(v, store, f"{path}[{i}]") for i, v in enumerate(value)]
+    return value
+
+
+def internalize_tensors(value, store):
+    """Put the sidecar's tensors back behind their references, in memory.
+
+    A reference whose tensor is missing from the sidecar is left as-is: consumers read
+    tensors through serializable_to_tensor, which returns nothing for it, and a missing
+    direction is a direction not applied rather than a broken run.
+    """
+    if isinstance(value, dict):
+        ref = value.get("__tensor_ref__")
+        if isinstance(ref, str):
+            held = store.get(ref)
+            return {"__tensor__": held} if isinstance(held, torch.Tensor) else value
+        return {k: internalize_tensors(v, store) for k, v in value.items()}
+    if isinstance(value, list):
+        return [internalize_tensors(v, store) for v in value]
+    return value
+
 
 def _safe_float(value, fallback=0.0):
     try:
@@ -3934,6 +3993,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 clear_refinement_data(refinement_key)
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Enhancement cleanup failed: {e}")
+            # The tensor sidecar goes with it. Reset means fresh, and a sidecar left behind
+            # would be read back by the next load if the fresh state were never saved.
+            for _sidecar in (self._v2_tensor_sidecar_path(path),):
+                try:
+                    if os.path.exists(_sidecar):
+                        os.remove(_sidecar)
+                except OSError as error:
+                    print(f"[FunPackVideoRefinerV2] tensor sidecar cleanup failed: {error}")
             vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
             try:
                 if os.path.exists(vf_path):
@@ -3961,6 +4028,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             _started = time.perf_counter()
             with open(path, "r", encoding="utf-8") as file:
                 data = json.load(file)
+            data = self._v2_load_state_tensors(path, data)
             self._v2_note_state_io("load", time.perf_counter() - _started,
                                    os.path.getsize(path), data)
             if not isinstance(data, dict) or int(data.get("version", 0)) != 2:
@@ -4031,13 +4099,63 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         path = self._v2_state_path(refinement_key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         _started = time.perf_counter()
+        payload = self._v2_store_state_tensors(path, data)
         with open(path, "w", encoding="utf-8") as file:
-            json.dump(self._v2_json_safe(data), file, indent=2)
+            json.dump(self._v2_json_safe(payload), file, indent=2)
         try:
             self._v2_note_state_io("save", time.perf_counter() - _started,
                                    os.path.getsize(path), data)
         except OSError:
             pass
+
+    @staticmethod
+    def _v2_tensor_sidecar_path(state_path):
+        return str(state_path) + TENSOR_SIDECAR_SUFFIX
+
+    def _v2_load_state_tensors(self, state_path, data):
+        """Resolve the key's tensor references against its sidecar, if it has one.
+
+        A key written before the sidecar existed carries inline blobs and is returned
+        untouched — serializable_to_tensor still reads those, and the next save moves them
+        out. No migration step, no version bump.
+        """
+        sidecar = self._v2_tensor_sidecar_path(state_path)
+        if not os.path.exists(sidecar):
+            return data
+        try:
+            store = torch.load(sidecar, map_location="cpu", weights_only=True)
+        except Exception as error:  # noqa: BLE001
+            _log.failed("FunPackVideoRefinerV2", "refinement key tensor sidecar", error,
+                        "the directions and deltas it holds are not applied this run; the "
+                        "rest of the key is used normally and the next save rewrites it")
+            return data
+        return internalize_tensors(data, store if isinstance(store, dict) else {})
+
+    def _v2_store_state_tensors(self, state_path, data):
+        """Write the key's tensors to a binary sidecar; return the JSON-bound tree.
+
+        Conditioning deltas and learned directions are megabytes each as base64, inside a
+        document that is parsed and rewritten in full on every run. Held as tensors in a .pt
+        beside the key, the JSON keeps only a named reference and stays readable.
+
+        If the sidecar cannot be written, the tensors stay INLINE — an old-format key is
+        slow, but a JSON pointing at a sidecar that does not exist has lost them.
+        """
+        store = {}
+        try:
+            payload = externalize_tensors(data, store, path="state")
+            if not store:
+                return payload
+            sidecar = self._v2_tensor_sidecar_path(state_path)
+            tmp = sidecar + ".tmp"
+            torch.save(store, tmp)
+            os.replace(tmp, sidecar)
+            return payload
+        except Exception as error:  # noqa: BLE001
+            _log.failed("FunPackVideoRefinerV2", "refinement key tensor sidecar write", error,
+                        "the tensors are written inline in the JSON instead — the key still "
+                        "works and stays correct, it is just the slower format")
+            return data
 
     # The collections that can grow without bound, and are therefore the ones worth naming
     # when a key gets slow. Each is re-parsed and rewritten in full on every run.
