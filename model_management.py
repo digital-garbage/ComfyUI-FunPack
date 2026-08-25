@@ -350,8 +350,20 @@ def _adaln_curve_note(model, bad):
             f"ComfyUI's H3 checkpoint.")
 
 
-def resolve_lora_patches(model, lora, clip=None):
+_DROPPED_FRAGMENT = re.compile(r"\| (\d+)/(\d+) DROPPED")
+
+
+def _dropped_all_of(line):
+    """True when a status line says every weight this LoRA matched was dropped for shape."""
+    return any(int(m.group(1)) == int(m.group(2)) for m in _DROPPED_FRAGMENT.finditer(line))
+
+
+def resolve_lora_patches(model, lora, clip=None, name=None):
     """Match a LoRA against a model, trying known wrapper prefixes. -> (patches, note).
+
+    `name` is the file this LoRA came from. It is carried into the log lines because the
+    answer to "is this one bad LoRA or the loader" is only visible across a whole stack:
+    one file dropping keys is that file, every file dropping every key is the loader.
 
     ComfyUI's converters handle the tensor-naming dialects (lora_up/lora_A/lora.up/PEFT
     defaults); what they do not handle is a whole state dict nested under a wrapper the
@@ -374,11 +386,14 @@ def resolve_lora_patches(model, lora, clip=None):
         if count > best_count:
             best, best_count, best_note = variant, count, f"stripped {prefix}"
 
+    who = f"{name}: " if name else ""
     patches = comfy.lora.load_lora(best, key_map)
     if not patches:
-        logging.warning("[FunPack] LoRA matched no weights in this model - wrong model family?")
+        logging.warning(
+            f"[FunPack] {who}LoRA matched no weights in this model - wrong model family?")
         return patches, "MATCHED NOTHING"
-    note = f"keys={len(patches)} fmt={best_note}"
+    matched = len(patches)
+    note = f"keys={matched} fmt={best_note}"
     # Matched by NAME is not applied: a mismatched pair is dropped during the merge, and
     # a LoRA that reports success while a third of it never lands is the worst of both.
     bad = _mismatched_lora_keys(model, patches)
@@ -394,7 +409,7 @@ def resolve_lora_patches(model, lora, clip=None):
             patches.pop(key, None)
         curve = _adaln_curve_note(model, bad)
         if curve:
-            _log.note_on_change("lora:adaln_curve", "FunPack", curve)
+            _log.note_on_change(f"lora:adaln_curve:{name or '?'}", "FunPack", who + curve)
             note += f" | {len(bad)} adaLN adapters DROPPED (curve-form — see log)"
         else:
             # WITH the numbers. "trained against a different variant" is not actionable on
@@ -404,13 +419,17 @@ def resolve_lora_patches(model, lora, clip=None):
             sample = "; ".join(f"{k}: LoRA {d[0]}x{d[1]} into weight {w[0]}x{w[1]}"
                                for k, d, w in bad[:3])
             _log.note_on_change(
-                "lora:shape", "FunPack",
-                f"{len(bad)} LoRA weights do not have the shape of the weight they name, so "
-                f"they are DROPPED before the merge. {sample}. The LoRA was trained against a "
-                f"different variant of this architecture. Kept, they would not error — comfy "
-                f"reshapes any delta with the right element count and adds it scrambled, which "
-                f"shows up later as an all-NaN latent, not as a load failure.")
-            note += f" | {len(bad)} DROPPED (shape mismatch)"
+                f"lora:shape:{name or '?'}", "FunPack",
+                f"{who}{len(bad)} of {matched} matched weights do not have the shape of the "
+                f"weight they name, so they are DROPPED before the merge. {sample}. Kept, they "
+                f"would not error — comfy reshapes any delta with the right element count and "
+                f"adds it scrambled, which shows up later as an all-NaN latent, not as a load "
+                f"failure. {len(bad)} of {matched} means "
+                + ("this LoRA was trained against a different variant of this architecture."
+                   if len(bad) < matched else
+                   "NOTHING from this file applies — if every LoRA in the stack says the same, "
+                   "suspect the checkpoint the loader built, not the LoRAs."))
+            note += f" | {len(bad)}/{matched} DROPPED (shape mismatch)"
     return patches, note
 
 
@@ -761,17 +780,18 @@ class FunPackLoraLoader:
             image_model,
         )
 
-    def _load_model_lora_patches(self, model, lora, lora_cache_key, model_cache_key=None):
+    def _load_model_lora_patches(self, model, lora, lora_cache_key, model_cache_key=None,
+                                 name=None):
         """(patches, format note). The note says how the LoRA's keys had to be read."""
         if lora_cache_key is None:
-            return resolve_lora_patches(model, lora)
+            return resolve_lora_patches(model, lora, name=name)
 
         cache_key = (lora_cache_key, model_cache_key or self._model_cache_key(model))
         cached = self._cache_get(self.model_patch_cache, cache_key)
         if cached is not None:
             return cached
 
-        result = resolve_lora_patches(model, lora)
+        result = resolve_lora_patches(model, lora, name=name)
         self._cache_put(self.model_patch_cache, cache_key, result, LORA_PATCH_CACHE_SIZE)
         return result
 
@@ -1038,9 +1058,9 @@ class FunPackLoraLoader:
             parts.insert(-1, f"anchor_q={quality:.2f}")
         return " ".join(parts)
 
-    def _load_lora_per_block(self, model, lora, model_weight):
+    def _load_lora_per_block(self, model, lora, model_weight, name=None):
         lora_cache_key = None
-        loaded, fmt = self._load_model_lora_patches(model, lora, lora_cache_key)
+        loaded, fmt = self._load_model_lora_patches(model, lora, lora_cache_key, name=name)
         profile = self._lora_block_profile({}, loaded, model_weight)
         if not profile:
             return None, f"per-block fallback=global {fmt}"
@@ -1089,7 +1109,8 @@ class FunPackLoraLoader:
             lora, lora_cache_key = self._load_lora_file(entry["name"])
             if self._per_block_supported(model, lora_stack, entry):
                 patch_cache_key = (lora_cache_key, model_cache_key)
-                loaded, fmt = self._load_model_lora_patches(model, lora, lora_cache_key, model_cache_key)
+                loaded, fmt = self._load_model_lora_patches(
+                    model, lora, lora_cache_key, model_cache_key, name=entry.get("name"))
                 profile = self._lora_block_profile(entry, loaded, model_weight, patch_cache_key)
                 if profile is not None:
                     item = {
@@ -1155,7 +1176,8 @@ class FunPackLoraLoader:
                 # Same resolver as the per-block path: comfy's own converters, plus the
                 # wrapper-prefix search, so an unusual format is not silently a no-op.
                 loaded, fmt = self._load_model_lora_patches(
-                    model, item["lora"], item.get("cache_key"), model_cache_key)
+                    model, item["lora"], item.get("cache_key"), model_cache_key,
+                    name=entry.get("name"))
                 model, _, _ = self._apply_model_patches(model, loaded, model_weight)
                 apply_status = f"{item['status']} {fmt}"
 
@@ -1167,5 +1189,33 @@ class FunPackLoraLoader:
 
         if loaded_count == 0:
             lines.append("No LoRAs were applied.")
+        else:
+            verdict = self._stack_shape_verdict(lines)
+            if verdict:
+                _log.note_on_change("lora:stack_shape", "FunPack", verdict)
+                lines.append(verdict)
 
         return (model, clip, lora_stack, "\n".join(lines))
+
+    @staticmethod
+    def _stack_shape_verdict(lines):
+        """One line about the STACK, because the per-file lines cannot answer the question.
+
+        "3 of 400 weights dropped" is a property of one LoRA. "every weight of every LoRA
+        dropped" is a property of the model they were all measured against — the same reading
+        the user makes by eye across the status lines, made once here so it is not missed.
+        """
+        applied = [ln for ln in lines if " mode=" in ln]
+        if not applied:
+            return None
+        total = [ln for ln in applied if "DROPPED (shape mismatch)" in ln]
+        if not total:
+            return None
+        whole = [ln for ln in total if _dropped_all_of(ln)]
+        if len(whole) == len(applied) and len(applied) > 1:
+            return (f"all {len(applied)} LoRAs in this stack matched this model by name and "
+                    f"NONE by shape. That is one property shared by every file, so suspect the "
+                    f"checkpoint the loader built (a repack whose layout was mis-inferred) "
+                    f"before suspecting the LoRAs.")
+        return (f"{len(total)} of {len(applied)} LoRAs dropped weights for shape; the rest "
+                f"applied. Per-file numbers are on the lines above.")

@@ -195,3 +195,55 @@ def test_the_dropped_message_carries_both_shapes(mm, monkeypatch, capsys):
     key, dims, want = bad[0]
     assert dims == (5376, 5376)
     assert want == (16128, 5376)
+
+
+def _status_line(slot, name, fragment):
+    return f"lora_{slot}: {name} applied=+1.000 source=base mode=keys=400 fmt=as-is{fragment}"
+
+
+def test_the_stack_verdict_blames_the_checkpoint_when_nothing_fits(mm):
+    """The question the per-file lines cannot answer. One LoRA dropping everything is that
+    file; every LoRA dropping everything is the one thing they share — the model."""
+    lines = [_status_line(0, "a.safetensors", " | 400/400 DROPPED (shape mismatch)"),
+             _status_line(1, "b.safetensors", " | 128/128 DROPPED (shape mismatch)")]
+    verdict = mm.FunPackLoraLoader._stack_shape_verdict(lines)
+    assert "all 2 LoRAs" in verdict
+    assert "checkpoint" in verdict
+
+
+def test_a_partial_drop_does_not_blame_the_checkpoint(mm):
+    lines = [_status_line(0, "a.safetensors", " | 51/400 DROPPED (shape mismatch)"),
+             _status_line(1, "b.safetensors", "")]
+    verdict = mm.FunPackLoraLoader._stack_shape_verdict(lines)
+    assert "1 of 2 LoRAs" in verdict
+    assert "checkpoint" not in verdict
+
+
+def test_one_lora_dropping_everything_is_not_a_stack_verdict(mm):
+    """A single file says nothing about what every file has in common."""
+    lines = [_status_line(0, "a.safetensors", " | 400/400 DROPPED (shape mismatch)")]
+    assert "checkpoint" not in (mm.FunPackLoraLoader._stack_shape_verdict(lines) or "")
+
+
+def test_a_clean_stack_says_nothing(mm):
+    lines = [_status_line(0, "a.safetensors", ""), _status_line(1, "b.safetensors", "")]
+    assert mm.FunPackLoraLoader._stack_shape_verdict(lines) is None
+
+
+def test_the_log_line_names_the_file_and_the_share(mm, monkeypatch, capsys):
+    """Which file, and how much of it. "51 dropped" out of 400 is a variant mismatch; out of
+    51 it is the whole LoRA, and the difference decides where to look next."""
+    import comfy.lora
+    model = _Model({"w": (768, 768)})
+    monkeypatch.setattr(comfy.lora, "model_lora_keys_unet", lambda *a, **k: {})
+    monkeypatch.setattr(comfy.lora, "load_lora",
+                        lambda *a, **k: {"w": _Adapter(384, 1536)})
+    monkeypatch.setattr(mm._log, "_last_by_key", {}, raising=False)
+
+    _, note = mm.resolve_lora_patches(model, {}, name="turbo.safetensors")
+
+    out = capsys.readouterr().out
+    assert "turbo.safetensors" in out
+    assert "1 of 1" in out
+    assert "NOTHING from this file applies" in out
+    assert "1/1 DROPPED" in note
