@@ -7265,6 +7265,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         return patch
 
+    def _v2_model_reads_attn2(self, model):
+        """Whether this model has a cross-attention for the direction patch to hook.
+
+        Asked BEFORE the emphasis ranges are computed, not only inside the patch. Locating
+        those ranges costs one full text-encoder pass per phrase — on H3 that is the same
+        multi-billion-parameter encoder the prompt goes through, spent on ranges for a patch
+        that is about to decline. Same question, asked early enough to skip the work.
+        """
+        if model is None:
+            return False
+        try:
+            from .minimax_h3 import is_h3_model
+        except ImportError:
+            from minimax_h3 import is_h3_model
+        return not is_h3_model(model)
+
     def _v2_apply_model_patches(self, model, global_state, axis_feedback, rating_profile, emphasis_ranges, strength):
         """Clone model and apply attn2 patch for layer-level direction injection + phrase emphasis."""
         if model is None:
@@ -10199,7 +10215,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             ]
             emphasis_ranges = (
                 self._v2_find_phrase_token_ranges(clip, cond, emphasis_phrases, encode_cache=encode_cache)
-                if clip is not None and emphasis_phrases else []
+                if clip is not None and emphasis_phrases and self._v2_model_reads_attn2(model)
+                else []
             )
             patched = self._v2_apply_model_patches(
                 model, global_state, repair_feedback, learning_profile, emphasis_ranges, model_strength
