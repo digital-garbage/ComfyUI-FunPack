@@ -293,8 +293,9 @@ def build_session(model, positive, latent, *, sink=2, window=2, storage="cpu_pin
     diffusion = resolved.diffusion_model
     if not hasattr(diffusion, "forward_chunk") or not hasattr(diffusion, "prefill_text"):
         return None, ("the loaded model is a stock bidirectional H3. The causal lane needs the "
-                      "chunk-causal DiT — load it through RAVEN Model Loader, which also "
-                      "attaches the RAVEN LoRA the causal attention pattern was trained for.")
+                      "chunk-causal DiT: set `raven_lora` on FunPack Diffusion Model Loader "
+                      "to the RAVEN streaming LoRA. It is a LoRA on the ordinary H3 "
+                      "checkpoint, not a different model file.")
     blocks = getattr(diffusion, "blocks", None)
     if not blocks:
         return None, "the loaded model exposes no DiT blocks to cache"

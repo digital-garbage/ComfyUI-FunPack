@@ -524,7 +524,10 @@ def test_a_stock_bidirectional_model_is_refused_by_name(monkeypatch):
     monkeypatch.setitem(sys.modules, "raven_streaming.cache", fake_cache)
     session, reason = rc.build_session(object(), [], {})
     assert session is None
-    assert "chunk-causal DiT" in reason and "RAVEN Model Loader" in reason
+    # points at OUR loader: FunPack owns the loading pipeline, so the fix is a setting on the
+    # node already in the graph, not a third-party loader node to go and add
+    assert "chunk-causal DiT" in reason
+    assert "FunPack Diffusion Model Loader" in reason and "raven_lora" in reason
 
 
 # ── the Chain Sampler dispatch ──────────────────────────────────────────────

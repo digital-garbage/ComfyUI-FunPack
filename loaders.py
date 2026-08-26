@@ -73,6 +73,11 @@ def weight_model_options(weight_dtype):
     return options
 
 
+def raven_lora_choices():
+    """LoRA files, with "None" first — the causal lane is opt-in per model."""
+    return ["None"] + list(folder_paths.get_filename_list("loras"))
+
+
 def attention_choices():
     """Attention backends this ComfyUI can actually run, newest-registry first.
 
@@ -128,6 +133,44 @@ def set_fp16_accumulation(enabled):
     return bool(enabled)
 
 
+def _load_with_raven_lora(model_name, lora_name, weight_dtype, model_options):
+    """Load an H3 checkpoint as a chunk-causal DiT with the RAVEN LoRA attached.
+
+    Delegated to the RAVEN package rather than reimplemented, for a reason that is not
+    convenience: the adapter is an FP32 activation residual registered as parameters of the
+    base Linear leaves, and it has to be attached to the raw model BEFORE the ModelPatcher is
+    built. ``ModelPatcher.model_size()`` memoises, so an adapter attached afterwards is
+    invisible to ComfyUI's memory ledger and never moved by partial CPU offload — the model
+    would look smaller than it is and the residual would sit on the wrong device.
+
+    Returns (model, note). Raises with an actionable message rather than falling back to a
+    plain load: silently returning a model WITHOUT the adapter would leave the causal lane
+    reading an attention pattern nothing was trained for, and look like a quality problem.
+    """
+    try:
+        from .raven_causal import locate_raven
+    except ImportError:
+        from raven_causal import locate_raven
+    module, reason = locate_raven()
+    if module is None:
+        raise RuntimeError(
+            f"ERROR: a RAVEN LoRA is selected ({lora_name}) but the causal model class is "
+            f"unavailable — {reason} Set raven_lora to None to load this model normally.")
+    from raven_streaming import loader as raven_loader
+    from raven_streaming.causal_model import RavenCausalMiniMaxH3Model
+
+    model = raven_loader.load_raven_diffusion_model(
+        model_name, lora_name,
+        weight_dtype=weight_dtype,
+        model_options=dict(model_options),
+        unet_model_cls=RavenCausalMiniMaxH3Model,
+    )
+    return model, (f"RAVEN: chunk-causal DiT + {lora_name} at strength 1.0 (a LoRA on the "
+                   f"ordinary H3 checkpoint, not a separate model). The Chain Sampler's "
+                   f"'Remembering chunks' mode can now run; without that mode on, this model "
+                   f"samples exactly as usual.")
+
+
 class FunPackDiffusionModelLoader:
     """Loads a diffusion model with quantization and an attention backend chosen per node."""
 
@@ -166,6 +209,24 @@ class FunPackDiffusionModelLoader:
                                "everything else."}),
             },
             "optional": {
+                "raven_lora": (raven_lora_choices(), {
+                    "default": "None",
+                    "tooltip": "MiniMax H3 only. Loads this model as a CHUNK-CAUSAL DiT with a "
+                               "RAVEN streaming LoRA attached, which is what the Chain "
+                               "Sampler's 'Remembering chunks' mode needs. The clip is then "
+                               "generated in time chunks that each remember the ones before "
+                               "them, so a long clip stays one continuous shot instead of "
+                               "separate scenes stitched together. The LoRA is not optional "
+                               "for that mode: the chunked attention pattern is what it was "
+                               "trained to read, and the base H3 weights have never seen a "
+                               "key/value cache. Needs the ComfyUI-MiniMax-H3-RAVEN-Streaming "
+                               "pack installed for the causal model class. This is a LoRA on "
+                               "the ordinary H3 checkpoint — there is no separate RAVEN model "
+                               "file. Strength is fixed at 1.0: the adapter is what teaches "
+                               "the chunked attention pattern, so 'partly on' is not a useful "
+                               "state. 'None' loads normally. "
+                               "Use the full non-pruned checkpoint: the pruned/adaln-curve cut "
+                               "has no time_embedder for the adapter to attach to."}),
                 "fp16_accumulation": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Accumulate fp16 matmuls in fp16. Faster on recent NVIDIA cards; "
@@ -228,7 +289,7 @@ class FunPackDiffusionModelLoader:
     def load_model(self, model_name, weight_dtype, compute_dtype, attention,
                    fp16_accumulation=False, sla_sparsity=None, sla_block_size=None,
                    sla_protect_audio=None, sla_min_seq_len=None, sla_dense_last_steps=None,
-                   sla=False):
+                   sla=False, raven_lora="None"):
         notes = [f"FunPack Diffusion Model Loader | {model_name}"]
 
         accum = set_fp16_accumulation(fp16_accumulation)
@@ -265,8 +326,13 @@ class FunPackDiffusionModelLoader:
             notes.append(gguf_note)
         else:
             state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
-        model = comfy.sd.load_diffusion_model_state_dict(
-            state_dict, model_options=model_options, metadata=metadata)
+        if str(raven_lora) not in ("", "None"):
+            model, raven_note = _load_with_raven_lora(
+                model_name, raven_lora, weight_dtype, model_options)
+            notes.append(raven_note)
+        else:
+            model = comfy.sd.load_diffusion_model_state_dict(
+                state_dict, model_options=model_options, metadata=metadata)
         if model is None:
             raise RuntimeError(
                 f"ERROR: could not detect a diffusion model in {model_name}. "
