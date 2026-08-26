@@ -62,12 +62,45 @@ def test_the_longer_prefix_is_tried_before_the_shorter_one_can_win():
 
 
 def test_stripping_that_prefix_yields_plain_module_paths():
-    stripped = mm._strip_key_prefix(
+    stripped = mm._rekey(
         {"base_model.model.dit.blocks.0.attn.qkv_proj.lora_A.weight": 1,
          "base_model.model.dit.blocks.0.attn.qkv_proj.lora_B.weight": 2},
         "base_model.model.dit.")
     assert set(stripped) == {"blocks.0.attn.qkv_proj.lora_A.weight",
                              "blocks.0.attn.qkv_proj.lora_B.weight"}
+
+
+# ── and why stripping was not enough ────────────────────────────────────────
+#
+# Measured on the rental: the RAVEN LoRA matched NOTHING through every strip. Its keys are
+# comfy's module paths exactly, under a different head — `base_model.model.dit.<path>` for
+# comfy's `diffusion_model.<path>` — and comfy's key map has no bare form to land on, so
+# stripping produced `blocks.0...` and matched none of it. The file did nothing at all.
+
+def test_the_raven_head_is_renamed_to_comfys_not_removed():
+    assert ("base_model.model.dit.", "diffusion_model.") in mm.LORA_KEY_RENAMES
+
+
+def test_renaming_that_head_yields_the_keys_comfys_map_holds():
+    renamed = mm._rekey(
+        {"base_model.model.dit.audio_patch_proj.lora_A.weight": 1,
+         "base_model.model.dit.blocks.0.adaln_proj.linear.lora_B.weight": 2},
+        "base_model.model.dit.", "diffusion_model.")
+    assert set(renamed) == {"diffusion_model.audio_patch_proj.lora_A.weight",
+                            "diffusion_model.blocks.0.adaln_proj.linear.lora_B.weight"}
+
+
+def test_a_rename_wins_over_a_strip_when_it_matches_more(monkeypatch):
+    """Both are scored against the real key map and the best is kept, so a rename that lands
+    beats a strip that does not without either being ordered ahead of the other."""
+    key_map = {"diffusion_model.audio_patch_proj": "audio_patch_proj.weight"}
+    monkeypatch.setattr(mm, "_count_lora_matches",
+                        lambda lora, km: sum(1 for k in lora
+                                             if k.rsplit(".lora_", 1)[0] in km))
+    lora = {"base_model.model.dit.audio_patch_proj.lora_A.weight": 1}
+    best, note = mm._best_lora_keying(lora, key_map)
+    assert note == "base_model.model.dit. -> diffusion_model."
+    assert "diffusion_model.audio_patch_proj.lora_A.weight" in best
 
 
 # ── re-classing an already-loaded model ─────────────────────────────────────

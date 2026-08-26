@@ -328,7 +328,7 @@ def audio_sigma_for(sigma, shift_video, shift_audio):
 def causal_rollout(*, chunks, sigmas, forward, commit, draw_noise,
                    video_noise, audio_noise, step_rule="consistency", eta=1.0,
                    known_chunks=0, known_video=None, known_audio=None,
-                   on_chunk=None, cancel=None):
+                   on_chunk=None, on_step=None, cancel=None):
     """Generate a clip chunk by chunk, each one attending to the cache of the ones before it.
 
     Everything the model does arrives as a callable, so the loop is testable without ComfyUI,
@@ -343,6 +343,11 @@ def causal_rollout(*, chunks, sigmas, forward, commit, draw_noise,
         is a chunk the rest of the clip cannot see.
     draw_noise(shape)
         fresh noise. Called in a fixed order so a seeded run reproduces exactly.
+    on_step(chunk_index, done, total)
+        after every model call, with the count of chunk-steps finished out of the clip's
+        total. This lane does not go through comfy's sampler, so nothing else ticks a
+        progress bar — and a long generation showing no progress is indistinguishable from
+        a hung one.
 
     `known_chunks` leading chunks are taken from `known_video`/`known_audio` instead of being
     sampled. That is how an i2v anchor survives: chunk 0 comes from FunPack's ORDINARY dense
@@ -382,6 +387,8 @@ def causal_rollout(*, chunks, sigmas, forward, commit, draw_noise,
         video_xt = video_noise[:, :, v_start:v_stop].clone()
         audio_xt = audio_noise[..., a_start:a_stop].clone()
         for position in range(len(sigmas) - 1):
+            if cancel is not None:
+                cancel(index)
             sigma, sigma_next = sigmas[position], sigmas[position + 1]
             video_v, audio_v = forward(video_xt, audio_xt, index, sigma)
             # H3's head is data-ward velocity; x0 = x_t + sigma * v, no negation.
@@ -394,6 +401,9 @@ def causal_rollout(*, chunks, sigmas, forward, commit, draw_noise,
             audio_eps = draw_noise(audio_xt.shape)
             video_xt = step(step_rule, video_xt, video_x0, sigma, sigma_next, video_eps, eta)
             audio_xt = step(step_rule, audio_xt, audio_x0, sigma, sigma_next, audio_eps, eta)
+            if on_step is not None:
+                on_step(index, index * (len(sigmas) - 1) + position + 1,
+                        len(chunks) * (len(sigmas) - 1))
 
         video_out[:, :, v_start:v_stop] = video_xt
         audio_out[..., a_start:a_stop] = audio_xt
@@ -924,7 +934,7 @@ def build_session(model, positive, latent, *, sink=2, window=2, device=None, off
 
 def run_session(session, *, sigmas, step_rule="consistency", eta=1.0, seed=0,
                 known_chunks=0, known_video=None, known_audio=None,
-                on_chunk=None, cancel=None, transformer_options=None):
+                on_chunk=None, on_step=None, cancel=None, transformer_options=None):
     """Drive one causal rollout over an assembled session. Returns (video, audio)."""
     model, cache, plan = session["model"], session["cache"], session["plan"]
     device, payload = session["device"], session["payload"]
@@ -981,4 +991,5 @@ def run_session(session, *, sigmas, step_rule="consistency", eta=1.0, seed=0,
         chunks=plan.bounds, sigmas=sigmas, forward=forward, commit=commit,
         draw_noise=draw_noise, video_noise=video_noise, audio_noise=audio_noise,
         step_rule=step_rule, eta=eta, known_chunks=known_chunks,
-        known_video=known_video, known_audio=known_audio, on_chunk=on_chunk, cancel=cancel)
+        known_video=known_video, known_audio=known_audio, on_chunk=on_chunk,
+        on_step=on_step, cancel=cancel)

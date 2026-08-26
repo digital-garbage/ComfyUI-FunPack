@@ -8,6 +8,7 @@ import types
 import torch
 
 import comfy.k_diffusion.sampling as k_diffusion_sampling
+import comfy.model_management
 import comfy.model_sampling
 import comfy.nested_tensor
 import comfy.sample
@@ -4023,7 +4024,8 @@ class FunPackLTXAVSceneChainSampler:
         try:
             # The causal lane replaces the sampler entirely rather than wrapping it, so it is
             # tried here and falls through (loudly) when it cannot run.
-            sampled = self._run_h3_causal(model, positive, samples, sigmas, seed)
+            sampled = self._run_h3_causal(model, positive, samples, sigmas, seed,
+                                          pbar=pbar, step_offset=step_offset)
             if sampled is None:
                 sampled = comfy.sample.sample_custom(
                     model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
@@ -6871,7 +6873,8 @@ class FunPackLTXAVSceneChainSampler:
             return None
         return (projected.float() / norm) * float(strength)
 
-    def _run_h3_causal(self, model, positive, samples, sigmas, seed):
+    def _run_h3_causal(self, model, positive, samples, sigmas, seed,
+                       pbar=None, step_offset=0):
         """Generate the clip in remembering chunks instead of denoising it all at once.
 
         Returns the finished latent, or None to fall through to ordinary sampling — every
@@ -6916,16 +6919,36 @@ class FunPackLTXAVSceneChainSampler:
             f"never seen a key/value cache. The wired sampler and CFG are NOT used on this "
             f"path: the chunk loop is not a k-diffusion sampler, and H3 generates at CFG 1 "
             f"anyway. There is no per-chunk redo.")
+        # This lane never reaches comfy's sampler, so nothing else ticks the progress bar or
+        # checks for a cancel. A long generation showing no progress is indistinguishable
+        # from a hung one, and an interrupt that does nothing is worse.
+        base_label = self._current_phase_label()
+        scene_steps = max(1, len(schedule) - 1)
+
+        def _on_step(index, done, total):
+            self._set_phase(f"{base_label}{' · ' if base_label else ''}"
+                            f"chunk {int(index) + 1}/{session['plan'].n_chunks}")
+            if pbar is not None and total:
+                # Mapped onto the budget this scene was allotted, not counted raw: the bar was
+                # sized in scenes x steps, and a chunked scene runs that many steps PER CHUNK.
+                pbar.update_absolute(int(step_offset)
+                                     + int(round(scene_steps * float(done) / float(total))))
+
+        def _cancel(_index):
+            comfy.model_management.throw_exception_if_processing_interrupted()
+
         try:
             video, audio = causal.run_session(
                 session, sigmas=schedule,
                 step_rule=str(getattr(self, "_h3_causal_step_rule", "consistency")),
-                seed=int(seed),
+                seed=int(seed), on_step=_on_step, cancel=_cancel,
             )
         except Exception as error:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 causal rollout", error,
                         "this scene is NOT generated — nothing is silently substituted")
             raise
+        finally:
+            self._set_phase(base_label)
         return self._pack_h3_av(samples, video, audio)
 
     @staticmethod

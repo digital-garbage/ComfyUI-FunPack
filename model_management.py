@@ -293,6 +293,20 @@ LORA_KEY_PREFIXES = (
     "net.",
 )
 
+#: (prefix, replacement) for adapters that name the same modules under a different head.
+#: Stripping is not enough for these: comfy's key map has no bare form, only
+#: `diffusion_model.<path>`, so the head has to be REPLACED rather than removed.
+LORA_KEY_RENAMES = (
+    # RAVEN's streaming LoRA for MiniMax H3: `base_model.model.dit.blocks.0.adaln_proj.linear`
+    # is comfy's `diffusion_model.blocks.0.adaln_proj.linear`, module for module. Stripping
+    # left `blocks.0...`, which matches nothing, and the file silently did nothing at all.
+    ("base_model.model.dit.", "diffusion_model."),
+    ("base_model.model.", "diffusion_model."),
+    ("dit.", "diffusion_model."),
+    ("model.dit.", "diffusion_model."),
+    ("transformer.", "diffusion_model."),
+)
+
 
 def _sample_keys(mapping, count=3):
     """A few representative names, shortened. Enough to compare two namings by eye."""
@@ -309,10 +323,19 @@ def _count_lora_matches(lora, key_map):
         return len(comfy.lora.load_lora(lora, key_map))
 
 
-def _strip_key_prefix(lora, prefix):
+def _rekey(lora, prefix, replacement=""):
+    """`lora` with `prefix` replaced by `replacement` on every key that carries it, or None.
+
+    Stripping is the `replacement=""` case. RENAMING matters as much: an adapter trained
+    against a wrapper that calls the DiT something else has ComfyUI's exact module path
+    underneath a different head — `base_model.model.dit.audio_patch_proj` against comfy's
+    `diffusion_model.audio_patch_proj` — and stripping alone leaves it matching nothing,
+    because comfy's key map has no bare form to land on.
+    """
     if not any(k.startswith(prefix) for k in lora):
         return None
-    return {(k[len(prefix):] if k.startswith(prefix) else k): v for k, v in lora.items()}
+    return {(replacement + k[len(prefix):] if k.startswith(prefix) else k): v
+            for k, v in lora.items()}
 
 
 def _lora_pair_dims(adapter):
@@ -410,6 +433,26 @@ def _dropped_all_of(line):
     return any(int(m.group(1)) == int(m.group(2)) for m in _DROPPED_FRAGMENT.finditer(line))
 
 
+def _best_lora_keying(converted, key_map):
+    """The keying of `converted` that matches the most of `key_map`. -> (lora, note).
+
+    Every candidate is SCORED rather than ordered, so a rename that lands beats a strip that
+    does not without either having to be tried first, and a format nobody anticipated still
+    wins if its keys are recognisable underneath.
+    """
+    best, best_count, best_note = converted, _count_lora_matches(converted, key_map), "as-is"
+    candidates = [(p, "", f"stripped {p}") for p in LORA_KEY_PREFIXES]
+    candidates += [(p, r, f"{p} -> {r}") for p, r in LORA_KEY_RENAMES]
+    for prefix, replacement, label in candidates:
+        variant = _rekey(converted, prefix, replacement)
+        if variant is None:
+            continue
+        count = _count_lora_matches(variant, key_map)
+        if count > best_count:
+            best, best_count, best_note = variant, count, label
+    return best, best_note
+
+
 def resolve_lora_patches(model, lora, clip=None, name=None):
     """Match a LoRA against a model, trying known wrapper prefixes. -> (patches, note).
 
@@ -429,14 +472,7 @@ def resolve_lora_patches(model, lora, clip=None, name=None):
         key_map = comfy.lora.model_lora_keys_clip(clip.cond_stage_model, key_map)
     converted = comfy.lora_convert.convert_lora(lora)
 
-    best, best_count, best_note = converted, _count_lora_matches(converted, key_map), "as-is"
-    for prefix in LORA_KEY_PREFIXES:
-        variant = _strip_key_prefix(converted, prefix)
-        if variant is None:
-            continue
-        count = _count_lora_matches(variant, key_map)
-        if count > best_count:
-            best, best_count, best_note = variant, count, f"stripped {prefix}"
+    best, best_note = _best_lora_keying(converted, key_map)
 
     who = f"{name}: " if name else ""
     patches = comfy.lora.load_lora(best, key_map)

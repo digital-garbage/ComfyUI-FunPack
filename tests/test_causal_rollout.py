@@ -348,17 +348,39 @@ def test_a_schedule_with_no_steps_is_refused():
         r.run(sigmas=(1.0,))
 
 
-def test_cancellation_is_checked_before_each_chunk():
+def test_cancellation_is_checked_before_each_chunk_and_each_step():
+    """Per chunk is not often enough: a chunk is a full denoise, so an interrupt could sit
+    unanswered for every step of it while the user watches nothing happen."""
     r = Recorder()
     seen = []
 
     def cancel(index):
         seen.append(index)
-        if index == 1:
+        if len(seen) == 3:
             raise KeyboardInterrupt
     with pytest.raises(KeyboardInterrupt):
         r.run(cancel=cancel)
-    assert seen == [0, 1]
+    assert seen == [0, 0, 0]          # chunk 0, then once per step inside it
+
+
+def test_every_model_call_reports_progress():
+    """This lane never reaches comfy's sampler, so nothing else ticks a progress bar — and a
+    long generation showing none is indistinguishable from a hung one."""
+    r = Recorder()
+    ticks = []
+    r.run(sigmas=(1.0, 0.5, 0.0), on_step=lambda i, done, total: ticks.append((i, done, total)))
+    steps = 2
+    assert len(ticks) == len(r.chunks) * steps
+    assert [t[1] for t in ticks] == list(range(1, len(ticks) + 1))
+    assert {t[2] for t in ticks} == {len(r.chunks) * steps}   # a stable denominator
+
+
+def test_progress_counts_the_whole_clip_not_the_chunk():
+    """A bar that restarts at every chunk says nothing about how far along the clip is."""
+    r = Recorder()
+    ticks = []
+    r.run(sigmas=(1.0, 0.0), on_step=lambda i, done, total: ticks.append(done))
+    assert ticks == list(range(1, len(r.chunks) + 1))
 
 
 def test_the_chunk_callback_reports_whether_it_was_generated():
