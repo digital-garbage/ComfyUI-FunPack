@@ -13,7 +13,7 @@
   <script src="ui_mode.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
   <script>
     // Boot-time error surface: if any script fails, show it instead of a blank app.
@@ -23,11 +23,11 @@
         if (!b) {
           b = document.createElement("div"); b.id = "boot-error";
           b.style.cssText = "position:fixed;z-index:99999;left:0;right:0;top:0;padding:10px 34px 10px 14px;" +
-            "background:#3a1320;color:#ffb3c1;font:12px/1.5 monospace;border-bottom:1px solid #e0566b;white-space:pre-wrap";
+            "background:#3a1320;color:#ffb3c1;font:12px/1.5 var(--font-ui, system-ui, sans-serif);border-bottom:1px solid #e0566b;white-space:pre-wrap";
           var x = document.createElement("button");
           x.textContent = "✕"; x.title = "Dismiss";
           x.style.cssText = "position:absolute;top:6px;right:8px;background:transparent;border:1px solid #e0566b;" +
-            "color:#ffb3c1;border-radius:6px;cursor:pointer;font:12px monospace;padding:1px 7px;line-height:1.4";
+            "color:#ffb3c1;border-radius:6px;cursor:pointer;font:12px var(--font-ui, system-ui, sans-serif);padding:1px 7px;line-height:1.4";
           x.onclick = function () { b.remove(); };
           b.appendChild(x);
           (document.body || document.documentElement).appendChild(b);
