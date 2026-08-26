@@ -1516,16 +1516,37 @@ def last_prompt_segment(mod_segments):
     return found
 
 
+def current_sigma(transformer_options):
+    """The step's sigma, or None when the sampler did not record one."""
+    try:
+        sigmas = (transformer_options or {}).get("sigmas")
+        return float(sigmas.flatten()[0]) if sigmas is not None else None
+    except Exception:
+        return None
+
+
 class PromptTimestepBlock:
     """Per-block replace patch: run the block with the prompt on its own timestep.
 
     Appends one row to ``t_emb`` and points the prompt's segment at it. Every index the
     model computed for its own rows still means what it meant — the new row is only ever
     addressed by the segment rewritten here.
+
+    RAMPED, not constant. The timestep is how the model knows what stage everything is at,
+    and a prompt that disagrees with the picture about the stage costs it the ability to
+    settle on one reading: reported from a rental at 0.6-0.75 as several versions of the
+    shot being attempted at once in a single video, with the strongest signal winning.
+    Structure is chosen early, so the edit is held off until it is chosen — `ramp` is the
+    same late-step gate the rating-driven wrappers share, zero over the first half of the
+    schedule and rising to full at the end.
+
+    The ramp interpolates from the prompt's OWN current row, which the segment names, so a
+    gate of 0 is byte-identical to not being installed at all.
     """
 
-    def __init__(self, row):
+    def __init__(self, row, ramp=None):
         self.row = row
+        self.ramp = ramp
 
     def __call__(self, args, extra):
         run = extra["original_block"]
@@ -1534,19 +1555,32 @@ class PromptTimestepBlock:
         target = last_prompt_segment(segments)
         if target is None or t_emb is None:
             return run(args)
+        gate = 1.0
+        if self.ramp is not None:
+            sigma = current_sigma(args.get("transformer_options"))
+            if sigma is not None:
+                try:
+                    gate = max(0.0, min(1.0, float(self.ramp(sigma))))
+                except Exception:
+                    gate = 1.0
+            if gate <= 0.0:
+                return run(args)      # too early to disagree about the stage
         try:
             extra_row = self.row(t_emb)
         except Exception:            # no time basis to read — run the prompt as trained
             return run(args)
         rows = int(t_emb.shape[0])
-        start, stop, _ = segments[target][:3]
+        start, stop, row_index = segments[target][:3]
+        if gate < 1.0:
+            own = t_emb[row_index // _ADALN_MODALITIES].unsqueeze(0)
+            extra_row = torch.lerp(own, extra_row.to(own.dtype), gate)
         rewritten = list(segments)
         rewritten[target] = (start, stop, rows * _ADALN_MODALITIES + MODALITY_TAGS["text"])
         return run({**args, "t_emb": torch.cat([t_emb, extra_row], dim=0),
                     "mod_segments": rewritten})
 
 
-def apply_prompt_timestep(model, timestep):
+def apply_prompt_timestep(model, timestep, ramp=None):
     """Give the prompt rows their own timestep on every block. Returns (model, note)."""
     if float(timestep or 0.0) <= 0.0:
         return model, None
@@ -1561,11 +1595,12 @@ def apply_prompt_timestep(model, timestep):
     if row is None:
         return model, f"Prompt timestep skipped — {why}."
     patched = model.clone()
-    patch = PromptTimestepBlock(row)
+    patch = PromptTimestepBlock(row, ramp=ramp)
     for index in range(len(blocks)):
         patched.set_model_patch_replace(patch, "dit", "double_block", index)
-    return patched, (f"Prompt read at timestep {float(timestep):g} on {len(blocks)} blocks "
-                     f"— the prompt rows only, never the reference label ahead of them.")
+    where = "ramped in over the second half of the schedule" if ramp is not None \
+        else "on every step"
+    return patched, (f"Reference weight {float(timestep):g} on {len(blocks)} blocks, {where}.")
 
 
 # ── final layer: the one video-only edit ─────────────────────────────────────

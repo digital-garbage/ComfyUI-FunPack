@@ -256,10 +256,9 @@ def test_a_core_without_the_block_hook_declines_rather_than_half_working():
     assert "per-block replace hook" in note
 
 
-def test_the_note_says_the_label_is_left_alone():
-    """The one thing a reader needs to know, because the first version did the opposite."""
+def test_the_note_names_the_value_and_when_it_applies():
     _out, note = h3.apply_prompt_timestep(FakePatcher(), 0.9)
-    assert "never the reference label" in note
+    assert "Reference weight 0.9" in note and "every step" in note
 
 
 # ── what it is called, and why ──────────────────────────────────────────────
@@ -291,3 +290,91 @@ def test_the_editor_label_matches():
           / "engine_settings.js").read_text(encoding="utf-8")
     row = next(ln for ln in js.splitlines() if '{ name: "h3_prompt_time"' in ln)
     assert 'label: "Reference weight"' in row
+
+
+# ── ramped, so the model can commit first ───────────────────────────────────
+#
+# The timestep is how the model knows what stage everything is at. A prompt that disagrees
+# with the picture about the stage costs it the ability to settle on ONE reading — reported
+# from a rental at 0.6-0.75 as several versions of the shot attempted at once in a single
+# video, strongest signal winning. Structure is chosen early, so the edit is held off until
+# it has been chosen.
+
+def ramped(segments, t_emb, sigma, ramp, row=None):
+    seen = {}
+
+    def original(args):
+        seen.update(args)
+        return args["img"]
+    patch = h3.PromptTimestepBlock(row or constant_row(0.95), ramp=ramp)
+    patch({"img": "IMG", "t_emb": t_emb, "mod_segments": segments,
+           "transformer_options": {"sigmas": torch.tensor([sigma])}},
+          {"original_block": original})
+    return seen
+
+
+def half_way(sigma):
+    """Stand-in for _make_steer_ramp: nothing early, full late."""
+    return 0.0 if sigma > 0.5 else 1.0
+
+
+def test_early_steps_run_exactly_as_if_it_were_not_installed():
+    """Not 'weaker' — identical. The disagreement is the cost, so there must be none."""
+    got = ramped(T2V, torch.tensor([[0.2]]), sigma=0.9, ramp=half_way)
+    assert got["t_emb"].shape[0] == 1
+    assert got["mod_segments"] == T2V
+
+
+def test_late_steps_get_the_full_value():
+    got = ramped(T2V, torch.tensor([[0.2]]), sigma=0.1, ramp=half_way,
+                 row=constant_row(0.93))
+    assert float(got["t_emb"][1][0]) == pytest.approx(0.93)
+
+
+def test_a_partial_gate_interpolates_from_the_prompts_own_row():
+    """From its OWN row, which the segment names — so a gate of 0 is the untouched model
+    rather than 'whatever row 0 happens to be'."""
+    segments = [seg(0, 10, 1, TEXT)]                 # the prompt sits at t_row 1
+    t_emb = torch.tensor([[0.2], [0.6]])
+    got = ramped(segments, t_emb, sigma=0.0, ramp=lambda _s: 0.5, row=constant_row(1.0))
+    assert float(got["t_emb"][2][0]) == pytest.approx(0.8)   # halfway 0.6 -> 1.0
+
+
+def test_no_ramp_means_every_step(  ):
+    """Without a ramp the patch is unconditional, which is what the tests above assume."""
+    got = run_block(T2V, torch.tensor([[0.2]]))
+    assert got["t_emb"].shape[0] == 2
+
+
+def test_a_sampler_that_records_no_sigma_still_applies_it():
+    """Better fully on than silently off: an inert feature that reports itself as active is
+    the failure mode funpack_log exists to stop."""
+    seen = {}
+
+    def original(args):
+        seen.update(args)
+        return args["img"]
+    h3.PromptTimestepBlock(constant_row(), ramp=half_way)(
+        {"img": "IMG", "t_emb": torch.tensor([[0.2]]), "mod_segments": T2V,
+         "transformer_options": {}}, {"original_block": original})
+    assert seen["t_emb"].shape[0] == 2
+
+
+def test_a_ramp_that_raises_does_not_take_the_render_with_it():
+    def boom(_sigma):
+        raise RuntimeError("no")
+    got = ramped(T2V, torch.tensor([[0.2]]), sigma=0.1, ramp=boom)
+    assert got["t_emb"].shape[0] == 2
+
+
+def test_the_note_says_it_is_ramped():
+    _out, note = h3.apply_prompt_timestep(FakePatcher(), 0.9, ramp=half_way)
+    assert "second half of the schedule" in note
+
+
+def test_the_sampler_hands_it_the_ramp_the_other_wrappers_use():
+    import inspect
+    import samplers
+    src = inspect.getsource(
+        samplers.FunPackLTXAVSceneChainSampler._install_h3_prompt_timestep)
+    assert 'ramp=getattr(self, "_steer_ramp", None)' in src

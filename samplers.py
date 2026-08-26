@@ -6957,7 +6957,8 @@ class FunPackLTXAVSceneChainSampler:
                 "not a MiniMax H3 model. Per-row timesteps are an H3-only lane.")
             return model
         try:
-            patched, note = h3mod.apply_prompt_timestep(model, timestep)
+            patched, note = h3mod.apply_prompt_timestep(
+                model, timestep, ramp=getattr(self, "_steer_ramp", None))
         except Exception as error:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "Prompt timestep", error,
                         "the prompt is read at the picture's own noise level")
@@ -7352,6 +7353,9 @@ class FunPackLTXAVSceneChainSampler:
         # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's
         # own base grid; on LTX it stays the absolute-sigma gate it was validated with.
         _steer_ramp = _make_steer_ramp(sigmas, self._is_h3)
+        # Also read by the reference-weight patch, which is installed per scene rather than
+        # threaded through the sample call like the wrappers below.
+        self._steer_ramp = _steer_ramp
         if self._is_h3:
             # H3 only generates on a 17k+5 pixel-frame grid. Empty MiniMax H3 AV Latent snaps
             # its own `length` up silently, so an off-grid scene length produces a template
