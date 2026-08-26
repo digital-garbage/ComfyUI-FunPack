@@ -3187,7 +3187,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "h3_causal_sink": ("INT", {
                     "default": 2, "min": 1, "max": 64,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. How many chunks are pinned in the cache from the very start and never evicted. Chunk 0 is the prompt, so 2 means the prompt plus the opening shot stay visible to every later chunk — which is what keeps a character consistent across a long clip. Higher costs more memory and more attention per chunk.",
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. How many chunks are pinned in the cache from the very start and never evicted, counted from the front: 1 is the prompt, 2 adds the anchor image and any reference, 3 adds the opening shot. The prompt is every moment of the clip so it is always pinned. The ANCHOR is not — in a dense render it is one pin among hundreds of frames, but pinned into a three-block context it is a third of everything the model can see, and the model then does what it was trained to do with a conditioning row: compose from it. If every chunk restarts from your input image instead of continuing, drop this to 1. Higher costs more memory and more attention per chunk.",
                 }),
                 "h3_causal_window": ("INT", {
                     "default": 2, "min": 0, "max": 64,

@@ -98,10 +98,35 @@ def test_the_tail_chunk_owns_whatever_audio_is_left():
     assert plan.bounds[-1][3] == AUDIO_T
 
 
-def test_media_chunk_zero_is_cache_chunk_one():
-    """The prefix holds cache index 0, so `sink=2` pins the prompt plus the opening shot."""
-    assert hc.ChunkPlan.cache_index(0) == 1
-    assert hc.ChunkPlan.cache_index(5) == 6
+def test_media_chunk_zero_is_cache_chunk_two():
+    """The prompt holds 0 and the conditioning 1, so the media chunks start at 2."""
+    assert hc.ChunkPlan.cache_index(0) == 2
+    assert hc.ChunkPlan.cache_index(5) == 7
+
+
+def test_the_prompt_and_the_conditioning_are_separate_cache_chunks():
+    """They are not the same kind of context. The prompt is every moment of the clip; the
+    anchor is one moment of it, and pinning it into a 3-block context makes the model compose
+    from it instead of continuing."""
+    plan = _plan((("text", TEXT_LEN), ("cond", 6), ("ref_img", 12)))
+    assert [k for _, _, k in plan.text_runs] == ["text"]
+    assert [k for _, _, k in plan.cond_runs] == ["cond", "ref_img"]
+    assert plan.text_rows.tolist() + plan.cond_rows.tolist() == plan.prefix_rows.tolist()
+
+
+def test_the_conditioning_runs_are_local_to_their_own_sequence():
+    """They are prefilled as a sequence of their own, so a run still starting at the text's
+    row count would write past the end of the buffer."""
+    plan = _plan((("text", TEXT_LEN), ("cond", 6)))
+    assert plan.cond_runs == [(0, 6, "cond")]
+
+
+def test_a_clip_with_no_conditioning_still_reserves_the_slot():
+    """An index that moved with the presence of an anchor would make `sink` mean a different
+    thing on a t2v run than on an i2v one."""
+    plan = _plan()
+    assert plan.cond_rows.numel() == 0
+    assert hc.ChunkPlan.cache_index(0) == 2
 
 
 # ── conditioning rows keep upstream's layout ────────────────────────────────

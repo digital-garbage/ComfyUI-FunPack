@@ -231,10 +231,11 @@ def test_the_commit_of_one_chunk_precedes_the_first_forward_of_the_next():
 
 
 def test_each_chunk_writes_to_its_own_cache_index_above_the_prefix():
-    diffusion, session, _, _ = _run()
+    """The prompt holds 0 and the conditioning 1, so nothing a media chunk writes may land
+    on either — overwriting the prompt's K/V would silently unprompt the rest of the clip."""
+    _, session, _, _ = _run()
     written = {key[1] for key in session["cache"]._store}
-    assert 0 not in written or session["cache"].committed_chunks
-    assert written <= set(range(1, session["plan"].n_chunks + 1))
+    assert written <= set(range(2, session["plan"].n_chunks + 2))
 
 
 def test_the_rollout_returns_a_clip_of_the_shape_it_was_given():

@@ -185,6 +185,34 @@ def _forward_phase():
             rows, _ = plan.chunk(i)
             assert cache._store[(0, plan.cache_index(i))][0].shape[-2] == rows.shape[0]
 
+    # An i2v clip: the anchor is prefilled as its OWN cache chunk, reading the text already
+    # cached at 0, so it can be evicted by `sink` without taking the prompt with it.
+    pinned_layout = PackedLayout(text_len, latent_t, lat_h, lat_w, audio_t,
+                                 keyframes=[{"resolved_frame_index": 0}], frame_count=39)
+    pinned_plan = hc.build_plan(pinned_layout, latent_t, audio_t)
+    assert pinned_plan.cond_rows.numel(), "the keyframe produced no conditioning rows"
+    pinned_payload = {"layout": pinned_layout, "seed": 0,
+                      "cond_video_latents": [torch.randn(1, 24, 1, lat_h, lat_w)]}
+    pinned_cache = hc.ChunkKVCache(len(causal.blocks), sink=2, window=2,
+                                   device=torch.device("cpu"), offload=False)
+    with torch.no_grad():
+        causal.prefill_text(context, pinned_plan, pinned_cache,
+                            minimax_payload=pinned_payload)
+        assert pinned_cache._store[(0, 0)][0].shape[-2] == text_len
+        assert (pinned_cache._store[(0, 1)][0].shape[-2]
+                == pinned_plan.cond_rows.shape[0]), "the anchor did not cache on its own"
+        v_start, v_stop, a_start, a_stop = pinned_plan.bounds[0]
+        out_v, out_a = causal.forward_chunk(
+            video[:, :, v_start:v_stop], audio[..., a_start:a_stop], pinned_plan, 0,
+            pinned_cache, video_sigma=0.8, audio_sigma=0.4, context=context,
+            minimax_payload=pinned_payload)
+        assert torch.isfinite(out_v).all() and torch.isfinite(out_a).all()
+    # sink 1 releases the anchor and keeps the prompt; sink 2 keeps both
+    pinned_cache.sink = 1
+    assert pinned_cache.retained_indices(6) == [0], pinned_cache.retained_indices(6)
+    pinned_cache.sink = 2
+    assert pinned_cache.retained_indices(6) == [0, 1], pinned_cache.retained_indices(6)
+
     # A ComfyUI without the newer `time_shift_slope` must still build the lane. Importing it
     # like the rest made one missing symbol refuse the whole feature on 0.34.0, and the
     # refusal then blamed a setting — this is that regression.

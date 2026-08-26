@@ -172,17 +172,27 @@ class ChunkPlan:
     would be a second source of truth for the clip's shape — and the first symptom of it
     drifting is a clip that looks subtly wrong rather than an exception.
 
-    Two kinds of selection:
+    Three kinds of selection, and they are three because THE PROMPT AND THE ANCHOR ARE NOT
+    THE SAME KIND OF CONTEXT:
 
-    `prefix` is everything before the target streams — the text, the keyframe cond rows and
-    the reference blocks. It is cached ONCE, as cache chunk 0, and every media chunk reads it.
-    That is why i2v and r2v survive here: the conditioning rows keep the layout upstream built
-    for them instead of being re-packed into a chunk that has no place for them.
+    `text` is the prompt span. Cache chunk 0, and pinned for the whole clip by any sink at
+    all — every moment of the video is the same prompt.
+
+    `cond` is the keyframe pins and the reference blocks. Cache chunk 1, so it is pinned by
+    `sink >= 2` and EVICTED by `sink == 1`. In a dense forward the anchor is one pin among
+    hundreds of frames' worth of rows; pinned into a 3-block context it is a third of
+    everything the model can see, and the model does what it was trained to do with
+    conditioning rows — compose from them. Releasing it lets the shot progress. Keeping the
+    conditioning rows in the layout upstream built for them is still what makes i2v and r2v
+    work here at all; this only decides how long they stay visible.
 
     `chunk(i)` is media chunk i: its audio rows followed by its video rows, in the packing
-    order the target segments already use. Media chunk i is CACHE chunk i + 1, because the
-    prefix took index 0.
+    order the target segments already use. Media chunk i is CACHE chunk i + 2, because the
+    text and the conditioning took 0 and 1.
     """
+
+    TEXT_CACHE_INDEX = 0
+    COND_CACHE_INDEX = 1
 
     def __init__(self, layout, bounds, audio_t):
         self.layout = layout
@@ -211,8 +221,19 @@ class ChunkPlan:
                 f"the soundtrack does not cover the picture — {self.audio_t} audio latents "
                 f"against {latent_t} video latents leaves chunk {empty[0]} silent. H3 runs "
                 f"audio at 40/s against a fixed 24 fps; this clip is not on that clock.")
+        prefix = [(a, b, kind) for a, b, kind in segments if b <= audio_seg[0]]
         self.prefix_rows = torch.arange(0, audio_seg[0], dtype=torch.long)
-        self.prefix_runs = [(a, b, kind) for a, b, kind in segments if b <= audio_seg[0]]
+        self.prefix_runs = prefix
+        text = [r for r in prefix if r[2] == "text"]
+        cond = [r for r in prefix if r[2] != "text"]
+        self.text_runs = text
+        self.text_rows = torch.arange(text[0][0], text[-1][1], dtype=torch.long) if text \
+            else torch.zeros(0, dtype=torch.long)
+        # Local indices: the conditioning is its own sequence now, not a tail of the text.
+        base = cond[0][0] if cond else 0
+        self.cond_runs = [(a - base, b - base, kind) for a, b, kind in cond]
+        self.cond_rows = torch.arange(base, cond[-1][1], dtype=torch.long) if cond \
+            else torch.zeros(0, dtype=torch.long)
 
     @property
     def n_chunks(self):
@@ -220,8 +241,13 @@ class ChunkPlan:
 
     @staticmethod
     def cache_index(index):
-        """Media chunk i lives at cache index i + 1; the prefix holds 0."""
-        return int(index) + 1
+        """Media chunk i lives at cache index i + 2; the text holds 0 and the conditioning 1.
+
+        The conditioning slot is reserved whether or not this clip has any — an index that
+        moved with the presence of an anchor would make `sink` mean a different thing on a
+        t2v run than on an i2v one.
+        """
+        return int(index) + 2
 
     def chunk(self, index):
         """(row indices, local runs) for one media chunk."""
@@ -569,35 +595,16 @@ def _causal_classes():
             return self.token_refiner(self.condition_proj(states),
                                       transformer_options=transformer_options)
 
-        def prefill_text(self, context, plan, cache, *, video_sigma=0.0, audio_sigma=0.0,
-                         transformer_options={}, minimax_payload=None):
-            """Run the prompt and the conditioning rows once, and cache them as chunk 0.
+        def _prefill_span(self, plan, rows, runs, cache, chunk_index, t_v, t_a, dtype,
+                          device, payload, transformer_options, text_states=None):
+            """Run one prefix span and write its K/V. Returns nothing — only the cache matters.
 
-            The prefix is the text, the keyframe cond rows and the reference blocks — the part
-            of the sequence that does not change from chunk to chunk. Caching it once is not
-            only cheaper: every later chunk assumes the text keys it attends are the ones the
-            model saw, and recomputing them per chunk would quietly make that false.
-
-            Cached at sigma 0 by default, so the prefix is CLEAN context. The cond rows pin
-            near 1 in upstream's own table regardless, and text is never noised, so this is the
-            state those rows would be in at the end of any schedule.
+            `chunk_index` is both where this span is written AND what it is allowed to read,
+            so the conditioning written at 1 attends the text already at 0.
             """
-            payload = minimax_payload or {}
-            rows = plan.prefix_rows
-            if rows.numel() == 0:
-                raise CacheError("this layout has no prefix rows to prefill")
-            device = comfy.model_management.get_torch_device()
-            if hasattr(context, "device"):
-                device = context.device
-            dtype = context.dtype
-            t_v = float(1.0 - max(float(video_sigma), 1e-6))
-            t_a = float(1.0 - max(float(audio_sigma), 1e-6))
-            runs = plan.prefix_runs
             seg_t, t_row, unique_t = self._modulation({k for _, _, k in runs}, t_v, t_a, payload)
-            text_states = self._text_states(context, transformer_options)
             cond_video = self._cond_video_rows(payload, device)
             cond_audio = self._cond_audio_rows(payload, device)
-
             h = torch.empty(int(rows.shape[0]), self.hidden_size, dtype=dtype, device=device)
             voff = aoff = 0
             for a, b, kind in runs:
@@ -616,14 +623,48 @@ def _causal_classes():
                                          "carries no cond_audio_latents to fill them")
                     h[a:b] = self.audio_patch_proj(cond_audio[aoff:aoff + n]).to(dtype)
                     aoff += n
-
             rope_freqs = rope_rotation_table(
                 self.rope_freqs(plan.layout.position_ids[rows], device), dtype)
             self._run_blocks(h, self._t_emb(unique_t, device, dtype),
                              self._mod_segments(runs, seg_t, t_row,
                                                 payload.get("text_token_tags")),
-                             rope_freqs, transformer_options, cache, 0, True)
-            cache.finish_chunk(0)
+                             rope_freqs, transformer_options, cache, chunk_index, True)
+            cache.finish_chunk(chunk_index)
+
+        def prefill_text(self, context, plan, cache, *, video_sigma=0.0, audio_sigma=0.0,
+                         transformer_options={}, minimax_payload=None):
+            """Cache the prompt, then the conditioning, as two separate chunks.
+
+            Two forwards rather than one because the prompt and the anchor are not the same
+            kind of context and must be evictable separately — see ChunkPlan. The conditioning
+            pass reads the text already in the cache, so the anchor is still represented WITH
+            the prompt rather than in isolation.
+
+            Cached at sigma 0 by default, so the prefix is CLEAN context. The cond rows pin
+            near 1 in upstream's own table regardless, and text is never noised, so this is
+            the state those rows would be in at the end of any schedule.
+            """
+            payload = minimax_payload or {}
+            if plan.text_rows.numel() == 0:
+                raise CacheError("this layout has no prompt rows to prefill")
+            device = context.device if hasattr(context, "device") \
+                else comfy.model_management.get_torch_device()
+            dtype = context.dtype
+            t_v = float(1.0 - max(float(video_sigma), 1e-6))
+            t_a = float(1.0 - max(float(audio_sigma), 1e-6))
+            text_states = self._text_states(context, transformer_options)
+
+            self._prefill_span(plan, plan.text_rows, plan.text_runs, cache,
+                               plan.TEXT_CACHE_INDEX, t_v, t_a, dtype, device, payload,
+                               transformer_options, text_states=text_states)
+            if plan.cond_rows.numel():
+                self._prefill_span(plan, plan.cond_rows, plan.cond_runs, cache,
+                                   plan.COND_CACHE_INDEX, t_v, t_a, dtype, device, payload,
+                                   transformer_options)
+            else:
+                # Reserve the slot even with nothing in it, so `sink` counts the same on a
+                # t2v run as on an i2v one.
+                cache.finish_chunk(plan.COND_CACHE_INDEX)
 
         def forward_chunk(self, video_latent, audio_latent, plan, index, cache, *,
                           video_sigma, audio_sigma, context=None, update_cache=False,
