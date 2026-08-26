@@ -627,3 +627,78 @@ def test_the_run_says_the_sampler_and_cfg_are_not_used(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "CFG" in out and "not used" in out.replace("NOT used", "not used")
     assert "no per-chunk redo" in out.lower()
+
+
+# ── loading, and what loading also installs ─────────────────────────────────
+#
+# The ordinary path reaches the model through comfy.sample.sample_custom, whose
+# prepare_sampling calls load_models_gpu. That call is ALSO what applies a patcher's object
+# patches (partially_load -> patch_model), which is how FunPack's AdaLN modality gains and
+# token-refiner edit get installed at all. This lane calls the DiT directly, so skipping the
+# load would leave the weights offloaded AND both of those silently absent.
+
+def test_the_model_is_loaded_before_the_rollout(monkeypatch):
+    import comfy.model_management
+    calls = []
+    monkeypatch.setattr(comfy.model_management, "load_models_gpu",
+                        lambda models, **kw: calls.append((models, kw)), raising=False)
+    model = FakeCausalModel()
+    session = _session(model)
+    session["patcher"] = "the-patcher"
+    rc.run_session(session, sigmas=(1.0, 0.0))
+    assert calls and calls[0][0] == ["the-patcher"]
+
+
+def test_the_load_happens_before_the_first_forward(monkeypatch):
+    import comfy.model_management
+    order = []
+    monkeypatch.setattr(comfy.model_management, "load_models_gpu",
+                        lambda models, **kw: order.append("load"), raising=False)
+    model = FakeCausalModel()
+
+    real_forward = model.forward_chunk
+    def spy(**kw):
+        order.append("forward")
+        return real_forward(**kw)
+    model.forward_chunk = spy
+
+    session = _session(model)
+    session["patcher"] = "the-patcher"
+    rc.run_session(session, sigmas=(1.0, 0.0))
+    assert order[0] == "load"
+
+
+def test_the_model_is_loaded_once_not_per_chunk(monkeypatch):
+    """Loading per chunk would fight Comfy's own offload decision all the way down the clip."""
+    import comfy.model_management
+    calls = []
+    monkeypatch.setattr(comfy.model_management, "load_models_gpu",
+                        lambda models, **kw: calls.append(models), raising=False)
+    session = _session()
+    session["patcher"] = "the-patcher"
+    rc.run_session(session, sigmas=(1.0, 0.5, 0.0))
+    assert len(calls) == 1
+
+
+def test_a_failed_load_does_not_abort_the_run(monkeypatch, capsys):
+    """It degrades to whatever Comfy already had resident, and says the patches may be
+    missing — rather than turning a recoverable placement problem into a dead run."""
+    import comfy.model_management
+    monkeypatch.setattr(
+        comfy.model_management, "load_models_gpu",
+        lambda models, **kw: (_ for _ in ()).throw(RuntimeError("out of memory")),
+        raising=False)
+    session = _session()
+    session["patcher"] = "the-patcher"
+    video, _audio = rc.run_session(session, sigmas=(1.0, 0.0))
+    assert video is not None
+    assert "object patches may not be installed" in capsys.readouterr().out
+
+
+def test_no_patcher_means_no_load_attempt(monkeypatch):
+    import comfy.model_management
+    calls = []
+    monkeypatch.setattr(comfy.model_management, "load_models_gpu",
+                        lambda models, **kw: calls.append(models), raising=False)
+    rc.run_session(_session(), sigmas=(1.0, 0.0))     # _session has no patcher
+    assert calls == []

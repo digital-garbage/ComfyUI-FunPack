@@ -344,6 +344,22 @@ def run_session(session, *, sigmas, step_rule="consistency", eta=1.0, seed=0,
     layout = session["layout"]
     model = session["model"]
     cache = session["cache"]
+    # LOAD FIRST. The ordinary path reaches the model through comfy.sample.sample_custom,
+    # whose prepare_sampling calls load_models_gpu — and load_models_gpu is also what applies
+    # a patcher's OBJECT PATCHES (partially_load -> patch_model). This lane calls the DiT
+    # directly, so without this the weights may still be offloaded AND every object patch
+    # FunPack installed (the AdaLN modality gains, the token-refiner edit) would silently not
+    # be there. Once, for the whole rollout: the loop must not fight Comfy's offload decision
+    # chunk by chunk.
+    patcher = session.get("patcher")
+    if patcher is not None:
+        try:
+            import comfy.model_management
+            comfy.model_management.load_models_gpu([patcher], memory_required=0,
+                                                   force_full_load=False)
+        except Exception as error:                   # noqa: BLE001
+            print(f"[FunPack H3] causal lane could not pre-load the model ({error}); "
+                  f"the rollout continues, but object patches may not be installed.")
     device = session["device"]
     compute_dtype = session["compute_dtype"]
     conditioning = session["conditioning"]
