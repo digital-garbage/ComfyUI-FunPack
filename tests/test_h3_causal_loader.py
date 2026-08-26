@@ -111,3 +111,44 @@ def test_a_comfy_without_h3_declines_instead_of_raising(monkeypatch):
     fake.model.diffusion_model = diffusion
     ok, note = hc.make_causal(fake)
     assert ok is False and "no MiniMax H3" in note
+
+
+# ── which node the user is actually sent to ─────────────────────────────────
+#
+# FunPack LoRA Loader loads AND applies, from its own file list. FunPack Apply LoRA Weights is
+# the optional stack producer for prompt-specific trained strengths. Naming the second one as
+# the way in sends the user to add a node they do not need.
+
+def test_the_loader_message_names_the_lora_loader():
+    tip = _fields()["chunk_causal"][1]["tooltip"]
+    assert "FunPack LoRA Loader" in tip
+    assert "Apply LoRA Weights" not in tip
+
+
+def test_the_sampler_message_names_the_lora_loader():
+    import inspect
+    import raven_causal
+    src = inspect.getsource(raven_causal.build_session)
+    assert "FunPack LoRA Loader" in src
+    assert "Apply LoRA Weights" not in src
+
+
+def test_the_lora_loader_does_not_advertise_itself_as_stack_only():
+    """Its description used to read as though a stack node were required."""
+    import model_management
+    text = model_management.FunPackLoraLoader.DESCRIPTION
+    assert "only needed" in text or "own list" in text
+
+
+def test_the_stack_input_is_optional():
+    """If it were required, 'the loader applies them on its own' would be false."""
+    import model_management
+    spec = model_management.FunPackLoraLoader.INPUT_TYPES()
+    assert "lora_stack" in spec.get("optional", {})
+    assert "lora_stack" not in spec.get("required", {})
+
+
+def test_the_file_list_is_the_required_way_in():
+    import model_management
+    spec = model_management.FunPackLoraLoader.INPUT_TYPES()
+    assert "lora_list" in spec.get("required", {})

@@ -294,7 +294,8 @@ def build_session(model, positive, latent, *, sink=2, window=2, storage="cpu_pin
     if not hasattr(diffusion, "forward_chunk") or not hasattr(diffusion, "prefill_text"):
         return None, ("the loaded model is a stock bidirectional H3. Switch on `chunk_causal` "
                       "on FunPack Diffusion Model Loader, and load a LoRA trained for the "
-                      "chunked pattern with FunPack Apply LoRA Weights.")
+                      "chunked pattern with FunPack LoRA Loader — it applies on its own, no "
+                      "stack node needed.")
     blocks = getattr(diffusion, "blocks", None)
     if not blocks:
         return None, "the loaded model exposes no DiT blocks to cache"

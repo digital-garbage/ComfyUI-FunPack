@@ -174,8 +174,8 @@ class FunPackDiffusionModelLoader:
                                "about the weights changes and an ordinary generation is "
                                "unaffected — the model simply gains the ability to read a "
                                "key/value cache. It still needs a LoRA trained for that "
-                               "pattern (load it with FunPack Apply LoRA Weights like any "
-                               "other): the base H3 weights have never seen a cache, so "
+                               "pattern — load it with FunPack LoRA Loader like any other "
+                               "LoRA: the base H3 weights have never seen a cache, so "
                                "without one the chunked lane runs out of distribution. Use "
                                "the full non-pruned checkpoint."}),
                 "fp16_accumulation": ("BOOLEAN", {

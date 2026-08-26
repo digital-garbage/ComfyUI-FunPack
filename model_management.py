@@ -718,13 +718,19 @@ class FunPackApplyLoraWeights:
 
 
 class FunPackLoraLoader:
-    """Loads the LoRA stack prepared by FunPack Apply LoRA Weights."""
+    """Loads and applies LoRAs. Complete on its own — the stack input is optional.
+
+    The `lora_list` on this node is the ordinary way in: pick files, they are applied. A
+    FunPack Apply LoRA Weights stack is only needed when the strengths are prompt-specific
+    and trained, which is a narrower case than it used to read as.
+    """
 
     CATEGORY = "FunPack/Model Management"
     RETURN_TYPES = ("MODEL", "CLIP", LORA_STACK_TYPE, "STRING")
     RETURN_NAMES = ("MODEL", "CLIP", "lora_stack", "status")
     FUNCTION = "load_loras"
-    DESCRIPTION = "Loads LoRAs from a FunPack LoRA stack without doing any learning."
+    DESCRIPTION = ("Loads and applies LoRAs. Pick files in its own list — a stack node is "
+                   "only needed for prompt-specific trained strengths.")
 
     def __init__(self):
         self.raw_lora_cache = OrderedDict()
