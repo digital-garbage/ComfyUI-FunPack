@@ -96,9 +96,15 @@ def _reason(text: str) -> str:
     return out[:1].upper() + out[1:] if out else ""
 
 
-def note(tag: str, message: str) -> None:
-    """Say it, every time. For events that genuinely differ run to run."""
-    print(f"[{tag}] {compact(message)}")
+def note(tag: str, message: str, full: bool = False) -> None:
+    """Say it, every time. For events that genuinely differ run to run.
+
+    `full` prints the whole message rather than its first clause. For the rare line whose
+    PAYLOAD is the detail — two sets of key names to compare, a table, a list of what was
+    dropped — where trimming removes the only reason to print it. Not for emphasis: a
+    feature's state and its reason are one clause, and that is the point of the shape.
+    """
+    print(f"[{tag}] {message if full else compact(message)}")
 
 
 def note_once(tag: str, message: str, key: str | None = None) -> bool:
@@ -115,7 +121,7 @@ def note_once(tag: str, message: str, key: str | None = None) -> bool:
     return True
 
 
-def note_on_change(key: str, tag: str, message: str) -> bool:
+def note_on_change(key: str, tag: str, message: str, full: bool = False) -> bool:
     """Say it only when what it would say has changed since this key last spoke.
 
     For standing conditions: model family, a missing backend, a feature inert because of how
@@ -125,7 +131,7 @@ def note_on_change(key: str, tag: str, message: str) -> bool:
     if _last_by_key.get(key) == message:
         return False
     _last_by_key[key] = message
-    print(f"[{tag}] {compact(message)}")
+    print(f"[{tag}] {message if full else compact(message)}")
     return True
 
 

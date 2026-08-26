@@ -477,8 +477,7 @@ def test_mixing_pins_and_references_is_called_out(capsys):
         "minimax_keyframes": [{"resolved_frame_index": 0}],
         "minimax_refs": [{"kind": "image"}],
     }]])
-    out = capsys.readouterr().out
-    assert "BOTH" in out and "fl2va" in out and "ref2va" in out
+    assert "BOTH keyframe pins and references" in capsys.readouterr().out
 
 
 # ── pins rescued from a wired MiniMax H3 Image to Video node ─────────────────

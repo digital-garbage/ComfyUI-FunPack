@@ -294,6 +294,14 @@ LORA_KEY_PREFIXES = (
 )
 
 
+def _sample_keys(mapping, count=3):
+    """A few representative names, shortened. Enough to compare two namings by eye."""
+    keys = sorted(str(k) for k in mapping)
+    picked = keys[:count]
+    more = f" (+{len(keys) - len(picked)} more)" if len(keys) > len(picked) else ""
+    return ", ".join(k[:80] for k in picked) + more if picked else "(none)"
+
+
 def _count_lora_matches(lora, key_map):
     try:
         return len(comfy.lora.load_lora(lora, key_map, log_missing=False))
@@ -433,8 +441,17 @@ def resolve_lora_patches(model, lora, clip=None, name=None):
     who = f"{name}: " if name else ""
     patches = comfy.lora.load_lora(best, key_map)
     if not patches:
-        logging.warning(
-            f"[FunPack] {who}LoRA matched no weights in this model - wrong model family?")
+        # WITH BOTH SIDES OF THE COMPARISON. "matched no weights" is not actionable; the two
+        # sets of names are, because they say whether the file is for another architecture
+        # (nothing alike) or for the same one under different module names (fixable by a
+        # rename rule). Every prefix in LORA_KEY_PREFIXES was born from one of these.
+        _log.note_on_change(
+            f"lora:nothing:{name or '?'}", "FunPack",
+            f"{who}LoRA matched NOTHING in this model, so it is doing nothing at all. "
+            f"Its keys look like: {_sample_keys(converted)}. This model wants: "
+            f"{_sample_keys(key_map)}. If those are the same layers under different names, "
+            f"the file needs a rename rule; if they are unrelated, it is for another model.",
+            full=True)
         return patches, "MATCHED NOTHING"
     matched = len(patches)
     note = f"keys={matched} fmt={best_note}"
@@ -1261,7 +1278,10 @@ class FunPackLoraLoader:
             # is the difference between "loaded" and "doing something", and the Editor's fixed
             # graph shows this node's status output nowhere — so a file that matched nothing
             # looked exactly like one that applied.
-            _log.feature("FunPack", f"LoRA {entry['name']}", True,
+            # "Active" for a file that matched nothing is the same lie the status string
+            # used to tell in private: loaded is not applied.
+            _log.feature("FunPack", f"LoRA {entry['name']}",
+                         "MATCHED NOTHING" not in apply_status,
                          f"{apply_status} at {model_weight:+.3f}")
 
         if loaded_count == 0:

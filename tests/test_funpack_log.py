@@ -204,3 +204,12 @@ def test_a_skip_and_an_inactive_feature_read_the_same(capsys):
     L.skipped("FunPack", "SLA attention", "Triton is not installed")
     lines = [x for x in capsys.readouterr().out.strip().splitlines()]
     assert lines[0] == lines[1]
+
+
+def test_a_diagnostic_can_ask_for_its_whole_payload(capsys):
+    """The rare line whose PAYLOAD is the detail — two sets of key names to compare — where
+    trimming removes the only reason to print it."""
+    L.note("FunPack", "LoRA matched NOTHING. Its keys: a.b.c. This model wants: d.e.f.",
+           full=True)
+    out = capsys.readouterr().out
+    assert "a.b.c" in out and "d.e.f" in out

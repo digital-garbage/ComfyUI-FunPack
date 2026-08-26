@@ -247,3 +247,40 @@ def test_the_log_line_names_the_file_and_the_share(mm, monkeypatch, capsys):
     assert "1 of 1" in out
     assert "DROPPED before the merge" in out
     assert "1/1 DROPPED" in note
+
+
+# ── a file that matches nothing has to say what it looked like ──────────────
+#
+# "matched no weights" is not actionable. The two sets of NAMES are: they say whether the
+# file is for another architecture (nothing alike) or for the same one under different
+# module names (a rename rule away). Every entry in LORA_KEY_PREFIXES was born from one of
+# these, and each was found by hand because the log did not print this.
+
+def test_a_lora_that_matches_nothing_prints_both_namings(mm, monkeypatch, capsys):
+    monkeypatch.setattr(mm.comfy.lora, "model_lora_keys_unet",
+                        lambda model, out: {"diffusion_model.blocks.0.attn.qkv_proj.weight":
+                                            "blocks.0.attn.qkv_proj.weight"}, raising=False)
+    monkeypatch.setattr(mm.comfy.lora, "model_lora_keys_clip", lambda *a, **kw: {},
+                        raising=False)
+    monkeypatch.setattr(mm.comfy.lora_convert, "convert_lora", lambda sd: sd, raising=False)
+    monkeypatch.setattr(mm.comfy.lora, "load_lora", lambda *a, **kw: {}, raising=False)
+    mm._log.reset()
+    lora = {"base_model.model.dit.blocks.0.self_attn.qkv.lora_A.weight": torch.zeros(1)}
+
+    patches, status = mm.resolve_lora_patches(_Model({}), lora, name="raven.safetensors")
+
+    assert patches == {} and status == "MATCHED NOTHING"
+    out = capsys.readouterr().out
+    assert "doing nothing at all" in out
+    assert "self_attn.qkv" in out            # what the file has
+    assert "attn.qkv_proj" in out            # what the model wants
+
+
+def test_the_sample_says_how_many_it_did_not_show(mm):
+    """Three names is enough to compare two namings by eye; the count says it is a sample."""
+    line = mm._sample_keys({f"k{i}": i for i in range(10)})
+    assert line.count(",") == 2 and "(+7 more)" in line
+
+
+def test_an_empty_side_reads_as_empty_rather_than_blank(mm):
+    assert mm._sample_keys({}) == "(none)"

@@ -5682,7 +5682,7 @@ class FunPackLTXAVSceneChainSampler:
         )
         self._h3_mode_noted = True
         if note:
-            print(f"[FunPackSceneChain] H3: {note}")
+            _log.note("FunPackSceneChain", f"H3 conditioning: {note}")
 
     def _apply_h3_references(self, positive, chunk, vae, audio_vae=None):
         """Turn Studio's resolved ref2va order into the DiT's `minimax_refs` blocks.

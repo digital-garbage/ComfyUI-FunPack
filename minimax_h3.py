@@ -487,22 +487,27 @@ def checkpoint_mode_note(has_keyframes: bool, has_refs: bool):
     """One line naming the checkpoint this run's conditioning actually needs, or None.
 
     H3 ships as two separate DiTs — ``minimax_h3_fl2va_*`` (t2v / first-last frame) and
-    ``minimax_h3_ref2va_*`` (references). Both load through the same detection and neither
-    rejects the other's conditioning, so the only failure signal is a bad generation. There
-    is no variant marker in the state dict to check against, so the run says what it is
-    doing and leaves matching the file to the user.
+    ``minimax_h3_ref2va_*`` (references) — and community checkpoints merge both. Nothing in
+    the state dict identifies the variant, so THIS CANNOT AND DOES NOT CHECK THE LOADED FILE.
+    It names the conditioning the run is using and stops there.
+
+    It used to add "fl2va weights will read it, but were not trained on it", which reads as a
+    finding and is not one: it fires on every run with references, including on the ref2va and
+    hybrid checkpoints where nothing is wrong. Asserting a mismatch nothing detected is worse
+    than silence — the reader has to learn to ignore the line, and then ignores it when it
+    matters.
     """
     if has_keyframes and has_refs:
-        return ("this run uses BOTH keyframe pins and reference blocks, which live in "
-                "DIFFERENT checkpoints (fl2va pins / ref2va references) — whichever model "
-                "is loaded, one of the two is untrained conditioning. Drop the anchor image "
-                "or the references, or run them as separate scenes.")
+        # One sentence, because the log prints the first one: the finding has to be IN it.
+        return ("BOTH keyframe pins and references, which live in different DiTs unless "
+                "yours is a hybrid — one of the two is then untrained conditioning. Drop the "
+                "anchor image or the references, or run them as separate scenes.")
     if has_keyframes:
-        return ("keyframe pin conditioning (fl2va) — this needs a minimax_h3_fl2va_* "
-                "checkpoint; ref2va weights will read it, but were not trained on it.")
+        return ("keyframe pins (fl2va conditioning). Needs fl2va or hybrid weights — which "
+                "variant is loaded cannot be read from the file.")
     if has_refs:
-        return ("reference conditioning (ref2va) — this needs a minimax_h3_ref2va_* "
-                "checkpoint; fl2va weights will read it, but were not trained on it.")
+        return ("references (ref2va conditioning). Needs ref2va or hybrid weights — which "
+                "variant is loaded cannot be read from the file.")
     return None
 
 

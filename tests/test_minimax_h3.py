@@ -400,8 +400,24 @@ def test_checkpoint_note_names_the_variant_each_mode_needs():
     assert "fl2va" in h3.checkpoint_mode_note(True, False)
     assert "ref2va" in h3.checkpoint_mode_note(False, True)
     assert h3.checkpoint_mode_note(False, False) is None
+    assert "BOTH" in h3.checkpoint_mode_note(True, True)
+
+
+def test_the_note_does_not_assert_a_mismatch_it_never_checked():
+    """Nothing in the state dict identifies the variant, so this cannot know which file is
+    loaded. It used to say "fl2va weights will read it, but were not trained on it" on EVERY
+    run with references — including on the ref2va and hybrid checkpoints where nothing is
+    wrong. A reader who learns to ignore a line ignores it when it matters."""
+    for note in (h3.checkpoint_mode_note(True, False), h3.checkpoint_mode_note(False, True)):
+        assert "were not trained on it" not in note
+        assert "hybrid" in note or "cannot be read from the file" in note
+
+
+def test_pins_and_references_together_stay_a_warning():
+    """That one IS a finding: the two conditionings live in different DiTs, so on anything but
+    a hybrid one of them is untrained whichever file is loaded."""
     both = h3.checkpoint_mode_note(True, True)
-    assert "BOTH" in both and "fl2va" in both and "ref2va" in both
+    assert "BOTH" in both and "Drop the" in both
 
 
 # ── 6. video references ──────────────────────────────────────────────────────
