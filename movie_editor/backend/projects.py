@@ -10,7 +10,7 @@ import time
 from typing import Optional
 
 from . import config
-from .timeline import Project, Scene
+from .timeline import Project, Scene, without_key_scoped
 
 
 def _path(project_id: str):
@@ -39,7 +39,11 @@ def get(project_id: str) -> Optional[Project]:
     p = _path(project_id)
     if not p.exists():
         return None
-    return Project.from_dict(json.loads(p.read_text()))
+    stored = json.loads(p.read_text())
+    # Only here, on the way off disk: the rating-learned strengths come from the refinement
+    # key, so an opened project must not carry yesterday's copy of them.
+    stored["sampler_inputs"] = without_key_scoped(stored.get("sampler_inputs"))
+    return Project.from_dict(stored)
 
 
 def save(project: Project) -> Project:
