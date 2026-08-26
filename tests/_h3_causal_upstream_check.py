@@ -185,6 +185,30 @@ def _forward_phase():
             rows, _ = plan.chunk(i)
             assert cache._store[(0, plan.cache_index(i))][0].shape[-2] == rows.shape[0]
 
+    # A ComfyUI without the newer `time_shift_slope` must still build the lane. Importing it
+    # like the rest made one missing symbol refuse the whole feature on 0.34.0, and the
+    # refusal then blamed a setting — this is that regression.
+    from comfy.ldm.minimax.model import time_shift_slope as _slope
+    del sys.modules["comfy.ldm.minimax.model"].time_shift_slope
+    try:
+        old_attn, old_block, older = hc._causal_classes()
+        assert hasattr(older, "forward_chunk"), "the lane refused itself without the slope"
+        stripped = copy.deepcopy(stock)
+        for i in range(len(stripped.blocks)):
+            hc._to_causal_block(stripped.blocks[i], old_block, old_attn)
+        stripped.__class__ = older
+        older_cache = hc.ChunkKVCache(len(stripped.blocks), sink=2, window=2,
+                                      device=torch.device("cpu"), offload=False)
+        with torch.no_grad():
+            stripped.prefill_text(context, plan, older_cache, minimax_payload=payload)
+            v_start, v_stop, a_start, a_stop = plan.bounds[0]
+            out_v, out_a = stripped.forward_chunk(
+                video[:, :, v_start:v_stop], audio[..., a_start:a_stop], plan, 0, older_cache,
+                video_sigma=0.8, audio_sigma=0.4, context=context, minimax_payload=payload)
+        assert torch.isfinite(out_v).all() and torch.isfinite(out_a).all()
+    finally:
+        sys.modules["comfy.ldm.minimax.model"].time_shift_slope = _slope
+
     # a clip whose streams disagree about its length is refused by name, not deep in a block
     try:
         hc.build_plan(PackedLayout(text_len, latent_t, lat_h, lat_w, 20), latent_t, 20)

@@ -396,13 +396,23 @@ def _causal_classes():
     Deferred into a function because these subclass ``comfy.ldm.minimax.model``, which is not
     importable on a ComfyUI without H3 — and a node pack must still register there.
     """
+    import comfy.ldm.minimax.model as upstream
     import comfy.model_management
     import comfy.quant_ops
-    from comfy.ldm.minimax.model import (AUDIO_COND_TIMESTEP, VISUAL_COND_TIMESTEP, Attention,
-                                         DiTBlock, MiniMaxH3Model, _mod_gate, _mod_scale_shift,
-                                         optimized_attention, pack_audio, patchify_video,
-                                         rope_rotation_table, time_shift_slope, unpack_audio,
+    # The names without which there is no lane at all. A missing one is named by the
+    # ImportError, which is how a ComfyUI too old for this gets diagnosed rather than guessed.
+    from comfy.ldm.minimax.model import (Attention, DiTBlock, MiniMaxH3Model, _mod_gate,
+                                         _mod_scale_shift, optimized_attention, pack_audio,
+                                         patchify_video, rope_rotation_table, unpack_audio,
                                          unpatchify_video)
+
+    # And the names that ARRIVED LATER. Importing these the same way made one missing symbol
+    # refuse the whole feature on an older ComfyUI — which is what happened, and the refusal
+    # then blamed a setting. Each falls back to what that ComfyUI's own dense forward does,
+    # so the chunked lane never applies a correction the dense path is not applying either.
+    VISUAL_COND_TIMESTEP = getattr(upstream, "VISUAL_COND_TIMESTEP", 0.999)
+    AUDIO_COND_TIMESTEP = getattr(upstream, "AUDIO_COND_TIMESTEP", 1.0)
+    time_shift_slope = getattr(upstream, "time_shift_slope", None)
 
     class CausalAttention(Attention):
         """Upstream attention, with the retained K/V prepended to this chunk's own.
@@ -627,7 +637,10 @@ def _causal_classes():
 
             The audio velocity carries the same `time_shift_slope` factor upstream applies, so
             the caller can integrate BOTH streams against the video sigma and still be on the
-            audio's own shifted grid.
+            audio's own shifted grid — on a ComfyUI that applies it. 0.34.0 has no such
+            function and its dense forward returns the audio velocity unscaled, so neither
+            does this: the chunked lane must not correct for something the dense path on the
+            same install is leaving alone.
             """
             payload = minimax_payload or {}
             rows, runs = plan.chunk(index)
@@ -662,13 +675,14 @@ def _causal_classes():
             video_out = unpatchify_video(v, latent_t, lat_h // 2, lat_w // 2,
                                          self.latents_dim, self.patch_size)
             audio_out = unpack_audio(a)
-            shift_v = float(self.sigma_shift_video if sigma_shift_video is None
-                            else sigma_shift_video)
-            shift_a = float(self.sigma_shift_audio if sigma_shift_audio is None
-                            else sigma_shift_audio)
-            slope = time_shift_slope(torch.tensor(sigma_v), shift_v, shift_a)
-            return (video_out.to(video_latent.dtype),
-                    (slope.to(audio_out.dtype) * audio_out).to(audio_latent.dtype))
+            if time_shift_slope is not None:
+                shift_v = float(self.sigma_shift_video if sigma_shift_video is None
+                                else sigma_shift_video)
+                shift_a = float(self.sigma_shift_audio if sigma_shift_audio is None
+                                else sigma_shift_audio)
+                slope = time_shift_slope(torch.tensor(sigma_v), shift_v, shift_a)
+                audio_out = slope.to(audio_out.dtype) * audio_out
+            return (video_out.to(video_latent.dtype), audio_out.to(audio_latent.dtype))
 
     return CausalAttention, CausalDiTBlock, CausalMiniMaxH3Model
 
