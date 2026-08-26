@@ -332,6 +332,8 @@
       hint: "MiniMax H3 only: removes audio distortion on few-step turbo schedules. Free.",
       detail: "H3 runs video and audio on different flow schedules but only one sigma grid reaches the sampler, so audio drifts further the bigger the step. This corrects it for one multiply per step. Exact with FunPack Distilled Flow, Hybrid Euler 2S and euler; leave it off with res_multistep / dpmpp_2m and the rest of the multistep family, which already absorb most of the error. No effect when both sigma shifts are equal, or on two-evals-per-step samplers." },
     { name: "h3_gain_mode", label: "H3 render gains", kind: "combo", choices: ["learned", "manual"], default: "learned",
+      clearsOnDefault: ["h3_gain_video", "h3_gain_prompt", "h3_gain_audio",
+                        "h3_prompt_scale", "h3_taste_bias", "h3_video_detail"],
       hint: "MiniMax H3 only. 'learned' takes six render strengths from your ratings and ignores the dials below. 'Prompt is settled' is not one of them and works in either mode. 'manual' uses the dials as typed.",
       detail: "Learned needs the Refiner's 'Rating-learned render gains (H3)' left on — with it off, or before anything is rated, learned mode renders at the model's trained strengths and the dials still do nothing. Switch to manual to drive them yourself." },
     { name: "h3_gain_video", label: "Write gain · picture", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
@@ -489,6 +491,12 @@
   function writeSamplerInput(k, value, immediate) {
     if (value === k.default) {
       S.unsetSamplerInput(k.name);
+      // A knob whose default hands ownership BACK to something else takes the values it
+      // owned with it. Without this, switching H3 render gains from manual to learned left
+      // the six hand-typed values behind: inert, invisible (the dials hide in learned mode),
+      // and not cleared until the project was next opened. Deferred invisible state is the
+      // whole problem this rule exists to remove.
+      (k.clearsOnDefault || []).forEach((name) => S.unsetSamplerInput(name));
       if (immediate) S.flushSave?.();
       return;
     }
