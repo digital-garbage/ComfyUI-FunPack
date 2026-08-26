@@ -1577,9 +1577,18 @@ def apply_prompt_timestep(model, timestep):
 # no path to the audio at all.
 #
 # The arithmetic below MIRRORS ``FinalLayer.forward`` using the module's own submodules
-# rather than wrapping its result, because the value being changed (the video row's scale)
-# is consumed inside that method. It is checked against the module's attributes before it
-# runs, so a changed upstream shape declines instead of computing something else.
+# rather than wrapping its result, because the value being changed is consumed inside that
+# method. It is checked against the module's attributes before it runs, so a changed upstream
+# shape declines instead of computing something else.
+#
+# WHAT IS SCALED, and why it is not the obvious thing. The layer computes
+# ``norm(x) * (1 + scale[row]) + shift[row]``. Scaling ``scale`` itself reads as the natural
+# edit, and it was the first build — but H3's ``scale`` is NEGATIVE here, so raising the
+# multiplier SHRANK ``1 + scale`` and the dial ran backwards: measured on a rental, 0.8 gave
+# more contrast and 1.2 less, and 1.15 was nearly inert. Scaling the whole ``(1 + scale)``
+# term instead is monotone in magnitude whichever sign the checkpoint carries, so "above 1.0
+# is more" is true by construction rather than by luck. ``shift`` is left alone either way:
+# it is the bias, and moving it walks every channel off its trained centre.
 _FINAL_LAYER_PARTS = ("norm", "adaln_proj", "video_out", "audio_out")
 
 
@@ -1600,7 +1609,7 @@ class FinalLayerVideoScale:
         shift, scale = module.adaln_proj(t_emb)
         va, vb, vrow = video_seg
         aa, ab, arow = audio_seg
-        hv = (module.norm(x[va:vb]) * (1.0 + scale[vrow] * self.scale)
+        hv = (module.norm(x[va:vb]) * ((1.0 + scale[vrow]) * self.scale)
               + shift[vrow]).to(torch.float32)
         ha = (module.norm(x[aa:ab]) * (1.0 + scale[arow]) + shift[arow]).to(torch.float32)
         return module.video_out(hv), module.audio_out(ha)

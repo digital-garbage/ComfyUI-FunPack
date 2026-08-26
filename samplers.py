@@ -3185,7 +3185,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "h3_video_detail": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Makes the picture crisper or softer WITHOUT changing the sound at all. Above 1.0 = more detail and contrast (past ~1.3 it overcooks), below 1.0 = softer and calmer. 1.0 = untouched, and the model is not cloned. This is the audio-safe twin of h3_gain_video: everything earlier in the model shares one attention pass, so a change to the picture reaches the soundtrack, but this runs after the last one — there is no path left for it to travel. Free. UNVALIDATED.",
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Makes the picture crisper or softer WITHOUT changing the sound at all. Above 1.0 = more detail and contrast, below 1.0 = softer and calmer. The step from 1.0 is small, so reach for 1.4-1.8 before deciding it does nothing. 1.0 = untouched, and the model is not cloned. This is the audio-safe twin of h3_gain_video: everything earlier in the model shares one attention pass, so a change to the picture reaches the soundtrack, but this runs after the last one — there is no path left for it to travel. Free. UNVALIDATED.",
                 }),
                 "alg_anchor": ("BOOLEAN", {
                     "default": False,

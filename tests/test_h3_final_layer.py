@@ -83,17 +83,30 @@ def test_the_scale_multiplies_the_modulation_not_the_output():
     x = torch.arange(6 * HIDDEN, dtype=torch.float32).view(6, HIDDEN) / 10.0
     got_v, _ = h3.FinalLayerVideoScale(module, 2.0)(x, None, (0, 3, 0), (3, 6, 1))
     shift, scale = module.adaln_proj(None)
-    want = module.video_out(x[0:3] * (1.0 + scale[0] * 2.0) + shift[0])
+    want = module.video_out(x[0:3] * ((1.0 + scale[0]) * 2.0) + shift[0])
     assert torch.allclose(got_v, want)
+
+
+def test_above_one_reads_the_rows_harder_even_when_the_checkpoint_scale_is_negative():
+    """The bug this parameterisation exists for. The first build multiplied `scale` inside
+    `1 + scale`; H3's scale is negative, so raising the dial SHRANK the term and the control
+    ran backwards on the rental — 0.8 sharpened, 1.2 softened."""
+    module = FakeFinalLayer()
+    module.adaln_proj.scale = torch.full((ROWS, HIDDEN), -0.5)   # H3's sign
+    x = torch.ones(6, HIDDEN)
+    weight = lambda k: (h3.FinalLayerVideoScale(module, k)(
+        x, None, (0, 3, 0), (3, 6, 1))[0] - module.video_out(torch.zeros(3, HIDDEN)
+                                                             + module.adaln_proj.shift[0]))
+    assert weight(1.5).abs().sum() > weight(1.0).abs().sum() > weight(0.5).abs().sum()
 
 
 def test_the_bias_is_left_alone():
     """Scale is a contrast dial; shift would push every channel off its trained centre."""
     module = FakeFinalLayer()
-    x = torch.zeros(6, HIDDEN)
+    x = torch.zeros(6, HIDDEN)             # nothing for the scale to act on
     got_v, _ = h3.FinalLayerVideoScale(module, 3.0)(x, None, (0, 3, 0), (3, 6, 1))
     base_v, _ = module(x, None, (0, 3, 0), (3, 6, 1))
-    assert torch.allclose(got_v, base_v)   # x is 0, so only the shift survives — unchanged
+    assert torch.allclose(got_v, base_v)   # only the shift survives — unchanged
 
 
 def test_a_final_layer_of_a_shape_we_do_not_know_declines():

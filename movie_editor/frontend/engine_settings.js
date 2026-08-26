@@ -355,7 +355,7 @@
       detail: "The Refiner already steers along your liked direction, but on H3 that edit is mixed and renormalized by the token refiner before the model reads it. This adds the same direction after the refiner, where it lands as sent. Measured as a fraction of a typical prompt row, so one value means the same thing on every prompt." },
     { name: "h3_video_detail", label: "Picture detail (audio-safe)", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
       dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "Makes the picture crisper or softer without changing the sound at all. Above 1.0 = more detail and contrast; past about 1.3 it overcooks. 1.0 = untouched. Free. Unvalidated.",
+      hint: "Makes the picture crisper or softer without changing the sound at all. Above 1.0 = more detail and contrast, below is softer. The step from 1.0 is small — reach for 1.4-1.8 before deciding it does nothing. Free.",
       detail: "Every block of the model shares one attention pass, so anything that moves the picture also reaches the soundtrack. This runs after the last one, where there is no path left for it to travel — it is the audio-safe twin of Write gain \u00b7 picture." },
     { name: "h3_prompt_time", label: "Prompt is settled", kind: "float", default: 0.0, min: 0.0, max: 1.0, step: 0.01,
       hint: "Makes the picture stick closer to the prompt, and drift away from it less as a scene goes on. 0.0 = off. Try 0.9-1.0; below about 0.5 it makes the picture worse rather than weaker, so do not sweep up from zero. Free.",
