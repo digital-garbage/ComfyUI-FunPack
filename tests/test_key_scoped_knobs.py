@@ -25,7 +25,7 @@ FRONTEND = Path(__file__).resolve().parents[1] / "movie_editor" / "frontend"
 def test_every_learned_render_knob_is_key_scoped():
     assert KEY_SCOPED_SAMPLER_INPUTS == {
         "h3_gain_mode", "h3_gain_video", "h3_gain_prompt", "h3_gain_audio",
-        "h3_prompt_scale", "h3_taste_bias",
+        "h3_prompt_scale", "h3_taste_bias", "h3_video_detail", "h3_prompt_time",
     }
 
 

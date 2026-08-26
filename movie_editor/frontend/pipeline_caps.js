@@ -189,6 +189,8 @@
     h3_gain_audio: H3_RENDER_GAIN_REASON,
     h3_prompt_scale: H3_RENDER_GAIN_REASON,
     h3_taste_bias: H3_RENDER_GAIN_REASON,
+    h3_video_detail: H3_RENDER_GAIN_REASON,
+    h3_prompt_time: H3_RENDER_GAIN_REASON,
   };
 
   // Sub-settings of identity transfer: meaningless wherever the feature itself cannot run,

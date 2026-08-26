@@ -1360,8 +1360,12 @@ def patch_module_forward(patcher, key, wrapper):
     patcher.add_object_patch(f"{key}.forward", wrapper)
 
 
-class AdalnModalityGain:
-    """Wraps one block's ``adaln_proj.forward`` and scales its gates per modality.
+class AdalnEdit:
+    """Wraps one block's ``adaln_proj.forward``: per-modality gate gain, prompt timestep.
+
+    Both edits act on the same projection output through the same row indexing, so they
+    share one wrapper — two wrappers on one key would nest, and ``unwrapped_forward``
+    deliberately strips a FunPack wrapper rather than stacking on it.
 
     Deliberately NOT an ``nn.Module``. Replacing a module with a wrapper module renames
     every weight beneath it in the state dict (``adaln_proj.weight`` becomes
@@ -1374,16 +1378,20 @@ class AdalnModalityGain:
     #: marks an already-installed wrapper, so a re-install unwraps instead of nesting
     _funpack_wrapper = True
 
-    def __init__(self, inner, gains):
+    def __init__(self, inner, gains, prompt_row=None):
         self.inner = inner
         # The ORIGINAL callable, captured before the patch is applied. Calling
         # ``inner.forward`` at call time would re-enter this wrapper once it is installed.
         self.original = unwrapped_forward(inner)
         self.gains = {int(t): float(g) for t, g in (gains or {}).items() if float(g) != 1.0}
+        self.prompt_row = prompt_row
 
     def __call__(self, t_emb):
-        out = self.original(t_emb)
-        if not self.gains or getattr(self.inner, "modalities", 1) != _ADALN_MODALITIES:
+        if getattr(self.inner, "modalities", 1) != _ADALN_MODALITIES:
+            return self.original(t_emb)     # FinalLayer shares the class, not the row meaning
+        out = self._with_prompt_timestep(t_emb) if self.prompt_row is not None \
+            else self.original(t_emb)
+        if not self.gains:
             return out
         out = list(out)
         for idx in _ADALN_GATE_CHUNKS:
@@ -1395,26 +1403,112 @@ class AdalnModalityGain:
             out[idx] = scaled
         return tuple(out)
 
+    def _with_prompt_timestep(self, t_emb):
+        """Run the projection with ONE extra timestep row, and give it to the prompt.
 
-def apply_adaln_gains(model, gains):
-    """Attach per-modality gate gains to every DiT block. Returns (model, note).
+        The model tells every row what noise level it is at. Text is told the video's.
+        Appending a row for the requested level and copying its tag-1 modulation over every
+        text row hands the prompt its own noise level without touching the model's own row
+        bookkeeping — the extra row is dropped before the result is returned, so every index
+        the caller computed still means what it meant.
+        """
+        rows = int(t_emb.shape[0])
+        try:
+            extra = self.prompt_row(t_emb)
+        except Exception:                    # embedding failed — run the prompt as trained
+            return self.original(t_emb)
+        out = self.original(torch.cat([t_emb, extra], dim=0))
+        source = rows * _ADALN_MODALITIES + MODALITY_TAGS["text"]
+        trimmed = []
+        for chunk in out:
+            kept = chunk[:rows * _ADALN_MODALITIES].clone()
+            kept[MODALITY_TAGS["text"]::_ADALN_MODALITIES] = chunk[source]
+            trimmed.append(kept)
+        return tuple(trimmed)
+
+
+class PromptTimestepRow:
+    """One absolute timestep, embedded in the DiT's own time-embedding space.
+
+    Computed on first use rather than at install time: the checkpoint may still be on the
+    CPU when the patch is attached, and the row has to land on whatever device and dtype
+    the live ``t_emb`` is using. Cached per (device, dtype) and shared by all 50 blocks.
+    """
+
+    def __init__(self, timestep, table=None, embedder=None):
+        self.timestep = float(timestep)
+        self.table = table            # curve-form checkpoints: the time-embedding basis
+        self.embedder = embedder      # full-form checkpoints: the time embedder module
+        self._cache = None
+
+    def __call__(self, like):
+        key = (like.device, like.dtype)
+        if self._cache is not None and self._cache[0] == key:
+            return self._cache[1]
+        row = self._embed(like).reshape(1, -1).to(dtype=like.dtype)
+        self._cache = (key, row)
+        return row
+
+    def _embed(self, like):
+        t = min(1.0, max(0.0, self.timestep))
+        if self.table is not None:
+            # the same fractional lookup the model does for its own timesteps
+            table = self.table.to(device=like.device, dtype=torch.float32)
+            pos = t * (table.shape[0] - 1)
+            low = min(int(pos), table.shape[0] - 2)
+            return torch.lerp(table[low], table[low + 1],
+                              torch.tensor(pos - low, dtype=torch.float32, device=like.device))
+        value = torch.tensor([t], dtype=torch.float32, device=like.device)
+        return self.embedder(value)
+
+
+def prompt_timestep_row(model, timestep):
+    """Build the row for `timestep`, reading whichever time basis this checkpoint carries."""
+    try:
+        table = model.get_model_object("diffusion_model.adaln_t_table")
+    except Exception:
+        table = None
+    if table is not None:
+        return PromptTimestepRow(timestep, table=table), None
+    try:
+        embedder = model.get_model_object("diffusion_model.time_embedder")
+    except Exception as error:
+        return None, f"no time embedding to read ({error})"
+    return PromptTimestepRow(timestep, embedder=embedder), None
+
+
+def apply_adaln_edits(model, gains=None, prompt_timestep=0.0):
+    """Attach the per-block AdaLN edits. Returns (model, note).
 
     Uses ``add_object_patch`` rather than replacing methods by name: ComfyUI restores
     object patches on unpatch, so nothing survives the run. Degradation that outlives a
     reset has been a real bug here before, and this is the mechanism that prevents it.
 
-    `gains` maps a name in MODALITY_TAGS to a float. 1.0 (or absent) means untouched, and
-    an all-1.0 request returns the model unchanged rather than cloning it.
+    `gains` maps a name in MODALITY_TAGS to a float; 1.0 (or absent) means untouched.
+    `prompt_timestep` of 0 means the prompt keeps the video's. A request that changes
+    nothing returns the model unchanged rather than cloning it.
     """
     live = {MODALITY_TAGS[name]: float(value)
             for name, value in (gains or {}).items()
             if name in MODALITY_TAGS and float(value) != 1.0}
-    if not live:
+    want_time = float(prompt_timestep or 0.0) > 0.0
+    if not live and not want_time:
         return model, None
     try:
         blocks = model.get_model_object("diffusion_model.blocks")
     except Exception as error:                       # not H3, or a layout we do not know
-        return model, f"AdaLN gain skipped — no DiT blocks to patch ({error})."
+        return model, f"AdaLN edits skipped — no DiT blocks to patch ({error})."
+    prompt_row = None
+    if want_time:
+        prompt_row, why = prompt_timestep_row(model, prompt_timestep)
+        if prompt_row is None:
+            if not live:
+                return model, f"Prompt timestep skipped — {why}."
+            note_time = f" Prompt timestep skipped — {why}."
+        else:
+            note_time = f" Prompt read at timestep {float(prompt_timestep):g}."
+    else:
+        note_time = ""
     patched = model.clone()
     count = 0
     for index in range(len(blocks)):
@@ -1423,13 +1517,71 @@ def apply_adaln_gains(model, gains):
             inner = patched.get_model_object(key)
         except Exception:
             continue
-        patch_module_forward(patched, key, AdalnModalityGain(inner, live))
+        patch_module_forward(patched, key, AdalnEdit(inner, live, prompt_row))
         count += 1
     if not count:
-        return model, "AdaLN gain skipped — no adaln_proj found on the blocks."
+        return model, "AdaLN edits skipped — no adaln_proj found on the blocks."
     named = ", ".join(f"{n}={v:g}" for n, v in sorted((gains or {}).items()) if float(v) != 1.0)
-    return patched, (f"AdaLN modality gain on {count} blocks ({named}). Keyframe pins and "
-                     f"reference images ride the VIDEO tag, so the video gain moves them too.")
+    gain_note = (f"AdaLN modality gain on {count} blocks ({named}). Keyframe pins and "
+                 f"reference images ride the VIDEO tag, so the video gain moves them too."
+                 if live else f"AdaLN edits on {count} blocks.")
+    return patched, (gain_note + note_time).strip()
+
+
+# ── final layer: the one video-only edit ─────────────────────────────────────
+#
+# Every block shares one attention pass, so anything written into the video rows is read by
+# the audio rows in the next block — which is what made post-block injection corrupt the
+# soundtrack. The final layer is past the last attention: video and audio are modulated on
+# separate rows and leave through separate heads, so an edit to the video branch here has
+# no path to the audio at all.
+#
+# The arithmetic below MIRRORS ``FinalLayer.forward`` using the module's own submodules
+# rather than wrapping its result, because the value being changed (the video row's scale)
+# is consumed inside that method. It is checked against the module's attributes before it
+# runs, so a changed upstream shape declines instead of computing something else.
+_FINAL_LAYER_PARTS = ("norm", "adaln_proj", "video_out", "audio_out")
+
+
+class FinalLayerVideoScale:
+    """Scales how strongly the final layer reads the accumulated video rows."""
+
+    _funpack_wrapper = True
+
+    def __init__(self, inner, scale):
+        self.inner = inner
+        self.original = unwrapped_forward(inner)
+        self.scale = float(scale)
+
+    def __call__(self, x, t_emb, video_seg, audio_seg):
+        module = self.inner
+        if self.scale == 1.0 or not all(hasattr(module, part) for part in _FINAL_LAYER_PARTS):
+            return self.original(x, t_emb, video_seg, audio_seg)
+        shift, scale = module.adaln_proj(t_emb)
+        va, vb, vrow = video_seg
+        aa, ab, arow = audio_seg
+        hv = (module.norm(x[va:vb]) * (1.0 + scale[vrow] * self.scale)
+              + shift[vrow]).to(torch.float32)
+        ha = (module.norm(x[aa:ab]) * (1.0 + scale[arow]) + shift[arow]).to(torch.float32)
+        return module.video_out(hv), module.audio_out(ha)
+
+
+def apply_final_video_scale(model, scale):
+    """Attach the video-only final-layer scale. Returns (model, note)."""
+    if float(scale) == 1.0:
+        return model, None
+    key = "diffusion_model.final_layer"
+    try:
+        inner = model.get_model_object(key)
+    except Exception as error:
+        return model, f"Final-layer video scale skipped — no final layer to patch ({error})."
+    if not all(hasattr(inner, part) for part in _FINAL_LAYER_PARTS):
+        return model, ("Final-layer video scale skipped — this final layer is not the shape "
+                       "the edit was written against.")
+    patched = model.clone()
+    patch_module_forward(patched, key, FinalLayerVideoScale(inner, scale))
+    return patched, (f"Final-layer video scale {float(scale):g} — past the last attention, "
+                     f"so the audio stream cannot see it.")
 
 
 # ── token-refiner output ─────────────────────────────────────────────────────

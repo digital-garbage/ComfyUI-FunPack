@@ -44,7 +44,7 @@ def gates(out):
 
 def test_a_gain_scales_only_its_own_modality():
     inner = FakeProj()
-    wrapped = h3.AdalnModalityGain(inner, {h3.MODALITY_TAGS["audio"]: 0.5})
+    wrapped = h3.AdalnEdit(inner, {h3.MODALITY_TAGS["audio"]: 0.5})
     base_msa, base_mlp = gates(inner(None))
     msa, mlp = gates(wrapped(None))
     for tag in (0, 1):
@@ -57,7 +57,7 @@ def test_a_gain_scales_only_its_own_modality():
 def test_only_the_gate_chunks_move():
     """shift and scale modulate what a block READS; the gate is what it WRITES."""
     inner = FakeProj()
-    wrapped = h3.AdalnModalityGain(inner, {0: 0.25})
+    wrapped = h3.AdalnEdit(inner, {0: 0.25})
     base, out = inner(None), wrapped(None)
     for idx in (0, 1, 3, 4):
         assert torch.equal(out[idx], base[idx])
@@ -66,7 +66,7 @@ def test_only_the_gate_chunks_move():
 def test_every_timestep_row_of_that_modality_is_scaled():
     """Rows are t_row*3+tag, so a modality appears once per unique timestep."""
     inner = FakeProj(timesteps=3)
-    wrapped = h3.AdalnModalityGain(inner, {1: 2.0})
+    wrapped = h3.AdalnEdit(inner, {1: 2.0})
     base_msa, _ = gates(inner(None))
     msa, _ = gates(wrapped(None))
     assert msa[1::3].shape[0] == 3
@@ -77,20 +77,20 @@ def test_the_source_buffer_is_not_mutated():
     """chunk() returns views onto one tensor — scaling in place would corrupt the module."""
     inner = FakeProj()
     before = inner.buf.clone()
-    h3.AdalnModalityGain(inner, {0: 0.1})(None)
-    h3.AdalnModalityGain(inner, {0: 0.1})(None)
+    h3.AdalnEdit(inner, {0: 0.1})(None)
+    h3.AdalnEdit(inner, {0: 0.1})(None)
     assert torch.equal(inner.buf, before)
 
 
 def test_gain_of_one_is_dropped_entirely():
-    wrapped = h3.AdalnModalityGain(FakeProj(), {0: 1.0, 1: 1.0})
+    wrapped = h3.AdalnEdit(FakeProj(), {0: 1.0, 1: 1.0})
     assert wrapped.gains == {}
 
 
 def test_a_single_modality_projection_is_left_alone():
     """FinalLayer uses AdalnProj too, with modalities=1 — different row meaning."""
     inner = FakeProj(modalities=1, expand=2)
-    wrapped = h3.AdalnModalityGain(inner, {0: 0.5})
+    wrapped = h3.AdalnEdit(inner, {0: 0.5})
     assert all(torch.equal(a, b) for a, b in zip(wrapped(None), inner(None)))
 
 
@@ -127,30 +127,30 @@ class FakePatcher:
 
 def test_all_ones_returns_the_same_model_unpatched():
     model = FakePatcher()
-    out, note = h3.apply_adaln_gains(model, {"video": 1.0, "text": 1.0, "audio": 1.0})
+    out, note = h3.apply_adaln_edits(model, {"video": 1.0, "text": 1.0, "audio": 1.0})
     assert out is model and note is None
     assert model.patched == {}
 
 
 def test_every_block_is_wrapped():
     model = FakePatcher(n=4)
-    out, note = h3.apply_adaln_gains(model, {"video": 0.8})
+    out, note = h3.apply_adaln_edits(model, {"video": 0.8})
     assert out is not model
     assert len(out.patched) == 4
-    assert all(isinstance(v, h3.AdalnModalityGain) for v in out.patched.values())
+    assert all(isinstance(v, h3.AdalnEdit) for v in out.patched.values())
     assert "4 blocks" in note
 
 
 def test_it_says_the_anchor_moves_with_the_video():
     """Pins and reference images carry the VIDEO tag — a real limit, stated not hidden."""
-    _out, note = h3.apply_adaln_gains(FakePatcher(), {"video": 0.8})
+    _out, note = h3.apply_adaln_edits(FakePatcher(), {"video": 0.8})
     assert "reference images ride the VIDEO tag" in note
 
 
 def test_object_patches_are_used_not_method_replacement():
     """ComfyUI restores object patches on unpatch. Degradation outliving a reset has been a
     real bug here; this is the mechanism that stops it."""
-    src = inspect.getsource(h3.apply_adaln_gains)
+    src = inspect.getsource(h3.apply_adaln_edits)
     assert "add_object_patch" in src
     assert "model.clone()" in src
 
@@ -159,14 +159,14 @@ def test_an_unknown_model_declines_with_a_reason():
     class NoBlocks:
         def get_model_object(self, name):
             raise KeyError(name)
-    out, note = h3.apply_adaln_gains(NoBlocks(), {"video": 0.5})
+    out, note = h3.apply_adaln_edits(NoBlocks(), {"video": 0.5})
     assert isinstance(out, NoBlocks)
     assert "no DiT blocks" in note
 
 
 def test_unknown_modality_names_are_ignored():
     model = FakePatcher()
-    out, note = h3.apply_adaln_gains(model, {"nonsense": 0.5})
+    out, note = h3.apply_adaln_edits(model, {"nonsense": 0.5})
     assert out is model and note is None
 
 

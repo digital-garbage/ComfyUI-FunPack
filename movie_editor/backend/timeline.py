@@ -556,7 +556,7 @@ class Scene:
 #: drives them by hand, which is what `h3_gain_mode: manual` is for.
 KEY_SCOPED_SAMPLER_INPUTS = frozenset({
     "h3_gain_mode", "h3_gain_video", "h3_gain_prompt", "h3_gain_audio",
-    "h3_prompt_scale", "h3_taste_bias",
+    "h3_prompt_scale", "h3_taste_bias", "h3_video_detail", "h3_prompt_time",
 })
 
 

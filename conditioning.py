@@ -3089,7 +3089,8 @@ class FunPackVideoRefiner:
     # Unlike anything in conditioning space these transfer between prompts: 0.85 means the
     # same thing on every prompt, so a value learned on one run is worth something on the
     # next. That is the property that makes them worth learning at all.
-    H3_GAIN_KEYS = ("video", "prompt", "audio", "prompt_scale", "refiner_bias")
+    H3_GAIN_KEYS = ("video", "prompt", "audio", "prompt_scale", "refiner_bias",
+                    "video_detail")
     # Which rated AXIS each gain answers to. A rating carries three per-axis signals in
     # [-1, +1] alongside its overall reward, and they say far more than the scalar does:
     # "Missing concept" is reward +0.10 (quality was fine) but concept_signal -1.00. Read as
@@ -3106,6 +3107,12 @@ class FunPackVideoRefiner:
         "prompt_scale": ("concept_signal",),
         "audio": (),
         "refiner_bias": (),
+        # The final-layer read strength: the same axes as the block gain it is the
+        # audio-safe twin of. `prompt_time` is deliberately absent from these keys — its
+        # off value (0.0) sits at the far end of its own range rather than in the middle,
+        # so exploring around it would step straight into "the prompt is pure noise".
+        # It stays a manual dial until a rental run says what a good value looks like.
+        "video_detail": ("detail_signal", "quality_signal"),
     }
     H3_GAIN_MIN = 0.60
     H3_GAIN_MAX = 1.40

@@ -136,7 +136,7 @@ def test_it_patches_the_forward_not_the_module():
 
 def test_the_edit_is_not_a_module_so_the_state_dict_is_untouched():
     assert not isinstance(h3.TokenRefinerEdit(FakeRefiner()), torch.nn.Module)
-    assert not isinstance(h3.AdalnModalityGain(FakeRefiner(), {}), torch.nn.Module)
+    assert not isinstance(h3.AdalnEdit(FakeRefiner(), {}), torch.nn.Module)
 
 
 def test_reinstalling_unwraps_instead_of_nesting():
@@ -327,5 +327,5 @@ def test_the_module_itself_stays_in_place():
 
 def test_the_adaln_gain_patches_a_forward_too():
     """Same hazard, same shape: adaln_proj.weight must not become adaln_proj.inner.weight."""
-    src = inspect.getsource(h3.apply_adaln_gains)
+    src = inspect.getsource(h3.apply_adaln_edits)
     assert "patch_module_forward" in src

@@ -3173,11 +3173,19 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "h3_gain_mode": (["learned", "manual"], {
                     "default": "learned",
-                    "tooltip": "Where the five H3 render strengths come from. 'learned' (default) takes them from the refinement key: Studio learns them from your ratings alone and tags them onto the conditioning, and the five widgets below are IGNORED — nothing to tune by hand, which is the point. Five scalars is a smaller search than the sigma schedule already learns from ratings, so it converges in tens of rated runs. With no key wired, or before the first rating, 'learned' renders at the model's trained strengths (untouched, and the taste push at 0). 'manual' ignores the learned values and uses the widgets below exactly as set — for deliberately probing one strength, or for a graph with no Refiner in it.",
+                    "tooltip": "Where the seven H3 render strengths come from. 'learned' (default) takes them from the refinement key: Studio learns them from your ratings alone and tags them onto the conditioning, and the seven widgets below are IGNORED — nothing to tune by hand, which is the point. Six of the seven are learned (h3_prompt_time is not — its off value sits at the end of its own range, not the middle, so the loop cannot explore around it safely; it stays a manual dial). Six scalars is a smaller search than the sigma schedule already learns from ratings, so it converges in tens of rated runs. With no key wired, or before the first rating, 'learned' renders at the model's trained strengths (untouched, and the taste push at 0). 'manual' ignores the learned values and uses the widgets below exactly as set — for deliberately probing one strength, or for a graph with no Refiner in it.",
                 }),
                 "h3_prompt_scale": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
                     "tooltip": "EXPERIMENTAL, MiniMax H3 only. How LOUD the prompt is when the picture reads it. H3 puts the Qwen text through condition_proj + a 2-block token refiner (ending in an RMSNorm) before the DiT sees it, and the blocks then read the text through attention — so the magnitude of those refined rows is how strongly the prompt competes for attention against the picture and the reference. This multiplies them: above 1.0 the prompt is harder to ignore, below 1.0 it recedes and the reference or the anchor gets more say. Applied AFTER the refiner's final norm, so it lands as set rather than being renormalized away. 1.0 = untouched, and the model is not cloned. Free — one multiply on the text rows, no extra model calls. Confined to the PROMPT rows: the <Picture N> label and vision block sit ahead of them and are left alone (read from minimax_token_tags; if those cannot be read the whole text span is scaled and the console says so). DIFFERENT from h3_gain_prompt, which controls how much each block WRITES BACK into the text rows — this controls how loudly they are READ.",
+                }),
+                "h3_prompt_time": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Makes the picture stick closer to the prompt, and drift away from it less as a scene goes on. 0.0 = off (default). Try 0.9-1.0; the effect gets stronger the closer to 1.0. HOW: H3 tells every part of its sequence how finished it is, and it tells the prompt whatever it tells the picture — so early on, while the picture is still noise, the prompt is treated as unreliable too. This tells the prompt it is finished no matter where the picture is, so the model leans on it from the first step. Free: one extra row through a small projection per block, no extra model calls. Does not touch the reference image or a keyframe pin. UNVALIDATED.",
+                }),
+                "h3_video_detail": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Makes the picture crisper or softer WITHOUT changing the sound at all. Above 1.0 = more detail and contrast (past ~1.3 it overcooks), below 1.0 = softer and calmer. 1.0 = untouched, and the model is not cloned. This is the audio-safe twin of h3_gain_video: everything earlier in the model shares one attention pass, so a change to the picture reaches the soundtrack, but this runs after the last one — there is no path left for it to travel. Free. UNVALIDATED.",
                 }),
                 "alg_anchor": ("BOOLEAN", {
                     "default": False,
@@ -3992,6 +4000,7 @@ class FunPackLTXAVSceneChainSampler:
         # key, no rating and no Studio state, so it works on a graph with the Refiner absent
         # entirely. 1.0 on all three does not even clone the model.
         model = self._install_h3_adaln_gains(model, positive)
+        model = self._install_h3_final_layer(model, positive)
         model = self._install_h3_token_refiner(model, positive)
 
         try:
@@ -6723,7 +6732,8 @@ class FunPackLTXAVSceneChainSampler:
     #: the value of each render gain that means "untouched". Not all of them are 1.0:
     #: refiner_bias is a signed push along a learned direction, so its neutral is 0.0.
     H3_GAIN_NEUTRAL = {"video": 1.0, "prompt": 1.0, "audio": 1.0,
-                       "prompt_scale": 1.0, "refiner_bias": 0.0}
+                       "prompt_scale": 1.0, "refiner_bias": 0.0,
+                       "prompt_time": 0.0, "video_detail": 1.0}
 
     def _h3_render_gains(self, positive):
         """The four render strengths for this run: learned from ratings, or the widgets.
@@ -6741,7 +6751,9 @@ class FunPackLTXAVSceneChainSampler:
                   "prompt": float(getattr(self, "_h3_gain_prompt", 1.0)),
                   "audio": float(getattr(self, "_h3_gain_audio", 1.0)),
                   "prompt_scale": float(getattr(self, "_h3_prompt_scale", 1.0)),
-                  "refiner_bias": float(getattr(self, "_h3_taste_bias", 0.0))}
+                  "refiner_bias": float(getattr(self, "_h3_taste_bias", 0.0)),
+                  "prompt_time": float(getattr(self, "_h3_prompt_time", 0.0)),
+                  "video_detail": float(getattr(self, "_h3_video_detail", 1.0))}
         if str(getattr(self, "_h3_gain_mode", "learned")).lower() == "manual":
             return manual
         learned = None
@@ -6889,7 +6901,9 @@ class FunPackLTXAVSceneChainSampler:
         Returns `model` untouched when all three gains are 1.0, which is every default run.
         """
         gains = self._h3_render_gains(positive)
-        if all(gains.get(k, 1.0) == 1.0 for k in ("video", "prompt", "audio")):
+        prompt_time = float(gains.get("prompt_time", 0.0))
+        if all(gains.get(k, 1.0) == 1.0 for k in ("video", "prompt", "audio")) \
+                and prompt_time <= 0.0:
             return model
         try:
             from . import minimax_h3 as h3mod
@@ -6904,10 +6918,40 @@ class FunPackLTXAVSceneChainSampler:
         # is what it is to the person setting it.
         tagged = {"video": gains["video"], "text": gains["prompt"], "audio": gains["audio"]}
         try:
-            patched, note = h3mod.apply_adaln_gains(model, tagged)
+            patched, note = h3mod.apply_adaln_edits(model, tagged, prompt_timestep=prompt_time)
         except Exception as error:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "AdaLN modality gain", error,
                         "the blocks write at their trained strength for every modality")
+            return model
+        if note:
+            print(f"[FunPackSceneChain] {note}")
+        return patched
+
+    def _install_h3_final_layer(self, model, positive):
+        """The video-only detail scale, applied past the model's last attention pass.
+
+        Everything else that moves the picture also reaches the soundtrack, because all 50
+        blocks share one attention sequence. This one cannot: there is no attention after
+        the final layer, so the audio branch is untouched by construction.
+        """
+        gains = self._h3_render_gains(positive)
+        detail = float(gains.get("video_detail", 1.0))
+        if detail == 1.0:
+            return model
+        try:
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import minimax_h3 as h3mod
+        if not h3mod.is_h3_model(model):
+            _log.feature(
+                "FunPackSceneChain", "Video detail", False,
+                "not a MiniMax H3 model. The final-layer edit is an H3-only lane.")
+            return model
+        try:
+            patched, note = h3mod.apply_final_video_scale(model, detail)
+        except Exception as error:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "Video detail", error,
+                        "the picture is rendered at the model's trained strength")
             return model
         if note:
             print(f"[FunPackSceneChain] {note}")
@@ -7242,6 +7286,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_audio_clock=False,
                h3_gain_video=1.0, h3_gain_prompt=1.0, h3_gain_audio=1.0,
                h3_prompt_scale=1.0, h3_taste_bias=0.0, h3_gain_mode="learned",
+               h3_prompt_time=0.0, h3_video_detail=1.0,
                audio_vae=None, h3_keyframes=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
@@ -7262,6 +7307,8 @@ class FunPackLTXAVSceneChainSampler:
         self._h3_gain_audio = max(0.0, min(2.0, float(h3_gain_audio)))
         self._h3_prompt_scale = max(0.0, min(2.0, float(h3_prompt_scale)))
         self._h3_taste_bias = max(-0.30, min(0.30, float(h3_taste_bias)))
+        self._h3_prompt_time = max(0.0, min(1.0, float(h3_prompt_time)))
+        self._h3_video_detail = max(0.0, min(2.0, float(h3_video_detail)))
         self._h3_gain_mode = str(h3_gain_mode or "learned").strip().lower()
         # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's
         # own base grid; on LTX it stays the absolute-sigma gate it was validated with.
