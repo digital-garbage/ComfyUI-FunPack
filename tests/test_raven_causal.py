@@ -526,8 +526,8 @@ def test_a_stock_bidirectional_model_is_refused_by_name(monkeypatch):
     assert session is None
     # points at OUR loader: FunPack owns the loading pipeline, so the fix is a setting on the
     # node already in the graph, not a third-party loader node to go and add
-    assert "chunk-causal DiT" in reason
-    assert "FunPack Diffusion Model Loader" in reason and "raven_lora" in reason
+    assert "stock bidirectional H3" in reason
+    assert "FunPack Diffusion Model Loader" in reason and "chunk_causal" in reason
 
 
 # ── the Chain Sampler dispatch ──────────────────────────────────────────────

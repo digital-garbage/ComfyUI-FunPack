@@ -294,3 +294,35 @@ def _to_causal_block(block, block_cls, attention_cls):
     block.attn.__class__ = attention_cls
     block.__class__ = block_cls
     return block
+
+
+def make_causal(model):
+    """Re-class an already-loaded H3 so its blocks can read a chunk cache. Returns (ok, note).
+
+    This is why nothing here needs its own loader. The alternative — building the model
+    through a different class — means reimplementing ComfyUI's whole diffusion-model load
+    path, and attaching anything to the raw model before the ModelPatcher exists so its
+    memory ledger counts it. Re-classing sidesteps all of that: no parameter is added, no key
+    is renamed, nothing is copied. Only which `forward` runs changes.
+
+    Idempotent, and a no-op on anything that is not H3.
+    """
+    diffusion = getattr(getattr(model, "model", None), "diffusion_model", None)
+    if diffusion is None:
+        return False, "no diffusion model to make causal"
+    blocks = getattr(diffusion, "blocks", None)
+    if not blocks:
+        return False, "this model has no DiT blocks — not a MiniMax H3"
+    if getattr(diffusion, "_funpack_causal", False):
+        return True, "already chunk-causal"
+    try:
+        attention_cls, block_cls, model_cls = _causal_classes()
+    except Exception as error:                        # noqa: BLE001
+        return False, f"this ComfyUI has no MiniMax H3 to extend ({error})"
+    if not isinstance(diffusion, model_cls.__bases__[0]):
+        return False, "this model is not a MiniMax H3"
+    for index in range(len(blocks)):
+        _to_causal_block(blocks[index], block_cls, attention_cls)
+    diffusion.__class__ = model_cls
+    diffusion._funpack_causal = True
+    return True, f"chunk-causal DiT: {len(blocks)} blocks re-classed in place"

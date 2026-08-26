@@ -284,6 +284,11 @@ LORA_KEY_PREFIXES = (
     "diffusion_model.",
     "model.diffusion_model.",
     "base_model.model.",
+    # PEFT adapters trained against a wrapper that names the DiT: RAVEN's streaming LoRA is
+    # `base_model.model.dit.<path>`, so stripping only `base_model.model.` leaves `dit.` in
+    # front of every key and the whole file matches nothing.
+    "base_model.model.dit.",
+    "base_model.model.diffusion_model.",
     "lora_model.",
     "net.",
 )
