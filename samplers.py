@@ -2837,6 +2837,18 @@ def _normalize_video_denoised(denoised, video_mask, sigma, ref, strength,
         return denoised
     return denoised
 
+# The causal lane's step rules, read from the module that implements them so the widget and
+# the loop can never drift apart. Imported defensively: a broken optional module must not stop
+# the node pack from registering.
+try:
+    from .raven_causal import STEP_RULES as _CAUSAL_STEP_RULES
+except ImportError:
+    try:
+        from raven_causal import STEP_RULES as _CAUSAL_STEP_RULES
+    except ImportError:
+        _CAUSAL_STEP_RULES = ("consistency", "euler", "euler_ancestral")
+
+
 class FunPackLTXAVSceneChainSampler:
     @classmethod
     def INPUT_TYPES(cls):
@@ -3164,6 +3176,22 @@ class FunPackLTXAVSceneChainSampler:
                 "h3_gain_audio": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
                     "tooltip": "EXPERIMENTAL, MiniMax H3 only. Per-block write gain on the AUDIO rows (see h3_gain_video for the mechanism). This is the one modality whose gate can be moved without touching the other two at the point of writing — though the streams still share one attention pass, so a changed audio row is read by the video on the NEXT block. Below 1.0 the soundtrack is built more conservatively. Free. 1.0 = untouched.",
+                }),
+                "h3_causal_chunks": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Generates the clip in time CHUNKS that each remember the ones before them, instead of denoising the whole clip at once. A chunk is finished, written into a key/value cache as settled context, and the next chunk is generated attending to it — so a long clip stays one continuous shot with real memory of what was already drawn, rather than a chain of separate scenes stitched together. Needs the ComfyUI-MiniMax-H3-RAVEN-Streaming pack installed AND its RAVEN LoRA loaded: the chunked attention pattern is what that LoRA was trained to read, and the base H3 weights have never seen a key/value cache. Without either, this says so and the run continues normally. One consequence you cannot opt out of: there is no per-chunk redo — a chunk enters the cache the moment it finishes and the next is already built on it, so disliking chunk 3 of 12 means a new seed.",
+                }),
+                "h3_causal_step_rule": (list(_CAUSAL_STEP_RULES), {
+                    "default": "consistency",
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. How each chunk's step reaches the next noise level, when h3_causal_chunks is on. 'consistency' is RAVEN's own transition and what its LoRA was distilled for — jump to the clean prediction and re-noise with fresh noise. 'euler' is the ordinary flow step this sampler uses everywhere else, so a chunked run can be compared against an unchunked one without the step rule being a second thing that changed. 'euler_ancestral' is euler with noise put back, in the rectified-flow form. Start on consistency; the other two are for finding out what the chunking alone is worth.",
+                }),
+                "h3_causal_sink": ("INT", {
+                    "default": 2, "min": 1, "max": 64,
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. How many chunks are pinned in the cache from the very start and never evicted. Chunk 0 is the prompt, so 2 means the prompt plus the opening shot stay visible to every later chunk — which is what keeps a character consistent across a long clip. Higher costs more memory and more attention per chunk.",
+                }),
+                "h3_causal_window": ("INT", {
+                    "default": 2, "min": 0, "max": 64,
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. How many of the MOST RECENT chunks stay in the cache besides the pinned ones. This is short-term memory: it carries motion and continuity from one moment to the next. 0 keeps only the pinned chunks, which makes the clip lean entirely on its opening. Higher is smoother and costs more per chunk.",
                 }),
                 "h3_taste_bias": ("FLOAT", {
                     "default": 0.0, "min": -0.30, "max": 0.30, "step": 0.01,
@@ -3993,11 +4021,15 @@ class FunPackLTXAVSceneChainSampler:
         model = self._install_h3_token_refiner(model, positive)
 
         try:
-            sampled = comfy.sample.sample_custom(
-                model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
-                noise_mask=latent.get("noise_mask"), seed=int(seed),
-                callback=_progress_cb if pbar is not None else None,
-            )
+            # The causal lane replaces the sampler entirely rather than wrapping it, so it is
+            # tried here and falls through (loudly) when it cannot run.
+            sampled = self._run_h3_causal(model, positive, samples, sigmas, seed)
+            if sampled is None:
+                sampled = comfy.sample.sample_custom(
+                    model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
+                    noise_mask=latent.get("noise_mask"), seed=int(seed),
+                    callback=_progress_cb if pbar is not None else None,
+                )
         finally:
             self._remove_bounded_attention(_ba_handles)
         self._assert_finite_sample(sampled)
@@ -6717,6 +6749,8 @@ class FunPackLTXAVSceneChainSampler:
 
     #: what Studio tags onto entry 0 when it has learned gains for this key
     H3_GAINS_META = "funpack_h3_gains"
+    #: how a chunk reaches its next sigma when the causal lane is running
+    H3_CAUSAL_STEP_RULES = _CAUSAL_STEP_RULES
     #: and the learned taste direction that rides with them
     H3_TASTE_DIR_META = "funpack_h3_taste_dir"
     #: the value of each render gain that means "untouched". Not all of them are 1.0:
@@ -6840,6 +6874,78 @@ class FunPackLTXAVSceneChainSampler:
         if not norm or norm != norm:
             return None
         return (projected.float() / norm) * float(strength)
+
+    def _run_h3_causal(self, model, positive, samples, sigmas, seed):
+        """Generate the clip in remembering chunks instead of denoising it all at once.
+
+        Returns the finished latent, or None to fall through to ordinary sampling — every
+        reason for falling through is printed, because a silently ignored mode looks exactly
+        like a mode that ran and did nothing.
+
+        What this deliberately does NOT use: the wired SAMPLER and the CFG. The chunk loop is
+        not a k-diffusion sampler and cannot host one, and H3 generates at CFG 1 regardless.
+        Both are stated on the console rather than dropped quietly.
+        """
+        if not getattr(self, "_h3_causal_chunks", False):
+            return None
+        try:
+            from . import raven_causal as causal
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import raven_causal as causal
+            import minimax_h3 as h3mod
+        if not h3mod.is_h3_model(model):
+            _log.note_on_change(
+                "h3:causal_family", "FunPackSceneChain",
+                "h3_causal_chunks is on but this is not a MiniMax H3 model. The chunk cache "
+                "is an H3 lane; this run samples normally.")
+            return None
+        session, reason = causal.build_session(
+            model, positive, {"samples": samples},
+            sink=int(getattr(self, "_h3_causal_sink", 2)),
+            window=int(getattr(self, "_h3_causal_window", 2)),
+        )
+        if session is None:
+            _log.note_on_change(
+                "h3:causal_unavailable", "FunPackSceneChain",
+                f"h3_causal_chunks is on but the causal lane could not be built — {reason} "
+                f"This run samples normally.")
+            return None
+        schedule = [float(v) for v in sigmas]
+        _log.note_on_change(
+            "h3:causal_on", "FunPackSceneChain",
+            f"H3 causal chunks: {len(session['layout'].chunks)} chunks, "
+            f"{len(schedule) - 1} steps each, step rule "
+            f"'{getattr(self, '_h3_causal_step_rule', 'consistency')}', sink "
+            f"{getattr(self, '_h3_causal_sink', 2)} / window "
+            f"{getattr(self, '_h3_causal_window', 2)}. EXPERIMENTAL, and it needs the RAVEN "
+            f"LoRA loaded — the chunked attention pattern is what that LoRA was trained to "
+            f"read. The wired sampler and CFG are NOT used on this path: the chunk loop is "
+            f"not a k-diffusion sampler, and H3 generates at CFG 1 anyway. There is no "
+            f"per-chunk redo.")
+        try:
+            video, audio = causal.run_session(
+                session, sigmas=schedule,
+                step_rule=str(getattr(self, "_h3_causal_step_rule", "consistency")),
+                seed=int(seed),
+            )
+        except Exception as error:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 causal rollout", error,
+                        "this scene is NOT generated — nothing is silently substituted")
+            raise
+        return self._pack_h3_av(samples, video, audio)
+
+    @staticmethod
+    def _pack_h3_av(template, video, audio):
+        """Put the two streams back into the nested container the rest of the chain expects.
+
+        `template` is the incoming latent, used only for its dtype: the rollout works in fp32
+        and handing the decoder a different dtype than it was given is a difference nothing
+        downstream would report.
+        """
+        import comfy.nested_tensor
+        dtype = getattr(template, "dtype", None) or torch.float32
+        return comfy.nested_tensor.NestedTensor((video.to(dtype), audio.to(dtype)))
 
     def _install_h3_token_refiner(self, model, positive):
         """Edit the token refiner's OUTPUT: prompt loudness, and the learned taste push.
@@ -7232,6 +7338,8 @@ class FunPackLTXAVSceneChainSampler:
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
                phase_scale=1.0, id_strength=1.0, arcface_mode="auto_adjust", debug_log=False,
                carry_overlap_through_anchor=False,
+               h3_causal_chunks=False, h3_causal_step_rule="consistency",
+               h3_causal_sink=2, h3_causal_window=2,
                plateau_cache=False, plateau_cache_threshold=0.975,
                taste_nearest_prompt=False,
                segmented_detailing=False, detail_targets="hands",
@@ -7267,6 +7375,10 @@ class FunPackLTXAVSceneChainSampler:
         self._h3_gain_audio = max(0.0, min(2.0, float(h3_gain_audio)))
         self._h3_prompt_scale = max(0.0, min(2.0, float(h3_prompt_scale)))
         self._h3_taste_bias = max(-0.30, min(0.30, float(h3_taste_bias)))
+        self._h3_causal_chunks = bool(h3_causal_chunks)
+        self._h3_causal_step_rule = str(h3_causal_step_rule)
+        self._h3_causal_sink = max(1, int(h3_causal_sink))
+        self._h3_causal_window = max(0, int(h3_causal_window))
         self._h3_gain_mode = str(h3_gain_mode or "learned").strip().lower()
         # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's
         # own base grid; on LTX it stays the absolute-sigma gate it was validated with.

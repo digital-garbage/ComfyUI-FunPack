@@ -165,6 +165,25 @@ def step(rule, x_t, prediction, sigma, sigma_next, noise, eta=1.0):
     return stepped + noise * renoise
 
 
+def audio_sigma_for(sigma, shift_video, shift_audio):
+    """The audio stream's own sigma for a video sigma, through the flow time-shift.
+
+    H3 runs the two streams on DIFFERENT shifted grids — 12 for video, 3 for audio — and the
+    sampler only ever sees one array. Reusing the video sigma for the audio rows tells the
+    model the soundtrack is at a noise level it is not at, and the error grows with the step
+    size, which is why it bites hardest on the few-step schedules this lane is built for.
+
+    Same remap ``h3_audio_clock`` uses: undo the video shift to recover the unshifted time,
+    then apply the audio shift to it.
+    """
+    sigma = float(sigma)
+    if sigma <= 0.0 or float(shift_video) == float(shift_audio):
+        return sigma
+    unshifted = sigma / (float(shift_video) - (float(shift_video) - 1.0) * sigma)
+    return (float(shift_audio) * unshifted
+            / (1.0 + (float(shift_audio) - 1.0) * unshifted))
+
+
 def causal_rollout(*, chunks, sigmas, forward, commit, draw_noise,
                    video_noise, audio_noise, step_rule="consistency", eta=1.0,
                    known_chunks=0, known_video=None, known_audio=None,
@@ -290,9 +309,19 @@ def build_session(model, positive, latent, *, sink=2, window=2, storage="cpu_pin
     kv = cache_mod.ChunkKVCache(len(blocks), sink=int(sink),
                                 window=None if window is None else int(window),
                                 storage=str(storage))
+    try:
+        from raven_streaming import contracts as _c
+        video_channels = int(_c.VIDEO_LATENT_CHANNELS)
+        audio_channels = int(_c.AUDIO_LATENT_CHANNELS)
+    except Exception:
+        video_channels, audio_channels = 24, 32
     return {
         "module": module,
         "model": diffusion,
+        "video_channels": video_channels,
+        "audio_channels": audio_channels,
+        "shift_video": float(getattr(diffusion, "sigma_shift_video", 12.0)),
+        "shift_audio": float(getattr(diffusion, "sigma_shift_audio", 3.0)),
         "patcher": resolved.patcher,
         "conditioning": conditioning,
         "request": request,
@@ -334,18 +363,20 @@ def run_session(session, *, sigmas, step_rule="consistency", eta=1.0, seed=0,
     def draw_noise(shape):
         return torch.randn(tuple(shape), generator=generator, dtype=torch.float32).to(device)
 
-    request = session["request"]
-    video_noise = draw_noise(layout.video_latent_shape(request.video_channels)
-                             if hasattr(layout, "video_latent_shape") else known_video.shape)
-    audio_noise = draw_noise(layout.audio_latent_shape(request.audio_channels)
-                             if hasattr(layout, "audio_latent_shape") else known_audio.shape)
+    video_noise = draw_noise(layout.video_latent_shape(session["video_channels"]))
+    audio_noise = draw_noise(layout.audio_latent_shape(session["audio_channels"]))
 
     chunks = [(c.video_start, c.video_stop, c.audio_start, c.audio_stop) for c in layout.chunks]
+    shift_video, shift_audio = session["shift_video"], session["shift_audio"]
 
     def forward(video_xt, audio_xt, index, sigma):
+        # The two streams do NOT share a sigma. H3 denoises audio on its own shifted grid
+        # (3 against the video's 12), and handing the audio rows the video's sigma is exactly
+        # the error h3_audio_clock exists to correct — the further the step, the worse it is.
         return model.forward_chunk(
             video_latent=video_xt, audio_latent=audio_xt, layout=layout, chunk_index=index,
-            cache=cache, role="noise", video_sigma=float(sigma), audio_sigma=float(sigma),
+            cache=cache, role="noise", video_sigma=float(sigma),
+            audio_sigma=float(audio_sigma_for(sigma, shift_video, shift_audio)),
             update_cache=False, transformer_options=options, compute_dtype=compute_dtype,
         )
 

@@ -9,6 +9,7 @@ pin the separation: the chunking is theirs, the schedule is ours, and the step r
 so a chunked run can be compared against an unchunked one without two variables moving.
 """
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -357,3 +358,272 @@ def test_the_chunk_callback_reports_whether_it_was_generated():
           on_chunk=lambda i, v, a, was_known: events.append((i, was_known)))
     assert events[0] == (0, True)
     assert all(not known for _i, known in events[1:])
+
+
+# ── the bridge to the RAVEN package ─────────────────────────────────────────
+#
+# build_session assembles their contracts/layout/cache/causal model; run_session drives it
+# with OUR schedule and step rule. Tested against a fake package, because the real one needs
+# weights and a GPU — what is being pinned is the wiring, not the numerics.
+
+class FakeLayout:
+    def __init__(self, latent_t=12, audio_t=100, latent_h=4, latent_w=4):
+        self.latent_t, self.audio_t = latent_t, audio_t
+        self.latent_h, self.latent_w = latent_h, latent_w
+        bounds = rc.chunk_bounds(latent_t, audio_t)
+        self.chunks = [types.SimpleNamespace(index=i, video_start=a, video_stop=b,
+                                             audio_start=c, audio_stop=d)
+                       for i, (a, b, c, d) in enumerate(bounds)]
+
+    def video_latent_shape(self, dim=24):
+        return (1, dim, self.latent_t, self.latent_h, self.latent_w)
+
+    def audio_latent_shape(self, dim=32):
+        return (1, dim, 2, self.audio_t)
+
+
+class FakeCausalModel:
+    dtype = torch.float32
+    sigma_shift_video = 12.0
+    sigma_shift_audio = 3.0
+
+    def __init__(self):
+        self.blocks = [object()] * 4
+        self.prefills = 0
+        self.forwards = []
+        self.commits = []
+
+    def prefill_text(self, context, **kw):
+        self.prefills += 1
+        return int(context.shape[1])
+
+    def forward_chunk(self, *, video_latent, audio_latent, chunk_index, role,
+                      video_sigma=None, audio_sigma=None, update_cache=None, **kw):
+        if role == "clean":
+            self.commits.append(chunk_index)
+        else:
+            self.forwards.append((chunk_index, video_sigma, audio_sigma))
+        return [torch.zeros_like(video_latent), torch.zeros_like(audio_latent)]
+
+
+def _session(model=None, layout=None):
+    model = model or FakeCausalModel()
+    return {
+        "module": None, "model": model, "patcher": None,
+        "conditioning": types.SimpleNamespace(
+            cross_attn=torch.zeros(1, 7, 16), token_tags=None, text_len=7),
+        "request": None, "layout": layout or FakeLayout(),
+        "cache": object(), "device": torch.device("cpu"),
+        "compute_dtype": torch.float32,
+        "video_channels": 24, "audio_channels": 32,
+        "shift_video": 12.0, "shift_audio": 3.0,
+    }
+
+
+def test_the_text_is_prefilled_exactly_once():
+    """Text is cache chunk 0 and is written alone: folding it into the first media chunk
+    would let text rows attend media rows, and every later chunk assumes otherwise."""
+    model = FakeCausalModel()
+    rc.run_session(_session(model), sigmas=(1.0, 0.5, 0.0))
+    assert model.prefills == 1
+
+
+def test_the_audio_stream_gets_its_own_sigma():
+    """H3 denoises audio on a shift of 3 against the video's 12. Handing the audio rows the
+    video's sigma is the error h3_audio_clock exists to correct."""
+    model = FakeCausalModel()
+    rc.run_session(_session(model), sigmas=(1.0, 0.83, 0.0))
+    video_sigmas = [v for _i, v, _a in model.forwards]
+    audio_sigmas = [a for _i, _v, a in model.forwards]
+    assert 0.83 in video_sigmas
+    assert not any(abs(a - 0.83) < 1e-9 for a in audio_sigmas)
+    assert any(abs(a - rc.audio_sigma_for(0.83, 12.0, 3.0)) < 1e-9 for a in audio_sigmas)
+
+
+def test_the_audio_remap_matches_comfys_own_time_shift():
+    """Pinned against upstream's formula so a drift in ours is caught here rather than as
+    quiet audio distortion.
+
+    Transcribed rather than imported: the suite stubs `comfy`, so importing the real module
+    is not possible here. This is `time_shift_sigma` from comfy/ldm/minimax/model.py verbatim
+    — invert to the base grid, re-apply the other shift. Verified equal to the live function
+    across this range when run against the real checkout.
+    """
+    def upstream(sigma, from_shift, to_shift):
+        base = sigma / (from_shift + sigma * (1.0 - from_shift))
+        return to_shift * base / (1.0 + (to_shift - 1.0) * base)
+
+    for sigma in (1.0, 0.94, 0.83, 0.72, 0.55, 0.30, 0.10, 0.01):
+        assert abs(rc.audio_sigma_for(sigma, 12.0, 3.0)
+                   - upstream(sigma, 12.0, 3.0)) < 1e-9
+
+
+def test_equal_shifts_leave_the_sigma_alone():
+    assert rc.audio_sigma_for(0.7, 12.0, 12.0) == 0.7
+
+
+def test_sigma_zero_stays_zero():
+    """A remapped zero would leave the last step short of clean."""
+    assert rc.audio_sigma_for(0.0, 12.0, 3.0) == 0.0
+
+
+def test_every_chunk_is_committed_through_the_clean_role():
+    model = FakeCausalModel()
+    session = _session(model)
+    rc.run_session(session, sigmas=(1.0, 0.5, 0.0))
+    assert model.commits == [c.index for c in session["layout"].chunks]
+
+
+def test_the_noise_shapes_come_from_the_layout():
+    model = FakeCausalModel()
+    layout = FakeLayout(latent_t=7, audio_t=37)
+    video, audio = rc.run_session(_session(model, layout), sigmas=(1.0, 0.0))
+    assert tuple(video.shape) == layout.video_latent_shape(24)
+    assert tuple(audio.shape) == layout.audio_latent_shape(32)
+
+
+def test_the_same_seed_gives_the_same_clip():
+    a = rc.run_session(_session(), sigmas=(1.0, 0.5, 0.0), seed=7)[0]
+    b = rc.run_session(_session(), sigmas=(1.0, 0.5, 0.0), seed=7)[0]
+    assert torch.allclose(a, b)
+
+
+def test_a_different_seed_gives_a_different_clip():
+    a = rc.run_session(_session(), sigmas=(1.0, 0.5, 0.0), seed=7)[0]
+    b = rc.run_session(_session(), sigmas=(1.0, 0.5, 0.0), seed=8)[0]
+    assert not torch.allclose(a, b)
+
+
+def test_our_schedule_reaches_the_model_unchanged():
+    model = FakeCausalModel()
+    rc.run_session(_session(model), sigmas=(1.0, 0.94, 0.83, 0.72, 0.55, 0.30, 0.10, 0.0))
+    first = [v for i, v, _a in model.forwards if i == 0]
+    assert first == [1.0, 0.94, 0.83, 0.72, 0.55, 0.30, 0.10]
+
+
+def test_a_stock_bidirectional_model_is_refused_by_name(monkeypatch):
+    """The causal lane needs the chunk-causal DiT; a stock H3 has no forward_chunk and would
+    otherwise fail somewhere deep in the rollout instead of at the door."""
+    monkeypatch.setitem(rc._PROBE, "state", (types.SimpleNamespace(), ""))
+    fake_contracts = types.SimpleNamespace(
+        resolve_model=lambda m, **k: types.SimpleNamespace(
+            diffusion_model=types.SimpleNamespace(), patcher=None, load_device="cpu"),
+        parse_conditioning=lambda p: types.SimpleNamespace(text_len=7, token_tags=None),
+        parse_latent=lambda l, **k: types.SimpleNamespace(
+            layout=lambda *a, **k: FakeLayout(), device="cpu", dtype=torch.float32),
+    )
+    # The parent module has to be registered too, and the submodules attached to it as
+    # ATTRIBUTES: `from raven_streaming import cache` resolves through the parent, so a
+    # sys.modules entry alone leaves the import reading nothing. Same trap the suite's own
+    # comfy stubs were built to avoid.
+    fake_cache = types.SimpleNamespace(ChunkKVCache=lambda *a, **k: object())
+    parent = types.ModuleType("raven_streaming")
+    parent.contracts, parent.cache = fake_contracts, fake_cache
+    monkeypatch.setitem(sys.modules, "raven_streaming", parent)
+    monkeypatch.setitem(sys.modules, "raven_streaming.contracts", fake_contracts)
+    monkeypatch.setitem(sys.modules, "raven_streaming.cache", fake_cache)
+    session, reason = rc.build_session(object(), [], {})
+    assert session is None
+    assert "chunk-causal DiT" in reason and "RAVEN Model Loader" in reason
+
+
+# ── the Chain Sampler dispatch ──────────────────────────────────────────────
+#
+# The causal lane REPLACES the sampler rather than wrapping it, so the thing that matters is
+# that it falls through — loudly — whenever it cannot run. A mode that is silently ignored
+# looks exactly like a mode that ran and did nothing.
+
+def _sampler(**attrs):
+    import samplers
+    node = samplers.FunPackLTXAVSceneChainSampler.__new__(
+        samplers.FunPackLTXAVSceneChainSampler)
+    for k, v in attrs.items():
+        setattr(node, k, v)
+    return node
+
+
+def test_the_mode_is_off_by_default():
+    import samplers
+    spec = samplers.FunPackLTXAVSceneChainSampler.INPUT_TYPES()
+    fields = {**spec.get("required", {}), **spec.get("optional", {})}
+    assert fields["h3_causal_chunks"][1]["default"] is False
+
+
+def test_the_widget_offers_exactly_the_rules_the_loop_implements():
+    """A widget listing a rule the loop refuses would be a crash three minutes into a run."""
+    import samplers
+    spec = samplers.FunPackLTXAVSceneChainSampler.INPUT_TYPES()
+    fields = {**spec.get("required", {}), **spec.get("optional", {})}
+    assert tuple(fields["h3_causal_step_rule"][0]) == rc.STEP_RULES
+
+
+def test_off_means_the_normal_sampler_runs():
+    node = _sampler(_h3_causal_chunks=False)
+    assert node._run_h3_causal(object(), [], object(), [1.0, 0.0], 0) is None
+
+
+def test_a_non_h3_model_falls_through_and_says_so(monkeypatch, capsys):
+    import samplers
+    monkeypatch.setattr(samplers._log, "note_on_change",
+                        lambda tag, who, msg: print(msg), raising=False)
+    import minimax_h3
+    monkeypatch.setattr(minimax_h3, "is_h3_model", lambda m: False)
+    node = _sampler(_h3_causal_chunks=True)
+    assert node._run_h3_causal(object(), [], object(), [1.0, 0.0], 0) is None
+    assert "not a MiniMax H3 model" in capsys.readouterr().out
+
+
+def test_a_missing_raven_package_falls_through_and_says_why(monkeypatch, capsys):
+    import samplers
+    monkeypatch.setattr(samplers._log, "note_on_change",
+                        lambda tag, who, msg: print(msg), raising=False)
+    import minimax_h3
+    monkeypatch.setattr(minimax_h3, "is_h3_model", lambda m: True)
+    monkeypatch.setattr(rc, "build_session",
+                        lambda *a, **k: (None, "the pack is not installed."))
+    node = _sampler(_h3_causal_chunks=True, _h3_causal_sink=2, _h3_causal_window=2)
+    assert node._run_h3_causal(object(), [], object(), [1.0, 0.0], 0) is None
+    out = capsys.readouterr().out
+    assert "not installed" in out and "samples normally" in out
+
+
+def test_a_rollout_failure_is_raised_not_swallowed(monkeypatch):
+    """Falling back to ordinary sampling after a partial rollout would return a clip the user
+    did not ask for, under a mode they think ran."""
+    import samplers
+    monkeypatch.setattr(samplers._log, "note_on_change", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(samplers._log, "failed", lambda *a, **k: None, raising=False)
+    import minimax_h3
+    monkeypatch.setattr(minimax_h3, "is_h3_model", lambda m: True)
+    monkeypatch.setattr(rc, "build_session",
+                        lambda *a, **k: ({"layout": FakeLayout()}, ""))
+    monkeypatch.setattr(rc, "run_session",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("cache overflow")))
+    node = _sampler(_h3_causal_chunks=True, _h3_causal_sink=2, _h3_causal_window=2,
+                    _h3_causal_step_rule="consistency")
+    with pytest.raises(RuntimeError, match="cache overflow"):
+        node._run_h3_causal(object(), [], object(), [1.0, 0.0], 0)
+
+
+def test_the_run_says_the_sampler_and_cfg_are_not_used(monkeypatch, capsys):
+    """Both are wired on the node and ignored on this path. Dropping them quietly would be
+    the kind of silent no-op this project logs against."""
+    import samplers
+    monkeypatch.setattr(samplers._log, "note_on_change",
+                        lambda tag, who, msg: print(msg), raising=False)
+    import minimax_h3
+    monkeypatch.setattr(minimax_h3, "is_h3_model", lambda m: True)
+    layout = FakeLayout()
+    # the suite's comfy stub has NestedTensor as a bare object; the packer needs to construct one
+    import comfy.nested_tensor
+    monkeypatch.setattr(comfy.nested_tensor, "NestedTensor", lambda pair: tuple(pair),
+                        raising=False)
+    monkeypatch.setattr(rc, "build_session", lambda *a, **k: ({"layout": layout}, ""))
+    monkeypatch.setattr(rc, "run_session",
+                        lambda *a, **k: (torch.zeros(1, 24, 12, 4, 4), torch.zeros(1, 32, 2, 100)))
+    node = _sampler(_h3_causal_chunks=True, _h3_causal_sink=2, _h3_causal_window=2,
+                    _h3_causal_step_rule="consistency")
+    node._run_h3_causal(object(), [], torch.zeros(1), [1.0, 0.5, 0.0], 0)
+    out = capsys.readouterr().out
+    assert "CFG" in out and "not used" in out.replace("NOT used", "not used")
+    assert "no per-chunk redo" in out.lower()
