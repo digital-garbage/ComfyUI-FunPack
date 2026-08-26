@@ -134,7 +134,7 @@
       dependsOn: "prompt_enhance", dependsVals: [true],
       hint: "Let the model reason before answering, if it supports it. Slower, and the reasoning is stripped from the result." },
     { name: "h3_render_gains", label: "Rating-learned render gains (H3)", kind: "bool", default: true,
-      hint: "Learns five render strengths from your ratings alone: how hard each block writes into the picture, the prompt and the soundtrack, how loudly the prompt is read, and how far to push the prompt toward what you have rated well. Five numbers is a smaller search than the sigma schedule already learns, so there is nothing to tune by hand — each run is rendered slightly off the learned values so the next rating has something to credit. The taste push needs at least 3 liked runs on the key before it does anything. Free. Off leaves the model at its trained strengths; the Chain Sampler's h3_gain_* and h3_taste_bias widgets then do nothing unless its h3_gain_mode is set to manual." }
+      hint: "Learns five render strengths from your ratings alone: how hard each block writes into the picture, the prompt and the soundtrack, how loudly the prompt is read, and how far to push the prompt toward what you have rated well. Five numbers is a smaller search than the sigma schedule already learns, so there is nothing to tune by hand — each run is rendered slightly off the learned values so the next rating has something to credit. The taste push needs at least 3 liked runs on the key before it does anything. Free. The values live in the refinement key, not in this project — clearing your keys resets them. Off leaves the model at its trained strengths." }
   ];
 
   function parseStudioSettings(p) {
@@ -343,26 +343,6 @@
     { name: "h3_causal_window", label: "Recent chunks remembered", kind: "int", default: 2, min: 0, max: 64,
       dependsOn: "h3_causal_chunks", dependsValue: true,
       hint: "Short-term memory: how many of the most recent chunks stay visible, carrying motion and continuity from one moment to the next. 0 makes the clip lean entirely on its opening." },
-    { name: "h3_gain_mode", label: "H3 render gains", kind: "combo", choices: ["learned", "manual"], default: "learned",
-      hint: "MiniMax H3 only. 'learned' takes the five render strengths from your ratings and ignores the dials below. 'manual' uses the dials as typed.",
-      detail: "Learned needs the Refiner's 'Rating-learned render gains (H3)' left on — with it off, or before anything is rated, learned mode renders at the model's trained strengths and the dials still do nothing. Switch to manual to drive them yourself." },
-    { name: "h3_gain_video", label: "Write gain · picture", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "How hard each block writes into the picture rows. Below 1.0 is a calmer, less-committed image; above pushes harder. 1.0 = untouched. Free.",
-      detail: "Keyframe pins and reference images ride the same modality tag as the video, so this moves the anchor with it." },
-    { name: "h3_gain_prompt", label: "Write gain · prompt", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "How much each block rewrites the prompt as it draws. Lower it when a scene slowly stops matching what you asked for; 0.0 freezes the text at its encoded value. 1.0 = untouched. Free." },
-    { name: "h3_gain_audio", label: "Write gain · soundtrack", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "How hard each block writes into the audio rows. Below 1.0 builds the soundtrack more conservatively. 1.0 = untouched. Free." },
-    { name: "h3_prompt_scale", label: "Prompt loudness", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "How loudly the prompt is READ, as opposed to how much it is rewritten. Above 1.0 it is harder to ignore; below, the anchor or the reference gets more say. 1.0 = untouched. Free." },
-    { name: "h3_taste_bias", label: "Taste push", kind: "float", default: 0.0, min: -0.30, max: 0.30, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "Pushes the prompt toward what you have rated well. Negative pushes away from it. Needs at least 3 liked runs on the refinement key; without them it does nothing and says so. 0.0 = off. Free.",
-      detail: "The Refiner already steers along your liked direction, but on H3 that edit is mixed and renormalized by the token refiner before the model reads it. This adds the same direction after the refiner, where it lands as sent. Measured as a fraction of a typical prompt row, so one value means the same thing on every prompt." },
     { name: "segmented_detailing", label: "Segmented detailing (region refine)", kind: "bool", default: false,
       hint: "Re-renders small regions like hands at higher detail after each scene. Costs about 15%.",
       detail: "After each scene renders, CLIPSeg finds the named regions, refines them at 2x through Lightricks' latent upsampler and pastes them back through a feathered silhouette. Final resolution never changes. Regions over 35% of the frame are refused; every skip is in the scene report." },
@@ -563,7 +543,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "h3_audio_clock", "h3_causal_chunks", "h3_causal_step_rule", "h3_causal_sink", "h3_causal_window", "h3_gain_mode", "h3_gain_video", "h3_gain_prompt", "h3_gain_audio", "h3_prompt_scale", "h3_taste_bias", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "h3_audio_clock", "h3_causal_chunks", "h3_causal_step_rule", "h3_causal_sink", "h3_causal_window", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id, st) {

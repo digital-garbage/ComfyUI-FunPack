@@ -175,11 +175,6 @@
     "The chunk cache is an H3 lane: it needs the chunk-causal DiT and the RAVEN LoRA, both "
     + "of which are MiniMax H3 only. LTX has no equivalent.";
 
-  const H3_RENDER_GAIN_REASON =
-    "The render gains scale H3's per-modality AdaLN gates and its token refiner. LTX has "
-    + "neither: one modulation path for all streams, and the prompt reaches it through "
-    + "cross-attention instead of a packed text span.";
-
   const H3_ONLY_SAMPLER_INPUTS = {
     h3_audio_clock:
       "The audio clock corrects for H3 denoising video and audio on two different flow "
@@ -191,12 +186,6 @@
     h3_causal_step_rule: H3_CAUSAL_REASON,
     h3_causal_sink: H3_CAUSAL_REASON,
     h3_causal_window: H3_CAUSAL_REASON,
-    h3_gain_mode: H3_RENDER_GAIN_REASON,
-    h3_gain_video: H3_RENDER_GAIN_REASON,
-    h3_gain_prompt: H3_RENDER_GAIN_REASON,
-    h3_gain_audio: H3_RENDER_GAIN_REASON,
-    h3_prompt_scale: H3_RENDER_GAIN_REASON,
-    h3_taste_bias: H3_RENDER_GAIN_REASON,
   };
 
   // Sub-settings of identity transfer: meaningless wherever the feature itself cannot run,
