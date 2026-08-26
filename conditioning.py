@@ -10617,7 +10617,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         _enhance_status = ""
         _enhance_clip = advisor_clip          # already falls back to `clip` at the top
         _enhance_system = str(prompt_enhance_system or "").strip() or V2_PROMPT_ENHANCER_SYSTEM_PROMPT
-        if prompt_enhance:
+        # When the run splits into scenes, the per-scene conditionings REPLACE this base entry
+        # — so enhancing the base too would be a second full generation whose result is then
+        # thrown away. One generation per prompt that is actually encoded, never two.
+        _enhance_base = prompt_enhance and not split_by_transitions
+        if prompt_enhance and not _enhance_base:
+            print("[FunPackVideoRefinerV2] Prompt enhancer: base prompt skipped — this run "
+                  "splits into scenes and each scene is enhanced instead.")
+        if _enhance_base:
             prompt_to_encode, _enhance_status = self._v2_enhance_prompt(
                 _enhance_clip, prompt_to_encode, _enhance_system, cache=_enhance_cache,
                 seed=seed, temperature=prompt_enhance_temperature,

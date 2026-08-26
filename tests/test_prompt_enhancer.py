@@ -329,3 +329,52 @@ def test_an_unreported_device_says_so_rather_than_guessing(studio):
 def test_the_status_reports_the_cap_that_was_applied(studio):
     _out, status = studio._v2_enhance_prompt(FakeClip(), "a cat", "sys", max_length=256)
     assert "256" in status
+
+
+# ── one generation per prompt that is actually encoded ──────────────────────
+#
+# Reported from a rental: the enhancer ran twice. The Movie Editor's builder forces
+# split_by_transitions on for EVERY project (builder.py), and the per-scene conditionings
+# replace the base entry — so enhancing the base as well was a second full generation whose
+# result was then thrown away. At ~59s per call that is a minute of pure waste per run.
+
+def _refine_source():
+    import inspect
+    return inspect.getsource(C.FunPackVideoRefinerV2.refine_v2)
+
+
+def test_the_base_prompt_is_not_enhanced_when_the_run_splits():
+    src = _refine_source()
+    assert "_enhance_base = prompt_enhance and not split_by_transitions" in src
+
+
+def test_the_base_enhancement_is_gated_on_that_flag():
+    """Gating the print but not the call would keep paying for the generation."""
+    src = _refine_source()
+    assert "if _enhance_base:" in src
+
+
+def test_the_scene_path_is_still_enhanced_when_splitting():
+    src = _refine_source()
+    assert "if prompt_enhance and split_scene_texts:" in src
+
+
+def test_the_skip_is_reported_not_silent():
+    """A user watching the console must see why the base was not enhanced."""
+    src = _refine_source()
+    assert "base prompt skipped" in src
+
+
+def test_thinking_is_off_unless_asked_for():
+    """The double run looked like thinking mode; it was not. Thinking defaults off and is
+    passed explicitly, so it can never be inherited from the advisor's own default of True."""
+    import inspect
+    sig = inspect.signature(C.FunPackVideoRefinerV2.refine_v2)
+    assert sig.parameters["prompt_enhance_thinking"].default is False
+    assert "thinking=prompt_enhance_thinking" in _refine_source()
+
+
+def test_the_enhancer_never_inherits_the_advisors_thinking_default(studio):
+    clip = FakeClip()
+    studio._v2_enhance_prompt(clip, "a cat", "sys")
+    assert clip.calls[0][1].get("thinking") is False
