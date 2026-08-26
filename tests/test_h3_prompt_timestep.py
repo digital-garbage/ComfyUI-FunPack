@@ -1,13 +1,22 @@
-"""Prompt timestep: the prompt is told how finished it is, independently of the picture.
+"""Prompt timestep: the PROMPT's own place in the denoise — not the reference label's.
 
-H3 tells every row of its packed sequence what noise level it is at, and it gives the text
-rows the video's. Early in a run that means the prompt is treated as unfinished too. This
-gives the text rows a level of their own by putting ONE extra row through each block's
-AdaLN projection and copying its tag-1 modulation over the text rows — the model's own row
-bookkeeping never sees it, because the extra row is dropped before the result comes back.
+H3 tells every row of its packed sequence how far along the denoise it is, and it tells the
+text rows whatever it tells the picture. So early in a run, while the picture is still noise,
+the prompt is modulated as unreliable too. Giving the prompt rows a level of their own makes
+the model lean on the prompt from the first step.
+
+WHICH ROWS is the whole feature, and the first version got it wrong. Measured on a rental at
+0.9-1.0: it reproduced the reference image almost untouched in the output, overriding a
+prompt that explicitly said the reference was not where the scene begins. An r2v conditioning
+is laid out `<Picture n>: ` label / vision block / prompt, and the LABEL is text (the vision
+block is not). That label already reads to the model as "compose like this"; made maximally
+authoritative, the model composed like it, literally.
+
+The prompt is the LAST text run. Nothing outside the text span ever carries the text tag, so
+that identifies it without help from the conditioning — and with no reference wired there is
+one text run and it is the prompt, so the rule holds either way.
 """
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -18,108 +27,128 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import minimax_h3 as h3
 
 MOD = 3
-EXPAND = 6
-HIDDEN = 4
+TEXT = h3.MODALITY_TAGS["text"]
 
 
-class RowProj(torch.nn.Module):
-    """AdalnProj stand-in whose every output row reports (timestep, modality).
-
-    Row value is `t * 100 + tag`, so which timestep a modality was modulated at is readable
-    straight off the tensor.
-    """
-
-    def __init__(self, modalities=MOD, expand=EXPAND, hidden=HIDDEN):
-        super().__init__()
-        self.modalities = modalities
-        self.expand = expand
-        self.hidden = hidden
-
-    def forward(self, t_emb):
-        rows = int(t_emb.shape[0])
-        base = t_emb[:, 0].repeat_interleave(self.modalities) * 100.0
-        tags = torch.arange(self.modalities, dtype=torch.float32).repeat(rows)
-        out = (base + tags).unsqueeze(1).expand(
-            rows * self.modalities, self.expand * self.hidden).contiguous()
-        return out.chunk(self.expand, dim=-1)
+def seg(start, stop, t_row, tag):
+    return (start, stop, t_row * MOD + tag)
 
 
-def t_emb(*values):
-    return torch.tensor(values, dtype=torch.float32).unsqueeze(1)
+# An r2v sequence: label(text) / vision(video) / prompt(text) / audio / video.
+R2V = [
+    seg(0, 4, 0, TEXT),                          # "<Picture 1>: "
+    seg(4, 20, 0, h3.MODALITY_TAGS["video"]),    # the reference itself
+    seg(20, 60, 0, TEXT),                        # the prompt
+    seg(60, 80, 1, h3.MODALITY_TAGS["audio"]),
+    seg(80, 200, 0, h3.MODALITY_TAGS["video"]),
+]
+# No reference: one text run, and it is the prompt.
+T2V = [
+    seg(0, 40, 0, TEXT),
+    seg(40, 60, 1, h3.MODALITY_TAGS["audio"]),
+    seg(60, 200, 0, h3.MODALITY_TAGS["video"]),
+]
 
 
-def row_values(chunk):
-    return chunk[:, 0].tolist()
+# ── finding the prompt ──────────────────────────────────────────────────────
+
+def test_the_prompt_is_the_last_text_run_not_the_first():
+    """The bug in one assertion: index 0 is the reference label, index 2 is the prompt."""
+    assert h3.last_prompt_segment(R2V) == 2
 
 
-def constant_row(value):
+def test_with_no_reference_the_only_text_run_is_the_prompt():
+    assert h3.last_prompt_segment(T2V) == 0
+
+
+def test_a_sequence_with_no_text_at_all_has_no_prompt():
+    assert h3.last_prompt_segment(
+        [seg(0, 10, 0, h3.MODALITY_TAGS["video"])]) is None
+
+
+def test_it_reads_the_tag_off_the_row_index():
+    """Rows are t_row*3+tag, so a text run at a LATER timestep must still read as text."""
+    assert h3.last_prompt_segment([seg(0, 4, 2, TEXT)]) == 0
+
+
+def test_no_segments_is_not_a_crash():
+    assert h3.last_prompt_segment([]) is None and h3.last_prompt_segment(None) is None
+
+
+# ── running a block with it ─────────────────────────────────────────────────
+
+def constant_row(value=0.95):
     return lambda like: torch.tensor([[value]], dtype=like.dtype, device=like.device)
 
 
-# ── the edit itself ─────────────────────────────────────────────────────────
+def run_block(segments, t_emb, row=None):
+    """Returns the args the block was actually called with."""
+    seen = {}
 
-def test_the_prompt_is_modulated_at_its_own_timestep():
-    inner = RowProj()
-    wrapped = h3.AdalnEdit(inner, None, prompt_row=constant_row(0.95))
-    out = wrapped(t_emb(0.2, 0.7))
-    # rows are t_row*3 + tag: video 0/3, text 1/4, audio 2/5. The fake reports t*100+tag,
-    # so 96 proves the copy came from the extra timestep's TEXT row, not its video row.
-    assert row_values(out[0]) == [20.0, 96.0, 22.0, 70.0, 96.0, 72.0]
-
-
-def test_every_other_modality_keeps_the_timestep_it_had():
-    inner = RowProj()
-    plain = row_values(inner(t_emb(0.2, 0.7))[0])
-    out = row_values(h3.AdalnEdit(inner, None, prompt_row=constant_row(0.95))(t_emb(0.2, 0.7))[0])
-    for row in (0, 2, 3, 5):
-        assert out[row] == plain[row]
+    def original(args):
+        seen.update(args)
+        return args["img"]
+    patch = h3.PromptTimestepBlock(row or constant_row())
+    out = patch({"img": "IMG", "t_emb": t_emb, "mod_segments": segments}, 
+                {"original_block": original})
+    assert out == "IMG"
+    return seen
 
 
-def test_the_extra_row_never_reaches_the_caller():
-    """The model indexes modulation as t_row*3+tag off its OWN row count. An extra row left
-    on the end would not break those indices, but a changed row COUNT would be a lie about
-    how many timesteps are in play."""
-    out = h3.AdalnEdit(RowProj(), None, prompt_row=constant_row(0.9))(t_emb(0.2, 0.7))
-    assert all(chunk.shape[0] == 2 * MOD for chunk in out)
+def test_only_the_prompt_segment_is_re_timed():
+    """The regression, stated directly: the reference label keeps the row it had."""
+    got = run_block(R2V, torch.tensor([[0.2], [0.7]]))
+    assert got["mod_segments"][0] == R2V[0]      # the "<Picture 1>" label — untouched
+    assert got["mod_segments"][1] == R2V[1]      # the reference image — untouched
+    assert got["mod_segments"][2][2] == 2 * MOD + TEXT   # the prompt — the appended row
 
 
-def test_all_six_modulation_vectors_move_together():
-    """shift/scale/gate for attention and for the MLP all belong to one timestep — moving
-    some and not others would describe a state the model was never trained on."""
-    out = h3.AdalnEdit(RowProj(), None, prompt_row=constant_row(0.95))(t_emb(0.2))
-    assert all(row_values(chunk)[1] == 96.0 for chunk in out)
+def test_the_prompt_keeps_its_row_range():
+    """Only which timestep it is modulated at changes, never which rows it covers."""
+    got = run_block(R2V, torch.tensor([[0.2], [0.7]]))
+    assert got["mod_segments"][2][:2] == (20, 60)
 
 
-def test_off_by_default_leaves_the_projection_alone():
-    inner = RowProj()
-    out = h3.AdalnEdit(inner, None)(t_emb(0.2, 0.7))
-    assert all(torch.equal(a, b) for a, b in zip(out, inner(t_emb(0.2, 0.7))))
+def test_every_other_segment_is_left_exactly_as_it_was():
+    got = run_block(R2V, torch.tensor([[0.2], [0.7]]))
+    for index, entry in enumerate(R2V):
+        if index != 2:
+            assert got["mod_segments"][index] == entry
 
 
-def test_a_single_modality_projection_is_left_alone():
-    """FinalLayer shares AdalnProj with modalities=1, where tag 1 means nothing."""
-    inner = RowProj(modalities=1, expand=2)
-    wrapped = h3.AdalnEdit(inner, None, prompt_row=constant_row(0.9))
-    assert all(torch.equal(a, b) for a, b in zip(wrapped(t_emb(0.2)), inner(t_emb(0.2))))
+def test_the_appended_row_carries_the_requested_timestep():
+    got = run_block(T2V, torch.tensor([[0.2]]), row=constant_row(0.93))
+    assert got["t_emb"].shape[0] == 2
+    assert float(got["t_emb"][1][0]) == pytest.approx(0.93)
 
 
-def test_a_failed_embedding_renders_the_prompt_as_trained():
-    """Never a hard failure: the run continues with the model's own behaviour."""
+def test_the_original_rows_are_untouched_underneath_it():
+    """Every index the model computed for its own rows must still mean what it meant."""
+    t_emb = torch.tensor([[0.2], [0.7]])
+    got = run_block(R2V, t_emb)
+    assert torch.equal(got["t_emb"][:2], t_emb)
+
+
+def test_the_segment_list_is_not_mutated_in_place():
+    """It is rebuilt per forward but shared by all 50 blocks within one; editing it would
+    make block 2 onward re-time a row that block 1 had already moved."""
+    segments = list(R2V)
+    run_block(segments, torch.tensor([[0.2]]))
+    assert segments == R2V
+
+
+def test_a_sequence_with_no_prompt_runs_untouched():
+    got = run_block([seg(0, 10, 0, h3.MODALITY_TAGS["video"])], torch.tensor([[0.2]]))
+    assert got["t_emb"].shape[0] == 1
+
+
+def test_a_failed_embedding_runs_the_block_as_trained():
+    """Never a hard failure: this is a refinement, not a prerequisite."""
     def boom(_like):
         raise RuntimeError("no time basis")
-    inner = RowProj()
-    out = h3.AdalnEdit(inner, None, prompt_row=boom)(t_emb(0.2))
-    assert all(torch.equal(a, b) for a, b in zip(out, inner(t_emb(0.2))))
-
-
-def test_it_composes_with_the_modality_gains():
-    """Both edits ride one wrapper — installing two on the same key would nest, and
-    unwrapped_forward deliberately strips a FunPack wrapper rather than stacking on it."""
-    wrapped = h3.AdalnEdit(RowProj(), {h3.MODALITY_TAGS["text"]: 2.0},
-                           prompt_row=constant_row(0.95))
-    gate = row_values(wrapped(t_emb(0.2))[2])
-    assert gate[1] == 96.0 * 2.0     # re-timed AND gained
-    assert gate[0] == 20.0           # video untouched by both
+    got = run_block(T2V, torch.tensor([[0.2]]), row=boom)
+    assert got["t_emb"].shape[0] == 1
+    assert got["mod_segments"] == T2V
 
 
 # ── the timestep row ────────────────────────────────────────────────────────
@@ -174,98 +203,60 @@ def test_the_row_is_computed_once_and_reused():
 
 # ── installing it ───────────────────────────────────────────────────────────
 
-class FakeBlock(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.adaln_proj = RowProj()
-
-
 class FakePatcher:
     def __init__(self, n=3, table=torch.tensor([[0.0], [1.0]])):
-        self.objects = {"diffusion_model.blocks": [FakeBlock() for _ in range(n)]}
-        for i in range(n):
-            self.objects[f"diffusion_model.blocks.{i}.adaln_proj"] = \
-                self.objects["diffusion_model.blocks"][i].adaln_proj
+        self.objects = {"diffusion_model.blocks": [object() for _ in range(n)]}
         if table is not None:
             self.objects["diffusion_model.adaln_t_table"] = table
-        self.patched = {}
+        self.replaced = {}
 
     def get_model_object(self, name):
-        if name in self.patched:
-            return self.patched[name]
         return self.objects[name]
 
     def clone(self):
         other = FakePatcher.__new__(FakePatcher)
         other.objects = self.objects
-        other.patched = dict(self.patched)
+        other.replaced = dict(self.replaced)
         return other
 
-    def add_object_patch(self, name, obj):
-        self.patched[name] = obj
+    def set_model_patch_replace(self, patch, name, block_name, number):
+        self.replaced[(name, block_name, number)] = patch
 
 
 def test_zero_changes_nothing_and_does_not_clone():
     model = FakePatcher()
-    out, note = h3.apply_adaln_edits(model, None, prompt_timestep=0.0)
-    assert out is model and note is None and model.patched == {}
+    out, note = h3.apply_prompt_timestep(model, 0.0)
+    assert out is model and note is None and model.replaced == {}
 
 
-def test_a_timestep_alone_is_enough_to_install():
+def test_it_installs_on_every_block():
     model = FakePatcher(n=3)
-    out, note = h3.apply_adaln_edits(model, None, prompt_timestep=0.9)
-    assert len(out.patched) == 3
-    assert all(v.prompt_row is not None for v in out.patched.values())
+    out, note = h3.apply_prompt_timestep(model, 0.9)
+    assert sorted(out.replaced) == [("dit", "double_block", i) for i in range(3)]
     assert "0.9" in note
 
 
-def test_every_block_shares_one_row_provider():
-    out, _ = h3.apply_adaln_edits(FakePatcher(n=3), None, prompt_timestep=0.9)
-    providers = {id(v.prompt_row) for v in out.patched.values()}
-    assert len(providers) == 1
+def test_every_block_shares_one_patch():
+    out, _ = h3.apply_prompt_timestep(FakePatcher(n=3), 0.9)
+    assert len({id(v) for v in out.replaced.values()}) == 1
 
 
 def test_a_checkpoint_with_no_time_basis_declines_with_a_reason():
     model = FakePatcher(table=None)
-    out, note = h3.apply_adaln_edits(model, None, prompt_timestep=0.9)
-    assert out is model
-    assert "no time embedding" in note
+    out, note = h3.apply_prompt_timestep(model, 0.9)
+    assert out is model and "no time embedding" in note
 
 
-def test_the_gains_still_apply_when_the_timestep_cannot_be_read():
-    """A missing time basis must not silently cancel the edit the user also asked for."""
-    model = FakePatcher(table=None)
-    out, note = h3.apply_adaln_edits(model, {"video": 0.8}, prompt_timestep=0.9)
-    assert out is not model and len(out.patched) == 3
-    assert "Prompt timestep skipped" in note
+def test_a_core_without_the_block_hook_declines_rather_than_half_working():
+    class NoHook:
+        def get_model_object(self, name):
+            return [object()]
+    out, note = h3.apply_prompt_timestep(NoHook(), 0.9)
+    assert isinstance(out, NoHook)
+    assert "per-block replace hook" in note
 
 
-# ── it must not cost you the rating loop ────────────────────────────────────
-
-def _gains(mode, **widgets):
-    import samplers
-    node = samplers.FunPackLTXAVSceneChainSampler()
-    node._h3_gain_mode = mode
-    for name, value in widgets.items():
-        setattr(node, f"_h3_{name}", value)
-    tagged = [[torch.zeros(1, 2, 4), {node.H3_GAINS_META: {"video": 0.8, "prompt_time": 0.4}}]]
-    return node._h3_render_gains(tagged)
-
-
-def test_the_prompt_timestep_survives_learned_mode():
-    """It is not one of the learned strengths, so 'learned' must leave it to the widget —
-    otherwise the only way to use this dial is to switch rating-learned gains off."""
-    pytest.importorskip("comfy")
-    assert _gains("learned", prompt_time=0.9)["prompt_time"] == pytest.approx(0.9)
-
-
-def test_a_learned_value_for_it_is_ignored_rather_than_applied():
-    """Nothing writes one today; if something ever does, the widget still wins — the loop
-    cannot explore this range safely and must not be trusted with it by accident."""
-    pytest.importorskip("comfy")
-    assert _gains("learned", prompt_time=0.0)["prompt_time"] == 0.0
-
-
-def test_the_learned_strengths_still_come_from_the_key():
-    pytest.importorskip("comfy")
-    assert _gains("learned", prompt_time=0.9, gain_video=1.4)["video"] == pytest.approx(0.8)
+def test_the_note_says_the_label_is_left_alone():
+    """The one thing a reader needs to know, because the first version did the opposite."""
+    _out, note = h3.apply_prompt_timestep(FakePatcher(), 0.9)
+    assert "never the reference label" in note

@@ -1361,11 +1361,7 @@ def patch_module_forward(patcher, key, wrapper):
 
 
 class AdalnEdit:
-    """Wraps one block's ``adaln_proj.forward``: per-modality gate gain, prompt timestep.
-
-    Both edits act on the same projection output through the same row indexing, so they
-    share one wrapper — two wrappers on one key would nest, and ``unwrapped_forward``
-    deliberately strips a FunPack wrapper rather than stacking on it.
+    """Wraps one block's ``adaln_proj.forward`` and scales its gates per modality.
 
     Deliberately NOT an ``nn.Module``. Replacing a module with a wrapper module renames
     every weight beneath it in the state dict (``adaln_proj.weight`` becomes
@@ -1378,19 +1374,17 @@ class AdalnEdit:
     #: marks an already-installed wrapper, so a re-install unwraps instead of nesting
     _funpack_wrapper = True
 
-    def __init__(self, inner, gains, prompt_row=None):
+    def __init__(self, inner, gains):
         self.inner = inner
         # The ORIGINAL callable, captured before the patch is applied. Calling
         # ``inner.forward`` at call time would re-enter this wrapper once it is installed.
         self.original = unwrapped_forward(inner)
         self.gains = {int(t): float(g) for t, g in (gains or {}).items() if float(g) != 1.0}
-        self.prompt_row = prompt_row
 
     def __call__(self, t_emb):
         if getattr(self.inner, "modalities", 1) != _ADALN_MODALITIES:
             return self.original(t_emb)     # FinalLayer shares the class, not the row meaning
-        out = self._with_prompt_timestep(t_emb) if self.prompt_row is not None \
-            else self.original(t_emb)
+        out = self.original(t_emb)
         if not self.gains:
             return out
         out = list(out)
@@ -1403,28 +1397,40 @@ class AdalnEdit:
             out[idx] = scaled
         return tuple(out)
 
-    def _with_prompt_timestep(self, t_emb):
-        """Run the projection with ONE extra timestep row, and give it to the prompt.
+def apply_adaln_edits(model, gains=None):
+    """Attach per-modality gate gains to every DiT block. Returns (model, note).
 
-        The model tells every row what noise level it is at. Text is told the video's.
-        Appending a row for the requested level and copying its tag-1 modulation over every
-        text row hands the prompt its own noise level without touching the model's own row
-        bookkeeping — the extra row is dropped before the result is returned, so every index
-        the caller computed still means what it meant.
-        """
-        rows = int(t_emb.shape[0])
+    Uses ``add_object_patch`` rather than replacing methods by name: ComfyUI restores
+    object patches on unpatch, so nothing survives the run. Degradation that outlives a
+    reset has been a real bug here before, and this is the mechanism that prevents it.
+
+    `gains` maps a name in MODALITY_TAGS to a float. 1.0 (or absent) means untouched, and
+    an all-1.0 request returns the model unchanged rather than cloning it.
+    """
+    live = {MODALITY_TAGS[name]: float(value)
+            for name, value in (gains or {}).items()
+            if name in MODALITY_TAGS and float(value) != 1.0}
+    if not live:
+        return model, None
+    try:
+        blocks = model.get_model_object("diffusion_model.blocks")
+    except Exception as error:                       # not H3, or a layout we do not know
+        return model, f"AdaLN gain skipped — no DiT blocks to patch ({error})."
+    patched = model.clone()
+    count = 0
+    for index in range(len(blocks)):
+        key = f"diffusion_model.blocks.{index}.adaln_proj"
         try:
-            extra = self.prompt_row(t_emb)
-        except Exception:                    # embedding failed — run the prompt as trained
-            return self.original(t_emb)
-        out = self.original(torch.cat([t_emb, extra], dim=0))
-        source = rows * _ADALN_MODALITIES + MODALITY_TAGS["text"]
-        trimmed = []
-        for chunk in out:
-            kept = chunk[:rows * _ADALN_MODALITIES].clone()
-            kept[MODALITY_TAGS["text"]::_ADALN_MODALITIES] = chunk[source]
-            trimmed.append(kept)
-        return tuple(trimmed)
+            inner = patched.get_model_object(key)
+        except Exception:
+            continue
+        patch_module_forward(patched, key, AdalnEdit(inner, live))
+        count += 1
+    if not count:
+        return model, "AdaLN gain skipped — no adaln_proj found on the blocks."
+    named = ", ".join(f"{n}={v:g}" for n, v in sorted((gains or {}).items()) if float(v) != 1.0)
+    return patched, (f"AdaLN modality gain on {count} blocks ({named}). Keyframe pins and "
+                     f"reference images ride the VIDEO tag, so the video gain moves them too.")
 
 
 class PromptTimestepRow:
@@ -1477,55 +1483,89 @@ def prompt_timestep_row(model, timestep):
     return PromptTimestepRow(timestep, embedder=embedder), None
 
 
-def apply_adaln_edits(model, gains=None, prompt_timestep=0.0):
-    """Attach the per-block AdaLN edits. Returns (model, note).
+# ── prompt timestep: the PROMPT's own, not the reference label's ─────────────
+#
+# H3 tells every row of the packed sequence how far along the denoise it is. The text rows
+# are told whatever the video is told, so early in a run — while the picture is still noise
+# — the prompt is modulated as unreliable too. Giving the text rows a level of their own
+# makes the model lean on the prompt from the first step.
+#
+# THE ROW RANGE IS THE WHOLE FEATURE. Measured on a rental: applying this to every text row
+# at 0.9-1.0 reproduced the reference image almost untouched in the output. An r2v
+# conditioning is laid out `<Picture n>: ` label / vision block / prompt, and the LABEL is
+# text (the vision block is not). That label already reads to the model as "compose like
+# this" — made maximally authoritative, the model composed like it, literally.
+#
+# The prompt is the LAST text run in the sequence, and nothing outside the text span ever
+# carries the text tag, so "the last text segment" identifies it with no help from the
+# conditioning. With no reference wired there is one text run and it is the prompt, so the
+# same rule holds either way.
+#
+# This needs the row ranges, which `AdalnProj` never sees — every text row shares one
+# modulation row, and only ``mod_segments`` says which range is which. So it runs on
+# ComfyUI's own per-block replace hook, which is handed both.
 
-    Uses ``add_object_patch`` rather than replacing methods by name: ComfyUI restores
-    object patches on unpatch, so nothing survives the run. Degradation that outlives a
-    reset has been a real bug here before, and this is the mechanism that prevents it.
 
-    `gains` maps a name in MODALITY_TAGS to a float; 1.0 (or absent) means untouched.
-    `prompt_timestep` of 0 means the prompt keeps the video's. A request that changes
-    nothing returns the model unchanged rather than cloning it.
+def last_prompt_segment(mod_segments):
+    """Index of the prompt's entry in ``mod_segments``, or None if there is no text."""
+    tag = MODALITY_TAGS["text"]
+    found = None
+    for index, entry in enumerate(mod_segments or ()):
+        if len(entry) >= 3 and int(entry[2]) % _ADALN_MODALITIES == tag:
+            found = index
+    return found
+
+
+class PromptTimestepBlock:
+    """Per-block replace patch: run the block with the prompt on its own timestep.
+
+    Appends one row to ``t_emb`` and points the prompt's segment at it. Every index the
+    model computed for its own rows still means what it meant — the new row is only ever
+    addressed by the segment rewritten here.
     """
-    live = {MODALITY_TAGS[name]: float(value)
-            for name, value in (gains or {}).items()
-            if name in MODALITY_TAGS and float(value) != 1.0}
-    want_time = float(prompt_timestep or 0.0) > 0.0
-    if not live and not want_time:
+
+    def __init__(self, row):
+        self.row = row
+
+    def __call__(self, args, extra):
+        run = extra["original_block"]
+        t_emb = args.get("t_emb")
+        segments = args.get("mod_segments")
+        target = last_prompt_segment(segments)
+        if target is None or t_emb is None:
+            return run(args)
+        try:
+            extra_row = self.row(t_emb)
+        except Exception:            # no time basis to read — run the prompt as trained
+            return run(args)
+        rows = int(t_emb.shape[0])
+        start, stop, _ = segments[target][:3]
+        rewritten = list(segments)
+        rewritten[target] = (start, stop, rows * _ADALN_MODALITIES + MODALITY_TAGS["text"])
+        return run({**args, "t_emb": torch.cat([t_emb, extra_row], dim=0),
+                    "mod_segments": rewritten})
+
+
+def apply_prompt_timestep(model, timestep):
+    """Give the prompt rows their own timestep on every block. Returns (model, note)."""
+    if float(timestep or 0.0) <= 0.0:
         return model, None
     try:
         blocks = model.get_model_object("diffusion_model.blocks")
-    except Exception as error:                       # not H3, or a layout we do not know
-        return model, f"AdaLN edits skipped — no DiT blocks to patch ({error})."
-    prompt_row = None
-    if want_time:
-        prompt_row, why = prompt_timestep_row(model, prompt_timestep)
-        if prompt_row is None:
-            if not live:
-                return model, f"Prompt timestep skipped — {why}."
-            note_time = f" Prompt timestep skipped — {why}."
-        else:
-            note_time = f" Prompt read at timestep {float(prompt_timestep):g}."
-    else:
-        note_time = ""
+    except Exception as error:
+        return model, f"Prompt timestep skipped — no DiT blocks to patch ({error})."
+    if not hasattr(model, "set_model_patch_replace"):
+        return model, ("Prompt timestep skipped — this ComfyUI has no per-block replace "
+                       "hook to attach it to.")
+    row, why = prompt_timestep_row(model, timestep)
+    if row is None:
+        return model, f"Prompt timestep skipped — {why}."
     patched = model.clone()
-    count = 0
+    patch = PromptTimestepBlock(row)
     for index in range(len(blocks)):
-        key = f"diffusion_model.blocks.{index}.adaln_proj"
-        try:
-            inner = patched.get_model_object(key)
-        except Exception:
-            continue
-        patch_module_forward(patched, key, AdalnEdit(inner, live, prompt_row))
-        count += 1
-    if not count:
-        return model, "AdaLN edits skipped — no adaln_proj found on the blocks."
-    named = ", ".join(f"{n}={v:g}" for n, v in sorted((gains or {}).items()) if float(v) != 1.0)
-    gain_note = (f"AdaLN modality gain on {count} blocks ({named}). Keyframe pins and "
-                 f"reference images ride the VIDEO tag, so the video gain moves them too."
-                 if live else f"AdaLN edits on {count} blocks.")
-    return patched, (gain_note + note_time).strip()
+        patched.set_model_patch_replace(patch, "dit", "double_block", index)
+    return patched, (f"Prompt read at timestep {float(timestep):g} on {len(blocks)} blocks "
+                     f"— the prompt rows only, never the reference label ahead of them.")
 
 
 # ── final layer: the one video-only edit ─────────────────────────────────────

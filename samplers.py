@@ -3181,7 +3181,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "h3_prompt_time": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Makes the picture stick closer to the prompt, and drift away from it less as a scene goes on. 0.0 = off (default). Try 0.9-1.0; the effect gets stronger the closer to 1.0. Works in BOTH h3_gain_modes: it is not one of the learned strengths, so 'learned' leaves it to this widget rather than overwriting it. HOW: H3 tells every part of its sequence how finished it is, and it tells the prompt whatever it tells the picture — so early on, while the picture is still noise, the prompt is treated as unreliable too. This tells the prompt it is finished no matter where the picture is, so the model leans on it from the first step. Free: one extra row through a small projection per block, no extra model calls. Does not touch the reference image or a keyframe pin. UNVALIDATED.",
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Makes the picture stick closer to the prompt, and drift away from it less as a scene goes on. 0.0 = off (default). Above 0.5, stronger the closer to 1.0; BELOW 0.5 it makes the picture worse rather than weaker (it tells the model your prompt is unfinished), so do not sweep up from zero. Works in BOTH h3_gain_modes: it is not one of the learned strengths, so 'learned' leaves it to this widget rather than overwriting it. HOW: H3 tells every part of its sequence how finished it is, and it tells the prompt whatever it tells the picture — so early on, while the picture is still noise, the prompt is treated as unreliable too. This tells the prompt it is finished no matter where the picture is, so the model leans on it from the first step. Free: one extra row through a small projection per block, no extra model calls. Applied to the PROMPT rows only. An r2v conditioning runs '<Picture N>' label / image / prompt, and the label is text too — re-timing that as well made the model reproduce the reference image almost untouched (measured on a rental), so the label is left alone. Does not touch the reference image or a keyframe pin.",
                 }),
                 "h3_video_detail": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
@@ -4000,6 +4000,7 @@ class FunPackLTXAVSceneChainSampler:
         # key, no rating and no Studio state, so it works on a graph with the Refiner absent
         # entirely. 1.0 on all three does not even clone the model.
         model = self._install_h3_adaln_gains(model, positive)
+        model = self._install_h3_prompt_timestep(model, positive)
         model = self._install_h3_final_layer(model, positive)
         model = self._install_h3_token_refiner(model, positive)
 
@@ -6911,9 +6912,7 @@ class FunPackLTXAVSceneChainSampler:
         Returns `model` untouched when all three gains are 1.0, which is every default run.
         """
         gains = self._h3_render_gains(positive)
-        prompt_time = float(gains.get("prompt_time", 0.0))
-        if all(gains.get(k, 1.0) == 1.0 for k in ("video", "prompt", "audio")) \
-                and prompt_time <= 0.0:
+        if all(gains.get(k, 1.0) == 1.0 for k in ("video", "prompt", "audio")):
             return model
         try:
             from . import minimax_h3 as h3mod
@@ -6928,10 +6927,40 @@ class FunPackLTXAVSceneChainSampler:
         # is what it is to the person setting it.
         tagged = {"video": gains["video"], "text": gains["prompt"], "audio": gains["audio"]}
         try:
-            patched, note = h3mod.apply_adaln_edits(model, tagged, prompt_timestep=prompt_time)
+            patched, note = h3mod.apply_adaln_edits(model, tagged)
         except Exception as error:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "AdaLN modality gain", error,
                         "the blocks write at their trained strength for every modality")
+            return model
+        if note:
+            print(f"[FunPackSceneChain] {note}")
+        return patched
+
+    def _install_h3_prompt_timestep(self, model, positive):
+        """Give the prompt rows their own place in the denoise, separate from the picture.
+
+        Deliberately NOT applied to the whole text span: the `<Picture N>` label sits in
+        there too, and re-timing that made the model reproduce the reference image instead
+        of following the prompt (measured on a rental at 0.9-1.0).
+        """
+        gains = self._h3_render_gains(positive)
+        timestep = float(gains.get("prompt_time", 0.0))
+        if timestep <= 0.0:
+            return model
+        try:
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import minimax_h3 as h3mod
+        if not h3mod.is_h3_model(model):
+            _log.feature(
+                "FunPackSceneChain", "Prompt timestep", False,
+                "not a MiniMax H3 model. Per-row timesteps are an H3-only lane.")
+            return model
+        try:
+            patched, note = h3mod.apply_prompt_timestep(model, timestep)
+        except Exception as error:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "Prompt timestep", error,
+                        "the prompt is read at the picture's own noise level")
             return model
         if note:
             print(f"[FunPackSceneChain] {note}")
