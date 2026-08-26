@@ -742,6 +742,33 @@ def _unbind_av(samples):
     raise CacheError("this latent is not an H3 video+audio pair")
 
 
+def _ensure_loaded(patcher, noise_shape, conds):
+    """Put the weights on the card the way the dense path does, and say so if it cannot.
+
+    THIS MUST HAPPEN BEFORE ANY FORWARD, AND BEFORE THE CONDITIONING IS PREPARED. The
+    ordinary path reaches the model through comfy.sample.sample_custom, whose prepare_sampling
+    calls load_models_gpu — and load_models_gpu is also what applies a patcher's OBJECT
+    PATCHES (partially_load -> patch_model), which is how FunPack's AdaLN modality gains and
+    token-refiner edit get installed at all. This lane calls the DiT directly, so without this
+    the weights may still be offloaded AND every object patch would silently not be there.
+
+    Preparing the conditioning is itself a partial forward — extra_conds runs H3's token
+    refiner — so doing it before the load is what produced `mat1 is on cuda:0, different from
+    other tensors on cpu`. ComfyUI's own prepare_sampling is used rather than a bare
+    load_models_gpu so the memory estimate, the wrappers and the placement are the ones the
+    dense path would have made for this clip.
+    """
+    if patcher is None:
+        return
+    try:
+        import comfy.sampler_helpers
+        comfy.sampler_helpers.prepare_sampling(patcher, tuple(noise_shape), dict(conds or {}),
+                                               getattr(patcher, "model_options", None))
+    except Exception as error:                                        # noqa: BLE001
+        print(f"[FunPack H3] causal lane could not pre-load the model ({error}); the "
+              f"rollout continues, but object patches may not be installed.")
+
+
 def build_session(model, positive, latent, *, sink=2, window=2, device=None, offload=True):
     """Assemble everything one causal run needs, or explain why it cannot be assembled.
 
@@ -784,6 +811,9 @@ def build_session(model, positive, latent, *, sink=2, window=2, device=None, off
     if device is None:
         device = getattr(model, "load_device", None) or video.device
     device = torch.device(device)
+    # Before extra_conds, which runs the token refiner: a partial forward that needs the
+    # weights where the tensors it is handed already are.
+    _ensure_loaded(model, video.shape, {"positive": positive})
     try:
         base = model.model
         kwargs = dict(positive[0][1])
@@ -835,22 +865,10 @@ def run_session(session, *, sigmas, step_rule="consistency", eta=1.0, seed=0,
     device, payload = session["device"], session["payload"]
     options = dict(transformer_options or {})
 
-    # LOAD FIRST. The ordinary path reaches the model through comfy.sample.sample_custom,
-    # whose prepare_sampling calls load_models_gpu — and load_models_gpu is also what applies
-    # a patcher's OBJECT PATCHES (partially_load -> patch_model). This lane calls the DiT
-    # directly, so without this the weights may still be offloaded AND every object patch
-    # FunPack installed (the AdaLN modality gains, the token-refiner edit) would silently not
-    # be there. Once, for the whole rollout: the loop must not fight Comfy's offload decision
-    # chunk by chunk.
-    patcher = session.get("patcher")
-    if patcher is not None:
-        try:
-            import comfy.model_management
-            comfy.model_management.load_models_gpu([patcher], memory_required=0,
-                                                   force_full_load=False)
-        except Exception as error:                                    # noqa: BLE001
-            print(f"[FunPack H3] causal lane could not pre-load the model ({error}); the "
-                  f"rollout continues, but object patches may not be installed.")
+    # Again, once for the whole rollout: a session can be built and run much later, and
+    # another model may have evicted this one in between. The loop must not fight Comfy's
+    # offload decision chunk by chunk, so this is the only place it happens.
+    _ensure_loaded(session.get("patcher"), session["video_shape"], {})
 
     cache.clear()
     with torch.no_grad():

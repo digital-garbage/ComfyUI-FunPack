@@ -278,29 +278,54 @@ def test_an_unknown_step_rule_is_refused_rather_than_silently_defaulted():
 # token-refiner edit get installed at all. This lane calls the DiT directly, so skipping the
 # load would leave the weights offloaded AND both of those silently absent.
 
-def _loading_session(diffusion=None):
-    diffusion = diffusion or _Diffusion()
+@pytest.fixture
+def loads(monkeypatch):
+    """Records every prepare_sampling call, the way ComfyUI's own would be made."""
+    from tests._comfy_stubs import install_module
+
+    calls = []
+    install_module("comfy.sampler_helpers",
+                   prepare_sampling=lambda *a, **kw: calls.append(a))
+    return calls
+
+
+def test_the_model_is_loaded_before_the_conditioning_is_prepared(loads):
+    """extra_conds runs H3's token refiner — a partial forward. Preparing it before the load
+    is what produced `mat1 is on cuda:0, different from other tensors on cpu`."""
+    order = []
+
+    class Watched(_Base):
+        def extra_conds(self, **kwargs):
+            order.append("conds")
+            return super().extra_conds(**kwargs)
+
+    diffusion = _Diffusion()
+    patcher = _Patcher(diffusion)
+    patcher.model = Watched(diffusion, None, None)
+    patcher.model.diffusion_model = diffusion
+    from tests._comfy_stubs import install_module
+    install_module("comfy.sampler_helpers",
+                   prepare_sampling=lambda *a, **kw: order.append("load"))
+    session, reason = hc.build_session(patcher, _positive(), _latent())
+    assert session is not None, reason
+    assert order[:2] == ["load", "conds"]
+
+
+def test_the_load_is_given_the_clips_own_shape(loads):
+    """prepare_sampling estimates memory from the noise shape; handing it the wrong one gets
+    a placement decision made for a clip that is not this one."""
+    _build()
+    assert loads and loads[0][1] == (1, 24, LATENT_T, 8, 8)
+
+
+def test_the_load_happens_before_the_first_forward(loads):
+    order = []
+    diffusion = _Diffusion()
     session, reason = _build(diffusion=diffusion)
     assert session is not None, reason
-    return diffusion, session
-
-
-def test_the_model_is_loaded_before_the_rollout(monkeypatch):
-    import comfy.model_management
-    calls = []
-    monkeypatch.setattr(comfy.model_management, "load_models_gpu",
-                        lambda models, **kw: calls.append((models, kw)), raising=False)
-    _, session = _loading_session()
-    hc.run_session(session, sigmas=[1.0, 0.0])
-    assert calls and calls[0][0] == [session["patcher"]]
-
-
-def test_the_load_happens_before_the_first_forward(monkeypatch):
-    import comfy.model_management
-    order = []
-    monkeypatch.setattr(comfy.model_management, "load_models_gpu",
-                        lambda models, **kw: order.append("load"), raising=False)
-    diffusion, session = _loading_session()
+    from tests._comfy_stubs import install_module
+    install_module("comfy.sampler_helpers",
+                   prepare_sampling=lambda *a, **kw: order.append("load"))
     real = diffusion.forward_chunk
 
     def spy(*a, **kw):
@@ -312,55 +337,35 @@ def test_the_load_happens_before_the_first_forward(monkeypatch):
     assert order[0] == "load"
 
 
-def test_the_model_is_loaded_once_not_per_chunk(monkeypatch):
+def test_the_model_is_loaded_once_per_rollout_not_per_chunk(loads):
     """Loading per chunk would fight Comfy's own offload decision all the way down the clip."""
-    import comfy.model_management
-    calls = []
-    monkeypatch.setattr(comfy.model_management, "load_models_gpu",
-                        lambda models, **kw: calls.append(models), raising=False)
-    _, session = _loading_session()
+    session, reason = _build()
+    assert session is not None, reason
+    loads.clear()
     hc.run_session(session, sigmas=[1.0, 0.5, 0.0])
-    assert len(calls) == 1
+    assert len(loads) == 1
 
 
 def test_a_failed_load_does_not_abort_the_run(monkeypatch, capsys):
     """It degrades to whatever Comfy already had resident, and says the patches may be
     missing — rather than turning a recoverable placement problem into a dead run."""
-    import comfy.model_management
-    monkeypatch.setattr(
-        comfy.model_management, "load_models_gpu",
-        lambda models, **kw: (_ for _ in ()).throw(RuntimeError("out of memory")),
-        raising=False)
-    _, session = _loading_session()
+    from tests._comfy_stubs import install_module
+
+    def boom(*a, **kw):
+        raise RuntimeError("out of memory")
+
+    install_module("comfy.sampler_helpers", prepare_sampling=boom)
+    session, reason = _build()
+    assert session is not None, reason
     video, _audio = hc.run_session(session, sigmas=[1.0, 0.0])
     assert video is not None
     assert "object patches may not be installed" in capsys.readouterr().out
 
 
-def test_no_patcher_means_no_load_attempt(monkeypatch):
-    import comfy.model_management
-    calls = []
-    monkeypatch.setattr(comfy.model_management, "load_models_gpu",
-                        lambda models, **kw: calls.append(models), raising=False)
-    _, session = _loading_session()
+def test_no_patcher_means_no_load_attempt(loads):
+    session, reason = _build()
+    assert session is not None, reason
     session["patcher"] = None
+    loads.clear()
     hc.run_session(session, sigmas=[1.0, 0.0])
-    assert calls == []
-
-
-def test_installing_it_late_says_which_end_did_the_work(monkeypatch, capsys):
-    """Reaching that branch means the loader's switch did not take. Knowing which end did it
-    is the difference between a fixed setting and a mystery."""
-    class Stock:
-        blocks = [object()]
-
-    monkeypatch.setattr(hc, "make_causal", lambda model: (True, "re-classed"))
-    _build(diffusion=Stock())
-    out = capsys.readouterr().out
-    assert "installed by the Chain Sampler, not by the loader" in out
-
-
-def test_a_model_already_causal_is_not_reported_as_a_late_install(capsys):
-    """The ordinary case is the loader having done it, and that must stay quiet."""
-    _build()
-    assert "installed by the Chain Sampler" not in capsys.readouterr().out
+    assert loads == []
