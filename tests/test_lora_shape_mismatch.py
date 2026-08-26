@@ -284,3 +284,21 @@ def test_the_sample_says_how_many_it_did_not_show(mm):
 
 def test_an_empty_side_reads_as_empty_rather_than_blank(mm):
     assert mm._sample_keys({}) == "(none)"
+
+
+def test_the_curve_note_leads_with_the_answer_and_prints_whole(mm, monkeypatch, capsys):
+    """It is trimmed to its first sentence like everything else, so the verdict — how many
+    dropped, and that the rest still applies — has to BE the first sentence. It also asks for
+    its full text: this only prints when a LoRA is half-landing, which is the one moment the
+    whole explanation is worth its line."""
+    import funpack_log as L
+
+    note = mm._adaln_curve_note(
+        _Model({"diffusion_model.blocks.0.adaln_proj.linear.weight": (16128, 64)},
+               use_curves=True),
+        [("diffusion_model.blocks.0.adaln_proj.linear.weight", (16128, 2688), (16128, 64))])
+    first = L.compact(note)
+    assert "DROPPED" in first and "rest of the LoRA still applies" in first
+
+    import inspect
+    assert "full=True" in inspect.getsource(mm.resolve_lora_patches)

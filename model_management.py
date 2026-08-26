@@ -416,13 +416,13 @@ def _adaln_curve_note(model, bad):
     if not getattr(dm, "use_adaln_curves", False):
         return None
     n = sum(1 for k, _, _ in bad if "adaln_proj" in k)
-    return (f"{n} adaLN adapters do NOT apply: this is a curve-form H3 checkpoint (adaLN "
-            f"reads a compact time-curve basis), and the LoRA was trained against the "
-            f"full-width form. They cannot be projected onto it — the basis that built the "
-            f"table is not in the checkpoint. They are DROPPED rather than attempted — each "
-            f"attempt builds the full-size delta before discovering it does not fit. The rest "
-            f"of the LoRA still applies. For the full effect use a LoRA converted for "
-            f"ComfyUI's H3 checkpoint.")
+    return (f"{n} adaLN adapters DROPPED, the rest of the LoRA still applies. This is a "
+            f"curve-form H3 checkpoint (adaLN reads a compact time-curve basis) and the LoRA "
+            f"was trained against the full-width form, so they cannot be projected onto it — "
+            f"the basis that built the table is not in the checkpoint. Dropped rather than "
+            f"attempted: each attempt builds the full-size delta before discovering it does "
+            f"not fit. For the full effect use a full-width H3 checkpoint, or a LoRA "
+            f"converted for this one.")
 
 
 _DROPPED_FRAGMENT = re.compile(r"\| (\d+)/(\d+) DROPPED")
@@ -506,7 +506,10 @@ def resolve_lora_patches(model, lora, clip=None, name=None):
             patches.pop(key, None)
         curve = _adaln_curve_note(model, bad)
         if curve:
-            _log.note_on_change(f"lora:adaln_curve:{name or '?'}", "FunPack", who + curve)
+            # full: the payload IS the detail here, and this only prints when a LoRA is
+            # half-landing — the one moment the whole explanation is worth its line.
+            _log.note_on_change(f"lora:adaln_curve:{name or '?'}", "FunPack", who + curve,
+                                full=True)
             note += f" | {len(bad)} adaLN adapters DROPPED (curve-form — see log)"
         else:
             # WITH the numbers. "trained against a different variant" is not actionable on
