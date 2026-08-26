@@ -2841,10 +2841,10 @@ def _normalize_video_denoised(denoised, video_mask, sigma, ref, strength,
 # the loop can never drift apart. Imported defensively: a broken optional module must not stop
 # the node pack from registering.
 try:
-    from .raven_causal import STEP_RULES as _CAUSAL_STEP_RULES
+    from .h3_causal import STEP_RULES as _CAUSAL_STEP_RULES
 except ImportError:
     try:
-        from raven_causal import STEP_RULES as _CAUSAL_STEP_RULES
+        from h3_causal import STEP_RULES as _CAUSAL_STEP_RULES
     except ImportError:
         _CAUSAL_STEP_RULES = ("consistency", "euler", "euler_ancestral")
 
@@ -6889,10 +6889,10 @@ class FunPackLTXAVSceneChainSampler:
         if not getattr(self, "_h3_causal_chunks", False):
             return None
         try:
-            from . import raven_causal as causal
+            from . import h3_causal as causal
             from . import minimax_h3 as h3mod
         except ImportError:
-            import raven_causal as causal
+            import h3_causal as causal
             import minimax_h3 as h3mod
         if not h3mod.is_h3_model(model):
             _log.note_on_change(
@@ -6914,7 +6914,7 @@ class FunPackLTXAVSceneChainSampler:
         schedule = [float(v) for v in sigmas]
         _log.note_on_change(
             "h3:causal_on", "FunPackSceneChain",
-            f"H3 causal chunks: {len(session['layout'].chunks)} chunks, "
+            f"H3 causal chunks: {session['plan'].n_chunks} chunks, "
             f"{len(schedule) - 1} steps each, step rule "
             f"'{getattr(self, '_h3_causal_step_rule', 'consistency')}', sink "
             f"{getattr(self, '_h3_causal_sink', 2)} / window "
