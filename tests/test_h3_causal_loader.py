@@ -163,3 +163,13 @@ def test_no_surface_still_points_at_the_removed_raven_lora_widget():
                  "movie_editor/frontend/pipeline_caps.js"):
         text = (root / name).read_text(encoding="utf-8", errors="replace")
         assert "raven_lora" not in text, name
+
+
+def test_the_lora_stack_says_what_it_matched_on_the_console():
+    """`keys=N fmt=...` only ever went into the node's `status` output, which the Editor's
+    fixed graph shows nowhere — so a LoRA that matched nothing looked exactly like one that
+    applied, and the chunk-causal lane had no way to tell the user which it was."""
+    import inspect
+    src = inspect.getsource(mm.FunPackLoraLoader.load_loras)
+    assert '_log.feature(' in src
+    assert 'no LoRA is selected' in src

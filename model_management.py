@@ -1257,9 +1257,16 @@ class FunPackLoraLoader:
                 f"lora_{entry.get('slot', '?')}: {entry['name']} "
                 f"applied={model_weight:+.3f} source={entry.get('source', 'base')} mode={apply_status}"
             )
+            # ON THE CONSOLE, not only in `status`. How many weights a LoRA actually matched
+            # is the difference between "loaded" and "doing something", and the Editor's fixed
+            # graph shows this node's status output nowhere — so a file that matched nothing
+            # looked exactly like one that applied.
+            _log.feature("FunPack", f"LoRA {entry['name']}", True,
+                         f"{apply_status} at {model_weight:+.3f}")
 
         if loaded_count == 0:
             lines.append("No LoRAs were applied.")
+            _log.feature("FunPack", "LoRA stack", False, "no LoRA is selected")
         else:
             verdict = self._stack_shape_verdict(lines)
             if verdict:
