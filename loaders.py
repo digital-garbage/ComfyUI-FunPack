@@ -18,6 +18,11 @@ import folder_paths
 import torch
 
 try:
+    from . import funpack_log as _log
+except ImportError:
+    import funpack_log as _log
+
+try:
     from .widgets import field, list_widget, parse_rows
     from . import gguf_support, sla_attention
 except ImportError:  # standalone tests import the modules directly
@@ -45,6 +50,13 @@ def encoder_file_choices():
 WEIGHT_DTYPES = ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2", "fp16", "bf16", "fp32"]
 COMPUTE_DTYPES = ["default", "fp16", "bf16", "fp32"]
 VAE_DTYPES = ["default", "fp16", "bf16", "fp32"]
+#: MiniMax H3 weight dtypes measured to go wrong, and what breaks first. Audio is the
+#: canary: it corrupts before the picture visibly does, so a bad choice reads as "the
+#: soundtrack is garbage" rather than as a precision problem.
+H3_RISKY_WEIGHT_DTYPES = {
+    "fp16": "The soundtrack breaks first, and H3's VAEs fail outright at this precision.",
+    "fp8_e4m3fn_fast": "Measured here to corrupt the audio.",
+}
 
 _DTYPE_BY_NAME = {
     "fp16": torch.float16,
@@ -272,6 +284,8 @@ class FunPackDiffusionModelLoader:
                 f"ERROR: could not detect a diffusion model in {model_name}. "
                 "Loading a text encoder or VAE file here is the usual cause.")
 
+        _warn_h3_weight_dtype(model, weight_dtype)
+
         dtype = dtype_of(compute_dtype)
         if dtype is not None and hasattr(model, "set_model_compute_dtype"):
             model.set_model_compute_dtype(dtype)
@@ -305,6 +319,31 @@ class FunPackDiffusionModelLoader:
             notes.append(f"attention: {attention} (dense calls)")
 
         return (model, "\n".join(notes))
+
+
+def _warn_h3_weight_dtype(model, weight_dtype):
+    """Say it on the console when MiniMax H3 is loaded at a precision known to break it.
+
+    The loader's own notes go into a status string the Editor's fixed graph never renders,
+    so a bad choice here was invisible until the soundtrack came back wrong.
+    """
+    if weight_dtype not in H3_RISKY_WEIGHT_DTYPES:
+        return
+    try:
+        try:
+            from .minimax_h3 import is_h3_model
+        except ImportError:
+            from minimax_h3 import is_h3_model
+        if not is_h3_model(model):
+            return
+    except Exception:  # noqa: BLE001
+        return
+    # The FIX goes in the first sentence: the console renderer keeps sentence one and
+    # trims the rest, so a message that explains before it answers loses the answer.
+    _log.note_on_change(
+        f"loader:h3dtype:{weight_dtype}", "FunPack",
+        f"MiniMax H3 wants bf16 weights, not {weight_dtype}. "
+        f"{H3_RISKY_WEIGHT_DTYPES[weight_dtype]}")
 
 
 class FunPackCLIPLoader:
