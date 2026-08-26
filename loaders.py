@@ -327,6 +327,10 @@ class FunPackDiffusionModelLoader:
             # mode on its own if the model cannot do it.
             notes.append(f"chunk-causal: {causal_note}" if ok
                          else f"chunk-causal REQUESTED BUT NOT APPLIED: {causal_note}")
+            # ON THE CONSOLE, not only in `status`. The Editor's fixed graph does not show
+            # this node's status output anywhere, so a refusal here used to be invisible —
+            # and the sampler's own refusal then had to GUESS why, which it got wrong.
+            print(f"[FunPackDiffusionModelLoader] {model_name}: {notes[-1]}")
 
         return (model, "\n".join(notes))
 

@@ -127,8 +127,8 @@ def test_the_loader_message_names_the_lora_loader():
 
 def test_the_sampler_message_names_the_lora_loader():
     import inspect
-    import h3_causal
-    src = inspect.getsource(h3_causal.build_session)
+    import samplers
+    src = inspect.getsource(samplers.FunPackLTXAVSceneChainSampler._run_h3_causal)
     assert "FunPack LoRA Loader" in src
     assert "Apply LoRA Weights" not in src
 

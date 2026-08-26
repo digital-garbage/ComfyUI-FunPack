@@ -104,13 +104,28 @@ def _build(**kw):
 
 # ── what it refuses, and how it says so ─────────────────────────────────────
 
-def test_a_stock_bidirectional_model_is_refused_by_name():
+def test_a_stock_model_is_made_causal_rather_than_refused(monkeypatch):
+    """Re-classing costs nothing and changes no weight, so a mode that is already switched ON
+    must not refuse itself over a switch on another node. It does the work instead."""
     class Stock:
         blocks = [object()]
 
+    made = []
+    monkeypatch.setattr(hc, "make_causal",
+                        lambda model: (made.append(model) or (True, "re-classed")))
     session, reason = _build(diffusion=Stock())
+    assert made and session is not None, reason
+
+
+def test_a_model_that_cannot_be_made_causal_says_what_it_actually_is():
+    """The old message asserted the user had not switched something on, which was a guess —
+    and a wrong one sends them looking in the wrong place."""
+    class NotH3:
+        blocks = [object()]
+
+    session, reason = _build(diffusion=NotH3())
     assert session is None
-    assert "chunk_causal" in reason and "stock bidirectional" in reason
+    assert "NotH3" in reason
 
 
 def test_a_model_with_no_blocks_is_refused():
@@ -331,3 +346,21 @@ def test_no_patcher_means_no_load_attempt(monkeypatch):
     session["patcher"] = None
     hc.run_session(session, sigmas=[1.0, 0.0])
     assert calls == []
+
+
+def test_installing_it_late_says_which_end_did_the_work(monkeypatch, capsys):
+    """Reaching that branch means the loader's switch did not take. Knowing which end did it
+    is the difference between a fixed setting and a mystery."""
+    class Stock:
+        blocks = [object()]
+
+    monkeypatch.setattr(hc, "make_causal", lambda model: (True, "re-classed"))
+    _build(diffusion=Stock())
+    out = capsys.readouterr().out
+    assert "installed by the Chain Sampler, not by the loader" in out
+
+
+def test_a_model_already_causal_is_not_reported_as_a_late_install(capsys):
+    """The ordinary case is the loader having done it, and that must stay quiet."""
+    _build()
+    assert "installed by the Chain Sampler" not in capsys.readouterr().out

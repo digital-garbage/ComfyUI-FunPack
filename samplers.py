@@ -6918,9 +6918,11 @@ class FunPackLTXAVSceneChainSampler:
             f"{len(schedule) - 1} steps each, step rule "
             f"'{getattr(self, '_h3_causal_step_rule', 'consistency')}', sink "
             f"{getattr(self, '_h3_causal_sink', 2)} / window "
-            f"{getattr(self, '_h3_causal_window', 2)}. EXPERIMENTAL, and it needs the RAVEN "
-            f"LoRA loaded — the chunked attention pattern is what that LoRA was trained to "
-            f"read. The wired sampler and CFG are NOT used on this path: the chunk loop is "
+            f"{getattr(self, '_h3_causal_window', 2)}. EXPERIMENTAL, and it needs a "
+            f"chunk-causal LoRA loaded with FunPack LoRA Loader — the chunked attention "
+            f"pattern is what that LoRA was trained to read, and the base H3 weights have "
+            f"never seen a key/value cache. "
+            f"The wired sampler and CFG are NOT used on this path: the chunk loop is "
             f"not a k-diffusion sampler, and H3 generates at CFG 1 anyway. There is no "
             f"per-chunk redo.")
         try:

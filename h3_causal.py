@@ -743,10 +743,20 @@ def build_session(model, positive, latent, *, sink=2, window=2, device=None, off
     if diffusion is None:
         return None, "this model has no diffusion model to run."
     if not hasattr(diffusion, "forward_chunk"):
-        return None, ("the loaded model is a stock bidirectional H3. Switch on `chunk_causal` "
-                      "on FunPack Diffusion Model Loader, and load a LoRA trained for the "
-                      "chunked pattern with FunPack LoRA Loader — it applies on its own, no "
-                      "stack node needed.")
+        # Do it here rather than telling the user to go and switch something on. Re-classing
+        # adds no parameter, renames no key and costs nothing, and with no cache passed the
+        # model is bit-identical to stock H3 — so there is nothing to protect them from and
+        # no reason a mode that is already switched ON should refuse itself over it.
+        ok, note = make_causal(model)
+        if not ok:
+            return None, (f"{note} (the diffusion model is "
+                          f"{type(diffusion).__name__}).")
+        # Say that it happened HERE. Reaching this point means the loader's `chunk_causal`
+        # did not take — either it is off, or its value never arrived — and knowing which
+        # end did the work is the difference between a fixed setting and a mystery.
+        print("[FunPack H3] the chunk-causal DiT was installed by the Chain Sampler, not by "
+              "the loader: FunPack Diffusion Model Loader's `chunk_causal` is off or its "
+              f"value did not reach the node. Nothing is lost — {note}.")
     blocks = getattr(diffusion, "blocks", None)
     if not blocks:
         return None, "the loaded model exposes no DiT blocks to cache."
