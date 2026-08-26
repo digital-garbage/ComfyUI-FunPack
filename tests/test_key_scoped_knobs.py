@@ -66,12 +66,19 @@ def _engine_settings():
 
 
 @pytest.mark.parametrize("knob", sorted(KEY_SCOPED_SAMPLER_INPUTS))
-def test_no_key_scoped_knob_is_offered_as_a_project_setting(knob):
-    """Offering one writes it into sampler_inputs the moment it is touched, which is exactly
-    how the second copy got there."""
+def test_every_key_scoped_knob_is_still_offered_in_settings(knob):
+    """They stay reachable in Engine Settings — untying them from the project file is a
+    storage change, not a reason to take the dial away."""
     import re
-    source = _engine_settings()
-    assert not re.search(r'\{\s*name:\s*"%s"' % re.escape(knob), source)
+    assert re.search(r'\{\s*name:\s*"%s"' % re.escape(knob), _engine_settings())
+
+
+@pytest.mark.parametrize("knob", sorted(KEY_SCOPED_SAMPLER_INPUTS))
+def test_touching_one_in_settings_does_not_become_project_state(knob):
+    """A dial moved in a session applies to that session. Reopening reads the key, or the
+    defaults when there is no key."""
+    saved = Project.from_dict({"sampler_inputs": {knob: 0.5}}).to_dict()
+    assert knob not in saved["sampler_inputs"]
 
 
 def test_the_settings_hint_says_where_the_values_live():
