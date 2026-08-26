@@ -5470,11 +5470,10 @@ class FunPackLTXAVSceneChainSampler:
         if pin.get(h3mod.REGION_META) is not None:
             kept = int(pin[h3mod.REGION_META].sum())
             total = int(pin[h3mod.REGION_META].numel())
-            _log.note_on_change(
-                "h3:region_lock", "FunPackSceneChain",
-                f"H3: the anchor is TRANSPARENT in places, so it is pinned as a REGION — "
-                f"{kept} of {total} patches ({100.0 * kept / max(1, total):.0f}%) are "
-                f"conditioned and the rest of the frame is the model's to invent. "
+            _log.feature(
+                "FunPackSceneChain", "Region lock", True,
+                f"{kept} of {total} patches ({100.0 * kept / max(1, total):.0f}%) "
+                f"conditioned, the rest is the model's to invent. "
                 f"EXPERIMENTAL: the checkpoint was trained on whole condition frames. Feed a "
                 f"fully opaque image to pin the whole frame as before.")
         aug = max(0.0, min(1.0, float(strength)))
@@ -5646,10 +5645,10 @@ class FunPackLTXAVSceneChainSampler:
                   f"image (ref2va) for mid-clip guidance instead.")
             return positive, negative, 0
         if not keyframe_is_endpoint(at, frame_count):
-            _log.note_on_change(
-                "h3:interior_pin", "FunPackSceneChain",
-                f"H3: guide pinned mid-clip at pixel frame {at} of "
-                f"{frame_count}. EXPERIMENTAL — the checkpoint was trained on first/last pins "
+            _log.feature(
+                "FunPackSceneChain", "Interior keyframe pin", True,
+                f"pinned at pixel frame {at} of {frame_count}. "
+                f"EXPERIMENTAL — the checkpoint was trained on first/last pins "
                 f"only; if the frame does not land, move the guide to 0 or {frame_count - 1}.")
 
         pins = [{"resolved_frame_index": int(at), "latent": guide_frame}]
@@ -6790,12 +6789,11 @@ class FunPackLTXAVSceneChainSampler:
             # No key, or nothing rated yet. Trained strengths — NOT the widgets, which in
             # this mode are not what the user is steering with.
             if any(value != self.H3_GAIN_NEUTRAL[key] for key, value in manual.items()):
-                _log.note_on_change(
-                    "h3:gains_mode", "FunPackSceneChain",
-                    "h3_gain_mode is 'learned' and the conditioning "
-                    "carries no learned gains yet, so the h3_gain_* widgets are IGNORED and "
-                    "this run renders at the model's trained strengths. Set h3_gain_mode to "
-                    "'manual' to use them as typed.")
+                _log.feature(
+                    "FunPackSceneChain", "Rating-learned render gains", False,
+                    "nothing rated on this key yet, so the run uses the model's trained "
+                    "strengths. The h3_gain_* widgets are IGNORED in 'learned' mode — set "
+                    "h3_gain_mode to 'manual' to use them as typed.")
             return dict(self.H3_GAIN_NEUTRAL)
         return {k: learned.get(k, self.H3_GAIN_NEUTRAL[k]) for k in manual}
 
@@ -6856,19 +6854,17 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:  # noqa: BLE001
             direction = None
         if direction is None:
-            _log.note_on_change(
-                "h3:taste_bias_none", "FunPackSceneChain",
-                "the taste bias is set but the conditioning carries no "
-                "learned direction — it needs a refinement key with at least 3 liked runs on "
-                "it. Not applied.")
+            _log.feature(
+                "FunPackSceneChain", "Taste push", False,
+                "the conditioning carries no learned direction. "
+                "It needs a refinement key with at least 3 liked runs on it.")
             return None
         projected = h3mod.project_into_refiner_space(model, direction)
         if projected is None:
-            _log.note_on_change(
-                "h3:taste_bias_proj", "FunPackSceneChain",
-                "the taste bias could not be projected into the token "
-                "refiner's space (the direction's width does not match condition_proj). "
-                "Not applied.")
+            _log.feature(
+                "FunPackSceneChain", "Taste push", False,
+                "the learned direction does not fit the token refiner's space. "
+                "Its width does not match condition_proj.")
             return None
         norm = float(projected.float().norm().item())
         if not norm or norm != norm:
@@ -6895,10 +6891,9 @@ class FunPackLTXAVSceneChainSampler:
             import h3_causal as causal
             import minimax_h3 as h3mod
         if not h3mod.is_h3_model(model):
-            _log.note_on_change(
-                "h3:causal_family", "FunPackSceneChain",
-                "h3_causal_chunks is on but this is not a MiniMax H3 model. The chunk cache "
-                "is an H3 lane; this run samples normally.")
+            _log.feature("FunPackSceneChain", "Chunk cache", False,
+                         "not a MiniMax H3 model. The chunk cache is an H3 lane; this run "
+                         "samples normally.")
             return None
         session, reason = causal.build_session(
             model, positive, {"samples": samples},
@@ -6906,25 +6901,21 @@ class FunPackLTXAVSceneChainSampler:
             window=int(getattr(self, "_h3_causal_window", 2)),
         )
         if session is None:
-            _log.note_on_change(
-                "h3:causal_unavailable", "FunPackSceneChain",
-                f"h3_causal_chunks is on but the causal lane could not be built — {reason} "
-                f"This run samples normally.")
+            _log.feature("FunPackSceneChain", "Chunk cache", False,
+                         f"{reason} This run samples normally.")
             return None
         schedule = [float(v) for v in sigmas]
-        _log.note_on_change(
-            "h3:causal_on", "FunPackSceneChain",
-            f"H3 causal chunks: {session['plan'].n_chunks} chunks, "
-            f"{len(schedule) - 1} steps each, step rule "
-            f"'{getattr(self, '_h3_causal_step_rule', 'consistency')}', sink "
+        _log.feature(
+            "FunPackSceneChain", "Chunk cache", True,
+            f"{session['plan'].n_chunks} chunks, {len(schedule) - 1} steps each, "
+            f"{getattr(self, '_h3_causal_step_rule', 'consistency')}, sink "
             f"{getattr(self, '_h3_causal_sink', 2)} / window "
             f"{getattr(self, '_h3_causal_window', 2)}. EXPERIMENTAL, and it needs a "
             f"chunk-causal LoRA loaded with FunPack LoRA Loader — the chunked attention "
             f"pattern is what that LoRA was trained to read, and the base H3 weights have "
-            f"never seen a key/value cache. "
-            f"The wired sampler and CFG are NOT used on this path: the chunk loop is "
-            f"not a k-diffusion sampler, and H3 generates at CFG 1 anyway. There is no "
-            f"per-chunk redo.")
+            f"never seen a key/value cache. The wired sampler and CFG are NOT used on this "
+            f"path: the chunk loop is not a k-diffusion sampler, and H3 generates at CFG 1 "
+            f"anyway. There is no per-chunk redo.")
         try:
             video, audio = causal.run_session(
                 session, sigmas=schedule,
@@ -6966,15 +6957,13 @@ class FunPackLTXAVSceneChainSampler:
         except ImportError:
             import minimax_h3 as h3mod
         if not h3mod.is_h3_model(model):
-            _log.note_on_change(
-                "h3:prompt_scale_family", "FunPackSceneChain",
-                "a token-refiner edit is set but this is not a MiniMax H3 "
-                "model — there is no token refiner to edit. Not applied.")
+            _log.feature(
+                "FunPackSceneChain", "Token-refiner edit", False,
+                "not a MiniMax H3 model. There is no token refiner to edit.")
             return model
         start, note = self._h3_prompt_rows(positive)
         if note:
-            _log.note_on_change("h3:prompt_scale_span", "FunPackSceneChain",
-                                f"h3 token-refiner edit: {note}.")
+            _log.feature("FunPackSceneChain", "Token-refiner edit", True, note)
         bias = self._h3_taste_bias_vector(model, positive, strength)
         if scale == 1.0 and bias is None:
             return model
@@ -7008,10 +6997,9 @@ class FunPackLTXAVSceneChainSampler:
         except ImportError:
             import minimax_h3 as h3mod
         if not h3mod.is_h3_model(model):
-            _log.note_on_change(
-                "h3:adaln_gain_family", "FunPackSceneChain",
-                "h3_gain_* is set but this is not a MiniMax H3 model — "
-                "the per-modality AdaLN gates only exist there. Not applied.")
+            _log.feature(
+                "FunPackSceneChain", "AdaLN render gains", False,
+                "not a MiniMax H3 model. The per-modality gates only exist there.")
             return model
         # MODALITY_TAGS names the text modality "text"; the widget says "prompt" because that
         # is what it is to the person setting it.

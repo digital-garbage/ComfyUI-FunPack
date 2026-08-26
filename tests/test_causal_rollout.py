@@ -420,7 +420,7 @@ def test_a_non_h3_model_falls_through_and_says_so(monkeypatch, capsys):
     monkeypatch.setattr(minimax_h3, "is_h3_model", lambda m: False)
     node = _sampler(_h3_causal_chunks=True)
     assert node._run_h3_causal(object(), [], object(), [1.0, 0.0], 0) is None
-    assert "not a MiniMax H3 model" in capsys.readouterr().out
+    assert "Chunk cache: Inactive | Not a MiniMax H3 model" in capsys.readouterr().out
 
 
 def test_an_unbuildable_causal_lane_falls_through_and_says_why(monkeypatch, capsys):
@@ -434,7 +434,7 @@ def test_an_unbuildable_causal_lane_falls_through_and_says_why(monkeypatch, caps
     node = _sampler(_h3_causal_chunks=True, _h3_causal_sink=2, _h3_causal_window=2)
     assert node._run_h3_causal(object(), [], object(), [1.0, 0.0], 0) is None
     out = capsys.readouterr().out
-    assert "stock bidirectional" in out and "samples normally" in out
+    assert "Chunk cache: Inactive" in out and "stock bidirectional" in out
 
 
 def test_a_rollout_failure_is_raised_not_swallowed(monkeypatch):
@@ -473,6 +473,10 @@ def test_the_run_says_the_sampler_and_cfg_are_not_used(monkeypatch, capsys):
     node = _sampler(_h3_causal_chunks=True, _h3_causal_sink=2, _h3_causal_window=2,
                     _h3_causal_step_rule="consistency")
     node._run_h3_causal(object(), [], torch.zeros(1), [1.0, 0.5, 0.0], 0)
-    out = capsys.readouterr().out
-    assert "CFG" in out and "not used" in out.replace("NOT used", "not used")
-    assert "no per-chunk redo" in out.lower()
+    assert "Chunk cache: Active" in capsys.readouterr().out
+    # The console line is one clause by design; the caveats live in the full text, which
+    # FUNPACK_LOG=verbose prints. What must not happen is them being dropped from the source.
+    import inspect
+    src = inspect.getsource(samplers.FunPackLTXAVSceneChainSampler._run_h3_causal)
+    assert "CFG" in src and "NOT used" in src
+    assert "no per-chunk redo" in src.lower()

@@ -559,7 +559,7 @@ def _apply(refiner, monkeypatch, meta, memory, variables=None):
     monkeypatch.setattr(minimax_h3, "is_h3_clip", lambda c: True)
     monkeypatch.setattr(conditioning, "_log",
                         types.SimpleNamespace(failed=lambda *a, **k: None,
-                                              note_on_change=lambda *a, **k: None),
+                                              note_on_change=lambda *a, **k: None, feature=lambda *a, **k: None),
                         raising=False)
     out = refiner._v2_apply_h3_token_weights(
         [[torch.zeros(1, 40, 8), dict(meta)]], _H3Clip(), phrase_memory=memory,

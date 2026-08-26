@@ -17,8 +17,51 @@ worthless the twentieth. `failed` is the standard phrasing for rule 1, collapsed
 run so a per-step failure cannot bury everything else.
 """
 
+import os
+import re
+
 _last_by_key: dict[str, str] = {}   # key -> the text that key last printed
 _said_this_run: set[str] = set()    # keys already spoken since begin_run()
+
+#: Compact by default. A log nobody reads reports nothing, and a paragraph per feature is
+#: how a log stops being read. The reasoning is still written at the call sites — it is
+#: worth having the first time someone hits a problem — so `FUNPACK_LOG=verbose` in the
+#: environment (or `set_verbose(True)`) prints it in full.
+_verbose = os.environ.get("FUNPACK_LOG", "").strip().lower() in ("verbose", "full", "1")
+
+#: Where a message stops being the answer and starts being the explanation. SENTENCE ENDS
+#: ONLY — an em-dash just as often introduces the reason as the essay, and a renderer that
+#: guesses wrong eats the one part of the line worth reading. Anything that wants the
+#: reason kept apart says so by calling `feature`.
+_CUT = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
+_MAX = 150
+
+
+def set_verbose(on: bool) -> None:
+    """Print the full text of every message, explanations included."""
+    global _verbose
+    _verbose = bool(on)
+
+
+def verbose() -> bool:
+    return _verbose
+
+
+def compact(message: str) -> str:
+    """The first clause of a message, which is the part that says WHAT happened.
+
+    Everything FunPack logs is written as answer-then-reasoning, so cutting at the first
+    sentence end keeps the answer and drops the essay. A message without one is hard-trimmed
+    rather than left to run: the shape of the log matters more than any one line's
+    completeness, and the full text is one environment variable away.
+    """
+    if _verbose:
+        return message
+    head = _CUT.split(str(message).strip(), 1)[0].strip()
+    head = head.rstrip(" ,;:")
+    if len(head) > _MAX:
+        head = head[:_MAX].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+    return head
 
 
 def begin_run() -> None:
@@ -33,9 +76,29 @@ def reset() -> None:
     _said_this_run.clear()
 
 
+def feature(tag: str, name: str, active: bool, reason: str = "") -> None:
+    """The standard shape for a capability's state, and the only shape worth scanning:
+
+        [FunPack] Region locks: Active
+        [FunPack] Region locks: Inactive | This model is not MiniMax H3
+
+    Say it once per run for anything the user switched on, whether or not it took. A feature
+    that is on and silent is indistinguishable from one that is off.
+    """
+    state = "Active" if active else "Inactive"
+    why = _reason(reason) if active else (_reason(reason) or "No reason given")
+    note_on_change(f"{tag}:{name}", tag, f"{name}: {state}" + (f" | {why}" if why else ""))
+
+
+def _reason(text: str) -> str:
+    """One clause, starting with a capital. The reason is the half people read."""
+    out = compact(text or "").strip().rstrip(".")
+    return out[:1].upper() + out[1:] if out else ""
+
+
 def note(tag: str, message: str) -> None:
     """Say it, every time. For events that genuinely differ run to run."""
-    print(f"[{tag}] {message}")
+    print(f"[{tag}] {compact(message)}")
 
 
 def note_once(tag: str, message: str, key: str | None = None) -> bool:
@@ -48,7 +111,7 @@ def note_once(tag: str, message: str, key: str | None = None) -> bool:
     if k in _said_this_run:
         return False
     _said_this_run.add(k)
-    print(f"[{tag}] {message}")
+    print(f"[{tag}] {compact(message)}")
     return True
 
 
@@ -62,7 +125,7 @@ def note_on_change(key: str, tag: str, message: str) -> bool:
     if _last_by_key.get(key) == message:
         return False
     _last_by_key[key] = message
-    print(f"[{tag}] {message}")
+    print(f"[{tag}] {compact(message)}")
     return True
 
 
@@ -80,8 +143,12 @@ def failed(tag: str, what: str, error, effect: str, key: str | None = None) -> b
     if k in _said_this_run:
         return False
     _said_this_run.add(k)
-    detail = f" ({error})" if error is not None and str(error) else ""
-    print(f"[{tag}] {what} failed{detail} — {effect}")
+    # The EFFECT is the half that survives the trim, not the exception text: "that explains
+    # what I am looking at" is what rule 1 exists for, and an exception message rarely says
+    # it. The error itself is one FUNPACK_LOG=verbose away.
+    detail = f" ({error})" if _verbose and error is not None and str(error) else ""
+    print(f"[{tag}] {what}: Failed{detail}"
+          + (f" | {_reason(effect)}" if effect else ""))
     return True
 
 
@@ -92,5 +159,5 @@ def skipped(tag: str, what: str, why: str, key: str | None = None) -> bool:
     if k in _said_this_run:
         return False
     _said_this_run.add(k)
-    print(f"[{tag}] {what} — SKIPPED: {why}")
+    print(f"[{tag}] {what}: Inactive | {_reason(why) or 'No reason given'}")
     return True

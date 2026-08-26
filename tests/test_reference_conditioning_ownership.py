@@ -113,8 +113,8 @@ def test_the_skip_is_reported_not_silent():
     """A silently unsplit multi-scene run looks like the scene texts were ignored."""
     import conditioning
     src = inspect.getsource(conditioning.FunPackVideoRefinerV2.refine_v2)
-    assert "the scene split is SKIPPED" in src
-    assert "Disconnect it to let Studio split and encode per scene." in src
+    assert '"Scene split", False' in src
+    assert "Disconnect it to split per scene." in src
 
 
 # --- a multi-entry wired conditioning keeps all of its entries --------------
@@ -163,7 +163,7 @@ def test_bounded_attention_skips_a_wired_entry(studio, monkeypatch):
     import conditioning
     monkeypatch.setattr(conditioning, "_log",
                         types.SimpleNamespace(failed=lambda *a, **k: None,
-                                              note_on_change=lambda *a, **k: None),
+                                              note_on_change=lambda *a, **k: None, feature=lambda *a, **k: None),
                         raising=False)
     monkeypatch.setattr(studio, "_v2_bounded_attention_split_encode",
                         lambda *a, **k: (torch.ones(1, 197, 8), 40), raising=False)

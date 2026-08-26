@@ -41,34 +41,43 @@ def test_a_failure_says_what_stopped_and_what_the_output_looks_like(capsys):
     L.failed("FunPackSceneChain", "anchor pin restore", ValueError("shape mismatch"),
              "the scene keeps its unpinned latent")
     out = capsys.readouterr().out
-    assert "anchor pin restore failed" in out
-    assert "shape mismatch" in out
-    assert "the scene keeps its unpinned latent" in out
+    assert "anchor pin restore: Failed" in out
+    # The effect, not the exception: an exception message rarely says what the output looks
+    # like, and that is the half rule 1 exists for. The error is one FUNPACK_LOG away.
+    assert "The scene keeps its unpinned latent" in out
+    L.reset()
+    L.set_verbose(True)
+    try:
+        L.failed("FunPackSceneChain", "anchor pin restore", ValueError("shape mismatch"),
+                 "the scene keeps its unpinned latent")
+        assert "shape mismatch" in capsys.readouterr().out
+    finally:
+        L.set_verbose(False)
 
 
 def test_a_per_step_failure_is_collapsed_to_one_line_per_run(capsys):
     for _ in range(20):
         L.failed("T", "taste steering", RuntimeError("boom"), "the step runs unsteered")
-    assert capsys.readouterr().out.count("taste steering failed") == 1
+    assert capsys.readouterr().out.count("taste steering: Failed") == 1
 
 
 def test_the_next_run_reports_the_same_failure_again(capsys):
     L.failed("T", "taste steering", RuntimeError("boom"), "unsteered")
     L.begin_run()
     L.failed("T", "taste steering", RuntimeError("boom"), "unsteered")
-    assert capsys.readouterr().out.count("taste steering failed") == 2
+    assert capsys.readouterr().out.count("taste steering: Failed") == 2
 
 
 def test_a_failure_without_an_error_object_still_reads_as_a_sentence(capsys):
     L.failed("T", "guide append", None, "the scene renders without the guide")
-    assert "guide append failed — the scene renders without the guide" in capsys.readouterr().out
+    assert "guide append: Failed" in capsys.readouterr().out
 
 
 def test_a_deliberate_skip_reads_differently_from_a_failure(capsys):
     L.skipped("T", "SLA attention", "Triton is not installed")
     out = capsys.readouterr().out
-    assert "SKIPPED: Triton is not installed" in out
-    assert "failed" not in out
+    assert "SLA attention: Inactive | Triton is not installed" in out
+    assert "Failed" not in out
 
 
 def test_note_once_keys_on_the_message_so_distinct_values_each_speak(capsys):
@@ -120,4 +129,78 @@ def test_a_standing_condition_and_a_failure_do_not_share_a_reset(capsys):
     L.failed("T", "guide append", None, "no guide")
     out = capsys.readouterr().out
     assert "non-LTX" not in out          # standing: still true, still silent
-    assert "guide append failed" in out  # failure: news again this run
+    assert "guide append: Failed" in out  # failure: news again this run
+
+
+# ── the shape: one line, one clause ─────────────────────────────────────────
+#
+# A paragraph per feature is how a log stops being read, and a log nobody reads reports
+# nothing. The reasoning is still written at every call site — it is worth having the first
+# time someone hits a problem — so FUNPACK_LOG=verbose prints it in full.
+
+def test_a_feature_reads_as_state_then_reason(capsys):
+    L.feature("FunPack", "K/V conditioning patch", False, "non-LTX model loaded")
+    assert capsys.readouterr().out == \
+        "[FunPack] K/V conditioning patch: Inactive | Non-LTX model loaded\n"
+
+
+def test_an_active_feature_needs_no_reason(capsys):
+    L.feature("FunPack", "Region lock", True)
+    assert capsys.readouterr().out == "[FunPack] Region lock: Active\n"
+
+
+def test_an_inactive_feature_without_a_reason_says_so_rather_than_trailing_off(capsys):
+    """Inactive is only half an answer. A missing why is a gap worth seeing, not hiding."""
+    L.feature("FunPack", "Region lock", False)
+    assert "Inactive | No reason given" in capsys.readouterr().out
+
+
+def test_the_explanation_is_cut_and_the_answer_is_kept(capsys):
+    L.feature("FunPack", "Taste push", False,
+              "needs 3 liked runs on this key. The Refiner learns the direction from your "
+              "ratings and there is nothing to learn from yet.")
+    assert capsys.readouterr().out == \
+        "[FunPack] Taste push: Inactive | Needs 3 liked runs on this key\n"
+
+
+def test_verbose_prints_the_whole_thing(capsys):
+    L.set_verbose(True)
+    try:
+        L.feature("FunPack", "Taste push", False,
+                  "needs 3 liked runs on this key. The Refiner learns the direction from "
+                  "your ratings.")
+        assert "The Refiner learns the direction" in capsys.readouterr().out
+    finally:
+        L.set_verbose(False)
+
+
+def test_an_em_dash_is_not_a_cut(capsys):
+    """It introduces the reason as often as the essay, and a renderer that guesses wrong eats
+    the one part of the line worth reading."""
+    L.feature("FunPack", "Chunk cache", False, "not a MiniMax H3 model — an H3-only lane")
+    assert "an H3-only lane" in capsys.readouterr().out
+
+
+def test_a_single_long_sentence_is_trimmed_rather_than_left_to_run(capsys):
+    L.feature("FunPack", "Thing", False, "because " + "a" * 400)
+    line = capsys.readouterr().out.strip()
+    assert len(line) < 220 and line.endswith("…")
+
+
+def test_a_feature_repeats_only_when_its_state_changes(capsys):
+    """A standing condition is news once. Twenty identical lines are what makes a log stop
+    being read at all."""
+    for _ in range(5):
+        L.feature("FunPack", "Chunk cache", False, "not a MiniMax H3 model")
+    assert capsys.readouterr().out.count("Chunk cache") == 1
+    L.feature("FunPack", "Chunk cache", True, "22 chunks")
+    assert "Chunk cache: Active" in capsys.readouterr().out
+
+
+def test_a_skip_and_an_inactive_feature_read_the_same(capsys):
+    """They are the same fact — the user should not have to learn two spellings of it."""
+    L.feature("FunPack", "SLA attention", False, "Triton is not installed")
+    L.reset()
+    L.skipped("FunPack", "SLA attention", "Triton is not installed")
+    lines = [x for x in capsys.readouterr().out.strip().splitlines()]
+    assert lines[0] == lines[1]

@@ -245,5 +245,5 @@ def test_the_log_line_names_the_file_and_the_share(mm, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "turbo.safetensors" in out
     assert "1 of 1" in out
-    assert "NOTHING from this file applies" in out
+    assert "DROPPED before the merge" in out
     assert "1/1 DROPPED" in note

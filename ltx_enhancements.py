@@ -1338,9 +1338,8 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     if not _is_ltx_model(model):
         # A standing condition, not an event: on an H3 project this is true of every run, and
         # saying it every run buries the lines that ARE news. Restated only if it changes.
-        _log.note_on_change(
-            "ltx_enh:family", "FunPackEnhancements",
-            "non-LTX model — LTX enhancements skipped, model passed through unchanged")
+        _log.feature("FunPackEnhancements", "LTX enhancements", False,
+                     "non-LTX model loaded. The model is passed through unchanged.")
         return model
 
     temporal_style = str(temporal_style or "natural").strip().lower()

@@ -24,7 +24,7 @@ def studio(monkeypatch):
     import conditioning
     monkeypatch.setattr(conditioning, "_log",
                         types.SimpleNamespace(failed=lambda *a, **k: None,
-                                              note_on_change=lambda *a, **k: None),
+                                              note_on_change=lambda *a, **k: None, feature=lambda *a, **k: None),
                         raising=False)
     return conditioning.FunPackVideoRefinerV2.__new__(conditioning.FunPackVideoRefinerV2)
 

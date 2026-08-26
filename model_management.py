@@ -917,12 +917,12 @@ class FunPackLoraLoader:
             # Both containers number from 0, so their blocks would share buckets and one
             # scale would land on two unrelated blocks. Declining is the honest answer; the
             # caller falls back to global at the plain weight.
-            _log.note_on_change(
-                "lora:block_containers", "FunPack",
-                f"per-block declined: this model numbers its blocks in {len(containers)} "
-                f"separate stacks ({', '.join(sorted(containers))}), which start at 0 each, "
-                f"so a block index does not identify one block. The LoRA applies globally "
-                f"at its plain weight instead.")
+            _log.feature(
+                "FunPack", "Per-block LoRA weights", False,
+                f"this model numbers its blocks in {len(containers)} separate stacks "
+                f"({', '.join(sorted(containers))}), which start at 0 each, so a block index "
+                f"does not identify one block. The LoRA applies globally at its plain "
+                f"weight instead.")
             return None
 
         global_patches, block_patches = self._split_model_patches_by_block(loaded)

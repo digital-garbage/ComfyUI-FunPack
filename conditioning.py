@@ -3289,11 +3289,9 @@ class FunPackVideoRefiner:
                 out.append([entry[0], meta])
             else:
                 out.append(entry)
-        _log.note_on_change(
-            "studio:h3gains",
-            "FunPackStudio",
-            "H3 render gains this run: "
-            + ", ".join(f"{k}={gains[k]:.3f}" for k in self.H3_GAIN_KEYS if k in gains)
+        _log.feature(
+            "FunPackStudio", "Rating-learned render gains", True,
+            ", ".join(f"{k}={gains[k]:.3f}" for k in self.H3_GAIN_KEYS if k in gains)
             + ("; taste direction attached" if direction is not None
                else f"; no taste direction yet (needs {self.H3_TASTE_DIR_MIN_COUNT} liked runs)")
             + " (learned from ratings, perturbed to keep learning; the Chain Sampler applies "
@@ -7933,10 +7931,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except ImportError:
             from minimax_h3 import is_h3_model
         if is_h3_model(model):
-            _log.note_on_change("studio:h3attn2", "FunPackStudio",
-                                "MiniMax H3: skipping the attn2 K/V direction patch — H3 is a single packed "
-                                "self-attention stream with no cross-attention to hook. Learned directions "
-                                "still apply to the conditioning tensor itself.")
+            _log.feature("FunPackStudio", "K/V conditioning patch", False,
+                         "MiniMax H3 loaded. H3 is a single packed self-attention stream "
+                         "with no cross-attention to hook; learned directions still apply "
+                         "to the conditioning tensor itself.")
             return None
         axis_memory = global_state.get("axis_conditioning_memory", {})
         missing_axes = set(axis_feedback.get("missing_axes", []))
@@ -11224,12 +11222,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # drift — a different person. Studio cannot split a conditioning it did not build, so
         # it keeps the one it was given.
         if split_by_transitions and conditioning_owner == "CONDITIONING-owned":
-            _log.note_on_change(
-                "studio:split_vs_wired", "FunPackStudio",
-                "the positive CONDITIONING is wired, so the scene split is SKIPPED — "
-                "splitting means re-encoding each scene from text, and this node cannot "
-                "reproduce a reference it never received. Every scene uses the wired "
-                "conditioning. Disconnect it to let Studio split and encode per scene.")
+            _log.feature(
+                "FunPackStudio", "Scene split", False,
+                "the positive CONDITIONING is wired. Splitting means re-encoding each scene "
+                "from text, and this node cannot reproduce a reference it never received, so "
+                "every scene uses the wired conditioning. Disconnect it to split per scene.")
             status = status + ("\nTransition split: skipped — the wired positive "
                                "CONDITIONING owns the prompt") + enhancement_status
         elif split_by_transitions:
@@ -11987,11 +11984,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 # replaces the tensor with the result — which has no reference image in it,
                 # because this node was never given one. On a reference run that swaps the
                 # whole conditioning for a text-only encode.
-                _log.note_on_change(
-                    "studio:ba_vs_wired", "FunPackStudio",
-                    "Bounded Attention's exact-boundary split is SKIPPED for the wired "
-                    "positive CONDITIONING — it works by re-encoding the prompt, and this "
-                    "node cannot put back a reference it never received.")
+                _log.feature(
+                    "FunPackStudio", "Bounded Attention", False,
+                    "the positive CONDITIONING is wired. The exact-boundary split works by "
+                    "re-encoding the prompt, and this node cannot put back a reference it "
+                    "never received.")
                 out.append(entry)
                 continue
             text = str(meta.get("funpack_scene_text") or "").strip() or str(fallback_text or "")
@@ -12147,12 +12144,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     # saw, so the arithmetic would bias a window of the wrong words with no
                     # sign of it. The tags are the only trustworthy placement, and without
                     # them the honest result is no emphasis.
-                    _log.note_on_change(
-                        "h3:emphasis_placement", "FunPackStudio",
-                        "phrase emphasis is SKIPPED for the wired positive CONDITIONING: "
-                        "none of the prompt texts this node holds tokenizes to the number of "
-                        "text positions the tensor actually has, so the string it was encoded "
-                        "from is not among them and the bias cannot be placed.")
+                    _log.feature(
+                        "FunPackStudio", "Phrase emphasis", False,
+                        "the positive CONDITIONING is wired and none of the prompt texts "
+                        "this node holds tokenizes to the tensor's length, so the string it "
+                        "was encoded from is not among them and the bias cannot be placed.")
                     out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
                     continue
                 if base is not None:
@@ -12170,10 +12166,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # the number is for, and it says the same thing about whether emphasis is doing
             # too much without quoting anything.
             strongest = max(landed.values()) if landed else 0.0
-            _log.note_on_change(
-                "h3:token_weights", "FunPackStudio",
-                f"rating-derived phrase emphasis: {len(landed)} of {len(weighted)} learned "
-                f"phrase(s) are in this prompt and were weighted across {applied} scene(s)"
+            _log.feature(
+                "FunPackStudio", "Phrase emphasis", True,
+                f"{len(landed)} of {len(weighted)} learned phrase(s) in this prompt, "
+                f"weighted across {applied} scene(s)"
                 + (f", strongest x{strongest:.2f}" if landed else "")
                 + " — applied as an attention bias on H3's packed stream, where the attn2 "
                   "K/V emphasis has nothing to hook.")

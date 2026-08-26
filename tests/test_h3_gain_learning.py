@@ -141,7 +141,7 @@ def test_rendered_values_stay_inside_the_band(studio):
 def test_the_gains_ride_entry_zero_of_the_conditioning(studio, monkeypatch):
     import torch
     monkeypatch.setattr(C, "_log", types.SimpleNamespace(
-        failed=lambda *a, **k: None, note_on_change=lambda *a, **k: None), raising=False)
+        failed=lambda *a, **k: None, note_on_change=lambda *a, **k: None, feature=lambda *a, **k: None), raising=False)
     cond = [[torch.zeros(1, 4, 8), {}], [torch.zeros(1, 4, 8), {}]]
     out = studio._v2_tag_h3_gains(cond, {}, seed=5)
     assert "funpack_h3_gains" in out[0][1]
@@ -292,7 +292,7 @@ def test_an_empty_state_has_no_direction(studio):
 def test_the_direction_rides_entry_zero_with_the_gains(studio, monkeypatch):
     import torch
     monkeypatch.setattr(C, "_log", types.SimpleNamespace(
-        failed=lambda *a, **k: None, note_on_change=lambda *a, **k: None), raising=False)
+        failed=lambda *a, **k: None, note_on_change=lambda *a, **k: None, feature=lambda *a, **k: None), raising=False)
     cond = [[torch.zeros(1, 4, 8), {}], [torch.zeros(1, 4, 8), {}]]
     out = studio._v2_tag_h3_gains(cond, _liked(4), seed=5)
     assert studio.H3_TASTE_DIR_META in out[0][1]
@@ -304,7 +304,7 @@ def test_a_direction_alone_is_worth_tagging(studio, monkeypatch):
     worth carrying, because the sampler's manual mode can supply the push itself."""
     import torch
     monkeypatch.setattr(C, "_log", types.SimpleNamespace(
-        failed=lambda *a, **k: None, note_on_change=lambda *a, **k: None), raising=False)
+        failed=lambda *a, **k: None, note_on_change=lambda *a, **k: None, feature=lambda *a, **k: None), raising=False)
     monkeypatch.setattr(studio, "_v2_h3_gains_for_run",
                         lambda *a, **k: {key: studio._h3_gain_centre(key)
                                          for key in studio.H3_GAIN_KEYS}, raising=False)

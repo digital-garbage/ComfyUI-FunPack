@@ -90,4 +90,4 @@ def test_two_block_stacks_decline_rather_than_collide(mm, capsys):
     loader = mm.FunPackLoraLoader()
     mixed = {**_deltas("double_blocks", 4), **_deltas("single_blocks", 4)}
     assert loader._block_profile_template(mixed) is None
-    assert "per-block declined" in capsys.readouterr().out
+    assert "Per-block LoRA weights: Inactive" in capsys.readouterr().out
