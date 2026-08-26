@@ -798,16 +798,36 @@ def _ensure_loaded(patcher, noise_shape, conds):
     other tensors on cpu`. ComfyUI's own prepare_sampling is used rather than a bare
     load_models_gpu so the memory estimate, the wrappers and the placement are the ones the
     dense path would have made for this clip.
+
+    Returns None when the model is where it should be, or the reason it is not — the caller
+    decides whether that is fatal. It is at build time (nothing has run yet, so refusing is
+    clean) and it is not at run time (the rollout is already under way).
     """
     if patcher is None:
-        return
+        return None
     try:
-        import comfy.sampler_helpers
-        comfy.sampler_helpers.prepare_sampling(patcher, tuple(noise_shape), dict(conds or {}),
-                                               getattr(patcher, "model_options", None))
+        import comfy.sampler_helpers as helpers
+        prepare = helpers.prepare_sampling
+        convert = helpers.convert_cond
+    except (ImportError, AttributeError):
+        # A ComfyUI that does not expose the helper still has to get its weights placed.
+        try:
+            import comfy.model_management
+            comfy.model_management.load_models_gpu([patcher], force_full_load=False)
+            return None
+        except Exception as error:                                    # noqa: BLE001
+            return str(error)
+    try:
+        # convert_cond FIRST. `estimate_memory` calls `extra_conds_shapes(**cond)`, so it
+        # wants ComfyUI's INTERNAL cond dicts, not the [tensor, meta] pairs a node is handed.
+        # Passing the node-level list raised, the load never happened, and the conditioning
+        # then failed on a model that was still half on the CPU — one bug reported twice.
+        prepared = {k: convert(v) for k, v in (conds or {}).items()}
+        prepare(patcher, tuple(noise_shape), prepared,
+                getattr(patcher, "model_options", None))
+        return None
     except Exception as error:                                        # noqa: BLE001
-        print(f"[FunPack H3] causal lane could not pre-load the model ({error}); the "
-              f"rollout continues, but object patches may not be installed.")
+        return str(error)
 
 
 def build_session(model, positive, latent, *, sink=2, window=2, device=None, offload=True):
@@ -853,8 +873,12 @@ def build_session(model, positive, latent, *, sink=2, window=2, device=None, off
         device = getattr(model, "load_device", None) or video.device
     device = torch.device(device)
     # Before extra_conds, which runs the token refiner: a partial forward that needs the
-    # weights where the tensors it is handed already are.
-    _ensure_loaded(model, video.shape, {"positive": positive})
+    # weights where the tensors it is handed already are. Refused rather than warned about,
+    # because everything after this point assumes the model is loaded and the failure would
+    # otherwise surface as a device mismatch three lines later.
+    failure = _ensure_loaded(model, video.shape, {"positive": positive})
+    if failure is not None:
+        return None, f"the model could not be placed for the causal lane: {failure}"
     try:
         base = model.model
         kwargs = dict(positive[0][1])
@@ -909,7 +933,10 @@ def run_session(session, *, sigmas, step_rule="consistency", eta=1.0, seed=0,
     # Again, once for the whole rollout: a session can be built and run much later, and
     # another model may have evicted this one in between. The loop must not fight Comfy's
     # offload decision chunk by chunk, so this is the only place it happens.
-    _ensure_loaded(session.get("patcher"), session["video_shape"], {})
+    failure = _ensure_loaded(session.get("patcher"), session["video_shape"], {})
+    if failure is not None:
+        print(f"[FunPack H3] causal lane could not re-place the model ({failure}); the "
+              f"rollout continues on whatever is already resident.")
 
     cache.clear()
     with torch.no_grad():

@@ -279,18 +279,37 @@ def test_an_unknown_step_rule_is_refused_rather_than_silently_defaulted():
 # token-refiner edit get installed at all. This lane calls the DiT directly, so skipping the
 # load would leave the weights offloaded AND both of those silently absent.
 
-@pytest.fixture
-def loads(monkeypatch):
-    """Records every prepare_sampling call, the way ComfyUI's own would be made."""
+@pytest.fixture(autouse=True)
+def helpers(monkeypatch):
+    """A live comfy.sampler_helpers whose prepare_sampling is swappable PER TEST.
+
+    Installed once and patched with monkeypatch afterwards: `install_module` merges onto a
+    module object the whole session shares, so a test that installs a raising stub and does
+    not restore it poisons every test that runs after it.
+    """
     from tests._comfy_stubs import install_module
 
+    module = install_module(
+        "comfy.sampler_helpers",
+        prepare_sampling=lambda *a, **kw: None,
+        convert_cond=lambda cond: [dict(c[1], cross_attn=c[0]) for c in cond])
+
+    def swap(fn):
+        monkeypatch.setattr(module, "prepare_sampling", fn)
+
+    monkeypatch.setattr(module, "prepare_sampling", lambda *a, **kw: None)
+    return swap
+
+
+@pytest.fixture
+def loads(helpers):
+    """Records every prepare_sampling call, the way ComfyUI's own would be made."""
     calls = []
-    install_module("comfy.sampler_helpers",
-                   prepare_sampling=lambda *a, **kw: calls.append(a))
+    helpers(lambda *a, **kw: calls.append(a))
     return calls
 
 
-def test_the_model_is_loaded_before_the_conditioning_is_prepared(loads):
+def test_the_model_is_loaded_before_the_conditioning_is_prepared(helpers):
     """extra_conds runs H3's token refiner — a partial forward. Preparing it before the load
     is what produced `mat1 is on cuda:0, different from other tensors on cpu`."""
     order = []
@@ -304,9 +323,7 @@ def test_the_model_is_loaded_before_the_conditioning_is_prepared(loads):
     patcher = _Patcher(diffusion)
     patcher.model = Watched(diffusion, None, None)
     patcher.model.diffusion_model = diffusion
-    from tests._comfy_stubs import install_module
-    install_module("comfy.sampler_helpers",
-                   prepare_sampling=lambda *a, **kw: order.append("load"))
+    helpers(lambda *a, **kw: order.append("load"))
     session, reason = hc.build_session(patcher, _positive(), _latent())
     assert session is not None, reason
     assert order[:2] == ["load", "conds"]
@@ -319,14 +336,20 @@ def test_the_load_is_given_the_clips_own_shape(loads):
     assert loads and loads[0][1] == (1, 24, LATENT_T, 8, 8)
 
 
-def test_the_load_happens_before_the_first_forward(loads):
+def test_the_conditioning_is_converted_before_the_memory_estimate(loads):
+    """estimate_memory calls extra_conds_shapes(**cond), so it wants ComfyUI's INTERNAL cond
+    dicts — handing it the [tensor, meta] pairs a node receives raises, the load silently does
+    not happen, and the failure resurfaces as a device mismatch three lines later."""
+    _build()
+    assert isinstance(loads[0][2]["positive"][0], dict)
+
+
+def test_the_load_happens_before_the_first_forward(helpers):
     order = []
     diffusion = _Diffusion()
     session, reason = _build(diffusion=diffusion)
     assert session is not None, reason
-    from tests._comfy_stubs import install_module
-    install_module("comfy.sampler_helpers",
-                   prepare_sampling=lambda *a, **kw: order.append("load"))
+    helpers(lambda *a, **kw: order.append("load"))
     real = diffusion.forward_chunk
 
     def spy(*a, **kw):
@@ -347,20 +370,28 @@ def test_the_model_is_loaded_once_per_rollout_not_per_chunk(loads):
     assert len(loads) == 1
 
 
-def test_a_failed_load_does_not_abort_the_run(monkeypatch, capsys):
-    """It degrades to whatever Comfy already had resident, and says the patches may be
-    missing — rather than turning a recoverable placement problem into a dead run."""
-    from tests._comfy_stubs import install_module
+def _boom(*a, **kw):
+    raise RuntimeError("out of memory")
 
-    def boom(*a, **kw):
-        raise RuntimeError("out of memory")
 
-    install_module("comfy.sampler_helpers", prepare_sampling=boom)
+def test_a_load_that_fails_at_build_time_refuses_the_lane(helpers):
+    """Everything after the load assumes the model is resident, so a warning here surfaces
+    three lines later as a device mismatch — one bug reported twice."""
+    helpers(_boom)
+    session, reason = _build()
+    assert session is None
+    assert "could not be placed" in reason and "out of memory" in reason
+
+
+def test_a_load_that_fails_mid_rollout_does_not_abort_it(helpers, capsys):
+    """By then the rollout is under way. It degrades to whatever Comfy already had resident
+    and says so, rather than turning a recoverable placement problem into a dead run."""
     session, reason = _build()
     assert session is not None, reason
+    helpers(_boom)
     video, _audio = hc.run_session(session, sigmas=[1.0, 0.0])
     assert video is not None
-    assert "object patches may not be installed" in capsys.readouterr().out
+    assert "could not re-place the model" in capsys.readouterr().out
 
 
 def test_no_patcher_means_no_load_attempt(loads):
