@@ -210,3 +210,64 @@ test("releasing something that never held is not a release", () => {
   P.release("rating-picker");
   assert.equal(P.isHeld(), false);
 });
+
+
+// ── is the timeline actually on screen? ─────────────────────────────────────
+//
+// Reported from a rental: typing in the Composer, focus was lost, typing continued, and a
+// clip was cut in half by a stray `s`. Single letters are destructive commands on the
+// timeline, and with peek on the timeline may not even be visible to show what happened.
+// isVisible is what the keyboard handler reads before it edits anything.
+
+function fakeDoc(classes) {
+  const set = new Set(classes || []);
+  return {
+    getElementById: (id) => (id === "timeline-zone"
+      ? { classList: { contains: (c) => set.has(c) } }
+      : null),
+  };
+}
+
+function withPeek(on, fn) {
+  const saved = global.localStorage;
+  const store = new Map(on ? [["funpack_timeline_peek", "1"]] : []);
+  global.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+  try { return fn(); } finally { global.localStorage = saved; }
+}
+
+test("with the preference off the timeline is always considered visible", () => {
+  withPeek(false, () => {
+    assert.equal(P.isVisible(fakeDoc([])), true);
+  });
+});
+
+test("in peek mode a closed strip is not visible", () => {
+  withPeek(true, () => {
+    assert.equal(P.isVisible(fakeDoc([])), false);
+  });
+});
+
+test("hovering it open makes it visible again", () => {
+  withPeek(true, () => {
+    assert.equal(P.isVisible(fakeDoc([P.OPEN_CLASS])), true);
+  });
+});
+
+test("held open by a drag counts as visible", () => {
+  // Dropping a clip onto a lane is exactly when the timeline is being used.
+  withPeek(true, () => {
+    assert.equal(P.isVisible(fakeDoc([P.DRAG_CLASS])), true);
+  });
+});
+
+test("no timeline in the document blocks nothing", () => {
+  // Simple mode has no timeline zone at all. Reading "not visible" there would disable
+  // shortcuts for a layout that never had them to begin with, which is not this rule's job.
+  withPeek(true, () => {
+    assert.equal(P.isVisible({ getElementById: () => null }), true);
+  });
+});

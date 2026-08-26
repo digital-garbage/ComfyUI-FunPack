@@ -61,6 +61,17 @@
 
   function get() { return stored(); }
 
+  // Is the timeline BODY on screen? Only meaningful in peek mode — with the preference off
+  // the timeline is always there. Keyboard shortcuts that act on a clip read this: a
+  // selection you cannot see is not something to delete or split by reflex.
+  function isVisible(doc) {
+    if (!get()) return true;
+    const d = doc || (typeof document !== "undefined" ? document : null);
+    const zone = d && d.getElementById && d.getElementById("timeline-zone");
+    if (!zone) return true;              // no timeline to hide: do not block anything
+    return zone.classList.contains(OPEN_CLASS) || zone.classList.contains(DRAG_CLASS);
+  }
+
   function set(on) {
     persist(!!on);
     const result = apply(!!on);
@@ -286,6 +297,7 @@
   }
 
   return { get, set, apply, install, measure, ensureStrip, opensOnPointer, isDrag,
+           isVisible,
            hold, release, isHeld,
            makeDragTracker, makeHoverIntent, LS_KEY, ATTR, DRAG_CLASS, OPEN_CLASS,
            STRIP_ID, STRIP_LABEL, OPEN_DELAY_MS };

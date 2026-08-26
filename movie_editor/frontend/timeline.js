@@ -2144,13 +2144,31 @@
     S.splitScene(target.id, at);
   }
 
+  // A single letter is a destructive command here — s splits, Delete removes — and the only
+  // thing standing between "typing" and "editing" is where focus happens to be. Reported
+  // from a rental: typing in the Composer, focus was lost, typing continued, and a clip was
+  // split in half by a stray `s`. Focus loss lands on <body>, which reads exactly like
+  // "nothing is focused, so the user must mean the timeline".
+  //
+  // So the guard is not only about focus: while a text-writing surface is on screen, letters
+  // belong to it whether or not it currently holds focus.
+  function textSurfaceOpen() {
+    try {
+      if (window.Composer?.isOpen?.()) return true;
+      return !!document.querySelector(".fw:not([hidden])");
+    } catch (_) {
+      return false;
+    }
+  }
+
   window.addEventListener("keydown", (e) => {
     const a = document.activeElement;
     // Inline numeric fields on clips (e.g. audio track "Start (s)") can keep keyboard focus
     // after a stray click without the user noticing they're "in" a text field. Letters like
     // i/o/s/Delete are meaningless inside a number input anyway, so blur it and let the
     // clip-level shortcut through rather than silently swallowing the keystroke.
-    if (a && a.tagName === "INPUT" && a.type === "number" && a.closest(".tl-aud-clip, .tl-clip")) {
+    if (a && a.tagName === "INPUT" && a.type === "number" && a.closest(".tl-aud-clip, .tl-clip")
+        && !textSurfaceOpen()) {
       a.blur();
     } else if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) {
       return;
@@ -2158,13 +2176,24 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const st = S.get();
     if (!st.project) return;
+    // With "Show timeline on hover" on and the timeline collapsed, anything that edits a
+    // clip is acting on a selection nobody can see — Delete most of all. Transport keys stay
+    // live: they drive the player, which is on screen either way.
+    if (textSurfaceOpen()) return;
+    const timelineShowing = window.TimelinePeek?.isVisible?.() !== false;
     const ph = window.Player?.getPlayhead() ?? 0;
     const fps = st.project.frame_rate || 25;
     if (e.key === "j" || e.key === "J") { e.preventDefault(); window.Player?.seek(Math.max(0, ph - 1)); return; }
     if (e.key === "k" || e.key === "K") { e.preventDefault(); window.Player?.pause?.(); return; }
     if (e.key === "l" || e.key === "L") { e.preventDefault(); window.Player?.play?.(); return; }
-    if (e.key === "+" || e.key === "=") { e.preventDefault(); setZoom(pxPerSec * 1.2, { manual: true }); return; }
-    if (e.key === "-" || e.key === "_") { e.preventDefault(); setZoom(pxPerSec / 1.2, { manual: true }); return; }
+    if (e.key === "+" || e.key === "=") {
+      if (!timelineShowing) return;
+      e.preventDefault(); setZoom(pxPerSec * 1.2, { manual: true }); return;
+    }
+    if (e.key === "-" || e.key === "_") {
+      if (!timelineShowing) return;
+      e.preventDefault(); setZoom(pxPerSec / 1.2, { manual: true }); return;
+    }
     if (e.key === " " || e.code === "Space") {
       e.preventDefault();
       if (window.Player?.isPlaying?.()) window.Player.pause();
@@ -2174,6 +2203,7 @@
     if (e.key === "ArrowLeft") { e.preventDefault(); window.Player?.seek(Math.max(0, ph - 1 / fps)); return; }
     if (e.key === "ArrowRight") { e.preventDefault(); window.Player?.seek(ph + 1 / fps); return; }
     if (e.key === "Delete" || e.key === "Backspace") {
+      if (!timelineShowing) return;
       if (st.selectedOverlayId) {
         e.preventDefault();
         S.removeSelectedOverlay();
@@ -2191,6 +2221,7 @@
       }
       return;
     }
+    if (!timelineShowing) return;      // everything below edits the selected clip
     if (st.selectedAudioTrackId) {
       const aud = (st.project.audio_tracks || []).find((t) => t.id === st.selectedAudioTrackId);
       if (aud) {
