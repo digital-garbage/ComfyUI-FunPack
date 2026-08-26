@@ -3181,7 +3181,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "h3_prompt_time": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Makes the picture stick closer to the prompt, and drift away from it less as a scene goes on. 0.0 = off (default). Try 0.9-1.0; the effect gets stronger the closer to 1.0. HOW: H3 tells every part of its sequence how finished it is, and it tells the prompt whatever it tells the picture — so early on, while the picture is still noise, the prompt is treated as unreliable too. This tells the prompt it is finished no matter where the picture is, so the model leans on it from the first step. Free: one extra row through a small projection per block, no extra model calls. Does not touch the reference image or a keyframe pin. UNVALIDATED.",
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Makes the picture stick closer to the prompt, and drift away from it less as a scene goes on. 0.0 = off (default). Try 0.9-1.0; the effect gets stronger the closer to 1.0. Works in BOTH h3_gain_modes: it is not one of the learned strengths, so 'learned' leaves it to this widget rather than overwriting it. HOW: H3 tells every part of its sequence how finished it is, and it tells the prompt whatever it tells the picture — so early on, while the picture is still noise, the prompt is treated as unreliable too. This tells the prompt it is finished no matter where the picture is, so the model leans on it from the first step. Free: one extra row through a small projection per block, no extra model calls. Does not touch the reference image or a keyframe pin. UNVALIDATED.",
                 }),
                 "h3_video_detail": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
@@ -6765,17 +6765,27 @@ class FunPackLTXAVSceneChainSampler:
                     learned = {k: float(v) for k, v in candidate.items()}
         except Exception:  # noqa: BLE001
             learned = None
+        # prompt_time is NOT in the learned set (its off value sits at the end of its own
+        # range, so the loop cannot explore around it). Taking it from the learned dict
+        # would mean the only way to use it is to switch learning off, which is not a
+        # trade anyone should have to make for one dial.
+        never_learned = ("prompt_time",)
         if learned is None:
             # No key, or nothing rated yet. Trained strengths — NOT the widgets, which in
             # this mode are not what the user is steering with.
-            if any(value != self.H3_GAIN_NEUTRAL[key] for key, value in manual.items()):
+            if any(value != self.H3_GAIN_NEUTRAL[key] for key, value in manual.items()
+                   if key not in never_learned):
                 _log.feature(
                     "FunPackSceneChain", "Rating-learned render gains", False,
                     "nothing rated on this key yet, so the run uses the model's trained "
                     "strengths. The h3_gain_* widgets are IGNORED in 'learned' mode — set "
                     "h3_gain_mode to 'manual' to use them as typed.")
-            return dict(self.H3_GAIN_NEUTRAL)
-        return {k: learned.get(k, self.H3_GAIN_NEUTRAL[k]) for k in manual}
+            resolved = dict(self.H3_GAIN_NEUTRAL)
+        else:
+            resolved = {k: learned.get(k, self.H3_GAIN_NEUTRAL[k]) for k in manual}
+        for key in never_learned:
+            resolved[key] = manual[key]
+        return resolved
 
     def _h3_prompt_rows(self, positive):
         """Where the PROMPT starts inside the text span, from the conditioning's own tags.

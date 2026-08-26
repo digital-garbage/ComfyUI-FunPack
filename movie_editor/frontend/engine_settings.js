@@ -134,7 +134,7 @@
       dependsOn: "prompt_enhance", dependsVals: [true],
       hint: "Let the model reason before answering, if it supports it. Slower, and the reasoning is stripped from the result." },
     { name: "h3_render_gains", label: "Rating-learned render gains (H3)", kind: "bool", default: true,
-      hint: "Learns six render strengths from your ratings alone: how hard each block writes into the picture, the prompt and the soundtrack, how loudly the prompt is read, how far to push the prompt toward what you have rated well, and how much detail the picture gets. Six numbers is a smaller search than the sigma schedule already learns, so there is nothing to tune by hand — each run is rendered slightly off the learned values so the next rating has something to credit. The taste push needs at least 3 liked runs on the key before it does anything. Free. The learned values live in the refinement key, not in this project — clearing your keys resets them. Off leaves the model at its trained strengths; the Chain Sampler's h3_gain_*, h3_taste_bias, h3_video_detail and h3_prompt_time widgets then do nothing unless its h3_gain_mode is set to manual." }
+      hint: "Learns six render strengths from your ratings alone: how hard each block writes into the picture, the prompt and the soundtrack, how loudly the prompt is read, how far to push the prompt toward what you have rated well, and how much detail the picture gets. Six numbers is a smaller search than the sigma schedule already learns, so there is nothing to tune by hand — each run is rendered slightly off the learned values so the next rating has something to credit. The taste push needs at least 3 liked runs on the key before it does anything. Free. The learned values live in the refinement key, not in this project — clearing your keys resets them. Off leaves the model at its trained strengths; the Chain Sampler's h3_gain_*, h3_taste_bias and h3_video_detail widgets then do nothing unless its h3_gain_mode is set to manual (h3_prompt_time is never learned, so it always applies)." }
   ];
 
   function parseStudioSettings(p) {
@@ -332,7 +332,7 @@
       hint: "MiniMax H3 only: removes audio distortion on few-step turbo schedules. Free.",
       detail: "H3 runs video and audio on different flow schedules but only one sigma grid reaches the sampler, so audio drifts further the bigger the step. This corrects it for one multiply per step. Exact with FunPack Distilled Flow, Hybrid Euler 2S and euler; leave it off with res_multistep / dpmpp_2m and the rest of the multistep family, which already absorb most of the error. No effect when both sigma shifts are equal, or on two-evals-per-step samplers." },
     { name: "h3_gain_mode", label: "H3 render gains", kind: "combo", choices: ["learned", "manual"], default: "learned",
-      hint: "MiniMax H3 only. 'learned' takes the five render strengths from your ratings and ignores the dials below. 'manual' uses the dials as typed.",
+      hint: "MiniMax H3 only. 'learned' takes six render strengths from your ratings and ignores the dials below. 'Prompt is settled' is not one of them and works in either mode. 'manual' uses the dials as typed.",
       detail: "Learned needs the Refiner's 'Rating-learned render gains (H3)' left on — with it off, or before anything is rated, learned mode renders at the model's trained strengths and the dials still do nothing. Switch to manual to drive them yourself." },
     { name: "h3_gain_video", label: "Write gain · picture", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
       dependsOn: "h3_gain_mode", dependsValue: "manual",
@@ -356,7 +356,6 @@
       hint: "Makes the picture crisper or softer without changing the sound at all. Above 1.0 = more detail and contrast; past about 1.3 it overcooks. 1.0 = untouched. Free. Unvalidated.",
       detail: "Every block of the model shares one attention pass, so anything that moves the picture also reaches the soundtrack. This runs after the last one, where there is no path left for it to travel — it is the audio-safe twin of Write gain \u00b7 picture." },
     { name: "h3_prompt_time", label: "Prompt is settled", kind: "float", default: 0.0, min: 0.0, max: 1.0, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
       hint: "Makes the picture stick closer to the prompt, and drift away from it less as a scene goes on. 0.0 = off. Try 0.9-1.0; below about 0.5 it makes things worse, not weaker. Free. Unvalidated.",
       detail: "The model tells every part of its sequence how finished it is, and it tells the prompt whatever it tells the picture — so early on, while the picture is still noise, the prompt is treated as unreliable too. This tells the prompt it is settled no matter where the picture is. Not learned from ratings yet: its off value sits at the end of its range rather than the middle, so the learner cannot explore around it safely." },
     { name: "segmented_detailing", label: "Segmented detailing (region refine)", kind: "bool", default: false,

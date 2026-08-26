@@ -238,3 +238,34 @@ def test_the_gains_still_apply_when_the_timestep_cannot_be_read():
     out, note = h3.apply_adaln_edits(model, {"video": 0.8}, prompt_timestep=0.9)
     assert out is not model and len(out.patched) == 3
     assert "Prompt timestep skipped" in note
+
+
+# ── it must not cost you the rating loop ────────────────────────────────────
+
+def _gains(mode, **widgets):
+    import samplers
+    node = samplers.FunPackLTXAVSceneChainSampler()
+    node._h3_gain_mode = mode
+    for name, value in widgets.items():
+        setattr(node, f"_h3_{name}", value)
+    tagged = [[torch.zeros(1, 2, 4), {node.H3_GAINS_META: {"video": 0.8, "prompt_time": 0.4}}]]
+    return node._h3_render_gains(tagged)
+
+
+def test_the_prompt_timestep_survives_learned_mode():
+    """It is not one of the learned strengths, so 'learned' must leave it to the widget —
+    otherwise the only way to use this dial is to switch rating-learned gains off."""
+    pytest.importorskip("comfy")
+    assert _gains("learned", prompt_time=0.9)["prompt_time"] == pytest.approx(0.9)
+
+
+def test_a_learned_value_for_it_is_ignored_rather_than_applied():
+    """Nothing writes one today; if something ever does, the widget still wins — the loop
+    cannot explore this range safely and must not be trusted with it by accident."""
+    pytest.importorskip("comfy")
+    assert _gains("learned", prompt_time=0.0)["prompt_time"] == 0.0
+
+
+def test_the_learned_strengths_still_come_from_the_key():
+    pytest.importorskip("comfy")
+    assert _gains("learned", prompt_time=0.9, gain_video=1.4)["video"] == pytest.approx(0.8)
