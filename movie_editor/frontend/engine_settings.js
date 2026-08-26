@@ -485,6 +485,21 @@
     return true;
   }
 
+  // A knob left at its default is not a setting, it is the absence of one. Storing it anyway
+  // meant the project file accumulated every dial the user ever touched, with no way to undo
+  // that except typing the default back in — and even then the key stayed, so the value
+  // outlived the refinement key it came from and looked like learned state that would not
+  // clear. Writing the default REMOVES the key, so "back to default" really is back to
+  // nothing, and a project only ever records what was deliberately changed.
+  function writeSamplerInput(k, value, immediate) {
+    if (value === k.default) {
+      S.unsetSamplerInput(k.name);
+      if (immediate) S.flushSave?.();
+      return;
+    }
+    (immediate ? S.setSamplerInputNow : S.setSamplerInput)(k.name, value);
+  }
+
   function renderSamplerKnob(parentGroup, st, k, si, multiScene) {
     if (!knobVisible(k, si, st)) return;
     const val = si[k.name] != null ? si[k.name] : k.default;
@@ -501,7 +516,7 @@
         ctrl.disabled = true;
         ctrl.title = "Auto-enabled by Auto continuity for multi-scene carry runs";
       } else {
-        ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.checked);
+        ctrl.onchange = () => writeSamplerInput(k, ctrl.checked, true);
       }
     } else if (k.kind === "combo") {
       ctrl = el("select"); ctrl.dataset.k = "si-" + k.name;
@@ -510,15 +525,15 @@
       const shown = (k.legacy && k.legacy[val]) || val;
       if (shown !== val) S.setSamplerInput(k.name, shown);
       (k.choices || []).forEach((c) => { const o = el("option", null, c); o.value = c; if (c === shown) o.selected = true; ctrl.append(o); });
-      ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
+      ctrl.onchange = () => writeSamplerInput(k, ctrl.value, true);
     } else if (k.kind === "text") {
       ctrl = el("input"); ctrl.type = "text";
       ctrl.value = val != null ? String(val) : "";
       if (k.placeholder) ctrl.placeholder = k.placeholder;
       ctrl.dataset.k = "si-" + k.name;
       // Quiet while typing (no repaint under the caret), commit on blur/Enter.
-      ctrl.oninput = () => S.setSamplerInput(k.name, ctrl.value);
-      ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
+      ctrl.oninput = () => writeSamplerInput(k, ctrl.value, false);
+      ctrl.onchange = () => writeSamplerInput(k, ctrl.value, true);
     } else {
       ctrl = el("input"); ctrl.type = "number";
       if (k.step != null) ctrl.step = String(k.step);
@@ -527,7 +542,7 @@
       ctrl.value = val; ctrl.dataset.k = "si-" + k.name;
       ctrl.oninput = () => {
         const v = k.kind === "int" ? parseInt(ctrl.value || "0", 10) : parseFloat(ctrl.value || "0");
-        S.setSamplerInput(k.name, v);
+        writeSamplerInput(k, v, false);
       };
     }
     parentGroup.append(field(k.label + (forced ? " (auto)" : ""), ctrl, k.hint, k.detail));
