@@ -177,7 +177,7 @@ def test_verbose_prints_the_whole_thing(capsys):
 def test_an_em_dash_is_not_a_cut(capsys):
     """It introduces the reason as often as the essay, and a renderer that guesses wrong eats
     the one part of the line worth reading."""
-    L.feature("FunPack", "Chunk cache", False, "not a MiniMax H3 model — an H3-only lane")
+    L.feature("FunPack", "Region lock", False, "not a MiniMax H3 model — an H3-only lane")
     assert "an H3-only lane" in capsys.readouterr().out
 
 
@@ -191,10 +191,10 @@ def test_a_feature_repeats_only_when_its_state_changes(capsys):
     """A standing condition is news once. Twenty identical lines are what makes a log stop
     being read at all."""
     for _ in range(5):
-        L.feature("FunPack", "Chunk cache", False, "not a MiniMax H3 model")
-    assert capsys.readouterr().out.count("Chunk cache") == 1
-    L.feature("FunPack", "Chunk cache", True, "22 chunks")
-    assert "Chunk cache: Active" in capsys.readouterr().out
+        L.feature("FunPack", "Region lock", False, "not a MiniMax H3 model")
+    assert capsys.readouterr().out.count("Region lock") == 1
+    L.feature("FunPack", "Region lock", True, "384 of 1024 patches")
+    assert "Region lock: Active" in capsys.readouterr().out
 
 
 def test_a_skip_and_an_inactive_feature_read_the_same(capsys):

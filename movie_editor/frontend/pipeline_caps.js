@@ -171,10 +171,6 @@
   // Left on against an LTX pipeline they are just as silently inert, so they get a chip
   // by the same rule — the user should not have to spend a generation to find out.
   // key -> why it cannot run off H3.
-  const H3_CAUSAL_REASON =
-    "The chunk cache is an H3 lane: it needs the chunk-causal DiT and the RAVEN LoRA, both "
-    + "of which are MiniMax H3 only. LTX has no equivalent.";
-
   const H3_RENDER_GAIN_REASON =
     "The render gains scale H3's per-modality AdaLN gates and its token refiner. LTX has "
     + "neither: one modulation path for all streams, and the prompt reaches it through "
@@ -187,10 +183,6 @@
     // The render gains scale H3's per-modality AdaLN gates and its token refiner. LTX has
     // neither — one modulation path, cross-attention instead of a packed text span — so
     // there is nothing for these to reach on any other family.
-    h3_causal_chunks: H3_CAUSAL_REASON,
-    h3_causal_step_rule: H3_CAUSAL_REASON,
-    h3_causal_sink: H3_CAUSAL_REASON,
-    h3_causal_window: H3_CAUSAL_REASON,
     h3_gain_mode: H3_RENDER_GAIN_REASON,
     h3_gain_video: H3_RENDER_GAIN_REASON,
     h3_gain_prompt: H3_RENDER_GAIN_REASON,

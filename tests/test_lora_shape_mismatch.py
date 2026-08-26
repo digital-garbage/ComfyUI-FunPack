@@ -267,7 +267,7 @@ def test_a_lora_that_matches_nothing_prints_both_namings(mm, monkeypatch, capsys
     mm._log.reset()
     lora = {"base_model.model.dit.blocks.0.self_attn.qkv.lora_A.weight": torch.zeros(1)}
 
-    patches, status = mm.resolve_lora_patches(_Model({}), lora, name="raven.safetensors")
+    patches, status = mm.resolve_lora_patches(_Model({}), lora, name="adapter.safetensors")
 
     assert patches == {} and status == "MATCHED NOTHING"
     out = capsys.readouterr().out
@@ -302,3 +302,56 @@ def test_the_curve_note_leads_with_the_answer_and_prints_whole(mm, monkeypatch, 
 
     import inspect
     assert "full=True" in inspect.getsource(mm.resolve_lora_patches)
+
+
+# ── a wrapper head: rename it, do not strip it ──────────────────────────────
+#
+# A PEFT adapter trained against a wrapper that calls the DiT something else carries comfy's
+# module paths EXACTLY, under a different head — `base_model.model.dit.<path>` where comfy's
+# key map holds `diffusion_model.<path>`. Stripping leaves `blocks.0...`, comfy's map has no
+# bare form to land on, and the whole file silently applies nothing. Measured: 532 keys, zero
+# applied, no error. Renaming the head is the fix, and it is scored against the real key map
+# alongside every strip so it wins only where it actually lands.
+
+def test_a_wrapper_head_is_renamed_to_comfys_not_removed(mm):
+    assert ("base_model.model.dit.", "diffusion_model.") in mm.LORA_KEY_RENAMES
+
+
+def test_renaming_a_head_yields_the_keys_comfys_map_holds(mm):
+    renamed = mm._rekey(
+        {"base_model.model.dit.audio_patch_proj.lora_A.weight": 1,
+         "base_model.model.dit.blocks.0.adaln_proj.linear.lora_B.weight": 2},
+        "base_model.model.dit.", "diffusion_model.")
+    assert set(renamed) == {"diffusion_model.audio_patch_proj.lora_A.weight",
+                            "diffusion_model.blocks.0.adaln_proj.linear.lora_B.weight"}
+
+
+def test_the_empty_replacement_is_a_plain_strip(mm):
+    stripped = mm._rekey({"base_model.model.dit.blocks.0.attn.qkv_proj.lora_A.weight": 1},
+                         "base_model.model.dit.")
+    assert set(stripped) == {"blocks.0.attn.qkv_proj.lora_A.weight"}
+
+
+def test_a_head_the_file_does_not_carry_is_declined_not_applied(mm):
+    """None, so the candidate is skipped rather than scored as a no-op variant of itself."""
+    assert mm._rekey({"diffusion_model.x.lora_A.weight": 1}, "base_model.model.") is None
+
+
+def test_a_rename_wins_over_a_strip_when_it_matches_more(mm, monkeypatch):
+    """Both are scored against the real key map and the best is kept, so a rename that lands
+    beats a strip that does not without either being ordered ahead of the other."""
+    key_map = {"diffusion_model.audio_patch_proj": "audio_patch_proj.weight"}
+    monkeypatch.setattr(mm, "_count_lora_matches",
+                        lambda lora, km: sum(1 for k in lora
+                                             if k.rsplit(".lora_", 1)[0] in km))
+    best, note = mm._best_lora_keying(
+        {"base_model.model.dit.audio_patch_proj.lora_A.weight": 1}, key_map)
+    assert note == "base_model.model.dit. -> diffusion_model."
+    assert "diffusion_model.audio_patch_proj.lora_A.weight" in best
+
+
+def test_a_file_that_needs_nothing_is_left_as_is(mm, monkeypatch):
+    monkeypatch.setattr(mm, "_count_lora_matches", lambda lora, km: len(lora))
+    lora = {"diffusion_model.x.lora_A.weight": 1}
+    best, note = mm._best_lora_keying(lora, {})
+    assert best is lora and note == "as-is"

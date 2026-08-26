@@ -284,9 +284,9 @@ LORA_KEY_PREFIXES = (
     "diffusion_model.",
     "model.diffusion_model.",
     "base_model.model.",
-    # PEFT adapters trained against a wrapper that names the DiT: RAVEN's streaming LoRA is
-    # `base_model.model.dit.<path>`, so stripping only `base_model.model.` leaves `dit.` in
-    # front of every key and the whole file matches nothing.
+    # PEFT adapters trained against a wrapper that names the DiT: `base_model.model.dit.
+    # <path>`, where stripping only `base_model.model.` leaves `dit.` in front of every key
+    # and the whole file matches nothing.
     "base_model.model.dit.",
     "base_model.model.diffusion_model.",
     "lora_model.",
@@ -297,9 +297,9 @@ LORA_KEY_PREFIXES = (
 #: Stripping is not enough for these: comfy's key map has no bare form, only
 #: `diffusion_model.<path>`, so the head has to be REPLACED rather than removed.
 LORA_KEY_RENAMES = (
-    # RAVEN's streaming LoRA for MiniMax H3: `base_model.model.dit.blocks.0.adaln_proj.linear`
-    # is comfy's `diffusion_model.blocks.0.adaln_proj.linear`, module for module. Stripping
-    # left `blocks.0...`, which matches nothing, and the file silently did nothing at all.
+    # Measured on a MiniMax H3 adapter: `base_model.model.dit.blocks.0.adaln_proj.linear` is
+    # comfy's `diffusion_model.blocks.0.adaln_proj.linear`, module for module. Stripping left
+    # `blocks.0...`, which matched nothing, and 532 keys silently did nothing at all.
     ("base_model.model.dit.", "diffusion_model."),
     ("base_model.model.", "diffusion_model."),
     ("dit.", "diffusion_model."),

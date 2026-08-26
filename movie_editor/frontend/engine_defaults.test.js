@@ -88,6 +88,6 @@ test("a store without flushSave does not throw", () => {
 
 test("booleans clear when set back to their default", () => {
   const s = fakeStore();
-  writeSamplerInput(s, { name: "h3_causal_chunks", default: false }, false, true);
-  assert.deepStrictEqual(s.calls[0], ["unset", "h3_causal_chunks"]);
+  writeSamplerInput(s, { name: "segmented_detailing", default: false }, false, true);
+  assert.deepStrictEqual(s.calls[0], ["unset", "segmented_detailing"]);
 });

@@ -166,18 +166,6 @@ class FunPackDiffusionModelLoader:
                                "everything else."}),
             },
             "optional": {
-                "chunk_causal": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "MiniMax H3 only. Loads this model so it can generate in time "
-                               "CHUNKS that each remember the ones before them, which is what "
-                               "the Chain Sampler's 'Remembering chunks' mode needs. Nothing "
-                               "about the weights changes and an ordinary generation is "
-                               "unaffected — the model simply gains the ability to read a "
-                               "key/value cache. It still needs a LoRA trained for that "
-                               "pattern — load it with FunPack LoRA Loader like any other "
-                               "LoRA: the base H3 weights have never seen a cache, so "
-                               "without one the chunked lane runs out of distribution. Use "
-                               "the full non-pruned checkpoint."}),
                 "fp16_accumulation": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Accumulate fp16 matmuls in fp16. Faster on recent NVIDIA cards; "
@@ -240,7 +228,7 @@ class FunPackDiffusionModelLoader:
     def load_model(self, model_name, weight_dtype, compute_dtype, attention,
                    fp16_accumulation=False, sla_sparsity=None, sla_block_size=None,
                    sla_protect_audio=None, sla_min_seq_len=None, sla_dense_last_steps=None,
-                   sla=False, chunk_causal=False):
+                   sla=False):
         notes = [f"FunPack Diffusion Model Loader | {model_name}"]
 
         accum = set_fp16_accumulation(fp16_accumulation)
@@ -315,22 +303,6 @@ class FunPackDiffusionModelLoader:
                 notes.append("attention: default (as launched)")
         else:
             notes.append(f"attention: {attention} (dense calls)")
-
-        if chunk_causal:
-            try:
-                from .h3_causal import make_causal
-            except ImportError:
-                from h3_causal import make_causal
-            ok, causal_note = make_causal(model)
-            # Not fatal. The weights are fine and every other setting on this node applied;
-            # what is lost is one optional capability, and the sampler refuses the chunked
-            # mode on its own if the model cannot do it.
-            notes.append(f"chunk-causal: {causal_note}" if ok
-                         else f"chunk-causal REQUESTED BUT NOT APPLIED: {causal_note}")
-            # ON THE CONSOLE, not only in `status`. The Editor's fixed graph does not show
-            # this node's status output anywhere, so a refusal here used to be invisible —
-            # and the sampler's own refusal then had to GUESS why, which it got wrong.
-            print(f"[FunPackDiffusionModelLoader] {model_name}: {notes[-1]}")
 
         return (model, "\n".join(notes))
 
