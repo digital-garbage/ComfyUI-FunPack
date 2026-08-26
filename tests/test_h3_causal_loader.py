@@ -152,3 +152,14 @@ def test_the_file_list_is_the_required_way_in():
     import model_management
     spec = model_management.FunPackLoraLoader.INPUT_TYPES()
     assert "lora_list" in spec.get("required", {})
+
+
+def test_no_surface_still_points_at_the_removed_raven_lora_widget():
+    """It was a combo on the diffusion loader and is now a boolean plus an ordinary LoRA.
+    A tooltip naming the old widget sends the user hunting for a setting that is not there."""
+    root = Path(__file__).resolve().parents[1]
+    for name in ("samplers.py", "loaders.py",
+                 "movie_editor/frontend/engine_settings.js",
+                 "movie_editor/frontend/pipeline_caps.js"):
+        text = (root / name).read_text(encoding="utf-8", errors="replace")
+        assert "raven_lora" not in text, name
