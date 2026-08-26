@@ -260,3 +260,34 @@ def test_the_note_says_the_label_is_left_alone():
     """The one thing a reader needs to know, because the first version did the opposite."""
     _out, note = h3.apply_prompt_timestep(FakePatcher(), 0.9)
     assert "never the reference label" in note
+
+
+# ── what it is called, and why ──────────────────────────────────────────────
+
+def test_the_widget_name_is_not_renamed_with_the_label():
+    """`h3_prompt_time` is stored in saved projects and saved ComfyUI workflows. The label
+    was wrong and got fixed; renaming the INPUT would silently drop the setting from every
+    project that already carries it."""
+    import samplers
+    spec = samplers.FunPackLTXAVSceneChainSampler.INPUT_TYPES()
+    fields = {**spec.get("required", {}), **spec.get("optional", {})}
+    assert "h3_prompt_time" in fields
+
+
+def test_the_tooltip_describes_what_was_measured_not_what_was_intended():
+    """It was built to improve prompt adherence and does not. A tooltip left describing the
+    intent would send the next reader looking for an effect that is not there."""
+    import samplers
+    spec = samplers.FunPackLTXAVSceneChainSampler.INPUT_TYPES()
+    tip = spec["optional"]["h3_prompt_time"][1]["tooltip"]
+    assert "REFERENCE" in tip
+    assert "MEASURED" in tip
+    assert "stick closer to the prompt" not in tip
+
+
+def test_the_editor_label_matches():
+    from pathlib import Path
+    js = (Path(__file__).resolve().parents[1] / "movie_editor" / "frontend"
+          / "engine_settings.js").read_text(encoding="utf-8")
+    row = next(ln for ln in js.splitlines() if '{ name: "h3_prompt_time"' in ln)
+    assert 'label: "Reference weight"' in row
