@@ -349,6 +349,11 @@ def _switched_on(name: str, values: dict, defaults: dict, _seen=None) -> bool:
     return live and _switched_on(owner, values, defaults, seen)
 
 
+#: keys that live on in old studio_settings blobs for features that no longer exist. There
+#: is no node to check the refiner block against, so these are named rather than derived.
+_DEAD_REFINER_KEYS = frozenset({"prompt_repair", "prefer_wired_conditioning"})
+
+
 def _empty(value) -> bool:
     return value is None or (isinstance(value, (str, list, dict, tuple)) and len(value) == 0)
 
@@ -369,6 +374,8 @@ def _live_rows(values: dict, node_class: str = "", defaults: dict = None) -> lis
     rows = []
     for name, value in (values or {}).items():
         if str(name).startswith("_"):            # the builder's own private channel
+            continue
+        if name in _DEAD_REFINER_KEYS:           # a feature that no longer exists
             continue
         if declared and name not in declared:    # cannot reach the render at all
             continue

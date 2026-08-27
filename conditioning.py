@@ -10321,10 +10321,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 intent_phrases,
                 global_state,
             )
-            # Prompt repair removed (Stage 2). The intent-aligned prompt is encoded as-is; the only
-            # remaining prompt-rewriting path is the advisor (when enabled). Perfect-repair phrase
-            # injection, missing-axis repair, and the emphasis pass are gone. repair_feedback /
-            # active_repair_axes is KEPT — it's the "what's missing" signal the advisor still reads.
+            # Prompt repair is gone: the intent-aligned prompt is encoded as written, and the
+            # advisor is the only remaining path that may rewrite it. Perfect-repair phrase
+            # injection, missing-axis repair, the emphasis pass and the last fallback that
+            # appended missing phrases back onto the prompt have all been removed.
+            # repair_feedback / active_repair_axes is KEPT — it is the "what's missing" signal
+            # the advisor still reads, and it never edits the prompt by itself.
             perfect_repair_status = "Perfect repairs: removed."
             perfect_repair_adjustments = []
             prompt_to_encode = aligned_prompt
@@ -10367,12 +10369,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 encoded_role = "advisor repaired prompt"
             if advisor_diagnostic:
                 self._v2_record_advisor_diagnostic(global_state, advisor_diagnostic, advisor_rating_label, int(global_state.get("total_iterations", 0)))
-            if advisor_mode != "Off" and not learning_mode and repair_candidates and not advisor_applied:
-                additions = [c["text"] for c in repair_candidates if isinstance(c, dict) and str(c.get("text", "")).strip()]
-                if additions:
-                    base = str(pre_advisor_prompt or "").strip()
-                    prompt_to_encode = f"{base}, {', '.join(additions)}" if base else ", ".join(additions)
-                    repair_status = repair_status.replace("suggestion(s)", "phrase(s)").replace("suggested", "added")
 
         # Resolve $name variables into the base prompt before encoding (single-scene path +
         # the modified_positive output). The multi-scene per-scene texts are resolved after the

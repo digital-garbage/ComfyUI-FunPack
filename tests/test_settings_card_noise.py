@@ -85,8 +85,16 @@ def test_a_changed_refiner_value_survives():
 def test_an_unrecognised_refiner_key_is_kept():
     """No node declares these, so unknown means unjudgeable — not inert. Dropping it would
     hide something rather than tidy it."""
-    got = dict(sc._live_rows({"prompt_repair": True}, defaults=sc._EDITOR_DEFAULTS))
-    assert "prompt_repair" in got
+    got = dict(sc._live_rows({"some_future_setting": True}, defaults=sc._EDITOR_DEFAULTS))
+    assert "some_future_setting" in got
+
+
+def test_a_key_for_a_feature_that_no_longer_exists_is_dropped():
+    """The exception to the rule above. prompt_repair and prefer_wired_conditioning are read
+    by nothing at all — they only survive in old studio_settings blobs. There is no node to
+    check the refiner block against, so these are named rather than derived."""
+    assert sc._live_rows({"prompt_repair": True, "prefer_wired_conditioning": True},
+                         defaults=sc._EDITOR_DEFAULTS) == []
 
 
 def test_an_owner_live_for_more_than_one_value_is_matched_on_any_of_them():

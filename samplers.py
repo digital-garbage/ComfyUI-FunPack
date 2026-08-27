@@ -2766,7 +2766,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "bounded_attention_enabled": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL: Bounded Attention (arXiv:2403.16990) + Structured Diffusion Guidance (arXiv:2212.05032)-style exact split. Studio splits multi-sentence scene prompts by sentence count and encodes each half SEPARATELY (no shared tokenization, exact boundary), then this masks text cross-attention so the left half of the frame can only attend to subject-1's tokens and the right half only to subject-2's — aims to stop attribute/anatomy bleed between two figures in one frame. No-op on single-sentence prompts or single-subject scenes. Works on any sampler (model-level hook, not sampler-specific).",
+                    "tooltip": "EXPERIMENTAL AND UNTESTED — built, never run. Bounded Attention (arXiv:2403.16990) + Structured Diffusion Guidance (arXiv:2212.05032)-style exact split. Studio splits multi-sentence scene prompts by sentence count and encodes each half SEPARATELY (no shared tokenization, exact boundary), then this masks text cross-attention so the left half of the frame can only attend to subject-1's tokens and the right half only to subject-2's — aims to stop attribute/anatomy bleed between two figures in one frame. No-op on single-sentence prompts or single-subject scenes. Works on any sampler (model-level hook, not sampler-specific).",
                 }),
                 # NOTE: append-only — keep new sampler widgets at the END of this block so the
                 # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
