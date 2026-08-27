@@ -177,12 +177,6 @@
     + "cross-attention instead of a packed text span.";
 
   const H3_ONLY_SAMPLER_INPUTS = {
-    h3_audio_clock:
-      "The audio clock corrects for H3 denoising video and audio on two different flow "
-      + "schedules. LTX puts both streams on one schedule, so there is nothing to correct.",
-    // The render gains scale H3's per-modality AdaLN gates and its token refiner. LTX has
-    // neither — one modulation path, cross-attention instead of a packed text span — so
-    // there is nothing for these to reach on any other family.
     h3_video_detail: H3_ONLY_REASON,
   };
 

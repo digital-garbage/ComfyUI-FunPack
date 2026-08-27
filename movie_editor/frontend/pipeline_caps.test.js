@@ -37,13 +37,11 @@ test("H3 hides the whole JoyAI group, coupling knob included", () => {
 
 test("LTX hides the H3-only audio clock", () => {
   const inert = PC.familyInertInputs(ltx);
-  assert.ok(inert.has("h3_audio_clock"));
 });
 
 test("neither family hides the other's live settings", () => {
   const onH3 = PC.familyInertInputs(h3);
   const onLtx = PC.familyInertInputs(ltx);
-  assert.ok(!onH3.has("h3_audio_clock"), "the audio clock is the point of H3");
   assert.ok(!onLtx.has("bounded_attention_enabled"), "bounded attention is an LTX feature");
   assert.ok(!onLtx.has("identity_transfer_enabled"), "Best-FaceID is an LTX feature");
 });
@@ -58,7 +56,6 @@ test("nothing is hidden when the chain sampler is not in the pipeline", () => {
 test("an unknown family is treated as LTX, never as 'hide everything'", () => {
   const inert = PC.familyInertInputs({ models: { model_family: "wan2.2" }, project: {} });
   assert.ok(!inert.has("bounded_attention_enabled"));
-  assert.ok(inert.has("h3_audio_clock"));
 });
 
 test("the main-window chips no longer name a control that is now hidden", () => {

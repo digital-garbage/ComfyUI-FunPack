@@ -316,9 +316,6 @@
       hint: "What to do when the face detector can't get a clean crop of the pin image: 'auto_adjust' fixes the crop, 'as_is' uses it anyway, 'disable' skips the ArcFace channel entirely." },
     { name: "debug_log", label: "Debug log", kind: "bool", default: false, dependsOn: "identity_transfer_enabled",
       hint: "Print per-scene identity-transfer shape/status logs to the ComfyUI console." },
-    { name: "h3_audio_clock", label: "H3 audio clock (few-step audio)", kind: "bool", default: false,
-      hint: "MiniMax H3 only: removes audio distortion on few-step turbo schedules. Free.",
-      detail: "H3 runs video and audio on different flow schedules but only one sigma grid reaches the sampler, so audio drifts further the bigger the step. This corrects it for one multiply per step. Exact with FunPack Distilled Flow, Hybrid Euler 2S and euler; leave it off with res_multistep / dpmpp_2m and the rest of the multistep family, which already absorb most of the error. No effect when both sigma shifts are equal, or on two-evals-per-step samplers." },
     { name: "h3_video_detail", label: "Picture detail (experimental)", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
       hint: "Makes the picture crisper or softer without changing the sound at all. Above 1.0 = more detail and contrast, below is softer. The step from 1.0 is small — reach for 1.4-1.8 before deciding it does nothing. Free. Experimental, lightly tested.",
       detail: "Every block of the model shares one attention pass, so anything that moves the picture also reaches the soundtrack. This runs after the last one, where there is no path left for it to travel — it is the audio-safe twin of Write gain \u00b7 picture." },
@@ -518,7 +515,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_audio_clock", "h3_video_detail", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_video_detail", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id, st) {

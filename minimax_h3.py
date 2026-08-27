@@ -122,42 +122,6 @@ def time_shift_slope(sigma, from_shift, to_shift):
     return (to_shift * (1.0 + (from_shift - 1.0) * base) ** 2) / lower
 
 
-def audio_clock_factors(sigmas, shift_video=DEFAULT_SHIFT_VIDEO, shift_audio=DEFAULT_SHIFT_AUDIO):
-    """Per-step correction for the audio stream's displacement, one float per step.
-
-    The sampler moves audio by ``slope(sigma_v) * v_a * (sigma_v_next - sigma_v)``.
-    The audio's own schedule wants ``v_a * (sigma_a_next - sigma_a)``. Multiplying the
-    audio part of the step by
-
-        (sigma_a_next - sigma_a) / (slope(sigma_v) * (sigma_v_next - sigma_v))
-
-    turns the first into the second exactly, for any sampler that moves the stream by a
-    velocity times the step. Returns ``len(sigmas) - 1`` factors; 1.0 wherever the
-    correction is undefined (zero-length step, degenerate slope), so it no-ops rather
-    than dividing by ~0.
-
-    Every factor is 1.0 when the two shifts are equal — the schedules coincide and
-    there is nothing to correct.
-    """
-    out = []
-    values = [float(s) for s in sigmas]
-    for i in range(max(0, len(values) - 1)):
-        sv, sv_next = values[i], values[i + 1]
-        dv = sv_next - sv
-        slope = time_shift_slope(sv, shift_video, shift_audio)
-        if abs(dv) < 1e-9 or abs(slope) < 1e-9:
-            out.append(1.0)
-            continue
-        da = (time_shift_sigma(sv_next, shift_video, shift_audio)
-              - time_shift_sigma(sv, shift_video, shift_audio))
-        factor = da / (slope * dv)
-        # With the stock shifts (video 12 > audio 3) the map is convex, the tangent is
-        # taken at the step's high-sigma end, and the factor lands in (0, 1] — it always
-        # SHORTENS the audio step. Shifts the other way round invert that and the factor
-        # exceeds 1, which is correct and must not be clamped away. The bound here is a
-        # numerical sanity rail only, wide enough never to bind on a real schedule.
-        out.append(float(min(_AUDIO_CLOCK_MAX_FACTOR, max(0.0, factor))))
-    return out
 
 
 def resolve_sigma_shifts(model_options):

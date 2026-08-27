@@ -258,7 +258,6 @@ _EDITOR_DEFAULTS = {
     "embed_guidance_source": "relative",
     "embed_guidance_strength": 0.02,
     "frame_overlap": 16,
-    "h3_audio_clock": False,
     "h3_phrase_emphasis": False,
     "h3_video_detail": 1.0,
     "id_strength": 1.0,
