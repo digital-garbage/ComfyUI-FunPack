@@ -704,61 +704,8 @@ def test_mixed_anchor_resolves_identity_pin_when_configured():
     assert "identity_pin_on_anchor_scene" in mechs
 
 
-def test_plateau_cache_reuses_forward_on_noise_plateau_and_recomputes_below():
-    """On the near-noise plateau (sigma >= threshold) the base-model forward is computed once
-    and reused; once sigma drops below threshold every step recomputes."""
-    node = FunPackLTXAVSceneChainSampler()
-    model = FakeModel()
-    stats = node._build_plateau_cache_wrapper(model, 0.975)
-    wrapper = model.model_options["model_function_wrapper"]
-
-    calls = {"n": 0}
-    x = torch.zeros(1, 4, 2, 2, 2)
-
-    def apply_fn(inp, ts, **c):
-        calls["n"] += 1
-        return torch.full_like(inp, float(calls["n"]))
-
-    def run(sig):
-        args = {"input": x, "timestep": torch.tensor([sig]), "cond_or_uncond": [0], "c": {}}
-        return wrapper(apply_fn, args)
-
-    # Default 8-step distilled schedule: sigmas 1.0..0.975 are the plateau, 0.909 onward is not.
-    sigmas = [1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875]
-    outs = [run(s) for s in sigmas]
-
-    # Plateau: 1 real forward, 4 reuses. Below threshold: 3 real forwards. Total 4 forwards vs 8.
-    assert stats["computed"] == 1
-    assert stats["reused"] == 4
-    assert calls["n"] == 4
-    for o in outs[:5]:
-        assert torch.allclose(o, torch.ones_like(x))  # all reuse the first plateau output
-    assert torch.allclose(outs[5], torch.full_like(x, 2.0))  # structure steps recompute fresh
-    assert torch.allclose(outs[7], torch.full_like(x, 4.0))
 
 
-def test_plateau_cache_keys_cond_and_uncond_separately():
-    """A CFG>1 split cond/uncond pair must each get its own cache slot, not thrash one."""
-    node = FunPackLTXAVSceneChainSampler()
-    model = FakeModel()
-    stats = node._build_plateau_cache_wrapper(model, 0.975)
-    wrapper = model.model_options["model_function_wrapper"]
-
-    calls = {"n": 0}
-    x = torch.zeros(1, 4, 2, 2, 2)
-
-    def apply_fn(inp, ts, **c):
-        calls["n"] += 1
-        return torch.full_like(inp, float(calls["n"]))
-
-    def run(co):
-        args = {"input": x, "timestep": torch.tensor([1.0]), "cond_or_uncond": co, "c": {}}
-        return wrapper(apply_fn, args)
-
-    run([0]); run([1]); run([0]); run([1])
-    assert stats["computed"] == 2  # cond + uncond each computed once
-    assert stats["reused"] == 2    # then each reused once
-    assert calls["n"] == 2
 
 
 # ── second pass: the progress bar and the phase readout ─────────────────────

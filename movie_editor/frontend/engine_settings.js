@@ -322,12 +322,6 @@
       hint: "What to do when the face detector can't get a clean crop of the pin image: 'auto_adjust' fixes the crop, 'as_is' uses it anyway, 'disable' skips the ArcFace channel entirely." },
     { name: "debug_log", label: "Debug log", kind: "bool", default: false, dependsOn: "identity_transfer_enabled",
       hint: "Print per-scene identity-transfer shape/status logs to the ComfyUI console." },
-    { name: "plateau_cache", label: "Plateau step-cache (speed)", kind: "bool", default: false,
-      hint: "Speeds up generation by reusing the earliest, near-noise steps, at some loss of exactness.",
-      detail: "Skipped while Context windows is on — the cache cannot tell one window from another within a step. Reuses the transformer output across the near-noise early steps (~3-4 of 8). Deterministic given the seed, but an approximation: A/B it before trusting it on finals." },
-    { name: "plateau_cache_threshold", label: "Plateau threshold (sigma)", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "plateau_cache",
-      hint: "Higher = fewer steps reused (safer); lower = more reused (faster, rougher).",
-      detail: "Steps with sigma at or above this count as the reusable plateau. 0.975 catches the documented noise plateau while leaving structure formation fully computed." },
     { name: "h3_audio_clock", label: "H3 audio clock (few-step audio)", kind: "bool", default: false,
       hint: "MiniMax H3 only: removes audio distortion on few-step turbo schedules. Free.",
       detail: "H3 runs video and audio on different flow schedules but only one sigma grid reaches the sampler, so audio drifts further the bigger the step. This corrects it for one multiply per step. Exact with FunPack Distilled Flow, Hybrid Euler 2S and euler; leave it off with res_multistep / dpmpp_2m and the rest of the multistep family, which already absorb most of the error. No effect when both sigma shifts are equal, or on two-evals-per-step samplers." },
@@ -566,7 +560,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "h3_audio_clock", "h3_gain_mode", "h3_gain_video", "h3_gain_prompt", "h3_gain_audio", "h3_prompt_scale", "h3_taste_bias", "h3_video_detail", "h3_prompt_time", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_audio_clock", "h3_gain_mode", "h3_gain_video", "h3_gain_prompt", "h3_gain_audio", "h3_prompt_scale", "h3_taste_bias", "h3_video_detail", "h3_prompt_time", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id, st) {

@@ -254,9 +254,8 @@ def make_rapid_temporal_wrapper(old_wrapper, mode, fraction=None, mult=None):
 # smooths it like any other cut — after enough steps the sequence is consistent under
 # rotation, i.e. it loops. WanVideoWrapper's "Loop Args" is the same trick for WAN.
 #
-# Roll starts below the near-noise plateau: content is ~pure noise up there (nothing to
-# smooth) and the plateau step-cache reuses base forwards, which a per-step roll would
-# invalidate. Appended guide frames (carry_i2v_guides / mid-scene guide / JoyAI memory /
+# Roll starts below the near-noise plateau: content is ~pure noise up there, so there is
+# nothing to smooth. Appended guide frames (carry_i2v_guides / mid-scene guide / JoyAI memory /
 # custom stacks) live at the TAIL of the same T range, pinned to absolute positions by
 # keyframe_idxs — so only the content region [0, T - tail) rolls and the tail (plus
 # keyframe_idxs and attention entries, which reference tail tokens) stays canonical.

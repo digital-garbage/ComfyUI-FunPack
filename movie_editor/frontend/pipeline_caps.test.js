@@ -122,7 +122,7 @@ test("knobs that depend on the INSTALL, not the family, stay visible", () => {
   // time against the actual object. A family rule here would be a guess about a models folder.
   const inert = PC.familyInertInputs(h3);
   for (const k of ["decode_noise_scale", "decode_timestep", "second_pass_op",
-                   "segmented_detailing", "plateau_cache"]) {
+                   "segmented_detailing"]) {
     assert.ok(!inert.has(k), `${k} is install-dependent and must not be hidden by family`);
   }
 });

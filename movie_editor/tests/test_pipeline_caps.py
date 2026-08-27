@@ -178,7 +178,7 @@ def test_simple_mode_leaves_everything_that_is_not_refinement_alone():
         "mid_scene_guide": True, "joyai_memory": True, "joyai_audio_memory": True,
         "carry_i2v_guides": True, "alg_anchor": True, "alg_blur_guides": True,
         "bounded_attention_enabled": True, "identity_transfer_enabled": True,
-        "segmented_detailing": True, "plateau_cache": True, "context_windows": True,
+        "segmented_detailing": True, "context_windows": True,
     }
     si, _ss = pipeline_caps.apply_simple_mode(dict(on), {})
     for key, value in on.items():

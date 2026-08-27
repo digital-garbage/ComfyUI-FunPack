@@ -3049,14 +3049,6 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "When a scene switches to its own i2v anchor (funpack_scene_anchors — a different reference image/character than the previous scene), still carry frame_overlap latent frames from the previous scene's tail into the frames right after the anchor image, instead of the default hard cut with no carried context. Preserves background/environment continuity through an anchor change (e.g. a Best-FaceID identity_transfer scene swapping the reference face mid-chain). The anchor image's own leading frame is never touched by the carried tail. No effect on scenes without a per-scene anchor.",
                 }),
-                "plateau_cache": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "EXPERIMENTAL speed (MixCache/Chorus-family step-caching, adapted to LTX2.3's distilled schedule). IGNORED while context_windows is on (the cache can't tell one window from another within a step) — the scene report says so. Mechanism: the near-pure-noise plateau steps (sigma above plateau_cache_threshold) carry almost no signal, so the model's output barely changes across them. This computes the full transformer forward once at the top of the plateau, then REUSES that output for the remaining plateau steps instead of recomputing — skipping those transformer passes entirely. On the default 8-step schedule (sigmas 1.0→0.975 are the plateau) that's ~3-4 of 8 forwards skipped. DETERMINISTIC given seed (no diversity/rating impact, safe in Batch Training) but an APPROXIMATION — validate A/B before trusting on final renders. Note: much of wall-clock time is outside the sampler (encode/decode), so sampler speedup ≠ total speedup. Off by default. UNVALIDATED LIVE.",
-                }),
-                "plateau_cache_threshold": ("FLOAT", {
-                    "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
-                    "tooltip": "Steps whose sigma is at or above this value count as the reusable plateau (matches the alg_guide_blur_sigma_threshold convention). Higher = fewer steps cached (safer, less speedup); lower = more steps cached (faster, more approximation). 0.975 catches the documented near-pure-noise plateau (schedule steps 1-5) while leaving structure formation (sigma 0.909 onward) fully computed. Only used when plateau_cache is on.",
-                }),
                 "taste_nearest_prompt": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "EXPERIMENTAL: source embed_guidance / score_slider from the taste direction learned on the prompts NEAREST this scene's prompt, instead of the single global liked-direction average. On every liked rating the Refiner records (prompt fingerprint -> that run's liked direction); with this on, each scene retrieves the similarity-weighted direction of its closest matches (a forest prompt pulls what worked on forests, not the mean across all prompts). Non-parametric retrieval — no extra model forward, just a cosine lookup + vector mean, and it can't collapse into a spurious attractor the way a value function can. Falls back to the global liked direction when no rated prompt is close enough (or the index is empty). Only affects embed_guidance / score_slider; needs refinement_key_input (or embed_guidance_source=absolute). UNVALIDATED LIVE.",
@@ -6429,53 +6421,6 @@ class FunPackLTXAVSceneChainSampler:
                      "so 'pin anchor in every window' applies to conditioning only")
         return _remove, latent_len, _note
 
-    def _build_plateau_cache_wrapper(self, model, threshold):
-        """Plateau step-cache (MixCache/Chorus-family, adapted to LTX2.3's distilled schedule).
-
-        Installed INNERMOST so it caches the raw base-model forward; every other per-scene
-        wrapper (embed/score/dynashift/output guidance, temporal) still layers around it and
-        post-processes the (cached-or-fresh) prediction. On the near-pure-noise plateau
-        (sigma >= threshold) the transformer output barely changes step-to-step, so we compute
-        it once per distinct batch signature and reuse it for the remaining plateau steps,
-        skipping those full 48-block forwards. Below the threshold every step is computed for
-        real, and the cache is dropped (frees the held tensors) so structure formation is never
-        approximated. Deterministic given seed — no effect on batch-variant diversity.
-
-        Cache is keyed by (input.shape, cond_or_uncond) so a CFG>1 split cond/uncond pair each
-        gets its own slot instead of thrashing a single slot. Returns a stats dict the caller
-        reads after the scene for the run report (never used for control flow)."""
-        old_wrapper = model.model_options.get("model_function_wrapper")
-        thr = float(threshold)
-        stats = {"cache": {}, "reused": 0, "computed": 0}
-
-        def _plateau_wrapper(apply_fn, args, _ew=old_wrapper, _st=stats, _thr=thr):
-            def _run():
-                if _ew is not None:
-                    return _ew(apply_fn, args)
-                return apply_fn(args["input"], args["timestep"], **(args.get("c") or {}))
-
-            ts = args.get("timestep")
-            x = args.get("input")
-            try:
-                sigma = float(ts.max().item()) if ts is not None else 0.0
-                key = (tuple(x.shape), tuple(args.get("cond_or_uncond") or ()))
-            except Exception:
-                return _run()  # can't reason about it safely -> always compute
-
-            if sigma < _thr:
-                _st["cache"].clear()  # past the plateau: compute every step, release cached tensors
-                return _run()
-            cached = _st["cache"].get(key)
-            if cached is not None:
-                _st["reused"] += 1
-                return cached
-            out = _run()
-            _st["cache"][key] = out
-            _st["computed"] += 1
-            return out
-
-        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_plateau_wrapper, old_wrapper)
-        return stats
 
     # ---------------------------------------------------------------------------
     # identity_transfer: native port of ComfyUI-BFSNodes' LTX Identity Transfer
@@ -7311,7 +7256,6 @@ class FunPackLTXAVSceneChainSampler:
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
                phase_scale=1.0, id_strength=1.0, arcface_mode="auto_adjust", debug_log=False,
                carry_overlap_through_anchor=False,
-               plateau_cache=False, plateau_cache_threshold=0.975,
                taste_nearest_prompt=False,
                segmented_detailing=False, detail_targets="hands",
                second_pass_upscale=2.0,
@@ -7525,7 +7469,6 @@ class FunPackLTXAVSceneChainSampler:
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
                 dynashift_threshold=dynashift_threshold,
-                plateau_cache=plateau_cache, plateau_cache_threshold=plateau_cache_threshold,
                 context_windows=context_windows, context_window_length=context_window_length,
                 context_window_overlap=context_window_overlap,
                 context_window_schedule=context_window_schedule,
@@ -7911,7 +7854,6 @@ class FunPackLTXAVSceneChainSampler:
             _scene_base_wrapper = model.model_options.get("model_function_wrapper")
             _v2a_handles = []
             _identity_overlap_handle = None
-            _plateau_stats = None
             _ctx_remove = None
             try:
                 # Context windows: core-owned, installed first so every FunPack wrapper below
@@ -7947,22 +7889,6 @@ class FunPackLTXAVSceneChainSampler:
                                 f"len={_ctx_latent_len},ovl={max(int(context_window_overlap) // 8, 0)}"
                                 f"{',freenoise' if context_window_freenoise else ''}"
                                 f"{',retain_first' if context_window_retain_first else ''})")
-                # Innermost wrapper (installed first): caches the raw base-model forward on the
-                # near-noise plateau so later plateau steps reuse it. All guidance wrappers below
-                # layer around it and still post-process each step's (cached-or-fresh) prediction.
-                #
-                # MUTUALLY EXCLUSIVE with context windows: the cache is keyed by
-                # (input.shape, cond_or_uncond), and every window within one step calls the model
-                # with the SAME shape. Windows 2..N would therefore be handed window 1's cached
-                # prediction on every plateau step — one window's content bleeding across the whole
-                # clip. Context windows wins (it's a capability, the cache is a speed experiment);
-                # say so in the report rather than silently dropping one of two ticked boxes.
-                if plateau_cache and _ctx_remove is not None:
-                    run_mechanisms.append(
-                        "plateau_cache(SKIPPED: incompatible with context_windows — the per-step "
-                        "cache cannot tell two windows apart)")
-                elif plateau_cache:
-                    _plateau_stats = self._build_plateau_cache_wrapper(model, plateau_cache_threshold)
                 # Loop temporal style (auto director's funpack_temporal_loop): Mobius latent
                 # roll. Installed BELOW the guidance wrappers (embed guidance / slider /
                 # dynashift / output guidance) so they see canonical-orientation inputs and
@@ -8280,12 +8206,6 @@ class FunPackLTXAVSceneChainSampler:
                         f"{', own sampler' if second_pass_sampler is not None else ''})")
                 _scene_sample_s = _time.perf_counter() - _t_sample0
                 _phase_sampling += _scene_sample_s
-                if _plateau_stats is not None:
-                    _reused, _computed = _plateau_stats["reused"], _plateau_stats["computed"]
-                    _total = _reused + _computed
-                    if _total > 0:
-                        run_mechanisms.append(
-                            f"plateau_cache(skipped {_reused}/{_total} plateau fwd, thr={plateau_cache_threshold})")
             finally:
                 # Nothing is sampling once this scene is out of the sampler — including on an
                 # interrupt, which is exactly when a stale "pass 2 of 2" would linger.
@@ -8749,7 +8669,6 @@ class FunPackLTXAVSceneChainSampler:
                             alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                             alg_anchor=False, alg_anchor_strength=2.0,
                             alg_anchor_sigma_threshold=0.975,
-                            plateau_cache=False, plateau_cache_threshold=0.975,
                             context_windows=False, context_window_length=145,
                             context_window_overlap=40, context_window_schedule="standard_uniform",
                             context_window_fuse="pyramid", context_window_freenoise=True,
@@ -8812,7 +8731,6 @@ class FunPackLTXAVSceneChainSampler:
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
                 dynashift_threshold=dynashift_threshold,
-                plateau_cache=plateau_cache, plateau_cache_threshold=plateau_cache_threshold,
                 context_windows=context_windows, context_window_length=context_window_length,
                 context_window_overlap=context_window_overlap,
                 context_window_schedule=context_window_schedule,
