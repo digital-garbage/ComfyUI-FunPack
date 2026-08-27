@@ -268,7 +268,6 @@ _EDITOR_DEFAULTS = {
     "h3_gain_video": 1.0,
     "h3_phrase_emphasis": False,
     "h3_prompt_scale": 1.0,
-    "h3_prompt_time": 0.0,
     "h3_render_gains": True,
     "h3_taste_bias": 0.0,
     "h3_video_detail": 1.0,

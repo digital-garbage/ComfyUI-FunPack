@@ -553,8 +553,7 @@ class Scene:
 #:
 #: TWO THINGS THIS IS NOT, both learned the hard way:
 #:
-#: 1. It is not `h3_gain_mode`, and not `h3_prompt_time`. A mode is a choice, and
-#:    `h3_prompt_time` is never learned from anything — clearing either on open would throw
+#: 1. It is not `h3_gain_mode`. A mode is a choice, and clearing it on open would throw
 #:    away a setting the user made on purpose, which is not what "untie from the project
 #:    file" meant.
 #: 2. It does not apply in MANUAL mode. There, these are hand-typed settings like any other

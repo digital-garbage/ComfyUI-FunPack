@@ -13,8 +13,8 @@ rental as "mode automatically switches back to learned".
 
 The rule now, in three parts:
   1. Values are dropped when a project is READ FROM DISK, not on the save round-trip.
-  2. `h3_gain_mode` and `h3_prompt_time` are NOT in the set. A mode is a deliberate choice
-     and prompt_time is never learned from anything, so clearing them discards user intent.
+  2. `h3_gain_mode` is NOT in the set. A mode is a deliberate choice, so clearing it
+     discards user intent.
   3. In MANUAL mode nothing is dropped: there is no learned state to reset, because nothing
      learned it — those are hand-typed settings like any other.
 """
@@ -43,13 +43,6 @@ def test_the_mode_itself_is_never_stripped():
     back `learned` again."""
     assert "h3_gain_mode" not in KEY_SCOPED_SAMPLER_INPUTS
     assert without_key_scoped({"h3_gain_mode": "manual"})["h3_gain_mode"] == "manual"
-
-
-def test_a_dial_that_is_never_learned_is_never_stripped():
-    """h3_prompt_time has no learned value anywhere, so there is nothing for the key to
-    say about it and nothing to reset."""
-    assert "h3_prompt_time" not in KEY_SCOPED_SAMPLER_INPUTS
-    assert without_key_scoped({"h3_prompt_time": 0.9})["h3_prompt_time"] == 0.9
 
 
 # ── what happens on the way off disk ────────────────────────────────────────
@@ -115,8 +108,7 @@ def _engine_settings():
     return (FRONTEND / "engine_settings.js").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("knob", sorted(KEY_SCOPED_SAMPLER_INPUTS | {
-    "h3_gain_mode", "h3_prompt_time"}))
+@pytest.mark.parametrize("knob", sorted(KEY_SCOPED_SAMPLER_INPUTS | {"h3_gain_mode"}))
 def test_every_render_dial_is_still_offered_in_settings(knob):
     """Untying a value from the project file is a storage change, not a reason to take the
     dial away."""
@@ -134,7 +126,7 @@ def test_they_are_still_widgets_on_the_node():
     import samplers
     spec = samplers.FunPackLTXAVSceneChainSampler.INPUT_TYPES()
     fields = {**spec.get("required", {}), **spec.get("optional", {})}
-    for knob in KEY_SCOPED_SAMPLER_INPUTS | {"h3_gain_mode", "h3_prompt_time"}:
+    for knob in KEY_SCOPED_SAMPLER_INPUTS | {"h3_gain_mode"}:
         assert knob in fields
 
 

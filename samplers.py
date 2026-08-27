@@ -3165,15 +3165,11 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "h3_gain_mode": (["learned", "manual"], {
                     "default": "learned",
-                    "tooltip": "Where the seven H3 render strengths come from. 'learned' (default) takes them from the refinement key: Studio learns them from your ratings alone and tags them onto the conditioning, and the seven widgets below are IGNORED — nothing to tune by hand, which is the point. Six of the seven are learned (h3_prompt_time is not — its off value sits at the end of its own range, not the middle, so the loop cannot explore around it safely; it stays a manual dial). Six scalars is a smaller search than the sigma schedule already learns from ratings, so it converges in tens of rated runs. With no key wired, or before the first rating, 'learned' renders at the model's trained strengths (untouched, and the taste push at 0). 'manual' ignores the learned values and uses the widgets below exactly as set — for deliberately probing one strength, or for a graph with no Refiner in it.",
+                    "tooltip": "Where the six H3 render strengths come from. 'learned' (default) takes them from the refinement key: Studio learns them from your ratings alone and tags them onto the conditioning, and the six widgets below are IGNORED — nothing to tune by hand, which is the point. Six scalars is a smaller search than the sigma schedule already learns from ratings, so it converges in tens of rated runs. With no key wired, or before the first rating, 'learned' renders at the model's trained strengths (untouched, and the taste push at 0). 'manual' ignores the learned values and uses the widgets below exactly as set — for deliberately probing one strength, or for a graph with no Refiner in it.",
                 }),
                 "h3_prompt_scale": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
                     "tooltip": "EXPERIMENTAL, MiniMax H3 only. How LOUD the prompt is when the picture reads it. H3 puts the Qwen text through condition_proj + a 2-block token refiner (ending in an RMSNorm) before the DiT sees it, and the blocks then read the text through attention — so the magnitude of those refined rows is how strongly the prompt competes for attention against the picture and the reference. This multiplies them: above 1.0 the prompt is harder to ignore, below 1.0 it recedes and the reference or the anchor gets more say. Applied AFTER the refiner's final norm, so it lands as set rather than being renormalized away. 1.0 = untouched, and the model is not cloned. Free — one multiply on the text rows, no extra model calls. Confined to the PROMPT rows: the <Picture N> label and vision block sit ahead of them and are left alone (read from minimax_token_tags; if those cannot be read the whole text span is scaled and the console says so). DIFFERENT from h3_gain_prompt, which controls how much each block WRITES BACK into the text rows — this controls how loudly they are READ.",
-                }),
-                "h3_prompt_time": ("FLOAT", {
-                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. How literally the model takes the REFERENCE you gave it. 0.0 = off (default). MEASURED on a rental, not predicted: 1.0 reproduces the reference almost exactly in the frame, overriding a prompt that says in words the reference is not where the scene begins; around 0.4 the prompt is followed but the model invents things that were in neither; below 0.3 the picture starts breaking up. Start at 0.7. HOW: H3 marks every row of its packed sequence as finished or still forming, and 'finished' is what tells it a row is reference material - given content to reproduce. Condition rows are the ones normally marked that way. This sets the mark on the PROMPT rows, so turning it up moves the prompt into that category and the reference takes over the frame; turning it down reads the prompt as a rough draft to fill in around. Applied to the prompt rows only, never the reference label ahead of them. Free: one extra row through a small projection per block, no extra model calls. Works in BOTH h3_gain_modes - it is not one of the learned strengths, so 'learned' leaves it to this widget. The widget NAME is kept because it is stored in saved projects and workflows; it was built expecting to improve prompt adherence, which it does not do.",
                 }),
                 "h3_video_detail": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
@@ -3992,7 +3988,6 @@ class FunPackLTXAVSceneChainSampler:
         # key, no rating and no Studio state, so it works on a graph with the Refiner absent
         # entirely. 1.0 on all three does not even clone the model.
         model = self._install_h3_adaln_gains(model, positive)
-        model = self._install_h3_prompt_timestep(model, positive)
         model = self._install_h3_final_layer(model, positive)
         model = self._install_h3_token_refiner(model, positive)
 
@@ -6679,7 +6674,7 @@ class FunPackLTXAVSceneChainSampler:
     #: refiner_bias is a signed push along a learned direction, so its neutral is 0.0.
     H3_GAIN_NEUTRAL = {"video": 1.0, "prompt": 1.0, "audio": 1.0,
                        "prompt_scale": 1.0, "refiner_bias": 0.0,
-                       "prompt_time": 0.0, "video_detail": 1.0}
+                       "video_detail": 1.0}
 
     def _h3_render_gains(self, positive):
         """The four render strengths for this run: learned from ratings, or the widgets.
@@ -6698,7 +6693,6 @@ class FunPackLTXAVSceneChainSampler:
                   "audio": float(getattr(self, "_h3_gain_audio", 1.0)),
                   "prompt_scale": float(getattr(self, "_h3_prompt_scale", 1.0)),
                   "refiner_bias": float(getattr(self, "_h3_taste_bias", 0.0)),
-                  "prompt_time": float(getattr(self, "_h3_prompt_time", 0.0)),
                   "video_detail": float(getattr(self, "_h3_video_detail", 1.0))}
         if str(getattr(self, "_h3_gain_mode", "learned")).lower() == "manual":
             return manual
@@ -6711,27 +6705,17 @@ class FunPackLTXAVSceneChainSampler:
                     learned = {k: float(v) for k, v in candidate.items()}
         except Exception:  # noqa: BLE001
             learned = None
-        # prompt_time is NOT in the learned set (its off value sits at the end of its own
-        # range, so the loop cannot explore around it). Taking it from the learned dict
-        # would mean the only way to use it is to switch learning off, which is not a
-        # trade anyone should have to make for one dial.
-        never_learned = ("prompt_time",)
         if learned is None:
             # No key, or nothing rated yet. Trained strengths — NOT the widgets, which in
             # this mode are not what the user is steering with.
-            if any(value != self.H3_GAIN_NEUTRAL[key] for key, value in manual.items()
-                   if key not in never_learned):
+            if any(value != self.H3_GAIN_NEUTRAL[key] for key, value in manual.items()):
                 _log.feature(
                     "FunPackSceneChain", "Rating-learned render gains", False,
                     "nothing rated on this key yet, so the run uses the model's trained "
                     "strengths. The h3_gain_* widgets are IGNORED in 'learned' mode — set "
                     "h3_gain_mode to 'manual' to use them as typed.")
-            resolved = dict(self.H3_GAIN_NEUTRAL)
-        else:
-            resolved = {k: learned.get(k, self.H3_GAIN_NEUTRAL[k]) for k in manual}
-        for key in never_learned:
-            resolved[key] = manual[key]
-        return resolved
+            return dict(self.H3_GAIN_NEUTRAL)
+        return {k: learned.get(k, self.H3_GAIN_NEUTRAL[k]) for k in manual}
 
     def _h3_prompt_rows(self, positive):
         """Where the PROMPT starts inside the text span, from the conditioning's own tags.
@@ -6881,36 +6865,6 @@ class FunPackLTXAVSceneChainSampler:
             print(f"[FunPackSceneChain] {note}")
         return patched
 
-    def _install_h3_prompt_timestep(self, model, positive):
-        """Give the prompt rows their own place in the denoise, separate from the picture.
-
-        Deliberately NOT applied to the whole text span: the `<Picture N>` label sits in
-        there too, and re-timing that made the model reproduce the reference image instead
-        of following the prompt (measured on a rental at 0.9-1.0).
-        """
-        gains = self._h3_render_gains(positive)
-        timestep = float(gains.get("prompt_time", 0.0))
-        if timestep <= 0.0:
-            return model
-        try:
-            from . import minimax_h3 as h3mod
-        except ImportError:
-            import minimax_h3 as h3mod
-        if not h3mod.is_h3_model(model):
-            _log.feature(
-                "FunPackSceneChain", "Prompt timestep", False,
-                "not a MiniMax H3 model. Per-row timesteps are an H3-only lane.")
-            return model
-        try:
-            patched, note = h3mod.apply_prompt_timestep(
-                model, timestep, ramp=getattr(self, "_steer_ramp", None))
-        except Exception as error:  # noqa: BLE001
-            _log.failed("FunPackSceneChain", "Prompt timestep", error,
-                        "the prompt is read at the picture's own noise level")
-            return model
-        if note:
-            print(f"[FunPackSceneChain] {note}")
-        return patched
 
     def _install_h3_final_layer(self, model, positive):
         """The video-only detail scale, applied past the model's last attention pass.
@@ -7270,7 +7224,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_audio_clock=False,
                h3_gain_video=1.0, h3_gain_prompt=1.0, h3_gain_audio=1.0,
                h3_prompt_scale=1.0, h3_taste_bias=0.0, h3_gain_mode="learned",
-               h3_prompt_time=0.0, h3_video_detail=1.0,
+               h3_video_detail=1.0,
                audio_vae=None, h3_keyframes=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
@@ -7291,15 +7245,11 @@ class FunPackLTXAVSceneChainSampler:
         self._h3_gain_audio = max(0.0, min(2.0, float(h3_gain_audio)))
         self._h3_prompt_scale = max(0.0, min(2.0, float(h3_prompt_scale)))
         self._h3_taste_bias = max(-0.30, min(0.30, float(h3_taste_bias)))
-        self._h3_prompt_time = max(0.0, min(1.0, float(h3_prompt_time)))
         self._h3_video_detail = max(0.0, min(2.0, float(h3_video_detail)))
         self._h3_gain_mode = str(h3_gain_mode or "learned").strip().lower()
         # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's
         # own base grid; on LTX it stays the absolute-sigma gate it was validated with.
         _steer_ramp = _make_steer_ramp(sigmas, self._is_h3)
-        # Also read by the reference-weight patch, which is installed per scene rather than
-        # threaded through the sample call like the wrappers below.
-        self._steer_ramp = _steer_ramp
         if self._is_h3:
             # H3 only generates on a 17k+5 pixel-frame grid. Empty MiniMax H3 AV Latent snaps
             # its own `length` up silently, so an off-grid scene length produces a template
