@@ -23,7 +23,7 @@ FRONTEND = Path(__file__).resolve().parents[1] / "movie_editor" / "frontend"
 
 @pytest.fixture
 def defaults(monkeypatch):
-    """Stand in for the node's declared defaults, so these tests describe the RULE."""
+    """Stand in for the node's declared inputs, so these tests describe the RULE."""
     table = {
         "segmented_detailing": False, "detail_targets": "hands, face",
         "context_windows": False, "context_window_overlap": 40,
@@ -31,7 +31,8 @@ def defaults(monkeypatch):
         "h3_gain_mode": "learned", "h3_video_detail": 1.0,
         "cfg": 1.0, "frame_overlap": 8,
     }
-    monkeypatch.setattr(sc, "_node_defaults", lambda _cls: table)
+    declared = frozenset(table) | {"mystery", "adjustments"}
+    monkeypatch.setattr(sc, "_node_inputs", lambda _cls: (declared, table))
     return table
 
 
@@ -49,10 +50,49 @@ def test_a_changed_value_is_printed(defaults):
     assert "cfg" in rows({"cfg": 3.5})
 
 
-def test_a_value_the_node_does_not_declare_is_kept(defaults):
-    """Not every key on the card comes from a widget. Unknown means unjudgeable, and
-    dropping it would hide something the card was asked to show."""
+def test_a_declared_key_with_no_default_is_kept(defaults):
     assert "mystery" in rows({"mystery": 7})
+
+
+def test_a_key_the_node_does_not_declare_is_dropped(defaults):
+    """Reported from a rental: the card showed `block_steer` and a `steps` value. Neither is
+    an input on the Chain Sampler — block_steer was removed from the pack entirely — so
+    ComfyUI never passes them to anything. Printed beside live settings they read as live."""
+    assert rows({"block_steer": True, "steps": 40}) == {}
+
+
+def test_an_empty_value_decided_nothing_either(defaults):
+    assert rows({"adjustments": [], "mystery": ""}) == {}
+
+
+def test_the_builders_private_keys_are_not_settings(defaults):
+    assert rows({"_movie_editor_scene_ratings": {"a": 1}}) == {}
+
+
+# ── the studio_settings blob, which has no node to ask ──────────────────────
+
+def test_a_refiner_value_at_its_editor_default_is_dropped():
+    assert sc._live_rows({"temporal_style": "natural", "steer_mode": "relative"},
+                         defaults=sc._EDITOR_DEFAULTS) == []
+
+
+def test_a_changed_refiner_value_survives():
+    got = dict(sc._live_rows({"temporal_style": "slow_motion"},
+                             defaults=sc._EDITOR_DEFAULTS))
+    assert got["temporal_style"] == "slow_motion"
+
+
+def test_an_unrecognised_refiner_key_is_kept():
+    """No node declares these, so unknown means unjudgeable — not inert. Dropping it would
+    hide something rather than tidy it."""
+    got = dict(sc._live_rows({"prompt_repair": True}, defaults=sc._EDITOR_DEFAULTS))
+    assert "prompt_repair" in got
+
+
+def test_a_hand_built_control_still_gets_an_owner():
+    """identity_projector is rendered by hand in the Editor, so it carries no dependsOn for
+    the generator to find — and it was printing a model filename under a disabled feature."""
+    assert sc._OWNED_BY["identity_projector"] == ("identity_transfer_enabled", None)
 
 
 # ── rule 2: an off feature decided nothing ──────────────────────────────────
@@ -108,7 +148,24 @@ def test_the_ownership_table_is_the_editors_own():
         if m:
             found[name] = (m.group(1), m.group(2))
     assert found, "no dependsOn rows parsed — the parser, not the table, is what broke"
-    assert found == sc._OWNED_BY
+    assert {**found, **sc._OWNED_EXTRA} == sc._OWNED_BY
+
+
+def test_the_defaults_table_is_the_editors_own():
+    src = (FRONTEND / "engine_settings.js").read_text(encoding="utf-8")
+    found = {}
+    for name, body in re.findall(r'\{\s*name:\s*"([a-z0-9_.]+)"(.*?)\n\s*(?=\{ name:|\];)',
+                                 src, re.S):
+        m = re.search(r'default:\s*(true|false|-?[\d.]+|"[^"]*")', body)
+        if m:
+            raw = m.group(1)
+            found[name] = {"true": True, "false": False}.get(raw) if raw in ("true", "false") \
+                else (raw.strip('"') if raw.startswith('"') else float(raw))
+    assert found, "no default rows parsed"
+    for name, value in found.items():
+        assert name in sc._EDITOR_DEFAULTS, name
+        assert float(sc._EDITOR_DEFAULTS[name]) == value if isinstance(value, float) \
+            else sc._EDITOR_DEFAULTS[name] == value, name
 
 
 # ── the sections it feeds ───────────────────────────────────────────────────
@@ -127,5 +184,5 @@ def test_a_section_with_something_to_say_survives(defaults):
 def test_defaults_are_read_off_the_node_not_copied_here():
     """A default copied into this file is one more thing to keep in step with the node."""
     import inspect
-    src = inspect.getsource(sc._node_defaults)
+    src = inspect.getsource(sc._node_inputs)
     assert "INPUT_TYPES()" in src

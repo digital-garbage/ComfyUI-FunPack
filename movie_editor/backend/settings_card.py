@@ -161,7 +161,14 @@ def _pass_rows(cfg: dict) -> list:
 #: knob -> (the toggle that owns it, the value of that toggle which switches it on).
 #: None means "any truthy value". Mirrored from the Editor's own dependsOn wiring, and a
 #: test regenerates this from engine_settings.js so the two cannot drift apart.
+#: knobs the Editor renders by hand rather than from its knob table, so they carry no
+#: dependsOn for the test below to find. Kept separate so the generated half stays generated.
+_OWNED_EXTRA = {
+    "identity_projector": ("identity_transfer_enabled", None),
+}
+
 _OWNED_BY = {
+    **_OWNED_EXTRA,
     "absolute_strength": ("steer_mode", None),
     "alg_anchor_sigma_threshold": ("alg_anchor", None),
     "alg_anchor_strength": ("alg_anchor", None),
@@ -214,28 +221,125 @@ _OWNED_BY = {
 }
 
 
-def _node_defaults(node_class: str) -> dict:
-    """Declared defaults for one node's widgets, read off the node itself.
+#: every knob the Editor offers, and the value it ships with. Used for the settings that
+#: live inside the studio_settings blob rather than on a node, where there is no INPUT_TYPES
+#: to ask. Regenerated from engine_settings.js by a test, like the table above.
+_EDITOR_DEFAULTS = {
+    "absolute_strength": 0.6,
+    "alg_anchor": False,
+    "alg_anchor_sigma_threshold": 0.975,
+    "alg_anchor_strength": 2.0,
+    "alg_blur_guides": False,
+    "alg_guide_blur_sigma_threshold": 0.975,
+    "alg_guide_blur_strength": 2.0,
+    "arcface_mode": "auto_adjust",
+    "bounded_attention_enabled": False,
+    "carry_i2v_guides": False,
+    "carry_overlap_through_anchor": False,
+    "cfg": 1.0,
+    "context_window_freenoise": True,
+    "context_window_fuse": "pyramid",
+    "context_window_length": 145,
+    "context_window_overlap": 40,
+    "context_window_retain_first": False,
+    "context_window_schedule": "standard_uniform",
+    "context_windows": False,
+    "cut_opening_frames": 0,
+    "debug_log": False,
+    "decode_noise_scale": 0.0,
+    "decode_tile_size": 0,
+    "decode_timestep": 0.05,
+    "detail_denoise": 0.85,
+    "detail_max_area": 0.35,
+    "detail_mode": "repair",
+    "detail_strength": 1.0,
+    "detail_targets": "hands",
+    "detail_threshold": 0.35,
+    "dynashift": False,
+    "dynashift_strength": 0.3,
+    "dynashift_threshold": 0.6,
+    "embed_guidance": False,
+    "embed_guidance_source": "relative",
+    "embed_guidance_strength": 0.02,
+    "frame_overlap": 16,
+    "h3_audio_clock": False,
+    "h3_gain_audio": 1.0,
+    "h3_gain_mode": "learned",
+    "h3_gain_prompt": 1.0,
+    "h3_gain_video": 1.0,
+    "h3_phrase_emphasis": False,
+    "h3_prompt_scale": 1.0,
+    "h3_prompt_time": 0.0,
+    "h3_render_gains": True,
+    "h3_taste_bias": 0.0,
+    "h3_video_detail": 1.0,
+    "id_strength": 1.0,
+    "identity_transfer_enabled": False,
+    "joyai_audio_memory": False,
+    "joyai_fix_frames": 3,
+    "joyai_frame_select": "center",
+    "joyai_memory": False,
+    "joyai_memory_size": 7,
+    "joyai_memory_strength": 0.3,
+    "mid_scene_guide": False,
+    "mid_scene_guide_strength": 0.25,
+    "negative_erase": False,
+    "negative_erase_mode": "project",
+    "negative_erase_renorm": True,
+    "negative_erase_strength": 0.5,
+    "output_guidance": False,
+    "output_guidance_strength": 0.02,
+    "phase_scale": 1.0,
+    "plateau_cache": False,
+    "plateau_cache_threshold": 0.975,
+    "prompt_enhance": False,
+    "prompt_enhance_max_length": 400,
+    "prompt_enhance_system": "",
+    "prompt_enhance_temperature": 0.7,
+    "prompt_enhance_thinking": False,
+    "prompt_enhance_top_p": 0.92,
+    "reference_injection": False,
+    "score_slider": False,
+    "score_slider_strength": 1.0,
+    "second_pass_op": "none",
+    "second_pass_upscale": 2.0,
+    "segmented_detailing": False,
+    "source_id": 2.0,
+    "split_transition_placement": "start",
+    "steer_mode": "relative",
+    "taste_nearest_prompt": False,
+    "temporal_style": "natural",
+    "transition_duration": 16,
+    "use_same_seed": False,
+    "v2a_grad_scale": 1.0,
+    "value_guidance": True,
+    "vision_conditioning": True,
+}
 
-    Off the NODE rather than a table here: the node is the thing whose value is being
-    printed, so a default copied to this file would be one more thing to keep in step.
+
+def _node_inputs(node_class: str) -> tuple:
+    """(every input this node declares, the ones that have a default).
+
+    Read off the NODE rather than copied here: it is the thing whose values are being
+    printed, so a table in this file would be one more thing to keep in step.
     """
     try:
         from . import bridge
         spec = bridge._funpack_attr("samplers" if "Sampler" in node_class else "conditioning",
                                     node_class).INPUT_TYPES()
     except Exception:
-        return {}
-    out = {}
+        return frozenset(), {}
+    declared, defaults = set(), {}
     for group in ("required", "optional"):
         for name, decl in (spec.get(group) or {}).items():
+            declared.add(name)
             if not isinstance(decl, (list, tuple)) or not decl:
                 continue
             if len(decl) >= 2 and isinstance(decl[1], dict) and "default" in decl[1]:
-                out[name] = decl[1]["default"]
+                defaults[name] = decl[1]["default"]
             elif isinstance(decl[0], (list, tuple)) and decl[0]:
-                out[name] = decl[0][0]          # a combo's first entry is its default
-    return out
+                defaults[name] = decl[0][0]      # a combo's first entry is its default
+    return frozenset(declared), defaults
 
 
 def _switched_on(name: str, values: dict, defaults: dict, _seen=None) -> bool:
@@ -256,12 +360,32 @@ def _switched_on(name: str, values: dict, defaults: dict, _seen=None) -> bool:
     return live and _switched_on(owner, values, defaults, seen)
 
 
-def _live_rows(values: dict, node_class: str) -> list:
-    """`values` filtered down to what actually decided this render."""
-    defaults = _node_defaults(node_class)
+def _empty(value) -> bool:
+    return value is None or (isinstance(value, (str, list, dict, tuple)) and len(value) == 0)
+
+
+def _live_rows(values: dict, node_class: str = "", defaults: dict = None) -> list:
+    """`values` filtered down to what actually decided this render.
+
+    With a `node_class`, a key the node does not declare is DROPPED: ComfyUI builds a node's
+    arguments from its own INPUT_TYPES, so a leftover key from a feature that no longer
+    exists reaches nothing. `block_steer` was removed from this pack entirely and was still
+    being printed as a live setting; so was a `steps` key the Chain Sampler has never had.
+    """
+    declared = frozenset()
+    if node_class:
+        declared, node_defaults = _node_inputs(node_class)
+        defaults = node_defaults if defaults is None else {**defaults, **node_defaults}
+    defaults = defaults or {}
     rows = []
     for name, value in (values or {}).items():
+        if str(name).startswith("_"):            # the builder's own private channel
+            continue
+        if declared and name not in declared:    # cannot reach the render at all
+            continue
         if name in defaults and value == defaults[name]:
+            continue
+        if _empty(value):                        # decided nothing either
             continue
         if not _switched_on(name, values, defaults):
             continue
@@ -301,9 +425,11 @@ def _sampling_sections(studio_inputs: dict, sampler_inputs: dict) -> list:
         out.append({"title": "Second pass", "node_class": "", "rows": rows})
 
     refiner = settings.get("refiner") if isinstance(settings.get("refiner"), dict) else {}
-    if refiner:
-        out.append({"title": "Studio", "node_class": "",
-                    "rows": [(k, _short(v)) for k, v in refiner.items()]})
+    # No node to ask here — the refiner block lives inside the studio_settings blob — so an
+    # unrecognised key is KEPT. Unjudgeable is not the same as inert.
+    refiner_rows = _live_rows(refiner, defaults=_EDITOR_DEFAULTS)
+    if refiner_rows:
+        out.append({"title": "Studio", "node_class": "", "rows": refiner_rows})
 
     extras = _live_rows({k: v for k, v in studio_inputs.items()
                          if k not in _SKIP_STUDIO_KEYS}, "FunPackStudio")
