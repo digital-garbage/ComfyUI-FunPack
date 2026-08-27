@@ -112,10 +112,12 @@ def test_a_boolean_owner_survives_the_journey_from_javascript():
     assert got["negative_erase_mode"] == "subtract"
 
 
-def test_a_hand_built_control_still_gets_an_owner():
-    """identity_projector is rendered by hand in the Editor, so it carries no dependsOn for
-    the generator to find — and it was printing a model filename under a disabled feature."""
+def test_a_knob_the_editor_does_not_offer_still_gets_an_owner():
+    """Two reasons a knob has no dependsOn to find: it is rendered by hand (identity_projector),
+    or the Editor no longer offers it at all while a raw ComfyUI graph still can
+    (segmented detailing). The card has to hide both when their feature is off."""
     assert sc._OWNED_BY["identity_projector"] == ("identity_transfer_enabled", None)
+    assert sc._OWNED_BY["detail_targets"] == ("segmented_detailing", None)
 
 
 # ── rule 2: an off feature decided nothing ──────────────────────────────────

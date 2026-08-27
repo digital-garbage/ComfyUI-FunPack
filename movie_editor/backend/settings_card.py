@@ -169,6 +169,14 @@ def _pass_rows(cfg: dict) -> list:
 #: dependsOn for the test below to find. Kept separate so the generated half stays generated.
 _OWNED_EXTRA = {
     "identity_projector": ("identity_transfer_enabled", None),
+    # Segmented detailing is no longer offered in the Editor (see detailing.py), but a raw
+    # ComfyUI graph can still tick it, so the card still has to hide its settings when it
+    # is off.
+    "detail_targets": ("segmented_detailing", None),
+    "detail_strength": ("segmented_detailing", None),
+    "detail_threshold": ("segmented_detailing", None),
+    "detail_max_area": ("segmented_detailing", None),
+    "detail_mode": ("segmented_detailing", None),
 }
 
 _OWNED_BY = {
@@ -186,11 +194,6 @@ _OWNED_BY = {
     "context_window_retain_first": ("context_windows", None),
     "context_window_schedule": ("context_windows", None),
     "debug_log": ("identity_transfer_enabled", None),
-    "detail_max_area": ("segmented_detailing", None),
-    "detail_mode": ("segmented_detailing", None),
-    "detail_strength": ("segmented_detailing", None),
-    "detail_targets": ("segmented_detailing", None),
-    "detail_threshold": ("segmented_detailing", None),
     "dynashift_strength": ("dynashift", None),
     "dynashift_threshold": ("dynashift", None),
     "embed_guidance_source": ("embed_guidance", None),

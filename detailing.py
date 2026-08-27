@@ -1,5 +1,10 @@
 """Segmented detailing: ADetailer-style region refine for the Scene Chain sampler.
 
+FOR FUTURE REFERENCE. Never validated on a real run, so as of 4.0.0 it is not offered in
+the Editor and stays off unless a raw ComfyUI graph ticks its widget. Kept whole rather
+than deleted: the CLIPSeg tube, the upsampler pass and the feathered paste-back are the
+hard parts, and they are worth having if this is ever picked up again.
+
 After a scene finishes denoising, CLIPSeg (text-prompted segmentation, the same
 model family face-swap stacks use for occlusion masking) locates user-named
 regions ("hands", "feet", ...) on a few decoded keyframes. The matched region is

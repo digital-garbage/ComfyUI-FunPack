@@ -319,27 +319,6 @@
     { name: "h3_video_detail", label: "Picture detail (experimental)", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
       hint: "Makes the picture crisper or softer without changing the sound at all. Above 1.0 = more detail and contrast, below is softer. The step from 1.0 is small — reach for 1.4-1.8 before deciding it does nothing. Free. Experimental, lightly tested.",
       detail: "Every block of the model shares one attention pass, so anything that moves the picture also reaches the soundtrack. This runs after the last one, where there is no path left for it to travel — it is the audio-safe twin of Write gain \u00b7 picture." },
-    { name: "segmented_detailing", label: "Segmented detailing (region refine)", kind: "bool", default: false,
-      hint: "Re-renders small regions like hands at higher detail after each scene. Costs about 15%.",
-      detail: "After each scene renders, CLIPSeg finds the named regions, refines them at 2x through Lightricks' latent upsampler and pastes them back through a feathered silhouette. Final resolution never changes. Regions over 35% of the frame are refused; every skip is in the scene report." },
-    { name: "detail_targets", label: "Detail targets", kind: "text", default: "hands", dependsOn: "segmented_detailing", placeholder: "hands, feet",
-      hint: "Which regions to detail, in plain words, comma-separated.",
-      detail: "Each becomes a CLIPSeg text query — malformed anatomy still matches its name. Also editable from Composer ▸ Compose while detailing is on." },
-    { name: "detail_strength", label: "Detail strength", kind: "float", default: 1.0, min: 0, max: 1, step: 0.05, dependsOn: "segmented_detailing",
-      hint: "How strongly the refined region replaces the original. 0 disables the pass." },
-    { name: "detail_threshold", label: "Detail match threshold", kind: "float", default: 0.35, min: 0.05, max: 0.9, step: 0.05, dependsOn: "segmented_detailing",
-      hint: "How sure the region match must be. Lower it when the scene report says 'no match'.",
-      detail: "CLIPSeg's raw score for a real region is often well under 0.5 — if the scene report shows 'no match: max CLIPSeg score X < threshold', lower this toward X rather than assuming nothing is there." },
-    { name: "detail_max_area", label: "Detail max area", kind: "float", default: 0.35, min: 0.05, max: 1.0, step: 0.05, dependsOn: "segmented_detailing",
-      hint: "Regions covering more of the frame than this are skipped, to cap cost. 1.0 = no cap.",
-      detail: "Cost-only guardrail (a bigger region costs more, roughly 4× its area × 3 steps) — never a judgment call about whether it's worth detailing. If the scene report shows a region refused at some %, raise this above that % to detail it anyway." },
-    { name: "detail_mode", label: "Detail mode", kind: "combo", choices: ["repair", "sharpen"], default: "repair", dependsOn: "segmented_detailing",
-      hint: "'repair' re-renders the region and can fix bad anatomy; 'sharpen' only upscales it — near-free, but structure stays wrong.",
-      detail: "'repair' re-denoises the upsampled crop through the video model (~4x region area x 3 steps). 'sharpen' stops after the upsampler — no video-model calls, so an extra finger stays an extra finger." },
-    { name: "detail_denoise", label: "Detail re-noise strength", kind: "float", default: 0.85, min: 0.3, max: 0.99, step: 0.05,
-      deps: [{ name: "segmented_detailing" }, { name: "detail_mode", value: "repair" }],
-      hint: "Higher = more freedom to actually rebuild the region; lower = closer to a plain upscale.",
-      detail: "How far the crop is re-noised before its 3-step refine; 0.85 is the LTX 2.3 recipe's own value. Higher risks drift from the surrounding frame; lower interpolates instead of repairing." },
     { name: "cut_opening_frames", label: "Cut the opening (frames)", kind: "int", default: 0, min: 0, max: 512, step: 8,
       hint: "Trims this many frames off the FRONT of the finished clip, so an i2v render reads as t2v. The scene comes out shorter.",
       detail: "The anchor is generated at full strength, then this many frames are dropped from the FRONT of the finished clip, so an i2v render reads as t2v without weakening the anchor. Nothing is regrown: the scene comes out shorter and the audio is cropped to match. 8 removes only the anchor and is usually too little; 48 worked on a 768x768x305@30 chain. Skipped on continuation scenes and scenes carrying guides." },
@@ -515,7 +494,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_video_detail", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_video_detail", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id, st) {
@@ -909,7 +888,7 @@
       if (c === cur) o.selected = true;
       sel.append(o);
     });
-    sel.onchange = () => S.setSamplerInputNow("detail_upsampler", sel.value);
+    sel.onchange = () => S.setSamplerInputNow(sel.value);
     // An upsampler has to take latents the same width as the model's, so on H3 the LTX
     // file is not a fallback and 'auto' deliberately will not fetch it. Promising a
     // download that cannot happen sends people to wait at the console for nothing.
@@ -948,9 +927,6 @@
     renderChainKnobsView(pane, st, "chain_experimental", "Experimental",
       "Research techniques — off by default; expect quality/overhead trade-offs.");
     const si = st.project.sampler_inputs || {};
-    if (si.segmented_detailing) {
-      renderDetailUpsampler(pane, si, "Segmented detailing: upsampler model");
-    }
     if (!si.identity_transfer_enabled) return;
     const g = group(pane, "Best-FaceID: ArcFace projector");
     if (!_loraChoices) {
