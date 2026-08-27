@@ -142,3 +142,51 @@ def test_output_guidance_high_sigma_is_passthrough():
     out = wrap(apply_fn, {"input": denoised, "timestep": torch.tensor([0.9]),
                           "c": {}})
     assert torch.equal(out, denoised)
+
+
+# ── the sweep has to reach every module a hook can be installed on ────────────
+
+class _Block(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.attn2 = torch.nn.Identity()               # bounded attention hooks here
+        self.video_to_audio_attn = torch.nn.Identity() # v2a scale hooks here
+
+    def forward(self, x):
+        return x
+
+
+class _Diffusion(torch.nn.Module):
+    def __init__(self, n=2):
+        super().__init__()
+        self.transformer_blocks = torch.nn.ModuleList(_Block() for _ in range(n))
+
+    def forward(self, x):
+        return x
+
+
+def _patcher():
+    return types.SimpleNamespace(model=types.SimpleNamespace(diffusion_model=_Diffusion()))
+
+
+def test_the_sweep_reaches_hooks_installed_below_the_blocks():
+    """v2a sits on video_to_audio_attn and bounded attention on attn2 — a block-only sweep
+    left both to stack up run after run."""
+    import ltx_enhancements as enh
+    model = _patcher()
+    hook = samplers._tag_funpack_hook(lambda *a: None)
+    for blk in model.model.diffusion_model.transformer_blocks:
+        blk.attn2.register_forward_pre_hook(hook)
+        blk.video_to_audio_attn.register_forward_hook(hook)
+    assert enh.count_module_hooks(model) == (4, 4)
+    assert enh.strip_funpack_block_hooks(model) == 4
+    assert enh.count_module_hooks(model) == (0, 0)
+
+
+def test_the_sweep_leaves_hooks_that_are_not_funpacks():
+    import ltx_enhancements as enh
+    model = _patcher()
+    model.model.diffusion_model.transformer_blocks[0].attn2.register_forward_hook(
+        lambda *a: None)
+    assert enh.strip_funpack_block_hooks(model) == 0
+    assert enh.count_module_hooks(model) == (1, 1)

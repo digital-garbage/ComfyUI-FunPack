@@ -15,9 +15,23 @@ import torch
 from aiohttp import web
 from server import PromptServer
 
+try:
+    from .widgets import field, list_widget, parse_rows
+    from . import funpack_log as _log
+except ImportError:  # standalone tests import the modules directly
+    from widgets import field, list_widget, parse_rows
+    import funpack_log as _log
+
 LORA_TYPES = ["general", "action", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
-TRANSFORMER_BLOCK_PATTERN = re.compile(r"(?:^|\.)transformer_blocks\.(\d+)\.")
+# Any numbered block container a diffusion transformer might use. Per-block application
+# reads the LoRA's own deltas, which is a property of the adapter and not of the
+# architecture — so the container name is the only thing that was ever model-specific, and
+# it is a list rather than a gate. Longest names first so `transformer_blocks` is not
+# matched as `blocks` (it cannot be, the preceding char is `_`, but the order says so).
+TRANSFORMER_BLOCK_PATTERN = re.compile(
+    r"(?:^|\.)(transformer_blocks|double_blocks|single_blocks|joint_blocks|blocks|layers)"
+    r"\.(\d+)\.")
 LTX_IMAGE_MODELS = {"ltxv", "ltxav"}
 LORA_RAW_CACHE_SIZE = 12
 LORA_PATCH_CACHE_SIZE = 24
@@ -41,9 +55,27 @@ LORA_TYPE_BLOCK_ZONES = {
 }
 LORA_ZONE_BOOST = 1.12
 LORA_ZONE_SCALE_CAP = 1.75
-# Blocks confirmed as primary semantic focal points (PAG default=14, STG defaults=14,19).
+# Primary semantic focal points, as a POSITION along the stack rather than an index.
+# PAG's default is block 14 and STG's are 14 and 19, both measured on LTX's 28-block DiT;
+# 14/27 and 19/27 are those same blocks expressed as a fraction, so a 28-block model still
+# resolves to exactly 14 and 19 while a model of any other depth gets the proportionally
+# equivalent blocks instead of two indices that mean nothing there.
 # These are never zeroed by type-zone suppression and never damped by stack pressure.
-SEMANTIC_ANCHOR_BLOCKS = frozenset({14, 19})
+SEMANTIC_ANCHOR_POSITIONS = (14.0 / 27.0, 19.0 / 27.0)
+
+
+def semantic_anchor_blocks(block_indices):
+    """The blocks nearest SEMANTIC_ANCHOR_POSITIONS in this model's own stack."""
+    indices = sorted(int(i) for i in block_indices)
+    if len(indices) < 2:
+        return frozenset(indices)
+    max_idx = max(indices)
+    if max_idx <= 0:
+        return frozenset(indices)
+    return frozenset(
+        min(indices, key=lambda i: abs(i / max_idx - pos))
+        for pos in SEMANTIC_ANCHOR_POSITIONS
+    )
 
 
 @PromptServer.instance.routes.get("/funpack/loras")
@@ -163,7 +195,21 @@ def transformer_block_index(patch_key):
     match = TRANSFORMER_BLOCK_PATTERN.search(target_key)
     if not match:
         return None
-    return int(match.group(1))
+    return int(match.group(2))
+
+
+def block_container_name(patch_key):
+    """Which numbered container this patch lives in, or None.
+
+    Two containers in one model (Flux's double_blocks/single_blocks) both start at 0, so
+    their indices would collide into one bucket and one scale would be applied to two
+    unrelated blocks. Per-block declines in that case rather than averaging them.
+    """
+    target_key = patch_target_key(patch_key)
+    if not isinstance(target_key, str):
+        return None
+    match = TRANSFORMER_BLOCK_PATTERN.search(target_key)
+    return match.group(1) if match else None
 
 
 def patch_energy(value):
@@ -181,6 +227,310 @@ def patch_energy(value):
         return sum(patch_energy(item) for item in value)
 
     return 0.0
+
+
+def lora_row_fields():
+    """The columns of one LoRA row, shared by the list widget and its parser."""
+    loras = ["None"] + folder_paths.get_filename_list("loras")
+    return [
+        field("lora", "combo", label="LoRA", choices=loras, default="None"),
+        field("type", "combo", label="type", choices=LORA_TYPES, default="general",
+              tooltip="What the LoRA is for. Drives per-block placement when per_block is on."),
+        field("strength", "float", label="strength", default=1.0, min=-10.0, max=10.0, step=0.01),
+    ]
+
+
+def lora_list_input(tooltip, allow_empty=False):
+    return list_widget("LoRA", lora_row_fields(), add_label="+ Add LoRA…", tooltip=tooltip,
+                       allow_empty=allow_empty, picker="lora")
+
+
+def stack_from_lora_list(value, per_block=False):
+    """A LoRA stack straight from a list widget, with no refinement suggestions applied.
+
+    Same row shape FunPack Apply LoRA Weights emits, so the loader cannot tell the two
+    apart — which is what lets a LoRA be used without wiring a second node for it.
+    """
+    entries = []
+    for row in parse_rows(value, lora_row_fields(), key="lora"):
+        name = row["lora"]
+        lora_type = normalize_lora_type(row["type"])
+        entries.append({
+            "slot": row["index"],
+            "name": name,
+            "type": lora_type,
+            "id": lora_state_id(name, lora_type),
+            "base_model_weight": row["strength"],
+            "model_weight": row["strength"],
+            "source": "list",
+        })
+    return {
+        "version": 2,
+        "refinement_key": "",
+        "mode": "ltx2",
+        "per_block": coerce_bool(per_block),
+        "positive_prompt": "",
+        "prompt_key": "",
+        "loras": entries,
+    }
+
+
+# Wrapper prefixes trainers put in front of otherwise-standard keys. ComfyUI's own key maps
+# already cover diffusion_model./lora_unet_/lycoris_ and, for LTX, the bare
+# transformer_blocks.* form -- these are the ones that arrive wrapped and match nothing at
+# all until the wrapper comes off.
+LORA_KEY_PREFIXES = (
+    "transformer.",
+    "diffusion_model.",
+    "model.diffusion_model.",
+    "base_model.model.",
+    # PEFT adapters trained against a wrapper that names the DiT: `base_model.model.dit.
+    # <path>`, where stripping only `base_model.model.` leaves `dit.` in front of every key
+    # and the whole file matches nothing.
+    "base_model.model.dit.",
+    "base_model.model.diffusion_model.",
+    "lora_model.",
+    "net.",
+)
+
+#: (prefix, replacement) for adapters that name the same modules under a different head.
+#: Stripping is not enough for these: comfy's key map has no bare form, only
+#: `diffusion_model.<path>`, so the head has to be REPLACED rather than removed.
+LORA_KEY_RENAMES = (
+    # Measured on a MiniMax H3 adapter: `base_model.model.dit.blocks.0.adaln_proj.linear` is
+    # comfy's `diffusion_model.blocks.0.adaln_proj.linear`, module for module. Stripping left
+    # `blocks.0...`, which matched nothing, and 532 keys silently did nothing at all.
+    ("base_model.model.dit.", "diffusion_model."),
+    ("base_model.model.", "diffusion_model."),
+    ("dit.", "diffusion_model."),
+    ("model.dit.", "diffusion_model."),
+    ("transformer.", "diffusion_model."),
+)
+
+
+def _sample_keys(mapping, count=3):
+    """A few representative names, shortened. Enough to compare two namings by eye."""
+    keys = sorted(str(k) for k in mapping)
+    picked = keys[:count]
+    more = f" (+{len(keys) - len(picked)} more)" if len(keys) > len(picked) else ""
+    return ", ".join(k[:80] for k in picked) + more if picked else "(none)"
+
+
+def _count_lora_matches(lora, key_map):
+    try:
+        return len(comfy.lora.load_lora(lora, key_map, log_missing=False))
+    except TypeError:  # ComfyUI without the log_missing argument
+        return len(comfy.lora.load_lora(lora, key_map))
+
+
+def _rekey(lora, prefix, replacement=""):
+    """`lora` with `prefix` replaced by `replacement` on every key that carries it, or None.
+
+    Stripping is the `replacement=""` case. RENAMING matters as much: an adapter trained
+    against a wrapper that calls the DiT something else has ComfyUI's exact module path
+    underneath a different head — `base_model.model.dit.audio_patch_proj` against comfy's
+    `diffusion_model.audio_patch_proj` — and stripping alone leaves it matching nothing,
+    because comfy's key map has no bare form to land on.
+    """
+    if not any(k.startswith(prefix) for k in lora):
+        return None
+    return {(replacement + k[len(prefix):] if k.startswith(prefix) else k): v
+            for k, v in lora.items()}
+
+
+def _lora_pair_dims(adapter):
+    """(rows, cols) of the delta a plain LoRA entry produces, else None.
+
+    comfy's LoRAAdapter holds `weights = (mat1, mat2, alpha, mid, dora_scale, reshape)` and
+    merges with `mm(mat1.flatten(1), mat2.flatten(1)).reshape(weight.shape)`, so the delta is
+    flattened the same way here rather than assuming a 2-D pair.
+
+    Returns None — abstaining, so nothing is dropped — for the two entries whose merge this
+    does not model: a locon `mid` rebuilds mat2 into a different shape, and a `reshape` pads
+    the target weight before merging, so the weight it lands in is not the one in the model.
+    Anything that is not a plain LoRA at all (LoKr, LoHa, a plain "diff") is left to comfy.
+    """
+    w = getattr(adapter, "weights", None)
+    if not w or len(w) < 2:
+        return None
+    if len(w) > 3 and w[3] is not None:      # locon mid
+        return None
+    if len(w) > 5 and w[5] is not None:      # target weight is padded before the merge
+        return None
+    try:
+        return int(w[0].flatten(start_dim=1).shape[0]), int(w[1].flatten(start_dim=1).shape[-1])
+    except (AttributeError, IndexError, TypeError):
+        return None
+
+
+def _mismatched_lora_keys(model, patches):
+    """Patch keys whose LoRA pair cannot multiply into the weight they name.
+
+    Key matching says the LoRA is FOR this model; it says nothing about the weights fitting.
+    A mismatch is only discovered later, inside comfy's merge, as one generic warning per
+    key — 51 of them for the case below, mixed into everything else a load prints. Checked
+    here so the count reaches the status line the user actually reads.
+
+    Both dimensions have to agree, not just the element count. comfy merges with
+    `mm(mat1.flatten(1), mat2.flatten(1)).reshape(weight.shape)` and adds the result — the
+    reshape succeeds on ANY pair with the right number of elements, so a pair that is right
+    by count and wrong by shape is merged in silence, scrambled. A correctly trained adapter
+    always produces (weight.shape[0], weight.shape[1:].numel()) exactly; anything else fitting
+    by count is a transposed or differently fused variant, and merging it corrupts the weight.
+    That corruption is invisible at load and surfaces as an all-NaN latent mid-render.
+    """
+    try:
+        sd = model.model.state_dict()
+    except Exception:  # noqa: BLE001 — diagnostics must never break a load
+        return []
+    bad = []
+    for key, adapter in patches.items():
+        dims = _lora_pair_dims(adapter)
+        target = sd.get(key)
+        if dims is None or target is None or getattr(target, "dim", None) is None:
+            continue
+        try:
+            if target.dim() < 2:
+                continue
+            want = (int(target.shape[0]), int(target.shape[1:].numel()))
+        except Exception:  # noqa: BLE001
+            continue
+        if dims != want:
+            bad.append((key, dims, want))
+    return bad
+
+
+def _adaln_curve_note(model, bad):
+    """The specific, common cause — named, because "51 shape mismatches" is not actionable.
+
+    ComfyUI's MiniMax H3 checkpoints come in two forms. The full one derives the adaLN input
+    from a `time_embedder` (time_embed_dim 2688); the pruned "curve" one replaces it with a
+    precomputed `adaln_t_table` over a much smaller shared basis, so every
+    `adaln_proj.linear` is narrower on its input side. A LoRA trained against the full model
+    therefore cannot merge into a curve-form checkpoint — and it cannot be projected either,
+    because the basis used to build the table is not in the file.
+    """
+    if not any("adaln_proj" in k for k, _, _ in bad):
+        return None
+    dm = getattr(getattr(model, "model", None), "diffusion_model", None)
+    if not getattr(dm, "use_adaln_curves", False):
+        return None
+    n = sum(1 for k, _, _ in bad if "adaln_proj" in k)
+    return (f"{n} adaLN adapters DROPPED, the rest of the LoRA still applies. This is a "
+            f"curve-form H3 checkpoint (adaLN reads a compact time-curve basis) and the LoRA "
+            f"was trained against the full-width form, so they cannot be projected onto it — "
+            f"the basis that built the table is not in the checkpoint. Dropped rather than "
+            f"attempted: each attempt builds the full-size delta before discovering it does "
+            f"not fit. For the full effect use a full-width H3 checkpoint, or a LoRA "
+            f"converted for this one.")
+
+
+_DROPPED_FRAGMENT = re.compile(r"\| (\d+)/(\d+) DROPPED")
+
+
+def _dropped_all_of(line):
+    """True when a status line says every weight this LoRA matched was dropped for shape."""
+    return any(int(m.group(1)) == int(m.group(2)) for m in _DROPPED_FRAGMENT.finditer(line))
+
+
+def _best_lora_keying(converted, key_map):
+    """The keying of `converted` that matches the most of `key_map`. -> (lora, note).
+
+    Every candidate is SCORED rather than ordered, so a rename that lands beats a strip that
+    does not without either having to be tried first, and a format nobody anticipated still
+    wins if its keys are recognisable underneath.
+    """
+    best, best_count, best_note = converted, _count_lora_matches(converted, key_map), "as-is"
+    candidates = [(p, "", f"stripped {p}") for p in LORA_KEY_PREFIXES]
+    candidates += [(p, r, f"{p} -> {r}") for p, r in LORA_KEY_RENAMES]
+    for prefix, replacement, label in candidates:
+        variant = _rekey(converted, prefix, replacement)
+        if variant is None:
+            continue
+        count = _count_lora_matches(variant, key_map)
+        if count > best_count:
+            best, best_count, best_note = variant, count, label
+    return best, best_note
+
+
+def resolve_lora_patches(model, lora, clip=None, name=None):
+    """Match a LoRA against a model, trying known wrapper prefixes. -> (patches, note).
+
+    `name` is the file this LoRA came from. It is carried into the log lines because the
+    answer to "is this one bad LoRA or the loader" is only visible across a whole stack:
+    one file dropping keys is that file, every file dropping every key is the loader.
+
+    ComfyUI's converters handle the tensor-naming dialects (lora_up/lora_A/lora.up/PEFT
+    defaults); what they do not handle is a whole state dict nested under a wrapper the
+    model's key map never mentions, which is how a diffusers-trained LoRA ends up applying
+    zero weights in silence. Every candidate is scored against the real key map and the one
+    that matches the most weights wins, so a format nobody anticipated still lands as long
+    as its keys are recognisable underneath.
+    """
+    key_map = comfy.lora.model_lora_keys_unet(model.model, {})
+    if clip is not None:
+        key_map = comfy.lora.model_lora_keys_clip(clip.cond_stage_model, key_map)
+    converted = comfy.lora_convert.convert_lora(lora)
+
+    best, best_note = _best_lora_keying(converted, key_map)
+
+    who = f"{name}: " if name else ""
+    patches = comfy.lora.load_lora(best, key_map)
+    if not patches:
+        # WITH BOTH SIDES OF THE COMPARISON. "matched no weights" is not actionable; the two
+        # sets of names are, because they say whether the file is for another architecture
+        # (nothing alike) or for the same one under different module names (fixable by a
+        # rename rule). Every prefix in LORA_KEY_PREFIXES was born from one of these.
+        _log.note_on_change(
+            f"lora:nothing:{name or '?'}", "FunPack",
+            f"{who}LoRA matched NOTHING in this model, so it is doing nothing at all. "
+            f"Its keys look like: {_sample_keys(converted)}. This model wants: "
+            f"{_sample_keys(key_map)}. If those are the same layers under different names, "
+            f"the file needs a rename rule; if they are unrelated, it is for another model.",
+            full=True)
+        return patches, "MATCHED NOTHING"
+    matched = len(patches)
+    note = f"keys={matched} fmt={best_note}"
+    # Matched by NAME is not applied: a mismatched pair is dropped during the merge, and
+    # a LoRA that reports success while a third of it never lands is the worst of both.
+    bad = _mismatched_lora_keys(model, patches)
+    if bad:
+        # DROPPED, not merely reported. Left in, comfy attempts every one of them and fails
+        # per key — and the failure is not free: it materialises the full lora_A @ lora_B
+        # delta first, and only then discovers it cannot be reshaped into the weight. For a
+        # curve-form H3 checkpoint that is a 96768x2688 tensor per block, 51 times, allocated
+        # and thrown away one after another while dynamic VRAM staging streams the model in.
+        # Nothing about the render changes — these adapters could never have applied — so the
+        # only thing keeping them buys is 51 ERROR lines and the memory churn behind them.
+        for key, _, _ in bad:
+            patches.pop(key, None)
+        curve = _adaln_curve_note(model, bad)
+        if curve:
+            # full: the payload IS the detail here, and this only prints when a LoRA is
+            # half-landing — the one moment the whole explanation is worth its line.
+            _log.note_on_change(f"lora:adaln_curve:{name or '?'}", "FunPack", who + curve,
+                                full=True)
+            note += f" | {len(bad)} adaLN adapters DROPPED (curve-form — see log)"
+        else:
+            # WITH the numbers. "trained against a different variant" is not actionable on
+            # its own; the two shapes say which variant, and whether every layer is off by the
+            # same factor (a different width — nothing to do) or only some are (a fusion or
+            # naming difference — fixable).
+            sample = "; ".join(f"{k}: LoRA {d[0]}x{d[1]} into weight {w[0]}x{w[1]}"
+                               for k, d, w in bad[:3])
+            _log.note_on_change(
+                f"lora:shape:{name or '?'}", "FunPack",
+                f"{who}{len(bad)} of {matched} matched weights do not have the shape of the "
+                f"weight they name, so they are DROPPED before the merge. {sample}. Kept, they "
+                f"would not error — comfy reshapes any delta with the right element count and "
+                f"adds it scrambled, which shows up later as an all-NaN latent, not as a load "
+                f"failure. {len(bad)} of {matched} means "
+                + ("this LoRA was trained against a different variant of this architecture."
+                   if len(bad) < matched else
+                   "NOTHING from this file applies — if every LoRA in the stack says the same, "
+                   "suspect the checkpoint the loader built, not the LoRAs."))
+            note += f" | {len(bad)}/{matched} DROPPED (shape mismatch)"
+    return patches, note
 
 
 class FunPackApplyLoraWeights:
@@ -201,7 +551,10 @@ class FunPackApplyLoraWeights:
         optional = FlexibleOptionalInputType(
             any_type,
             {
-                "lora_list": ("STRING", {"default": "[]", "multiline": False}),
+                # The canvas draws this with web/funpack_lora_weights.js; the funpack_list
+                # spec is what lets the FunPack Editor draw the same rows instead of raw JSON.
+                "lora_list": lora_list_input(
+                    "LoRAs whose weights this node looks up for the current prompt."),
                 "refinement_key_input": ("STRING", {
                     "default": "",
                     "multiline": False,
@@ -421,13 +774,19 @@ class FunPackApplyLoraWeights:
 
 
 class FunPackLoraLoader:
-    """Loads the LoRA stack prepared by FunPack Apply LoRA Weights."""
+    """Loads and applies LoRAs. Complete on its own — the stack input is optional.
+
+    The `lora_list` on this node is the ordinary way in: pick files, they are applied. A
+    FunPack Apply LoRA Weights stack is only needed when the strengths are prompt-specific
+    and trained, which is a narrower case than it used to read as.
+    """
 
     CATEGORY = "FunPack/Model Management"
     RETURN_TYPES = ("MODEL", "CLIP", LORA_STACK_TYPE, "STRING")
     RETURN_NAMES = ("MODEL", "CLIP", "lora_stack", "status")
     FUNCTION = "load_loras"
-    DESCRIPTION = "Loads LoRAs from a FunPack LoRA stack without doing any learning."
+    DESCRIPTION = ("Loads and applies LoRAs. Pick files in its own list — a stack node is "
+                   "only needed for prompt-specific trained strengths.")
 
     def __init__(self):
         self.raw_lora_cache = OrderedDict()
@@ -458,10 +817,26 @@ class FunPackLoraLoader:
         return {
             "required": {
                 "model": ("MODEL",),
-                "lora_stack": (LORA_STACK_TYPE,),
+                "lora_list": lora_list_input(
+                    "LoRAs to apply, top to bottom. Enough on its own — a stack is only "
+                    "needed for prompt-specific trained weights. Empty is fine: the model "
+                    "passes straight through.",
+                    allow_empty=True),
             },
             "optional": {
                 "clip": ("CLIP",),
+                "lora_stack": (LORA_STACK_TYPE, {
+                    # Advanced: LoRAs are chosen in the list above. The stack is for trained,
+                    # prompt-specific strengths, so it must not read as the way in.
+                    "advanced": True,
+                    "tooltip": "Optional stack from FunPack Apply LoRA Weights, carrying "
+                               "prompt-specific trained strengths. Its LoRAs are applied "
+                               "first, then this node's own list."}),
+                "per_block": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Analyze each LoRA's block deltas and balance competing block "
+                               "strengths. LTX models only; a wired stack can switch this on "
+                               "by itself."}),
             },
         }
 
@@ -486,13 +861,17 @@ class FunPackLoraLoader:
         return coerce_bool(entry.get("per_block", lora_stack.get("per_block", False)))
 
     def _per_block_supported(self, model, lora_stack, entry):
-        if not self._per_block_requested(entry, lora_stack):
-            return False
+        """Whether to TRY per-block for this entry. Not a model whitelist any more.
 
-        if (lora_stack.get("mode") or "ltx2").lower() != "ltx2":
-            return False
-
-        return self._model_image_model(model) in LTX_IMAGE_MODELS
+        Per-block scaling is derived from the LoRA's own deltas — which blocks it actually
+        put energy into — so what decides whether it can run is whether this adapter names
+        numbered blocks, not which architecture it was trained for. That is discovered from
+        the patches themselves in _lora_block_profile, which returns None when there are
+        fewer than two blocks to compare; the caller then falls back to global and says so.
+        Refusing here by image_model meant a model FunPack had never heard of got the
+        fallback without anyone ever looking at its deltas.
+        """
+        return self._per_block_requested(entry, lora_stack)
 
     def _model_cache_key(self, model):
         model_wrapper = getattr(model, "model", None)
@@ -511,22 +890,20 @@ class FunPackLoraLoader:
             image_model,
         )
 
-    def _load_model_lora_patches(self, model, lora, lora_cache_key, model_cache_key=None):
+    def _load_model_lora_patches(self, model, lora, lora_cache_key, model_cache_key=None,
+                                 name=None):
+        """(patches, format note). The note says how the LoRA's keys had to be read."""
         if lora_cache_key is None:
-            key_map = comfy.lora.model_lora_keys_unet(model.model, {})
-            converted_lora = comfy.lora_convert.convert_lora(lora)
-            return comfy.lora.load_lora(converted_lora, key_map)
+            return resolve_lora_patches(model, lora, name=name)
 
         cache_key = (lora_cache_key, model_cache_key or self._model_cache_key(model))
-        loaded = self._cache_get(self.model_patch_cache, cache_key)
-        if loaded is not None:
-            return loaded
+        cached = self._cache_get(self.model_patch_cache, cache_key)
+        if cached is not None:
+            return cached
 
-        key_map = comfy.lora.model_lora_keys_unet(model.model, {})
-        converted_lora = comfy.lora_convert.convert_lora(lora)
-        loaded = comfy.lora.load_lora(converted_lora, key_map)
-        self._cache_put(self.model_patch_cache, cache_key, loaded, LORA_PATCH_CACHE_SIZE)
-        return loaded
+        result = resolve_lora_patches(model, lora, name=name)
+        self._cache_put(self.model_patch_cache, cache_key, result, LORA_PATCH_CACHE_SIZE)
+        return result
 
     def _split_model_patches_by_block(self, loaded):
         global_patches = {}
@@ -590,6 +967,20 @@ class FunPackLoraLoader:
             if cached is not None:
                 return cached
 
+        containers = {block_container_name(k) for k in loaded}
+        containers.discard(None)
+        if len(containers) > 1:
+            # Both containers number from 0, so their blocks would share buckets and one
+            # scale would land on two unrelated blocks. Declining is the honest answer; the
+            # caller falls back to global at the plain weight.
+            _log.feature(
+                "FunPack", "Per-block LoRA weights", False,
+                f"this model numbers its blocks in {len(containers)} separate stacks "
+                f"({', '.join(sorted(containers))}), which start at 0 each, so a block index "
+                f"does not identify one block. The LoRA applies globally at its plain "
+                f"weight instead.")
+            return None
+
         global_patches, block_patches = self._split_model_patches_by_block(loaded)
         block_scores = self._block_scores_from_patches(block_patches)
         base_scales = self._block_scales_from_scores(block_scores)
@@ -627,10 +1018,11 @@ class FunPackLoraLoader:
 
         result = dict(scales)
         suppressed = 0
+        anchors = semantic_anchor_blocks(block_indices)
         for block_index, scale in scales.items():
             pos = block_index / max_idx
             if bad and bad[0] <= pos <= bad[1]:
-                if block_index in SEMANTIC_ANCHOR_BLOCKS:
+                if block_index in anchors:
                     continue
                 result[block_index] = 0.0
                 suppressed += 1
@@ -642,9 +1034,10 @@ class FunPackLoraLoader:
         total = sum(block_scores.values())
         if total <= 0.0:
             return 1.0
-        anchor_energy = sum(block_scores.get(b, 0.0) for b in SEMANTIC_ANCHOR_BLOCKS)
+        anchors = semantic_anchor_blocks(block_scores.keys())
+        anchor_energy = sum(block_scores.get(b, 0.0) for b in anchors)
         anchor_share = anchor_energy / total
-        expected = len(SEMANTIC_ANCHOR_BLOCKS) / max(len(block_scores), 1)
+        expected = len(anchors) / max(len(block_scores), 1)
         ratio = anchor_share / max(expected, 1e-9)
         return max(0.92, min(1.08, 1.0 + (ratio - 1.0) * 0.08))
 
@@ -701,6 +1094,7 @@ class FunPackLoraLoader:
             return
 
         block_indices = sorted({block_index for profile in profiles for block_index in profile["normalized_scores"]})
+        anchors = semantic_anchor_blocks(block_indices)
         for block_index in block_indices:
             contributors = [
                 profile
@@ -736,7 +1130,7 @@ class FunPackLoraLoader:
                 advantage = (own_signal - strongest_other) / max(own_signal + strongest_other, 1e-9)
                 if advantage >= 0.0:
                     multiplier = 1.0 + min(0.18, advantage * 0.14) * min(1.0, overlap_ratio * 1.25)
-                elif block_index in SEMANTIC_ANCHOR_BLOCKS:
+                elif block_index in anchors:
                     continue
                 else:
                     pressure = min(1.0, overlap_ratio * 1.35)
@@ -791,12 +1185,12 @@ class FunPackLoraLoader:
             parts.insert(-1, f"anchor_q={quality:.2f}")
         return " ".join(parts)
 
-    def _load_lora_per_block(self, model, lora, model_weight):
+    def _load_lora_per_block(self, model, lora, model_weight, name=None):
         lora_cache_key = None
-        loaded = self._load_model_lora_patches(model, lora, lora_cache_key)
+        loaded, fmt = self._load_model_lora_patches(model, lora, lora_cache_key, name=name)
         profile = self._lora_block_profile({}, loaded, model_weight)
         if not profile:
-            return None, "per-block fallback=global"
+            return None, f"per-block fallback=global {fmt}"
 
         new_model, non_block_count, _ = self._apply_model_patches(
             model,
@@ -809,13 +1203,23 @@ class FunPackLoraLoader:
         max_eff = model_weight * max(scales.values())
         status = (
             f"per-block blocks={len(scales)} non_block={non_block_count} "
-            f"range={min_eff:.3f}..{max_eff:.3f}"
+            f"range={min_eff:.3f}..{max_eff:.3f} {fmt}"
         )
         return new_model, status
 
-    def load_loras(self, model, lora_stack, clip=None):
-        loras = lora_stack.get("loras", []) if isinstance(lora_stack, dict) else []
-        per_block = coerce_bool(lora_stack.get("per_block", False)) if isinstance(lora_stack, dict) else False
+    def load_loras(self, model, lora_list="[]", lora_stack=None, clip=None, per_block=False):
+        # Both sources are honoured: a wired stack carries trained, prompt-specific weights,
+        # the list is what the user typed here. Dropping either one silently would make a
+        # filled-in field do nothing.
+        stack = lora_stack if isinstance(lora_stack, dict) else {}
+        own = stack_from_lora_list(lora_list, per_block)
+        loras = list(stack.get("loras", [])) + own["loras"]
+        per_block = coerce_bool(stack.get("per_block", False)) or coerce_bool(per_block)
+        lora_stack = {**own, **stack, "per_block": per_block, "loras": loras}
+        if not loras:
+            # An empty loader is a wire, not an error: it hands the model on untouched so it
+            # can sit in the pipeline permanently, waiting for the run that wants a LoRA.
+            return (model, clip, lora_stack, "FunPack LoRA Loader | No active LoRAs")
         lines = [f"FunPack LoRA Loader | loading {len(loras)} LoRA(s)"]
         lines.append(f"Per-block application: {'enabled' if per_block else 'disabled'}")
         loaded_count = 0
@@ -832,7 +1236,8 @@ class FunPackLoraLoader:
             lora, lora_cache_key = self._load_lora_file(entry["name"])
             if self._per_block_supported(model, lora_stack, entry):
                 patch_cache_key = (lora_cache_key, model_cache_key)
-                loaded = self._load_model_lora_patches(model, lora, lora_cache_key, model_cache_key)
+                loaded, fmt = self._load_model_lora_patches(
+                    model, lora, lora_cache_key, model_cache_key, name=entry.get("name"))
                 profile = self._lora_block_profile(entry, loaded, model_weight, patch_cache_key)
                 if profile is not None:
                     item = {
@@ -851,7 +1256,7 @@ class FunPackLoraLoader:
                             "loaded": loaded,
                             "mode": "patch_global",
                             "model_weight": model_weight,
-                            "status": "per-block fallback=global",
+                            "status": f"per-block fallback=global {fmt}",
                         }
                     )
             elif self._per_block_requested(entry, lora_stack):
@@ -859,6 +1264,7 @@ class FunPackLoraLoader:
                     {
                         "entry": entry,
                         "lora": lora,
+                        "cache_key": lora_cache_key,
                         "mode": "global",
                         "model_weight": model_weight,
                         "status": "per-block unsupported -> global",
@@ -869,6 +1275,7 @@ class FunPackLoraLoader:
                     {
                         "entry": entry,
                         "lora": lora,
+                        "cache_key": lora_cache_key,
                         "mode": "global",
                         "model_weight": model_weight,
                         "status": "global",
@@ -893,16 +1300,59 @@ class FunPackLoraLoader:
                 apply_status = item["status"]
                 model, _, _ = self._apply_model_patches(model, item["loaded"], model_weight)
             else:
-                apply_status = item["status"]
-                model, clip = comfy.sd.load_lora_for_models(model, clip, item["lora"], model_weight, 0.0)
+                # Same resolver as the per-block path: comfy's own converters, plus the
+                # wrapper-prefix search, so an unusual format is not silently a no-op.
+                loaded, fmt = self._load_model_lora_patches(
+                    model, item["lora"], item.get("cache_key"), model_cache_key,
+                    name=entry.get("name"))
+                model, _, _ = self._apply_model_patches(model, loaded, model_weight)
+                apply_status = f"{item['status']} {fmt}"
 
             loaded_count += 1
             lines.append(
                 f"lora_{entry.get('slot', '?')}: {entry['name']} "
                 f"applied={model_weight:+.3f} source={entry.get('source', 'base')} mode={apply_status}"
             )
+            # ON THE CONSOLE, not only in `status`. How many weights a LoRA actually matched
+            # is the difference between "loaded" and "doing something", and the Editor's fixed
+            # graph shows this node's status output nowhere — so a file that matched nothing
+            # looked exactly like one that applied.
+            # "Active" for a file that matched nothing is the same lie the status string
+            # used to tell in private: loaded is not applied.
+            _log.feature("FunPack", f"LoRA {entry['name']}",
+                         "MATCHED NOTHING" not in apply_status,
+                         f"{apply_status} at {model_weight:+.3f}")
 
         if loaded_count == 0:
             lines.append("No LoRAs were applied.")
+            _log.feature("FunPack", "LoRA stack", False, "no LoRA is selected")
+        else:
+            verdict = self._stack_shape_verdict(lines)
+            if verdict:
+                _log.note_on_change("lora:stack_shape", "FunPack", verdict)
+                lines.append(verdict)
 
         return (model, clip, lora_stack, "\n".join(lines))
+
+    @staticmethod
+    def _stack_shape_verdict(lines):
+        """One line about the STACK, because the per-file lines cannot answer the question.
+
+        "3 of 400 weights dropped" is a property of one LoRA. "every weight of every LoRA
+        dropped" is a property of the model they were all measured against — the same reading
+        the user makes by eye across the status lines, made once here so it is not missed.
+        """
+        applied = [ln for ln in lines if " mode=" in ln]
+        if not applied:
+            return None
+        total = [ln for ln in applied if "DROPPED (shape mismatch)" in ln]
+        if not total:
+            return None
+        whole = [ln for ln in total if _dropped_all_of(ln)]
+        if len(whole) == len(applied) and len(applied) > 1:
+            return (f"all {len(applied)} LoRAs in this stack matched this model by name and "
+                    f"NONE by shape. That is one property shared by every file, so suspect the "
+                    f"checkpoint the loader built (a repack whose layout was mis-inferred) "
+                    f"before suspecting the LoRAs.")
+        return (f"{len(total)} of {len(applied)} LoRAs dropped weights for shape; the rest "
+                f"applied. Per-file numbers are on the lines above.")

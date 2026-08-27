@@ -16,6 +16,7 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -184,12 +185,272 @@ def test_an_unknown_operation_is_reported_not_guessed():
     assert out is lat and "unknown operation" in note
 
 
-def test_the_pin_is_dropped_when_the_operation_changed_the_resolution():
-    """upscale_2x leaves the chunk's anchor and mask the wrong size. Rescaling them would be
-    inventing an anchor, so the pin is dropped — and the caller reports it."""
+def test_the_pin_survives_an_operation_that_changed_the_resolution():
+    """upscale_2x leaves the chunk's mask the wrong size, which used to drop the pin and let
+    pass 2 re-denoise the anchor at 4x the pixels — the run most likely to drift.
+
+    The anchor is not re-derived from the source image: the pinned frames in the upscaled
+    state ARE the anchor, carried through the same upsampler as every other frame. Only the
+    mask has to be brought to the new grid.
+    """
     clean = torch.zeros(1, 4, 4, 8, 8)
     mask = torch.ones_like(clean)
     mask[:, :, :1] = 0.0
     chunk = {"samples": clean, "noise_mask": mask}
+    anchor = torch.full((1, 4, 1, 16, 16), 7.0)
+    upscaled = {"samples": torch.zeros(1, 4, 4, 16, 16)}
+    upscaled["samples"][:, :, :1] = anchor
+
+    out = _node()._restore_pinned_prefix(upscaled, chunk)
+    assert out is not upscaled
+    m = out["noise_mask"]
+    assert m.shape[-2:] == (16, 16)
+    assert float(m[:, :, :1].max()) == 0.0      # anchor frame still pinned...
+    assert float(m[:, :, 1:].min()) == 1.0      # ...and nothing else is
+    # The upsampler's anchor is what stays pinned — untouched by the restore.
+    assert torch.equal(out["samples"][:, :, :1], anchor)
+
+
+def test_the_pin_is_dropped_when_the_mask_cannot_be_rebuilt():
+    """A mask with no spatial axes to scale is unusable at the new size. Dropping the pin and
+    saying so beats pinning against a grid that isn't there."""
+    clean = torch.zeros(1, 4, 4, 8, 8)
+    mask = torch.ones(1, 4, 4)                  # 3-D: no H/W to rescale
+    mask[:, :1] = 0.0
+    chunk = {"samples": clean, "noise_mask": mask}
     upscaled = {"samples": torch.zeros(1, 4, 4, 16, 16)}
     assert _node()._restore_pinned_prefix(upscaled, chunk) is upscaled
+
+
+# ── a latent op is about the upsampler, not the model family ──────────────────
+# The op used to be switched off outright on MiniMax H3 because Lightricks' upsampler is
+# trained on LTX's 128-channel latent. That is a fact about the FILE, not about H3: with an
+# upsampler trained for the model, the op runs. What has to stay true is that a mismatched
+# one is refused by name rather than blowing up inside a convolution mid-render.
+import detailing  # noqa: E402
+
+
+class _TypedUpsampler(_FakeUpsampler):
+    def __init__(self, in_channels):
+        self.in_channels = in_channels
+
+
+def test_an_upsamplers_width_is_read_from_the_model():
+    assert detailing.upsampler_in_channels(_TypedUpsampler(24)) == 24
+
+
+def test_an_upsamplers_width_falls_back_to_its_first_convolution():
+    class _Weights:
+        def state_dict(self):
+            return {"initial_conv.weight": torch.zeros(512, 24, 3, 3)}
+    assert detailing.upsampler_in_channels(_Weights()) == 24
+
+
+def test_an_upsampler_wrapped_in_a_patcher_is_still_readable():
+    class _Patcher:
+        model = _TypedUpsampler(24)
+    assert detailing.upsampler_in_channels(_Patcher()) == 24
+
+
+def test_an_upsampler_for_another_model_is_refused_by_name():
+    lat = _video()                                   # 4-channel stand-in latents
+    out, note = _node()._second_pass_operate(lat, "upscale_2x", _TypedUpsampler(128), None)
+    assert out is lat
+    assert "128-channel" in note and "4-channel" in note
+
+
+def test_a_matching_upsampler_runs_on_any_family():
+    out, note = _node()._second_pass_operate(_video(h=8, w=8), "upscale_2x", _TypedUpsampler(4), None)
+    assert out["samples"].shape == (1, 4, 4, 16, 16)
+    assert "4x the pixels" in note
+
+
+def _installed(monkeypatch, files):
+    """Patch the SHARED folder_paths stub in place. Replacing sys.modules["folder_paths"]
+    would leak this test's view of the models folder into every later test file."""
+    monkeypatch.setattr(sys.modules["folder_paths"], "get_filename_list",
+                        lambda _kind: list(files))
+
+
+def test_auto_never_downloads_the_ltx_upsampler_for_a_model_it_cannot_fit(monkeypatch):
+    """A gigabyte, then a shape error. 'auto' takes what is installed instead."""
+    _installed(monkeypatch, ["h3_latent_upscaler.safetensors"])
+    monkeypatch.setattr(detailing, "DEFAULT_UPSAMPLER_FILE", "ltx.safetensors", raising=False)
+    assert detailing.resolve_upsampler_name("auto", 24) == "h3_latent_upscaler.safetensors"
+
+
+def test_auto_says_what_to_install_when_nothing_fits(monkeypatch):
+    _installed(monkeypatch, [])
+    try:
+        detailing.resolve_upsampler_name("auto", 24)
+    except RuntimeError as exc:
+        assert "24-channel" in str(exc) and "latent_upscale_models" in str(exc)
+    else:
+        raise AssertionError("expected a RuntimeError naming the channel width")
+
+
+def test_an_explicitly_chosen_file_is_always_honoured(monkeypatch):
+    _installed(monkeypatch, [])
+    assert detailing.resolve_upsampler_name("my_upsampler.safetensors", 24) == "my_upsampler.safetensors"
+
+
+# ── an upsampler ComfyUI cannot load at all ───────────────────────────────────
+
+def test_an_unknown_upsampler_architecture_is_named_not_a_python_error(monkeypatch):
+    """Core's loader is an if/elif with no else, so a file it does not recognise falls off
+    the end as `cannot access local variable 'model'` — which names neither the file nor
+    the problem, and reads like a FunPack bug."""
+    called = []
+    monkeypatch.setitem(
+        sys.modules, "comfy_extras.nodes_hunyuan",
+        types.SimpleNamespace(LatentUpscaleModelLoader=types.SimpleNamespace(
+            execute=lambda name: called.append(name))))
+    sd = {"encoder.layers.0.weight": object(), "decoder.out.bias": object()}
+    with pytest.raises(ValueError) as exc:
+        detailing._load_upsampler_via_core("h3_upsampler.safetensors", sd)
+    msg = str(exc.value)
+    assert "h3_upsampler.safetensors" in msg
+    assert "encoder, decoder" in msg          # what the file actually looks like
+    assert "Hunyuan Video 1.5 SR (720p)" in msg
+    assert not called, "core's loader should not be reached with a file it cannot branch on"
+
+
+def test_an_architecture_core_does_know_is_still_handed_over(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules, "comfy_extras.nodes_hunyuan",
+        types.SimpleNamespace(LatentUpscaleModelLoader=types.SimpleNamespace(
+            execute=lambda name: ("loaded",))))
+    sd = {"blocks.0.block.0.conv.weight": object()}
+    assert detailing._load_upsampler_via_core("hunyuan_sr.safetensors", sd) == "loaded"
+
+
+# ── the resample factor ───────────────────────────────────────────────────────
+
+class _ScalingUpsampler(torch.nn.Module):
+    """Stands in for H3's resizer: it takes a factor and reports the one it got."""
+
+    def __init__(self):
+        super().__init__()
+        self.seen = None
+        self.weight = torch.nn.Parameter(torch.zeros(1))
+
+    def funpack_latent_upscale(self, x, scale=2.0):
+        self.seen = float(scale)
+        h, w = int(round(x.shape[3] * scale / 2)) * 2, int(round(x.shape[4] * scale / 2)) * 2
+        return torch.nn.functional.interpolate(x, size=(x.shape[2], h, w), mode="nearest")
+
+
+class _FixedTwoX(torch.nn.Module):
+    """Stands in for Lightricks': 2x is the architecture, not a parameter."""
+
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        return torch.nn.functional.interpolate(
+            x, size=(x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest")
+
+
+def _latent(c=24, h=8, w=12):
+    return {"samples": torch.randn(1, c, 3, h, w)}
+
+
+def test_the_factor_reaches_an_upsampler_that_takes_one():
+    node = samplers.FunPackLTXAVSceneChainSampler()
+    up = _ScalingUpsampler()
+    out, note = node._second_pass_operate(_latent(), "upscale_2x", up, None, scale=1.5)
+    assert up.seen == 1.5
+    assert out["samples"].shape[-2:] == (12, 18)          # 8x12 -> 12x18, both even
+    assert "2.2x the pixels" in note
+
+
+def test_a_fixed_two_x_upsampler_says_it_ignored_the_factor(monkeypatch):
+    """Silently rounding 1.5 to 2 would make the knob a lie on LTX."""
+    node = samplers.FunPackLTXAVSceneChainSampler()
+    monkeypatch.setattr(detailing, "_per_channel_stats", lambda vae: None)
+    out, note = node._second_pass_operate(_latent(128), "upscale_2x", _FixedTwoX(), None, scale=1.5)
+    assert out["samples"].shape[-2:] == (16, 24)
+    assert "1.5x ignored" in note and "fixed at 2x" in note
+
+
+def test_sharpen_uses_the_factor_and_still_comes_back_to_size():
+    node = samplers.FunPackLTXAVSceneChainSampler()
+    up = _ScalingUpsampler()
+    out, note = node._second_pass_operate(_latent(), "sharpen", up, None, scale=3.0)
+    assert up.seen == 3.0
+    assert out["samples"].shape[-2:] == (8, 12)
+    assert "3x upsampler pass" in note
+
+
+def test_only_an_upsampler_that_takes_a_factor_is_asked_for_one():
+    assert detailing.upsampler_takes_a_scale(_ScalingUpsampler()) is True
+    assert detailing.upsampler_takes_a_scale(_FixedTwoX()) is False
+
+
+# ── a different sampler for pass 2 ────────────────────────────────────────────
+# What builds a shot well is often not what finishes it. The socket is optional and
+# unwired means "reuse pass 1", so nothing changes for a graph that already had one.
+
+
+def test_second_pass_sampler_is_the_last_optional_socket():
+    """Widget values are mapped positionally from a saved workflow: a new SOCKET is safe at
+    the end, a new WIDGET after one would re-read every saved graph one slot off."""
+    from samplers import FunPackLTXAVSceneChainSampler
+    opt = FunPackLTXAVSceneChainSampler.INPUT_TYPES()["optional"]
+    assert opt["second_pass_sampler"][0] == "SAMPLER"
+    assert list(opt)[-1] == "second_pass_sampler"
+
+
+def test_studio_mirrors_the_high_pass_algorithm_unless_asked_otherwise():
+    """The low pass's SAMPLER output is wired to second_pass_sampler now. Without this, every
+    project that already used a second pass would silently switch pass 2 to whatever its
+    low-pass panel happened to say."""
+    import comfy.samplers as _cs
+    import torch as _t
+    from conditioning import FunPackStudio
+
+    seen = []
+    _orig = FunPackStudio._build_one_sampler
+
+    def _spy(cfg, **kw):
+        seen.append(dict(cfg))
+        return ("S", _t.linspace(1.0, 0.0, 3))
+
+    FunPackStudio._build_one_sampler = staticmethod(_spy)
+    try:
+        FunPackStudio._build_samplers({
+            "high": {"type": "Hybrid Euler 2S", "hybrid": {"eta": 0.7}},
+            "low": {"type": "Distilled Flow", "sigmas": "0.4, 0.0"},
+        })
+    finally:
+        FunPackStudio._build_one_sampler = _orig
+    high, low = seen
+    assert low["type"] == high["type"] == "Hybrid Euler 2S"
+    assert low["hybrid"] == {"eta": 0.7}
+    assert low["sigmas"] == "0.4, 0.0"        # the SCHEDULE is always the low pass's own
+
+
+def test_own_sampler_lets_pass_two_use_its_own_algorithm():
+    import torch as _t
+    from conditioning import FunPackStudio
+
+    seen = []
+    _orig = FunPackStudio._build_one_sampler
+    FunPackStudio._build_one_sampler = staticmethod(
+        lambda cfg, **kw: (seen.append(dict(cfg)), ("S", _t.linspace(1.0, 0.0, 3)))[1])
+    try:
+        FunPackStudio._build_samplers({
+            "high": {"type": "Hybrid Euler 2S"},
+            "low": {"type": "KSampler", "own_sampler": True, "ksampler_name": "res_multistep"},
+        })
+    finally:
+        FunPackStudio._build_one_sampler = _orig
+    assert seen[1]["type"] == "KSampler"
+    assert seen[1]["ksampler_name"] == "res_multistep"
+
+
+def test_the_editor_wires_the_low_pass_sampler_to_pass_two():
+    from movie_editor.backend import builder
+    assert builder.CORE_LINKS["sampler"]["second_pass_sampler"] == ("studio", 6)
+    assert builder.CORE_LINKS["sampler"]["second_pass_sigmas"] == ("studio", 7)

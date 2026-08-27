@@ -33,6 +33,12 @@
     window.FunPackRestart?.waitForReload?.(msgEl, startMs);
   }
 
+  // All three actions below end in a restart and a page reload, so anything the store is
+  // still holding has to reach disk first. flushSave() ignores the suspension for this.
+  async function _flushPendingEdits() {
+    try { await window.Store?.flushSave?.(); } catch (_) {}
+  }
+
   async function update() {
     const gs = await _ensureStatus();
     if (!gs) return;
@@ -43,18 +49,33 @@
     const branch = gs.branch || "dev";
     const behind = gs.behind > 0 ? `\n\n${gs.behind} commit(s) available on origin/${branch}.` : "";
     if (!confirm(`Pull latest "${branch}" from origin and restart ComfyUI?\n\nAny running generation will be lost.${behind}`)) return;
+    await _flushPendingEdits();
     const msg = _restartOverlay(`Pulling origin/${branch}…\nComfyUI will restart when the pull finishes.`);
     try {
       const res = await API().gitUpdate(branch);
-      msg.textContent = res.updated
-        ? `Updated ${res.before} → ${res.after}.\nRestarting ComfyUI…`
-        : "Already up to date.\nRestarting ComfyUI…";
+      const deps = _reportRequirements(res);
+      msg.textContent = (res.updated
+        ? `Updated ${res.before} → ${res.after}.${deps}\nRestarting ComfyUI…`
+        : "Already up to date.\nRestarting ComfyUI…");
     } catch (e) {
       window.FunPackRestart?.removeOverlay?.();
       alert("Update failed: " + (e.message || e));
       return;
     }
     _waitForComfyReload(msg, Date.now());
+  }
+
+  // An update that changed requirements.txt installs them before restarting. A FAILED
+  // install is the one outcome the user has to act on — the code is updated and the node
+  // pack will not import — so it interrupts rather than scrolling past in an overlay.
+  function _reportRequirements(res) {
+    const r = res && res.requirements;
+    if (!r || !r.ran) return "";
+    if (r.ok) return "\nDependencies installed.";
+    alert("FunPack updated, but installing its dependencies failed.\n\n"
+          + (r.detail || "")
+          + "\n\nFunPack may not load until this is run.");
+    return "\nDependency install FAILED — see the message above.";
   }
 
   async function switchBranch() {
@@ -74,12 +95,14 @@
       onPick: async (branch) => {
         if (branch === cur) return;
         if (!confirm(`Switch to "${branch}", pull from origin, and restart ComfyUI?\n\nAny running generation will be lost.`)) return;
+        await _flushPendingEdits();
         const msg = _restartOverlay(`Switching to ${branch}…\nComfyUI will restart when ready.`);
         try {
           const res = await API().gitCheckout(branch);
-          msg.textContent = res.updated
-            ? `Switched to ${branch} (${res.before} → ${res.after}).\nRestarting ComfyUI…`
-            : `On ${branch}, already up to date.\nRestarting ComfyUI…`;
+          const deps = _reportRequirements(res);
+          msg.textContent = (res.updated
+            ? `Switched to ${branch} (${res.before} → ${res.after}).${deps}\nRestarting ComfyUI…`
+            : `On ${branch}, already up to date.\nRestarting ComfyUI…`);
         } catch (e) {
           window.FunPackRestart?.removeOverlay?.();
           alert("Branch switch failed: " + (e.message || e));
@@ -90,5 +113,61 @@
     });
   }
 
-  window.FunPackGit = { refresh, get, update, switchBranch };
+  async function restartComfy() {
+    if (!confirm(
+      "Restart ComfyUI now?\n\nThe server will be down for ~10-40s and any running generation "
+      + "will be lost. This page reloads automatically when it's back."
+    )) return;
+    await _flushPendingEdits();
+    const msg = _restartOverlay("Restarting ComfyUI…\nThis page will reload when it's back.");
+    if (!msg) return;
+    try { await API().restart(); } catch (_) { /* the connection drops as it execv's */ }
+    _waitForComfyReload(msg, Date.now());
+  }
+
+  // The three maintenance actions every FunPack splash screen offers. Shared because
+  // they are the actions you need BEFORE opening a project — a branch swap should not
+  // require first loading a montage you did not want.
+  function maintenanceRow(cls) {
+    const { el } = window.dom;
+    const row = el("div", "maint-row" + (cls ? " " + cls : ""));
+
+    const mk = (label, hint, fn) => {
+      const b = el("button", "maint-btn");
+      b.type = "button";
+      b.append(el("span", "maint-btn-label", label));
+      b.append(el("span", "maint-btn-hint", hint));
+      b.onclick = fn;
+      return b;
+    };
+
+    const updateBtn = mk("Update", "Checking…", () => update());
+    const switchBtn = mk("Switch branch", "Checking…", () => switchBranch());
+    const restartBtn = mk("Restart ComfyUI", "Reload the server without updating", () => restartComfy());
+    row.append(updateBtn, switchBtn, restartBtn);
+
+    const hint = (b) => b.querySelector(".maint-btn-hint");
+    // No isConnected guard: callers build the row before appending their overlay, so
+    // status can land while the row is still detached — bailing there would leave the
+    // hints reading "Checking…" for good. Writing into a discarded row is harmless.
+    refresh().then((gs) => {
+      if (!gs?.ok) {
+        updateBtn.classList.add("disabled");
+        switchBtn.classList.add("disabled");
+        hint(updateBtn).textContent = "Git unavailable for this install";
+        hint(switchBtn).textContent = "Git unavailable for this install";
+        return;
+      }
+      hint(updateBtn).textContent = gs.dirty
+        ? "Local changes — commit first"
+        : (gs.behind > 0 ? `${gs.behind} commit(s) behind origin/${gs.branch}` : `origin/${gs.branch} up to date`);
+      hint(switchBtn).textContent = gs.dirty
+        ? `On ${gs.branch} · local changes — commit first`
+        : `On ${gs.branch} · pick another`;
+    });
+
+    return row;
+  }
+
+  window.FunPackGit = { refresh, get, update, switchBranch, restartComfy, maintenanceRow };
 })();

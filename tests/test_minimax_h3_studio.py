@@ -76,7 +76,7 @@ def test_an_ltx_anchor_is_not_carried_on_the_conditioning():
     """LTX writes the anchor into the latent in the graph. Carrying it here too would put a
     second, competing anchor mechanism on a family that already has one."""
     node = FunPackVideoRefinerV2()
-    node._gemma3_has_vision = lambda clip: True
+    node._encoder_has_vision = lambda clip: True
     _cond, meta, _status = node._v2_encode_prompt(LTXClip(), "a shot", reference_image=IMAGE)
     assert "funpack_h3_anchor" not in meta
 
@@ -152,7 +152,67 @@ def test_an_ltx_split_is_left_alone():
     """On LTX the anchor reaches the model through the latent. Adding Gemma3 vision to scene 0
     here would change what every existing multi-scene LTX project generates."""
     node = FunPackVideoRefinerV2()
-    node._gemma3_has_vision = lambda clip: True
+    node._encoder_has_vision = lambda clip: True
     scenes = node._v2_transition_scene_conditionings(LTXClip(), ["a room", "a street"],
                                                      reference_image=IMAGE)
     assert all("funpack_h3_anchor" not in m for _c, m in scenes)
+
+
+# --- which input actually owns the conditioning -----------------------------------
+# A wired positive CONDITIONING owns the prompt; CLIP keeps the negative, the references and
+# phrase classification. CLIP used to win, silently, so a graph feeding Studio from an i2v or
+# r2v node had its conditioning replaced by a text-only re-encode Studio could not make
+# equivalent — it has no way to reach the reference image the node had.
+
+class _StubClip:
+    pass
+
+
+def _source(node, clip, wired, monkeypatch):
+    monkeypatch.setattr(
+        node, "_v2_encode_prompt",
+        lambda *a, **k: (torch.ones(1, 4, 8), {"pooled_output": None}, "encoded"),
+        raising=False)
+    monkeypatch.setattr(
+        node, "_v2_extract_conditioning",
+        lambda c: (torch.zeros(1, 4, 8), {"pooled_output": None}), raising=False)
+    monkeypatch.setattr(node, "_v2_text_tokenizer_status", lambda: "tokenizer ok", raising=False)
+    return node._v2_conditioning_source(clip, "a prompt", wired)
+
+
+def test_a_wired_conditioning_owns_the_prompt_even_with_clip_connected(monkeypatch, capsys):
+    """CLIP used to win, so Studio re-encoded from text and the node's own conditioning was
+    discarded. The node may have seen a reference image Studio has no way to reach, making
+    the re-encode a different tensor rather than an approximation of the same one."""
+    node = FunPackVideoRefinerV2()
+    wired = [[torch.zeros(1, 4, 8), {}]]
+    cond, _meta, status, owner = _source(node, _StubClip(), wired, monkeypatch)
+    assert owner == "CONDITIONING-owned"
+    assert torch.equal(cond, torch.zeros(1, 4, 8))     # the wired tensor, not a re-encode
+    assert "owns the prompt" in status
+    assert "CLIP still encodes the negative" in status
+
+
+def test_the_ownership_note_is_said_once_not_once_per_scene(monkeypatch, capsys):
+    node = FunPackVideoRefinerV2()
+    wired = [[torch.zeros(1, 4, 8), {}]]
+    for _ in range(3):
+        _source(node, _StubClip(), wired, monkeypatch)
+    assert capsys.readouterr().out.count("owns the prompt") == 1
+
+
+def test_a_wired_conditioning_is_used_when_clip_is_absent(monkeypatch):
+    node = FunPackVideoRefinerV2()
+    wired = [[torch.zeros(1, 4, 8), {}]]
+    cond, _meta, status, owner = _source(node, None, wired, monkeypatch)
+    assert owner == "CONDITIONING-owned"
+    assert torch.equal(cond, torch.zeros(1, 4, 8))
+    assert "CLIP still encodes" not in status
+
+
+def test_clip_alone_says_nothing_extra(monkeypatch, capsys):
+    node = FunPackVideoRefinerV2()
+    _cond, _meta, status, owner = _source(node, _StubClip(), None, monkeypatch)
+    assert owner == "CLIP-owned"
+    assert "IGNORED" not in status
+    assert capsys.readouterr().out == ""

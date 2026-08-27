@@ -1,5 +1,10 @@
 """Segmented detailing: ADetailer-style region refine for the Scene Chain sampler.
 
+FOR FUTURE REFERENCE. Never validated on a real run, so as of 4.0.0 it is not offered in
+the Editor and stays off unless a raw ComfyUI graph ticks its widget. Kept whole rather
+than deleted: the CLIPSeg tube, the upsampler pass and the feathered paste-back are the
+hard parts, and they are worth having if this is ever picked up again.
+
 After a scene finishes denoising, CLIPSeg (text-prompted segmentation, the same
 model family face-swap stacks use for occlusion masking) locates user-named
 regions ("hands", "feet", ...) on a few decoded keyframes. The matched region is
@@ -99,7 +104,34 @@ DEFAULT_UPSAMPLER_REPO = "Lightricks/LTX-2.3"
 DEFAULT_UPSAMPLER_FILE = "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
 
 
-def resolve_upsampler_name(model_name=None):
+# LTX-2's video latent width. The official Lightricks upsampler is trained on it, so a
+# model whose latents are a different width cannot use that file no matter how it is loaded.
+LTX_LATENT_CHANNELS = 128
+
+
+def upsampler_in_channels(model):
+    """How many latent channels an upsampler expects, or None when it can't be read.
+
+    Used to say "this upsampler is for a different model" instead of letting a shape error
+    surface from inside a conv three minutes into a render.
+    """
+    for candidate in (model, getattr(model, "model", None)):
+        if candidate is None:
+            continue
+        declared = getattr(candidate, "in_channels", None)
+        if isinstance(declared, int) and declared > 0:
+            return declared
+        state = getattr(candidate, "state_dict", None)
+        if not callable(state):
+            continue
+        for tensor in state().values():
+            # The first convolution is the input one; its second dim is what it accepts.
+            if getattr(tensor, "ndim", 0) >= 4:
+                return int(tensor.shape[1])
+    return None
+
+
+def resolve_upsampler_name(model_name=None, latent_channels=None):
     """Turn the node's detail_upsampler widget value into a loadable filename.
 
     Explicit filename -> returned as-is. "auto" (and the legacy "None" default)
@@ -107,6 +139,10 @@ def resolve_upsampler_name(model_name=None):
     installed latent upscale model, else download the official file from HF.
     Raises with a user-actionable message when nothing can be obtained — callers
     surface it, they must NOT silently skip.
+
+    `latent_channels` is the width of the latents this run actually produces. When it is
+    not LTX's, the official Lightricks file cannot be the answer, so it is never downloaded
+    on a model it could not serve — a gigabyte for nothing, then a shape error.
     """
     import os
 
@@ -116,6 +152,14 @@ def resolve_upsampler_name(model_name=None):
     if name and name not in ("None", "auto"):
         return name
     files = folder_paths.get_filename_list("latent_upscale_models")
+    if latent_channels is not None and int(latent_channels) != LTX_LATENT_CHANNELS:
+        if files:
+            return files[0]
+        raise RuntimeError(
+            f"no latent upscale model installed, and this model's latents are "
+            f"{int(latent_channels)}-channel, so the official Lightricks upsampler "
+            f"({LTX_LATENT_CHANNELS}-channel) would not fit it — put an upsampler trained "
+            "for this model in models/latent_upscale_models")
     if DEFAULT_UPSAMPLER_FILE in files:
         return DEFAULT_UPSAMPLER_FILE
     spatial = [f for f in files if "spatial" in f.lower() and "upscal" in f.lower()]
@@ -165,9 +209,20 @@ def load_latent_upsampler(model_name):
 
     model_path = folder_paths.get_full_path_or_raise("latent_upscale_models", model_name)
     sd, metadata = comfy.utils.load_torch_file(model_path, safe_load=True, return_metadata=True)
+    try:
+        from . import h3_latent_upscaler as _h3up
+    except ImportError:
+        import h3_latent_upscaler as _h3up
+    if _h3up.is_h3_latent_upscaler(sd):
+        # MiniMax H3's own upscaler. ComfyUI has no branch for this architecture, so
+        # without this the only published 24-channel upsampler needs a custom node pack —
+        # and second_pass_op on H3 needs a 24-channel one to run at all.
+        return _h3up.from_state_dict(sd, dtype=comfy.model_management.vae_dtype(
+            allowed_dtypes=[torch.bfloat16, torch.float32]))
     if "post_upsample_res_blocks.0.conv2.bias" not in sd:
-        raise ValueError(
-            f"{model_name} is not an LTX latent upsampler (expected post_upsample_res_blocks keys).")
+        # Not Lightricks' architecture. ComfyUI's own loader knows the others (and will know
+        # the next one), so hand it over rather than declaring the file unusable here.
+        return _load_upsampler_via_core(model_name, sd)
     config = json.loads(metadata["config"])
     # ComfyUI v0.29.0 (upstream f8a3fd9d) moved the upsampler onto DynamicVram and made
     # `operations` a required argument of from_config; older cores build nn.Modules
@@ -183,6 +238,53 @@ def load_latent_upsampler(model_name):
     model.load_state_dict(sd)
     model.eval()
     return model
+
+
+# The state-dict keys ComfyUI's own loader branches on, and what each one is.
+# Its execute() is an if/elif/elif with NO else, so a file matching none of them falls off
+# the end and raises `cannot access local variable 'model'` — a Python internal that names
+# neither the file nor the problem. Probing here means an unknown architecture is reported
+# as what it is, and it also means we never depend on that missing else.
+CORE_UPSAMPLER_SIGNATURES = (
+    ("blocks.0.block.0.conv.weight", "Hunyuan Video 1.5 SR (720p)"),
+    ("up.0.block.0.conv1.conv.weight", "Hunyuan Video 1.5 SR (1080p)"),
+)
+
+
+def _key_families(sd, limit=6):
+    """A few distinguishing top-level key prefixes, to identify an unknown file by."""
+    seen = []
+    for key in sd:
+        head = str(key).split(".")[0]
+        if head not in seen:
+            seen.append(head)
+        if len(seen) >= limit:
+            break
+    return ", ".join(seen) or "no keys"
+
+
+def _load_upsampler_via_core(model_name, sd=None):
+    """ComfyUI's Load Latent Upscale Model, for every architecture that is not LTX's."""
+    try:
+        from comfy_extras.nodes_hunyuan import LatentUpscaleModelLoader
+    except ImportError as exc:
+        raise ValueError(
+            f"{model_name} is not an LTX latent upsampler, and this ComfyUI has no other "
+            "latent upscale model loader to try") from exc
+    if sd is not None and not any(k in sd for k, _ in CORE_UPSAMPLER_SIGNATURES):
+        known = ", ".join(name for _, name in CORE_UPSAMPLER_SIGNATURES)
+        raise ValueError(
+            f"{model_name} is not an architecture this ComfyUI can load as a latent "
+            f"upscale model. It knows Lightricks LatentUpsampler and {known}; this file's "
+            f"keys start with: {_key_families(sd)}. Either it is not a latent upsampler, or "
+            "it needs the custom node pack it shipped with")
+    out = LatentUpscaleModelLoader.execute(model_name)
+    result = getattr(out, "result", out)
+    if isinstance(result, (tuple, list)):
+        result = result[0]
+    if result is None:
+        raise ValueError(f"{model_name} could not be loaded as a latent upscale model")
+    return result
 
 
 def _get_clipseg():
@@ -371,7 +473,18 @@ def _per_channel_stats(vae):
     return getattr(getattr(vae, "first_stage_model", None), "per_channel_statistics", None)
 
 
-def _run_upsampler(upsampler, video_crop, vae, debug=False):
+def upsampler_takes_a_scale(upsampler):
+    """Whether this upsampler can be asked for a factor other than 2x.
+
+    Lightricks' is a fixed 2x network (its final PixelShuffle decides that, not a
+    parameter); H3's resizer interpolates to a requested size, so it takes any factor in
+    its trained range. Asking the wrong one for 1.5x would silently give 2x.
+    """
+    return callable(getattr(getattr(upsampler, "model", upsampler),
+                            "funpack_latent_upscale", None))
+
+
+def _run_upsampler(upsampler, video_crop, vae, debug=False, scale=2.0):
     """un_normalize -> LatentUpsampler(2x spatial) -> normalize, on the crop.
 
     Same recipe as comfy's LTXVLatentUpsampler node: the model was trained on
@@ -380,21 +493,27 @@ def _run_upsampler(upsampler, video_crop, vae, debug=False):
     """
     import comfy.model_management
 
+    # Core's loader hands back a patcher; FunPack's LTX path hands back the module itself.
+    module = getattr(upsampler, "model", upsampler)
     device = comfy.model_management.get_torch_device()
-    model_dtype = next(upsampler.parameters()).dtype
+    model_dtype = next(module.parameters()).dtype
     in_dtype, in_device = video_crop.dtype, video_crop.device
-    stats = _per_channel_stats(vae)
+    # An upscaler that owns its normalisation (H3's) says so, because its statistics are the
+    # model's own — running it through the VAE's per-channel stats instead would hand it a
+    # distribution it never saw.
+    own_norm = getattr(module, "funpack_latent_upscale", None)
+    stats = None if callable(own_norm) else _per_channel_stats(vae)
     try:
-        upsampler.to(device)
+        module.to(device)
         x = video_crop.to(device=device, dtype=model_dtype)
         if stats is not None:
             x = stats.un_normalize(x)
         with torch.no_grad():
-            x = upsampler(x)
+            x = own_norm(x, scale=float(scale)) if callable(own_norm) else module(x)
         if stats is not None:
             x = stats.normalize(x)
     finally:
-        upsampler.cpu()
+        module.cpu()
     return x.to(device=in_device, dtype=in_dtype)
 
 

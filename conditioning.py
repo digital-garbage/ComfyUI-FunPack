@@ -6,12 +6,19 @@ import math
 import os
 import random
 import re
+import time
+import weakref
 from datetime import datetime, timezone
 from hashlib import md5
 from typing import Optional
 
 import numpy as np
 import torch
+
+try:
+    from . import funpack_log as _log
+except ImportError:  # flat import when ComfyUI loads the pack as a top-level module
+    import funpack_log as _log
 import torch.nn.functional as F
 from PIL import Image, ImageDraw, ImageFont
 from safetensors.torch import load_file
@@ -245,12 +252,71 @@ def tensor_to_serializable(t: torch.Tensor) -> dict:
         "dtype": str(arr.dtype)
     }
 
+# A tensor inside the refinement key is one of three things:
+#   {"data","shape","dtype"}   an inline base64 blob — the original format, still read
+#   {"__tensor__": Tensor}     loaded from the sidecar, in memory only
+#   {"__tensor_ref__": id}     what an externalised tensor looks like ON DISK
+# The blob form is what makes a key slow: it is base64 inside a JSON that is fully parsed and
+# fully rewritten every run, and one conditioning delta is several megabytes of it.
+TENSOR_SIDECAR_SUFFIX = ".tensors.pt"
+
+
 def serializable_to_tensor(d: dict) -> torch.Tensor:
+    held = d.get("__tensor__") if isinstance(d, dict) else None
+    if isinstance(held, torch.Tensor):
+        tensor = held.to(dtype=torch.float32)
+        return tensor.cuda() if torch.cuda.is_available() else tensor
     arr = np.frombuffer(base64.b64decode(d["data"]), dtype=d["dtype"]).reshape(d["shape"]).copy()
     tensor = torch.from_numpy(arr).to(dtype=torch.float32)
     if torch.cuda.is_available():
         tensor = tensor.cuda()
     return tensor
+
+def _is_tensor_blob(value):
+    return isinstance(value, dict) and "data" in value and "shape" in value and "dtype" in value
+
+
+def externalize_tensors(value, store, path="state"):
+    """Replace every tensor in a state tree with a reference, collecting them into `store`.
+
+    Ids are the tensor's PATH in the tree ("state.global.liked_dir.direction"), so the JSON
+    stays readable and diffable and a reader can see what a reference points at. Returns the
+    tree with references in place of blobs; the caller writes `store` beside the JSON.
+    """
+    if isinstance(value, dict):
+        held = value.get("__tensor__")
+        if isinstance(held, torch.Tensor):
+            store[path] = held.detach().cpu()
+            return {"__tensor_ref__": path, "shape": list(held.shape), "dtype": str(held.dtype)}
+        if _is_tensor_blob(value):
+            arr = np.frombuffer(base64.b64decode(value["data"]),
+                                dtype=value["dtype"]).reshape(value["shape"]).copy()
+            store[path] = torch.from_numpy(arr)
+            return {"__tensor_ref__": path, "shape": list(value["shape"]),
+                    "dtype": str(value["dtype"])}
+        return {k: externalize_tensors(v, store, f"{path}.{k}") for k, v in value.items()}
+    if isinstance(value, list):
+        return [externalize_tensors(v, store, f"{path}[{i}]") for i, v in enumerate(value)]
+    return value
+
+
+def internalize_tensors(value, store):
+    """Put the sidecar's tensors back behind their references, in memory.
+
+    A reference whose tensor is missing from the sidecar is left as-is: consumers read
+    tensors through serializable_to_tensor, which returns nothing for it, and a missing
+    direction is a direction not applied rather than a broken run.
+    """
+    if isinstance(value, dict):
+        ref = value.get("__tensor_ref__")
+        if isinstance(ref, str):
+            held = store.get(ref)
+            return {"__tensor__": held} if isinstance(held, torch.Tensor) else value
+        return {k: internalize_tensors(v, store) for k, v in value.items()}
+    if isinstance(value, list):
+        return [internalize_tensors(v, store) for v in value]
+    return value
+
 
 def _safe_float(value, fallback=0.0):
     try:
@@ -459,7 +525,9 @@ def protect_audio_channels(steered, original):
         out = steered.clone()
         out[..., v:] = original[..., v:].to(device=out.device, dtype=out.dtype)
         return out
-    except Exception:
+    except Exception as _e:
+        _log.failed("FunPackStudio", "audio channel protection", _e,
+                    "the conditioning edit reached the AUDIO channels too")
         return steered
 
 
@@ -477,7 +545,9 @@ def scale_conditioning_spread(cond, factor):
         m = vid.mean(dim=-1, keepdim=True)
         out[..., :v] = m + (vid - m) * float(factor)
         return out
-    except Exception:
+    except Exception as _e:
+        _log.failed("FunPackStudio", "conditioning spread scaling", _e,
+                    "the conditioning keeps its original spread")
         return cond
 
 
@@ -529,6 +599,19 @@ def refinement_state_path(refinement_key, mode, prefix="refine", extension="json
 
 
 def clone_latent(latent):
+    """Shallow-clone a LATENT dict, deep-copying its tensor values.
+
+    A NestedTensor (LTXAV / H3 packed audio+video) is NOT a torch.Tensor, so it is carried over
+    BY REFERENCE and the "clone" aliases the caller's samples. That is safe here, and an audit
+    should not re-open it: `latent_samples` returns None for a nested value, so
+    `latent_is_plain_video_tensor` is False and `_refine_latent` rejects the latent outright
+    (`_raise_wrong_latent`) before reaching this function. Every other caller returns the clone
+    unmodified — the two writes in `_refine_latent` REPLACE the "samples" key rather than
+    mutating it in place, so nothing can reach through the alias.
+
+    The sampler's own `_clone_latent` unbinds and clones each stream, because it works on
+    latents that ARE nested.
+    """
     if not isinstance(latent, dict):
         return None
 
@@ -718,7 +801,9 @@ def _expand_with_map(text):
               "orig_end": len(text), "is_shortcut": False}]
     try:
         data = load_shortcut_db()
-    except Exception:
+    except Exception as _e:
+        _log.failed("FunPackShortcuts", "shortcut library load", _e,
+                    "the prompt is used VERBATIM — no shortcut triggers were expanded")
         return text, whole
     candidates = []
     for db_key, shortcut in (data.get("shortcuts", {}) or {}).items():
@@ -751,7 +836,9 @@ def _expand_with_map(text):
     _rev_random = bool(_revolver.get("random"))
     try:
         pattern = re.compile(combined, re.IGNORECASE | re.UNICODE)
-    except re.error:
+    except re.error as _e:
+        _log.failed("FunPackShortcuts", "shortcut trigger pattern", _e,
+                    "the prompt is used VERBATIM — no shortcut triggers were expanded")
         return text, whole
 
     pieces, parts, exp_pos, last = [], [], 0, 0
@@ -1111,6 +1198,39 @@ def parse_timeline_segments(prompt):
     return {"anchor": anchor, "scenes": scenes, "transitions": transitions}
 
 
+class _ClipTokenizerAdapter:
+    """Presents a live Comfy tokenizer through the slice of the HuggingFace API the refinement
+    code uses: call it for `input_ids`, decode ids back to text.
+
+    Comfy's inner tokenizers take text and nothing else, so truncation and the leading start
+    token are handled here. Dropping the start token matters: concept spans are found by
+    matching a phrase's ids inside the whole prompt's ids, and a BOS on the phrase never
+    matches."""
+
+    def __init__(self, sd_tokenizer):
+        self._t = sd_tokenizer.tokenizer
+        self._start = getattr(sd_tokenizer, "start_token", None)
+        self.name_or_path = str(getattr(sd_tokenizer, "embedding_key", "") or "CLIP")
+
+    def __call__(self, text, add_special_tokens=True, truncation=False, max_length=None, **_):
+        ids = list((self._t(text) or {}).get("input_ids") or [])
+        if not add_special_tokens and self._start is not None:
+            while ids and ids[0] == self._start:
+                ids.pop(0)
+        if truncation and max_length:
+            ids = ids[: int(max_length)]
+        return {"input_ids": ids}
+
+    def encode(self, text, **kwargs):
+        return self(text, **kwargs)["input_ids"]
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        try:
+            return self._t.decode(list(token_ids), skip_special_tokens=skip_special_tokens)
+        except TypeError:
+            return self._t.decode(list(token_ids))
+
+
 class FunPackVideoRefiner:
     LATENT_OUTPUT_INDEX = 6
     NO_LATENT_REFERENCE_ERROR = "No available latent to operate. Please connect reference latent to input of Video Refiner."
@@ -1131,6 +1251,13 @@ class FunPackVideoRefiner:
                 "trust_remote_code": True,
                 "use_fast": True,
             }),
+        ],
+        # MiniMax H3 encodes with Qwen3-VL, not Gemma. Falling through to the ltx2 entry
+        # downloaded a 12B Gemma tokenizer for a Qwen model: every token span it produced was
+        # measured with the wrong vocabulary, and it fetched ~50 MB over the network to do it.
+        "minimax_h3": [
+            ("Qwen/Qwen3-VL-32B-Instruct", {"use_fast": True}),
+            ("Qwen/Qwen3-32B", {"use_fast": True}),
         ],
         "wan": [
             ("Wan-AI/Wan2.2-T2V-A14B", {
@@ -1183,20 +1310,70 @@ class FunPackVideoRefiner:
 
         return sources
 
+    @staticmethod
+    def _clip_text_tokenizer(clip):
+        """The tokenizer that actually produced the conditioning, or None.
+
+        `clip.tokenizer` is a Comfy SD1Tokenizer holding one named sub-tokenizer — `gemma3_12b`
+        on LTX-2.3, `gemma4` on LTX-2.5, `umt5_xxl` on WAN. The name is on `.clip`."""
+        top = getattr(clip, "tokenizer", None)
+        name = getattr(top, "clip", None) if top is not None else None
+        sub = getattr(top, name, None) if isinstance(name, str) else None
+        return sub if getattr(sub, "tokenizer", None) is not None else None
+
+    @staticmethod
+    def _encoder_family_changed(stored, current):
+        """Whether learned state from `stored` may still be applied under `current`.
+
+        Either side being empty means unknown — an older session file, or a run with no CLIP
+        connected — and unknown must never trigger a reset, or every conditioning-only run
+        would wipe the key it was meant to use."""
+        return bool(current and stored and stored != current)
+
     @classmethod
-    def _get_tokenizer(cls, mode="ltx2"):
+    def _encoder_family(cls, clip):
+        """Short name of the text encoder behind `clip` ("gemma3_12b", "gemma4", ...), or ""."""
+        sub = cls._clip_text_tokenizer(clip)
+        return str(getattr(sub, "embedding_key", "") or "") if sub is not None else ""
+
+    @classmethod
+    def _get_tokenizer(cls, mode="ltx2", clip=None):
+        """Prefer the CLIP's own tokenizer. A downloaded one has to guess the encoder family,
+        and guessing wrong is silent: the spans still resolve, they just point at the wrong
+        positions. LTX-2.3 encodes with Gemma3 and LTX-2.5 with Gemma4."""
+        if clip is not None:
+            sub = cls._clip_text_tokenizer(clip)
+            if sub is not None:
+                try:
+                    return _ClipTokenizerAdapter(sub)
+                except Exception as e:
+                    print(f"[FunPackVideoRefiner] CLIP tokenizer unusable, falling back to download: {e}")
+
         mode = (mode or "ltx2").lower()
         cached = cls._tokenizers.get(mode)
         if cached is not None:
             return cls._tokenizers[mode]
 
         sources = cls._get_tokenizer_sources(mode)
-        for model_id, kwargs in sources:
-            try:
-                cls._tokenizers[mode] = AutoTokenizer.from_pretrained(model_id, **kwargs)
-                return cls._tokenizers[mode]
-            except Exception as e:
-                print(f"[FunPackVideoRefiner] Tokenizer load failed for mode '{mode}' from '{model_id}': {e}")
+        # Local cache FIRST, every source, before any network call. `from_pretrained` reaches
+        # HuggingFace with no token, no timeout and no progress, on ComfyUI's execution
+        # thread — mid-run that is an unbounded stall with nothing in the log to explain it,
+        # and on a rate-limited unauthenticated request it can be a long one. A tokenizer
+        # that is already on disk should never pay for that.
+        for local_only in (True, False):
+            for model_id, kwargs in sources:
+                if not local_only:
+                    print(f"[FunPackVideoRefiner] tokenizer for '{mode}' is not in the local "
+                          f"HuggingFace cache — DOWNLOADING '{model_id}'. This blocks the run "
+                          f"until it finishes; set HF_TOKEN to avoid unauthenticated rate limits.")
+                try:
+                    cls._tokenizers[mode] = AutoTokenizer.from_pretrained(
+                        model_id, **dict(kwargs, local_files_only=local_only))
+                    return cls._tokenizers[mode]
+                except Exception as e:
+                    if not local_only:
+                        print(f"[FunPackVideoRefiner] Tokenizer load failed for mode '{mode}' "
+                              f"from '{model_id}': {e}")
 
         return None
 
@@ -1468,27 +1645,8 @@ class FunPackVideoRefiner:
             key=lambda group: (group[0], group[1], group[2].lower()),
         )
 
-    def _void_empty_status(self, enabled=False):
-        return f"Void: {'on' if enabled else 'off'} | idle | tokens: none"
 
-    def _void_token_embedding(self, conditioning: torch.Tensor, start: int, end: int):
-        if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1 or end <= start:
-            return None
-        if conditioning.dim() == 3:
-            return conditioning[:, start:end, :].detach().mean(dim=(0, 1))
-        return conditioning[start:end, :].detach().mean(dim=0)
 
-    def _void_bank_score(self, item):
-        likes = float(item.get("liked_count", 0))
-        neutral = float(item.get("neutral_count", 0))
-        awful = float(item.get("awful_count", 0))
-        wanted = float(item.get("wanted_count", 0))
-        missing = float(item.get("missing_count", 0))
-        concept_missing = float(item.get("missing_concept_count", 0))
-        detail_missing = float(item.get("missing_detail_count", 0))
-        quality_missing = float(item.get("missing_quality_count", 0))
-        missing_pressure = missing * 0.22 + concept_missing * 0.14 + detail_missing * 0.10 + quality_missing * 0.08
-        return float(item.get("score", 0.0)) + likes * 0.40 + neutral * 0.08 + wanted * 0.30 + missing_pressure - awful * 0.95
 
     def _missing_axes_for_rating_key(self, rating_key):
         for profile in RATING_PROFILES.values():
@@ -1531,136 +1689,11 @@ class FunPackVideoRefiner:
         item["last_missing_iter"] = int(iter_num)
         return item
 
-    def _ensure_void_token_bank(self, global_adaptive):
-        bank = global_adaptive.get("void_token_bank")
-        if not isinstance(bank, dict):
-            bank = {}
-        if bank and global_adaptive.get("void_token_bank_validated") is True:
-            return bank
-        cleaned = {}
-        for token, item in bank.items():
-            if not isinstance(token, str) or not isinstance(item, dict):
-                continue
-            vector = item.get("embedding")
-            if not isinstance(vector, dict):
-                continue
-            try:
-                shape = vector.get("shape", [])
-                if len(shape) != 1 or int(shape[0]) <= 0:
-                    continue
-                item["score"] = round(max(-2.0, min(8.0, float(item.get("score", 0.0)))), 4)
-                item["liked_count"] = max(0, int(item.get("liked_count", 0)))
-                item["neutral_count"] = max(0, int(item.get("neutral_count", 0)))
-                item["awful_count"] = max(0, int(item.get("awful_count", 0)))
-                item["wanted_count"] = max(0, int(item.get("wanted_count", 0)))
-                item["missing_count"] = max(0, int(item.get("missing_count", 0)))
-                item["missing_concept_count"] = max(0, int(item.get("missing_concept_count", 0)))
-                item["missing_detail_count"] = max(0, int(item.get("missing_detail_count", 0)))
-                item["missing_quality_count"] = max(0, int(item.get("missing_quality_count", 0)))
-                item["last_seen_iter"] = max(0, int(item.get("last_seen_iter", 0)))
-                item["last_missing_iter"] = max(0, int(item.get("last_missing_iter", 0)))
-                item["sample_count"] = max(0, int(item.get("sample_count", 0)))
-                cleaned[token] = item
-            except (TypeError, ValueError):
-                continue
-        global_adaptive["void_token_bank"] = cleaned
-        global_adaptive["void_token_bank_validated"] = True
-        return cleaned
 
-    def _void_pair_key(self, left_token, right_token):
-        return f"{str(left_token).strip().lower()}\t{str(right_token).strip().lower()}"
 
-    def _void_pair_score(self, item):
-        likes = float(item.get("liked_count", 0))
-        neutral = float(item.get("neutral_count", 0))
-        awful = float(item.get("awful_count", 0))
-        wanted = float(item.get("wanted_count", 0))
-        missing = float(item.get("missing_count", 0))
-        return float(item.get("score", 0.0)) + likes * 0.35 + neutral * 0.05 + wanted * 0.22 + missing * 0.16 - awful * 0.85
 
-    def _ensure_void_pair_bank(self, global_adaptive):
-        bank = global_adaptive.get("void_token_pairs")
-        if not isinstance(bank, dict):
-            bank = {}
-        if bank and global_adaptive.get("void_token_pairs_validated") is True:
-            return bank
-        cleaned = {}
-        for key, item in bank.items():
-            if not isinstance(key, str) or "\t" not in key or not isinstance(item, dict):
-                continue
-            try:
-                left, right = key.split("\t", 1)
-                if not self._is_valuable_token(left) or not self._is_valuable_token(right):
-                    continue
-                item["score"] = round(max(-3.0, min(6.0, float(item.get("score", 0.0)))), 4)
-                item["liked_count"] = max(0, int(item.get("liked_count", 0)))
-                item["neutral_count"] = max(0, int(item.get("neutral_count", 0)))
-                item["awful_count"] = max(0, int(item.get("awful_count", 0)))
-                item["wanted_count"] = max(0, int(item.get("wanted_count", 0)))
-                item["missing_count"] = max(0, int(item.get("missing_count", 0)))
-                item["missing_concept_count"] = max(0, int(item.get("missing_concept_count", 0)))
-                item["missing_detail_count"] = max(0, int(item.get("missing_detail_count", 0)))
-                item["missing_quality_count"] = max(0, int(item.get("missing_quality_count", 0)))
-                item["last_seen_iter"] = max(0, int(item.get("last_seen_iter", 0)))
-                item["last_missing_iter"] = max(0, int(item.get("last_missing_iter", 0)))
-                cleaned[key] = item
-            except (TypeError, ValueError):
-                continue
-        global_adaptive["void_token_pairs"] = cleaned
-        global_adaptive["void_token_pairs_validated"] = True
-        return cleaned
 
-    def _lucky_context_score(self, item):
-        likes = float(item.get("liked_count", 0))
-        neutral = float(item.get("neutral_count", 0))
-        awful = float(item.get("awful_count", 0))
-        wanted = float(item.get("wanted_count", 0))
-        missing = float(item.get("missing_count", 0))
-        concept_missing = float(item.get("missing_concept_count", 0))
-        detail_missing = float(item.get("missing_detail_count", 0))
-        return float(item.get("score", 0.0)) + likes * 0.38 + neutral * 0.06 + wanted * 0.24 + missing * 0.18 + concept_missing * 0.10 + detail_missing * 0.08 - awful * 0.90
 
-    def _ensure_lucky_context_memory(self, global_adaptive):
-        memory = global_adaptive.get("lucky_context_memory")
-        if not isinstance(memory, dict):
-            memory = {}
-        if memory and global_adaptive.get("lucky_context_memory_validated") is True:
-            return memory
-
-        cleaned = {}
-        for anchor, neighbors in memory.items():
-            anchor = str(anchor).strip().lower()
-            if not self._is_valuable_token(anchor) or not isinstance(neighbors, dict):
-                continue
-
-            clean_neighbors = {}
-            for neighbor, item in neighbors.items():
-                neighbor = str(neighbor).strip().lower()
-                if neighbor == anchor or not self._is_valuable_token(neighbor) or not isinstance(item, dict):
-                    continue
-                try:
-                    item["score"] = round(max(-4.0, min(8.0, float(item.get("score", 0.0)))), 4)
-                    item["liked_count"] = max(0, int(item.get("liked_count", 0)))
-                    item["neutral_count"] = max(0, int(item.get("neutral_count", 0)))
-                    item["awful_count"] = max(0, int(item.get("awful_count", 0)))
-                    item["wanted_count"] = max(0, int(item.get("wanted_count", 0)))
-                    item["missing_count"] = max(0, int(item.get("missing_count", 0)))
-                    item["missing_concept_count"] = max(0, int(item.get("missing_concept_count", 0)))
-                    item["missing_detail_count"] = max(0, int(item.get("missing_detail_count", 0)))
-                    item["missing_quality_count"] = max(0, int(item.get("missing_quality_count", 0)))
-                    item["last_seen_iter"] = max(0, int(item.get("last_seen_iter", 0)))
-                    item["last_missing_iter"] = max(0, int(item.get("last_missing_iter", 0)))
-                    item["co_count"] = max(0, int(item.get("co_count", 0)))
-                    clean_neighbors[neighbor] = item
-                except (TypeError, ValueError):
-                    continue
-
-            if clean_neighbors:
-                cleaned[anchor] = clean_neighbors
-
-        global_adaptive["lucky_context_memory"] = cleaned
-        global_adaptive["lucky_context_memory_validated"] = True
-        return cleaned
 
     def _phrase_position_score(self, item):
         likes = float(item.get("liked_count", 0))
@@ -1670,52 +1703,6 @@ class FunPackVideoRefiner:
         missing = float(item.get("missing_count", 0))
         return float(item.get("score", 0.0)) + likes * 0.45 + neutral * 0.06 + wanted * 0.26 + missing * 0.18 - awful * 0.85
 
-    def _ensure_lucky_phrase_placements(self, global_adaptive):
-        memory = global_adaptive.get("lucky_phrase_placements")
-        if not isinstance(memory, dict):
-            memory = {}
-        if memory and global_adaptive.get("lucky_phrase_placements_validated") is True:
-            return memory
-
-        cleaned = {}
-        for phrase, item in memory.items():
-            phrase_key = str(phrase).strip().lower()
-            if len(phrase_key) < 3 or not isinstance(item, dict):
-                continue
-            positions = item.get("positions")
-            if not isinstance(positions, dict):
-                continue
-            clean_positions = {}
-            for pos, pos_item in positions.items():
-                if not isinstance(pos_item, dict):
-                    continue
-                try:
-                    pos_key = str(max(0, min(31, int(pos))))
-                    pos_item["score"] = round(max(-4.0, min(8.0, float(pos_item.get("score", 0.0)))), 4)
-                    pos_item["liked_count"] = max(0, int(pos_item.get("liked_count", 0)))
-                    pos_item["neutral_count"] = max(0, int(pos_item.get("neutral_count", 0)))
-                    pos_item["awful_count"] = max(0, int(pos_item.get("awful_count", 0)))
-                    pos_item["wanted_count"] = max(0, int(pos_item.get("wanted_count", 0)))
-                    pos_item["missing_count"] = max(0, int(pos_item.get("missing_count", 0)))
-                    pos_item["missing_concept_count"] = max(0, int(pos_item.get("missing_concept_count", 0)))
-                    pos_item["missing_detail_count"] = max(0, int(pos_item.get("missing_detail_count", 0)))
-                    pos_item["missing_quality_count"] = max(0, int(pos_item.get("missing_quality_count", 0)))
-                    pos_item["count"] = max(0, int(pos_item.get("count", 0)))
-                    pos_item["last_seen_iter"] = max(0, int(pos_item.get("last_seen_iter", 0)))
-                    pos_item["last_missing_iter"] = max(0, int(pos_item.get("last_missing_iter", 0)))
-                    clean_positions[pos_key] = pos_item
-                except (TypeError, ValueError):
-                    continue
-            if not clean_positions:
-                continue
-            cleaned[phrase_key] = {
-                "text": str(item.get("text", phrase_key)).strip().lower() or phrase_key,
-                "positions": clean_positions,
-            }
-
-        global_adaptive["lucky_phrase_placements"] = cleaned
-        global_adaptive["lucky_phrase_placements_validated"] = True
-        return cleaned
 
     def _rating_memory_deltas(self, rating_key):
         if rating_key == "like":
@@ -1738,235 +1725,12 @@ class FunPackVideoRefiner:
             return 0.0, 0, 1, 0
         return 0.12, 0, 1, 0
 
-    def _update_lucky_context_memory(self, global_adaptive, tokens, rating_key, iter_num):
-        memory = self._ensure_lucky_context_memory(global_adaptive)
-        ordered_tokens = []
-        seen = set()
-        for token in tokens or []:
-            token = str(token).strip().lower()
-            if token in seen or not self._is_valuable_token(token):
-                continue
-            seen.add(token)
-            ordered_tokens.append(token)
 
-        if len(ordered_tokens) < 2:
-            return memory
 
-        score_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
-        missing_axes = self._missing_axes_for_rating_key(rating_key)
-        if missing_axes:
-            score_delta += self._axis_memory_boost(missing_axes) * 0.55
-        # Keep context learning local and ordered. A full all-to-all update makes
-        # long Lucky prompts create thousands of JSON entries per click.
-        window = 6
-        for index, anchor in enumerate(ordered_tokens):
-            neighbors = memory.setdefault(anchor, {})
-            start = max(0, index - window)
-            end = min(len(ordered_tokens), index + window + 1)
-            for neighbor_index in range(start, end):
-                if neighbor_index == index:
-                    continue
-                neighbor = ordered_tokens[neighbor_index]
-                distance = abs(neighbor_index - index)
-                if distance <= 0:
-                    continue
-                local_weight = 1.0 / float(distance)
-                item = neighbors.get(neighbor, {})
-                item["score"] = round(max(-4.0, min(8.0, float(item.get("score", 0.0)) + score_delta * local_weight)), 4)
-                item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
-                item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
-                item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
-                if missing_axes:
-                    item = self._apply_missing_memory_pressure(item, missing_axes, iter_num)
-                item["co_count"] = max(0, int(item.get("co_count", 0)) + 1)
-                item["last_seen_iter"] = int(iter_num)
-                neighbors[neighbor] = item
 
-        return memory
 
-    def _update_lucky_phrase_placements(self, global_adaptive, prompt_text, rating_key, iter_num):
-        phrases = self._ordered_prompt_phrases(prompt_text)
-        if not phrases:
-            return self._ensure_lucky_phrase_placements(global_adaptive)
 
-        memory = self._ensure_lucky_phrase_placements(global_adaptive)
-        score_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
-        missing_axes = self._missing_axes_for_rating_key(rating_key)
-        if missing_axes:
-            score_delta += self._axis_memory_boost(missing_axes) * 0.70
-        for index, phrase in enumerate(phrases[:32]):
-            text = str(phrase.get("text", "")).strip().lower()
-            if len(text) < 3:
-                continue
-            entry = memory.setdefault(text, {"text": text, "positions": {}})
-            positions = entry.setdefault("positions", {})
-            pos_key = str(index)
-            item = positions.get(pos_key, {})
-            item["score"] = round(max(-4.0, min(8.0, float(item.get("score", 0.0)) + score_delta)), 4)
-            item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
-            item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
-            item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
-            if missing_axes:
-                item = self._apply_missing_memory_pressure(item, missing_axes, iter_num)
-            item["count"] = max(0, int(item.get("count", 0)) + 1)
-            item["last_seen_iter"] = int(iter_num)
-            positions[pos_key] = item
-            entry["text"] = text
-            memory[text] = entry
 
-        global_adaptive["lucky_phrase_placements"] = memory
-        return memory
-
-    def _update_void_token_pairs(self, global_adaptive, word_groups, rating_key, iter_num):
-        pair_bank = self._ensure_void_pair_bank(global_adaptive)
-        ordered_tokens = []
-        seen_positions = set()
-        for start, _, full_word, _ in sorted(word_groups or [], key=lambda group: (group[0], group[1])):
-            token = str(full_word).strip().lower()
-            if not self._is_valuable_token(token):
-                continue
-            marker = (int(start), token)
-            if marker in seen_positions:
-                continue
-            seen_positions.add(marker)
-            ordered_tokens.append(token)
-
-        if len(ordered_tokens) < 2:
-            return pair_bank
-
-        base_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
-        missing_axes = self._missing_axes_for_rating_key(rating_key)
-        score_delta = base_delta * 0.84
-        if missing_axes:
-            score_delta += self._axis_memory_boost(missing_axes) * 0.48
-
-        for left, right in zip(ordered_tokens, ordered_tokens[1:]):
-            if left == right:
-                continue
-            key = self._void_pair_key(left, right)
-            item = pair_bank.get(key, {})
-            item["left"] = left
-            item["right"] = right
-            item["score"] = round(max(-3.0, min(6.0, float(item.get("score", 0.0)) + score_delta)), 4)
-            item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
-            item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
-            item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
-            if missing_axes:
-                item = self._apply_missing_memory_pressure(item, missing_axes, iter_num)
-            item["last_seen_iter"] = int(iter_num)
-            pair_bank[key] = item
-
-        self._update_lucky_context_memory(global_adaptive, ordered_tokens, rating_key, iter_num)
-        global_adaptive["void_token_pairs"] = pair_bank
-        return global_adaptive["void_token_pairs"]
-
-    def _void_pair_is_poor(self, global_adaptive, left_token, right_token):
-        if not left_token or not right_token:
-            return False
-        pair_bank = global_adaptive.get("void_token_pairs")
-        if not isinstance(pair_bank, dict):
-            return False
-        item = pair_bank.get(self._void_pair_key(left_token, right_token))
-        if not isinstance(item, dict):
-            return False
-        awful_count = int(item.get("awful_count", 0))
-        positive_count = int(item.get("liked_count", 0)) + int(item.get("neutral_count", 0))
-        return awful_count > 0 and self._void_pair_score(item) < -0.05 and awful_count >= max(1, positive_count)
-
-    def _update_void_token_bank(self, global_adaptive, word_groups, cur_positive,
-                                rating_profile, iter_num, token_mask=None):
-        bank = self._ensure_void_token_bank(global_adaptive)
-        rating_key = rating_profile.get("key", "")
-        if not word_groups or not isinstance(cur_positive, torch.Tensor) or rating_profile.get("skip_learning"):
-            return bank
-
-        score_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
-        missing_axes = set(rating_profile.get("missing_axes", []))
-        if missing_axes:
-            score_delta += self._axis_memory_boost(missing_axes)
-
-        token_mask_list = None
-        if token_mask is not None:
-            token_mask_list = token_mask.detach().cpu().tolist()
-
-        for start, end, full_word, _ in word_groups:
-            if not self._is_valuable_token(full_word):
-                continue
-            if token_mask_list is not None and not all(token_mask_list[start:min(len(token_mask_list), end)]):
-                continue
-            embedding = self._void_token_embedding(cur_positive, start, end)
-            if embedding is None:
-                continue
-
-            token = full_word.strip().lower()
-            item = bank.get(token, {})
-            count = max(0, int(item.get("sample_count", 0)))
-            if "embedding" in item and count > 0 and rating_key != "awful":
-                try:
-                    previous = serializable_to_tensor(item["embedding"]).to(embedding.device)
-                    if list(previous.shape) == list(embedding.shape):
-                        if rating_key == "like":
-                            mix = 0.62
-                        elif rating_key == "missing_details":
-                            mix = 0.48
-                        else:
-                            mix = min(0.30, 1.0 / float(count + 1))
-                        embedding = previous.lerp(embedding, mix)
-                except Exception:
-                    pass
-
-            item["embedding"] = tensor_to_serializable(embedding.float().cpu())
-            item["score"] = round(max(-2.0, min(8.0, float(item.get("score", 0.0)) + score_delta)), 4)
-            item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
-            item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
-            item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
-            if missing_axes:
-                item = self._apply_missing_memory_pressure(item, missing_axes, iter_num)
-            item["sample_count"] = count + (0 if rating_key == "awful" else 1)
-            item["last_seen_iter"] = int(iter_num)
-            bank[token] = item
-
-        self._update_void_token_pairs(global_adaptive, word_groups, rating_key, iter_num)
-
-        global_adaptive["void_token_bank"] = bank
-        return global_adaptive["void_token_bank"]
-
-    def _seed_void_token_bank(self, global_adaptive, word_groups, cur_positive, iter_num, token_mask=None):
-        return self._update_void_token_bank(
-            global_adaptive,
-            word_groups,
-            cur_positive,
-            {"key": "discover", "skip_learning": False},
-            iter_num,
-            token_mask=token_mask,
-        )
-
-    def _lucky_groups_from_history(self, history_entry, seq_len):
-        if not isinstance(history_entry, dict) or seq_len <= 0:
-            return []
-        lucky = history_entry.get("lucky") if isinstance(history_entry.get("lucky"), dict) else {}
-        injections = lucky.get("injections", [])
-        groups = []
-        seen = set()
-        for item in injections:
-            if not isinstance(item, dict):
-                continue
-            token = str(item.get("token", "")).strip().lower()
-            if not self._is_valuable_token(token):
-                continue
-            try:
-                start = int(item.get("start", 0))
-                end = int(item.get("end", start + 1))
-            except (TypeError, ValueError):
-                continue
-            start = max(0, min(seq_len - 1, start))
-            end = max(start + 1, min(seq_len, end))
-            marker = (start, token)
-            if marker in seen:
-                continue
-            seen.add(marker)
-            groups.append((start, end, token, []))
-        return groups
 
     def _history_modified_conditioning(self, history_entry, reference, device):
         if not isinstance(history_entry, dict):
@@ -2082,80 +1846,6 @@ class FunPackVideoRefiner:
             return 0
         return int(shape[1] if len(shape) == 3 else shape[0])
 
-    def _select_lucky_memory_canvas(self, prompt_histories, template, device, dtype):
-        if not isinstance(prompt_histories, dict) or not isinstance(template, torch.Tensor):
-            return None, ""
-
-        candidates = []
-        current_seq = self._get_conditioning_seq_len(template)
-
-        def consider(payload, label, quality=0.0, iteration=0):
-            if payload is None:
-                return
-            if not self._serialized_conditioning_compatible(payload, template):
-                return
-            seq_len = self._serialized_conditioning_seq_len(payload)
-            candidates.append({
-                "payload": payload,
-                "label": label,
-                "seq_len": int(seq_len),
-                "quality": float(quality),
-                "iteration": int(iteration or 0),
-            })
-
-        for prompt_key, prompt_state in prompt_histories.items():
-            if not isinstance(prompt_state, dict):
-                continue
-            short_key = str(prompt_key)[:48] or "prompt"
-            liked_count = int(prompt_state.get("liked_reference_count", 0) or 0)
-            if liked_count > 0:
-                consider(
-                    prompt_state.get("liked_reference_embeds"),
-                    f"liked '{short_key}'",
-                    quality=2.0 + min(3.0, liked_count * 0.25),
-                    iteration=prompt_state.get("liked_reference_last_iteration", 0),
-                )
-            consider(prompt_state.get("reference_embeds"), f"reference '{short_key}'", quality=0.5)
-            consider(prompt_state.get("source_conditioning_embeds"), f"source '{short_key}'", quality=0.25)
-
-            for entry in prompt_state.get("history", []) or []:
-                if not isinstance(entry, dict):
-                    continue
-                profile = normalize_refiner_rating(entry.get("rating_label", entry.get("rating", 0)))
-                key = profile.get("key", "")
-                if key in {"forget", "awful"}:
-                    continue
-                quality = float(profile.get("reward", 0.0))
-                if key == "like":
-                    quality += 1.5
-                elif key.startswith("missing"):
-                    quality += 0.45
-                consider(
-                    entry.get("modified_embeds"),
-                    f"history {entry.get('iteration', 0)} '{short_key}'",
-                    quality=quality,
-                    iteration=entry.get("iteration", 0),
-                )
-
-        if not candidates:
-            return None, ""
-
-        best = max(
-            candidates,
-            key=lambda item: (
-                item["seq_len"] >= current_seq,
-                item["seq_len"],
-                item["quality"],
-                item["iteration"],
-            )
-        )
-        try:
-            canvas = serializable_to_tensor(best["payload"]).to(device=device, dtype=dtype)
-        except Exception:
-            return None, ""
-        if not self._conditioning_canvas_compatible(canvas, template):
-            return None, ""
-        return canvas.clone(), f"{best['label']} ({best['seq_len']} positions)"
 
     def _legacy_auto_inject_token_allowed(self, token):
         token = str(token or "").strip().lower()
@@ -2166,800 +1856,17 @@ class FunPackVideoRefiner:
             return False
         return True
 
-    def _eligible_void_bank_items(self, global_adaptive, embedding_dim):
-        bank = self._ensure_void_token_bank(global_adaptive)
-        eligible = []
-        for token, item in bank.items():
-            if not self._legacy_auto_inject_token_allowed(token):
-                continue
-            if int(item.get("awful_count", 0)) >= 2 and int(item.get("liked_count", 0)) <= 0:
-                continue
-            score = self._void_bank_score(item)
-            if score <= 0.35:
-                continue
-            try:
-                vector = serializable_to_tensor(item["embedding"]).float()
-            except Exception:
-                continue
-            if vector.dim() != 1 or int(vector.shape[0]) != int(embedding_dim):
-                continue
-            eligible.append((token, item, score))
-        return eligible
 
-    def _eligible_lucky_bank_items(self, global_adaptive, embedding_dim):
-        bank = self._ensure_void_token_bank(global_adaptive)
-        candidates = []
-        for token, item in bank.items():
-            if not self._legacy_auto_inject_token_allowed(token):
-                continue
-            score = self._void_bank_score(item)
-            embedding_shape = self._serialized_tensor_shape(item.get("embedding"))
-            if embedding_shape is None or len(embedding_shape) != 1 or int(embedding_shape[0]) != int(embedding_dim):
-                continue
-            candidates.append((token, item, score))
 
-        return candidates
 
-    def _lucky_prompt_anchor_tokens(self, word_groups, token_vectors, global_adaptive):
-        context_memory = self._ensure_lucky_context_memory(global_adaptive)
-        anchors = []
-        seen = set()
-        for _, _, full_word, _ in sorted(word_groups or [], key=lambda group: (group[0], group[1])):
-            token = str(full_word).strip().lower()
-            if token in seen or not self._is_valuable_token(token):
-                continue
-            if token in token_vectors or token in context_memory:
-                anchors.append(token)
-                seen.add(token)
-        return anchors
 
-    def _lucky_context_neighbors(self, global_adaptive, anchor_tokens, token_vectors, present_tokens=None):
-        context_memory = self._ensure_lucky_context_memory(global_adaptive)
-        present = set(present_tokens or [])
-        scored = {}
-        for anchor in anchor_tokens or []:
-            for neighbor, item in context_memory.get(anchor, {}).items():
-                if neighbor in present or neighbor not in token_vectors:
-                    continue
-                score = self._lucky_context_score(item)
-                if score <= 0.15 and int(item.get("liked_count", 0)) <= 0:
-                    continue
-                if self._void_pair_is_poor(global_adaptive, anchor, neighbor):
-                    continue
-                scored[neighbor] = max(scored.get(neighbor, -999.0), score)
-        return [
-            token for token, _ in sorted(scored.items(), key=lambda pair: pair[1], reverse=True)
-        ]
 
-    def _lucky_global_tokens(self, lucky_pool):
-        scored = sorted(lucky_pool, key=lambda item: item[2], reverse=True)
-        preferred = [
-            token for token, item, score in scored
-            if score > 0.10 or int(item.get("liked_count", 0)) > 0 or int(item.get("neutral_count", 0)) > 0
-        ]
-        return preferred or [token for token, _, _ in scored]
 
-    def _lucky_weighted_pick(self, token_scores, candidates, previous_token=None, global_adaptive=None):
-        usable = []
-        weights = []
-        for token in candidates or []:
-            token = str(token).strip().lower()
-            if not token:
-                continue
-            if previous_token and global_adaptive is not None and self._void_pair_is_poor(global_adaptive, previous_token, token):
-                continue
-            usable.append(token)
-            weights.append(max(0.05, float(token_scores.get(token, 0.0)) + 1.25))
 
-        if not usable:
-            return None
 
-        if len(usable) == 1:
-            return usable[0]
 
-        weights_tensor = torch.tensor(weights, dtype=torch.float32)
-        index = int(torch.multinomial(weights_tensor, 1).item())
-        return usable[index]
 
-    def _lucky_compose_tokens(self, global_adaptive, word_groups, lucky_pool, token_vectors, slot_count):
-        token_scores = {token: score for token, _, score in lucky_pool}
-        token_items = {token: item for token, item, _ in lucky_pool}
-        present_tokens = {
-            str(group[2]).strip().lower()
-            for group in (word_groups or [])
-            if isinstance(group, (list, tuple)) and len(group) >= 3 and self._is_valuable_token(str(group[2]).strip())
-        }
-        anchor_tokens = self._lucky_prompt_anchor_tokens(word_groups, token_vectors, global_adaptive)
-        context_tokens = self._lucky_context_neighbors(
-            global_adaptive,
-            anchor_tokens,
-            token_vectors,
-            present_tokens=present_tokens,
-        )
-        global_tokens = self._lucky_global_tokens(lucky_pool)
 
-        seed_sequence = []
-        for token in anchor_tokens + context_tokens + global_tokens:
-            if token in token_vectors and token not in seed_sequence:
-                seed_sequence.append(token)
-
-        if not seed_sequence:
-            seed_sequence = [token for token, _, _ in lucky_pool]
-
-        max_slots = max(0, int(slot_count))
-        required_candidates = []
-        for index, token in enumerate(anchor_tokens):
-            item = token_items.get(token, {})
-            missing_pressure = (
-                int(item.get("wanted_count", 0)) +
-                int(item.get("missing_count", 0)) +
-                int(item.get("missing_concept_count", 0)) +
-                int(item.get("missing_detail_count", 0)) +
-                int(item.get("missing_quality_count", 0))
-            )
-            # Current prompt anchors are required; missing pressure decides which
-            # ones win when the conditioning budget is tight.
-            priority = float(token_scores.get(token, 0.0)) + missing_pressure * 0.55 + 0.12 / float(index + 1)
-            required_candidates.append((priority, index, token))
-        required_candidates = sorted(required_candidates, key=lambda item: (-item[0], item[1]))
-        reserve_count = min(len(required_candidates), max_slots)
-        if reserve_count > 3:
-            reserve_count = min(reserve_count, max(3, min(16, int(math.ceil(max_slots * 0.40)))))
-        required_tokens = [
-            token for _, _, token in sorted(required_candidates[:reserve_count], key=lambda item: item[1])
-        ]
-
-        chosen_tokens = list(required_tokens)
-        previous_token = None
-        context_hits = 0
-        if chosen_tokens:
-            previous_token = chosen_tokens[-1]
-        for index in range(len(chosen_tokens), max_slots):
-            context_index = index - len(required_tokens)
-            if context_tokens and 0 <= context_index < len(context_tokens):
-                candidates = [context_tokens[context_index]]
-            elif seed_sequence and random.random() < 0.72:
-                candidates = seed_sequence
-            else:
-                candidates = [token for token, _, _ in lucky_pool]
-
-            token = self._lucky_weighted_pick(token_scores, candidates, previous_token, global_adaptive)
-            if token is None:
-                token = self._lucky_weighted_pick(token_scores, [token for token, _, _ in lucky_pool], previous_token, global_adaptive)
-            if token is None:
-                continue
-
-            if token in context_tokens:
-                context_hits += 1
-            chosen_tokens.append(token)
-            previous_token = token
-
-        if anchor_tokens and context_hits:
-            source = "anchors+context"
-        elif anchor_tokens:
-            source = "prompt anchors"
-        elif context_hits:
-            source = "context"
-        else:
-            source = "global preferences"
-
-        return chosen_tokens, {
-            "source": source,
-            "anchor_tokens": anchor_tokens,
-            "required_tokens": required_tokens,
-            "context_tokens": context_tokens,
-            "context_hits": context_hits,
-        }
-
-    def _compose_lucky_prompt_text(self, global_adaptive, word_groups, embedding_dim,
-                                   prompt_sequences=None, phrase_sequences=None, target_count=64):
-        bank = self._ensure_void_token_bank(global_adaptive)
-        lucky_pool = []
-        for token, item in bank.items():
-            if not self._legacy_auto_inject_token_allowed(token):
-                continue
-            embedding_shape = self._serialized_tensor_shape(item.get("embedding"))
-            if embedding_shape is None or len(embedding_shape) != 1 or int(embedding_shape[0]) != int(embedding_dim):
-                continue
-            lucky_pool.append((token, item, self._void_bank_score(item)))
-
-        if len(lucky_pool) < 2:
-            return "", {
-                "source": "bank too small",
-                "anchor_tokens": [],
-                "context_tokens": [],
-                "context_hits": 0,
-                "token_count": 0,
-            }
-
-        token_vectors = {token: True for token, _, _ in lucky_pool}
-
-        if len(token_vectors) < 2:
-            return "", {
-                "source": "bank unreadable",
-                "anchor_tokens": [],
-                "context_tokens": [],
-                "context_hits": 0,
-                "token_count": 0,
-            }
-
-        count = max(4, min(int(target_count or 0), 32))
-        chosen_tokens, compose_info = self._lucky_compose_tokens(
-            global_adaptive,
-            word_groups,
-            lucky_pool,
-            token_vectors,
-            count,
-        )
-
-        ordered_sequences = []
-        if isinstance(prompt_sequences, list):
-            for sequence in prompt_sequences:
-                if not isinstance(sequence, list):
-                    continue
-                ordered = [str(token).strip().lower() for token in sequence if str(token).strip().lower() in token_vectors]
-                if len(ordered) >= 2:
-                    ordered_sequences.append(ordered)
-
-        if ordered_sequences and compose_info.get("source") == "global preferences":
-            sequence = random.choice(ordered_sequences)
-            chosen_tokens = [
-                sequence[index % len(sequence)]
-                if random.random() < 0.55 else chosen_tokens[index]
-                for index in range(min(len(chosen_tokens), count))
-            ]
-            compose_info["source"] = "saved prompt order"
-
-        token_scores = {token: score for token, _, score in lucky_pool}
-        prompt_tokens = []
-        seen = set()
-        for token in chosen_tokens:
-            token = str(token).strip().lower()
-            if token in seen or not self._is_valuable_token(token):
-                continue
-            prompt_tokens.append(token)
-            seen.add(token)
-
-        if not prompt_tokens:
-            return "", {
-                **compose_info,
-                "token_count": 0,
-            }
-
-        prompt_phrases = []
-        phrase_seen = set()
-        chosen_set = set(prompt_tokens)
-        if isinstance(phrase_sequences, list):
-            phrase_candidates = []
-            placement_memory = self._ensure_lucky_phrase_placements(global_adaptive)
-            for sequence_index, sequence in enumerate(phrase_sequences[-64:]):
-                if not isinstance(sequence, list):
-                    continue
-                for phrase_index, phrase in enumerate(sequence):
-                    if not isinstance(phrase, dict):
-                        continue
-                    text = str(phrase.get("text", "")).strip()
-                    if not text:
-                        continue
-                    tokens = [
-                        str(token).strip().lower()
-                        for token in phrase.get("tokens", [])
-                        if self._is_valuable_token(str(token).strip())
-                    ]
-                    if not tokens:
-                        continue
-                    overlap = chosen_set & set(tokens)
-                    if not overlap:
-                        continue
-                    score = sum(max(0.05, token_scores.get(token, 0.0) + 1.25) for token in overlap)
-                    score += 0.18 / float(phrase_index + 1)
-                    score += 0.03 / float(max(1, len(phrase_sequences) - sequence_index))
-                    preferred_position, placement_score = self._lucky_phrase_preferred_position(
-                        placement_memory,
-                        text,
-                        fallback_position=phrase_index,
-                    )
-                    score += max(0.0, placement_score) * 0.20
-                    phrase_candidates.append((score, preferred_position, phrase_index, text, tokens))
-
-            sorted_candidates = sorted(phrase_candidates, key=lambda item: item[0], reverse=True)
-            selected = []
-            for score, preferred_position, phrase_index, text, tokens in sorted_candidates:
-                key = text.lower()
-                if key in phrase_seen:
-                    continue
-                selected.append({
-                    "score": score,
-                    "position": preferred_position,
-                    "source_position": phrase_index,
-                    "text": text,
-                    "tokens": tokens,
-                })
-                phrase_seen.add(key)
-                if len(selected) >= 12:
-                    break
-            prompt_phrases = [
-                item["text"]
-                for item in sorted(
-                    selected,
-                    key=lambda item: (item["position"], -item["score"], item["source_position"], item["text"]),
-                )
-            ]
-
-        if not prompt_phrases:
-            prompt_phrases = prompt_tokens
-
-        prompt_text = ", ".join(prompt_phrases)
-        return prompt_text, {
-            **compose_info,
-            "token_count": len(prompt_tokens),
-            "tokens": prompt_tokens,
-            "phrases": prompt_phrases,
-        }
-
-    def _lucky_phrase_preferred_position(self, placement_memory, phrase_text, fallback_position=0):
-        phrase_key = str(phrase_text).strip().lower()
-        entry = placement_memory.get(phrase_key) if isinstance(placement_memory, dict) else None
-        if not isinstance(entry, dict):
-            return int(fallback_position), 0.0
-        positions = entry.get("positions")
-        if not isinstance(positions, dict) or not positions:
-            return int(fallback_position), 0.0
-
-        candidates = []
-        for pos_key, item in positions.items():
-            if not isinstance(item, dict):
-                continue
-            try:
-                pos = max(0, min(31, int(pos_key)))
-            except (TypeError, ValueError):
-                continue
-            score = self._phrase_position_score(item)
-            count_bonus = min(0.30, math.log1p(float(item.get("count", 0))) * 0.08)
-            candidates.append((score + count_bonus, pos))
-
-        if not candidates:
-            return int(fallback_position), 0.0
-
-        candidates = sorted(candidates, key=lambda item: item[0], reverse=True)
-        top_score = candidates[0][0]
-        close = [item for item in candidates if item[0] >= top_score - 0.18]
-        if len(close) > 1 and random.random() < 0.35:
-            weights = torch.tensor([max(0.05, item[0] + 1.25) for item in close], dtype=torch.float32)
-            selected = close[int(torch.multinomial(weights, 1).item())]
-        else:
-            selected = candidates[0]
-        return int(selected[1]), float(selected[0])
-
-    def _encode_lucky_prompt_conditioning(self, clip, prompt_text, template, device, dtype):
-        if clip is None or not prompt_text:
-            return None, None, ""
-        try:
-            tokens = clip.tokenize(prompt_text)
-            encoded = clip.encode_from_tokens_scheduled(tokens)
-        except Exception as e:
-            print(f"[FunPackVideoRefiner] Lucky prompt CLIP/Gemma encode failed: {e}")
-            return None, None, f"encode failed: {e}"
-
-        if not isinstance(encoded, list) or not encoded:
-            return None, None, "encode returned empty conditioning"
-
-        item = encoded[0]
-        if isinstance(item, (list, tuple)) and len(item) >= 2:
-            cond = item[0]
-            meta = item[1] if isinstance(item[1], dict) else {"pooled_output": None}
-        else:
-            cond = item if isinstance(item, torch.Tensor) else None
-            meta = {"pooled_output": None}
-
-        if not isinstance(cond, torch.Tensor):
-            return None, None, "encode returned invalid conditioning"
-
-        cond = cond.to(device=device, dtype=dtype)
-        if not self._conditioning_canvas_compatible(cond, template):
-            return None, None, f"encoded shape {tuple(cond.shape)} incompatible"
-
-        return cond, meta, f"encoded prompt ({self._get_conditioning_seq_len(cond)} positions)"
-
-    def _select_void_tokens(self, global_adaptive, word_groups, cur_positive,
-                            word_importance, token_mask=None, max_count=3):
-        if not isinstance(cur_positive, torch.Tensor) or cur_positive.dim() <= 1:
-            return [], "idle"
-        embedding_dim = int(cur_positive.shape[-1])
-        eligible = self._eligible_void_bank_items(global_adaptive, embedding_dim)
-        if eligible:
-            pool = sorted(eligible, key=lambda item: item[2], reverse=True)[:24]
-            weights = torch.tensor([max(0.01, item[2]) for item in pool], dtype=torch.float32)
-            count = min(max_count, max(1, int(torch.randint(1, min(3, len(pool)) + 1, (1,)).item())))
-            picked_indexes = torch.multinomial(weights, count, replacement=False).tolist()
-            picked = []
-            for index in picked_indexes:
-                token, item, _ = pool[index]
-                picked.append((token, serializable_to_tensor(item["embedding"]).float()))
-            return picked, "bank"
-
-        fallback = []
-        token_mask_list = None
-        if token_mask is not None:
-            token_mask_list = token_mask.detach().cpu().tolist()
-        for start, end, full_word, _ in word_groups:
-            token = full_word.strip().lower()
-            if not self._is_valuable_token(token):
-                continue
-            if not self._legacy_auto_inject_token_allowed(token):
-                continue
-            if token_mask_list is not None and not all(token_mask_list[start:min(len(token_mask_list), end)]):
-                continue
-            score = float(word_importance.get(token, 1.0))
-            if score < 1.05:
-                continue
-            embedding = self._void_token_embedding(cur_positive, start, end)
-            if embedding is not None:
-                fallback.append((token, embedding.float().cpu(), score))
-        fallback = sorted(fallback, key=lambda item: item[2], reverse=True)[:max_count]
-        return [(token, vector) for token, vector, _ in fallback], "current" if fallback else "empty"
-
-    def _apply_into_the_void(self, new_positive, reference, global_adaptive, word_groups,
-                             word_importance, into_the_void=False, im_feeling_lucky=False,
-                             token_mask=None, prompt_sequences=None, lucky_canvas=None,
-                             lucky_canvas_label="", lucky_prompt_text="", lucky_prompt_tokens=None):
-        if not into_the_void and not im_feeling_lucky:
-            return new_positive, self._void_empty_status(False), {}
-        if not isinstance(new_positive, torch.Tensor) or not isinstance(reference, torch.Tensor):
-            return new_positive, "Void: on | unavailable | tokens: none", {}
-        if new_positive.dim() <= 1 or list(new_positive.shape) != list(reference.shape):
-            return new_positive, "Void: on | incompatible conditioning | tokens: none", {}
-
-        device = new_positive.device
-        dtype = new_positive.dtype
-        seq_len = new_positive.shape[1] if new_positive.dim() == 3 else new_positive.shape[0]
-        active_len = self._get_effective_seq_len(token_mask, seq_len)
-        active_len = max(1, min(seq_len, active_len))
-        mixed = new_positive.clone()
-        status_parts = []
-        lucky_metadata = {}
-        lucky_canvas_used = False
-        lucky_canvas_status = ""
-
-        if (
-            im_feeling_lucky and
-            self._conditioning_canvas_compatible(lucky_canvas, new_positive)
-        ):
-            try:
-                canvas = lucky_canvas.to(device=device, dtype=dtype)
-            except Exception:
-                canvas = None
-            if isinstance(canvas, torch.Tensor):
-                mixed = canvas.clone()
-                reference = canvas.clone()
-                seq_len = mixed.shape[1] if mixed.dim() == 3 else mixed.shape[0]
-                if token_mask is None or int(token_mask.numel()) != int(seq_len):
-                    token_mask = self._get_conditioning_token_mask(mixed)
-                active_len = self._get_effective_seq_len(token_mask, seq_len)
-                active_len = max(1, min(seq_len, active_len))
-                lucky_canvas_used = True
-                lucky_canvas_status = lucky_canvas_label or f"memory ({seq_len} positions)"
-
-        clamp_base = mixed.clone()
-
-        if into_the_void:
-            selected, source = self._select_void_tokens(
-                global_adaptive,
-                word_groups,
-                mixed,
-                word_importance,
-                token_mask=token_mask,
-            )
-            if selected:
-                positions = torch.linspace(0, active_len - 1, steps=len(selected), device=device).round().long()
-                strength = min(0.055, 0.09 / max(1, len(selected)))
-
-                for index, (_, vector) in enumerate(selected):
-                    vector = vector.to(device=device, dtype=dtype)
-                    if vector.dim() != 1 or int(vector.shape[0]) != int(mixed.shape[-1]):
-                        continue
-                    pos = int(positions[index].item())
-                    if token_mask is not None and pos < token_mask.shape[0] and not bool(token_mask[pos].item()):
-                        active_positions = torch.nonzero(token_mask[:active_len], as_tuple=False).flatten()
-                        if active_positions.numel() == 0:
-                            continue
-                        pos = int(active_positions[min(index, active_positions.numel() - 1)].item())
-                    if mixed.dim() == 3:
-                        mixed[:, pos, :] = mixed[:, pos, :].lerp(vector.view(1, -1), strength)
-                    else:
-                        mixed[pos, :] = mixed[pos, :].lerp(vector, strength)
-
-                token_list = ", ".join(token for token, _ in selected)
-                status_parts.append(f"Void: on | {source} | tokens: {token_list}")
-            else:
-                status_parts.append(f"Void: on | {source} | tokens: none")
-        else:
-            status_parts.append("Void: off | idle | tokens: none")
-
-        if im_feeling_lucky:
-            active_positions = torch.arange(active_len, device=device)
-            if token_mask is not None:
-                active_positions = torch.nonzero(token_mask[:active_len], as_tuple=False).flatten()
-
-            prompt_tokens = [
-                str(token).strip().lower()
-                for token in (lucky_prompt_tokens or [])
-                if self._is_valuable_token(str(token).strip())
-            ]
-            if lucky_canvas_used and prompt_tokens:
-                positions = torch.linspace(
-                    0,
-                    max(0, int(active_positions.numel()) - 1),
-                    steps=min(len(prompt_tokens), max(1, int(active_positions.numel()))),
-                    device=device,
-                ).round().long()
-                injections = []
-                for index, token in enumerate(prompt_tokens[:int(positions.numel())]):
-                    pos = int(active_positions[int(positions[index].item())].item()) if active_positions.numel() > 0 else index
-                    injections.append({"token": token, "start": pos, "end": pos + 1})
-                lucky_metadata = {
-                    "enabled": True,
-                    "source": "encoded prompt",
-                    "tokens": prompt_tokens,
-                    "unique_tokens": sorted(set(prompt_tokens)),
-                    "injections": injections,
-                    "anchor_tokens": [],
-                    "required_tokens": prompt_tokens,
-                    "context_tokens": [],
-                    "context_hits": 0,
-                    "canvas": lucky_canvas_status,
-                    "prompt": lucky_prompt_text,
-                }
-                token_preview = ", ".join(prompt_tokens[:8])
-                if len(prompt_tokens) > 8:
-                    token_preview += ", ..."
-                prompt_preview = re.sub(r"\s+", " ", lucky_prompt_text).strip()
-                if len(prompt_preview) > 160:
-                    prompt_preview = prompt_preview[:157].rstrip() + "..."
-                status_parts.append(
-                    f"Lucky: on | encoded prompt | {len(prompt_tokens)} prompt tokens | "
-                    f"canvas: {lucky_canvas_status} | prompt: {prompt_preview} | tokens: {token_preview}"
-                )
-            else:
-                lucky_pool = self._eligible_lucky_bank_items(global_adaptive, int(mixed.shape[-1]))
-                if len(lucky_pool) < 2:
-                    if lucky_canvas_used:
-                        lucky_metadata = {
-                            "enabled": True,
-                            "source": "memory canvas",
-                            "tokens": [],
-                            "unique_tokens": [],
-                            "injections": [],
-                            "anchor_tokens": [],
-                            "required_tokens": [],
-                            "context_tokens": [],
-                            "context_hits": 0,
-                            "canvas": lucky_canvas_status,
-                            "prompt": lucky_prompt_text,
-                        }
-                        status_parts.append(
-                            f"Lucky: on | memory canvas {lucky_canvas_status} | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none"
-                        )
-                    else:
-                        status_parts.append(f"Lucky: on | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none")
-                elif active_positions.numel() <= 0:
-                    if lucky_canvas_used:
-                        lucky_metadata = {
-                            "enabled": True,
-                            "source": "memory canvas",
-                            "tokens": [],
-                            "unique_tokens": [],
-                            "injections": [],
-                            "anchor_tokens": [],
-                            "required_tokens": [],
-                            "context_tokens": [],
-                            "context_hits": 0,
-                            "canvas": lucky_canvas_status,
-                            "prompt": lucky_prompt_text,
-                        }
-                        status_parts.append(f"Lucky: on | memory canvas {lucky_canvas_status} | no active positions | tokens: none")
-                    else:
-                        status_parts.append("Lucky: on | no active positions | tokens: none")
-                else:
-                    token_membership = {token: True for token, _, _ in lucky_pool}
-
-                    ordered_sequences = []
-                    if isinstance(prompt_sequences, list):
-                        for sequence in prompt_sequences:
-                            if not isinstance(sequence, list):
-                                continue
-                            ordered = [token for token in sequence if token in token_membership]
-                            if len(ordered) >= 2:
-                                ordered_sequences.append(ordered)
-
-                    chosen_tokens, compose_info = self._lucky_compose_tokens(
-                        global_adaptive,
-                        word_groups,
-                        lucky_pool,
-                        token_membership,
-                        int(active_positions.numel()),
-                    )
-                    if ordered_sequences and compose_info.get("source") == "global preferences":
-                        sequence = random.choice(ordered_sequences)
-                        chosen_tokens = [
-                            sequence[index % len(sequence)]
-                            if random.random() < 0.55 else chosen_tokens[index]
-                            for index in range(min(len(chosen_tokens), int(active_positions.numel())))
-                        ]
-                        compose_info["source"] = "saved prompt order"
-
-                    needed_tokens = set(chosen_tokens)
-                    token_vectors = {}
-                    for token, item, _ in lucky_pool:
-                        if token not in needed_tokens:
-                            continue
-                        try:
-                            vector = serializable_to_tensor(item["embedding"]).to(device=device, dtype=dtype)
-                        except Exception:
-                            continue
-                        if vector.dim() == 1 and int(vector.shape[0]) == int(mixed.shape[-1]):
-                            token_vectors[token] = vector
-
-                    lucky_field = mixed.clone()
-                    picked_tokens = []
-                    injections = []
-                    for pos_tensor, token in zip(active_positions, chosen_tokens):
-                        vector = token_vectors.get(token)
-                        if vector is None:
-                            continue
-                        pos = int(pos_tensor.item())
-                        if lucky_field.dim() == 3:
-                            lucky_field[:, pos, :] = vector.view(1, -1)
-                        else:
-                            lucky_field[pos, :] = vector
-                        picked_tokens.append(token)
-                        injections.append({"token": token, "start": pos, "end": pos + 1})
-
-                    if picked_tokens:
-                        strength = 0.030 if into_the_void else 0.040
-                        mixed = mixed.lerp(lucky_field, strength)
-                        token_preview = []
-                        seen_tokens = set()
-                        for token in picked_tokens:
-                            if token in seen_tokens:
-                                continue
-                            token_preview.append(token)
-                            seen_tokens.add(token)
-                            if len(token_preview) >= 8:
-                                break
-                        token_list = ", ".join(token_preview)
-                        if len(seen_tokens) < len(set(picked_tokens)):
-                            token_list += ", ..."
-                        anchor_preview = ", ".join(compose_info.get("anchor_tokens", [])[:4]) or "none"
-                        required_preview = ", ".join(compose_info.get("required_tokens", [])[:6]) or "none"
-                        context_preview = ", ".join(compose_info.get("context_tokens", [])[:6]) or "none"
-                        lucky_metadata = {
-                            "enabled": True,
-                            "source": compose_info.get("source", "global preferences"),
-                            "tokens": picked_tokens,
-                            "unique_tokens": sorted(set(picked_tokens)),
-                            "injections": injections,
-                            "anchor_tokens": compose_info.get("anchor_tokens", []),
-                            "required_tokens": compose_info.get("required_tokens", []),
-                            "context_tokens": compose_info.get("context_tokens", []),
-                            "context_hits": int(compose_info.get("context_hits", 0)),
-                            "canvas": lucky_canvas_status if lucky_canvas_used else "current conditioning",
-                            "prompt": lucky_prompt_text,
-                        }
-                        canvas_phrase = f" | canvas: {lucky_canvas_status}" if lucky_canvas_used else ""
-                        prompt_preview = re.sub(r"\s+", " ", lucky_prompt_text).strip()
-                        if len(prompt_preview) > 160:
-                            prompt_preview = prompt_preview[:157].rstrip() + "..."
-                        prompt_phrase = f" | prompt: {prompt_preview}" if prompt_preview else ""
-                        status_parts.append(
-                            f"Lucky: on | {lucky_metadata['source']} | field {len(picked_tokens)} positions from {len(set(picked_tokens))} tokens | "
-                            f"anchors: {anchor_preview} | required: {required_preview} | context add: {context_preview}{canvas_phrase}{prompt_phrase} | tokens: {token_list}"
-                        )
-                    else:
-                        if lucky_canvas_used:
-                            lucky_metadata = {
-                                "enabled": True,
-                                "source": "memory canvas",
-                                "tokens": [],
-                                "unique_tokens": [],
-                                "injections": [],
-                                "anchor_tokens": [],
-                                "required_tokens": [],
-                                "context_tokens": [],
-                                "context_hits": 0,
-                                "canvas": lucky_canvas_status,
-                                "prompt": lucky_prompt_text,
-                            }
-                            status_parts.append(f"Lucky: on | memory canvas {lucky_canvas_status} | bank unreadable | tokens: none")
-                        else:
-                            status_parts.append("Lucky: on | bank unreadable | tokens: none")
-        else:
-            status_parts.append("Lucky: off")
-
-        delta = mixed - clamp_base
-        reference_norm = reference.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-        max_delta = reference_norm * 0.08
-        delta_norm = delta.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-        scale = torch.minimum(torch.ones_like(delta_norm), max_delta / delta_norm)
-        mixed = clamp_base + delta * scale
-        mixed = torch.clamp(mixed, min=-60.0, max=60.0)
-        norm_factor = clamp_base.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-        mixed = mixed / mixed.norm(dim=-1, keepdim=True).clamp_min(1e-8) * norm_factor
-        return mixed, " | ".join(status_parts), lucky_metadata
-
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "positive_conditioning": ("CONDITIONING",),
-                "mode": (["ltx2", "wan"], {"default": "ltx2", "label": "Tokenizer Mode"}),
-                "rating": (RATING_LABELS, {"default": "Missing concept", "label": "Rating"}),
-                "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
-                "scheduler_mode": (["original", "accurate", "aggressive"], {"default": "original"}),
-            },
-            "optional": {
-                "positive_prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "placeholder": "Positive prompt"
-                }),
-                "clip": ("CLIP", {
-                    "tooltip": "Optional text encoder. When connected, Lucky composes a learned prompt and re-encodes it before refinement."
-                }),
-                "sigmas": ("SIGMAS",),
-                "sigma_strength": (["off", "subtle", "medium", "strong", "max"], {
-                    "default": "subtle",
-                    "label": "Sigma Refinement Strength"
-                }),
-                "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears ALL history)"}),
-                "unlimited_history": ("BOOLEAN", {
-                    "default": False,
-                    "label": "Unlimited History (never prunes)"
-                }),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "label": "Exploration Seed"}),
-                "feedback_enabled": ("BOOLEAN", {"default": False, "label": "Enable Concept Feedback"}),
-                "feedback_rating": ("INT", {
-                    "default": 3,
-                    "min": 1,
-                    "max": 6,
-                    "step": 1,
-                    "display": "slider",
-                    "label": "Feedback Response (follow the question scale)"
-                }),
-                "lora_stack": ("FUNPACK_LORA_STACK", {
-                    "tooltip": "Optional stack from FunPack LoRA Loader. The refiner uses it to save prompt-specific suggested LoRA weights."
-                }),
-                "latent": ("LATENT", {
-                    "tooltip": "Optional latent to refine. If no saved latent exists for this key, it passes through unchanged."
-                }),
-                "into_the_void": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Experimental: lightly mixes learned liked token embeddings into the final conditioning for preference discovery."
-                }),
-                "im_feeling_lucky": ("BOOLEAN", {
-                    "default": False,
-                    "label": "I'm Feeling Lucky",
-                    "tooltip": "Composes conditioning from learned memory first, using stored canvases plus preferred token/context relationships."
-                }),
-            },
-            "hidden": {
-                "prompt": "PROMPT",
-                "unique_id": "UNIQUE_ID",
-            }
-        }
-
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "STRING", "IMAGE", "SIGMAS", "LATENT")
-    RETURN_NAMES = ("modified_positive", "status", "feedback_question", "training_info", "loss_graph", "refined_sigmas", "refined_latent")
-    FUNCTION = "refine"
-    CATEGORY = "FunPack/Refinement"
-
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("nan")
-
-    # =========================================================================
-    # SCHEDULER
-    # =========================================================================
 
     def _get_scheduler_factors(self, mode, rating, reward, similarity, iter_num, total_iters,
                                word_importance, word_groups, global_adaptive, device):
@@ -3354,91 +2261,7 @@ class FunPackVideoRefiner:
             })
         return phrases
 
-    def _lucky_prompt_phrase_sequences(self, prompt_histories: dict):
-        if not isinstance(prompt_histories, dict):
-            return []
 
-        sequences = []
-        seen = set()
-        for prompt_key, history_entry in prompt_histories.items():
-            if not isinstance(history_entry, dict):
-                continue
-
-            history = history_entry.get("history", [])
-            good_history = []
-            if isinstance(history, list):
-                for item in history[-16:]:
-                    if not isinstance(item, dict):
-                        continue
-                    profile = normalize_refiner_rating(item.get("rating_label", item.get("rating", 0)))
-                    if int(profile.get("level", 0)) >= 5:
-                        good_history.append(item)
-
-            texts = []
-            for item in good_history:
-                for key in ("prompt_full", "analysis_prompt", "prompt"):
-                    text = item.get(key)
-                    if isinstance(text, str) and text.strip():
-                        texts.append(text)
-            if good_history:
-                texts.extend(self._history_prompt_texts(prompt_key, history_entry))
-
-            for text in texts:
-                phrases = self._ordered_prompt_phrases(text)
-                if not phrases:
-                    continue
-                signature = tuple(phrase["text"] for phrase in phrases)
-                if signature in seen:
-                    continue
-                seen.add(signature)
-                sequences.append(phrases[:32])
-
-        return sequences[-48:]
-
-    def _lucky_prompt_sequences(self, prompt_histories: dict):
-        if not isinstance(prompt_histories, dict):
-            return []
-
-        sequences = []
-        seen = set()
-        for prompt_key, history_entry in prompt_histories.items():
-            if not isinstance(history_entry, dict):
-                continue
-
-            history = history_entry.get("history", [])
-            good_history = []
-            if isinstance(history, list):
-                for item in history[-24:]:
-                    if not isinstance(item, dict):
-                        continue
-                    profile = normalize_refiner_rating(item.get("rating_label", item.get("rating", 0)))
-                    if int(profile.get("level", 0)) >= 5:
-                        good_history.append(item)
-
-            for item in good_history:
-                for key in ("prompt_full", "analysis_prompt", "prompt"):
-                    text = item.get(key)
-                    if not isinstance(text, str) or not text.strip():
-                        continue
-                    ordered = self._ordered_prompt_words(text)
-                    if len(ordered) < 2:
-                        continue
-                    signature = tuple(ordered)
-                    if signature not in seen:
-                        seen.add(signature)
-                        sequences.append(ordered[:64])
-
-            if good_history:
-                for text in self._history_prompt_texts(prompt_key, history_entry):
-                    ordered = self._ordered_prompt_words(text)
-                    if len(ordered) < 2:
-                        continue
-                    signature = tuple(ordered)
-                    if signature not in seen:
-                        seen.add(signature)
-                        sequences.append(ordered[:64])
-
-        return sequences[-96:]
 
     def _history_prompt_texts(self, prompt_key: str, history_entry: dict):
         texts = []
@@ -4250,6 +3073,7 @@ class FunPackVideoRefiner:
     # SIGMA REFINEMENT
     # =========================================================================
 
+
     def _ensure_sigma_state_defaults(self, global_adaptive: dict):
         global_adaptive.setdefault("sigma_profile", [0.0] * 32)
         global_adaptive.setdefault("last_applied_sigma_profile", [0.0] * 32)
@@ -4637,1550 +3461,27 @@ class FunPackVideoRefiner:
     def _lora_state_id(self, lora_name: str, lora_type: str):
         return md5(f"{lora_name}::{lora_type}".encode("utf-8")).hexdigest()[:16]
 
-    def _lora_words(self, text: str):
-        return {
-            word.strip().lower()
-            for word in re.split(r"[\s,;:_\\/\-().\[\]{}]+", text or "")
-            if self._is_valuable_token(word.strip())
-        }
 
-    def _ensure_lora_memory(self, memory: dict, lora_entry: dict):
-        lora_type = lora_entry.get("type", "general")
-        lora_id = lora_entry.get("id") or self._lora_state_id(lora_entry.get("name", ""), lora_type)
-        state = memory.setdefault(
-            lora_id,
-            {
-                "name": lora_entry.get("name", ""),
-                "type": lora_type,
-                "offset_ratio": 0.0,
-                "stable_offset_ratio": None,
-                "reward_ema": 0.0,
-                "culprit_score": 0.0,
-                "good_streak": 0,
-                "bad_streak": 0,
-                "culprit_hits": 0,
-                "iterations": 0,
-            },
-        )
-        state["name"] = lora_entry.get("name", "")
-        state["type"] = lora_type
-        state.setdefault("offset_ratio", 0.0)
-        state.setdefault("stable_offset_ratio", None)
-        state.setdefault("reward_ema", 0.0)
-        state.setdefault("culprit_score", 0.0)
-        state.setdefault("good_streak", 0)
-        state.setdefault("bad_streak", 0)
-        state.setdefault("culprit_hits", 0)
-        state.setdefault("iterations", 0)
-        return lora_id, state
-
-    def _score_lora_prompt_relation(self, lora_entry, ordered_concept_ids, concept_clusters, current_concept_labels):
-        lora_type = lora_entry.get("type", "general")
-        lora_words = self._lora_words(lora_entry.get("name", ""))
-
-        best_score = 0.35 if lora_type == "general" else 0.0
-        best_labels = []
-        best_importance = 1.0
-
-        for cid in ordered_concept_ids:
-            cluster = concept_clusters.get(cid)
-            if not cluster:
-                continue
-            cluster = self._ensure_concept_cluster_defaults(cluster)
-            label = current_concept_labels.get(cid, cluster.get("label", cid))
-            label_words = self._lora_words(label)
-            anchor_words = set(cluster.get("anchor_words", []))
-            prompt_words = label_words | anchor_words
-            category = cluster.get("category", "general")
-
-            overlap = len(lora_words & prompt_words) / max(1, len(lora_words)) if lora_words else 0.0
-            category_score = 0.62 if lora_type == category else 0.0
-            if lora_type in {"action", "concept"} and category in {"concept", "details", "subject", "appearance", "action", "environment"}:
-                category_score = max(category_score, 0.58)
-            if lora_type == "character" and category in {"character", "subject", "appearance"}:
-                category_score = max(category_score, 0.72)
-            if lora_type == "quality" and category == "quality":
-                category_score = 0.78
-            if lora_type == "style" and category in {"style", "camera"}:
-                category_score = max(category_score, 0.58)
-
-            score = max(category_score, overlap)
-            if score > best_score:
-                best_score = score
-                best_labels = [label]
-                best_importance = self._get_concept_mean_importance(cluster)
-            elif score > 0 and abs(score - best_score) < 1e-6:
-                best_labels.append(label)
-
-        return min(1.0, best_score), best_labels[:4], best_importance
-
-    def _update_lora_weight_suggestions(self, lora_stack, active, global_adaptive, ordered_concept_ids,
-                                        concept_clusters, current_concept_labels, rating, reward,
-                                        rating_profile: Optional[dict] = None):
-        if not isinstance(lora_stack, dict) or not lora_stack.get("loras"):
-            return "LoRA suggestions: no FunPack LoRA stack connected."
-
-        rating_profile = rating_profile or normalize_refiner_rating(rating)
-        rating_key = rating_profile.get("key", "")
-        missing_axes = set(rating_profile.get("missing_axes", []))
-        missing_count = len(missing_axes)
-        memory = global_adaptive.setdefault("lora_weight_memory", {})
-        suggestions = {}
-        status_parts = []
-        relation_cache = {}
-        top_concept_relation = 0.0
-        concept_lora_count = 0
-
-        for entry in lora_stack.get("loras", []):
-            lora_type = entry.get("type", "general")
-            lora_id = entry.get("id") or self._lora_state_id(entry.get("name", ""), lora_type)
-            relation, matched_labels, concept_importance = self._score_lora_prompt_relation(
-                entry,
-                ordered_concept_ids,
-                concept_clusters,
-                current_concept_labels,
-            )
-            relation_cache[lora_id] = (relation, matched_labels, concept_importance)
-            if lora_type in {"action", "concept", "character"}:
-                concept_lora_count += 1
-                top_concept_relation = max(top_concept_relation, relation)
-
-        for entry in lora_stack.get("loras", []):
-            lora_type = entry.get("type", "general")
-            profile = LORA_REFINER_TYPE_PROFILES.get(lora_type, LORA_REFINER_TYPE_PROFILES["general"])
-            lora_id, state = self._ensure_lora_memory(memory, entry)
-            relation, matched_labels, concept_importance = relation_cache.get(lora_id, (0.0, [], 1.0))
-
-            state["reward_ema"] = 0.84 * float(state.get("reward_ema", 0.0)) + 0.16 * reward
-            if rating_key == "like":
-                state["good_streak"] = int(state.get("good_streak", 0)) + 1
-                state["bad_streak"] = 0
-            elif rating_key == "dislike" or {"concept", "quality"}.issubset(missing_axes):
-                state["bad_streak"] = int(state.get("bad_streak", 0)) + 1
-                state["good_streak"] = 0
-            else:
-                state["good_streak"] = 0
-                state["bad_streak"] = 0
-
-            offset = float(state.get("offset_ratio", 0.0))
-            stable_offset = state.get("stable_offset_ratio")
-            culprit_score = float(state.get("culprit_score", 0.0))
-            culprit_hits = int(state.get("culprit_hits", 0))
-            if stable_offset is not None and (rating_key == "like" or missing_axes == {"details"}):
-                offset = 0.72 * offset + 0.28 * float(stable_offset)
-
-            step = profile["step"] * max(0.15, relation)
-            max_offset = profile["max_offset"]
-            min_offset = profile["min_offset"]
-            effective_relation = max(relation, profile.get("culprit_bias", 0.0))
-            base_model = float(entry.get("base_model_weight", entry.get("model_weight", 1.0)))
-            base_abs = abs(base_model)
-            is_concept_lora = lora_type in {"action", "concept"}
-            concept_match_strength = 1.0
-            if is_concept_lora:
-                concept_match_strength += 0.30 if matched_labels else 0.0
-                concept_match_strength += max(0.0, relation - 0.30) * 1.35
-
-            is_primary_concept_lora = (
-                lora_type in {"action", "concept", "character"} and
-                (
-                    concept_lora_count == 1 or
-                    (top_concept_relation > 0.0 and relation >= max(0.30, top_concept_relation - 1e-6))
-                )
-            )
-
-            if rating_key == "like":
-                value_mult = 0.75 + min(1.4, max(0.5, concept_importance)) * 0.25
-                offset += step * (0.45 + max(0.0, reward)) * value_mult
-                culprit_score *= 0.72
-                if state["good_streak"] >= 3:
-                    if stable_offset is None:
-                        stable_offset = offset
-                    else:
-                        stable_offset = 0.78 * float(stable_offset) + 0.22 * offset
-                    state["stable_offset_ratio"] = _clamp(stable_offset, min_offset, max_offset)
-                    offset = state["stable_offset_ratio"]
-            elif missing_axes:
-                if "concept" in missing_axes or "quality" in missing_axes:
-                    state["stable_offset_ratio"] = None
-
-                culprit_score *= 0.74 if rating_key == "awful" else 0.82
-                culprit_hits = max(0, culprit_hits - 1)
-                axis_boost = 0.0
-
-                if "details" in missing_axes:
-                    if relation >= 0.12 and lora_type in {"action", "concept", "character", "general", "style"}:
-                        value_mult = 0.85 + min(1.2, max(0.5, concept_importance)) * 0.20
-                        axis_boost += (0.26 + relation * 0.34) * value_mult
-                    elif lora_type == "quality":
-                        axis_boost += 0.06
-
-                if "concept" in missing_axes:
-                    if lora_type in {"action", "concept", "character"}:
-                        if is_primary_concept_lora:
-                            axis_boost += (0.95 + abs(reward) * 0.45) * concept_match_strength
-                        elif relation > 0.08:
-                            axis_boost += 0.34 + relation * 0.40
-                    elif lora_type == "general" and relation >= 0.25:
-                        axis_boost += 0.25 + relation * 0.25
-
-                if "quality" in missing_axes:
-                    if lora_type == "quality":
-                        axis_boost += 0.90 + abs(reward) * 0.35
-                    elif lora_type == "style" and relation >= 0.25:
-                        axis_boost += 0.20 + relation * 0.20
-                    elif lora_type == "general" and relation >= 0.20:
-                        axis_boost += 0.16 + relation * 0.15
-
-                if axis_boost > 0.0:
-                    if rating_key == "awful":
-                        axis_boost *= 1.25
-                    max_offset = max(max_offset, profile["bad_max_offset"] * (0.62 + 0.10 * missing_count))
-                    relation_floor = 0.35 if missing_count >= 2 else 0.22
-                    boost_step = profile["step"] * max(relation_floor, effective_relation)
-                    offset += boost_step * axis_boost
-                elif relation <= 0.05:
-                    offset *= 0.97
-                else:
-                    offset *= 0.94
-            elif rating_key == "dislike":
-                severity = _clamp((5.0 - float(rating)) / 4.0, 0.0, 1.0)
-                culprit_signal = max(0.20, effective_relation) * (0.70 + base_abs * 0.30)
-                if is_concept_lora:
-                    culprit_signal *= concept_match_strength
-                culprit_score = _clamp(culprit_score * 0.72 + severity * culprit_signal, 0.0, 2.5)
-                culprit_hits = culprit_hits + 1 if culprit_score >= 0.45 else max(0, culprit_hits - 1)
-                max_offset = profile["bad_max_offset"] if rating <= 2 else max(max_offset, profile["bad_max_offset"] * 0.72)
-                bad_floor_strength = min(1.0, 0.45 + 0.35 * culprit_score + 0.14 * state["bad_streak"])
-                if is_concept_lora:
-                    bad_floor_strength = min(1.0, bad_floor_strength + 0.18 * concept_match_strength)
-                min_offset = min(min_offset, profile["bad_min_offset"] * bad_floor_strength)
-                offset -= step * (1.0 + severity * 3.0) * max(0.4, effective_relation) * max(0.8, 0.85 + culprit_score)
-                if state["bad_streak"] >= 2:
-                    offset -= step * (0.65 + severity * 1.8) * max(0.25, effective_relation)
-                if is_concept_lora and state["bad_streak"] >= 2:
-                    offset -= step * (0.85 + severity * 2.4) * max(0.50, effective_relation) * concept_match_strength
-                if state["bad_streak"] >= 2:
-                    state["stable_offset_ratio"] = None
-                if is_concept_lora and matched_labels and state["bad_streak"] >= 2 and culprit_score >= 0.70:
-                    offset = min(offset, -1.0)
-                if state["bad_streak"] >= 3 and culprit_score >= 0.85 and abs(1.0 + offset) < 0.08:
-                    offset = -1.0
-            else:
-                culprit_score *= 0.92
-                culprit_hits = max(0, culprit_hits - 1)
-                if relation <= 0.05:
-                    offset *= 0.94
-                elif stable_offset is not None:
-                    offset = 0.65 * offset + 0.35 * float(stable_offset)
-                else:
-                    offset *= 0.90
-
-            offset = _clamp(offset, min_offset, max_offset)
-            state["offset_ratio"] = offset
-            state["culprit_score"] = culprit_score
-            state["culprit_hits"] = culprit_hits
-            state["iterations"] = int(state.get("iterations", 0)) + 1
-
-            model_weight = base_model * (1.0 + offset)
-            suspect = culprit_score >= 0.65 or model_weight <= 0.0 or culprit_hits >= 2
-            action = (
-                "invert" if model_weight < 0.0 else
-                "mute" if model_weight == 0.0 else
-                "hold" if abs(model_weight - base_model) < 1e-6 else
-                "reduce" if abs(model_weight) < abs(base_model) else
-                "boost"
-            )
-            suggestions[lora_id] = {
-                "name": entry.get("name", ""),
-                "type": lora_type,
-                "model_weight": model_weight,
-                "base_model_weight": base_model,
-                "offset_ratio": offset,
-                "culprit_score": culprit_score,
-                "culprit_hits": culprit_hits,
-                "suspect": suspect,
-                "action": action,
-                "relation": relation,
-                "matched_concepts": matched_labels,
-                "rating": int(rating),
-                "rating_label": rating_profile.get("label", str(rating)),
-                "rating_range": rating_profile.get("legacy_range", ""),
-                "good_streak": state.get("good_streak", 0),
-                "bad_streak": state.get("bad_streak", 0),
-                "stable": state.get("stable_offset_ratio") is not None,
-            }
-
-            match_text = ",".join(matched_labels) if matched_labels else "none"
-            status_parts.append(
-                f"{entry.get('name', '?')}[{lora_type}] rel={relation:.2f} "
-                f"offset={offset:+.3f} next={model_weight:+.3f} "
-                f"sus={culprit_score:.2f}{' !' if suspect else ''} "
-                f"match={match_text}"
-            )
-
-        active["lora_weight_suggestions"] = suggestions
-        active["last_lora_stack"] = lora_stack
-        if not status_parts:
-            return "LoRA suggestions: stack empty."
-        return f"LoRA suggestions ({rating_profile.get('label', str(rating))}): " + " | ".join(status_parts)
-
-    # =========================================================================
-    # MAIN REFINE
-    # =========================================================================
-
-    def refine(self, positive_conditioning, mode: str, rating: int, refinement_key: str,
-               scheduler_mode: str = "original", positive_prompt: str = "",
-               clip=None, reset_session: bool = False, unlimited_history: bool = False,
-               seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3,
-               sigmas=None, sigma_strength: str = "subtle", lora_stack=None, latent=None,
-               into_the_void: bool = False, im_feeling_lucky: bool = False,
-               prompt=None, unique_id=None):
-
-        mode = (mode or "ltx2").lower()
-        if mode not in self._tokenizer_sources:
-            mode = "ltx2"
-        rating_profile = normalize_refiner_rating(rating)
-        rating_label = rating_profile.get("label", str(rating))
-        rating = int(rating_profile.get("legacy_score", 6))
-        reward = float(rating_profile.get("reward", (rating - 5.5) / 4.5))
-
-        if seed != 0:
-            torch.manual_seed(seed)
-            random.seed(seed)
-
-        refinements_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refinements")
-        os.makedirs(refinements_dir, exist_ok=True)
-
-        json_file = refinement_state_path(refinement_key, mode)
-        fallback_loss_graph = render_refinement_loss_graph(
-            refinement_key=refinement_key,
-            scheduler_mode=scheduler_mode,
-            mode=mode,
-            total_iterations=0,
-            latest_learning_loss=0.0,
-            points=[],
-        )
-        fallback_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else torch.FloatTensor([])
-        latent_output_connected = self._is_output_connected(prompt, unique_id, self.LATENT_OUTPUT_INDEX)
-        fallback_latent = clone_latent(latent)
-        fallback_latent_status = "Latent: not evaluated before conditioning validation."
-
-        if not positive_conditioning or not isinstance(positive_conditioning, list) or len(positive_conditioning) == 0:
-            return (positive_conditioning, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning", fallback_loss_graph, fallback_sigmas, fallback_latent)
-
-        item = positive_conditioning[0]
-        if isinstance(item, (list, tuple)) and len(item) >= 2:
-            raw_positive = item[0]
-            positive_meta = item[1] if isinstance(item[1], dict) else {"pooled_output": None}
-        else:
-            raw_positive = item if isinstance(item, torch.Tensor) else None
-            positive_meta = {"pooled_output": None}
-
-        if not isinstance(raw_positive, torch.Tensor):
-            return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding", fallback_loss_graph, fallback_sigmas, fallback_latent)
-
-        if rating_profile.get("skip_learning"):
-            pending_cleared = False
-            if os.path.exists(json_file):
-                try:
-                    with open(json_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if data.get("pending_feedback") is not None:
-                        data["pending_feedback"] = None
-                        with open(json_file, "w", encoding="utf-8") as f:
-                            json.dump(data, f, indent=2)
-                        pending_cleared = True
-                except (json.JSONDecodeError, OSError, ValueError):
-                    pending_cleared = False
-            pending_status = " Pending feedback queue was cleared." if pending_cleared else ""
-            status = (
-                f"Feedback ignored | Mode {mode.upper()} | Rating {rating_label}\n"
-                "No learning history, LoRA weights, sigma schedule, or latent reference was updated."
-                f"{pending_status}"
-            )
-            training_info = (
-                f"Rating: {rating_label}\n"
-                "This run was intentionally forgotten. The connected conditioning, sigmas, and latent pass through unchanged."
-                f"{pending_status}"
-            )
-            return (positive_conditioning, status, "", training_info, fallback_loss_graph, fallback_sigmas, fallback_latent)
-
-        analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
-        prompt_key = analysis_prompt if mode == "wan" else positive_prompt
-        exact_prompt_key = prompt_key
-        if im_feeling_lucky:
-            prompt_key = "__lucky_memory__"
-        current_prompt_words = self._concept_overlap_words(analysis_prompt)
-        prompt_variant_match = None
-
-        # ====================== STATE TEMPLATES ======================
-        # Single source of truth for both reset and corrupt-recovery paths.
-        def _fresh_global():
-            state = {
-                "word_importance": {},
-                "concept_clusters": {},
-                "concept_groups": {},
-                "exploration_base": 0.08,
-                "momentum": None,
-                "avg_reward_ema": 0.0,
-                "good_ratio": 0.0,
-                "dynamic_sim_threshold": 0.82,
-                "last_feedback_concept": None,
-                "feedbacked_concepts": [],
-                "feedback_memory": {
-                    "recent_questions": [],
-                    "rating_change_events": [],
-                },
-                "loss_history": [],
-                "lora_weight_memory": {},
-                "void_token_bank": {},
-                "void_token_pairs": {},
-                "lucky_context_memory": {},
-                "lucky_phrase_placements": {},
-                "mode": mode,
-                "scheduler_mode": scheduler_mode,
-                "prodigy_d": {},
-                "prodigy_lr_base": 1.0,
-                "warmup_steps": 8,
-                "total_steps_estimate": 150,
-                "current_step": 0,
-            }
-            self._ensure_sigma_state_defaults(state)
-            return state
-
-        def _fresh_data():
-            return {
-                "refinement_key": refinement_key,
-                "global_adaptive": _fresh_global(),
-                "prompt_histories": {
-                    prompt_key: {
-                        "canonical_prompt": positive_prompt,
-                        "prompt_concept_words": current_prompt_words,
-                        "source_prompt_key": exact_prompt_key,
-                        "source_conditioning_embeds": tensor_to_serializable(raw_positive),
-                        "reference_embeds": tensor_to_serializable(raw_positive),
-                        "liked_reference_embeds": None,
-                        "liked_reference_count": 0,
-                        "history": [],
-                        "last_rating": rating,
-                        "last_rating_label": rating_label
-                    }
-                },
-                "last_prompt_key": prompt_key,
-                "pending_feedback": None
-            }
-
-        def _seed_fresh_prompt_discovery(data):
-            if not analysis_prompt or not isinstance(data, dict):
-                return False
-            global_state = data.get("global_adaptive")
-            if not isinstance(global_state, dict):
-                return False
-            seq_len = self._get_conditioning_seq_len(raw_positive)
-            token_mask = self._get_conditioning_token_mask(raw_positive) if mode == "wan" else None
-            discovery_groups = self._build_word_groups(
-                analysis_prompt,
-                None,
-                seq_len,
-                token_mask=token_mask,
-            )
-            if discovery_groups:
-                self._seed_void_token_bank(
-                    global_state,
-                    discovery_groups,
-                    raw_positive,
-                    0,
-                    token_mask=token_mask,
-                )
-            self._update_lucky_phrase_placements(global_state, analysis_prompt, "discover", 0)
-            return bool(discovery_groups)
-
-        # ====================== RESET / NEW SESSION ======================
-        lucky_bootstrap = False
-        fresh_discovery_seeded = False
-        if reset_session or not os.path.exists(json_file):
-            if reset_session:
-                self._delete_latent_reference(refinement_key, mode)
-            data = _fresh_data()
-            fresh_discovery_seeded = _seed_fresh_prompt_discovery(data)
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            if im_feeling_lucky:
-                lucky_bootstrap = True
-            else:
-                if latent_output_connected:
-                    fallback_latent, fallback_latent_status = self._refine_latent(
-                        latent,
-                        refinement_key,
-                        mode,
-                        rating,
-                        reward,
-                        {},
-                        rating_profile,
-                    )
-                else:
-                    fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
-                return (positive_conditioning, "New session started - Reference saved", "", f"New session started. Reference embedding saved.\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
-        else:
-            # ====================== SAFE JSON LOAD ======================
-            try:
-                with open(json_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except (json.JSONDecodeError, OSError, ValueError) as e:
-                print(f"[FunPackVideoRefiner] Corrupt session file, resetting: {e}")
-                try:
-                    os.remove(json_file)
-                except OSError:
-                    pass
-                data = _fresh_data()
-                fresh_discovery_seeded = _seed_fresh_prompt_discovery(data)
-                with open(json_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
-                if im_feeling_lucky:
-                    lucky_bootstrap = True
-                else:
-                    if latent_output_connected:
-                        fallback_latent, fallback_latent_status = self._refine_latent(
-                            latent,
-                            refinement_key,
-                            mode,
-                            rating,
-                            reward,
-                            {},
-                            rating_profile,
-                        )
-                    else:
-                        fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
-                    return (positive_conditioning, "Session file was corrupt - Reset and started fresh", "", f"Session reset due to corrupt file\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
-
-        if lucky_bootstrap:
-            rating_profile = dict(RATING_PROFILES["Initial discovery"], label="Initial discovery")
-            rating_label = rating_profile["label"]
-            rating = int(rating_profile.get("legacy_score", 6))
-            reward = float(rating_profile.get("reward", 0.0))
-
-        global_adaptive = data["global_adaptive"]
-        previous_prompt_key_for_rating = data.get("last_prompt_key")
-        # Migrate sessions created before the multi-level concept system was added
-        global_adaptive.setdefault("concept_clusters", {})
-        global_adaptive.setdefault("concept_groups", {})
-        global_adaptive.setdefault("word_importance", {})
-        global_adaptive.setdefault("feedbacked_concepts", [])
-        global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
-        global_adaptive.setdefault("loss_history", [])
-        global_adaptive.setdefault("lora_weight_memory", {})
-        self._ensure_void_token_bank(global_adaptive)
-        self._ensure_void_pair_bank(global_adaptive)
-        self._ensure_lucky_context_memory(global_adaptive)
-        self._ensure_lucky_phrase_placements(global_adaptive)
-        global_adaptive.setdefault("mode", mode)
-        self._ensure_sigma_state_defaults(global_adaptive)
-        for cid in list(global_adaptive["concept_clusters"].keys()):
-            global_adaptive["concept_clusters"][cid] = self._ensure_concept_cluster_defaults(
-                global_adaptive["concept_clusters"][cid]
-            )
-
-        prompt_histories = data.get("prompt_histories", {})
-        tokenizer = self._get_tokenizer(mode)
-
-        if prompt_key not in prompt_histories and not im_feeling_lucky:
-            matched_prompt_key, prompt_variant_match = self._find_prompt_variant_history(
-                exact_prompt_key,
-                current_prompt_words,
-                raw_positive,
-                prompt_histories,
-            )
-            if matched_prompt_key:
-                prompt_key = matched_prompt_key
-
-        # ====================== FEEDBACK STATE MACHINE (CONCEPT-LEVEL) ======================
-        # Operates on full concept phrases rather than individual words.
-        # Rating a concept updates all its tracked words proportionally and sends a
-        # dampened neighbour signal to adjacent phrases. See _apply_concept_feedback
-        # for the full multi-level propagation model.
-        feedback_question_output = ""
-        pending = data.get("pending_feedback")
-        if not feedback_enabled:
-            if pending is not None:
-                data["pending_feedback"] = None
-                with open(json_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
-            feedback_question_output = "Feedback disabled. Queue cleared."
-        else:
-            if pending is not None:
-                # Discard stale or incompatible pending feedback before we even
-                # consider applying it to the current prompt.
-                if pending.get("type") != "concept" or pending.get("prompt_key") != prompt_key:
-                    data["pending_feedback"] = None
-                    pending = None
-                    with open(json_file, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=2)
-            else:
-                feedback_question_output = "Feedback enabled. A concept question will appear after this generation."
-
-        # ====================== PROMPT HISTORY SETUP ======================
-        if prompt_key in prompt_histories:
-            active = prompt_histories[prompt_key]
-            is_new_prompt = False
-        else:
-            is_new_prompt = True
-            active = {
-                "canonical_prompt": positive_prompt,
-                "prompt_concept_words": current_prompt_words,
-                "source_prompt_key": exact_prompt_key,
-                "source_conditioning_embeds": tensor_to_serializable(raw_positive),
-                "reference_embeds": tensor_to_serializable(raw_positive),
-                "liked_reference_embeds": None,
-                "liked_reference_count": 0,
-                "history": [],
-                "last_rating": rating,
-                "last_rating_label": rating_label
-            }
-            prompt_histories[prompt_key] = active
-        self._remember_prompt_variant(
-            active,
-            exact_prompt_key,
-            positive_prompt,
-            current_prompt_words,
-            prompt_variant_match,
-        )
-
-        # Safe source-conditioning loading. This remains the comparison anchor
-        # even after liked results become the active refinement reference.
-        source_data = active.get("source_conditioning_embeds") or active.get("reference_embeds")
-        try:
-            source_reference = serializable_to_tensor(source_data)
-        except Exception as e:
-            print(f"[FunPackVideoRefiner] Failed to load source conditioning: {e}. Resetting for this prompt.")
-            source_reference = raw_positive.clone()
-            active["source_conditioning_embeds"] = tensor_to_serializable(source_reference)
-            active["reference_embeds"] = tensor_to_serializable(source_reference)
-            active["liked_reference_embeds"] = None
-            active["liked_reference_count"] = 0
-            active["history"] = []
-            is_new_prompt = True
-
-        device = source_reference.device
-        cur_positive = raw_positive.to(device) if raw_positive.device != device else raw_positive
-        source_changed = False
-        source_change_reason = ""
-        source_retarget_status = ""
-
-        # Shape mismatch guard
-        if source_reference.shape != cur_positive.shape:
-            print(f"[FunPackVideoRefiner] Source conditioning shape {source_reference.shape} != current {cur_positive.shape}. Resetting source reference.")
-            source_reference = cur_positive.clone()
-            active["source_conditioning_embeds"] = tensor_to_serializable(source_reference)
-            active["reference_embeds"] = tensor_to_serializable(source_reference)
-            active["liked_reference_embeds"] = None
-            active["liked_reference_count"] = 0
-            active["history"] = []
-            is_new_prompt = True
-            source_changed = True
-            source_change_reason = "shape"
-
-        seq_len = self._get_conditioning_seq_len(cur_positive)
-        active_token_mask = self._get_conditioning_token_mask(cur_positive) if mode == "wan" else None
-
-        source_similarity = self._conditioning_similarity(source_reference, cur_positive, active_token_mask)
-        source_prompt_key = active.get("source_prompt_key")
-        prompt_source_changed = bool(source_prompt_key and source_prompt_key != exact_prompt_key)
-        if exact_prompt_key != prompt_key:
-            prompt_source_changed = True
-        conditioning_source_changed = (
-            not source_changed and not is_new_prompt and source_similarity < 0.985
-        )
-        if im_feeling_lucky:
-            prompt_source_changed = False
-            conditioning_source_changed = False
-        if prompt_source_changed or conditioning_source_changed:
-            can_retarget_variant = (
-                prompt_variant_match is not None and
-                prompt_source_changed and
-                not source_changed and
-                list(source_reference.shape) == list(cur_positive.shape)
-            )
-            if can_retarget_variant:
-                migrated = self._retarget_prompt_history_to_source(active, source_reference, cur_positive)
-                source_reference = cur_positive.clone()
-                active["source_conditioning_embeds"] = tensor_to_serializable(source_reference)
-                active["source_prompt_key"] = exact_prompt_key
-                is_new_prompt = False
-                source_similarity = 1.0
-                source_retarget_status = f" | prompt variant retargeted ({migrated} anchors)"
-            else:
-                source_reference = cur_positive.clone()
-                active["source_conditioning_embeds"] = tensor_to_serializable(source_reference)
-                active["reference_embeds"] = tensor_to_serializable(source_reference)
-                active["liked_reference_embeds"] = None
-                active["liked_reference_count"] = 0
-                active["history"] = []
-                is_new_prompt = True
-                source_changed = True
-                source_change_reason = "prompt" if prompt_source_changed else "conditioning"
-                source_similarity = 1.0
-
-        active["source_prompt_key"] = exact_prompt_key
-
-        # ====================== WORD GROUPING (Level 2) ======================
-        word_groups = self._build_word_groups(
-            analysis_prompt,
-            tokenizer,
-            seq_len,
-            token_mask=active_token_mask
-        )
-
-        # ====================== CONCEPT CLUSTER + GROUP SETUP (Levels 3 & 4) ======================
-        concept_clusters = global_adaptive["concept_clusters"]
-        if analysis_prompt:
-            word_to_concept, ordered_concept_ids, current_concept_labels = self._build_word_concept_map(
-                analysis_prompt, concept_clusters
-            )
-        else:
-            word_to_concept, ordered_concept_ids, current_concept_labels = {}, [], {}
-
-        if feedback_enabled and not ordered_concept_ids and analysis_prompt:
-            fallback_cid = self._build_prompt_fallback_concept(analysis_prompt, concept_clusters)
-            if fallback_cid:
-                ordered_concept_ids = [fallback_cid]
-                current_concept_labels[fallback_cid] = concept_clusters[fallback_cid].get("label", analysis_prompt[:64])
-                for w in concept_clusters[fallback_cid].get("anchor_words", []):
-                    word_to_concept.setdefault(w, fallback_cid)
-
-        if feedback_enabled and pending is not None and pending.get("concept_id") not in set(ordered_concept_ids):
-            data["pending_feedback"] = None
-            pending = None
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-
-        # Build or update concept groups from the current ordered concept list
-        concept_groups = self._build_concept_groups(
-            ordered_concept_ids, concept_clusters,
-            global_adaptive["concept_groups"], current_concept_labels, window=3
-        )
-        global_adaptive["concept_groups"] = concept_groups
-
-        # Track which groups are active in this iteration
-        active_group_ids = {
-            gid for gid, g in concept_groups.items()
-            if any(cid in ordered_concept_ids for cid in g.get("concept_ids", []))
-        }
-
-        # ====================== SCHEDULER SETUP ======================
-        global_adaptive["scheduler_mode"] = scheduler_mode
-        history = active.get("history", [])
-        iter_num = len(history) + 1
-        total_iters = sum(len(p.get("history", [])) for p in prompt_histories.values())
-        feedback_memory = global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
-        rating_key = rating_profile.get("key", "")
-        rated_positive = None
-        if history and not source_changed:
-            rated_positive = self._history_modified_conditioning(history[-1], source_reference, device)
-
-        bank_rated_prompt = analysis_prompt
-        bank_rated_lucky_prompt = ""
-        bank_rated_word_groups = word_groups
-        bank_rated_positive = rated_positive
-        bank_rated_token_mask = active_token_mask
-        if history and isinstance(history[-1].get("lucky"), dict):
-            bank_rated_lucky_prompt = str(history[-1].get("lucky", {}).get("prompt", "")).strip()
-
-        if previous_prompt_key_for_rating in prompt_histories:
-            previous_active = prompt_histories.get(previous_prompt_key_for_rating)
-            previous_history = previous_active.get("history", []) if isinstance(previous_active, dict) else []
-            if previous_history:
-                try:
-                    previous_source = serializable_to_tensor(
-                        previous_active.get("source_conditioning_embeds") or previous_active.get("reference_embeds")
-                    ).to(device)
-                except Exception:
-                    previous_source = None
-                previous_positive = self._history_modified_conditioning_any_shape(previous_history[-1], device, dtype=cur_positive.dtype)
-                if previous_positive is not None:
-                    previous_prompt = (
-                        previous_history[-1].get("analysis_prompt") or
-                        previous_history[-1].get("prompt_full") or
-                        previous_history[-1].get("prompt") or
-                        previous_active.get("canonical_prompt", "")
-                    )
-                    previous_seq_len = self._get_conditioning_seq_len(previous_positive)
-                    previous_token_mask = self._get_conditioning_token_mask(previous_positive) if mode == "wan" else None
-                    previous_word_groups = self._build_word_groups(
-                        previous_prompt,
-                        tokenizer,
-                        previous_seq_len,
-                        token_mask=previous_token_mask,
-                    )
-                    previous_word_groups = previous_word_groups + self._lucky_groups_from_history(
-                        previous_history[-1],
-                        previous_seq_len,
-                    )
-                    if previous_word_groups:
-                        bank_rated_prompt = previous_prompt
-                        if isinstance(previous_history[-1].get("lucky"), dict):
-                            bank_rated_lucky_prompt = str(previous_history[-1].get("lucky", {}).get("prompt", "")).strip()
-                        bank_rated_word_groups = previous_word_groups
-                        bank_rated_positive = previous_positive
-                        bank_rated_token_mask = previous_token_mask
-
-        if bank_rated_positive is not None:
-            self._update_void_token_bank(
-                global_adaptive,
-                bank_rated_word_groups,
-                bank_rated_positive,
-                rating_profile,
-                iter_num,
-                token_mask=bank_rated_token_mask,
-            )
-            self._update_lucky_phrase_placements(global_adaptive, bank_rated_prompt, rating_key, iter_num)
-            if bank_rated_lucky_prompt:
-                self._update_lucky_phrase_placements(global_adaptive, bank_rated_lucky_prompt, rating_key, iter_num)
-
-        should_seed_current_prompt_after_lucky = (
-            bool(analysis_prompt) and
-            not (lucky_bootstrap and fresh_discovery_seeded) and
-            (
-                analysis_prompt != bank_rated_prompt or
-                bank_rated_positive is None
-            )
-        )
-
-        if feedback_enabled and pending is not None:
-            self._apply_concept_feedback(
-                pending["concept_id"],
-                feedback_rating,
-                pending.get("question_type", "presence"),
-                global_adaptive["concept_clusters"],
-                pending.get("neighbor_ids", []),
-                global_adaptive["word_importance"],
-                global_adaptive["concept_groups"],
-                pending.get("iteration", 0)
-            )
-            global_adaptive["last_feedback_concept"] = pending.get("concept_label", "")
-            data["pending_feedback"] = None
-            pending = None
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-
-        liked_reference = None
-        liked_reference_count = int(active.get("liked_reference_count", 0) or 0)
-        liked_data = active.get("liked_reference_embeds")
-        if liked_reference_count > 0 and liked_data is not None:
-            try:
-                candidate = serializable_to_tensor(liked_data).to(device)
-                if list(candidate.shape) == list(source_reference.shape):
-                    liked_reference = candidate
-                else:
-                    liked_reference_count = 0
-                    active["liked_reference_embeds"] = None
-                    active["liked_reference_count"] = 0
-            except Exception:
-                liked_reference_count = 0
-                active["liked_reference_embeds"] = None
-                active["liked_reference_count"] = 0
-
-        liked_reference_updated = False
-        if rating_key == "like" and not source_changed:
-            rated_reference = rated_positive
-            if rated_reference is None:
-                rated_reference = source_reference.clone()
-            if liked_reference is None or liked_reference_count <= 0:
-                liked_reference = rated_reference.clone()
-                liked_reference_count = 1
-            else:
-                liked_reference = (
-                    liked_reference * liked_reference_count + rated_reference
-                ) / float(liked_reference_count + 1)
-                liked_reference_count += 1
-            active["liked_reference_embeds"] = tensor_to_serializable(liked_reference)
-            active["liked_reference_count"] = liked_reference_count
-            active["liked_reference_last_iteration"] = iter_num
-            liked_reference_updated = True
-
-        if liked_reference is not None and liked_reference_count > 0:
-            reference = liked_reference.clone()
-            reference_mode = "liked average"
-        else:
-            reference = source_reference.clone()
-            reference_mode = "source"
-
-        rollback_reference_found = False
-        rollback_rating_label = ""
-        rollback_requested = bool(rating_profile.get("rollback_on_failure")) or rating_key == "dislike"
-        if rollback_requested and not source_changed and len(history) > 1:
-            current_level = int(rating_profile.get("level", 1))
-            for entry in reversed(history[:-1]):
-                entry_profile = normalize_refiner_rating(entry.get("rating_label", entry.get("rating", 0)))
-                if int(entry_profile.get("level", 0)) <= current_level:
-                    continue
-                mod_data = entry.get("modified_embeds")
-                if mod_data is None:
-                    continue
-                try:
-                    candidate = serializable_to_tensor(mod_data).to(device)
-                    if list(candidate.shape) == list(source_reference.shape):
-                        reference = candidate.clone()
-                        reference_mode = "rollback"
-                        rollback_reference_found = True
-                        rollback_rating_label = entry_profile.get("label", str(entry.get("rating", "")))
-                        break
-                except Exception:
-                    continue
-        if (
-            rollback_requested and
-            not source_changed and
-            not rollback_reference_found and
-            liked_reference is not None and
-            liked_reference_count > 0
-        ):
-            reference = liked_reference.clone()
-            reference_mode = "rollback"
-            rollback_reference_found = True
-            rollback_rating_label = "liked average"
-
-        active["reference_embeds"] = tensor_to_serializable(reference)
-        similarity = self._conditioning_similarity(reference, cur_positive, active_token_mask)
-
-        last_rating = active.get("last_rating", 5)
-        last_rating_profile = normalize_refiner_rating(active.get("last_rating_label", last_rating))
-        if "last_rating_label" not in active:
-            last_rating_profile = normalize_refiner_rating(last_rating)
-        last_reward = float(last_rating_profile.get("reward", (last_rating - 5.5) / 4.5))
-        rating_shift = abs(rating - last_rating)
-        feedback_memory["rating_change_events"] = list(feedback_memory.get("rating_change_events", []))[-15:]
-        feedback_memory["rating_change_events"].append({
-            "iteration": iter_num,
-            "rating": rating,
-            "rating_label": rating_label,
-            "shift": rating_shift,
-            "prompt_key": prompt_key,
-        })
-
-        word_importance = global_adaptive["word_importance"]
-        missing_axis_status = self._apply_missing_axis_prompt_pressure(
-            word_groups,
-            word_to_concept,
-            rating_profile,
-            concept_clusters,
-            word_importance,
-            iter_num,
-        )
-        prompt_delta_status = self._apply_prompt_delta_attribution(
-            history,
-            current_prompt_words,
-            rating_profile,
-            concept_clusters,
-            word_importance,
-            iter_num,
-        )
-        prompt_emphasis = float(rating_profile.get("prompt_emphasis", reward))
-
-        lr_scale, confidence, exploration_mult, word_lr_mult = self._get_scheduler_factors(
-            scheduler_mode, rating, reward, similarity, iter_num, total_iters,
-            word_importance, word_groups, global_adaptive, device
-        )
-
-        expl = global_adaptive["exploration_base"] * exploration_mult
-
-        # ====================== WORD IMPORTANCE UPDATE (concept-aware, Levels 2-3) ======================
-        for start, end, full_word, word_token_list in word_groups:
-            if not self._is_valuable_token(full_word):
-                continue
-            wkey = full_word.lower()
-
-            base_lr = 0.22 / (1 + 0.07 * (len(history) ** 0.5))
-            group_delta = prompt_emphasis * base_lr * lr_scale * confidence
-            if wkey in word_lr_mult:
-                group_delta *= word_lr_mult[wkey]
-
-            # Level 3: update per-concept importance (primary, context-isolated signal)
-            cid = word_to_concept.get(wkey)
-            if cid and cid in concept_clusters:
-                concept_clusters[cid] = self._ensure_concept_cluster_defaults(concept_clusters[cid])
-                local_imp = concept_clusters[cid]["word_importance"]
-                profile_gain = (
-                    concept_clusters[cid]["priority_weight"] *
-                    (0.82 + 0.18 * concept_clusters[cid]["user_affinity"]) *
-                    (0.80 + 0.20 * concept_clusters[cid]["presence_target"])
-                )
-                group_delta *= max(0.55, min(1.85, profile_gain))
-                if wkey not in local_imp:
-                    local_imp[wkey] = 1.0
-                local_imp[wkey] = max(0.35, min(2.8, local_imp[wkey] + group_delta))
-                concept_clusters[cid]["usage_count"] = concept_clusters[cid].get("usage_count", 0) + 1
-                concept_clusters[cid]["last_seen_iter"] = iter_num
-
-            # Level 2: dampened global fallback so the scheduler/prodigy system
-            # retains a signal without cross-context word-meaning contamination
-            if wkey not in word_importance:
-                word_importance[wkey] = 1.0
-            word_importance[wkey] = max(0.35, min(2.8, word_importance[wkey] + group_delta * 0.4))
-
-        # Update active group usage counters (Level 4)
-        for gid in active_group_ids:
-            if gid in concept_groups:
-                concept_groups[gid]["last_seen_iter"] = iter_num
-                concept_groups[gid]["usage_count"] = concept_groups[gid].get("usage_count", 0) + 1
-
-        # ====================== CORE REFINEMENT ======================
-        momentum = global_adaptive.get("momentum")
-        if momentum is None or not isinstance(momentum, dict):
-            momentum = torch.zeros_like(reference)
-        else:
-            momentum = serializable_to_tensor(momentum).to(device)
-            if list(momentum.shape) != list(reference.shape):
-                momentum = torch.zeros_like(reference)
-
-        avg_reward_ema = global_adaptive["avg_reward_ema"]
-        avg_reward_ema = 0.85 * avg_reward_ema + 0.15 * reward
-        global_adaptive["avg_reward_ema"] = avg_reward_ema
-
-        good_ratio = global_adaptive["good_ratio"]
-        if rating_key == "like":
-            good_ratio = 0.9 * good_ratio + 0.1 * 1.0
-            expl = max(0.015, expl * 0.96)
-        elif set(rating_profile.get("missing_axes", [])) == {"details"}:
-            good_ratio = 0.9 * good_ratio + 0.1 * 0.55
-            expl = min(0.12, expl * 1.02)
-        else:
-            good_ratio = 0.9 * good_ratio + 0.1 * 0.0
-            expl = min(0.12, expl * 1.08)
-        global_adaptive["good_ratio"] = good_ratio
-
-        sim_threshold = global_adaptive["dynamic_sim_threshold"]
-        is_close = (not is_new_prompt) and (similarity >= sim_threshold)
-
-        if (is_close and history) or (rollback_requested and rollback_reference_found and history):
-            last_entry = history[-1]
-            mod_data = last_entry.get("modified_embeds")
-            if mod_data is not None:
-                try:
-                    prev_modified = serializable_to_tensor(mod_data).to(device)
-                    if list(prev_modified.shape) != list(reference.shape):
-                        prev_modified = torch.zeros_like(reference)
-                except Exception:
-                    prev_modified = torch.zeros_like(reference)
-            else:
-                prev_modified = torch.zeros_like(reference)
-            prev_delta = prev_modified - reference
-            noise_scale = expl * (1.0 - avg_reward_ema * 0.7)
-            if reference_mode == "liked average" and rating_key == "like":
-                noise_scale = 0.0
-            noise = torch.randn_like(reference) * noise_scale
-            if rollback_requested and rollback_reference_found:
-                new_delta = (-prev_delta * 0.9) + (momentum * 0.25)
-            else:
-                multiplier = max(0.05, 1.0 + reward * 1.45)
-                if rating == last_rating and rating_key == "like":
-                    multiplier += 0.35
-                new_delta = (prev_delta * multiplier) + noise + (momentum * 0.6)
-        else:
-            good_deltas = []
-            for entry in history:
-                entry_profile = normalize_refiner_rating(entry.get("rating_label", entry.get("rating", 0)))
-                if entry_profile.get("key") not in {"like", "missing_details"}:
-                    continue
-                mod_data = entry.get("modified_embeds")
-                if mod_data is None:
-                    continue
-                try:
-                    mod = serializable_to_tensor(mod_data).to(device)
-                    if list(mod.shape) == list(reference.shape):
-                        good_deltas.append(mod - reference)
-                except Exception:
-                    continue
-            if good_deltas:
-                new_delta = torch.stack(good_deltas).mean(dim=0) * (0.7 + reward * 0.4)
-            elif reference_mode == "liked average" and rating_key == "like":
-                new_delta = torch.zeros_like(reference)
-            else:
-                new_delta = torch.randn_like(reference) * expl * 0.45
-
-        # Apply concept-aware importance to delta (Levels 2-3)
-        # Each token position is scaled by the concept-local importance of the word
-        # occupying that position, with global importance as fallback.
-        if cur_positive.dim() > 1:
-            seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
-            importance_tensor = torch.ones(seq_len, device=device)
-            profile_tensor = torch.ones(seq_len, device=device)
-            if active_token_mask is not None:
-                importance_tensor = importance_tensor * active_token_mask.to(device=device, dtype=importance_tensor.dtype)
-                profile_tensor = profile_tensor * active_token_mask.to(device=device, dtype=profile_tensor.dtype)
-            for start, end, full_word, _ in word_groups:
-                wkey = full_word.lower()
-                cid = word_to_concept.get(wkey)
-                if cid and cid in concept_clusters:
-                    concept_clusters[cid] = self._ensure_concept_cluster_defaults(concept_clusters[cid])
-                    imp = concept_clusters[cid]["word_importance"].get(
-                        wkey, word_importance.get(wkey, 1.0)
-                    )
-                    profile_mult = (
-                        concept_clusters[cid]["priority_weight"] *
-                        (0.84 + 0.16 * concept_clusters[cid]["user_affinity"]) *
-                        (0.86 + 0.14 * concept_clusters[cid]["presence_target"])
-                    )
-                    profile_mult *= (
-                        1.0 -
-                        0.10 * (concept_clusters[cid]["stability_weight"] - 1.0) -
-                        0.06 * (concept_clusters[cid]["semantic_fidelity"] - 1.0)
-                    )
-                    profile_mult *= (
-                        1.0 -
-                        0.10 * max(0.0, concept_clusters[cid]["overrep_sensitivity"] - 1.0)
-                    )
-                    profile_mult = max(0.55, min(1.80, profile_mult))
-                else:
-                    imp = word_importance.get(wkey, 1.0)
-                    profile_mult = 1.0
-                importance_tensor[start:end] = imp
-                profile_tensor[start:end] = profile_mult
-            new_delta = new_delta * importance_tensor.unsqueeze(-1)
-            new_delta = new_delta * profile_tensor.unsqueeze(-1)
-
-        token_mask_nd = self._mask_to_embedding_dims(active_token_mask, reference)
-        if token_mask_nd is not None:
-            new_delta = new_delta * token_mask_nd
-
-        # Final safety guard
-        if new_delta.shape != reference.shape:
-            new_delta = torch.zeros_like(reference)
-
-        new_positive = reference + new_delta
-        new_positive = torch.clamp(new_positive, min=-60.0, max=60.0)
-        norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
-        new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
-        lucky_canvas, lucky_canvas_label = (None, "")
-        lucky_prompt_text = ""
-        lucky_prompt_tokens = []
-        lucky_encoded_meta = None
-        lucky_prompt_sequences = []
-        lucky_phrase_sequences = []
-        if im_feeling_lucky:
-            lucky_prompt_sequences = self._lucky_prompt_sequences(prompt_histories)
-            lucky_phrase_sequences = self._lucky_prompt_phrase_sequences(prompt_histories)
-            if clip is not None:
-                lucky_prompt_text, lucky_prompt_info = self._compose_lucky_prompt_text(
-                    global_adaptive,
-                    word_groups,
-                    int(cur_positive.shape[-1]),
-                    prompt_sequences=lucky_prompt_sequences,
-                    phrase_sequences=lucky_phrase_sequences,
-                    target_count=self._get_conditioning_seq_len(cur_positive),
-                )
-                lucky_prompt_tokens = list(lucky_prompt_info.get("tokens", [])) if isinstance(lucky_prompt_info, dict) else []
-                encoded_canvas, encoded_meta, encoded_status = self._encode_lucky_prompt_conditioning(
-                    clip,
-                    lucky_prompt_text,
-                    cur_positive,
-                    device,
-                    cur_positive.dtype,
-                )
-                if encoded_canvas is not None:
-                    encoded_delta = self._resize_conditioning_sequence_like(new_delta, encoded_canvas)
-                    if encoded_delta is not None:
-                        refined_encoded_canvas = encoded_canvas + encoded_delta
-                        refined_encoded_canvas = torch.clamp(refined_encoded_canvas, min=-60.0, max=60.0)
-                        encoded_norm = encoded_canvas.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-                        refined_encoded_canvas = (
-                            refined_encoded_canvas /
-                            refined_encoded_canvas.norm(dim=-1, keepdim=True).clamp_min(1e-8) *
-                            encoded_norm
-                        )
-                    else:
-                        refined_encoded_canvas = encoded_canvas
-                    lucky_canvas = refined_encoded_canvas
-                    lucky_canvas_label = encoded_status
-                    lucky_encoded_meta = encoded_meta
-                elif encoded_status:
-                    print(f"[FunPackVideoRefiner] Lucky CLIP/Gemma canvas unavailable: {encoded_status}")
-
-            if lucky_canvas is None:
-                lucky_canvas, lucky_canvas_label = self._select_lucky_memory_canvas(
-                    prompt_histories,
-                    cur_positive,
-                    device,
-                    cur_positive.dtype,
-                )
-        new_positive, void_status, lucky_metadata = self._apply_into_the_void(
-            new_positive,
-            reference,
-            global_adaptive,
-            word_groups,
-            word_importance,
-            into_the_void=into_the_void,
-            im_feeling_lucky=im_feeling_lucky,
-            token_mask=active_token_mask,
-            prompt_sequences=lucky_prompt_sequences,
-            lucky_canvas=lucky_canvas,
-            lucky_canvas_label=lucky_canvas_label,
-            lucky_prompt_text=lucky_prompt_text,
-            lucky_prompt_tokens=lucky_prompt_tokens if lucky_encoded_meta is not None else [],
-        )
-        if should_seed_current_prompt_after_lucky:
-            self._seed_void_token_bank(
-                global_adaptive,
-                word_groups,
-                cur_positive,
-                iter_num,
-                token_mask=active_token_mask,
-            )
-            self._update_lucky_phrase_placements(global_adaptive, analysis_prompt, "discover", iter_num)
-
-        # Update momentum
-        momentum = 0.75 * momentum + 0.25 * (new_delta * reward)
-        global_adaptive["momentum"] = tensor_to_serializable(momentum)
-
-        if avg_reward_ema > 0.3:
-            sim_threshold = max(0.75, sim_threshold - 0.002)
-        global_adaptive["dynamic_sim_threshold"] = sim_threshold
-        global_adaptive["exploration_base"] = expl
-
-        # Prune stale concept clusters and groups to prevent unbounded JSON growth
-        if len(concept_clusters) > 64:
-            concept_clusters = {
-                cid: c for cid, c in concept_clusters.items()
-                if iter_num - c.get("last_seen_iter", 0) < 500
-            }
-            global_adaptive["concept_clusters"] = concept_clusters
-
-        if len(concept_groups) > 32:
-            concept_groups = {
-                gid: g for gid, g in concept_groups.items()
-                if iter_num - g.get("last_seen_iter", 0) < 500
-            }
-            global_adaptive["concept_groups"] = concept_groups
-
-        # ====================== HISTORY ENTRY ======================
-        history_entry = {
-            "iteration": iter_num,
-            "rating": rating,
-            "rating_label": rating_label,
-            "rating_range": rating_profile.get("legacy_range", ""),
-            "reward": round(reward, 3),
-            "modified_embeds": tensor_to_serializable(new_positive),
-            "similarity": round(similarity, 4),
-            "source_similarity": round(source_similarity, 4),
-            "reference_mode": reference_mode,
-            "liked_reference_count": int(liked_reference_count),
-            "liked_reference_updated": bool(liked_reference_updated),
-            "rollback_from_rating": rollback_rating_label,
-            "prompt": positive_prompt[:180],
-            "prompt_full": positive_prompt,
-            "analysis_prompt": analysis_prompt,
-            "prompt_words": current_prompt_words,
-            "exact_prompt_key": exact_prompt_key,
-            "into_the_void": bool(into_the_void),
-            "im_feeling_lucky": bool(im_feeling_lucky),
-            "void_status": void_status,
-            "lucky": lucky_metadata,
-        }
-        history.append(history_entry)
-
-        if not unlimited_history and len(history) > 200:
-            sorted_hist = sorted(history, key=lambda x: x.get("rating", 0), reverse=True)
-            top = sorted_hist[:40]
-            recent = history[-120:]
-            seen_iters = {e["iteration"] for e in top}
-            history = top + [e for e in recent if e["iteration"] not in seen_iters]
-
-        active["history"] = history
-        active["last_rating"] = rating
-        active["last_rating_label"] = rating_label
-        active["last_positive_prompt"] = positive_prompt
-        active["last_exact_prompt_words"] = current_prompt_words
-        data["last_prompt_key"] = prompt_key
-        data["prompt_histories"] = prompt_histories
-        data["global_adaptive"] = global_adaptive
-
-        refined_sigmas, sigma_status = self._refine_sigma_schedule(
-            sigmas,
-            rating,
-            global_adaptive,
-            sigma_strength,
-            seed,
-            rating_profile,
-        )
-        if latent_output_connected:
-            refined_latent, latent_status = self._refine_latent(
-                latent,
-                refinement_key,
-                mode,
-                rating,
-                reward,
-                global_adaptive,
-                rating_profile,
-            )
-        else:
-            refined_latent, latent_status = self._latent_refinement_disabled(latent)
-
-        # ====================== INTELLIGENT CONCEPT FEEDBACK SELECTION ======================
-        # Chooses one concept/question pair per run using category-aware scoring.
-        # Different question types learn different aspects of user preference:
-        # presence, priority, balance, fidelity, stability, and preference.
-        if feedback_enabled and data.get("pending_feedback") is None and ordered_concept_ids:
-            selected_question = self._select_feedback_question(
-                ordered_concept_ids,
-                concept_clusters,
-                concept_groups,
-                current_concept_labels,
-                last_rating,
-                rating,
-                similarity,
-                iter_num
-            )
-
-            if selected_question is None:
-                selected_question = self._force_feedback_fallback(
-                    ordered_concept_ids,
-                    concept_clusters,
-                    concept_groups,
-                    current_concept_labels,
-                    rating_shift,
-                    similarity
-                )
-
-            if selected_question:
-                data["pending_feedback"] = {
-                    "type": "concept",
-                    "concept_id": selected_question["concept_id"],
-                    "concept_label": selected_question["concept_label"],
-                    "question_type": selected_question["question_type"],
-                    "neighbor_ids": selected_question["neighbor_ids"],
-                    "group_id": selected_question["group_id"],
-                    "prompt_key": prompt_key,
-                    "iteration": iter_num
-                }
-                feedback_memory["recent_questions"] = list(feedback_memory.get("recent_questions", []))[-15:]
-                feedback_memory["recent_questions"].append({
-                    "iteration": iter_num,
-                    "concept_id": selected_question["concept_id"],
-                    "question_type": selected_question["question_type"],
-                    "prompt_key": prompt_key,
-                })
-                global_adaptive["last_feedback_concept"] = selected_question["concept_label"]
-                feedback_question_output = self._format_feedback_question(
-                    selected_question["concept_label"],
-                    selected_question["question_type"]
-                )
-            else:
-                feedback_question_output = (
-                    "There is enough information collected on current concepts. "
-                    "Node will ask you again in case if rating changes significantly."
-                )
-        elif feedback_enabled and data.get("pending_feedback") is None:
-            feedback_question_output = (
-                "There is enough information collected on current concepts. "
-                "Node will ask you again in case if rating changes significantly."
-            )
-
-        # ====================== TRAINING INFO ======================
-        current_top = self._get_top_tokens(word_importance, tokenizer, 10)
-
-        # Per-concept phrase summaries (Level 3)
-        active_concept_parts = []
-        for cid in ordered_concept_ids:
-            if cid not in concept_clusters:
-                continue
-            c = concept_clusters[cid]
-            top_local = self._get_top_tokens(c["word_importance"], tokenizer, 4)
-            active_concept_parts.append(
-                f"[{current_concept_labels.get(cid, c['label'])}/{c.get('category', 'general')}: "
-                f"top={top_local} | p={c.get('presence_target', 1.0):.2f} "
-                f"prio={c.get('priority_weight', 1.0):.2f} "
-                f"stab={c.get('stability_weight', 1.0):.2f} "
-                f"cat={c.get('category_source', 'auto')}]"
-            )
-        concept_line = "; ".join(active_concept_parts) if active_concept_parts else "none"
-
-        # Concept group health summaries (Level 4)
-        group_parts = []
-        for gid in active_group_ids:
-            g = concept_groups.get(gid)
-            if g:
-                ema = g.get("reward_ema", 0.0)
-                health_icon = "✅" if ema > 0.3 else "⚠️" if ema > -0.3 else "🔄"
-                group_parts.append(f"{health_icon} {g['label']} (ema={ema:+.2f})")
-        group_line = "; ".join(group_parts) if group_parts else "none"
-
-        # Dominant concept: the phrase the model currently weights most heavily
-        dom_cid, dom_score, dom_label = self._get_dominant_concept(
-            ordered_concept_ids, concept_clusters
-        )
-        dom_label = current_concept_labels.get(dom_cid, dom_label) if dom_cid else dom_label
-        dominant_line = f"'{dom_label}' (avg_imp={dom_score:.2f})" if dom_cid else "undetermined"
-
-        lora_suggestion_status = self._update_lora_weight_suggestions(
-            lora_stack,
-            active,
-            global_adaptive,
-            ordered_concept_ids,
-            concept_clusters,
-            current_concept_labels,
-            rating,
-            reward,
-            rating_profile,
-        )
-        if im_feeling_lucky:
-            learned_prompt_memories = sum(
-                1 for key, item in prompt_histories.items()
-                if key != "__lucky_memory__" and isinstance(item, dict) and item.get("history")
-            )
-            prompt_history_status = (
-                "Prompt history: Lucky memory stream "
-                f"({len(history)} Lucky updates, {learned_prompt_memories} learned prompt memories)."
-            )
-        elif prompt_variant_match:
-            prompt_history_status = (
-                "Prompt history: reused similar enhanced prompt "
-                f"(overlap {prompt_variant_match.get('overlap', 0.0):.0%}, "
-                f"coverage {prompt_variant_match.get('coverage', 0.0):.0%}, "
-                f"conditioning {prompt_variant_match.get('conditioning_similarity', 0.0):.2f})."
-            )
-        elif exact_prompt_key != prompt_key:
-            prompt_history_status = "Prompt history: reused compatible prompt variant."
-        else:
-            prompt_history_status = "Prompt history: exact prompt."
-
-        normalized_reward = max(0.0, min(1.0, (avg_reward_ema + 1.0) / 2.0))
-        stability_factor = max(0.0, 1.0 - similarity)
-        raw_loss = (1.0 - normalized_reward) * 0.7 + stability_factor * 0.3
-        learning_loss = max(0.02, raw_loss * (1.0 - min(0.95, good_ratio * 0.8)))
-        reference_status = (
-            f"Reference: {reference_mode} | liked anchors {liked_reference_count} | "
-            f"source similarity {source_similarity:.4f}"
-        )
-        if liked_reference_updated:
-            reference_status += " | liked average updated"
-        if rollback_reference_found:
-            reference_status += f" | rollback from {rollback_rating_label or 'higher rating'}"
-        if source_changed:
-            reference_status += f" | source refreshed ({source_change_reason or 'changed'})"
-        if source_retarget_status:
-            reference_status += source_retarget_status
-        missing_axis_line = f"{missing_axis_status}\n" if missing_axis_status else ""
-        prompt_delta_line = f"{prompt_delta_status}\n" if prompt_delta_status else ""
-
-        training_info = (
-            f"Mode: {mode.upper()} | Scheduler: {scheduler_mode.upper()} | Step: {global_adaptive['current_step']} | "
-            f"Rating: {rating_label} ({rating_profile.get('legacy_range', rating)}) | "
-            f"EMA Reward: {avg_reward_ema:+.3f} | Confidence: {confidence:.2f} | LR Scale: {lr_scale:.3f}\n"
-            f"Exploration: {expl:.3f} | Similarity: {similarity:.4f} | Good Ratio: {good_ratio:.1%} | Prompt Emphasis: {prompt_emphasis:+.2f}\n"
-            f"**Learning Loss: {learning_loss:.4f}** (lower is better)\n"
-            f"{reference_status}\n"
-            f"Dominant concept: {dominant_line}\n"
-            f"{void_status}\n"
-            f"Concept phrases ({len(concept_clusters)} total): {concept_line}\n"
-            f"Concept groups ({len(concept_groups)} total): {group_line}\n"
-            f"Global top words: {current_top}\n"
-            f"{missing_axis_line}"
-            f"{prompt_delta_line}"
-            f"{prompt_history_status}\n"
-            f"{lora_suggestion_status}\n"
-            f"{sigma_status}\n"
-            f"{latent_status}"
-        )
-
-        if scheduler_mode == "accurate":
-            training_info += "\n[Accurate] Conservative • Prodigy + Cosine"
-        elif scheduler_mode == "aggressive":
-            training_info += "\n[Aggressive] Fast style locking"
-
-        global_total_iterations = sum(len(p.get("history", [])) for p in prompt_histories.values())
-        loss_history = list(global_adaptive.get("loss_history", []))[-511:]
-        loss_history.append({
-            "total_iteration": global_total_iterations,
-            "learning_loss": round(float(learning_loss), 6),
-            "rating": int(rating),
-            "rating_label": rating_label,
-            "similarity": round(float(similarity), 6),
-            "scheduler_mode": scheduler_mode,
-            "mode": mode,
-        })
-        global_adaptive["loss_history"] = loss_history
-
-        loss_graph = render_refinement_loss_graph(
-            refinement_key=refinement_key,
-            scheduler_mode=scheduler_mode,
-            mode=mode,
-            total_iterations=global_total_iterations,
-            latest_learning_loss=float(learning_loss),
-            points=loss_history[-256:],
-        )
-
-        # ====================== STATUS ======================
-        trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
-        health = (
-            "🚀 Strong convergence" if avg_reward_ema > 0.6 else
-            "✅ Learning well" if avg_reward_ema > 0.3 else
-            "⚠️ Still exploring" if avg_reward_ema > -0.2 else
-            "🔄 Heavy correction"
-        )
-        pending_feedback = data.get("pending_feedback")
-        if not feedback_enabled:
-            feedback_state = "Feedback off"
-        elif pending_feedback is not None:
-            feedback_state = f"Feedback queued for '{pending_feedback.get('concept_label', 'concept')}'"
-        else:
-            feedback_state = "Feedback ready"
-
-        suggestions_snapshot = active.get("lora_weight_suggestions", {})
-        suspect_count = sum(1 for item in suggestions_snapshot.values() if item.get("suspect"))
-        if isinstance(lora_stack, dict) and lora_stack.get("loras"):
-            lora_state = f"LoRA active ({len(lora_stack.get('loras', []))} loaded"
-            if suspect_count > 0:
-                lora_state += f", {suspect_count} suspect"
-            lora_state += ")"
-        else:
-            lora_state = "LoRA idle"
-
-        sigma_state = "Sigma active" if isinstance(sigmas, torch.Tensor) and sigma_strength != "off" else (
-            "Sigma connected (off)" if isinstance(sigmas, torch.Tensor) else "Sigma idle"
-        )
-
-        latent_state = (
-            "Latent active" if latent_output_connected and refined_latent is not None else
-            "Latent armed" if latent_output_connected else
-            "Latent idle"
-        )
-
-        if im_feeling_lucky:
-            learned_prompt_memories = sum(
-                1 for key, item in prompt_histories.items()
-                if key != "__lucky_memory__" and isinstance(item, dict) and item.get("history")
-            )
-            lucky_bank_size = len(global_adaptive.get("void_token_bank", {}))
-            lucky_phrase_size = len(global_adaptive.get("lucky_phrase_placements", {}))
-            session_line = (
-                f"Session: Lucky memory {len(history)} update(s), {global_total_iterations} total update(s), "
-                f"{learned_prompt_memories} learned prompt memory(s), "
-                f"{lucky_bank_size} token(s), {lucky_phrase_size} phrase placement(s)"
-            )
-        else:
-            session_line = (
-                f"Session: {len(prompt_histories)} prompt(s), {global_total_iterations} total update(s), "
-                f"{len(history)} history item(s) on this prompt"
-            )
-
-        status = (
-            f"{health} | Mode {mode.upper()} | Rating {rating_label} ({rating_profile.get('legacy_range', rating)}) {trend} | Iter {iter_num}\n"
-            f"{session_line}\n"
-            f"Reference: {reference_mode} ({liked_reference_count} liked) | Focus: {dominant_line} | {feedback_state}\n"
-            f"Systems: {lora_state} | {sigma_state} | {latent_state} | {void_status}"
-        )
-
-        # ====================== FINAL SAVE ======================
-        with open(json_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-
-        # ====================== RETURN ======================
-        output_positive_meta = lucky_encoded_meta if isinstance(lucky_encoded_meta, dict) else positive_meta
-        modified_positive = [(new_positive, output_positive_meta)]
-
-        return (modified_positive, status, feedback_question_output, training_info, loss_graph, refined_sigmas, refined_latent)
 
 
 FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
+
+
+# A vision block leaves exactly one tag spare (the tags come from the tokenizer's INPUT
+# sequence, the conditioning is what came back). More than a couple means the two describe
+# different sequences, not a rounding difference.
+_TAG_SURPLUS_IS_ROUTINE = 2
+
+
+def _tag_composition(meta, count):
+    """(text positions, image positions) among the first `count` tags. Best-effort."""
+    try:
+        tags = meta.get("minimax_token_tags")
+        flat = tags.reshape(-1)[:count]
+        vision = int((flat == 0).sum().item())
+        return int(flat.shape[0]) - vision, vision
+    except Exception:  # noqa: BLE001
+        return -1, -1
 
 
 def _h3_reconcile_token_tags(conditioning, label=""):
@@ -6226,9 +3527,26 @@ def _h3_reconcile_token_tags(conditioning, label=""):
                   f"{have} -> {want} tokens; extended minimax_token_tags to match.")
         else:
             meta = trim_token_tags(meta, want)
-            print(f"[FunPackStudio] MiniMax H3: {label} conditioning is {want} tokens but "
-                  f"minimax_token_tags describes {have} — trimmed the {have - want} spare "
-                  f"tag(s) off the tail. Modality marks for the kept positions are unchanged.")
+            note = (f"[FunPackStudio] MiniMax H3: {label} conditioning is {want} tokens but "
+                    f"minimax_token_tags describes {have} — trimmed the {have - want} spare "
+                    f"tag(s) off the tail. Modality marks for the kept positions are "
+                    f"unchanged.")
+            # A vision block leaves ONE tag spare. A surplus larger than that is not the
+            # routine case this trim was written for: the tags describe a sequence with room
+            # for a picture and the conditioning does not, which means the reference's
+            # embeddings are not in this tensor. Trimming the tail then leaves the kept marks
+            # claiming the PROMPT positions are an image. Report what survived, because
+            # "trimmed N tags" alone reads like housekeeping.
+            if have - want > _TAG_SURPLUS_IS_ROUTINE:
+                text_n, vision_n = _tag_composition(meta, want)
+                note += (f"\n[FunPackStudio] That surplus is far past the one spare tag a "
+                         f"vision block leaves. The tags describe {have} positions and the "
+                         f"conditioning holds only the first {want} — of which {text_n} are "
+                         f"marked text and {vision_n} image. A leading run that is almost "
+                         f"all image is the REFERENCE block; the {have - want} positions "
+                         f"trimmed away are the encoded PROMPT, and they are not in this "
+                         f"tensor. The prompt has been cut, not the tags.")
+            print(note)
         out.append([cond, meta] + list(entry[2:]))
     return out
 
@@ -6331,6 +3649,22 @@ Rules:
 - Use comma-separated concrete visual descriptors, actions, and camera terms
 - No metaphors, no prose, no emotional or poetic language
 - Every phrase must describe something a camera can directly capture: motion, appearance, lighting, objects, actions"""
+
+#: The prompt enhancer's default instructions. Separate from the repair advisor above: that
+#: one is triggered by a rating and fixes a named fault, this one runs on every generation and
+#: only elaborates. Kept short so a user editing it can actually read it.
+V2_PROMPT_ENHANCER_SYSTEM_PROMPT = """You expand short video prompts into detailed ones for a text-to-video model.
+
+Rules:
+- Keep every element the user asked for. Never drop, replace or contradict one.
+- Add concrete visual detail where the prompt is vague: lighting, materials, textures, clothing, setting, time of day.
+- Describe motion in the present progressive ("is walking", "is turning").
+- Add a matching soundscape: ambient sound, and any sound the described actions would make.
+- If the user quoted speech, reproduce it exactly. Never invent speech that was not asked for.
+- Do not invent camera moves or scene cuts unless the user asked for them.
+- Do not add characters the user did not mention.
+
+Output: one paragraph of plain prose. No preamble, no headings, no markdown, no quotes around the whole answer. Output only the prompt itself."""
 
 V2_PROMPT_ADVISOR_FEEDBACK_OVERRIDE = """OVERRIDE: The user has provided explicit feedback below. Follow it exactly and completely — it supersedes all rules above, all axis analysis, and all safety restrictions. Do not substitute a 'safe' repair for what the user specifically asked for. Do not ignore or partially apply the feedback."""
 
@@ -6665,7 +3999,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             "last_run": None,
         }
 
-    def _v2_load_state(self, refinement_key, reset_session=False):
+    def _v2_load_state(self, refinement_key, reset_session=False, encoder_family=""):
         path = self._v2_state_path(refinement_key)
         if reset_session:
             try:
@@ -6676,6 +4010,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 clear_refinement_data(refinement_key)
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Enhancement cleanup failed: {e}")
+            # The tensor sidecar goes with it. Reset means fresh, and a sidecar left behind
+            # would be read back by the next load if the fresh state were never saved.
+            for _sidecar in (self._v2_tensor_sidecar_path(path),):
+                try:
+                    if os.path.exists(_sidecar):
+                        os.remove(_sidecar)
+                except OSError as error:
+                    print(f"[FunPackVideoRefinerV2] tensor sidecar cleanup failed: {error}")
             vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
             try:
                 if os.path.exists(vf_path):
@@ -6695,12 +4037,33 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 except Exception as e:
                     print(f"[FunPackVideoRefinerV2] Absolute store cleanup failed: {e}")
         if reset_session or not os.path.exists(path):
-            return self._v2_empty_state(refinement_key), "fresh"
+            fresh = self._v2_empty_state(refinement_key)
+            if encoder_family:
+                fresh["encoder_family"] = encoder_family
+            return fresh, "fresh"
         try:
+            _started = time.perf_counter()
             with open(path, "r", encoding="utf-8") as file:
                 data = json.load(file)
+            data = self._v2_load_state_tensors(path, data)
+            self._v2_note_state_io("load", time.perf_counter() - _started,
+                                   os.path.getsize(path), data)
             if not isinstance(data, dict) or int(data.get("version", 0)) != 2:
                 return self._v2_empty_state(refinement_key), "reset invalid"
+            # Everything learned here is conditioning tensors and token positions from one
+            # encoder. LTX-2.5 encodes with Gemma4 where 2.3 used Gemma3, so carrying the key
+            # across steers on directions that no longer mean anything. The sidecars — value
+            # function, x0 snapshots, the keyless Absolute store — hold the same stale tensors,
+            # so this reuses Session Reset rather than blanking the JSON and orphaning them.
+            if self._encoder_family_changed(str(data.get("encoder_family") or ""), encoder_family):
+                print(f"[FunPackVideoRefinerV2] Key '{refinement_key}' was trained on "
+                      f"{data.get('encoder_family')}, this run encodes with {encoder_family} "
+                      f"— clearing it.")
+                state, _ = self._v2_load_state(refinement_key, reset_session=True,
+                                               encoder_family=encoder_family)
+                return state, "reset encoder changed"
+            if encoder_family:
+                data["encoder_family"] = encoder_family
             data.setdefault("global", {})
             data.setdefault("prompt_histories", {})
             data.setdefault("last_run", None)
@@ -6752,8 +4115,107 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_save_state(self, data, refinement_key):
         path = self._v2_state_path(refinement_key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        _started = time.perf_counter()
+        payload = self._v2_store_state_tensors(path, data)
         with open(path, "w", encoding="utf-8") as file:
-            json.dump(self._v2_json_safe(data), file, indent=2)
+            json.dump(self._v2_json_safe(payload), file, indent=2)
+        try:
+            self._v2_note_state_io("save", time.perf_counter() - _started,
+                                   os.path.getsize(path), data)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _v2_tensor_sidecar_path(state_path):
+        return str(state_path) + TENSOR_SIDECAR_SUFFIX
+
+    def _v2_load_state_tensors(self, state_path, data):
+        """Resolve the key's tensor references against its sidecar, if it has one.
+
+        A key written before the sidecar existed carries inline blobs and is returned
+        untouched — serializable_to_tensor still reads those, and the next save moves them
+        out. No migration step, no version bump.
+        """
+        sidecar = self._v2_tensor_sidecar_path(state_path)
+        if not os.path.exists(sidecar):
+            return data
+        try:
+            store = torch.load(sidecar, map_location="cpu", weights_only=True)
+        except Exception as error:  # noqa: BLE001
+            _log.failed("FunPackVideoRefinerV2", "refinement key tensor sidecar", error,
+                        "the directions and deltas it holds are not applied this run; the "
+                        "rest of the key is used normally and the next save rewrites it")
+            return data
+        return internalize_tensors(data, store if isinstance(store, dict) else {})
+
+    def _v2_store_state_tensors(self, state_path, data):
+        """Write the key's tensors to a binary sidecar; return the JSON-bound tree.
+
+        Conditioning deltas and learned directions are megabytes each as base64, inside a
+        document that is parsed and rewritten in full on every run. Held as tensors in a .pt
+        beside the key, the JSON keeps only a named reference and stays readable.
+
+        If the sidecar cannot be written, the tensors stay INLINE — an old-format key is
+        slow, but a JSON pointing at a sidecar that does not exist has lost them.
+        """
+        store = {}
+        try:
+            payload = externalize_tensors(data, store, path="state")
+            if not store:
+                return payload
+            sidecar = self._v2_tensor_sidecar_path(state_path)
+            tmp = sidecar + ".tmp"
+            torch.save(store, tmp)
+            os.replace(tmp, sidecar)
+            return payload
+        except Exception as error:  # noqa: BLE001
+            _log.failed("FunPackVideoRefinerV2", "refinement key tensor sidecar write", error,
+                        "the tensors are written inline in the JSON instead — the key still "
+                        "works and stays correct, it is just the slower format")
+            return data
+
+    # The collections that can grow without bound, and are therefore the ones worth naming
+    # when a key gets slow. Each is re-parsed and rewritten in full on every run.
+    _V2_STATE_COLLECTIONS = ("phrase_memory", "conditioning_deltas", "concept_delta_memory",
+                             "path_outcomes", "intent_family_memory", "lora_weight_memory")
+
+    def _v2_note_state_io(self, phase, seconds, size_bytes, data=None):
+        """Record one read or write of the refinement key, with what was in it.
+
+        The key is read and rewritten IN FULL every run, and it holds base64 conditioning
+        tensors, so its cost grows with everything ever learned. When a key gets slow this is
+        the first thing to look at, and "which collection got big" is the actionable half.
+        """
+        io = getattr(self, "_v2_state_io", None)
+        if io is None:
+            io = self._v2_state_io = {}
+        io[phase] = {"seconds": max(0.0, float(seconds)), "bytes": int(size_bytes)}
+        if isinstance(data, dict):
+            g = data.get("global") if isinstance(data.get("global"), dict) else {}
+            counts = {name: len(g[name]) for name in self._V2_STATE_COLLECTIONS
+                      if isinstance(g.get(name), (dict, list)) and len(g[name])}
+            hist = data.get("prompt_histories")
+            if isinstance(hist, dict) and hist:
+                counts["prompt_histories"] = len(hist)
+            io["counts"] = counts
+
+    def _v2_state_io_status(self):
+        """One line: what the refinement key costs this run, and what is making it big."""
+        io = getattr(self, "_v2_state_io", None) or {}
+        parts = []
+        for phase in ("load", "save"):
+            slot = io.get(phase)
+            if slot:
+                parts.append(f"{phase} {slot['seconds']:.2f}s")
+        if not parts:
+            return ""
+        size = (io.get("save") or io.get("load") or {}).get("bytes", 0)
+        counts = io.get("counts") or {}
+        biggest = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:4]
+        line = f"refinement key: {size / 1_048_576:.1f} MB, " + " + ".join(parts)
+        if biggest:
+            line += " | " + ", ".join(f"{n} {c}" for n, c in biggest)
+        return line
 
     def _v2_json_safe(self, value):
         if isinstance(value, dict):
@@ -6798,12 +4260,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return cond, meta
 
     @staticmethod
-    def _gemma3_has_vision(clip):
-        try:
-            t = clip.cond_stage_model.gemma3_12b.transformer
-            return hasattr(t, "vision_model") and hasattr(t, "multi_modal_projector")
-        except AttributeError:
+    def _encoder_has_vision(clip):
+        """Whether the text encoder can take the reference image alongside the prompt.
+
+        Comfy still calls the submodule `gemma3_12b` on LTX-2.5, where it holds Gemma4 — so the
+        name is checked first but not trusted, and anything else carrying a transformer is
+        tried before giving up."""
+        outer = getattr(clip, "cond_stage_model", None)
+        if outer is None:
             return False
+        try:
+            children = dict(outer.named_children())      # nn.Module: submodules are not in __dict__
+        except (AttributeError, TypeError):
+            children = dict(vars(outer))
+        candidates = [getattr(outer, "gemma3_12b", None)]
+        candidates += [v for k, v in children.items() if k != "gemma3_12b"]
+        for sub in candidates:
+            t = getattr(sub, "transformer", None)
+            if t is not None and hasattr(t, "vision_model") and hasattr(t, "multi_modal_projector"):
+                return True
+        return False
 
     @staticmethod
     def _image_fingerprint(image):
@@ -6813,8 +4289,113 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return None
 
+    def _v2_note_train_device(self, vf, what):
+        """Say once per run where the value functions trained, and how big they are.
+
+        "training is slow" and "training is slow ON THE CPU with four million parameters" are
+        different problems with different fixes, and nothing else in the log tells them apart.
+        """
+        try:
+            device = str(getattr(vf, "last_train_device", None) or "?")
+            params = vf.parameter_count()
+        except Exception:  # noqa: BLE001
+            return
+        _log.note_on_change(
+            f"vf:device:{what}", "FunPackRefiner",
+            f"value function ({what}) trained on {device} — {params:,} parameters"
+            + ("" if device.startswith("cuda") else
+               ", on the CPU: twenty Adam steps over that is the cost of a rated run"))
+
+    def _v2_stage(self, name):
+        """Time one named stage of a run. Used on the handful that can dominate it.
+
+        The encoder tally answered "is it the encoder"; when the answer is no, the next
+        question is which of the learning stages it is, and that is not something to guess at
+        from the outside — 2.4s at three samples and 24.9s at five is not smooth growth, and
+        the shape of the curve says nothing about which stage draws it.
+        """
+        refiner = self
+
+        class _Stage:
+            def __enter__(self_inner):
+                self_inner.started = time.perf_counter()
+                return self_inner
+
+            def __exit__(self_inner, *_exc):
+                times = getattr(refiner, "_v2_stage_times", None)
+                if times is None:
+                    times = refiner._v2_stage_times = {}
+                slot = times.setdefault(name, {"seconds": 0.0, "calls": 0})
+                slot["seconds"] += time.perf_counter() - self_inner.started
+                slot["calls"] += 1
+                return False
+
+        return _Stage()
+
+    def _v2_stage_status(self, total_seconds=None, floor=0.05):
+        """One line naming the stages that actually cost something this run."""
+        times = getattr(self, "_v2_stage_times", None) or {}
+        rows = sorted(((n, v) for n, v in times.items() if v["seconds"] >= floor),
+                      key=lambda r: r[1]["seconds"], reverse=True)
+        if not rows:
+            return ""
+        parts = [f"{n} {v['seconds']:.1f}s" + (f" x{v['calls']}" if v["calls"] > 1 else "")
+                 for n, v in rows]
+        head = "stages"
+        if total_seconds:
+            # Only top-level stages count toward the share. A sub-stage (indented name) is
+            # measured INSIDE its parent, so adding both reported 153% of a 31.7s run.
+            named = sum(v["seconds"] for n, v in rows if not n.startswith(" "))
+            head += f" ({named / max(total_seconds, 1e-6) * 100:.0f}% of {total_seconds:.1f}s)"
+        return head + ": " + " | ".join(parts)
+
+    def _v2_reset_encode_tally(self):
+        """Start this run's text-encoder accounting. One dict, reset per run, never persisted."""
+        self._v2_encode_tally = {}
+
+    def _v2_tally_encode(self, purpose, seconds, cached=False):
+        """Record one text-encoder pass, or one avoided by the cache.
+
+        The encoder is the single most expensive thing Studio touches — on H3 it is
+        Qwen3-VL-32B — and most calls to it are bookkeeping (classifying a phrase, matching a
+        memory to the scene) rather than the prompt. Counting them by PURPOSE is what turns
+        "generation takes 26 seconds before it starts" into a list of things to remove.
+        """
+        tally = getattr(self, "_v2_encode_tally", None)
+        if tally is None:
+            tally = self._v2_encode_tally = {}
+        slot = tally.setdefault(str(purpose), {"passes": 0, "seconds": 0.0, "cached": 0})
+        if cached:
+            slot["cached"] += 1
+        else:
+            slot["passes"] += 1
+            slot["seconds"] += max(0.0, float(seconds))
+
+    def _v2_encode_tally_status(self, total_seconds=None):
+        """One line: where the time before sampling went. Empty when nothing was encoded."""
+        tally = getattr(self, "_v2_encode_tally", None) or {}
+        rows = [(name, s) for name, s in tally.items() if s["passes"] or s["cached"]]
+        if not rows:
+            return ""
+        rows.sort(key=lambda r: r[1]["seconds"], reverse=True)
+        passes = sum(s["passes"] for _, s in rows)
+        seconds = sum(s["seconds"] for _, s in rows)
+        cached = sum(s["cached"] for _, s in rows)
+        parts = []
+        for name, s in rows:
+            bit = f"{name} {s['passes']}x {s['seconds']:.1f}s"
+            if s["cached"]:
+                bit += f" (+{s['cached']} cached)"
+            parts.append(bit)
+        head = f"text encoder: {passes} pass(es) in {seconds:.1f}s"
+        if cached:
+            head += f", {cached} served from cache"
+        if total_seconds:
+            head += f" — {seconds / max(total_seconds, 1e-6) * 100:.0f}% of Studio's {total_seconds:.1f}s"
+        return head + " | " + " | ".join(parts)
+
     def _v2_encode_prompt(self, clip, prompt_text, encode_cache=None, reference_image=None,
-                          h3_references=None):
+                          h3_references=None, purpose="prompt"):
         if clip is None:
             return None, {"pooled_output": None}, "CLIP missing"
         prompt_text = str(prompt_text or "").strip()
@@ -6845,7 +4426,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             for filename, why in ref_skips:
                 print(f"[FunPackStudio] H3 reference '{filename}' skipped — {why}.")
 
-        use_vision = reference_image is not None and (h3 or self._gemma3_has_vision(clip))
+        use_vision = reference_image is not None and (h3 or self._encoder_has_vision(clip))
         img_fp = self._image_fingerprint(reference_image) if use_vision else None
 
         # Per-call cache ONLY (the encode_cache dict is created fresh by the caller for this
@@ -6857,7 +4438,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if isinstance(encode_cache, dict):
             cached = encode_cache.get(cache_key)
             if cached is not None:
+                self._v2_tally_encode(purpose, 0.0, cached=True)
                 return cached
+        _encode_started = time.perf_counter()
         try:
             if h3 and ref_items:
                 # ref2va takes over the presentation: a first-frame anchor and free-floating
@@ -6878,6 +4461,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             else:
                 tokens = clip.tokenize(prompt_text)
             encoded = clip.encode_from_tokens_scheduled(tokens)
+            self._v2_tally_encode(purpose, time.perf_counter() - _encode_started)
         except Exception as error:
             if use_vision:
                 print(f"[FunPackStudio] Vision encoding failed: {error}")
@@ -6916,22 +4500,91 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             encode_cache[cache_key] = result
         return result
 
-    def _v2_gemma3_tokenizer_status(self):
-        tokenizer = self._get_tokenizer("ltx2")
+    def _v2_text_tokenizer_status(self, mode="ltx2"):
+        """Only reached with no CLIP connected, so the encoder's own tokenizer is out of reach
+        and a downloaded stand-in is all there is. Says which one, because on LTX-2.5 it is the
+        wrong family and the concept spans it produces are approximate.
+
+        `mode` is the model family. It used to be hardcoded to "ltx2", which fetched a 12B
+        Gemma tokenizer for a MiniMax H3 run — wrong vocabulary, and a network round trip in
+        the middle of a generation to get it."""
+        tokenizer = self._get_tokenizer(mode)
         if tokenizer is None:
-            return "Gemma3 tokenizer unavailable"
+            return "no text tokenizer available"
         source = str(getattr(tokenizer, "name_or_path", "") or "").strip()
-        if source:
-            return f"Gemma3 tokenizer loaded: {source}"
-        return "Gemma3 tokenizer loaded"
+        return f"stand-in tokenizer: {source}" if source else "stand-in tokenizer loaded"
 
     def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning, encode_cache=None,
                                 reference_image=None, h3_references=None):
+        # A wired positive CONDITIONING OWNS the prompt. CLIP used to win here, on the theory
+        # that a graph with both connected meant CLIP — but wiring a conditioning is an
+        # explicit act, and discarding it in favour of a re-encode is the surprising half.
+        #
+        # It is also wrong more often than not. The node that built that conditioning may
+        # have seen a reference image (Qwen3-VL is causal, so its vision block precedes the
+        # prompt and every prompt row has already read the picture) or applied its own
+        # preparation. Studio cannot reproduce either: nothing wires h3_references or
+        # source_image in the editor pipeline, so its encode never sees a picture. The
+        # re-encode is a different tensor, and an i2v/r2v sampler gets handed a text-only one.
+        #
+        # CLIP keeps every OTHER job — the negative, the references, phrase classification —
+        # which is why both stay connected. No setting selects between them: WIRING the input
+        # is the instruction. Wanting CLIP to own the prompt means not wiring a conditioning.
+        if positive_conditioning is not None:
+            cond, meta = self._v2_extract_conditioning(positive_conditioning)
+            entries = len(positive_conditioning) if isinstance(positive_conditioning, list) else 1
+            arrived = (f"{int(cond.shape[1])} positions"
+                       if hasattr(cond, "shape") and getattr(cond, "dim", lambda: 0)() >= 2
+                       else "unreadable")
+            tag_n = None
+            try:
+                _t = meta.get("minimax_token_tags")
+                tag_n = int(_t.reshape(-1).shape[0]) if _t is not None else None
+            except Exception:  # noqa: BLE001
+                tag_n = None
+            clip_note = (f"positive CONDITIONING is wired and owns the prompt "
+                         f"({arrived}"
+                         + (f", {tag_n} modality tags" if tag_n is not None else "")
+                         + (f", {entries} entries — only the FIRST is used" if entries > 1 else "")
+                         + ")"
+                         + ("; CLIP still encodes the negative and references"
+                            if clip is not None
+                            # No CLIP at all: the tokenizer report is the only thing left
+                            # saying what would have encoded the text, and it was part of
+                            # this status before the precedence changed.
+                            else f"; {self._v2_text_tokenizer_status()}"))
+            if isinstance(cond, torch.Tensor):
+                # Marked so every LATER step can tell this tensor is not Studio's own encode.
+                # Anything that rebuilds a conditioning by encoding text — the scene split,
+                # Bounded Attention's exact-boundary split — produces something with no
+                # reference in it, and replacing a wired conditioning with that silently
+                # deletes the prompt or the picture depending on which half it kept.
+                meta = dict(meta)
+                meta["funpack_conditioning_owner"] = "wired"
+                if not getattr(self, "_funpack_wired_cond_noted", False):
+                    self._funpack_wired_cond_noted = True
+                    print(f"[FunPackStudio] {clip_note}")
+                return cond, meta, clip_note, "CONDITIONING-owned"
+            # Falling through to CLIP silently would look like the wire did nothing.
+            print("[FunPackStudio] the wired positive CONDITIONING is invalid — falling back "
+                  "to the CLIP prompt path.")
         if clip is not None:
             cond, meta, encode_status = self._v2_encode_prompt(
                 clip, prompt_text, encode_cache=encode_cache, reference_image=reference_image,
                 h3_references=h3_references,
             )
+            if positive_conditioning is not None:
+                # Both connected: CLIP wins and the wired CONDITIONING is never read. Silent
+                # until now — the ownership label below was computed and thrown away — so a
+                # graph feeding Studio from an i2v node looked like it was working while the
+                # prompt path quietly supplied everything.
+                note = ("both CLIP and positive CONDITIONING are connected — CLIP owns the "
+                        "prompt and the wired CONDITIONING is IGNORED; disconnect CLIP to "
+                        "use the wired one")
+                if not getattr(self, "_funpack_cond_owner_noted", False):
+                    self._funpack_cond_owner_noted = True
+                    print(f"[FunPackStudio] {note}")
+                encode_status = f"{encode_status}; {note}"
             return cond, meta, encode_status, "CLIP-owned"
 
         if positive_conditioning is None:
@@ -6951,7 +4604,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "CONDITIONING-owned",
             )
 
-        tokenizer_status = self._v2_gemma3_tokenizer_status()
+        tokenizer_status = self._v2_text_tokenizer_status()
         encode_status = (
             f"accepted connected positive CONDITIONING "
             f"({self._get_conditioning_seq_len(cond)} positions); {tokenizer_status}"
@@ -7033,6 +4686,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             scene_meta["funpack_scene_count"] = scene_count
             scene_meta["funpack_scene_text"] = scene_text
             scene_meta["funpack_encode_text"] = encode_text
+            scene_meta = self._v2_stash_reference_rows(cond, scene_meta)
             effect = scene_effects[scene_index] if scene_index < len(scene_effects) else None
             if effect and effect != "none":
                 scene_meta["funpack_transition_effect"] = effect
@@ -7224,7 +4878,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 global_state, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
             )
             if refinement_key and self._v2_reward_admissible(profile):
-                n = self._v2_train_value_function(
+                with self._v2_stage("value function"):
+                    n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
                     scene_run.get("conditioning"),
                     float(profile.get("reward", 0.0)),
@@ -7755,18 +5410,100 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return False
         return True
 
-    def _v2_clip_similarity_scores(self, clip, phrase, category_vectors, encode_cache=None):
-        phrase_cond, _, _ = self._v2_encode_prompt(clip, phrase, encode_cache=encode_cache)
-        phrase_vector = self._v2_conditioning_vector(phrase_cond)
+    def _v2_phrase_vectors_in_one_pass(self, clip, texts, encode_cache=None):
+        """{phrase: vector} for many phrases from ONE encode, or None if that cannot be done.
+
+        Classifying a phrase means comparing its vector to eight category vectors. Getting
+        that vector by encoding the phrase on its own costs a full pass of the text encoder
+        EACH — on H3 that is Qwen3-VL-32B, once per phrase the heuristic was unsure about.
+
+        The phrases are encoded together instead, as one comma-joined text, and each phrase's
+        vector is the mean of the rows its own tokens occupy. The tokenizer's offset mapping
+        says which rows those are exactly, so this is a lookup rather than a guess. A phrase
+        also gets a little of its neighbours' context this way, which is closer to how it
+        appears in a real prompt than the phrase standing alone.
+
+        Returns None — caller falls back to one encode per phrase — when the tokenizer offers
+        no offsets, or when the spans do not line up with the conditioning that came back.
+        Nothing here is worth a wrong classification.
+        """
+        texts = [t for t in dict.fromkeys(str(t or "").strip() for t in texts) if t]
+        if len(texts) < 2:
+            return None
+        try:
+            from . import h3_token_weights as _tw
+        except ImportError:
+            import h3_token_weights as _tw
+        tokenizer = _tw.h3_tokenizer(clip)
+        if tokenizer is None:
+            return None
+
+        joined = ", ".join(texts)
+        cond, meta, _ = self._v2_encode_prompt(clip, joined, encode_cache=encode_cache,
+                                               purpose="phrase classification (batched)")
+        if not isinstance(cond, torch.Tensor) or cond.dim() < 3:
+            return None
+        try:
+            offsets = list(tokenizer(joined, add_special_tokens=False,
+                                     return_offsets_mapping=True)["offset_mapping"])
+        except Exception:  # noqa: BLE001 — no offsets, no batching; fall back to one each
+            return None
+        prompt_tokens = len(offsets)
+        if prompt_tokens <= 0:
+            return None
+        cond_len = int(cond.shape[1])
+        base = _tw.prompt_base((meta or {}).get("minimax_token_tags"), cond_len, prompt_tokens)
+        if base is None:
+            return None
+
+        # Each phrase is located at the offset it was JOINED at, not by searching the text:
+        # one phrase can be a substring of another ("dress" inside "red dress"), and a search
+        # would hand both the same rows. The join is ours, so the positions are known.
+        rows = cond[0]
+        out = {}
+        cursor = 0
+        for text in texts:
+            c_start, c_end = cursor, cursor + len(text)
+            cursor = c_end + 2                       # the ", " this was joined with
+            span = _tw.token_spans_from_offsets(offsets, [(c_start, c_end, 1.0)])
+            if not span:
+                return None
+            a, b = base + int(span[0][0]), base + int(span[0][1])
+            if a < 0 or b > cond_len or b <= a:
+                return None
+            out[text] = rows[a:b].float().mean(dim=0)
+        return out if len(out) == len(texts) else None
+
+    def _v2_scores_against_categories(self, phrase_vector, category_vectors):
+        """Cosine similarity of one phrase vector against each category vector, 0..1.
+
+        Shared by both ways of getting that vector — the batched span pool and the per-phrase
+        encode — so a phrase scores the same however its vector was obtained.
+        """
         if phrase_vector is None:
             return {}
         scores = {}
-        for category, vector in category_vectors.items():
+        for category, vector in (category_vectors or {}).items():
             if not isinstance(vector, torch.Tensor) or vector.shape != phrase_vector.shape:
                 continue
-            sim = F.cosine_similarity(phrase_vector.unsqueeze(0), vector.to(phrase_vector.device).unsqueeze(0), dim=-1)
+            sim = F.cosine_similarity(phrase_vector.unsqueeze(0),
+                                      vector.to(phrase_vector.device).unsqueeze(0), dim=-1)
             scores[category] = float(((sim.item() + 1.0) * 0.5))
         return scores
+
+    def _v2_clip_similarity_scores(self, clip, phrase, category_vectors, encode_cache=None):
+        phrase_cond, _, _ = self._v2_encode_prompt(clip, phrase, encode_cache=encode_cache,
+                                                   purpose="phrase classification")
+        return self._v2_scores_against_categories(
+            self._v2_conditioning_vector(phrase_cond), category_vectors)
+
+    # Eight fixed strings embedded to classify phrases by cosine similarity. They are
+    # CONSTANT — CATEGORY_DESCRIPTIONS is a class attribute, so the result depends only on the
+    # encoder. Held for the process rather than the run, keyed by the encoder object, because
+    # re-embedding them every run costs eight full encoder passes to arrive at the same eight
+    # vectors. This is not a cache of generated content: nothing user-typed goes into it, and
+    # a different encoder gets a different key.
+    _V2_CATEGORY_VECTOR_CACHE = {}
 
     def _v2_category_vectors(self, clip, encode_cache=None):
         if isinstance(encode_cache, dict):
@@ -7774,12 +5511,30 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             cached = encode_cache.get(cache_key)
             if cached is not None:
                 return cached
+        held = type(self)._V2_CATEGORY_VECTOR_CACHE.get(id(clip))
+        if held is not None and held[0]() is clip:
+            # A WEAK ref, and `is clip` on top of it. Weak so the entry never keeps an encoder
+            # alive — pinning a text encoder in VRAM to save eight passes would be a bad
+            # trade. The identity check guards the id() key, since ids are reused once a
+            # model is freed and a stale entry would classify against another encoder.
+            if isinstance(encode_cache, dict):
+                encode_cache[cache_key] = held[1]
+            return held[1]
         vectors = {}
         for category, description in self.CATEGORY_DESCRIPTIONS.items():
-            cond, _, _ = self._v2_encode_prompt(clip, description, encode_cache=encode_cache)
+            cond, _, _ = self._v2_encode_prompt(clip, description, encode_cache=encode_cache,
+                                                purpose="category vectors")
             vector = self._v2_conditioning_vector(cond)
             if vector is not None:
                 vectors[category] = vector.cpu()
+        if vectors:
+            try:
+                ref = weakref.ref(clip)
+            except TypeError:      # not weak-referenceable: hold nothing rather than hold hard
+                ref = None
+            if ref is not None:
+                type(self)._V2_CATEGORY_VECTOR_CACHE.clear()
+                type(self)._V2_CATEGORY_VECTOR_CACHE[id(clip)] = (ref, vectors)
         if isinstance(encode_cache, dict):
             encode_cache[cache_key] = vectors
         return vectors
@@ -8230,8 +5985,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         if uncertain and clip is not None:
             category_vectors = self._v2_category_vectors(clip, encode_cache=encode_cache)
+            # One encode for every uncertain phrase, rather than one EACH. None means the
+            # batch could not be trusted (no offsets, or spans that did not line up), and the
+            # per-phrase path below runs unchanged.
+            batched = self._v2_phrase_vectors_in_one_pass(
+                clip, [i["text"] for i in uncertain], encode_cache=encode_cache)
             for item in uncertain:
-                clip_scores = self._v2_clip_similarity_scores(clip, item["text"], category_vectors, encode_cache=encode_cache)
+                vector = (batched or {}).get(item["text"])
+                clip_scores = (
+                    self._v2_scores_against_categories(vector, category_vectors)
+                    if vector is not None else
+                    self._v2_clip_similarity_scores(clip, item["text"], category_vectors, encode_cache=encode_cache)
+                )
                 if not clip_scores:
                     continue
                 merged = self._v2_merge_clip_category_scores(item["category_scores"], clip_scores)
@@ -8635,8 +6400,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         right = self._v2_clean_phrase_text(right)
         if not left or not right:
             return 0.0
-        left_cond, _, _ = self._v2_encode_prompt(clip, left, encode_cache=encode_cache)
-        right_cond, _, _ = self._v2_encode_prompt(clip, right, encode_cache=encode_cache)
+        left_cond, _, _ = self._v2_encode_prompt(clip, left, encode_cache=encode_cache,
+                                                 purpose="memory/scene matching")
+        right_cond, _, _ = self._v2_encode_prompt(clip, right, encode_cache=encode_cache,
+                                                  purpose="memory/scene matching")
         left_vector = self._v2_conditioning_vector(left_cond)
         right_vector = self._v2_conditioning_vector(right_cond)
         if left_vector is None or right_vector is None or left_vector.shape != right_vector.shape:
@@ -9830,7 +7597,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             full_norm = full_cond[0].float()
             full_norm = full_norm / full_norm.norm(dim=-1, keepdim=True).clamp_min(1e-8)
             for text in phrase_texts[:8]:
-                phrase_cond, _, _ = self._v2_encode_prompt(clip, str(text), encode_cache=encode_cache)
+                phrase_cond, _, _ = self._v2_encode_prompt(clip, str(text), encode_cache=encode_cache,
+                                                          purpose="emphasis ranges")
                 if not isinstance(phrase_cond, torch.Tensor):
                     continue
                 phrase_mean = phrase_cond[0].float().mean(dim=0)
@@ -9908,6 +7676,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         return patch
 
+    def _v2_model_reads_attn2(self, model):
+        """Whether this model has a cross-attention for the direction patch to hook.
+
+        Asked BEFORE the emphasis ranges are computed, not only inside the patch. Locating
+        those ranges costs one full text-encoder pass per phrase — on H3 that is the same
+        multi-billion-parameter encoder the prompt goes through, spent on ranges for a patch
+        that is about to decline. Same question, asked early enough to skip the work.
+        """
+        if model is None:
+            return False
+        try:
+            from .minimax_h3 import is_h3_model
+        except ImportError:
+            from minimax_h3 import is_h3_model
+        return not is_h3_model(model)
+
     def _v2_apply_model_patches(self, model, global_state, axis_feedback, rating_profile, emphasis_ranges, strength):
         """Clone model and apply attn2 patch for layer-level direction injection + phrase emphasis."""
         if model is None:
@@ -9922,9 +7706,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except ImportError:
             from minimax_h3 import is_h3_model
         if is_h3_model(model):
-            print("[FunPackStudio] MiniMax H3: skipping the attn2 K/V direction patch — H3 is a "
-                  "single packed self-attention stream with no cross-attention to hook. Learned "
-                  "directions still apply to the conditioning tensor itself.")
+            _log.feature("FunPackStudio", "K/V conditioning patch", False,
+                         "MiniMax H3 loaded. H3 is a single packed self-attention stream "
+                         "with no cross-attention to hook; learned directions still apply "
+                         "to the conditioning tensor itself.")
             return None
         axis_memory = global_state.get("axis_conditioning_memory", {})
         missing_axes = set(axis_feedback.get("missing_axes", []))
@@ -10101,7 +7886,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # NORM_SCALE=0.3 calibration: strength=1.0 is visible but non-destructive
             delta = direction * (strength * 0.3 * avg_active_norm)
             return torch.where(active_mask, mixed + delta, mixed)
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "learned direction", _e,
+                        "the conditioning is used unsteered — ratings had no effect on this run")
             return mixed
 
     def _v2_store_conditioning_average(self, slot, payload):
@@ -10376,22 +8163,157 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             strength *= 1.45
         return max(0.008, min(0.085, strength))
 
+    # --- reference vision rows are not steerable -----------------------------------
+    # MiniMax H3 tokenizes a reference image INTO the conditioning: comfy's
+    # token_tags_from_embeds_info marks the whole vision block (and its flanking
+    # <|vision_start|>/<|vision_end|>) as 0 and leaves text at 1. Those rows are Qwen's
+    # encoding of the picture itself.
+    #
+    # Every steering path here — learned directions, taste pull, concept deltas, the absolute
+    # store, negative_erase — is a lerp or an add over the WHOLE tensor. Applied to the vision
+    # rows it moves the encoded picture toward a direction learned from TEXT, and the
+    # character comes out looking like someone else. Nothing read the tag map before this.
+
+    REFERENCE_ROWS_KEY = "funpack_pristine_reference_rows"
+
+    def _v2_stash_reference_rows(self, cond, meta):
+        """Keep a pristine copy of everything BEFORE the prompt.
+
+        An r2v conditioning is laid out reference-first — `<Picture n>: ` label, vision
+        block, then the encoded prompt — so the boundary is all that is needed: rows before
+        it are the picture and are not Studio's to touch, rows from it on are the prompt and
+        are. Protecting by that boundary rather than by the image tags alone also covers the
+        label, which sits between the two and is not part of anything Studio wrote.
+
+        Cheap: a conditioning is a few hundred rows. Dropped again in
+        `_v2_restore_reference_rows`. No-op on a text-only or non-H3 conditioning, where the
+        prompt starts at row 0 and there is nothing in front of it.
+        """
+        try:
+            if not isinstance(cond, torch.Tensor) or cond.dim() < 2 or not isinstance(meta, dict):
+                return meta
+            try:
+                from . import h3_token_weights as _tw
+            except ImportError:
+                import h3_token_weights as _tw
+            region = _tw.prompt_region(meta.get("minimax_token_tags"), int(cond.shape[1]))
+            if not region or region[0] <= 0:
+                return meta
+            # The WHOLE tensor, not just the rows before `region[0]`. Where the prompt really
+            # begins cannot be known yet: "<Audio n>: " labels carry no vision block, so they
+            # sit inside the same run of text tags as the prompt, and the boundary only
+            # becomes exact once the encoded text has been identified — which happens later,
+            # in finalize. A conditioning is a few hundred rows, so keeping all of it costs
+            # single-digit megabytes and is dropped on restore.
+            meta = dict(meta)
+            meta[self.REFERENCE_ROWS_KEY] = cond.clone()
+            return meta
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackStudio", "reference protection", _e,
+                        "a reference image's rows CAN be moved by steering, which shows up "
+                        "as the character's appearance drifting")
+            return meta
+
+    def _v2_restore_reference_rows(self, conditioning_list, clip=None, candidates=()):
+        """Put everything that is not the PROMPT back exactly as it arrived.
+
+        The user writes the prompt. They do not write "<Picture 1>: " or "<Audio 1>: " —
+        those are the tokenizer's, and neither they nor the vision block are Studio's to
+        steer. The prompt is the tokenizer's last segment, so the boundary is measured back
+        from the end using the text that was actually encoded; without that the vision
+        block's end is used, which leaves a label steerable but never the picture.
+        """
+        try:
+            from . import h3_token_weights as _tw
+        except ImportError:
+            import h3_token_weights as _tw
+        tokenizer = _tw.h3_tokenizer(clip) if clip is not None else None
+        out = []
+        for entry in conditioning_list or []:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
+                    and isinstance(entry[1], dict) and self.REFERENCE_ROWS_KEY in entry[1]):
+                out.append(entry)
+                continue
+            cond, meta = entry[0], dict(entry[1])
+            rows = meta.pop(self.REFERENCE_ROWS_KEY)
+            try:
+                cond_len = int(cond.shape[1]) if isinstance(cond, torch.Tensor) and cond.dim() >= 2 else 0
+                tags = meta.get("minimax_token_tags")
+                start = None
+                if tokenizer is not None:
+                    _t, _n, verified = _tw.choose_encoded_text(
+                        tokenizer, candidates, tags, cond_len)
+                    start = verified
+                if start is None:
+                    region = _tw.prompt_region(tags, cond_len)
+                    start = region[0] if region else None
+                n = int(start) if start else 0
+                if n > 0 and cond_len >= n and rows.shape[-1] == cond.shape[-1] \
+                        and int(rows.shape[1]) >= n:
+                    cond = cond.clone()
+                    cond[:, :n] = rows[:, :n].to(device=cond.device, dtype=cond.dtype)
+            except Exception as _e:  # noqa: BLE001
+                _log.failed("FunPackStudio", "reference protection", _e,
+                            "this scene's reference rows keep whatever steering did to them")
+            out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+        return out
+
+    def _v2_payload_like(self, payload, mixed):
+        """A stored conditioning as a tensor the CURRENT one can be blended with, or None.
+
+        `_v2_shape_compatible` checks the channel width and the batch, deliberately not the
+        sequence length — and on H3 that length changes with every prompt edit, because Qwen
+        does not pad (`pad_to_max_length=False`). So a payload learned at 499 positions met a
+        conditioning of 492 and the blend threw, taking the whole learned direction with it.
+        On LTX the encoder pads to a fixed length and this never came up.
+
+        `_resize_conditioning_sequence_like` was written for exactly this and never wired to
+        anything. It interpolates along the sequence, which is what keeps a learned direction
+        applicable to a prompt whose length has since changed.
+        """
+        try:
+            target = serializable_to_tensor(payload).to(device=mixed.device, dtype=mixed.dtype)
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(target, torch.Tensor):
+            return None
+        if list(target.shape) == list(mixed.shape):
+            return target
+        resized = self._resize_conditioning_sequence_like(target, mixed)
+        if resized is None:
+            return None
+        _log.note_on_change(
+            "studio:payload_resize", "FunPackStudio",
+            f"a stored conditioning was learned at {int(target.shape[-2])} positions and this "
+            f"prompt is {int(mixed.shape[-2])} — resampled along the sequence so the learned "
+            f"direction still applies. H3's encoder does not pad, so this happens on any "
+            f"prompt edit.")
+        return resized
+
     def _v2_apply_conditioning_payload(self, mixed, payload, strength):
         if not self._v2_shape_compatible(payload, mixed):
             return mixed
         try:
-            target = serializable_to_tensor(payload).to(device=mixed.device, dtype=mixed.dtype)
+            target = self._v2_payload_like(payload, mixed)
+            if target is None:
+                return mixed
             return mixed.lerp(target, strength)
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "conditioning memory", _e,
+                        "the conditioning is used unblended")
             return mixed
 
     def _v2_repel_conditioning_payload(self, mixed, payload, strength):
         if not self._v2_shape_compatible(payload, mixed):
             return mixed
         try:
-            target = serializable_to_tensor(payload).to(device=mixed.device, dtype=mixed.dtype)
+            target = self._v2_payload_like(payload, mixed)
+            if target is None:
+                return mixed
             return mixed + (mixed - target) * strength
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "conditioning repel", _e,
+                        "the conditioning is not pushed away from the disliked payload")
             return mixed
 
     def _vf_direction_boost(self, slot, vf_grad_dir, alpha=0.5):
@@ -10451,8 +8373,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 strength = strength * confidence_scale
                 # Gradient direction for phrase-level alignment
                 vf_grad_dir = self._vf_gradient_direction(original, vf)
-            except Exception:
-                pass
+            except Exception as _e:
+                _log.failed("FunPackStudio", "value-function confidence scaling", _e,
+                            "steering runs at full strength with no confidence discount")
         axis_feedback = axis_feedback or self._v2_axis_feedback(
             rating_profile,
             global_state.get("last_missing_axes", []),
@@ -10466,11 +8389,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if int(liked_dir_slot.get("direction_count", 0)) >= 3:
             mixed = self._v2_apply_direction(mixed, liked_dir_slot, strength * liked_boost)
         elif self._v2_shape_compatible(liked_payload, mixed):
-            try:
-                liked = serializable_to_tensor(liked_payload).to(device=mixed.device, dtype=mixed.dtype)
+            # Through _v2_payload_like, which resizes along the sequence. _v2_shape_compatible
+            # deliberately ignores the sequence length, and on H3 that length changes with
+            # every prompt edit because Qwen does not pad — so this branch used to admit a
+            # payload the lerp could not take, throw, and drop the learned direction entirely.
+            liked = self._v2_payload_like(liked_payload, mixed)
+            if liked is not None:
                 mixed = mixed.lerp(liked, strength)
-            except Exception:
-                pass
+            else:
+                _log.failed("FunPackStudio", "liked-conditioning blend",
+                            "the stored conditioning could not be matched to this one",
+                            "the conditioning is NOT pulled toward what you rated well")
 
         mixed, family_delta_status = self._v2_apply_intent_family_delta(mixed, intent_family_slot, strength)
 
@@ -10539,8 +8468,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 d = concept_delta_dir.to(device=mixed.device, dtype=mixed.dtype)
                 mixed = mixed + concept_delta_strength * d.reshape(mixed.shape[-1]).unsqueeze(0).unsqueeze(0).expand_as(mixed)
                 axis_actions.append(f"concept-delta:{concept_delta_strength:.3f}")
-            except Exception:
-                pass
+            except Exception as _e:
+                _log.failed("FunPackStudio", "concept delta", _e,
+                            "the concept adjustment is not applied to this conditioning")
 
         # --- NEGATIVE SIGNALS: broad bad direction ---
         # Applied after all positive signals so we remove bad directions
@@ -10554,8 +8484,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 try:
                     bad = serializable_to_tensor(bad_payload).to(device=mixed.device, dtype=mixed.dtype)
                     mixed = mixed + (mixed - bad) * min(0.055, strength * 0.72)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    _log.failed("FunPackStudio", "disliked-conditioning repel", _e,
+                                "the conditioning is NOT pushed away from what you rated badly")
 
         # --- NEGATIVE SIGNALS: specific pair repulsion ---
         # Applied last among negatives — most targeted, has final say on
@@ -10600,8 +8531,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     rollback = min(0.75, (vf_score - new_score) / max(0.1, abs(vf_score) + 0.1))
                     mixed = mixed.lerp(original, rollback)
                     axis_actions.append(f"vf-rollback:{rollback:.2f}")
-            except Exception:
-                pass
+            except Exception as _e:
+                # The rollback is the safety net on the whole memory blend: without it a blend
+                # the value function scores WORSE than the original is kept anyway.
+                _log.failed("FunPackStudio", "value-function rollback check", _e,
+                            "the blended conditioning is kept unchecked — it may score worse "
+                            "than the unblended one")
 
         liked_count = int(liked_dir_slot.get("direction_count", 0))
         liked_mode = f"direction ({liked_count} runs)" if liked_count >= 3 else f"lerp fallback ({liked_count}/3 runs)"
@@ -10943,10 +8878,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             system += f"\n\nSession diagnostic: {analysis}"
         return system, "\n".join(user_lines)
 
-    def _v2_generate_advisor_text(self, clip, system_prompt, user_prompt, seed=None, image=None, thinking=True, max_length=800):
+    def _v2_generate_advisor_text(self, clip, system_prompt, user_prompt, seed=None, image=None,
+                                  thinking=True, max_length=800, temperature=0.7, top_p=0.92,
+                                  top_k=50, repetition_penalty=1.3, min_floor=128,
+                                  label="Advisor"):
+        """Generate text through a CLIP that exposes ComfyUI's generate/decode pair.
+
+        The sampling parameters default to exactly what the repair advisor has always used, so
+        its behaviour is unchanged; the prompt enhancer passes its own.
+        """
         if clip is None or not hasattr(clip, "generate") or not hasattr(clip, "decode"):
-            return "", "Advisor: unavailable; connected CLIP does not expose text generation."
-        max_length = max(128, int(max_length or 800))
+            return "", (f"{label}: unavailable; the connected CLIP does not expose text "
+                        f"generation. Wire a generation-capable text encoder (or a FunPack "
+                        f"Advisor LLM) into advisor_clip.")
+        max_length = max(int(min_floor), int(max_length or 800))
+        _started = time.time()
         try:
             # Tokenization: three layers in order of preference.
             # Layer 1: wrapper natively accepts system_prompt kwarg.
@@ -10986,11 +8932,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             generate_kwargs = dict(
                 do_sample=True,
                 max_length=max_length,
-                temperature=0.7,
-                top_k=50,
-                top_p=0.92,
+                temperature=float(temperature),
+                top_k=int(top_k),
+                top_p=float(top_p),
                 min_p=0.05,
-                repetition_penalty=1.3,
+                repetition_penalty=float(repetition_penalty),
                 no_repeat_ngram_size=5,
                 presence_penalty=0.0,
                 seed=seed if seed else None,
@@ -11001,9 +8947,140 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 generate_kwargs.pop("no_repeat_ngram_size", None)
                 generated_ids = clip.generate(tokens, **generate_kwargs)
             text = clip.decode(generated_ids, skip_special_tokens=True)
-            return str(text or "").strip(), "Advisor: generated."
+            elapsed = time.time() - _started
+            where = self._v2_generation_device(clip)
+            # A text encoder with no trained decoder head often never emits a stop token and
+            # runs to the cap, and a 32B on the CPU is minutes per call. Both are invisible
+            # from the result alone, so every generation says where it ran and how long.
+            return str(text or "").strip(), (
+                f"{label}: generated {len(str(text or ''))} chars in {elapsed:.1f}s on {where}"
+                f" (cap {max_length} tokens).")
         except Exception as error:
-            return "", f"Advisor: generation failed: {error}"
+            return "", f"{label}: generation failed: {error}"
+
+    #: one enhancement per distinct (system, text) within a run — a multi-scene chain often
+    #: repeats an anchor line across scenes, and each call is a full LLM generation
+    def _v2_enhance_prompt(self, clip, text, system_prompt, cache=None, seed=None,
+                           temperature=0.7, top_p=0.92, max_length=400, thinking=False,
+                           image=None):
+        """Rewrite one prompt through the advisor LLM, BEFORE it is encoded.
+
+        This is not the repair advisor. That one is triggered by a rating and fixes a named
+        fault; this runs on every generation and only elaborates, so it needs no key, no
+        rating and no previous run. It sits after shortcut expansion and after `$variables`
+        resolve — the model is handed exactly the text that would otherwise have been encoded.
+
+        Returns (text, status). On any failure the ORIGINAL text is returned: a generation
+        that did not happen must not silently empty the prompt.
+        """
+        original = str(text or "").strip()
+        if not original:
+            return text, "Prompt enhancer: skipped; prompt empty."
+        key = (str(system_prompt), original)
+        if cache is not None and key in cache:
+            return cache[key], "Prompt enhancer: reused."
+        raw, status = self._v2_generate_advisor_text(
+            clip, system_prompt, original, seed=seed, image=image, thinking=bool(thinking),
+            max_length=max_length, temperature=temperature, top_p=top_p,
+            min_floor=32, label="Prompt enhancer",
+        )
+        enhanced, overran = self._v2_trim_runaway_prompt(
+            self._v2_clean_enhanced_prompt(raw), max_length=max_length)
+        if overran:
+            status += (" The model repeated itself rather than stopping, and was cut at a "
+                       "sentence — a model with a trained chat head will not do this.")
+        if not enhanced:
+            return original, (status if "failed" in status or "unavailable" in status
+                              else "Prompt enhancer: model returned nothing; prompt unchanged.")
+        if cache is not None:
+            cache[key] = enhanced
+        # `status` carries where it ran, how long it took and whether the model stopped on its
+        # own — all invisible from the text alone, and all of it is what a slow or runaway run
+        # needs in order to be diagnosed instead of guessed at.
+        return enhanced, f"{status} Prompt {len(original)} -> {len(enhanced)} chars."
+
+    @staticmethod
+    def _v2_generation_device(clip):
+        """Where the text generation actually ran — reported, not assumed.
+
+        ComfyUI decides how much of a text encoder fits on the card; a 32B encoder sharing a
+        GPU with the DiT can end up executing on the CPU, which is minutes per call rather
+        than seconds. Nothing in the returned text says so, hence this.
+        """
+        for path in (("patcher", "load_device"), ("_device",), ("device",)):
+            probe = clip
+            for name in path:
+                probe = getattr(probe, name, None)
+                if probe is None:
+                    break
+            if probe is not None:
+                return str(probe)
+        return "an unreported device"
+
+    #: Rough chars per token, to turn the user's TOKEN limit into a character bound. There is
+    #: no fixed character cap: H3 has no padding, so every prompt token is a real sequence row
+    #: and a long prompt is a legitimate thing to want. The length the user asked for is the
+    #: length they get — this only stops output that overshoots the tokenizer's own ceiling.
+    V2_ENHANCED_PROMPT_CHARS_PER_TOKEN = 4
+    #: How many times a phrase may repeat before it is a stuck model rather than a style.
+    V2_ENHANCED_PROMPT_REPEAT_LIMIT = 3
+
+    @classmethod
+    def _v2_trim_runaway_prompt(cls, text, max_length=None):
+        """Cut a prompt that never ended — by REPETITION first, length second.
+
+        A model with no trained decoder head may never emit a stop token, so it fills whatever
+        budget it is given. But length alone cannot tell "long and detailed" from "stuck": on
+        H3 a long prompt is often exactly what is wanted. What distinguishes the two is that a
+        stuck model repeats itself, so that is what is detected — and the length bound is
+        derived from the user's own token limit rather than a number invented here.
+
+        Cutting lands on a complete sentence; a fragment handed to the encoder is worse than a
+        shorter prompt.
+        """
+        text = str(text or "").strip()
+        if not text:
+            return text, False
+
+        # 1. repetition: the honest signal that the model stopped writing and started looping
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        seen = {}
+        for index, sentence in enumerate(sentences):
+            key = " ".join(sentence.lower().split())
+            if len(key) < 12:                        # too short to judge; "She smiles." recurs
+                continue
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] >= cls.V2_ENHANCED_PROMPT_REPEAT_LIMIT:
+                kept = " ".join(sentences[:index]).strip()
+                if kept:
+                    return kept, True
+
+        # 2. length: only the ceiling the user's own token limit implies
+        if max_length is None:
+            return text, False
+        cap = max(64, int(max_length) * cls.V2_ENHANCED_PROMPT_CHARS_PER_TOKEN)
+        if len(text) <= cap:
+            return text, False
+        head = text[:cap]
+        cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+        if cut > cap // 4:                     # a sentence end late enough to be worth using
+            return head[:cut + 1].strip(), True
+        return head.rsplit(" ", 1)[0].strip(), True
+
+    @staticmethod
+    def _v2_clean_enhanced_prompt(raw):
+        """Strip the wrappers a chat model adds around a prompt it was asked to output bare."""
+        text = str(raw or "")
+        # thinking traces first: everything up to and including the close tag is not the answer
+        text = re.sub(r"(?is).*?</think>", "", text)
+        text = re.sub(r"(?is)<think>.*", "", text)
+        text = re.sub(r"```[a-zA-Z]*\n?", "", text).replace("```", "")
+        text = re.sub(r"(?i)^\s*(here(?:'s| is)[^:\n]*:|output\s*:|prompt\s*:)\s*", "", text.strip())
+        text = text.strip().strip("`").strip()
+        # a model that quoted the whole paragraph: unwrap, but only if the quotes are the ends
+        if len(text) > 1 and text[0] in "\"'\u201c" and text[-1] in "\"'\u201d":
+            text = text[1:-1].strip()
+        return text.strip()
 
     def _v2_parse_advisor_response(self, text, prompt_labels=("REPAIRED_PROMPT", "PROMPT")):
         text = re.sub(r"```.*?```", "", str(text or ""), flags=re.DOTALL).strip()
@@ -11176,138 +9253,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if self._v2_prompt_key(advised) == self._v2_prompt_key(current_prompt):
             return current_prompt, f"Advisor: no change. {analysis}".strip(), analysis, False, ""
         return advised, f"Advisor: applied repair. {analysis}".strip(), analysis, True, advised
-
-    def _v2_negative_advisor_prompt(
-        self,
-        positive_prompt,
-        negative_prompt,
-        intent_prompt,
-        previous_run=None,
-        feedback_prompt="",
-        feedback_history="",
-    ):
-        has_feedback = bool(str(feedback_prompt or "").strip())
-        previous_run = previous_run if isinstance(previous_run, dict) else {}
-        previous_prompt = self._v2_prompt_key(previous_run.get("encoded_prompt", "") or previous_run.get("prompt", ""))
-        neg_rules = (
-            "Additional rules for negative prompt repair:\n"
-            "- Add only concise suppression tags for things that were wrong or harmful.\n"
-            "- Never suppress requested subjects, actions, or visual intent.\n"
-            "- Preserve useful existing tags.\n"
-            "Output exactly two lines:\n"
-            "DIAGNOSTIC: one short sentence explaining the change or why none is needed.\n"
-            "NEGATIVE_PROMPT: comma-separated tags, or the current negative prompt unchanged."
-        )
-        user_lines = []
-        if has_feedback:
-            user_lines.append(f"User feedback: {str(feedback_prompt).strip()}")
-        user_lines += [
-            f"User intent: {self._v2_prompt_key(intent_prompt) or 'same as suggested prompt'}",
-            f"Suggested prompt: {self._v2_prompt_key(positive_prompt)}",
-            f"Current negative: {self._v2_prompt_key(negative_prompt) or 'empty'}",
-        ]
-        if previous_prompt:
-            user_lines.append(f"Previous prompt (what caused the feedback): {previous_prompt}")
-        if feedback_history:
-            user_lines.append(f"Past feedback (most recent first):\n{feedback_history}")
-        if has_feedback:
-            user_lines.append("Task: apply the user feedback to the negative prompt.")
-        else:
-            user_lines.append("Task: repair the negative prompt to suppress what went wrong.")
-        return (
-            V2_PROMPT_ADVISOR_SYSTEM_PROMPT.strip() + "\n" + neg_rules
-            + ("\n" + V2_PROMPT_ADVISOR_FEEDBACK_OVERRIDE.strip() if has_feedback else "")
-            + "\n\n" + "\n".join(user_lines)
-        )
-
-    def _v2_validate_advisor_negative_prompt(
-        self,
-        advised_negative,
-        current_positive,
-        intent_prompt,
-        intent_phrases=None,
-        intent_family_slot=None,
-    ):
-        advised = self._v2_prompt_key(advised_negative)
-        if not advised:
-            return True, "empty"
-        if self._prompt_looks_like_refusal(advised):
-            return False, "refusal text"
-        if len(advised) > 1200:
-            return False, "too long"
-        for phrase in self._ordered_prompt_phrases(advised)[:32]:
-            text = phrase.get("text", "")
-            if not text:
-                continue
-            if self._v2_negative_text_conflicts_with_request(
-                text,
-                current_prompt=current_positive,
-                intent_prompt=intent_prompt,
-                intent_phrases=intent_phrases or [],
-                family_slot=intent_family_slot,
-            ):
-                return False, f"conflicts with requested text: {text}"
-        return True, "validated"
-
-    def _v2_negative_prompt_advisor(
-        self,
-        clip,
-        mode,
-        positive_prompt,
-        negative_prompt,
-        intent_prompt,
-        rating_profile,
-        axis_feedback,
-        previous_run=None,
-        intent_phrases=None,
-        intent_family_slot=None,
-        allow_prompt_change=False,
-        seed=0,
-        image=None,
-        thinking=True,
-        feedback_prompt="",
-        feedback_history="",
-        max_length=800,
-    ):
-        mode = self._v2_advisor_mode(mode)
-        rating_profile = rating_profile if isinstance(rating_profile, dict) else {}
-        if mode == "Off":
-            return negative_prompt, "Negative advisor: off.", "", False
-        reward = float(rating_profile.get("reward", 0.0))
-        is_perfect = rating_profile.get("key") == "like"
-        repair_signal = bool(axis_feedback.get("wrong_axes")) or rating_profile.get("key") == "awful" or reward < -0.30
-        if mode in {"Only prompt", "Full"} and not repair_signal and not str(feedback_prompt or "").strip():
-            return negative_prompt, "Negative advisor: skipped; no wrong/awful signal and no user feedback.", "", False
-        advisor_prompt_text = self._v2_negative_advisor_prompt(
-            positive_prompt,
-            negative_prompt,
-            intent_prompt,
-            previous_run=previous_run,
-            feedback_prompt=feedback_prompt,
-            feedback_history=feedback_history,
-        )
-        raw, gen_status = self._v2_generate_advisor_text(
-            clip, advisor_prompt_text, seed=seed, image=image, thinking=thinking, max_length=max_length
-        )
-        if not raw:
-            return negative_prompt, gen_status.replace("Advisor:", "Negative advisor:", 1), "", False
-        diagnostic, advised = self._v2_parse_advisor_response(raw, prompt_labels=("NEGATIVE_PROMPT", "PROMPT"))
-        if mode == "Only diagnostics" or not allow_prompt_change or is_perfect:
-            reason = "diagnostics only" if mode == "Only diagnostics" else ("perfect rating — analysis only" if is_perfect else "prompt changes disabled")
-            return negative_prompt, f"Negative advisor: {reason}. {diagnostic or advised or 'No diagnostic returned.'}", diagnostic or advised, False
-        valid, reason = self._v2_validate_advisor_negative_prompt(
-            advised,
-            positive_prompt,
-            intent_prompt,
-            intent_phrases=intent_phrases or [],
-            intent_family_slot=intent_family_slot,
-        )
-        if not valid:
-            return negative_prompt, f"Negative advisor: rejected ({reason}). {diagnostic}".strip(), diagnostic, False
-        advised = self._v2_prompt_key(advised)
-        if advised == self._v2_prompt_key(negative_prompt):
-            return negative_prompt, f"Negative advisor: no change. {diagnostic}".strip(), diagnostic, False
-        return advised, f"Negative advisor: applied. {diagnostic}".strip(), diagnostic, True
 
     def _v2_encoded_prompts_output(self, positive_prompt, advisor_diagnostic="", pre_advisor_prompt="", advisor_suggested=""):
         parts = [f"Positive prompt: {str(positive_prompt or '').strip()}"]
@@ -11850,7 +9795,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return "LoRA suggestions: no FunPack LoRA stack connected."
         memory = global_state.setdefault("lora_weight_memory", {})
         phrase_by_category = {}
-        all_phrase_words = set()
         for phrase in phrases:
             scores = (
                 phrase.get("effective_category_scores", phrase.get("category_scores", {})) or
@@ -11858,7 +9802,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             primary, confidence = self._v2_scores_primary(scores)
             words = self._v2_lora_words(phrase.get("text", ""))
-            all_phrase_words |= words
             phrase_by_category.setdefault(primary, set()).update(words)
             for category, score in scores.items():
                 if category != primary and float(score or 0.0) >= max(0.30, confidence * 0.72):
@@ -11878,10 +9821,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             raw_type = entry.get("type", "general")
             lora_type = self._v2_lora_type(raw_type)
             lora_id = entry.get("id") or self._lora_state_id(name, raw_type)
-            lora_words = self._v2_lora_words(name)
+            # Relevance comes from the type the user set on the LoRA and the categories
+            # present in the prompt — NOT from the file's name. Matching prompt words against
+            # the filename guessed at what a LoRA does from what someone happened to call it,
+            # which is a different feature from learning its weight, and a worse one.
             relation = 0.20 if lora_type == "general" else 0.0
-            if lora_words and all_phrase_words:
-                relation = max(relation, len(lora_words & all_phrase_words) / max(1, len(lora_words)))
             if lora_type == "action":
                 relation = max(relation, 0.62 if phrase_by_category.get("action") else 0.0)
             elif lora_type == "quality":
@@ -11959,10 +9903,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
+                  h3_phrase_emphasis=False,
+                  prompt_enhance=False, prompt_enhance_system="",
+                  prompt_enhance_temperature=0.7, prompt_enhance_top_p=0.92,
+                  prompt_enhance_max_length=400, prompt_enhance_thinking=False,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
-                  variables=None, h3_references=None):
+                  variables=None, h3_references=None, link_texts=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         # Project-scoped `$name` variables, resolved DEAD LAST (after shortcut-expand + split)
         # so they can never affect scene-cut detection. Empty/None = no-op.
@@ -11971,6 +9919,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except ImportError:
             from templates import resolve_variables as _resolve_variables
         _prompt_variables = variables or None
+        # Exactly what the editor handed to nodes OUTSIDE Studio (server._expanded_link_texts):
+        # shortcuts rolled and $variables resolved. When a wired conditioning owns the prompt,
+        # one of these IS the string that was encoded, so the emphasis can be placed on the
+        # real tokens instead of on Studio's own copy of a prompt it did not encode.
+        _link_texts = link_texts if isinstance(link_texts, dict) else None
         # MiniMax H3 ref2va reference media, in the order the user listed it. No other model
         # family has the tokenizer kwarg it feeds, so it is inert when unset or on LTX.
         # minimax_h3.resolve_ref_spec explains why the ORDER is load-bearing.
@@ -11978,6 +9931,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             from .minimax_h3 import normalize_ref_spec as _normalize_ref_spec
         except ImportError:
             from minimax_h3 import normalize_ref_spec as _normalize_ref_spec
+        # New Studio pass: per-run log suppression starts over, so a failure that also
+        # happened last run is reported again rather than deduped away forever.
+        _log.begin_run()
+        _run_started = time.perf_counter()
+        self._v2_reset_encode_tally()
+        self._v2_state_io = {}
+        self._v2_stage_times = {}
         _h3_references = _normalize_ref_spec(h3_references) or None
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -12013,7 +9973,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         advisor_mode = self._v2_advisor_mode(advisor_mode)
         advisor_clip = advisor_clip if advisor_clip is not None else clip
         prompt_only_mode = execution_mode == "Prompt only"
-        state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session)
+        state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session,
+                                                  encoder_family=self._encoder_family(clip))
         if reset_session:
             extra_reset = self._v2_reset_prompt_keys(refinement_key, _raw_positive_prompt, _raw_intent_prompt)
             if extra_reset:
@@ -12104,7 +10065,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         else:
             axis_feedback = self._v2_axis_feedback(learning_profile, previous_missing_axes)
 
-            memory_status = self._v2_update_phrase_memory(
+            with self._v2_stage("phrase memory"):
+                memory_status = self._v2_update_phrase_memory(
                 global_state,
                 previous_run,
                 learning_profile,
@@ -12113,32 +10075,36 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             self._v2_update_concept_delta_memory(global_state, previous_run, learning_profile)
             self._v2_update_concept_pair_dirs(global_state, previous_run, learning_profile)
-            seed_memory_status = self._v2_update_successful_seed_memory(
-                global_state,
-                previous_run,
-                learning_profile,
-                int(global_state.get("total_iterations", 0)) + 1,
-                seed_output_connected=bool(seed_output_connected),
-            )
-            self._v2_update_path_outcomes(
-                global_state,
-                previous_run,
-                learning_profile,
-                int(global_state.get("total_iterations", 0)) + 1,
-            )
-            intent_family_status, _ = self._v2_update_intent_family_memory(
-                global_state,
-                previous_run,
-                learning_profile,
-                int(global_state.get("total_iterations", 0)) + 1,
-                axis_feedback,
-            )
-            self._v2_update_appearance_anchor(
-                global_state,
-                previous_run,
-                learning_profile,
-                int(global_state.get("total_iterations", 0)) + 1,
-            )
+            with self._v2_stage("seed memory"):
+                seed_memory_status = self._v2_update_successful_seed_memory(
+                    global_state,
+                    previous_run,
+                    learning_profile,
+                    int(global_state.get("total_iterations", 0)) + 1,
+                    seed_output_connected=bool(seed_output_connected),
+                )
+            with self._v2_stage("path outcomes"):
+                self._v2_update_path_outcomes(
+                    global_state,
+                    previous_run,
+                    learning_profile,
+                    int(global_state.get("total_iterations", 0)) + 1,
+                )
+            with self._v2_stage("intent family"):
+                intent_family_status, _ = self._v2_update_intent_family_memory(
+                    global_state,
+                    previous_run,
+                    learning_profile,
+                    int(global_state.get("total_iterations", 0)) + 1,
+                    axis_feedback,
+                )
+            with self._v2_stage("appearance anchor"):
+                self._v2_update_appearance_anchor(
+                    global_state,
+                    previous_run,
+                    learning_profile,
+                    int(global_state.get("total_iterations", 0)) + 1,
+                )
             negative_memory_status = self._v2_update_negative_prompt_memory(
                 global_state,
                 previous_run,
@@ -12153,7 +10119,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 axis_feedback,
             )
             memory_status = f"{memory_status}\n{seed_memory_status}\n{intent_family_status}\n{intent_learning_status}"
-            self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
+            with self._v2_stage("conditioning memory"):
+                self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
             # Always train the value function in the background (cheap: a small MLP, no diffusion
             # calls) so the reward asset accumulates regardless of whether guidance is applied.
             # value_guidance only controls APPLICATION (ascent below) - a user who runs with it
@@ -12170,7 +10137,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 # output_guidance's value function, trained on the sampler's x0_snapshot from the
                 # run this rating scores (whole-run granularity — see _v2_train_output_value_function
                 # for why this sits at the single overall-reward call site, not the per-scene ones).
-                n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
+                with self._v2_stage("output value function"):
+                    n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
                 if n_out is not None:
                     print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
             # DynaShift negative memory: pair the sampler's pending raw latent with this
@@ -12201,7 +10169,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure
             # quality, so a 0.0/low repair reward on a good gen would push it into the global bad_dir.
             if has_previous_run:
-                self._v2_learn_absolute(previous_run, learning_profile)
+                with self._v2_stage("absolute taste"):
+                    self._v2_learn_absolute(previous_run, learning_profile)
             if has_previous_run and not learning_profile.get("skip_learning"):
                 self._v2_update_streaks(global_state, learning_profile, update_conditioning_strength=not prompt_only_mode)
             repair_feedback, repair_persistence_status = self._v2_active_repair_feedback(
@@ -12225,19 +10194,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     fired_keys |= set(ks or [])
                 fired_keys.discard(str(refinement_key or "").strip())
                 if fired_keys:
-                    trained_keys = self._v2_learn_scene_into_keys(
-                        sorted(fired_keys), refinement_key, previous_run, learning_profile,
-                        int(global_state.get("total_iterations", 0)) + 1, axis_feedback,
-                        bool(seed_output_connected),
-                    )
+                    with self._v2_stage("scene keys"):
+                        trained_keys = self._v2_learn_scene_into_keys(
+                            sorted(fired_keys), refinement_key, previous_run, learning_profile,
+                            int(global_state.get("total_iterations", 0)) + 1, axis_feedback,
+                            bool(seed_output_connected),
+                        )
                     if trained_keys:
                         memory_status += f"\nTrained custom key(s): {', '.join(trained_keys)}"
 
-        vision_context, vision_status = self._v2_update_vision_memory(
-            global_state,
-            clip_vision_output=clip_vision_output,
-            source_image=source_image,
-        )
+        with self._v2_stage("vision memory"):
+            vision_context, vision_status = self._v2_update_vision_memory(
+                global_state,
+                clip_vision_output=clip_vision_output,
+                source_image=source_image,
+            )
         _sc_path = refinement_state_path(refinement_key, "sampler_ctx", prefix=self.V2_STATE_PREFIX)
         _last_sampler_context = {}
         if os.path.exists(_sc_path):
@@ -12253,20 +10224,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         intent_prompt = self._v2_prompt_key(user_intent_prompt)
         intent_prompt_is_vague = self._v2_user_intent_prompt_is_vague(intent_prompt)
         current_prompt_refusal = self._prompt_looks_like_refusal(analysis_prompt)
-        phrases = [] if current_prompt_refusal else self._v2_classify_phrases(
-            clip,
-            self._ordered_prompt_phrases(analysis_prompt),
-            global_state,
-            encode_cache=encode_cache,
-        )
-        intent_phrases = []
-        if intent_prompt and not intent_prompt_is_vague and not current_prompt_refusal:
-            intent_phrases = self._v2_classify_phrases(
+        with self._v2_stage("classify phrases"):
+            phrases = [] if current_prompt_refusal else self._v2_classify_phrases(
                 clip,
-                self._ordered_prompt_phrases(intent_prompt),
+                self._ordered_prompt_phrases(analysis_prompt),
                 global_state,
                 encode_cache=encode_cache,
             )
+        intent_phrases = []
+        if intent_prompt and not intent_prompt_is_vague and not current_prompt_refusal:
+            with self._v2_stage("classify intent phrases"):
+                intent_phrases = self._v2_classify_phrases(
+                    clip,
+                    self._ordered_prompt_phrases(intent_prompt),
+                    global_state,
+                    encode_cache=encode_cache,
+                )
         intent_source_prompt = self._v2_intent_source_prompt(analysis_prompt, intent_prompt, intent_prompt_is_vague)
         current_family_key, current_family_slot, current_family_similarity = self._v2_intent_family_slot(
             global_state,
@@ -12348,10 +10321,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 intent_phrases,
                 global_state,
             )
-            # Prompt repair removed (Stage 2). The intent-aligned prompt is encoded as-is; the only
-            # remaining prompt-rewriting path is the advisor (when enabled). Perfect-repair phrase
-            # injection, missing-axis repair, and the emphasis pass are gone. repair_feedback /
-            # active_repair_axes is KEPT — it's the "what's missing" signal the advisor still reads.
+            # Prompt repair is gone: the intent-aligned prompt is encoded as written, and the
+            # advisor is the only remaining path that may rewrite it. Perfect-repair phrase
+            # injection, missing-axis repair, the emphasis pass and the last fallback that
+            # appended missing phrases back onto the prompt have all been removed.
+            # repair_feedback / active_repair_axes is KEPT — it is the "what's missing" signal
+            # the advisor still reads, and it never edits the prompt by itself.
             perfect_repair_status = "Perfect repairs: removed."
             perfect_repair_adjustments = []
             prompt_to_encode = aligned_prompt
@@ -12369,42 +10344,62 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             intent_expansions = self._v2_format_intent_expansions(global_state, intent_source_prompt)
             pre_advisor_prompt = prompt_to_encode
             advisor_rating_label = rating_label if has_previous_run else "No previous output (first run or session reset)"
-            prompt_to_encode, advisor_status, advisor_diagnostic, advisor_applied, advisor_suggested = self._v2_prompt_advisor(
-                advisor_clip,
-                advisor_mode,
-                prompt_to_encode,
-                intent_source_prompt,
-                repair_feedback,
-                repair_candidates,
-                previous_run=previous_run,
-                intent_phrases=intent_phrases,
-                allow_prompt_change=not learning_mode and advisor_mode in {"Only prompt", "Full"},
-                seed=seed,
-                image=source_image,
-                thinking=advisor_thinking,
-                encode_cache=encode_cache,
-                feedback_prompt=feedback_prompt,
-                feedback_history=feedback_history,
-                max_length=self._V2_ADVISOR_MAX_TOKENS,
-                rating_profile=learning_profile,
-                intent_expansions=intent_expansions,
-            )
+            with self._v2_stage("advisor"):
+                prompt_to_encode, advisor_status, advisor_diagnostic, advisor_applied, advisor_suggested = self._v2_prompt_advisor(
+                    advisor_clip,
+                    advisor_mode,
+                    prompt_to_encode,
+                    intent_source_prompt,
+                    repair_feedback,
+                    repair_candidates,
+                    previous_run=previous_run,
+                    intent_phrases=intent_phrases,
+                    allow_prompt_change=not learning_mode and advisor_mode in {"Only prompt", "Full"},
+                    seed=seed,
+                    image=source_image,
+                    thinking=advisor_thinking,
+                    encode_cache=encode_cache,
+                    feedback_prompt=feedback_prompt,
+                    feedback_history=feedback_history,
+                    max_length=self._V2_ADVISOR_MAX_TOKENS,
+                    rating_profile=learning_profile,
+                    intent_expansions=intent_expansions,
+                )
             if advisor_applied:
                 encoded_role = "advisor repaired prompt"
             if advisor_diagnostic:
                 self._v2_record_advisor_diagnostic(global_state, advisor_diagnostic, advisor_rating_label, int(global_state.get("total_iterations", 0)))
-            if advisor_mode != "Off" and not learning_mode and repair_candidates and not advisor_applied:
-                additions = [c["text"] for c in repair_candidates if isinstance(c, dict) and str(c.get("text", "")).strip()]
-                if additions:
-                    base = str(pre_advisor_prompt or "").strip()
-                    prompt_to_encode = f"{base}, {', '.join(additions)}" if base else ", ".join(additions)
-                    repair_status = repair_status.replace("suggestion(s)", "phrase(s)").replace("suggested", "added")
 
         # Resolve $name variables into the base prompt before encoding (single-scene path +
         # the modified_positive output). The multi-scene per-scene texts are resolved after the
         # split below; this keeps the order shortcuts -> split -> variables intact.
         if _prompt_variables:
             prompt_to_encode = _resolve_variables(prompt_to_encode, _prompt_variables)[0]
+
+        # ── prompt enhancer ────────────────────────────────────────────────────────────
+        # Runs BEFORE the prompt becomes conditioning, so what ComfyUI generates from is the
+        # enhanced text and nothing downstream has to know this happened. After shortcuts and
+        # after $variables: the model is handed exactly what would otherwise be encoded.
+        # `advisor_clip` if one is wired, the generation CLIP otherwise.
+        _enhance_cache = {}
+        _enhance_status = ""
+        _enhance_clip = advisor_clip          # already falls back to `clip` at the top
+        _enhance_system = str(prompt_enhance_system or "").strip() or V2_PROMPT_ENHANCER_SYSTEM_PROMPT
+        # When the run splits into scenes, the per-scene conditionings REPLACE this base entry
+        # — so enhancing the base too would be a second full generation whose result is then
+        # thrown away. One generation per prompt that is actually encoded, never two.
+        _enhance_base = prompt_enhance and not split_by_transitions
+        if prompt_enhance and not _enhance_base:
+            print("[FunPackVideoRefinerV2] Prompt enhancer: base prompt skipped — this run "
+                  "splits into scenes and each scene is enhanced instead.")
+        if _enhance_base:
+            prompt_to_encode, _enhance_status = self._v2_enhance_prompt(
+                _enhance_clip, prompt_to_encode, _enhance_system, cache=_enhance_cache,
+                seed=seed, temperature=prompt_enhance_temperature,
+                top_p=prompt_enhance_top_p, max_length=prompt_enhance_max_length,
+                thinking=prompt_enhance_thinking, image=source_image,
+            )
+            print(f"[FunPackVideoRefinerV2] {_enhance_status}")
 
         cond, meta, encode_status, conditioning_owner = self._v2_conditioning_source(
             clip,
@@ -12414,6 +10409,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             reference_image=source_image,
             h3_references=_h3_references,
         )
+        # Before any steering runs: the reference's vision rows are Qwen's encoding of the
+        # picture and must come out of this node exactly as they went in.
+        meta = self._v2_stash_reference_rows(cond, meta)
         fallback_graph = render_refinement_loss_graph(refinement_key, "v2", "clip", 0, 0.0, [])
         if not isinstance(cond, torch.Tensor):
             status = f"ERROR: V2 could not prepare conditioning | {encode_status}"
@@ -12466,7 +10464,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             _concept_dir, _concept_strength = self._v2_concept_delta_direction(
                 global_state, _current_final, _prev_final
             )
-            refined, adaptation_status = self._v2_apply_conditioning_memory(
+            with self._v2_stage("apply conditioning memory"):
+                refined, adaptation_status = self._v2_apply_conditioning_memory(
                 cond,
                 global_state,
                 learning_profile,
@@ -12630,6 +10629,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     if _prompt_variables and split_scene_texts:
                         split_scene_texts = [
                             _resolve_variables(t, _prompt_variables)[0] for t in split_scene_texts
+                        ]
+                    # Enhanced PER SCENE, not as one blob. The editor's scene list is
+                    # authoritative on count, so rewriting the scenes as a single paragraph
+                    # and re-splitting could return a different number of scenes and desync
+                    # every clip from its anchor. One call per distinct text, cached.
+                    if prompt_enhance and split_scene_texts:
+                        split_scene_texts = [
+                            self._v2_enhance_prompt(
+                                _enhance_clip, t, _enhance_system, cache=_enhance_cache,
+                                seed=seed, temperature=prompt_enhance_temperature,
+                                top_p=prompt_enhance_top_p,
+                                max_length=prompt_enhance_max_length,
+                                thinking=prompt_enhance_thinking)[0]
+                            for t in split_scene_texts
                         ]
                     scene_refinement_keys = [set(s.get("keys") or set()) for s in canon_scenes]
                     current_scene_seeds = self._v2_scene_seed_values(seed, len(split_scene_texts), _scene_seeds)
@@ -12816,7 +10829,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             ]
             emphasis_ranges = (
                 self._v2_find_phrase_token_ranges(clip, cond, emphasis_phrases, encode_cache=encode_cache)
-                if clip is not None and emphasis_phrases else []
+                if clip is not None and emphasis_phrases and self._v2_model_reads_attn2(model)
+                else []
             )
             patched = self._v2_apply_model_patches(
                 model, global_state, repair_feedback, learning_profile, emphasis_ranges, model_strength
@@ -12920,6 +10934,36 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
 
         output_conditioning = [(refined, meta)]
+        # A wired CONDITIONING can be a MULTI-ENTRY list — an r2v node emits the reference
+        # block and the encoded prompt as separate entries. `_v2_extract_conditioning` reads
+        # entry 0 and Studio rebuilt a single-entry list around it, so everything after the
+        # first entry was dropped on the floor: the character survived and the prompt did
+        # not, which is a tensor holding the vision block and nothing to say.
+        #
+        # The extra entries pass through UNCHANGED. Steering is fitted to the entry Studio
+        # measured; applying it blind to a companion entry of a different length and purpose
+        # would be a guess, and dropping them is the bug being fixed here.
+        if conditioning_owner == "CONDITIONING-owned" and isinstance(positive_conditioning, list) \
+                and len(positive_conditioning) > 1:
+            # TAGGED as companions. The Chain Sampler reads one entry per SCENE
+            # (scene_conditionings = positive[:max_scenes]), so appending an r2v companion
+            # untagged made it a second scene and the run sampled twice for no reason the
+            # user asked for. The tag says "ride with the scene, do not be one".
+            companions = []
+            for entry in positive_conditioning[1:]:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict):
+                    meta_copy = dict(entry[1])
+                    meta_copy["funpack_companion_conditioning"] = True
+                    companions.append([entry[0], meta_copy])
+                else:
+                    companions.append(entry)
+            output_conditioning = output_conditioning + companions
+            _log.note_on_change(
+                "studio:wired_extra_entries", "FunPackStudio",
+                f"the wired positive CONDITIONING has {len(positive_conditioning)} entries; "
+                f"entry 1 is steered and the other "
+                f"{len(positive_conditioning) - 1} pass through unchanged. They used to be "
+                f"discarded, which cut everything after the first entry out of the prompt.")
         # Batch Training packs N variant entries (tagged 'funpack_batch_variant') onto the FINAL
         # conditioning just before each return below — so it wraps whatever output_conditioning
         # ends up being: single-scene OR multi-scene (transition split). Works WITH transitions.
@@ -12932,7 +10976,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         if _conditioning_plan_reason:
             print(f"[FunPackVideoRefinerV2] {_conditioning_plan_reason}")
-        if split_by_transitions:
+        # The split RE-ENCODES every scene from text and its entries replace
+        # `output_conditioning` wholesale. It re-establishes H3's visual conditioning from
+        # `source_image` / `h3_references` — but a wired CONDITIONING carries a reference this
+        # node never received: nothing in the editor pipeline sets either of those, so the
+        # re-encode is textually blind to the picture and the identity is simply gone. Not
+        # drift — a different person. Studio cannot split a conditioning it did not build, so
+        # it keeps the one it was given.
+        if split_by_transitions and conditioning_owner == "CONDITIONING-owned":
+            _log.feature(
+                "FunPackStudio", "Scene split", False,
+                "the positive CONDITIONING is wired. Splitting means re-encoding each scene "
+                "from text, and this node cannot reproduce a reference it never received, so "
+                "every scene uses the wired conditioning. Disconnect it to split per scene.")
+            status = status + ("\nTransition split: skipped — the wired positive "
+                               "CONDITIONING owns the prompt") + enhancement_status
+        elif split_by_transitions:
             try:
                 scene_texts = split_scene_texts
                 if scene_texts:
@@ -12979,7 +11038,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
                         status,
                         training_info,
                         loss_graph,
@@ -12996,8 +11055,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 encode_cache, source_image, prompt_to_encode, global_state, learning_profile,
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
+        _encode_line = self._v2_encode_tally_status(time.perf_counter() - _run_started)
+        if _encode_line:
+            print(f"[FunPackStudio] {_encode_line}")
+        _state_line = self._v2_state_io_status()
+        if _state_line:
+            print(f"[FunPackStudio] {_state_line}")
+        _stage_line = self._v2_stage_status(time.perf_counter() - _run_started)
+        if _stage_line:
+            print(f"[FunPackStudio] {_stage_line}")
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -13390,10 +11458,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 from value_function import OnlineValueFunction
             with _torch.inference_mode(False), _torch.enable_grad():
                 cond_tensor = serializable_to_tensor(payload).clone()
-                vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=cond_tensor.shape[-1])
+                with self._v2_stage("  vf: load"):
+                    vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=cond_tensor.shape[-1])
                 if vf is not None:
-                    vf.train_on(cond_tensor, float(reward))
-                    vf.save(vf_path)
+                    with self._v2_stage("  vf: train"):
+                        vf.train_on(cond_tensor, float(reward))
+                    self._v2_note_train_device(vf, "conditioning")
+                    with self._v2_stage("  vf: save"):
+                        vf.save(vf_path)
                     return vf.n_trained
         except Exception as e:
             print(f"[FunPackRefiner] Value function training failed: {e}")
@@ -13419,11 +11491,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 return None
             vf_path = refinement_state_path(refinement_key, "value_fn_x0", prefix="refine_v2", extension="pt")
             with _torch.inference_mode(False), _torch.enable_grad():
-                snapshot = _torch.load(snap_path, map_location="cpu", weights_only=False)
-                vf = LatentValueFunction.load_or_create(vf_path, hidden_dim=LatentValueFunction.DEFAULT_HIDDEN_DIM)
+                with self._v2_stage("  x0 vf: load snapshot"):
+                    snapshot = _torch.load(snap_path, map_location="cpu", weights_only=False)
+                with self._v2_stage("  x0 vf: load"):
+                    vf = LatentValueFunction.load_or_create(vf_path, hidden_dim=LatentValueFunction.DEFAULT_HIDDEN_DIM)
                 if vf is not None:
-                    vf.train_on(snapshot, float(reward))
-                    vf.save(vf_path)
+                    with self._v2_stage("  x0 vf: train"):
+                        vf.train_on(snapshot, float(reward))
+                    self._v2_note_train_device(vf, "x0 snapshot")
+                    with self._v2_stage("  x0 vf: save"):
+                        vf.save(vf_path)
                     return vf.n_trained
         except Exception as e:
             print(f"[FunPackRefiner] Output value function training failed: {e}")
@@ -13483,7 +11560,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return conditioning_list
         try:
             _, global_state = self._v2_load_absolute_global()
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "Absolute steer store", _e,
+                        "Absolute steer mode is INERT for this run")
             return conditioning_list
         liked = global_state.get("liked_dir", {})
         bad = global_state.get("bad_dir", {})
@@ -13595,7 +11674,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 from .ltx_enhancements import classify_temporal_intent
             except ImportError:
                 from ltx_enhancements import classify_temporal_intent
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "temporal style classifier", _e,
+                        "every scene renders at the natural temporal style")
             return conditioning_list
         out = []
         for entry in conditioning_list or []:
@@ -13633,14 +11714,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         mid = (len(sentences) + 1) // 2
         span1 = " ".join(sentences[:mid])
         span2 = " ".join(sentences[mid:])
-        cond1, _, _ = self._v2_encode_prompt(clip, span1, encode_cache=encode_cache)
-        cond2, _, _ = self._v2_encode_prompt(clip, span2, encode_cache=encode_cache)
+        cond1, _, _ = self._v2_encode_prompt(clip, span1, encode_cache=encode_cache,
+                                             purpose="bounded attention")
+        cond2, _, _ = self._v2_encode_prompt(clip, span2, encode_cache=encode_cache,
+                                             purpose="bounded attention")
         if not isinstance(cond1, torch.Tensor) or not isinstance(cond2, torch.Tensor):
             return None, None
         try:
             cond2 = cond2.to(device=cond1.device, dtype=cond1.dtype)
             combined = torch.cat([cond1, cond2], dim=1)
-        except Exception:
+        except Exception as _e:
+            _log.failed("FunPackStudio", "Bounded Attention split encode", _e,
+                        "the prompt is encoded as one span — subject bleed is not masked")
             return None, None
         return combined, int(cond1.shape[1])
 
@@ -13656,6 +11741,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 out.append(entry)
                 continue
             cond, meta = entry[0], dict(entry[1])
+            if meta.get("funpack_conditioning_owner") == "wired":
+                # This entry came in on a wire. The split below RE-ENCODES the text and
+                # replaces the tensor with the result — which has no reference image in it,
+                # because this node was never given one. On a reference run that swaps the
+                # whole conditioning for a text-only encode.
+                _log.feature(
+                    "FunPackStudio", "Bounded Attention", False,
+                    "the positive CONDITIONING is wired. The exact-boundary split works by "
+                    "re-encoding the prompt, and this node cannot put back a reference it "
+                    "never received.")
+                out.append(entry)
+                continue
             text = str(meta.get("funpack_scene_text") or "").strip() or str(fallback_text or "")
             combined, n1 = self._v2_bounded_attention_split_encode(text, clip, encode_cache=encode_cache)
             if combined is not None:
@@ -13664,11 +11761,190 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         return out
 
+    def _v2_apply_h3_token_weights(self, conditioning_list, clip, phrase_memory=None,
+                                   axis_feedback=None, fallback_text="", enabled=False,
+                                   auto_strength=None, variables=None, link_texts=None):
+        """Tag each scene with the token spans the RATING says deserve more attention.
+
+        Studio has decomposed and scored every phrase, word and n-gram since 2.0
+        (_v2_concept_units_for_run, _v2_update_phrase_memory). Until now the only consumer
+        was the attn2 K/V patch, which H3 skips outright — one packed self-attention stream,
+        no cross-attention — so on H3 that learning ran every generation and landed nowhere.
+
+        This writes it as (start, end, weight) token spans for the sampler to turn into an
+        attention-logit bias. Text-only and cheap: phrases are located with the tokenizer's
+        offset mapping, not by re-encoding each one through a 32B text encoder.
+
+        OFF by default. It changes what the model sees on every rated run, and an
+        unvalidated feature that does that should be something you turn on to try, not
+        something you discover. Also gated on having anything to say: an H3 CLIP, a phrase
+        memory, and a rating that named a missing axis.
+        """
+        if not enabled:
+            return conditioning_list
+        if clip is None or not isinstance(phrase_memory, dict) or not phrase_memory:
+            return conditioning_list
+        try:
+            try:                        # matches how this file reaches its siblings
+                from . import minimax_h3 as _h3
+                from . import h3_token_weights as _tw
+            except ImportError:
+                import minimax_h3 as _h3
+                import h3_token_weights as _tw
+            if not _h3.is_h3_clip(clip):
+                return conditioning_list
+            tokenizer = _tw.h3_tokenizer(clip)
+            if tokenizer is None:
+                return conditioning_list
+            feedback = axis_feedback or {}
+            units = [{"text": text, "kind": entry.get("kind"),
+                      "effective_category_scores": entry.get("effective_category_scores")}
+                     for text, entry in phrase_memory.items() if isinstance(entry, dict)]
+            weighted = _tw.weights_from_memory(
+                units, phrase_memory,
+                missing_axes=feedback.get("missing_axes", ()),
+                wrong_axes=feedback.get("wrong_axes", ()),
+                # Studio's own evidence ramp decides how hard, not this module. One Awful is
+                # one data point and must not boost a phrase to the ceiling.
+                strength=_tw.strength_from_auto(auto_strength))
+            if not weighted:
+                return conditioning_list
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackStudio", "H3 token weighting", _e,
+                        "the rating's per-phrase emphasis is NOT being applied")
+            return conditioning_list
+
+        def _resolve_phrase_variables(pairs):
+            """Phrase memory stores the RAW prompt text, so a phrase can still carry `$style`
+            while the encoded prompt has it resolved — and then it matches nothing.
+            Variables are a plain substitution, so both sides can be put in the same form.
+
+            Shortcuts are NOT expanded here. A `/trigger` rolls per seed, and peeking would
+            produce a different roll from the one that was encoded — a phrase carrying an
+            unrolled shortcut failing to match is the honest outcome."""
+            if not variables:
+                return list(pairs)
+            try:
+                try:
+                    from .templates import resolve_variables as _rv
+                except ImportError:
+                    from templates import resolve_variables as _rv
+            except Exception:  # noqa: BLE001
+                return list(pairs)
+            done = []
+            for phrase, weight in pairs:
+                try:
+                    done.append((_rv(str(phrase), variables)[0], weight))
+                except Exception:  # noqa: BLE001
+                    done.append((phrase, weight))
+            return done
+
+        # Resolved ONCE, up front: the matching below needs it, and so does the status line.
+        # Reporting the raw text made it look like `$style` was reaching the encoder.
+        weighted = _resolve_phrase_variables(weighted)
+        out = []
+        applied = 0
+        landed: dict = {}
+        for entry in conditioning_list or []:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict)):
+                out.append(entry)
+                continue
+            cond, meta = entry[0], dict(entry[1])
+            # funpack_encode_text is the string that was actually ENCODED — shortcuts rolled
+            # and $variables resolved. funpack_scene_text is the RAW one, and tokenizing that
+            # measures a different string from the one inside the conditioning: every span
+            # lands on the wrong words, or the placement guard rejects the run outright.
+            # Candidates for "the string this tensor was encoded from", best first. On a
+            # wired conditioning that string came from the editor's expansion for linked
+            # nodes, not from Studio's own copy — which is why this does not simply trust
+            # one. `choose_encoded_text` CHECKS each against the tensor's own text-tag run
+            # and takes the one that fits, so the placement is verified rather than assumed.
+            candidates = [meta.get("funpack_encode_text"), meta.get("funpack_scene_text"),
+                          fallback_text]
+            if isinstance(link_texts, dict):
+                candidates += [link_texts.get(k) for k in ("full_prompt", "prompt")]
+            try:
+                from . import h3_token_weights as _tw
+            except ImportError:
+                import h3_token_weights as _tw
+            # Capped AFTER ranking by weight, so the eight that survive are the eight the
+            # rating cared most about; ordered longest-first only for application, so a
+            # phrase's bias lands before one of its own words adds to it.
+            cond_len = int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0
+            text, _n, verified_base = _tw.choose_encoded_text(
+                tokenizer, candidates, meta.get("minimax_token_tags"), cond_len)
+            if text is None:
+                # No candidate matches the text the tensor holds, so nothing here knows where
+                # the prompt sits. Biasing by arithmetic would land on the wrong words.
+                text = str(next((c for c in candidates if str(c or "").strip()), ""))
+                verified_base = None
+            # Every learned phrase that is IN this prompt, with no cap. Phrase memory
+            # accumulates everything the session has rated, including phrases from prompts
+            # since edited away — those match nothing and are dropped here rather than
+            # counted, which is also why they used to appear in the status line.
+            #
+            # There is no limit because there is no cost to lift: locating a phrase is a
+            # substring find and a scan of the tokenizer's offset map. The 8 this inherited
+            # belongs to `_v2_find_phrase_token_ranges`, which finds a phrase by RE-ENCODING
+            # it through the text encoder — eight of those is eight Qwen3-VL-32B forward
+            # passes, and capping them is the whole point there.
+            lowered = text.lower()
+            present = [pair for pair in weighted if pair[0] and pair[0] in lowered]
+            chosen = _tw.order_for_application(present)
+            spans, prompt_tokens = _tw.locate(tokenizer, text, chosen)
+            if spans and prompt_tokens:
+                entry_meta = {"spans": spans, "prompt_tokens": int(prompt_tokens)}
+                # Where the prompt SITS is read from the modality tags when they are here,
+                # rather than assumed to be the tail of the conditioning.
+                base = verified_base if verified_base is not None else _tw.prompt_base(
+                    meta.get("minimax_token_tags"), cond_len, int(prompt_tokens))
+                if base is None and meta.get("funpack_conditioning_owner") == "wired":
+                    # Only reachable when NO candidate matched the tensor's text run.
+                    # The fallback places the prompt by arithmetic — cond_len minus the
+                    # tokens measured HERE. That only holds when Studio encoded the text. On
+                    # a wired conditioning another node did, from a string this one never
+                    # saw, so the arithmetic would bias a window of the wrong words with no
+                    # sign of it. The tags are the only trustworthy placement, and without
+                    # them the honest result is no emphasis.
+                    _log.feature(
+                        "FunPackStudio", "Phrase emphasis", False,
+                        "the positive CONDITIONING is wired and none of the prompt texts "
+                        "this node holds tokenizes to the tensor's length, so the string it "
+                        "was encoded from is not among them and the bias cannot be placed.")
+                    out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+                    continue
+                if base is not None:
+                    entry_meta["base"] = int(base)
+                meta["funpack_h3_token_weights"] = entry_meta
+                applied += 1
+                for _t, _w in chosen:
+                    if _t in lowered:
+                        landed[_t] = _w
+            out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+        if applied:
+            # COUNTS AND WEIGHTS ONLY — never the phrases themselves. The log is the thing
+            # the user copies out to send somewhere, and the phrases are their prompt: naming
+            # three of them puts prompt text into every paste. The strongest weight is what
+            # the number is for, and it says the same thing about whether emphasis is doing
+            # too much without quoting anything.
+            strongest = max(landed.values()) if landed else 0.0
+            _log.feature(
+                "FunPackStudio", "Phrase emphasis", True,
+                f"{len(landed)} of {len(weighted)} learned phrase(s) in this prompt, "
+                f"weighted across {applied} scene(s)"
+                + (f", strongest x{strongest:.2f}" if landed else "")
+                + " — applied as an attention bias on H3's packed stream, where the attn2 "
+                  "K/V emphasis has nothing to hook.")
+        return out
+
     def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
                                   steer_mode, absolute_strength, spread_cap=None,
                                   temporal_style="natural", temporal_fallback_text="",
                                   scene_refinement_keys=None, learning_profile=None,
-                                  conditioning_plan=None, clip=None, encode_cache=None):
+                                  conditioning_plan=None, clip=None, encode_cache=None,
+                                  phrase_memory=None, axis_feedback=None,
+                                  h3_phrase_emphasis=False, auto_strength=None,
+                                  variables=None, link_texts=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
@@ -13678,18 +11954,59 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         relative steering for those scenes with the merged per-key steering (see
         _v2_apply_scene_refinement_keys); scenes without bound keys keep the project key."""
         mode = str(steer_mode or "relative").lower()
-        out = self._v2_apply_pulse_temporal(conditioning_list, temporal_style)
-        out = self._v2_apply_rapid_temporal(out, temporal_style)
-        out = self._v2_apply_auto_temporal(out, temporal_style, fallback_text=temporal_fallback_text)
-        out = self._v2_apply_bounded_attention(out, clip, fallback_text=temporal_fallback_text, encode_cache=encode_cache)
+
+        def _lengths(entries):
+            got = []
+            for e in entries or []:
+                try:
+                    got.append(int(e[0].shape[1]))
+                except Exception:  # noqa: BLE001
+                    got.append(None)
+            return got
+
+        def _step(name, entries, fn):
+            """Run one stage and name it if it changed how many positions a conditioning has.
+
+            No stage here is allowed to. One did — Bounded Attention, which rebuilds the
+            tensor by re-encoding — and the only downstream symptom was a tag-count mismatch
+            three functions away that read like housekeeping.
+            """
+            before = _lengths(entries)
+            result = fn(entries)
+            after = _lengths(result)
+            if before != after:
+                _log.note_on_change(
+                    f"studio:len:{name}", "FunPackStudio",
+                    f"'{name}' changed the conditioning length: {before} -> {after}. Part of "
+                    f"the prompt is no longer in the tensor the sampler receives. This is a "
+                    f"bug in that step, not a setting.")
+            return result
+
+        out = _step("pulse temporal", conditioning_list,
+                    lambda c: self._v2_apply_pulse_temporal(c, temporal_style))
+        out = _step("rapid temporal", out, lambda c: self._v2_apply_rapid_temporal(c, temporal_style))
+        out = _step("auto temporal", out,
+                    lambda c: self._v2_apply_auto_temporal(c, temporal_style,
+                                                           fallback_text=temporal_fallback_text))
+        out = _step("bounded attention", out,
+                    lambda c: self._v2_apply_bounded_attention(
+                        c, clip, fallback_text=temporal_fallback_text, encode_cache=encode_cache))
+        out = self._v2_apply_h3_token_weights(out, clip, phrase_memory=phrase_memory,
+                                              axis_feedback=axis_feedback,
+                                              fallback_text=temporal_fallback_text,
+                                              enabled=h3_phrase_emphasis,
+                                              auto_strength=auto_strength,
+                                              variables=variables,
+                                              link_texts=link_texts)
         if mode in ("relative", "both"):
-            out = self._v2_apply_scene_refinement_keys(
-                out, scene_refinement_keys, refinement_key,
+            out = _step("relative steering", out, lambda c: self._v2_apply_scene_refinement_keys(
+                c, scene_refinement_keys, refinement_key,
                 value_guidance=value_guidance, learning_profile=learning_profile,
                 conditioning_plan=conditioning_plan,
-            )
+            ))
         if mode in ("absolute", "both"):
-            out = self._v2_apply_absolute(out, float(absolute_strength))
+            out = _step("absolute steering", out,
+                        lambda c: self._v2_apply_absolute(c, float(absolute_strength)))
         if spread_cap and spread_cap > 0:
             capped = []
             clamped_any = False
@@ -13704,6 +12021,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if clamped_any:
                 print(f"[FunPackRefiner] Interactive-Guessing cap: output conditioning spread "
                       f"clamped to learned-safe {spread_cap:.3f}.")
+        # LAST, after every manipulation above: a reference image's encoded rows go back
+        # exactly as Qwen produced them.
+        out = self._v2_restore_reference_rows(
+            out, clip=clip,
+            candidates=[temporal_fallback_text]
+            + [(link_texts or {}).get(k) for k in ("full_prompt", "prompt")])
+        # Nothing in this node is allowed to change how many positions a conditioning has.
+        # If one does, the prompt has been cut and the only visible symptom downstream is a
+        # tag-count mismatch, which reads like housekeeping.
+        for before, after in zip(conditioning_list or [], out):
+            try:
+                a = int(before[0].shape[1])
+                b = int(after[0].shape[1])
+            except Exception:  # noqa: BLE001
+                continue
+            if a != b:
+                _log.note_on_change(
+                    "studio:length_changed", "FunPackStudio",
+                    f"the conditioning changed length inside Studio: {a} -> {b} positions. "
+                    f"Part of the prompt is no longer in the tensor the sampler receives. "
+                    f"This is a bug, not a setting.")
+                break
         return out
 
 
@@ -14744,6 +13083,20 @@ class FunPackStudio:
             effective_negative = str(negative_prompt or "").strip() or rf_neg
             if effective_negative and clip is not None:
                 try:
+                    # Named, because on H3 this is a Qwen3-VL-32B forward pass whose output the
+                    # sampler will never read: CFG is fixed at 1.0, so the negative branch is
+                    # not evaluated. It still has to be encoded (the output is a real port, and
+                    # negative_erase reads it), but it is a full text-encoder pass and it has to
+                    # be visible when accounting for what a run loaded and when.
+                    # WHICH of the two supplied it. They are different boxes in different
+                    # places, and a stored one silently outranking an empty wired one reads
+                    # as the field on screen having no effect.
+                    source = ("the wired negative_prompt input"
+                              if str(negative_prompt or "").strip()
+                              else "Studio's SAVED setting (the wired negative_prompt input "
+                                   "is empty)")
+                    print(f"[FunPackStudio] encoding the negative prompt with the wired CLIP "
+                          f"({len(effective_negative)} chars) from {source}")
                     neg_encoded = clip.encode_from_tokens_scheduled(clip.tokenize(effective_negative))
                     if neg_encoded:
                         out_negative = neg_encoded
@@ -14913,6 +13266,13 @@ class FunPackStudio:
             user_intent_prompt=effective_intent,
             refinement_key_input=refinement_key_input,
             positive_conditioning=positive_conditioning,
+            h3_phrase_emphasis=bool(rf.get("h3_phrase_emphasis", False)),
+            prompt_enhance=bool(rf.get("prompt_enhance", False)),
+            prompt_enhance_system=str(rf.get("prompt_enhance_system", "") or ""),
+            prompt_enhance_temperature=float(rf.get("prompt_enhance_temperature", 0.7)),
+            prompt_enhance_top_p=float(rf.get("prompt_enhance_top_p", 0.92)),
+            prompt_enhance_max_length=int(rf.get("prompt_enhance_max_length", 400)),
+            prompt_enhance_thinking=bool(rf.get("prompt_enhance_thinking", False)),
             clip_vision_output=clip_vision_output,
             source_image=source_image if vision_conditioning else None,
             model=model,
@@ -14936,6 +13296,7 @@ class FunPackStudio:
             movie_editor_scene_ratings=_me_scene_ratings,
             scene_segments=(rf.get("scenes") if isinstance(rf.get("scenes"), dict) else None),
             variables=(rf.get("variables") if isinstance(rf.get("variables"), (list, dict)) else None),
+            link_texts=(rf.get("link_texts") if isinstance(rf.get("link_texts"), dict) else None),
             h3_references=rf.get("h3_references"),
         )
 
@@ -14975,6 +13336,29 @@ class FunPackStudio:
             # model's model_sampling, so the schedule follows whatever model is loaded.
             model=out_model,
         )
+
+        # Give the negative prompt a job at CFG 1. H3 never evaluates the negative branch, so
+        # the text you wrote there is otherwise dead weight; this takes its direction out of
+        # the positive conditioning instead. Last, so it operates on the conditioning the DiT
+        # will actually receive rather than on something later steering would move again.
+        if bool(rf.get("negative_erase", False)):
+            try:
+                try:
+                    from . import negative_erase as _neg
+                except ImportError:
+                    import negative_erase as _neg
+                cond, _neg_note = _neg.apply(
+                    cond, out_negative,
+                    float(rf.get("negative_erase_strength", 0.5) or 0.0),
+                    mode=str(rf.get("negative_erase_mode", "project") or "project"),
+                    renorm=bool(rf.get("negative_erase_renorm", True)),
+                )
+                if _neg_note:
+                    status = f"{status}\n{_neg_note}"
+                    print(f"[FunPackStudio] {_neg_note}")
+            except Exception as _e:  # noqa: BLE001
+                status = f"{status}\nnegative_erase failed: {_e}"
+                print(f"[FunPackStudio] negative_erase failed ({_e}) — conditioning unchanged")
 
         cond = _h3_reconcile_token_tags(cond, "positive")
         out_negative = _h3_reconcile_token_tags(out_negative, "negative")
@@ -15084,6 +13468,25 @@ class FunPackStudio:
                 # just the step function — so the pass's steps + schedule (built above, and
                 # shared with the FunPack samplers) is the only thing that can supply one.
                 sampler = _cs.sampler_object(sampler_name)
+                # Quality sharpness for a loop we do not own. The unsharp needs only the
+                # current x0 prediction, the previous one and the step's sigma, so it lifts
+                # out of the sampler through a denoiser proxy — the same trick ALG uses.
+                # Wrapping keeps the sampler you chose; it does not replace it.
+                _sharp = float(cfg.get("ksampler_sharpness", 0.0) or 0.0)
+                if _sharp > 0.0:
+                    try:
+                        from .samplers import _sharpen_wrap_sampler
+                    except ImportError:
+                        from samplers import _sharpen_wrap_sampler
+                    _wrapped = _sharpen_wrap_sampler(
+                        sampler, _sharp,
+                        float(cfg.get("ksampler_sharpen_start_pct", 0.35) or 0.0))
+                    if _wrapped is not None:
+                        sampler = _wrapped
+                    else:
+                        print(f"[FunPackStudio] ksampler_sharpness is set, but "
+                              f"'{sampler_name}' exposes no sampler_function to wrap — "
+                              f"sampling continues without the sharpening.")
                 out_sigmas = sigmas_raw
             else:  # Hybrid Euler 2S (default)
                 try:
@@ -15133,6 +13536,17 @@ class FunPackStudio:
     def _build_samplers(cls, samplers_cfg, prompt_sig=None, refinement_key="", model=None):
         if not isinstance(samplers_cfg, dict):
             samplers_cfg = {}
-        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}), prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
-        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}), prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
+        high_cfg = samplers_cfg.get("high", {}) if isinstance(samplers_cfg.get("high"), dict) else {}
+        low_cfg = samplers_cfg.get("low", {}) if isinstance(samplers_cfg.get("low"), dict) else {}
+        high_sampler, high_sigmas = cls._build_one_sampler(high_cfg, prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
+        # The low pass's SAMPLER drives the chain sampler's second pass. Off by default it
+        # mirrors the high pass's algorithm — the wire has always existed, and turning it into
+        # a live second sampler for every project that already uses second_pass would change
+        # what those runs do without anyone asking. `own_sampler` is the explicit opt-in; the
+        # low pass's SIGMAS is unaffected either way, because that was always pass 2's own.
+        if not low_cfg.get("own_sampler"):
+            low_cfg = dict(high_cfg, **{k: v for k, v in low_cfg.items()
+                                        if k in ("sigmas", "steps", "scheduler",
+                                                 "ksampler_steps", "ksampler_scheduler")})
+        low_sampler, low_sigmas = cls._build_one_sampler(low_cfg, prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
         return high_sampler, high_sigmas, low_sampler, low_sigmas

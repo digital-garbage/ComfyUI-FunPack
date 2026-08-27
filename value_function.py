@@ -41,6 +41,10 @@ class OnlineValueFunction(nn.Module):
             )
 
         self.nets = nn.ModuleList([_make_net() for _ in range(self.ENSEMBLE_SIZE)])
+        # Where the last train_on actually ran. Reported once per run: "training is slow" and
+        # "training is slow ON THE CPU" are different problems, and nothing else in the log
+        # distinguishes them.
+        self.last_train_device = None
         self._optimizer = None
         self.buffer_c = []  # compressed conditioning tensors [hidden_dim]
         self.buffer_r = []  # reward floats
@@ -112,7 +116,53 @@ class OnlineValueFunction(nn.Module):
                 self.buffer_r = self.buffer_r[-self.BUFFER_SIZE:]
             if len(self.buffer_c) < 2:
                 return
-            device = next(self.parameters()).device
+            # Train where the sample already is. These nets are tiny in FLOPs but not in
+            # PARAMETERS — a 5120-wide input makes the first layer 94% of ~4M weights, and
+            # twenty Adam steps over that on a CPU measured at ~1.1s locally and around 7.5s
+            # on a rental's vCPU, per rated generation, three times over. On the GPU the
+            # conditioning is already sitting on it is a few milliseconds.
+            #
+            # The buffer and the checkpoint stay on the CPU: the file has to stay portable,
+            # and inference elsewhere still expects a CPU module, so the device is restored
+            # before returning.
+            home = next(self.parameters()).device
+            device = self._training_device(conditioning, home)
+            if device != home:
+                self.to(device)
+                # Adam's state tensors do not follow module.to(), so a moved optimizer steps
+                # against buffers on the old device. Dropped rather than migrated — it is
+                # rebuilt lazily and never persisted, so a run starts from fresh moments
+                # either way.
+                self._optimizer = None
+            self.last_train_device = str(device)
+            try:
+                self._train_steps(device)
+            finally:
+                if device != home:
+                    self.to(home)
+                    self._optimizer = None
+
+    @staticmethod
+    def _training_device(conditioning, home):
+        """Where to run the twenty training steps: a GPU if there is one at all.
+
+        Not "the sample's device". The x0 value function's sample is a snapshot loaded with
+        map_location="cpu", so keying on the sample left it training on the CPU — measured at
+        10.1s a run against 46ms for the same net locally. What has to move is the ensemble
+        and one stacked batch out of the buffer, and both are small; where the sample happens
+        to have been read from says nothing about where the arithmetic belongs.
+        """
+        try:
+            if isinstance(conditioning, torch.Tensor) and conditioning.is_cuda:
+                return conditioning.device
+            if torch.cuda.is_available():
+                return torch.device("cuda")
+        except Exception:  # noqa: BLE001
+            pass
+        return home
+
+    def _train_steps(self, device):
+        with torch.inference_mode(False), torch.enable_grad():
             n = len(self.buffer_c)
             for _ in range(self.TRAIN_STEPS):
                 self.optimizer.zero_grad()
@@ -218,6 +268,9 @@ class OnlineValueFunction(nn.Module):
 
     def is_ready(self):
         return len(self.buffer_c) >= self.MIN_SAMPLES
+
+    def parameter_count(self):
+        return sum(p.numel() for p in self.parameters())
 
     def save(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)

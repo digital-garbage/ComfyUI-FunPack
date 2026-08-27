@@ -256,28 +256,87 @@
   let varHintEl = null;          // undeclared / cycle hint line under the prompt
 
   // ── templates bar (above the global prompt) ─────────────────────────────────────
+  const TPL_NONE = "__none__";
+
   function composeTemplatesBar() {
     const bar = el("div", "compose-templates");
+    const tpls = S.promptTemplates() || [];
+    // Which template the prompt came from. Without it the select forgot its own answer the
+    // instant it was given, so there was no state to leave — and so no way to leave it.
+    const active = S.get().project?.active_prompt_template || "";
+    const known = tpls.some((t) => t && t.name === active);
+
     const sel = el("select", "lib-in compose-tpl-select");
-    const ph = new Option("Templates…", ""); ph.disabled = true; ph.selected = true; sel.append(ph);
-    (S.promptTemplates() || []).forEach((t) => {
+    const ph = new Option("Templates…", ""); ph.disabled = true; sel.append(ph);
+    sel.append(new Option("— None (clear all prompts) —", TPL_NONE));
+    tpls.forEach((t) => {
       const preview = String(t.prompt || "").replace(/\s+/g, " ").slice(0, 48);
       const o = new Option(`${t.name}${preview ? " — " + preview : ""}`, t.name);
+      if (t.name === active) o.selected = true;
       sel.append(o);
     });
+    if (!known) ph.selected = true;
     sel.title = "Apply a saved global prompt + its variables";
-    sel.onchange = () => { const n = sel.value; if (n) S.applyPromptTemplate(n).then(render); };
+    sel.onchange = () => {
+      const n = sel.value;
+      if (!n) return;
+      if (n === TPL_NONE) {
+        if (!confirm(
+          "Clear the global prompt and stop using the current template?\n\n"
+          + "Empties the anchor, the transitions and every scene's text. The postfix and "
+          + "variables are separate settings and are left alone. Undo restores it."
+        )) { render(); return; }
+        S.clearGlobalPrompt();
+        render();
+        return;
+      }
+      S.applyPromptTemplate(n).then(render);
+    };
     bar.append(sel);
-    const save = el("button", "btn ghost tiny", "Save");
-    save.title = "Save the current global prompt + variables as a template";
+
+    const currentText = () => (composeTextarea ? composeTextarea.value
+                                               : (S.get().project?.global_prompt || ""));
+
+    // Saving under an existing name overwrites it, so pre-filling the applied template's
+    // name makes "update this template" the default gesture rather than a hidden trick.
+    const save = el("button", "btn ghost tiny", known ? "Update…" : "Save");
+    save.title = known
+      ? `Overwrite "${active}" with the current prompt + variables, or save under a new name`
+      : "Save the current global prompt + variables as a template";
     save.onclick = () => {
-      const name = (window.prompt("Template name:") || "").trim();
+      const name = (window.prompt("Template name:", known ? active : "") || "").trim();
       if (!name) return;
-      const txt = composeTextarea ? composeTextarea.value : (S.get().project?.global_prompt || "");
-      S.savePromptTemplate(name, txt);
+      S.savePromptTemplate(name, currentText());
       render();
     };
     bar.append(save);
+
+    // Rename and delete act on the applied template. They are the two operations the bar
+    // never offered: a template could only be replaced by saving over its own name, and
+    // nothing anywhere called the store's deletePromptTemplate.
+    if (known) {
+      const ren = el("button", "btn ghost tiny", "✎");
+      ren.title = `Rename "${active}"`;
+      ren.onclick = () => {
+        const next = (window.prompt("Rename template:", active) || "").trim();
+        if (!next || next === active) return;
+        if (!S.renamePromptTemplate(active, next)) {
+          alert(`A template called "${next}" already exists.`);
+          return;
+        }
+        render();
+      };
+      bar.append(ren);
+
+      const del = el("button", "btn ghost tiny danger", "×");
+      del.title = `Delete "${active}"`;
+      del.onclick = () => {
+        if (!confirm(`Delete the template "${active}"?\n\nThe prompt itself stays as it is.`)) return;
+        S.deletePromptTemplate(active);
+        render();
+      };
+      bar.append(del);
+    }
     return bar;
   }
 
@@ -883,9 +942,30 @@
   function _syncButton() { if (_btn) _btn.classList.toggle("on", isOpen()); }
 
   // Re-render on relevant store changes (shortcuts / splits / project switch).
+  // ── panes hosted somewhere other than the Composer window ──────────────────
+  // The setup wizard shows Shortcuts and Splits as full screens of its own, so the flow
+  // stays one continuous surface instead of spawning a floating Composer over it. Same
+  // builders, same editors, same store — only the container differs.
+  const PANE_BUILDERS = { shortcuts: shortcutsTab, splits: splitMarkersTab };
+  const _panes = new Set();   // { kind, host }
+
+  function mountPane(kind, host) {
+    const build = PANE_BUILDERS[kind];
+    if (!build) return () => {};
+    const entry = { kind, host };
+    _panes.add(entry);
+    paintPane(entry);
+    return () => { _panes.delete(entry); closeModal(); };
+  }
+
+  function paintPane(entry) {
+    clear(entry.host);
+    entry.host.append(PANE_BUILDERS[entry.kind](S.get()));
+  }
+
   let lastFp = null;
   S.subscribe((st) => {
-    if (!isOpen()) return;
+    if (!isOpen() && !_panes.size) return;
     const fp = JSON.stringify({
       s: st.shortcuts?.length, t: st.transitions?.length, pid: st.project?.id,
       c: (st.shortcutCategories || []).reduce((n, x) => n + 1 + (x.sub_categories?.length || 0), 0),
@@ -898,7 +978,8 @@
     });
     if (fp === lastFp) return;
     lastFp = fp;
-    render();
+    if (isOpen()) render();
+    _panes.forEach(paintPane);
   });
 
   // Keep the Compose textarea in sync with timeline-driven global-prompt changes,
@@ -913,7 +994,7 @@
     composeTextarea.value = (e.detail && e.detail.text) || "";
   });
 
-  window.Composer = { toggle, isOpen, registerButton };
+  window.Composer = { toggle, isOpen, registerButton, mountPane };
 
   // Self-wire the header button (present in index.html before this script runs).
   const headerBtn = document.getElementById("composer-btn");

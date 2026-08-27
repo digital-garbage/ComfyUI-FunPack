@@ -60,6 +60,10 @@
         conditioning_slot: p.conditioning_slot, sampler_slot: p.sampler_slot,
         studio_inputs: p.studio_inputs, sampler_inputs: p.sampler_inputs,
         guide_settings: p.guide_settings, continuity_settings: p.continuity_settings,
+        // The Project panel warns when its Frames field reaches no shot, so it depends on
+        // scene state even with no scene selected — without this the warning stays on screen
+        // after "Use project length everywhere" has already cleared it.
+        ownLength: (p.scenes || []).filter((s) => (s.frames_mode || "project") !== "project").length,
       },
       preview: st.preview ? {
         warning: st.preview.warning, parse_error: st.preview.parse_error,
@@ -141,7 +145,6 @@
       h3Pass2Op: st.project?.sampler_inputs?.second_pass_op,
       // H3-ONLY settings get a chip when the pipeline is NOT H3, so this belongs here for
       // exactly the same reason as the ones above — in the mirror direction.
-      h3Clock: st.project?.sampler_inputs?.h3_audio_clock,
       // ... including the project's frame rate, which the H3 fixed-24-fps chip reads.
       h3Fps: st.project?.frame_rate,
       // The "nothing encodes your prompt" chip reads the whole models WIRING, which is
@@ -175,7 +178,10 @@
     if (!S) return () => {};
     let last = null;
     return S.subscribe((st) => {
-      const fp = fpFn(st);
+      // Every zone builds different content in Simple mode, so the mode belongs in every
+      // fingerprint. Folded in here rather than in each fpFn — one place, no way to forget
+      // it in the next one added.
+      const fp = (window.FunPackMode ? window.FunPackMode.get() + "|" : "") + fpFn(st);
       if (fp === last) return;
       const ok = fn(st);
       if (ok === false) return; // handler declined to apply this update — retry next notify

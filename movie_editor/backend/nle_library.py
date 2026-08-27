@@ -27,6 +27,37 @@ DEFAULT_EFFECTS: list[dict[str, Any]] = [
         "name": "Fade out",
         "param": {"label": "Seconds", "default": 0.5, "min": 0, "max": 10, "step": 0.1},
     },
+    {
+        "id": "flip_h",
+        "name": "Flip horizontal",
+        "description": "Mirror left-to-right. Apply again to turn it off.",
+    },
+    {
+        "id": "flip_v",
+        "name": "Flip vertical",
+        "description": "Mirror top-to-bottom. Apply again to turn it off.",
+    },
+    {
+        "id": "fill_frame",
+        "name": "Fill frame (crop to fit)",
+        "description": "Cover the output frame and crop the overflow instead of letterboxing. "
+                       "Apply again to go back to letterbox.",
+    },
+    {
+        "id": "crop",
+        "name": "Crop edges (punch in)",
+        "param": {"label": "Trim per edge (%)", "default": 10, "min": 0, "max": 40, "step": 1},
+    },
+    {
+        "id": "reverse",
+        "name": "Reverse",
+        "description": "Play the clip backwards, audio included. Apply again to turn it off.",
+    },
+    {
+        "id": "reset",
+        "name": "Remove all effects",
+        "description": "Clear every effect on the selected clip.",
+    },
 ]
 
 DEFAULT_VIDEO_TRANSITIONS: list[dict[str, Any]] = [
@@ -121,6 +152,34 @@ def normalize(data: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _merge_missing_builtins(data: dict[str, Any]) -> dict[str, Any]:
+    """Append built-in presets the stored library predates.
+
+    The library is written to disk on first use, so an install that has been running since
+    before a preset existed would never see it — normalize() keeps exactly what the file
+    holds. Union by id: new built-ins are appended, everything already there is untouched
+    (including a user's own edits to a preset's name or default).
+    """
+    for key, defaults in (("effects", DEFAULT_EFFECTS),
+                          ("video_transitions", DEFAULT_VIDEO_TRANSITIONS)):
+        current = list(data.get(key) or [])
+        have = {str(item.get("id")) for item in current}
+        for d in defaults:
+            if d["id"] in have:
+                continue
+            entry: dict[str, Any] = {"id": d["id"], "name": d.get("name") or d["id"]}
+            if d.get("description"):
+                entry["description"] = d["description"]
+            if key == "video_transitions":
+                entry["type"] = d.get("type") or d["id"]
+            param = _normalize_param(d.get("param"))
+            if param:
+                entry["param"] = param
+            current.append(entry)
+        data[key] = current
+    return data
+
+
 def load() -> dict[str, Any]:
     config.ensure_dirs()
     if not NLE_PATH.exists():
@@ -132,6 +191,7 @@ def load() -> dict[str, Any]:
     except (json.JSONDecodeError, OSError, ValueError):
         raw = None
     data = normalize(raw)
+    data = _merge_missing_builtins(data)
     if raw != data:
         NLE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return data

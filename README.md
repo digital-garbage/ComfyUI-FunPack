@@ -13,13 +13,21 @@ Graphs replaced with neat cards, get/set replaced with Linked inputs, and simple
 > FunPack is a hobby project maintained by a single person. It's crafted for my personal needs mostly, and I can't test every single possible variant of usage to confirm it's bug-free and working as intended.
 > If you had found a bug or you want to request a new feature, feel free to add an entry to Issues - that would be the most appreciated.
 
-## v4 update and migration/seize of support notice
+## What's new in FunPack 4
 
-Preparation for the next milestone update v4.0.0 has been started and it is in progress.
+- One app instead of two. Easy Gen is now Simple mode of Cutting Room, and both live at `/funpack/`. The Hub is gone.
+- Light and dark themes, picked in Settings -> Appearance.
+- Project Setup Wizard on first run, ending in the Interactive Guide.
+- Models are cards on a shelf now, not a list. Nothing saves until you close the editor, and Cancel really cancels.
+- FunPack's own diffusion, CLIP and VAE loaders, with weight/compute dtype and an attention backend per model.
+- MiniMax H3 support, including its audio stream, keyframe pins and reference images.
+- Settings live in one window. Three of them can be pinned to the toolbar.
+- Clip effects on the timeline - flip, crop, fill, reverse - with preview matching the render.
+- Export settings as a picture, so you can tell later what produced a video.
+
+Experimental features that never proved out have been removed in this release. The full list is in [CHANGELOG.md](CHANGELOG.md).
 
 Since v4.0.0 all updates will target ONLY Cutting Room editor. Nodes will receive updates but their compatibility and proper display inside regular ComfyUI frontend won't be guaranteed and/or tested.
-
-Feel free to test and leave feedback regarding v4.0.0 by switching branch to "v4" via internal feature inside "Settings" -> "Updates and ComfyUI" -> "Switch branch".
 
 ## Installation
 

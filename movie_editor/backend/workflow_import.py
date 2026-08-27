@@ -130,6 +130,8 @@ def _build_slots_from_nodes(
             "input_sources": {},
             "_wf_node_id": wf_id,
         }
+        if ent.get("group"):
+            slot["group"] = ent["group"]
         if cls not in object_info:
             slot["_missing_class"] = True
         slots.append(slot)
@@ -177,7 +179,300 @@ def _input_name_for_slot(nd: dict | None, slot_idx: int, typ: str | None) -> str
     return None
 
 
+# ── subgraphs ─────────────────────────────────────────────────────────────────
+# A subgraph instance is a node whose `type` is a uuid listed in
+# definitions.subgraphs; the real nodes live inside that definition. Without
+# expanding it the importer takes the uuid for a class name, so the whole pipeline
+# inside the subgraph is lost and the graph is queued with a class ComfyUI has never
+# heard of. ComfyUI's own MiniMax H3 templates ship this way.
+_SG_IN, _SG_OUT = -10, -20      # the definition's own input / output boundary nodes
+_SG_MAX_DEPTH = 8               # a subgraph may contain subgraphs; this bounds a cycle
+
+
+def _subgraph_defs(workflow: dict) -> dict[str, dict]:
+    defs = ((workflow.get("definitions") or {}).get("subgraphs")) or []
+    return {str(d.get("id")): d for d in defs if isinstance(d, dict) and d.get("id")}
+
+
+def _promoted_widget_inputs(defn: dict) -> list[int]:
+    """Indices of the definition's inputs that stand for an inner WIDGET.
+
+    An instance's widgets_values lists exactly these, in this order — the socket-only
+    inputs (an IMAGE to wire in) are not among them. Which is which is not stated
+    anywhere; it is read off the inner node the boundary link lands on, whose input
+    socket carries a "widget" key when it is a promoted widget.
+    """
+    by_id = {n.get("id"): n for n in defn.get("nodes") or []}
+    promoted: list[int] = []
+    for idx in range(len(defn.get("inputs") or [])):
+        for link in defn.get("links") or []:
+            if link.get("origin_id") != _SG_IN or link.get("origin_slot") != idx:
+                continue
+            tgt = by_id.get(link.get("target_id")) or {}
+            socket = (tgt.get("inputs") or [])[link.get("target_slot")] \
+                if link.get("target_slot") is not None \
+                and link.get("target_slot") < len(tgt.get("inputs") or []) else None
+            if socket and socket.get("widget"):
+                promoted.append(idx)
+            break
+    return promoted
+
+
+def _flatten_subgraphs(workflow: dict, object_info: dict) -> dict:
+    """Replace every subgraph instance with the nodes inside it, rewired.
+
+    Returns a workflow in the same shape, so everything downstream is unchanged.
+    """
+    defs = _subgraph_defs(workflow)
+    if not defs:
+        return workflow
+
+    wf = json.loads(json.dumps(workflow))          # never mutate the caller's dict
+    next_link = [max((int(l[0]) for l in (wf.get("links") or [])
+                      if isinstance(l, list) and l), default=0) + 1]
+
+    def expand(nodes: list, links: list, depth: int) -> tuple[list, list]:
+        if depth > _SG_MAX_DEPTH:
+            return nodes, links
+        out_nodes, out_links, expanded = [], list(links), False
+        for inst in nodes:
+            defn = defs.get(str(inst.get("type")))
+            if not defn:
+                out_nodes.append(inst)
+                continue
+            expanded = True
+            pfx = f"sg{inst.get('id')}_"
+            inner_nodes = json.loads(json.dumps(defn.get("nodes") or []))
+            by_old = {n.get("id"): n for n in inner_nodes}
+            # The subgraph becomes a group, so what it organised survives being flattened.
+            # Its own inner groups are more specific, so they win; the instance's title (or
+            # the definition name) is the fallback.
+            outer_name = str(inst.get("title") or defn.get("name") or "Subgraph")
+            for n in inner_nodes:
+                n["id"] = f"{pfx}{n.get('id')}"
+                if not n.get(_GROUP_KEY):
+                    n[_GROUP_KEY] = _group_of(n, defn.get("groups") or []) or outer_name
+
+            # 1. promoted widget values: the instance's, not the inner node's stale copy
+            values = inst.get("widgets_values")
+            if isinstance(values, list):
+                for slot, val in zip(_promoted_widget_inputs(defn), values):
+                    for link in defn.get("links") or []:
+                        if link.get("origin_id") != _SG_IN or link.get("origin_slot") != slot:
+                            continue
+                        tgt = by_old.get(link.get("target_id"))
+                        sockets = (tgt or {}).get("inputs") or []
+                        ts = link.get("target_slot")
+                        if tgt is None or ts is None or ts >= len(sockets):
+                            continue
+                        name = (sockets[ts].get("widget") or {}).get("name")
+                        if not name:
+                            continue
+                        cur = builder.extract_widgets(
+                            object_info.get(tgt.get("type")), tgt.get("widgets_values"))
+                        cur[name] = val
+                        tgt["widgets_values"] = cur   # dict form: extract_widgets passes it through
+
+            # 2. what the outer graph feeds each instance input, by name
+            outer_in = {i.get("name"): i.get("link") for i in inst.get("inputs") or []}
+            outer_by_id = {int(l[0]): l for l in out_links if isinstance(l, list) and l}
+            in_names = [i.get("name") for i in defn.get("inputs") or []]
+
+            # 3. inner links -> outer link rows, resolving both boundaries
+            remap: dict[Any, Any] = {}                 # inner link id -> new id or None
+            out_slot_src: dict[int, tuple[Any, int]] = {}
+            for link in defn.get("links") or []:
+                src, sslot = link.get("origin_id"), link.get("origin_slot")
+                dst, dslot = link.get("target_id"), link.get("target_slot")
+                if dst == _SG_OUT:
+                    out_slot_src[int(dslot or 0)] = (f"{pfx}{src}", int(sslot or 0))
+                    remap[link.get("id")] = None
+                    continue
+                if src == _SG_IN:
+                    name = in_names[sslot] if sslot is not None and sslot < len(in_names) else None
+                    feed = outer_by_id.get(int(outer_in.get(name) or -1)) if name else None
+                    if not feed:
+                        remap[link.get("id")] = None   # unlinked: the widget value stands
+                        continue
+                    src, sslot = feed[1], feed[2]
+                else:
+                    src = f"{pfx}{src}"
+                nid = next_link[0]; next_link[0] += 1
+                remap[link.get("id")] = nid
+                out_links.append([nid, src, int(sslot or 0), f"{pfx}{dst}", int(dslot or 0),
+                                  link.get("type")])
+
+            # 4. inner sockets point at inner link ids — repoint or clear them
+            for n in inner_nodes:
+                for socket in n.get("inputs") or []:
+                    if socket.get("link") is not None:
+                        socket["link"] = remap.get(socket["link"])
+
+            # 5. consumers of the instance's outputs now read the inner producer
+            for row in out_links:
+                if isinstance(row, list) and len(row) >= 6 and row[1] == inst.get("id"):
+                    hit = out_slot_src.get(int(row[2] or 0))
+                    if hit:
+                        row[1], row[2] = hit[0], hit[1]
+            out_nodes.extend(inner_nodes)
+        if expanded:
+            return expand(out_nodes, out_links, depth + 1)
+        return out_nodes, out_links
+
+    wf["nodes"], wf["links"] = expand(wf.get("nodes") or [], wf.get("links") or [], 0)
+    # Links into the vanished instance nodes are dead; drop them rather than leave rows
+    # whose target no longer exists.
+    live = {n.get("id") for n in wf["nodes"]}
+    wf["links"] = [l for l in wf["links"]
+                   if isinstance(l, list) and len(l) >= 6 and l[3] in live and l[1] in live]
+    return wf
+
+
+# ── groups ────────────────────────────────────────────────────────────────────
+# Workflow authors already organise their graphs — "MODELS", "Prompt", "Sampler - First
+# Pass". That grouping is in the file and was being thrown away, leaving one flat wall of
+# cards. A group here is a VIEW, never a container: the nodes stay flat and first-class and
+# every wire keeps its real endpoints, so there is no inside to navigate into. That is the
+# whole difference from a ComfyUI subgraph, which is the part people dislike.
+_GROUP_KEY = "_fp_group"
+
+
+def _group_of(node: dict, groups: list) -> str:
+    """Title of the smallest group whose box contains the node's centre, or "".
+
+    Centre rather than corner because nodes routinely overhang a group's edge by a few
+    pixels; smallest-wins so a group nested inside another takes the node.
+    """
+    pos, size = node.get("pos") or [], node.get("size") or []
+    if len(pos) < 2:
+        return ""
+    try:
+        cx = float(pos[0]) + float(size[0] if len(size) > 0 else 0) / 2
+        cy = float(pos[1]) + float(size[1] if len(size) > 1 else 0) / 2
+    except (TypeError, ValueError):
+        return ""
+    best, best_area = "", None
+    for g in groups or []:
+        box = g.get("bounding") or []
+        if len(box) < 4:
+            continue
+        try:
+            x, y, w, h = (float(v) for v in box[:4])
+        except (TypeError, ValueError):
+            continue
+        if not (x <= cx <= x + w and y <= cy <= y + h):
+            continue
+        area = w * h
+        if best_area is None or area < best_area:
+            best, best_area = str(g.get("title") or ""), area
+    return best
+
+
+def _apply_groups(workflow: dict) -> dict:
+    """Stamp each node with its group title. Nodes that came from a subgraph already carry
+    one and keep it — the subgraph's own name is a better label than whatever outer box the
+    instance happened to sit in."""
+    groups = workflow.get("groups") or []
+    for node in workflow.get("nodes") or []:
+        if not node.get(_GROUP_KEY):
+            title = _group_of(node, groups)
+            if title:
+                node[_GROUP_KEY] = title
+    return workflow
+
+
+# ── virtual link nodes ────────────────────────────────────────────────────────
+# KJNodes' Set/Get exist ONLY in JavaScript (web/js/setgetnodes.js — there is no Python
+# class), so ComfyUI's frontend resolves them away when it builds the prompt. Emitting one
+# queues a node type the backend has never heard of. They are common in big LTX workflows:
+# one shipped 53 of them across 117 nodes.
+_VIRTUAL_LINK_NODES = frozenset({"SetNode", "GetNode"})
+_VIRTUAL_MAX_CHASE = 32          # Set -> Get -> Set chains; bounds a cycle
+
+
+def _virtual_name(node: dict) -> str:
+    values = node.get("widgets_values")
+    if isinstance(values, list) and values and isinstance(values[0], str):
+        return values[0]
+    return ""
+
+
+def _resolve_virtual_links(workflow: dict) -> dict:
+    """Rewire past Set/Get nodes, then drop them.
+
+    Link rows are re-pointed IN PLACE, keeping their id, so the `link` ids recorded on
+    every consumer's input socket stay valid and only the origin changes.
+    """
+    nodes = workflow.get("nodes") or []
+    if not any(n.get("type") in _VIRTUAL_LINK_NODES for n in nodes):
+        return workflow
+
+    wf = json.loads(json.dumps(workflow))
+    nodes = wf.get("nodes") or []
+    links = [l for l in (wf.get("links") or []) if isinstance(l, list) and len(l) >= 6]
+    by_id = {n.get("id"): n for n in nodes}
+    by_target = {}                                   # (node id, slot) -> link row
+    for row in links:
+        by_target[(row[3], row[4])] = row
+
+    # What each name was Set from.
+    produced: dict[str, tuple] = {}
+    for n in nodes:
+        if n.get("type") != "SetNode":
+            continue
+        row = by_target.get((n.get("id"), 0))
+        if row:
+            produced[_virtual_name(n)] = (row[1], row[2])
+
+    def source_of(nid, slot, seen=None):
+        """Follow Set/Get hops to the real producing node, or None if the chain is broken."""
+        seen = seen or set()
+        for _ in range(_VIRTUAL_MAX_CHASE):
+            node = by_id.get(nid)
+            kind = (node or {}).get("type")
+            if kind not in _VIRTUAL_LINK_NODES:
+                return (nid, slot)
+            if nid in seen:
+                return None
+            seen.add(nid)
+            if kind == "GetNode":
+                hit = produced.get(_virtual_name(node))
+                if not hit:
+                    return None                      # Get with no matching Set
+                nid, slot = hit
+            else:                                    # SetNode passthrough output
+                row = by_target.get((nid, 0))
+                if not row:
+                    return None
+                nid, slot = row[1], row[2]
+        return None
+
+    kept, dropped = [], set()
+    for row in links:
+        if (by_id.get(row[3]) or {}).get("type") in _VIRTUAL_LINK_NODES:
+            dropped.add(int(row[0]))                 # feeds a Set/Get: it goes with them
+            continue
+        src = source_of(row[1], row[2])
+        if src is None:
+            dropped.add(int(row[0]))                 # unresolvable — leave the input unwired
+            continue
+        row[1], row[2] = src
+        kept.append(row)
+
+    wf["links"] = kept
+    wf["nodes"] = [n for n in nodes if n.get("type") not in _VIRTUAL_LINK_NODES]
+    for n in wf["nodes"]:
+        for socket in n.get("inputs") or []:
+            if socket.get("link") is not None and int(socket["link"]) in dropped:
+                socket["link"] = None
+    return wf
+
+
 def _parse_ui_workflow(workflow: dict, object_info: dict) -> dict:
+    workflow = _flatten_subgraphs(workflow, object_info)
+    # After flattening: a subgraph can contain Set/Get, and its nodes are outer nodes now.
+    workflow = _resolve_virtual_links(workflow)
+    workflow = _apply_groups(workflow)
     nodes_raw = workflow.get("nodes") or []
     links_map = _parse_ui_links(workflow.get("links") or [])
     inp_links = _ui_input_links(nodes_raw)
@@ -196,6 +491,7 @@ def _parse_ui_workflow(workflow: dict, object_info: dict) -> dict:
             "widgets_values": node.get("widgets_values"),
             "label": None,
             "properties": node.get("properties") or {},
+            "group": node.get(_GROUP_KEY) or "",
         })
 
     for (tgt_wf, in_name), lid in inp_links.items():

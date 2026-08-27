@@ -7,7 +7,7 @@
   // Easy Gen has no per-scene inspector / main editor window for an exposed widget or
   // bypass toggle to actually surface in — the eye buttons below would just be inert
   // clutter (or worse, look actionable and do nothing visible), so they're hidden there.
-  const EASY = !!window.FunPackAppName;
+  const EASY = () => !!window.FunPackMode?.isSimple();
 
   let roles = [];                 // [{key,label,category}]
   let ports = [];                 // pipeline connection points [{id,type,label}]
@@ -20,12 +20,25 @@
   let coreProducers = [];          // [{id,type,label}]
   let requirements = [];           // [{id,type,label,required,role_hint,hint}]
   let wiringRules = {};            // guided wiring rules from /pipeline-ports
+  let defaultSlots = [];           // what a project with no pipeline yet starts as
   let container = null;           // mounted content root inside the Settings window
   let linkMode = false;           // selecting inputs to bind into one shared control
   let linkSel = [];               // [{slotId, input, kind, choices, label}]
 
   function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : (key === "custom" ? "Node" : (key || "?")); }
   function slotName(slot) { return slot.label || slot.node_class; }
+
+  // FunPack's own nodes say what they ARE, not what class they are. Everything else keeps
+  // its class name — that difference is the point: these are the built-in, wired-for-you
+  // pieces, and a third-party node is an addition that does not need to look native.
+  const BUILT_IN = {
+    FunPackDiffusionModelLoader: { icon: "🧠", label: "Diffusion model" },
+    FunPackCLIPLoader:           { icon: "🔤", label: "CLIP model" },
+    FunPackVAELoader:            { icon: "🎞️", label: "VAE" },
+    FunPackLoraLoader:           { icon: "🧩", label: "LoRA" },
+    FunPackRefinementKeyLoader:  { icon: "🔑", label: "Refinement key" },
+  };
+  function builtIn(slot) { return BUILT_IN[slot?.node_class] || null; }
   // Full display name for use in pickers: "RoleLabel · NodeName"
   function slotFullLabel(slot) {
     const rl = slot.role_label || roleLabel(slot.role);
@@ -59,13 +72,17 @@
     if (!pipelineLocked()) return all;
     const role = slot.role || "custom";
     const rules = wiringRules.role_targets?.[role] || [];
-    const chainPorts = wiringRules.type_chain_terminals?.[out.type] || [];
     const hidden = new Set(wiringRules.guided_hidden_ports || []);
-    const allowedPorts = [...rules
+    // Must match pipeline_wiring.allowed_port_ids exactly: a role's own rules when it has any
+    // for this type, otherwise every port of the type. Filtering harder than the builder
+    // validates is what made saved wires read back as "(not allowed)".
+    const explicit = rules
       .filter((r) => r.type === out.type && (r.output_name == null || r.output_name === out.name))
-      .map((r) => "port:" + r.port),
-    ...chainPorts.map((p) => "port:" + p),
-    ].filter((p, i, a) => a.indexOf(p) === i);
+      .map((r) => "port:" + r.port);
+    const fallback = rules.some((r) => r.type === out.type)
+      ? []
+      : (wiringRules.type_fallback_ports?.[out.type] || []).map((p) => "port:" + p);
+    const allowedPorts = [...explicit, ...fallback].filter((p, i, a) => a.indexOf(p) === i);
     return all.filter((d) => {
       if (!d.value.startsWith("port:")) return true;
       const id = d.value.slice(5);
@@ -113,6 +130,10 @@
       const src = config.core_overrides?.[cid]?.[inp];
       const parsed = _parseOutSource(src);
       if (!parsed) continue;
+      // An override naming a slot that no longer exists is stale — _addWire below would
+      // no-op on it while _clearPortWires still stripped everyone ELSE's wire to that port,
+      // so the surviving loader lost its wire on load. Drop the override, keep the wire.
+      if (!slotById(parsed.slotId)) { delete config.core_overrides[cid][inp]; continue; }
       _clearPortWires(portId, parsed.slotId, parsed.out);
       _addWire(parsed.slotId, parsed.out, "port:" + portId);
     }
@@ -257,12 +278,75 @@
     if (refreshExposedChoices()) { try { await persist(); } catch (_) {} }
   }
 
-  async function persist() {
+  async function persistNow() {
     // Keep the SAME `config` object — every wire/widget handler closes over it, so
     // reassigning it to the server's returned object detaches those closures and the
     // next edit wouldn't persist until the node is re-rendered. Save in place instead.
-    try { await API.saveModels(window.Store?.get().project?.id, config); window.dispatchEvent(new Event("funpack-models-changed")); }
-    catch (e) { console.error(e); }
+    const familyBefore = config.model_family;
+    try {
+      // The server detects the family from the checkpoint and answers with it, so a model
+      // swap can change the family without anyone touching a control. Copy the answer back
+      // onto the SAME object (see above) and migrate the project's frame geometry, which
+      // otherwise stays on the previous model's grid and fails the run.
+      const saved = await API.saveModels(window.Store?.get().project?.id, config);
+      if (saved && typeof saved === "object") {
+        if (saved.model_family) config.model_family = saved.model_family;
+        config.model_family_probe = saved.model_family_probe;
+      }
+      window.dispatchEvent(new Event("funpack-models-changed"));
+      if (config.model_family && config.model_family !== familyBefore) {
+        window.PipelineSetup?.applyFamilyGeometry?.();
+      }
+    } catch (e) { console.error(e); }
+  }
+
+  // ── deferred saving while a node is open ─────────────────────────────────────
+  // Editing a node used to save on every change. A save fired between two keystrokes
+  // stores what was on screen at that instant — start on 1.0, type 0.5, and the value
+  // that reaches disk can be 0.58. Nothing about that is recoverable, because the
+  // half-typed number is now the saved number.
+  //
+  // So the node editor buffers instead: `config` is still mutated in place (wiring edits
+  // legitimately touch OTHER slots' wires, so a single-slot draft could not hold them),
+  // but persist() is a no-op until Save. Cancel restores the snapshot taken on open.
+  let deferSave = false;
+  let deferDirty = false;
+  let baseline = null;      // config as it was when the node page opened
+  let footerEls = null;     // {save, hint} — updated without a re-render while typing
+
+  async function persist() {
+    if (deferSave) { deferDirty = true; paintFooter(); return; }
+    return persistNow();
+  }
+
+  function beginEdit() {
+    baseline = JSON.parse(JSON.stringify(config));
+    deferSave = true;
+    deferDirty = false;
+  }
+
+  function endEdit() {
+    deferSave = false;
+    deferDirty = false;
+    baseline = null;
+    footerEls = null;
+  }
+
+  function restoreBaseline() {
+    if (!baseline) return;
+    // In place, for the same reason persistNow() saves in place: the open page's
+    // handlers all close over this object.
+    Object.keys(config).forEach((k) => delete config[k]);
+    Object.assign(config, JSON.parse(JSON.stringify(baseline)));
+  }
+
+  function paintFooter() {
+    if (!footerEls) return;
+    footerEls.save.classList.toggle("disabled", !deferDirty);
+    footerEls.save.disabled = !deferDirty;
+    footerEls.hint.textContent = deferDirty
+      ? "Unsaved changes — nothing is written until you press Save."
+      : "No changes yet.";
   }
 
   // ── "expose to main editor" (eye toggle) ─────────────────────────────────────
@@ -300,7 +384,189 @@
   }
 
   // ── widget field rendering from object_info spec ─────────────────────────────
+  // ── list inputs ───────────────────────────────────────────────────────────────
+  // A FunPack list input is ONE string widget holding a JSON array of rows, with the row
+  // shape declared next to it (see widgets.py). ComfyUI has no repeatable input, so this is
+  // how a node asks for N text encoders or N LoRAs — and rendering it as raw JSON, which is
+  // what a plain STRING widget got, made the node unusable here.
+  function parseListValue(value) {
+    if (Array.isArray(value)) return value.map((r) => (r && typeof r === "object" ? { ...r } : {}));
+    try {
+      const parsed = JSON.parse(value || "[]");
+      return Array.isArray(parsed) ? parsed.map((r) => (r && typeof r === "object" ? { ...r } : {})) : [];
+    } catch (_) { return []; }
+  }
+
+  function listRowCell(f, row, onEdit) {
+    const cell = el("div", "list-cell");
+    cell.title = f.tooltip || f.label || f.name;
+    let cur = row[f.name] != null ? row[f.name] : f.default;
+    let ctrl;
+    if (f.kind === "combo") {
+      const choices = f.choices || [];
+      // A row the user never touched still has to save what it SHOWS. Without this the
+      // first option is displayed, nothing is stored, and the node loads an empty row.
+      if (choices.length && !choices.map(String).includes(String(cur))) {
+        cur = choices[0];
+        row[f.name] = cur;
+        onEdit();
+      }
+      ctrl = el("select");
+      choices.forEach((c) => {
+        const o = el("option", null, String(c)); o.value = c;
+        if (String(c) === String(cur)) o.selected = true;
+        ctrl.append(o);
+      });
+      if (!choices.length) { ctrl.append(el("option", null, "(none installed)")); ctrl.disabled = true; }
+      ctrl.onchange = () => { row[f.name] = ctrl.value; onEdit(); };
+    } else if (f.kind === "boolean") {
+      if (row[f.name] == null) { row[f.name] = cur !== false; onEdit(); }
+      ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = cur !== false; ctrl.style.width = "auto";
+      ctrl.onchange = () => { row[f.name] = ctrl.checked; onEdit(); };
+    } else if (f.kind === "int" || f.kind === "float") {
+      if (row[f.name] == null && cur != null) { row[f.name] = cur; onEdit(); }
+      ctrl = el("input"); ctrl.type = "number";
+      if (f.min != null) ctrl.min = f.min;
+      if (f.max != null) ctrl.max = f.max;
+      ctrl.step = f.step != null ? f.step : (f.kind === "int" ? 1 : 0.01);
+      ctrl.value = cur != null ? cur : "";
+      ctrl.oninput = () => {
+        row[f.name] = f.kind === "int" ? parseInt(ctrl.value || "0", 10) : parseFloat(ctrl.value || "0");
+        onEdit();
+      };
+    } else {
+      ctrl = el("input"); ctrl.type = "text"; ctrl.value = cur != null ? cur : "";
+      ctrl.oninput = () => { row[f.name] = ctrl.value; onEdit(); };
+    }
+    cell.append(ctrl);
+    return cell;
+  }
+
+  // Pick a file from what is installed, by name, with a filter — the alternative is a
+  // combo holding hundreds of LoRAs, where finding one means scrolling a dropdown.
+  function openChoicePicker(anchor, choices, taken, onPick) {
+    document.querySelectorAll(".mn-role-pop").forEach((n) => n.remove());
+    const pop = el("div", "mn-role-pop mn-pick-pop");
+    const search = el("input", "mn-pick-search");
+    search.type = "search";
+    search.placeholder = "Search…";
+    pop.append(search);
+    const list = el("div", "mn-pick-list");
+    pop.append(list);
+    const paint = () => {
+      clear(list);
+      const q = search.value.trim().toLowerCase();
+      const hits = choices.filter((c) => !q || String(c).toLowerCase().includes(q));
+      if (!hits.length) { list.append(el("div", "mn-pick-empty", "Nothing matches.")); return; }
+      hits.slice(0, 300).forEach((c) => {
+        const it = el("div", "mn-role-item", String(c));
+        if (taken.includes(c)) it.append(el("span", "mn-pick-used", "in use"));
+        it.onclick = () => { pop.remove(); onPick(c); };
+        list.append(it);
+      });
+    };
+    search.oninput = paint;
+    paint();
+
+    pop.style.visibility = "hidden";
+    document.body.append(pop);
+    const r = anchor.getBoundingClientRect();
+    const box = pop.getBoundingClientRect();
+    const gap = 6, edge = 8;
+    const below = r.bottom + gap;
+    pop.style.top = (below + box.height <= window.innerHeight - edge
+      ? below : Math.max(edge, r.top - gap - box.height)) + "px";
+    pop.style.left = Math.max(edge, Math.min(r.left, window.innerWidth - box.width - edge)) + "px";
+    pop.style.visibility = "";
+    search.focus();
+    const away = (e) => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener("mousedown", away, true); } };
+    document.addEventListener("mousedown", away, true);
+  }
+
+  function listField(spec, value, onChange) {
+    const meta = spec.list || {};
+    const fields = (meta.fields || []).filter((f) => f && f.name);
+    const rows = parseListValue(value != null ? value : spec.default);
+    // Picker mode: one field names a file and the rest are its settings, so the row reads
+    // "this LoRA, at this strength" instead of a table of dropdowns.
+    const pickField = meta.picker ? fields.find((f) => f.name === meta.picker) : null;
+    const restFields = pickField ? fields.filter((f) => f !== pickField) : fields;
+    const wrap = el("div", "field list-field" + (pickField ? " list-picker" : ""));
+    wrap.append(el("span", "list-field-name", meta.item ? `${spec.name} · ${meta.item}s` : spec.name));
+    const box = el("div", "list-rows");
+    wrap.append(box);
+
+    // Rows are edited in place, so keys this frontend does not know about survive a save.
+    const commit = () => onChange(JSON.stringify(rows));
+
+    function draw() {
+      clear(box);
+      if (!rows.length) box.append(el("div", "list-empty", `No ${meta.item || "entries"} yet.`));
+      if (rows.length && !pickField && fields.length > 1) {
+        const head = el("div", "list-row list-head");
+        head.append(el("span", "list-ord", ""));
+        fields.forEach((f) => head.append(el("div", "list-cell", f.label || f.name)));
+        head.append(el("span", "list-rm-head", ""));   // matches the row's remove button
+        box.append(head);
+      }
+      rows.forEach((row, i) => {
+        const r = el("div", "list-row");
+        // Order is load order — the text encoder before its connector, LoRAs top to bottom.
+        const ord = el("div", "list-ord");
+        const up = el("button", "btn ghost tiny", "▲");
+        up.title = "Move up"; up.disabled = i === 0;
+        up.onclick = () => { rows.splice(i - 1, 0, rows.splice(i, 1)[0]); commit(); draw(); };
+        const down = el("button", "btn ghost tiny", "▼");
+        down.title = "Move down"; down.disabled = i === rows.length - 1;
+        down.onclick = () => { rows.splice(i + 1, 0, rows.splice(i, 1)[0]); commit(); draw(); };
+        ord.append(up, down);
+        r.append(ord);
+        if (pickField) {
+          const name = el("button", "list-pick-name", String(row[pickField.name] || "Choose a file…"));
+          name.title = `${row[pickField.name] || "Nothing picked"} — click to change`;
+          name.onclick = (e) => openChoicePicker(e.currentTarget,
+            (pickField.choices || []).filter((c) => c !== "None"),
+            rows.map((r2) => r2[pickField.name]).filter(Boolean),
+            (chosen) => { row[pickField.name] = chosen; commit(); draw(); });
+          r.append(name);
+        }
+        restFields.forEach((f) => r.append(listRowCell(f, row, commit)));
+        const rm = el("button", "btn ghost tiny wire-rm", "×");
+        rm.title = `Remove this ${meta.item || "entry"}`;
+        rm.onclick = () => { rows.splice(i, 1); commit(); draw(); };
+        r.append(rm);
+        box.append(r);
+      });
+      const max = meta.max_rows || 0;
+      if (!max || rows.length < max) {
+        const add = el("button", "btn ghost tiny wire-add", meta.add_label || "+ Add");
+        const blank = () => {
+          const row = {};
+          fields.forEach((f) => { if (f.default != null) row[f.name] = f.default; });
+          return row;
+        };
+        add.onclick = (e) => {
+          if (!pickField) { rows.push(blank()); commit(); draw(); return; }
+          const choices = (pickField.choices || []).filter((c) => c !== "None");
+          if (!choices.length) return;
+          openChoicePicker(e.currentTarget, choices,
+            rows.map((r2) => r2[pickField.name]).filter(Boolean),
+            (chosen) => {
+              const row = blank();
+              row[pickField.name] = chosen;
+              rows.push(row); commit(); draw();
+            });
+        };
+        box.append(add);
+      }
+    }
+
+    draw();
+    return wrap;
+  }
+
   function widgetField(spec, value, onChange) {
+    if (spec.kind === "list") return listField(spec, value, onChange);
     const wrap = el("label", "field");
     wrap.append(el("span", null, spec.name + (spec.required ? "" : "  ·opt")));
     let ctrl;
@@ -360,6 +626,11 @@
       const v = slot.inputs[w.name];
       if (w.kind === "combo" && (!w.choices || !w.choices.length)) {
         issues.push({ level: "error", msg: `"${w.name}" has no installed options to pick from.` });
+      } else if (w.kind === "list") {
+        // "[]" passes the emptiness check below but means the node has nothing to load —
+        // unless the node declares empty a working state, where it passes its input through.
+        if (!(w.list || {}).allow_empty && parseListValue(v != null ? v : w.default).length === 0)
+          issues.push({ level: "error", msg: `"${w.name}" is empty — add at least one entry.` });
       } else if (v == null || v === "") {
         // A linked input is FILLED at generate time from a project value, so the stored
         // blank is the normal state for one — warning about it would train the user to
@@ -387,7 +658,9 @@
     // explicit input source, an incoming wire from another node, or a unique auto-wire
     // producer. Only checked for ACTIVE slots (wired into the pipeline) — an unused node
     // that feeds nothing must not be flagged or block generation.
-    if (slotIsActive(slot)) (spec.connection_inputs || []).forEach((ci) => {
+    // A bypassed slot is on its way out of the graph, so its own inputs are not something
+    // to fix — matches the builder, which auto-wires it if it can and otherwise stays quiet.
+    if (slotIsActive(slot) && !slot.bypassed) (spec.connection_inputs || []).forEach((ci) => {
       if (!ci.required) return;
       if (typeAccepts(ci.type, "IMAGE")) return;  // a scene/timeline image can always feed an IMAGE input
       const src = (slot.input_sources || {})[ci.name];
@@ -395,7 +668,8 @@
       const incoming = (config.slots || []).some((s2) =>
         s2.id !== slot.id && Object.values(s2.wires || {}).some((tg) => wireTargets(tg).includes(`node:${slot.id}:${ci.name}`)));
       if (incoming) return;
-      const prod = sources(slot, ci.type).filter((o) => o.value && o.value !== "timeline").length;
+      const prod = sources(slot, ci.type)
+        .filter((o) => o.value && o.value !== "timeline" && producerIsLive(o.value)).length;
       if (prod === 1) return;  // a single producer auto-wires
       if (prod > 1)
         issues.push({ level: "error", msg: `Input "${ci.name}" (${ci.type}): ${prod} possible sources — set its Input source.` });
@@ -440,9 +714,36 @@
     if (n != null) { slot.role_label = n.trim() || undefined; await persist(); render(); }
   }
 
+  // Which widget on a node names the file it loads. Checked in order, then any
+  // remaining combo input whose name ends in _name — enough to cover core loaders and
+  // most third-party ones without a per-class table to keep up to date.
+  const FILE_INPUTS = [
+    "lora_name", "unet_name", "ckpt_name", "checkpoint_name", "model_name", "clip_name",
+    "vae_name", "control_net_name", "style_model_name", "gguf_name", "upscale_model_name",
+  ];
+
+  // Five LoRAs all called "LoRA" are indistinguishable, and renaming each by hand is the
+  // tax this avoids: derive the name from the file the node actually loads.
+  function autoLabel(slot) {
+    const inputs = slot.inputs || {};
+    const spec = specFor(slot);
+    let key = FILE_INPUTS.find((k) => typeof inputs[k] === "string" && inputs[k]);
+    if (!key) {
+      const combos = (spec?.inputs || []).filter((i) => i.kind === "combo" && /_name$/.test(i.name));
+      key = combos.map((i) => i.name).find((k) => typeof inputs[k] === "string" && inputs[k]);
+    }
+    if (!key) return null;
+    const raw = String(inputs[key]);
+    // "SDXL/detail/add-detail-xl.safetensors" -> "add-detail-xl"
+    const base = raw.split(/[\\/]/).pop().replace(/\.[a-z0-9]+$/i, "");
+    return base || null;
+  }
+
   function slotDisplayLabel(slot) {
     const role = roles.find((r) => r.key === slot.role);
-    return slot.role_label || (role ? role.label : slot.role) || slotName(slot) || "?";
+    // An explicit rename always wins; the parsed filename only fills the gap where the
+    // label would otherwise be the role, which every node of that role shares.
+    return slot.role_label || autoLabel(slot) || (role ? role.label : slot.role) || slotName(slot) || "?";
   }
 
   // ── node page (one configured slot: values, wiring, sources) ──────────────────
@@ -454,12 +755,18 @@
     else if (warns) card.classList.add("slot-warn");
 
     const head = el("div", "slot-head node-page-head");
+    const back = el("button", "ic-btn node-back", "‹");
+    back.title = "Back to the pipeline";
+    back.onclick = () => setView("pipeline");
+    head.append(back);
     const roleSpan = el("span", "slot-role", slotDisplayLabel(slot));
     head.append(roleSpan);
     const ren = el("button", "ic-btn", "✎"); ren.title = "Rename node label";
     ren.onclick = (e) => { e.stopPropagation(); renameSlot(slot); };
     head.append(ren);
-    head.append(el("span", "slot-node", slotName(slot)));
+    const biHead = builtIn(slot);
+    head.append(el("span", "slot-node" + (biHead ? " built-in" : ""),
+                   biHead ? `${biHead.icon} ${biHead.label}` : slotName(slot)));
     const nExp = (slot.exposed || []).length;
     if (nExp) head.append(el("span", "slot-badge exposed", `◉ ${nExp}`));
     if (slot.bypassed) head.append(el("span", "slot-badge warn", "bypassed"));
@@ -471,13 +778,17 @@
     byp.title = "Skip this node's effect (pass its inputs straight through) without losing its configuration.";
     byp.onclick = async (e) => { e.stopPropagation(); slot.bypassed = !slot.bypassed; await persist(); render(); };
     acts.append(byp);
-    if (!EASY) acts.append(bypassEyeButton(slot));
+    if (!EASY()) acts.append(bypassEyeButton(slot));
     const rm = el("button", "btn ghost tiny danger", "remove");
     rm.onclick = async (e) => {
       e.stopPropagation();
       if (!confirm(`Remove "${slotDisplayLabel(slot)}" (${slotName(slot)}) from the pipeline?`)) return;
-      config.slots = config.slots.filter((s) => s.id !== slot.id);
-      await persist(); setView("pipeline");
+      // Removal is its own confirmed decision, not part of the edit buffer — and there
+      // would be nothing left to press Save on.
+      removeSlot(slot);
+      deferSave = false;
+      await persistNow();
+      _setView("pipeline");
     };
     acts.append(rm);
     head.append(acts);
@@ -486,71 +797,52 @@
     const ib = issuesBox(issues);
     if (ib) card.append(ib);
 
+    // Which section this node is filed under. Purely a heading — moving a node between
+    // groups changes nothing about how it is wired or built.
+    const grpRow = el("div", "field node-group-field");
+    grpRow.append(el("span", null, "Group"));
+    const grpSel = el("select");
+    const cur = (slot.group || "").trim();
+    const opts = groupNames();
+    if (cur && !opts.includes(cur)) opts.push(cur);
+    [["", "— none —"], ...opts.map((g) => [g, g]), ["__new__", "New group…"]]
+      .forEach(([val, label]) => {
+        const o = el("option", null, label); o.value = val;
+        if (val === cur) o.selected = true;
+        grpSel.append(o);
+      });
+    grpSel.onchange = async () => {
+      let next = grpSel.value;
+      if (next === "__new__") {
+        next = (prompt("Group name:", cur) || "").trim();
+        if (!next) { render(); return; }
+      }
+      if (next) slot.group = next; else delete slot.group;
+      await persist();
+      render();
+    };
+    grpRow.append(grpSel);
+    card.append(grpRow);
+
     const cand = specFor(slot);
-    if (cand && cand.inputs.length) {
-      const grid = el("div", "slot-fields");
-      cand.inputs.forEach((spec) => {
-        const lk = linkOf(slot.id, spec.name);
-        const iw = incomingWidgetWire(slot, spec.name);
-        const f = widgetField(spec, slot.inputs[spec.name], async (v) => {
-          slot.inputs[spec.name] = v;
-          const l2 = linkOf(slot.id, spec.name); if (l2) applyLinkValue(l2, v);  // keep group in sync
-          await persist();
-        });
-        if (!EASY || iw || lk || linkMode) f.classList.add("with-eye");
-        if (iw) {
-          // Wired from another node's output: the widget value is replaced by the
-          // connection at generation — lock the field and say where it comes from
-          // (same treatment as a linked control; the eye button is skipped because an
-          // exposed control would edit a value generation ignores).
-          f.classList.add("linked");
-          const ctrl = f.querySelector("input,select"); if (ctrl) ctrl.disabled = true;
-          const tag = el("span", "link-tag", `⇐ ${slotName(iw.slot)} · ${iw.out}`);
-          tag.title = `This value comes from ${slotFullLabel(iw.slot)}'s "${iw.out}" output at generation — the local field is ignored while wired.`;
-          f.append(tag);
-        } else if (lk) {
-          f.classList.add("linked");
-          const ctrl = f.querySelector("input,select"); if (ctrl) ctrl.disabled = true;
-          f.append(el("span", "link-tag", "🔗 " + lk.name));
-        } else if (linkMode) {
-          const chk = el("button", "eye-btn link-pick" + (linkSelHas(slot.id, spec.name) ? " on" : ""), "+");
-          chk.type = "button"; chk.title = "Add to link selection";
-          chk.onclick = (e) => {
-            e.preventDefault(); e.stopPropagation();
-            if (linkSelHas(slot.id, spec.name)) linkSel = linkSel.filter((s) => !(s.slotId === slot.id && s.input === spec.name));
-            else linkSel.push({ slotId: slot.id, input: spec.name, kind: spec.kind, choices: spec.choices, label: `${slotName(slot)} · ${spec.name}` });
-            render();
-          };
-          f.append(chk);
-        } else if (!EASY) {
-          f.append(eyeButton(slot, spec));
-        }
-        grid.append(f);
-      });
-      card.append(grid);
-    }
 
-    // Wiring: each output -> one or more destinations.
-    if (cand && (cand.outputs || []).length) {
-      slot.wires = slot.wires || {};
-      const wbox = el("div", "wire-box");
-      wbox.append(el("div", "wire-title", "Wire outputs to"));
-      cand.outputs.forEach((out) => {
-        const row = el("div", "wire-row");
-        row.append(el("span", "wire-out", `${out.name} (${out.type})`));
-        row.append(el("span", "wire-arrow", "→"));
-        row.append(destMulti(slot, out));
-        wbox.append(row);
-      });
-      card.append(wbox);
-    }
-
+    // Card reads top-down in signal order: what comes IN, what the node is set to,
+    // then what goes OUT.
     // Input sources: explicitly choose where each connection input comes from.
     if (cand && (cand.connection_inputs || []).length) {
       slot.input_sources = slot.input_sources || {};
       const sbox = el("div", "wire-box");
       sbox.append(el("div", "wire-title", "Input sources"));
-      visibleConnectionInputs(slot, cand.connection_inputs).forEach((ci) => {
+      // An input the node calls advanced is folded away UNLESS something feeds it: a wire
+      // that exists has to stay visible, or the page would hide part of the pipeline.
+      const visible = visibleConnectionInputs(slot, cand.connection_inputs);
+      const advanced = visible.filter((ci) => ci.advanced && !inputIsFed(slot, ci.name));
+      let advBox = null;
+      if (advanced.length) {
+        advBox = el("details", "wire-advanced");
+        advBox.append(el("summary", null, `Advanced · ${advanced.length}`));
+      }
+      visible.forEach((ci) => {
         const row = el("div", "wire-row");
         const lbl = el("span", "wire-out", `${ci.display || ci.name} (${ci.type})`);
         if (ci.autogrow)
@@ -568,12 +860,116 @@
         }
         sel.onchange = async () => { _setInputSource(slot, ci.name, sel.value); await persist(); render(); };
         row.append(sel);
-        sbox.append(row);
+        (advanced.includes(ci) ? advBox : sbox).append(row);
       });
+      if (advBox) sbox.append(advBox);
       card.append(sbox);
     }
 
+    if (cand && cand.inputs.length) {
+      const grid = el("div", "slot-fields");
+      // Widgets the node calls advanced are tweakable, but validated at their defaults —
+      // folded away so they do not sit between the user and the file picker.
+      const advWidgets = cand.inputs.filter((w) => w.advanced);
+      let advGrid = null, advWrap = null;
+      if (advWidgets.length) {
+        advWrap = el("details", "wire-advanced");
+        advWrap.append(el("summary", null, `Advanced · ${advWidgets.length}`));
+        advGrid = el("div", "slot-fields");
+        advWrap.append(advGrid);
+      }
+      cand.inputs.forEach((spec) => {
+        const lk = linkOf(slot.id, spec.name);
+        const iw = incomingWidgetWire(slot, spec.name);
+        const f = widgetField(spec, slot.inputs[spec.name], async (v) => {
+          slot.inputs[spec.name] = v;
+          const l2 = linkOf(slot.id, spec.name); if (l2) applyLinkValue(l2, v);  // keep group in sync
+          await persist();
+        });
+        const isList = spec.kind === "list";
+        if (!isList && (!EASY() || iw || lk || linkMode)) f.classList.add("with-eye");
+        if (iw) {
+          // Wired from another node's output: the widget value is replaced by the
+          // connection at generation — lock the field and say where it comes from
+          // (same treatment as a linked control; the eye button is skipped because an
+          // exposed control would edit a value generation ignores).
+          f.classList.add("linked");
+          const ctrl = f.querySelector("input,select"); if (ctrl) ctrl.disabled = true;
+          const tag = el("span", "link-tag", `⇐ ${slotName(iw.slot)} · ${iw.out}`);
+          tag.title = `This value comes from ${slotFullLabel(iw.slot)}'s "${iw.out}" output at generation — the local field is ignored while wired.`;
+          f.append(tag);
+        } else if (lk) {
+          f.classList.add("linked");
+          const ctrl = f.querySelector("input,select"); if (ctrl) ctrl.disabled = true;
+          f.append(el("span", "link-tag", "🔗 " + lk.name));
+        } else if (linkMode && !isList) {
+          const chk = el("button", "eye-btn link-pick" + (linkSelHas(slot.id, spec.name) ? " on" : ""), "+");
+          chk.type = "button"; chk.title = "Add to link selection";
+          chk.onclick = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            if (linkSelHas(slot.id, spec.name)) linkSel = linkSel.filter((s) => !(s.slotId === slot.id && s.input === spec.name));
+            else linkSel.push({ slotId: slot.id, input: spec.name, kind: spec.kind, choices: spec.choices, label: `${slotName(slot)} · ${spec.name}` });
+            render();
+          };
+          f.append(chk);
+        } else if (!EASY() && !isList) {
+          // A list holds many values; there is no single control to expose to the editor.
+          f.append(eyeButton(slot, spec));
+        }
+        (spec.advanced ? advGrid : grid).append(f);
+      });
+      card.append(grid);
+      if (advWrap) card.append(advWrap);
+    }
+
+    // Wiring: each output -> one or more destinations.
+    if (cand && (cand.outputs || []).length) {
+      slot.wires = slot.wires || {};
+      const wbox = el("div", "wire-box");
+      wbox.append(el("div", "wire-title", "Wire outputs to"));
+      cand.outputs.forEach((out) => {
+        const row = el("div", "wire-row");
+        row.append(el("span", "wire-out", `${out.name} (${out.type})`));
+        row.append(el("span", "wire-arrow", "→"));
+        row.append(destMulti(slot, out));
+        wbox.append(row);
+      });
+      card.append(wbox);
+    }
+
+    card.append(editFooter());
     return card;
+  }
+
+  // Nothing on the node page is written until Save. See the deferSave block above for why.
+  function editFooter() {
+    const foot = el("div", "node-foot");
+    const hint = el("div", "node-foot-hint");
+    const acts = el("div", "node-foot-acts");
+
+    const cancel = el("button", "btn ghost", "Cancel");
+    cancel.type = "button";
+    cancel.onclick = () => {
+      if (deferDirty && !confirm("Discard the changes to this node?")) return;
+      restoreBaseline();
+      finishNodeEdit();
+    };
+
+    const save = el("button", "btn primary", "Save");
+    save.type = "button";
+    save.onclick = async () => {
+      save.disabled = true;
+      deferSave = false;
+      await persistNow();
+      endEdit();
+      finishNodeEdit();
+    };
+
+    acts.append(cancel, save);
+    foot.append(hint, acts);
+    footerEls = { save, hint };
+    paintFooter();
+    return foot;
   }
 
   const _KIND2T = { int: "INT", float: "FLOAT", string: "STRING", boolean: "BOOLEAN" };
@@ -688,9 +1084,53 @@
   // Available sources for a slot connection input of a given type.
   // Source IDs: "" = auto, "out:<slotId>:<outName>", "core:<coreId>:<outIdx>",
   // "timeline" (IMAGE only), "ref:<mediaId>" (media marked R in the bin).
+  // A pass-through output is only a real source once its own input is fed: the LoRA loader
+  // hands CLIP straight back, so an unwired one emits nothing while still making every
+  // other CLIP consumer read as ambiguous. Matches builder._producers, which is what
+  // actually decides whether generation is blocked.
+  function producerIsLive(value) {
+    const m = /^out:([^:]+):(.+)$/.exec(String(value));
+    if (!m) return true;
+    const slot = (config.slots || []).find((s) => s.id === m[1]);
+    if (!slot) return true;
+    const spec = specFor(slot);
+    if (!spec) return true;
+    const out = (spec.outputs || []).find((o) => o.name === m[2]);
+    if (!out) return true;
+    return !(spec.connection_inputs || []).some(
+      (ci) => ci.type === out.type && !inputIsFed(slot, ci.name));
+  }
+
+  // Numbered reference SLOTS — "Reference image 1" is whatever is marked first among the
+  // image references, not a particular file. Wire a socket to a slot once and re-ordering
+  // marks in the bin re-points it, with no node page involved. Numbered per kind so marking
+  // an audio file never shifts the image slots.
+  //
+  // Offered up to one past the highest slot this node already uses, which is what makes the
+  // next free number the obvious pick: with 1 taken you see 1 (in use) and 2.
+  function referenceSlots(slot, type) {
+    const used = {};
+    Object.values(slot?.input_sources || {}).forEach((src) => {
+      const m = /^ref#([a-z]+):(\d+)$/.exec(String(src || ""));
+      if (m) used[m[1]] = Math.max(used[m[1]] || 0, +m[2]);
+    });
+    const out = [];
+    Object.keys(REF_KIND_TYPES).forEach((kind) => {
+      if (!REF_KIND_TYPES[kind].some((t) => typeAccepts(type, t))) return;
+      const top = Math.max(1, (used[kind] || 0) + 1);
+      for (let n = 1; n <= top; n++) {
+        out.push({ value: `ref#${kind}:${n}`,
+                   label: `Reference ${REF_KIND_LABEL[kind] || kind} ${n}`
+                        + ((used[kind] || 0) >= n ? " · in use" : "") });
+      }
+    });
+    return out;
+  }
+
   function sources(slot, type) {
     const out = [{ value: "", label: "(auto-wire)" }];
     if (typeAccepts(type, "IMAGE")) out.push({ value: "timeline", label: "Timeline (scene image)" });
+    referenceSlots(slot, type).forEach((r) => out.push(r));
     referenceSources(type).forEach((r) => out.push(r));
     coreProducers.filter((p) => typeAccepts(type, p.type)).forEach((p) =>
       out.push({ value: p.id, label: p.label }));
@@ -759,6 +1199,19 @@
   }
   // Replace a wire target + mirror it as an input source on the destination slot.
   function _setWireTarget(srcSlot, outName, oldTarget, newTarget) {
+    // A wire onto an open core port is recorded TWICE: as the slot's wire, and as a
+    // core_override. reconcileOpenPortWiring() rebuilds each from the other, so dropping
+    // only the wire left the override behind and the next reconcile put the wire straight
+    // back — which is why "Studio · model" could not be unwired without deleting the node.
+    if (String(oldTarget || "").startsWith("port:")) {
+      const map = portToOpenCore(oldTarget.slice(5));
+      if (map) {
+        const [cid, inp] = map;
+        // Only if the override still names THIS wire; another output may own it now.
+        if (config.core_overrides?.[cid]?.[inp] === `out:${srcSlot.id}:${outName}`)
+          delete config.core_overrides[cid][inp];
+      }
+    }
     const old = _parseNodeTarget(oldTarget);
     if (old) {
       const ds = slotById(old.slotId);
@@ -808,12 +1261,59 @@
     return wrap;
   }
 
+  // Same multi-destination editor as the node page, for a DRAFT slot: it has no id, is not
+  // in config yet, and nothing about it is persisted until "Add node". So this writes only
+  // into the draft's own wires map — no _setWireTarget mirroring, no persist, no re-render.
+  // The targets are replayed onto the real slot once it exists.
+  function draftDestMulti(draftSlot, out, wires) {
+    const targets = wireTargets(wires[out.name]);
+    if (!targets.length) targets.push("");  // always show one row, as the old single select did
+    wires[out.name] = targets;
+    const wrap = el("div", "wire-multi");
+
+    function renderRows() {
+      clear(wrap);
+      const dests = allowedDestinations(draftSlot, out);
+      targets.forEach((t, i) => {
+        const row = el("div", "wire-multi-row");
+        const sel = el("select", "wire-select");
+        dests.forEach((d) => {
+          const o = el("option", null, d.label); o.value = d.value;
+          if (d.value === t) o.selected = true;
+          sel.append(o);
+        });
+        sel.onchange = () => { targets[i] = sel.value; };
+        const rm = el("button", "btn ghost tiny wire-rm", "×");
+        rm.type = "button";
+        rm.title = "Remove this wire";
+        rm.onclick = () => { targets.splice(i, 1); renderRows(); };
+        row.append(sel, rm);
+        wrap.append(row);
+      });
+      // Same gate as the node page: with the built-in pipeline in charge a node normally
+      // feeds exactly one open core port, so offering more wires there would be offering
+      // something the pipeline will not honour.
+      const portOpts = dests.filter((d) => d.value.startsWith("port:"));
+      if (!pipelineLocked() || portOpts.length > 1
+          || (portOpts.length === 1 && !targets.some((t) => t.startsWith("port:")))) {
+        const add = el("button", "btn ghost tiny wire-add", "+ Add");
+        add.type = "button";
+        add.onclick = () => { targets.push(""); renderRows(); };
+        wrap.append(add);
+      }
+    }
+
+    renderRows();
+    return wrap;
+  }
+
   // ── "+ New node": role dropdown → "Setup node" modal (search → values + wiring) ──
-  function openRoleMenu(anchor) {
+  function openRoleMenu(anchor, onlyCategory) {
     document.querySelectorAll(".mn-role-pop").forEach((n) => n.remove());
     const pop = el("div", "mn-role-pop");
     const cats = {};
-    roles.forEach((r) => { (cats[r.category] = cats[r.category] || []).push(r); });
+    roles.filter((r) => !onlyCategory || r.category === onlyCategory)
+      .forEach((r) => { (cats[r.category] = cats[r.category] || []).push(r); });
     Object.keys(cats).forEach((cat) => {
       pop.append(el("div", "mn-role-cat", cat));
       cats[cat].forEach((r) => {
@@ -822,17 +1322,109 @@
         pop.append(it);
       });
     });
-    pop.append(el("div", "mn-role-cat", "Advanced"));
-    const any = el("div", "mn-role-item", "Any node…");
-    any.onclick = () => { pop.remove(); openNodeSetup("__any__"); };
-    pop.append(any);
+    if (!onlyCategory) {
+      pop.append(el("div", "mn-role-cat", "Advanced"));
+      const any = el("div", "mn-role-item", "Any node…");
+      any.onclick = () => { pop.remove(); openNodeSetup("__any__"); };
+      pop.append(any);
+    }
 
-    const r = anchor.getBoundingClientRect();
-    pop.style.left = r.left + "px";
-    pop.style.top = (r.bottom + 4) + "px";
+    // Measure before placing: below the card is the default, but the shelf is usually
+    // near the bottom of a scrolled pane, where "below" is off-screen.
+    pop.style.visibility = "hidden";
     document.body.append(pop);
+    const r = anchor.getBoundingClientRect();
+    const box = pop.getBoundingClientRect();
+    const gap = 6, edge = 8;
+    const below = r.bottom + gap;
+    const top = below + box.height <= window.innerHeight - edge
+      ? below
+      : Math.max(edge, r.top - gap - box.height);
+    pop.style.top = top + "px";
+    pop.style.left = Math.max(edge, Math.min(r.left, window.innerWidth - box.width - edge)) + "px";
+    pop.style.visibility = "";
     const away = (e) => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener("mousedown", away, true); } };
     document.addEventListener("mousedown", away, true);
+  }
+
+  // ── export settings as a picture ──────────────────────────────────────────────
+  // "Which model was that?" outlives the session that could answer it. The card is built
+  // on the server (it knows torch/CUDA/GPU; the browser only knows the laptop showing the
+  // page) and comes back as one PNG that is shown, saved or copied from here.
+  function openSettingsCard() {
+    document.querySelectorAll(".sc-overlay").forEach((n) => n.remove());
+    const overlay = el("div", "modal-overlay sc-overlay");
+    const modal = el("div", "modal sc-modal");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", "Export settings"));
+    const hr = el("div", "modal-head-right");
+    const x = el("button", "btn ghost tiny", "✕");
+    const close = () => { if (url) URL.revokeObjectURL(url); overlay.remove(); };
+    x.onclick = close;
+    hr.append(x); head.append(hr);
+    const content = el("div", "modal-content sc-content");
+    const foot = el("div", "modal-foot sc-foot");
+    modal.append(head, content, foot);
+    overlay.append(modal);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    document.body.append(overlay);
+
+    let url = null, blob = null;
+    content.append(el("div", "pj-meta", "Rendering…"));
+
+    const status = el("div", "sc-status");
+    const dl = el("button", "btn primary tiny", "⤓ Download");
+    const cp = el("button", "btn ghost tiny", "⧉ Copy image");
+    const cl = el("button", "btn ghost tiny", "Close");
+    cl.onclick = close;
+    dl.disabled = true; cp.disabled = true;
+    foot.append(status, dl, cp, cl);
+
+    // The card is rendered in whatever theme the app is showing, because it is a document
+    // about this install and it should look like this install.
+    const theme = window.FunPackTheme?.resolved?.()
+      || document.documentElement.getAttribute("data-theme") || "dark";
+    const project = window.Store?.get().project;
+    API.settingsCard(project?.id, theme)
+      .then((b) => {
+        if (!overlay.isConnected) return;
+        blob = b; url = URL.createObjectURL(b);
+        clear(content);
+        const img = el("img", "sc-img");
+        img.src = url;
+        img.alt = "FunPack settings card";
+        content.append(img);
+        dl.disabled = false; cp.disabled = false;
+      })
+      .catch((e) => {
+        if (!overlay.isConnected) return;
+        clear(content);
+        content.append(el("div", "pj-meta", "Could not render the card: " + (e?.message || e)));
+      });
+
+    dl.onclick = () => {
+      if (!url) return;
+      const a = document.createElement("a");
+      a.href = url;
+      const base = (project?.name || "funpack-settings").replace(/[^\w.-]+/g, "_");
+      a.download = `${base}-settings.png`;
+      document.body.append(a); a.click(); a.remove();
+    };
+
+    cp.onclick = async () => {
+      // Clipboard image writes need a secure context, which a rental reached over plain
+      // http://<ip> is not. Say that, rather than failing silently — Download still works.
+      status.textContent = "";
+      try {
+        if (!navigator.clipboard || typeof window.ClipboardItem !== "function") {
+          throw new Error("this browser/connection has no image clipboard");
+        }
+        await navigator.clipboard.write([new window.ClipboardItem({ "image/png": blob })]);
+        status.textContent = "Copied.";
+      } catch (e) {
+        status.textContent = "Could not copy (" + (e?.message || e) + "). Use Download.";
+      }
+    };
   }
 
   // Setup-node modal: pick the node by search, then set widget values AND wire its
@@ -898,6 +1490,13 @@
     }
     search.oninput = () => { listOpen = true; renderList(); };
 
+    // Opening "Add loader → Text encoder" on FunPack's own loader is the difference between
+    // choosing a file and choosing a node first. Any other node is still one search away.
+    function preferredClassFor(role) {
+      const recipe = defaultSlots.find((r) => r.role === role);
+      return recipe ? recipe.node_class : null;
+    }
+
     async function pick(cls) {
       curCand = specByClass[cls];
       if (!curCand) { try { curCand = await loadSpec(cls); } catch (_) { return; } }
@@ -917,34 +1516,7 @@
       // Shares the draft's input_sources so a filled autogrow entry reveals the next one.
       const draftSlot = { id: "__draft__", role: roleFinal, wires: {}, input_sources: draft.input_sources };
 
-      if ((curCand.inputs || []).length) {
-        detail.append(el("div", "wire-title", "Values"));
-        const grid = el("div", "slot-fields");
-        curCand.inputs.forEach((spec) =>
-          grid.append(widgetField(spec, draft.inputs[spec.name], (v) => { draft.inputs[spec.name] = v; })));
-        detail.append(grid);
-      }
-
-      if ((curCand.outputs || []).length) {
-        const wbox = el("div", "wire-box");
-        wbox.append(el("div", "wire-title", "Wire outputs to"));
-        curCand.outputs.forEach((out) => {
-          const row = el("div", "wire-row");
-          row.append(el("span", "wire-out", `${out.name} (${out.type})`));
-          row.append(el("span", "wire-arrow", "→"));
-          const sel = el("select", "wire-select");
-          const cur = draft.wires[out.name] || "";
-          allowedDestinations(draftSlot, out).forEach((d) => {
-            const o = el("option", null, d.label); o.value = d.value; if (d.value === cur) o.selected = true; sel.append(o);
-          });
-          sel.onchange = () => { if (sel.value) draft.wires[out.name] = sel.value; else delete draft.wires[out.name]; };
-          row.append(sel);
-          wbox.append(row);
-        });
-        wbox.append(el("div", "links-hint", "One wire per output here — add more on the node's page after adding."));
-        detail.append(wbox);
-      }
-
+      // Same top-down signal order as the node card: sources in, values, wires out.
       if ((curCand.connection_inputs || []).length) {
         const sbox = el("div", "wire-box");
         sbox.append(el("div", "wire-title", "Input sources"));
@@ -967,6 +1539,27 @@
         detail.append(sbox);
       }
 
+      if ((curCand.inputs || []).length) {
+        detail.append(el("div", "wire-title", "Values"));
+        const grid = el("div", "slot-fields");
+        curCand.inputs.forEach((spec) =>
+          grid.append(widgetField(spec, draft.inputs[spec.name], (v) => { draft.inputs[spec.name] = v; })));
+        detail.append(grid);
+      }
+
+      if ((curCand.outputs || []).length) {
+        const wbox = el("div", "wire-box");
+        wbox.append(el("div", "wire-title", "Wire outputs to"));
+        curCand.outputs.forEach((out) => {
+          const row = el("div", "wire-row");
+          row.append(el("span", "wire-out", `${out.name} (${out.type})`));
+          row.append(el("span", "wire-arrow", "→"));
+          row.append(draftDestMulti(draftSlot, out, draft.wires));
+          wbox.append(row);
+        });
+        detail.append(wbox);
+      }
+
       const foot = el("div", "ns-foot");
       const add = el("button", "btn primary", "Add node");
       add.onclick = async () => {
@@ -976,12 +1569,15 @@
           wires: {}, input_sources: {},
         };
         config.slots.push(slot);
-        Object.entries(draft.wires).forEach(([o, t]) => {
-          if (!t) return;
-          _addWire(slot.id, o, t);
-          _setWireTarget(slot, o, "", t); // mirror node: targets onto the destination's input source
+        Object.entries(draft.wires).forEach(([o, raw]) => {
+          wireTargets(raw).forEach((t) => {
+            if (!t) return;
+            _addWire(slot.id, o, t);
+            _setWireTarget(slot, o, "", t); // mirror node: targets onto the destination's input source
+          });
         });
         Object.entries(draft.input_sources).forEach(([inp, v]) => { if (v) _setInputSource(slot, inp, v); });
+        feedMatchingInputs(slot);
         reconcileOpenPortWiring();
         await persist();
         closeSetup();
@@ -995,7 +1591,12 @@
 
     listBox.append(el("div", "ns-empty", "Loading nodes…"));
     (roleKey === "__any__" ? ensureAllNodes() : candidates(roleKey))
-      .then((list) => { curList = list || []; renderList(); })
+      .then((list) => {
+        curList = list || [];
+        const preferred = preferredClassFor(roleFinal);
+        if (preferred && curList.some((c) => c.class === preferred)) { pick(preferred); return; }
+        renderList();
+      })
       .catch((e) => {
         clear(listBox);
         listBox.append(el("div", "ns-empty", "Node list unavailable: " + (e && e.message ? e.message : e)));
@@ -1032,71 +1633,114 @@
     return slotProducesType(req.type, null);
   }
 
+  // Dismiss state for the requirements list. Persisted, because a pipeline someone is
+  // deliberately leaving incomplete stays incomplete across reloads, and re-nagging every
+  // time the panel opens is exactly what the dismiss is for.
+  const REQ_HIDE_KEY = "funpack_models_req_hidden";
+  function reqPanelHidden(next) {
+    try {
+      if (next === undefined) return localStorage.getItem(REQ_HIDE_KEY) === "1";
+      if (next) localStorage.setItem(REQ_HIDE_KEY, "1");
+      else localStorage.removeItem(REQ_HIDE_KEY);
+    } catch (_) { /* private mode: the list just stays visible */ }
+    return !!next;
+  }
+
   function requirementsPanel() {
     const sec = el("div", "req-panel");
     if (config.disable_core) {
-      sec.append(el("div", "req-title", "Custom workflow"));
+      // No FunPack core means no FunPack requirements — say so once, briefly, and get out
+      // of the way. Everything else in this panel still works on the user's own nodes.
       sec.append(el("div", "req-empty",
-        "Built-in FunPack pipeline is off. Wire your workflow nodes below; FunPack loader requirements do not apply."));
+        "Custom workflow — the built-in pipeline is off, so FunPack's loader requirements "
+        + "do not apply. Wire your own nodes below."));
       return sec;
     }
-    if (pipelineLocked()) {
+    if (reqPanelHidden()) {
+      const missingNow = requirements.filter((r) => r.required && !requirementSatisfied(r));
+      if (!missingNow.length) return sec;          // nothing to say; stay quiet
+      const line = el("div", "req-collapsed");
+      line.append(el("span", "req-dot", "✕"));
+      line.append(el("span", null, `${missingNow.length} missing in pipeline`));
+      const show = el("button", "btn ghost tiny", "Show");
+      show.onclick = () => { reqPanelHidden(false); render(); };
+      line.append(show);
+      sec.append(line);
+      return sec;
+    }
+    // The wiring rules are reference material, not a warning — folded away so the first
+    // thing in this panel is the short list of what is actually missing.
+    function guidedRulesFold() {
       // The latent and audio path differ by family — H3 makes both streams in one node
       // that feeds the sampler directly, so pointing at Studio · latent here would send
       // the user to a port its graph does not even have.
       const h3 = familyKey() === "minimax_h3";
-      sec.append(el("div", "req-hint guided-hint",
+      const det = el("details", "req-fold");
+      det.append(el("summary", "req-fold-sum", "Guided wiring rules"));
+      det.append(el("div", "req-hint guided-hint",
         (h3
-          ? "Guided wiring: the AV LATENT → Chain Sampler · latent_template (Empty MiniMax H3 "
+          ? "The AV LATENT → Chain Sampler · latent_template (Empty MiniMax H3 "
             + "AV Latent makes both streams). Audio VAE → VAE Decode Audio · vae, and optionally "
             + "also Chain Sampler · audio_vae to encode audio references. "
-          : "Guided wiring: LATENT → Studio · latent (core forwards to Concat · video_latent). "
+          : "LATENT → Studio · latent (core forwards to Concat · video_latent). "
             + "Audio latent → Concat · audio_latent only. ")
         + "IMAGE → Studio · source_image (Input Image Processing defaults to Timeline scene image). "
         + "MODEL/CLIP may chain through LoRA. "
         + "Enable Full control for manual rewiring."));
+      return det;
     }
-    sec.append(el("div", "req-title", "Pipeline requirements"));
-
     if (!requirements.length) {
+      sec.append(el("div", "req-title", "Pipeline requirements"));
       sec.append(el("div", "req-empty", "Requirements not loaded — open Models to refresh."));
       return sec;
     }
 
     const required = requirements.filter((r) => r.required);
     const optional = requirements.filter((r) => !r.required);
-    const allOk = required.every(requirementSatisfied);
+    const missing = required.filter((r) => !requirementSatisfied(r));
+    const allOk = !missing.length;
 
-    required.forEach((req) => {
+    // One line per requirement: dot, name, type, and — only when it is missing and we know
+    // which role fills it — a + on the right. The hint used to be a paragraph inside the
+    // row, which made every missing item a block three times the height of a satisfied one.
+    function reqRow(req, cls) {
       const ok = requirementSatisfied(req);
-      const row = el("div", "req-row" + (ok ? " ok" : " missing"));
-      row.append(el("span", "req-dot", ok ? "✓" : "✕"));
-      const lbl = el("span", "req-label", req.label);
-      const badge = el("span", "req-type", req.type);
-      row.append(lbl); row.append(badge);
-      if (!ok) {
-        const hint = el("div", "req-hint", req.hint);
-        row.append(hint);
-        if (req.role_hint) {
-          const addBtn = el("button", "btn ghost tiny req-add", "+ Add");
-          addBtn.onclick = () => openNodeSetup(req.role_hint);
-          row.append(addBtn);
-        }
+      const row = el("div", "req-row" + cls + (ok ? " ok" : (req.required ? " missing" : "")));
+      row.append(el("span", "req-dot", ok ? "✓" : (req.required ? "✕" : "·")));
+      row.append(el("span", "req-label", req.label));
+      row.append(el("span", "req-type", req.type));
+      if (req.hint) row.title = req.hint;
+      if (!ok && req.required && req.role_hint) {
+        const addBtn = el("button", "btn ghost tiny req-add", "+");
+        addBtn.title = `Add a ${req.label} — ${req.hint || "picks the node for you"}`;
+        addBtn.onclick = () => openNodeSetup(req.role_hint);
+        row.append(addBtn);
       }
-      sec.append(row);
-    });
+      return row;
+    }
 
-    if (optional.length) {
-      const optHead = el("div", "req-opt-head", "Optional");
-      sec.append(optHead);
-      optional.forEach((req) => {
-        const ok = requirementSatisfied(req);
-        const row = el("div", "req-row opt" + (ok ? " ok" : ""));
-        row.append(el("span", "req-dot", ok ? "✓" : "·"));
-        row.append(el("span", "req-label", req.label));
-        row.append(el("span", "req-type", req.type));
-        sec.append(row);
-      });
+    const head = el("div", "req-head");
+    head.append(el("span", "req-title", missing.length
+      ? `Missing in pipeline · ${missing.length}` : "Pipeline requirements"));
+    // Dismissable, because a half-built pipeline the user is deliberately leaving half-built
+    // should not keep shouting. It comes back as a one-line link, never silently.
+    const hide = el("button", "req-dismiss", "✕");
+    hide.title = "Hide this list";
+    hide.onclick = () => { reqPanelHidden(true); render(); };
+    head.append(hide);
+    sec.append(head);
+
+    // Missing first: it is the only part that needs doing.
+    missing.forEach((req) => sec.append(reqRow(req, "")));
+    const satisfied = required.filter(requirementSatisfied);
+    if (satisfied.length || optional.length) {
+      const det = el("details", "req-fold");
+      det.open = false;
+      det.append(el("summary", "req-fold-sum",
+        `Satisfied${optional.length ? " and optional" : ""} · ${satisfied.length + optional.length}`));
+      satisfied.forEach((req) => det.append(reqRow(req, "")));
+      optional.forEach((req) => det.append(reqRow(req, " opt")));
+      sec.append(det);
     }
 
     if (allOk && config.slots.length) {
@@ -1111,6 +1755,7 @@
       sec.append(bar);
     }
 
+    if (pipelineLocked()) sec.append(guidedRulesFold());
     return sec;
   }
 
@@ -1183,8 +1828,25 @@
     if (link.source === "editor") {
       const srcLbl = (EDITOR_SOURCES.find((s) => s.key === link.editor_key) || {}).label || link.editor_key;
       const isText = ["prompt", "negative_prompt", "anchor", "postfix", "full_prompt"].includes(link.editor_key);
-      card.append(el("div", "link-bound", `Value comes from ${srcLbl} at generate — the fields below are ignored.`
-        + (isText ? " Shortcuts and $variables are expanded first, so the node encodes the same text Studio would." : "")));
+      // "the same text Studio would" is only true of full_prompt. Studio appends the postfix
+      // to every scene itself, so a node linked to the global prompt encodes strictly less --
+      // silently, and the postfix is where audio and style directions usually live.
+      let note = "";
+      if (isText) {
+        note = " Shortcuts and $variables are expanded first";
+        if (link.editor_key === "full_prompt") {
+          note += ", so the node encodes the same text Studio would.";
+        } else if (link.editor_key === "prompt") {
+          const pj = window.Store?.get().project || {};
+          const hasPostfix = pj.postfix_enabled !== false && String(pj.postfix || "").trim();
+          note += hasPostfix
+            ? ". The postfix is NOT included — Studio appends it to every scene. Pick Project · Prompt + postfix to match."
+            : ".";
+        } else {
+          note += ".";
+        }
+      }
+      card.append(el("div", "link-bound", `Value comes from ${srcLbl} at generate — the fields below are ignored.` + note));
     } else {
       const spec = { name: "shared value", kind: link.kind, choices: link.choices, required: false };
       const vf = widgetField(spec, link.value, async (v) => { applyLinkValue(link, v); await persist(); });
@@ -1223,7 +1885,14 @@
     }
     ensureLinks().push(link);
     applyLinkValue(link, val);
-    linkMode = false; linkSel = []; await persist(); setView("links");
+    linkMode = false; linkSel = [];
+    // Members are picked ON node pages, where saving is deferred until the node's Save
+    // button. Going through that buffer meant "Save link" only marked the page dirty, and
+    // the jump to the links view then offered to DISCARD the link it had just made — so a
+    // link could never be created at all. Pressing Save link is the explicit save.
+    if (deferSave) { await persistNow(); deferDirty = false; }
+    else await persist();
+    setView("links");
   }
 
   // Persistent bar while picking link members — stays visible as the user moves
@@ -1349,8 +2018,8 @@
   // from a checkpoint filename — a wrong guess fails deep inside ComfyUI at generate time
   // instead of here, where it can be fixed.
   const FAMILIES = [
-    { key: "ltxav", label: "LTX-2 / LTXAV",
-      sub: "Gemma3 text encoder · 8k+1 frames · separate video and audio latents" },
+    { key: "ltxav", label: "LTX2 / LTX2.3 / LTX2.5",
+      sub: "Gemma3 text encoder (Gemma4 on 2.5) · 8k+1 frames · separate video and audio latents" },
     { key: "minimax_h3", label: "MiniMax H3 (Hailuo)",
       sub: "Qwen3-VL text encoder · 17k+5 frames at 24 fps · one AV latent node · ref2va references" },
   ];
@@ -1365,43 +2034,34 @@
     const head = el("div", "links-head");
     head.append(el("span", "lib-sub", "Model family"));
     sec.append(head);
-    sec.append(el("div", "links-hint",
-      "Which model the built-in pipeline is wired for. Changing it changes which nodes the "
-      + "graph uses, so re-check your loaders afterwards — the ports they wire into move."));
+    // Detected from the checkpoint, never chosen. A radio button here could contradict the
+    // file that is actually loaded — pick LTX, load H3 — and the whole graph would be wired
+    // for the wrong model, surfacing as a stray port instead of as a family error.
+    const probe = config.model_family_probe || {};
+    const known = FAMILIES.find((x) => x.key === familyKey());
     const row = el("div", "links-row");
-    FAMILIES.forEach((f) => {
-      const active = familyKey() === f.key;
-      const b = el("button", "btn ghost tiny" + (active ? " active" : ""), f.label);
-      b.title = f.sub;
-      b.onclick = async () => {
-        if (familyKey() === f.key) return;
-        config.model_family = f.key;
-        await persist();
-        // the family decides which core nodes exist and which ports loaders may wire
-        // into, so both have to be re-fetched before the panel redraws
-        try {
-          const pp = await API.pipelinePorts();
-          ports = pp.ports || ports;
-          requirements = pp.requirements || requirements;
-          wiringRules = pp.wiring || wiringRules;
-        } catch (_) {}
-        try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || coreNodes; } catch (_) {}
-        // Only now — the prune needs the NEW family's core nodes to know which inputs exist.
-        const before = JSON.stringify(config.core_overrides || {});
-        dropOverridesForMissingInputs();
-        if (JSON.stringify(config.core_overrides || {}) !== before) await persist();
-        render();
-      };
-      row.append(b);
-    });
-    const setup = el("button", "btn ghost tiny", "Setup…");
-    setup.title = "What this model family needs — nodes and model files, including anything "
+    if (probe.detected) {
+      row.append(el("span", "lib-sub", (known ? known.label : familyKey())));
+      sec.append(row);
+      sec.append(el("div", "links-hint", "Detected from " + probe.reason));
+    } else {
+      row.append(el("span", "lib-sub", known ? known.label : familyKey()));
+      sec.append(row);
+      sec.append(el("div", "links-hint",
+        (probe.reason ? "Could not read the model: " + probe.reason + ". " : "")
+        + "Showing the last known family. Pick a .safetensors diffusion model and the "
+        + "pipeline will wire itself for whatever it is."));
+    }
+    const setup = el("div", "links-row");
+    const btn = el("button", "btn ghost tiny", "Setup\u2026");
+    btn.title = "What this model family needs — nodes and model files, including anything "
       + "not released yet.";
-    setup.onclick = () => window.PipelineSetup?.open();
-    row.append(setup);
-    sec.append(row);
+    btn.onclick = () => window.PipelineSetup?.open();
+    setup.append(btn);
+    sec.append(setup);
     return sec;
   }
+
 
   function coreSection() {
     const sec = el("div", "links-section");
@@ -1456,7 +2116,25 @@
 
   // ── shell: inner sidebar (Links · Pipeline · + New node · nodes) + content pane ──
   let view = "pipeline"; // "pipeline" | "links" | "node:<slotId>"
-  function setView(v) { view = v; render(); }
+
+  // Internal: no unsaved-changes check. Used by Cancel/Save, which have already dealt
+  // with the buffer, and by paths that removed the node they were editing.
+  function _setView(v) {
+    if (v !== "node:" + _directNodeId) _directNodeId = null;
+    if (view.startsWith("node:")) endEdit();
+    view = v;
+    if (view.startsWith("node:")) beginEdit();
+    render();
+  }
+
+  function setView(v) {
+    if (v === view) return;
+    if (deferDirty && !confirm(
+      "This node has unsaved changes.\n\nLeaving now discards them. Continue?"
+    )) return;
+    if (deferDirty) restoreBaseline();
+    _setView(v);
+  }
 
   const mnItem = (opts) => window.SettingsWindow.navItem(opts);
 
@@ -1475,28 +2153,519 @@
       active: view === "pipeline", onClick: () => setView("pipeline"),
     }));
 
-    side.append(el("div", "mn-sep"));
-
-    const add = el("button", "mn-new", "＋ New node");
-    add.onclick = (e) => openRoleMenu(e.currentTarget);
-    side.append(add);
-
-    config.slots.forEach((slot) => {
-      const issues = v.perSlot[slot.id] || [];
-      const errs = issues.some((i) => i.level === "error");
-      const warns = issues.some((i) => i.level === "warn");
-      const it = mnItem({
-        dot: errs ? "bad" : (warns || slot.bypassed ? "warn" : "ok"),
-        label: slotDisplayLabel(slot), sub: slotName(slot),
-        active: view === "node:" + slot.id, onClick: () => setView("node:" + slot.id),
-      });
-      const pen = el("button", "mn-pencil", "✎"); pen.title = "Rename";
-      pen.onclick = (e) => { e.stopPropagation(); renameSlot(slot); };
-      it.append(pen);
-      side.append(it);
-    });
-    if (!config.slots.length) side.append(el("div", "mn-empty", "No nodes yet."));
+    // Nodes themselves live in the Pipeline grid, not here — the sidebar is for the two
+    // places you can be, the way the reference app splits categories from the shelf.
     return side;
+  }
+
+  // ── the node shelf ───────────────────────────────────────────────────────────
+  function nodeCard(slot, issues) {
+    const errs = (issues || []).filter((i) => i.level === "error").length;
+    const warns = (issues || []).filter((i) => i.level === "warn").length;
+    const card = el("button", "node-card");
+    card.type = "button";
+    if (errs) card.classList.add("bad");
+    else if (warns || slot.bypassed) card.classList.add("warn");
+    card.onclick = () => setView("node:" + slot.id);
+
+    const art = el("div", "node-card-art");
+    // For FunPack's own nodes the art is an icon and a plain-language name. For anything
+    // else the class name IS the art — the label below it is the node's own name, so
+    // showing the class twice would say nothing new.
+    const bi = builtIn(slot);
+    if (bi) {
+      card.classList.add("built-in");
+      const mark = el("div", "node-card-builtin");
+      mark.append(el("div", "node-card-icon", bi.icon));
+      mark.append(el("div", "node-card-kind", bi.label));
+      art.append(mark);
+    } else {
+      art.append(el("span", "node-card-mark", slotName(slot) || "?"));
+    }
+    const flags = el("div", "node-card-flags");
+    if (slot.bypassed) flags.append(el("span", "node-flag warn", "bypassed"));
+    const nExp = (slot.exposed || []).length;
+    if (nExp) flags.append(el("span", "node-flag exposed", `◉ ${nExp}`));
+    if (errs) flags.append(el("span", "node-flag bad", errs + (errs > 1 ? " errors" : " error")));
+    else if (warns) flags.append(el("span", "node-flag warn", warns + (warns > 1 ? " warnings" : " warning")));
+    art.append(flags);
+
+    // On the tile, not under it: the name and what it feeds are the card, and a caption
+    // floating below left the shelf reading as a grid of unlabelled squares.
+    const meta = el("div", "node-card-meta");
+    meta.append(el("div", "node-card-title", slotDisplayLabel(slot)));
+    const outs = wireDestinationLabels(slot);
+    const flow = el("div", "node-card-flow");
+    if (!outs.length) {
+      flow.classList.add("none");
+      flow.append(el("span", null, "not wired"));
+    } else {
+      flow.append(el("span", null, "→ " + outs[0]));
+      if (outs.length > 1) flow.append(el("span", "node-card-more", `+${outs.length - 1}`));
+    }
+    meta.append(flow);
+    art.append(meta);
+    card.append(art);
+    return card;
+  }
+
+  // Human label for one wire target ("port:…", "node:<id>:<input>", "global:…").
+  function targetLabel(value) {
+    if (!value) return null;
+    if (value === "global:video") return "Global video output";
+    if (value === "global:audio") return "Global audio output";
+    if (value.startsWith("port:")) {
+      const p = ports.find((x) => "port:" + x.id === value);
+      return p ? p.label : value.slice(5);
+    }
+    const n = _parseNodeTarget(value);
+    if (n) {
+      const dest = slotById(n.slotId);
+      return dest ? `${slotDisplayLabel(dest)} · ${n.input}` : n.input;
+    }
+    return value;
+  }
+
+  function wireDestinationLabels(slot) {
+    const out = [];
+    Object.values(slot.wires || {}).forEach((raw) => {
+      wireTargets(raw).forEach((t) => {
+        const l = targetLabel(t);
+        if (l && !out.includes(l)) out.push(l);
+      });
+    });
+    return out;
+  }
+
+  // ── search ────────────────────────────────────────────────────────────────────
+  // One box over everything a node can be recognised by: its class, its label, the group
+  // it is filed under, the names AND values of its widgets (so a model filename matches),
+  // and the names and TYPES of its sockets. "model" therefore finds UNETLoader by class,
+  // anything with a MODEL input or output by type, and every node holding a file with
+  // "model" in its name.
+  let searchQ = "";
+
+  function slotHaystack(slot) {
+    const out = [slot.node_class || "", slot.label || "", slot.role_label || "", slot.group || ""];
+    Object.entries(slot.inputs || {}).forEach(([k, v]) => {
+      out.push(k);
+      if (v != null && typeof v !== "object") out.push(String(v));
+    });
+    const cand = specFor(slot);
+    (cand?.connection_inputs || []).forEach((ci) => out.push(ci.name || "", ci.type || ""));
+    (cand?.outputs || []).forEach((o) => out.push(o.name || "", o.type || ""));
+    (cand?.inputs || []).forEach((i) => out.push(i.name || ""));
+    return out.join("\n").toLowerCase();
+  }
+
+  function slotMatches(slot) {
+    if (!searchQ) return true;
+    const hay = slotHaystack(slot);
+    // Every word must appear somewhere, so "lora model" narrows instead of widening.
+    return searchQ.split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
+  }
+
+  function searchBar(shown, total) {
+    const row = el("div", "node-search");
+    const inp = el("input", "node-search-input");
+    inp.type = "search";
+    inp.placeholder = "Search nodes — name, model file, or socket type (e.g. model, vae, lora)";
+    inp.value = searchQ;
+    inp.dataset.k = "models-search";
+    inp.oninput = () => { searchQ = inp.value.trim().toLowerCase(); render(); };
+    row.append(inp);
+    if (searchQ) {
+      row.append(el("span", "node-search-count", `${shown} of ${total}`));
+      const clear = el("button", "btn ghost tiny", "Clear");
+      clear.onclick = () => { searchQ = ""; render(); };
+      row.append(clear);
+    }
+    return row;
+  }
+
+  // Groups a node can be filed under, in the order they first appear.
+  function groupNames() {
+    const seen = [];
+    config.slots.forEach((s) => {
+      const g = (s.group || "").trim();
+      if (g && !seen.includes(g)) seen.push(g);
+    });
+    return seen;
+  }
+
+  // Collapsed groups, per project. A group someone folded away should stay folded.
+  const GROUP_FOLD_KEY = "funpack_models_groups_closed";
+  function closedGroups() {
+    try { return new Set(JSON.parse(localStorage.getItem(GROUP_FOLD_KEY) || "[]")); }
+    catch (_) { return new Set(); }
+  }
+  function toggleGroup(name) {
+    const set = closedGroups();
+    if (set.has(name)) set.delete(name); else set.add(name);
+    try { localStorage.setItem(GROUP_FOLD_KEY, JSON.stringify([...set])); } catch (_) {}
+  }
+
+  // Removing a node from the middle of a chain joins its neighbours, the way deleting a node
+  // in ComfyUI does: loader → LoRA → sampler, drop the LoRA and the loader feeds the sampler.
+  // Same rule as bypass — for each output, exactly one input of a matching type is the one
+  // that carried it — except this one is permanent, so it runs before the slot goes.
+  function rewireAround(slot) {
+    const cand = specFor(slot);
+    if (!cand) return;
+    const cis = cand.connection_inputs || [];
+    const outs = cand.outputs || [];
+    // output name -> the source feeding the one input that can carry it through
+    const passthrough = {};
+    outs.forEach((out) => {
+      const matching = cis.filter((ci) => typeAccepts(ci.type, out.type));
+      if (matching.length !== 1) return;          // ambiguous: nothing to promote
+      const upstream = (slot.input_sources || {})[matching[0].name];
+      if (upstream && upstream !== "auto") passthrough[out.name] = upstream;
+    });
+    if (!Object.keys(passthrough).length) return;
+    // An imported workflow records output names as its own graph spelled them, which need
+    // not match this node class's output_name. With a single output there is no ambiguity.
+    const only = outs.length === 1 ? passthrough[outs[0].name] : undefined;
+    const resolve = (outName) => (passthrough[outName] !== undefined ? passthrough[outName] : only);
+
+    // An edge can be authored from either end. Downstream nodes usually hold it as their own
+    // input source ("out:<this>:<output>") and carry no wire on this side at all — which is
+    // exactly how an imported workflow arrives, so both directions have to be walked.
+    config.slots.forEach((s2) => {
+      if (s2.id === slot.id) return;
+      Object.entries(s2.input_sources || {}).forEach(([inp, value]) => {
+        const p = _parseOutSource(value);
+        if (!p || p.slotId !== slot.id) return;
+        const up = resolve(p.out);
+        if (up) _setInputSource(s2, inp, up);
+      });
+    });
+    Object.entries(slot.wires || {}).forEach(([outName, raw]) => {
+      const up = resolve(outName);
+      if (!up) return;
+      const src = _parseOutSource(up);
+      wireTargets(raw).filter(Boolean).forEach((target) => {
+        const dest = _parseNodeTarget(target);
+        if (dest) {
+          const ds = slotById(dest.slotId);
+          if (ds && ds.id !== slot.id) {
+            ds.input_sources = ds.input_sources || {};
+            _setInputSource(ds, dest.input, up);
+          }
+          return;
+        }
+        // A core port or a global output can only be re-fed from another node's output —
+        // the timeline image and the core primitives have no wire to inherit.
+        if (src) _addWire(src.slotId, src.out, target);
+      });
+    });
+  }
+
+  // Everything still pointing at a node that is gone. Left behind, these render as
+  // "(missing)" sources and dead wires that the builder then has to reject.
+  function purgeSlotReferences(id) {
+    config.slots.forEach((s) => {
+      Object.keys(s.wires || {}).forEach((out) => {
+        s.wires[out] = wireTargets(s.wires[out])
+          .filter((t) => { const n = _parseNodeTarget(t); return !n || n.slotId !== id; });
+      });
+      Object.entries(s.input_sources || {}).forEach(([inp, src]) => {
+        const p = _parseOutSource(src);
+        if (p && p.slotId === id) s.input_sources[inp] = "";
+      });
+    });
+    Object.values(config.core_overrides || {}).forEach((ins) => {
+      Object.keys(ins || {}).forEach((k) => {
+        if (String(ins[k]).startsWith(`out:${id}:`)) delete ins[k];
+      });
+    });
+  }
+
+  function removeSlot(slot) {
+    rewireAround(slot);
+    config.slots = config.slots.filter((s) => s.id !== slot.id);
+    purgeSlotReferences(slot.id);
+    reconcileOpenPortWiring();
+  }
+
+  function _grid(slots, v) {
+    const wrap = el("div", "node-grid");
+    slots.forEach((slot) => wrap.append(nodeCard(slot, v.perSlot[slot.id] || [])));
+    return wrap;
+  }
+
+  // Why this node cannot be bypassed, or [] when it can. Mirrors builder._apply_bypass: for
+  // every output something CONSUMES there must be exactly one input that can carry it
+  // through. Checked here so a group's bypass button is never offered when pressing it
+  // would stop the run instead — the builder still has the last word, and still explains.
+  // Whether a wire target lands on an OPTIONAL input, and so needs no pass-through when the
+  // node feeding it goes away. Core ports are never treated as optional here — the editor
+  // does not model their requiredness, and guessing wrong would hide a real block.
+  function targetIsOptional(t) {
+    if (!t || !t.startsWith("node:")) return false;
+    const [, sid, inName] = t.split(":");
+    const s2 = slotById(sid);
+    const ci = s2 && (specFor(s2)?.connection_inputs || []).find((c) => c.name === inName);
+    return !!ci && !ci.required;
+  }
+
+  function bypassBlockers(slot, alsoGoing) {
+    const cand = specFor(slot);
+    if (!cand) return [];                            // spec unknown: let the builder decide
+    // `alsoGoing` are the other nodes leaving with it. An output read only by them needs no
+    // pass-through, because after the bypass nothing reads it — which is the whole
+    // difference between bypassing a node and bypassing the group it lives in.
+    const leaving = new Set([slot.id, ...(alsoGoing || [])]);
+    // Targets an ACTIVE slot also feeds. Wiring two alternatives at one port and bypassing
+    // the one you are not using is the point of bypass here, so a target somebody else
+    // still drives is not a consumer this node has to satisfy.
+    const covered = new Set();
+    (config.slots || []).forEach((s2) => {
+      if (leaving.has(s2.id) || s2.bypassed) return;
+      Object.values(s2.wires || {}).forEach((tg) => wireTargets(tg).filter(Boolean)
+        .forEach((t) => covered.add(t)));
+    });
+    const consumed = new Set();
+    Object.keys(slot.wires || {}).forEach((outName) => {
+      const targets = wireTargets(slot.wires[outName]).filter(Boolean);
+      // A wire onto a core port or a global output is always an outside consumer; a wire
+      // onto another node counts only when that node is staying — and never when something
+      // active feeds the same place, or when the input it lands on is optional.
+      if (targets.some((t) => !covered.has(t) && !targetIsOptional(t)
+                            && (!t.startsWith("node:") || !leaving.has(t.split(":")[1]))))
+        consumed.add(outName);
+    });
+    config.slots.forEach((s2) => {
+      if (leaving.has(s2.id) || s2.bypassed) return;
+      Object.entries(s2.input_sources || {}).forEach(([inName, src]) => {
+        const hit = _parseOutSource(src);
+        if (!hit || hit.slotId !== slot.id) return;
+        const ci = (specFor(s2)?.connection_inputs || []).find((c) => c.name === inName);
+        if (ci && !ci.required) return;   // optional: the consumer runs without it
+        consumed.add(hit.out);
+      });
+    });
+    const out = [];
+    (cand.outputs || []).forEach((o) => {
+      if (!consumed.has(o.name)) return;             // feeds nothing: nothing to pass through
+      const n = (cand.connection_inputs || []).filter((ci) => typeAccepts(ci.type, o.type)).length;
+      if (n !== 1) {
+        out.push(`${slotName(slot)}: ${o.name} (${o.type}) has `
+          + `${n ? "more than one" : "no"} matching input to pass through`);
+      }
+    });
+    return out;
+  }
+
+  async function setGroupBypassed(slots, on) {
+    slots.forEach((s) => { if (on) s.bypassed = true; else delete s.bypassed; });
+    await persist();
+    render();
+  }
+
+  // A group is a VIEW, never a container: the nodes stay flat, every wire keeps its real
+  // endpoints, and anything can still wire to anything. That is the whole difference from a
+  // subgraph — there is no inside to navigate into, only a heading you can fold.
+  // Whether a slot is a model loader. Loaders are pinned to the top of the shelf: picking
+  // model files is the one thing every project has to do, and on a busy pipeline the
+  // loaders were scattered among nodes nobody needs to touch.
+  const LOADER_OUTPUT_TYPES = ["MODEL", "CLIP", "VAE", "CLIP_VISION"];
+  function isLoaderSlot(slot) {
+    const r = roles.find((x) => x.key === slot.role);
+    if (r) return r.category === "Loaders";
+    // An imported workflow has no roles — its nodes are all "custom" — so fall back to what
+    // the node actually produces. Anything emitting a model, encoder or VAE is model-side
+    // and belongs up here, including LoRA patchers.
+    const cand = specFor(slot);
+    return !!cand && (cand.outputs || []).some((o) => LOADER_OUTPUT_TYPES.includes(o.type));
+  }
+
+  function addCard(title, hint, onClick) {
+    const add = el("button", "node-card node-card-add");
+    add.type = "button";
+    add.title = hint;
+    const art = el("div", "node-card-art");
+    art.append(el("span", "node-card-plus", "+"));
+    const meta = el("div", "node-card-meta");
+    meta.append(el("div", "node-card-title", title));
+    art.append(meta);
+    add.append(art);
+    add.onclick = onClick;
+    return add;
+  }
+
+  // Recipes whose role nothing fills yet. A project made before FunPack had its own
+  // loaders — or one inherited from a global config — never gets seeded, so the offer has
+  // to be reachable by hand too. Only MISSING roles are ever added: an existing loader is
+  // someone's choice, and in guided mode a second producer on the same port would take it.
+  function missingDefaultLoaders() {
+    if (!pipelineLocked()) return [];
+    return defaultSlots.filter((r) => !(config.slots || []).some((s) => s.role === r.role));
+  }
+
+  async function addMissingDefaultLoaders() {
+    const missing = missingDefaultLoaders();
+    if (!missing.length) return;
+    for (const recipe of missing) {
+      const id = (config.slots || []).some((s) => s.id === recipe.id)
+        ? recipe.id + "_" + Math.random().toString(36).slice(2, 7) : recipe.id;
+      const slot = { ...recipe, id, inputs: { ...recipe.inputs },
+                     input_sources: { ...(recipe.input_sources || {}) } };
+      graftRecipeSources(slot);
+      config.slots.push(slot);
+    }
+    reconcileOpenPortWiring();
+    await persistNow();
+    await prewarmSpecs();
+    render();
+  }
+
+  // A recipe's sources name the OTHER seeded slots by their fixed ids. Dropped into a
+  // pipeline that was not seeded, those ids may not be there — and where they are, the
+  // producer is already wired to the port this pass-through now takes over, which would
+  // leave the port with two sources.
+  function graftRecipeSources(slot) {
+    const outTypes = new Set(((specFor(slot) || {}).outputs || []).map((o) => o.type));
+    Object.entries(slot.input_sources || {}).forEach(([input, src]) => {
+      const m = /^out:([^:]+):(.+)$/.exec(String(src));
+      if (!m) return;
+      const producer = (config.slots || []).find((s) => s.id === m[1]);
+      if (!producer) { delete slot.input_sources[input]; return; }
+      const out = ((specFor(producer) || {}).outputs || []).find((o) => o.name === m[2]);
+      if (out && outTypes.has(out.type))
+        (producer.wires = producer.wires || {})[m[2]] = [`node:${slot.id}:${input}`];
+    });
+  }
+
+  // A role whose output more than one node needs, and the input name each of them uses.
+  // The audio VAE is the case that bites: it decodes the sound AND encodes the empty audio
+  // latent, so wiring it to one of the two leaves the pipeline unable to generate — and
+  // with two VAE loaders present neither input can auto-resolve by type, so nothing filled
+  // the gap and nothing said which node was still waiting.
+  const ROLE_EXTRA_INPUTS = { audio_vae: ["audio_vae"], video_vae: ["vae"] };
+
+  function feedMatchingInputs(slot) {
+    const names = ROLE_EXTRA_INPUTS[slot.role];
+    if (!names) return;
+    const out = ((specFor(slot) || {}).outputs || [])[0];
+    if (!out) return;
+    (config.slots || []).forEach((other) => {
+      if (other.id === slot.id) return;
+      ((specFor(other) || {}).connection_inputs || []).forEach((ci) => {
+        if (!names.includes(ci.name) || !typeAccepts(ci.type, out.type)) return;
+        const cur = (other.input_sources || {})[ci.name];
+        if (cur && cur !== "auto") return;
+        _setInputSource(other, ci.name, `out:${slot.id}:${out.name}`);
+      });
+    });
+  }
+
+  function loaderSection(slots, v) {
+    const sec = el("div", "node-group node-group-pinned");
+    const head = el("div", "node-group-head");
+    const title = el("div", "node-group-fold static");
+    title.append(el("span", "node-group-name", "Loaders"));
+    title.append(el("span", "node-group-count", String(slots.length)));
+    const bad = slots.reduce(
+      (n, s) => n + ((v.perSlot[s.id] || []).some((m) => m.level === "error") ? 1 : 0), 0);
+    if (bad) title.append(el("span", "node-group-bad", `${bad} to fix`));
+    head.append(title);
+    const missing = missingDefaultLoaders();
+    if (missing.length && !searchQ) {
+      const use = el("button", "btn ghost tiny", `Use FunPack loaders (${missing.length})`);
+      use.title = "Add FunPack's own loaders for the roles nothing fills yet, already wired "
+        + "to the pipeline. Loaders you have set up are left exactly as they are.";
+      use.onclick = addMissingDefaultLoaders;
+      head.append(use);
+    }
+    sec.append(head);
+    sec.append(el("div", "node-group-note", "Your model files. Pick them here — the rest of the pipeline wires itself."));
+    const grid = _grid(slots, v);
+    if (!searchQ)
+      grid.append(addCard("Add loader", "Add a model loader to the pipeline",
+        (e) => openRoleMenu(e.currentTarget, "Loaders")));
+    sec.append(grid);
+    return sec;
+  }
+
+  function nodeGrid(v) {
+    const host = el("div", "node-groups");
+    const visible = config.slots.filter(slotMatches);
+    host.append(searchBar(visible.length, config.slots.length));
+
+    const loaders = visible.filter(isLoaderSlot);
+    const rest = visible.filter((s) => !isLoaderSlot(s));
+    if (loaders.length || !searchQ) host.append(loaderSection(loaders, v));
+
+    if (!searchQ) {                            // the add card is an action, not a result
+      const addWrap = el("div", "node-grid");
+      addWrap.append(addCard("New node", "Add a loader or custom node to the pipeline",
+        (e) => openRoleMenu(e.currentTarget)));
+      host.append(addWrap);
+    } else if (!visible.length) {
+      host.append(el("div", "req-empty", `Nothing matches "${searchQ}".`));
+      return host;
+    }
+
+    const names = groupNames().filter((n) => rest.some((s) => (s.group || "").trim() === n));
+    if (!names.length) {                       // nothing grouped: the plain grid, as before
+      if (rest.length) host.append(_grid(rest, v));
+      return host;
+    }
+    // A match inside a folded group has to be reachable, so search overrides the folds.
+    const closed = searchQ ? new Set() : closedGroups();
+    const sections = names.map((n) => [n, rest.filter((s) => (s.group || "").trim() === n)]);
+    const loose = rest.filter((s) => !(s.group || "").trim());
+    if (loose.length) sections.push(["Ungrouped", loose]);
+
+    sections.forEach(([name, slots]) => {
+      if (!slots.length) return;
+      const sec = el("div", "node-group");
+      const head = el("div", "node-group-head");
+      const isClosed = closed.has(name);
+      const fold = el("button", "node-group-fold");
+      fold.type = "button";
+      fold.append(el("span", "node-group-caret", isClosed ? "▸" : "▾"));
+      fold.append(el("span", "node-group-name", name));
+      fold.append(el("span", "node-group-count", String(slots.length)));
+      // Errors only: a folded group must still say when something inside it is broken.
+      const bad = slots.reduce(
+        (n, s) => n + ((v.perSlot[s.id] || []).some((m) => m.level === "error") ? 1 : 0), 0);
+      if (bad) fold.append(el("span", "node-group-bad", `${bad} to fix`));
+      fold.onclick = () => { toggleGroup(name); render(); };
+      head.append(fold);
+
+      // Bypass the whole group. No new graph concept: it sets the per-node bypass every
+      // card already has, so the pass-through rules and the reporting are the same ones.
+      const allOff = slots.every((s) => s.bypassed);
+      const ids = slots.map((s) => s.id);
+      const blockers = allOff ? [] : slots.flatMap((s) => bypassBlockers(s, ids));
+      const byp = el("button", "btn ghost tiny node-group-byp" + (allOff ? " on" : ""),
+        allOff ? "bypassed" : "bypass");
+      // Advisory, never a gate. What we can see here is only the explicit wiring; the
+      // builder also auto-wires, so this predicate is neither sufficient nor necessary —
+      // it would refuse bypasses that work and allow ones that don't. So warn with what we
+      // do know and let the builder, which resolves the real graph, have the last word.
+      const warn = blockers.length
+        ? "Some nodes here may not be bypassable:\n· " + blockers.slice(0, 4).join("\n· ")
+          + (blockers.length > 4 ? `\n· …and ${blockers.length - 4} more` : "")
+        : "";
+      byp.title = (allOff
+        ? `Put all ${slots.length} nodes in "${name}" back in the graph.`
+        : `Skip all ${slots.length} nodes in "${name}", passing their inputs straight through.`)
+        + (warn ? "\n\n" + warn : "");
+      if (warn) byp.classList.add("risky");
+      byp.onclick = () => {
+        if (warn && !confirm(`Bypass "${name}"?\n\n${warn}\n\n`
+            + "Generation will say exactly which node and input it could not pass through.")) return;
+        setGroupBypassed(slots, !allOff);
+      };
+      head.append(byp);
+      sec.append(head);
+      if (!isClosed) sec.append(_grid(slots, v));
+      host.append(sec);
+    });
+    return host;
   }
 
   function paneContent(v) {
@@ -1513,10 +2682,11 @@
       pane.append(banner);
     }
     pane.append(familySection());
+    // Above the node grid: what is missing is what the user came here to fix, and it used
+    // to sit below a grid tall enough to push it off screen.
     pane.append(requirementsPanel());
+    pane.append(nodeGrid(v));
     pane.append(coreSection());
-    if (!config.slots.length)
-      pane.append(el("div", "empty-stage", "No models configured yet — use ＋ New node in the sidebar to add loaders."));
     return pane;
   }
 
@@ -1535,10 +2705,18 @@
     // Preserve the content pane's scroll across the full re-render every edit triggers.
     const prevPane = container.querySelector(".models-pane");
     const scrollTop = prevPane ? prevPane.scrollTop : 0;
+    const hadSearchFocus = document.activeElement
+      && document.activeElement.dataset && document.activeElement.dataset.k === "models-search";
     clear(container);
     container.append(body());
     const pane = container.querySelector(".models-pane");
     if (pane) pane.scrollTop = scrollTop;
+    // Typing in the search box re-renders on every keystroke, which would otherwise throw
+    // the caret away after the first character.
+    if (hadSearchFocus) {
+      const box = container.querySelector('[data-k="models-search"]');
+      if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+    }
   }
 
   async function prewarmSpecs() {
@@ -1553,14 +2731,18 @@
 
   async function loadAll() {
     await ensureRoles();
+    const pid = window.Store?.get().project?.id;
+    // Config FIRST: the ports and wiring rules depend on the project's model family, so
+    // asking for them before we know it answered for whatever family was saved globally.
+    try { config = await API.getModels(pid); } catch (_) { config = { slots: [] }; }
     try {
-      const pp = await API.pipelinePorts();
+      const pp = await API.pipelinePorts(pid);
       ports = pp.ports || [];
       coreProducers = pp.core_producers || [];
       requirements = pp.requirements || [];
       wiringRules = pp.wiring || {};
-    } catch (_) { ports = []; coreProducers = []; requirements = []; wiringRules = {}; }
-    try { config = await API.getModels(window.Store?.get().project?.id); } catch (_) { config = { slots: [] }; }
+      defaultSlots = pp.default_slots || [];
+    } catch (_) { ports = []; coreProducers = []; requirements = []; wiringRules = {}; defaultSlots = []; }
     reconcileOpenPortWiring();
     try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || []; } catch (_) { coreNodes = []; }
     await prewarmSpecs();
@@ -1570,6 +2752,28 @@
     let dirty = refreshExposedChoices();
     if (migrateAutogrowNames()) dirty = true;
     if (dirty) { try { await persist(); } catch (_) {} }
+  }
+
+  // A pinned button can ask for a node before the section has ever mounted, and the slots
+  // only exist after loadAll(). Held here and applied once they do.
+  let _openNodeOnMount = null;
+  // The node currently being shown as a DESTINATION rather than as a stop inside Settings.
+  // Set when a pinned button opens it; cleared as soon as the user navigates elsewhere,
+  // because from then on they are browsing Settings normally.
+  let _directNodeId = null;
+
+  /** Leave a node page: back to the pipeline normally, but a node opened straight from a
+   *  pinned button is somewhere the user went ON PURPOSE — dropping them into the Models
+   *  list afterwards would undo the point of the shortcut. Finishing there closes Settings
+   *  and returns them to the editor, saved or discarded alike. */
+  function finishNodeEdit() {
+    if (_directNodeId && view === "node:" + _directNodeId) {
+      _directNodeId = null;
+      endEdit();
+      window.SettingsWindow.close();
+      return;
+    }
+    _setView("pipeline");
   }
 
   function mount(body, ctx) {
@@ -1584,9 +2788,29 @@
     imp.onclick = () => window.WorkflowImportWizard?.open();
     const refresh = el("button", "btn ghost tiny", "↻ Refresh model list");
     refresh.onclick = refreshList;
-    ctx.setActions([imp, refresh]);
+    const card = el("button", "btn ghost tiny", "🖼 Export settings…");
+    card.title = "Render this pipeline as a PNG — loaders, LoRAs, typed-in node values, "
+               + "and the host's torch / CUDA / attention";
+    card.onclick = openSettingsCard;
+    ctx.setActions([imp, refresh, card]);
     loadAll()
-      .then(() => { if (container && container.isConnected) render(); })
+      .then(() => {
+        if (!container || !container.isConnected) return;
+        const pending = _openNodeOnMount; _openNodeOnMount = null;
+        if (pending && slotById(pending)) {
+          _setView("node:" + pending);
+          _directNodeId = pending;   // after _setView, which clears it
+          return;
+        }
+        render();
+        if (pending) {
+          // Landing on the pipeline instead, without saying why, would look like the
+          // button simply did the wrong thing.
+          alert("That node is not in this project's pipeline.\n\n"
+                + "The pinned button still points at it — open the node you want and use "
+                + "Pin to a button to repoint the slot.");
+        }
+      })
       .catch(() => {
         if (container && container.isConnected) {
           clear(container);
@@ -1595,7 +2819,15 @@
       });
     return () => {
       container = null;
-      document.querySelectorAll(".mn-role-pop, .ns-overlay").forEach((n) => n.remove());
+      // The section can be torn down mid-edit — Escape, the ✕, switching sections — and
+      // loadAll() replaces `config` on the next mount anyway. Leaving the edit buffer
+      // behind would carry deferDirty and a baseline for an object that no longer exists
+      // into that mount: a spurious "unsaved changes" prompt, and a Cancel that splices
+      // stale slots into freshly loaded ones.
+      endEdit();
+      _directNodeId = null;
+      _openNodeOnMount = null;
+      document.querySelectorAll(".mn-role-pop, .ns-overlay, .sc-overlay").forEach((n) => n.remove());
     };
   }
 
@@ -1607,10 +2839,30 @@
     iconBg: "linear-gradient(180deg,#b18cff,#7a4fd0)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"><path d="M8 1.8 14 5v6l-6 3.2L2 11V5l6-3.2z"/><path d="M2 5l6 3 6-3M8 8v6.2"/></svg>',
     mount,
+    // Pinning while a node is open should pin THAT node, not the section it lives in —
+    // the node page is the thing that takes several clicks to reach.
+    pinTarget: () => {
+      if (!view.startsWith("node:")) return null;
+      const slot = slotById(view.slice(5));
+      if (!slot) return null;
+      return { kind: "node", id: slot.id, label: slotDisplayLabel(slot) };
+    },
   });
 
   window.ModelsModal = {
     open: () => window.SettingsWindow.open("models"),
+    // Open Models & Pipeline showing ONE node. Used by pinned buttons; safe to call
+    // whether or not the section has been mounted before.
+    openNode: (slotId) => {
+      if (!slotId) return;
+      // One route, whatever is on screen: open() mounts (or REMOUNTS) the section, and the
+      // request is armed AFTER that call — a remount tears the old section down, which
+      // clears pending state, so arming first would lose it. mount()'s load is async, so
+      // this still lands before the node view is chosen. The remount costs one refetch and
+      // buys freshness, which is what a shortcut into a quick edit wants anyway.
+      window.SettingsWindow.open("models");
+      _openNodeOnMount = slotId;
+    },
     refresh: async () => {
       await ensureRoles().catch(() => {});
       await doFullRefresh().catch(() => {});

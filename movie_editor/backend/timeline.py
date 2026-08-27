@@ -83,8 +83,6 @@ def normalize_continuity_settings(raw: Optional[dict]) -> dict[str, Any]:
         "identity_pin_strength": float(raw.get("identity_pin_strength", 0.35)),
         "prior_scene_guides": bool(raw.get("prior_scene_guides", True)),
         "prior_scene_strength": float(raw.get("prior_scene_strength", 0.35)),
-        "mid_scene_guide": bool(raw.get("mid_scene_guide", True)),
-        "mid_scene_guide_strength": float(raw.get("mid_scene_guide_strength", 0.3)),
         "guide_decay": float(raw.get("guide_decay", 0.85)),
         "solo_scene_guides": bool(raw.get("solo_scene_guides", True)),
     }
@@ -544,7 +542,12 @@ class Scene:
         return project.frame_rate
 
 
+
+
 @dataclass
+
+
+
 class Project:
     id: str = field(default_factory=_new_id)
     name: str = "Untitled"
@@ -574,6 +577,10 @@ class Project:
     # is a slot id from models.json. Stored now, full builder wiring in a future phase.
     conditioning_slot: str = "funpack"
     sampler_slot: str = "funpack"
+    # "i2v" (default) or "t2v". t2v means shots start from the prompt, so nothing checks
+    # or reports a missing anchor image. Images stay wireable either way — the mode only
+    # decides what is EXPECTED, never what is allowed.
+    generation_mode: str = "i2v"
     # Widget-input overrides for the built-in FunPack nodes (only used when the
     # corresponding slot == "funpack"). Keys match ComfyUI widget/input names exactly.
     studio_inputs: dict = field(default_factory=dict)
@@ -597,6 +604,10 @@ class Project:
     # Saved global-prompt templates: [{"name": str, "prompt": str, "variables": [...]}]. Selecting
     # one in the Composer applies its prompt + variables; loaded with the project (no Load button).
     prompt_templates: list = field(default_factory=list)
+    # Which saved template the global prompt currently came from, so the Composer can show
+    # it as selected and offer rename / update / delete for it. "" = none applied; the
+    # prompt is whatever the user typed.
+    active_prompt_template: str = ""
     # Refinement key for this project's runs. Feeds the FunPackRefinementKeyLoader (Studio /
     # Chain Sampler / SaveRefinementLatent). "default" = the keyless/default store. Shortcuts
     # bound to a non-default key layer their own per-scene training on top of this.
@@ -666,12 +677,14 @@ class Project:
             max_scenes=int(d.get("max_scenes", 8)),
             conditioning_slot=str(d.get("conditioning_slot", "funpack")),
             sampler_slot=str(d.get("sampler_slot", "funpack")),
+            generation_mode=("t2v" if str(d.get("generation_mode", "")).lower() == "t2v" else "i2v"),
             studio_inputs=dict(d.get("studio_inputs") or {}),
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
             variables=list(d.get("variables") or []),
             h3_references=list(d.get("h3_references") or []),
             references=[str(r) for r in (d.get("references") or []) if r],
             prompt_templates=list(d.get("prompt_templates") or []),
+            active_prompt_template=str(d.get("active_prompt_template") or ""),
             refinement_key=str(d.get("refinement_key") or "default"),
             keep_original_audio=bool(d.get("keep_original_audio", True)),
             audio_tracks=list(d.get("audio_tracks") or []),

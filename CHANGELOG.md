@@ -2,26 +2,498 @@
 
 ## [Unreleased]
 
-## [3.5.1] "Auspicious Asparagus" - 2026-08-11
+## [4.0.0] "Blinding Blackout" - 2026-08-27
 
-FunPack picks up release codenames, Ubuntu-style: an adjective and a vegetable sharing an
-initial, one per major version. All of 3.x is **Auspicious Asparagus**.
+### Removed
 
-Otherwise this is a compatibility-and-polish release on top of 3.5.0's second model family.
-LTX-2.5 landed upstream mid-cycle and turned out to need almost nothing — but the two places
-it *would* have broken silently are fixed, and several long-standing rough edges went with
-them.
+Experimental features that never proved out are gone. Their widget names disappear from
+saved projects and workflows; nothing else carries over.
+
+- **Plateau step-cache** — never worked as intended on a real run.
+- **H3 audio clock** — did not work. Its per-step correction, the proxy for samplers whose
+  loop FunPack does not own, and the sampler-suitability tables go with it.
+- **H3 render gains** — the three per-modality write gains, prompt loudness, the taste push,
+  and the learned/manual mode. Moving the picture gain past ±0.1 added distortion and latent
+  noise; the rest changed nothing legible. The rating loop behind them is gone too, so the
+  refinement key no longer holds any sampler value.
+- **Reference weight** (`h3_prompt_time`) — shipped and measured across its whole range in
+  one session: below 0.5 the picture breaks up, above 0.5 it reproduces the reference
+  outright, and it never improved prompt adherence, which is what it was for.
+- **Mid-scene guide** — including the auto-enable that turned it on for every multi-scene
+  carry chain.
+- **Prompt repair** — the last path that appended missing phrases back onto a prompt. The
+  rated axes stay: they tell the advisor what is missing and never edit a prompt themselves.
+- **Segmented detailing** is no longer offered in the Editor. The code stays, marked for
+  future reference, and a raw ComfyUI graph can still enable it.
+
+### Kept, with honest labels
+
+- **Picture detail** (`h3_video_detail`) survives the render-gain removal and now reads its
+  own widget. Above 1.0 is more detail and contrast; the sound is bit-for-bit unchanged,
+  because it runs past the model's last attention pass. Experimental, lightly tested.
+- **Bounded attention** is labelled experimental and untested: built, never run, and its
+  left/right split is fixed.
 
 ### Added
-- **Release codenames.** Shown under the name in Settings ▸ About, carried on the same
-  payload as the version. A major with no name yet simply shows nothing.
-- **About reports the machine ComfyUI runs on.** Chip, memory, GPU (name, VRAM and compute
-  capability), free disk, OS, ComfyUI, Python, torch and CUDA — plus which fast-attention
-  backend is actually importable, which answers "is SageAttention really installed on this
-  box" without reading the launch arguments. On a rental the host and the browser are
-  different machines and the host is the interesting one, so the panel says which it means.
-  Every probe degrades to a dash on its own: About is the screen that should still render
-  when the install is broken.
+- **The rating's per-phrase emphasis now reaches MiniMax H3.** Studio has decomposed every
+  run into phrases, words and n-grams and scored each against the rating since 2.0, but the
+  only thing reading that was the attn2 K/V patch — which H3 skips, having one packed
+  self-attention stream and no cross-attention. The learning ran every generation and landed
+  nowhere. It is now applied where H3 can act on it: `log(weight)` added to the attention
+  logits at that phrase's token positions, so its share of the attention mass is multiplied
+  by the weight. Boost only; damping a phrase you typed is opt-in. Phrases are located with
+  the tokenizer's offset mapping rather than re-encoded through a 32B text encoder.
+  A weighted run is a dense run — the bias is a mask, and SLA cannot carry one.
+  Weights are relative to the strongest candidate, so `strength` means "how much the best
+  phrase gets": an absolute scale put a whole prompt at x1.03, applied and doing nothing.
+  Phrases are ranked by weight before the cap, and the prompt is located from
+  `minimax_token_tags` rather than assumed to be the tail of the conditioning.
+
+### Changed
+- **A wired positive CONDITIONING now owns the prompt.** CLIP used to win whenever both were
+  connected, so Studio re-encoded from text and discarded what the node built — which on an
+  i2v/r2v graph is not the same tensor, because Studio's encode never sees the reference
+  image (nothing wires `h3_references` or `source_image`). CLIP keeps the negative, the
+  references and phrase classification. No setting selects between them — wiring the input
+  is the instruction, the same way a wired negative CONDITIONING has always won. "Skip
+  Studio's positive processing" is gone; it was a switch for something the graph already
+  said.
+- **Rating-driven phrase emphasis is OFF by default.** It changes what the model sees on
+  every rated run; unvalidated work that does that is something to turn on, not to discover.
+  Overlapping spans are also bounded — their biases add, and three overlapping x1.5 spans
+  compounded to an effective x3.4 on one token. A lone span is untouched. And how hard it
+  pushes now comes from Studio's existing machinery rather than a new scale: the ceiling is
+  the same 1.25 `_v2_build_attn2_patch` has used on LTX all along, and the ramp toward it is
+  `_v2_auto_strength`, so one Awful reaches about 1.13 instead of jumping to maximum. It also
+  measures the text that was ENCODED rather than the raw one, and resolves `$variables` in a
+  phrase before matching it — phrase memory stores raw text, so a phrase could still carry
+  `$style` while the encoded prompt had it resolved.
+
+### Fixed
+- **Learned conditioning directions survive a prompt edit on H3.** The compatibility check
+  covers the channel width and the batch, not the sequence length — which was fine on LTX,
+  whose encoder pads to a fixed length. Qwen does not pad, so H3's conditioning changes
+  length with every prompt edit, a direction learned at 499 positions met a conditioning of
+  492, and the blend threw: "conditioning memory failed ... used unblended". The whole
+  learned direction was lost on any edited prompt. The payload is now resampled along the
+  sequence with `_resize_conditioning_sequence_like`, which was written for exactly this and
+  had no callers.
+- **Bounded Attention no longer replaces a wired conditioning with a text-only re-encode.**
+  It is always-on, and it works by re-encoding the prompt through CLIP and swapping the
+  tensor for the result — which contains no reference image, because Studio was never given
+  one. On a reference run that turned 512 positions into 197: the picture and the prompt were
+  never both in the tensor the sampler received. Entries that arrived on a wire are now
+  marked, and no step that rebuilds a conditioning by encoding text touches them. Every stage
+  of `_v2_finalize_conditioning` is also length-checked and names itself if it changes one.
+- **A wired reference conditioning is no longer thrown away by the scene split.** The split
+  re-encodes every scene from text and its entries replace the output wholesale. It
+  re-establishes H3's visual conditioning from `source_image` / `h3_references` — neither of
+  which anything in the editor pipeline sets — so on a reference run the identity was
+  replaced by text-only encodes and the character came out as a different person entirely.
+  With CLIP disconnected the split returned None and the wired conditioning survived, which
+  is why disconnecting CLIP appeared to fix it. Studio cannot split a conditioning it did not
+  build, so it now keeps the one it was given and says so.
+- **A reference image's encoded rows are no longer steered.** H3 tokenizes a reference INTO
+  the conditioning — comfy marks the whole vision block as 0 in `minimax_token_tags` and text
+  as 1 — and those rows are Qwen's encoding of the picture. Every steering path (learned
+  directions, taste pull, concept deltas, the absolute store, negative_erase) lerps over the
+  WHOLE tensor, so the picture was being moved toward a direction learned from text and the
+  character's appearance drifted. Nothing read the tag map. The vision rows are now restored
+  exactly as encoded, after every manipulation. Text rows still steer. Protection runs to
+  the reference/prompt BOUNDARY rather than the image-tagged rows alone, so the
+  `<Picture n>: ` label between them is covered too: an r2v conditioning is laid out
+  reference-first, and everything before the trailing run of text tags belongs to the
+  picture.
+- **A reference image is no longer thrown away by Studio.** With CLIP and a positive
+  CONDITIONING both connected, CLIP won and Studio re-encoded the prompt from text. On H3
+  that is not a near-miss: Qwen3-VL is a causal VLM and a reference's vision block sits
+  BEFORE the prompt, so every prompt row has already read the picture — and Studio's own
+  encode gets no image, because nothing in the editor pipeline wires `h3_references` or
+  `source_image`. R2V and I2V runs were handed a text-only conditioning. A wired
+  conditioning whose `minimax_token_tags` contain a vision block now owns the prompt; CLIP
+  keeps the negative and the references. Text-only graphs are unchanged.
+- **Clearing the editor's Negative prompt box now actually clears it.** Studio falls back to
+  a negative stored in its own settings whenever the wired one is blank, and the editor has
+  no field for that stored copy — so emptying the visible box left an earlier negative in
+  force with nothing on screen saying so. The editor's box is authoritative, empty included.
+  The log now names which of the two supplied the text. The negative primitive is also
+  written unconditionally, like the positive beside it — guarded, it kept the widget value
+  harvested from an IMPORTED workflow, so someone else's negative encoded on every run.
+
+### Reverted
+- **GGUF loading is back to expanding the checkpoint at load.** The quantized path through
+  ComfyUI-GGUF loaded in seconds instead of a minute, and produced a model the sampler could
+  not run: a packed sequence one 1344-token unit short of what the model built. Reverted
+  whole rather than patched further.
+
+### Fixed
+- **The updater installs only what is MISSING, and never upgrades anything.** It ran
+  `pip install -r requirements.txt`, which upgrades any package below its version floor —
+  and on an install full of compiled extensions (torch, comfy-kitchen, comfy-aimdo,
+  onnxruntime, opencv) a numpy or transformers bump underneath them does not raise, it
+  segfaults hours later with nothing connecting it to the update. Absent packages are now
+  installed by name; a package that is present but older than FunPack asks for is reported
+  with the command to upgrade it yourself, and left alone. Nothing missing means pip is
+  never run at all.
+- **The stand-in tokenizer no longer downloads Gemma for a Qwen model, or reaches the
+  network mid-run.** With no CLIP wired, Studio fetched a 12B *Gemma* tokenizer whatever the
+  model was — wrong vocabulary for MiniMax H3, which encodes with Qwen3-VL. There is now an
+  H3 entry, and every source is tried from the local HuggingFace cache FIRST. Only if nothing
+  is cached does it go online, and it says so: `from_pretrained` has no token, no timeout and
+  no progress, and it runs on ComfyUI's execution thread, so an uncached fetch is an
+  unbounded stall in the middle of a generation with nothing in the log to explain it.
+- **A LoRA weight that cannot fit is now dropped, not attempted.** FunPack already detected
+  and reported shape mismatches, then handed them to ComfyUI anyway — which builds the full
+  `lora_A @ lora_B` delta and only then discovers it will not reshape into the weight. On a
+  curve-form MiniMax H3 checkpoint that is a 96768x2688 tensor per block, 51 times (~25 GB
+  in bf16, ~49 GB in fp32), allocated and thrown away while dynamic VRAM staging streams the
+  model in. Nothing about the render changes — those adapters could never have applied.
+- **negative_erase could put an amplified-noise vector into the conditioning.** "Keep prompt
+  strength" restored each token's norm after the erase — but a token pointing almost exactly
+  along the negative is left with nothing but rounding error, and restoring its norm scaled
+  that residue by thousands. The gain is now capped: past it the token stays quiet, because
+  it really was mostly the thing you asked to remove. A non-finite result is refused outright
+  rather than passed on, since the sampler captures conditioning for the refinement key and
+  would have banked the bad vector.
+- **Bypass now works as an A/B switch.** Wire two alternatives at one input — MiniMax H3's
+  ref-to-video and first-last-to-video both feeding the sampler's latent — and bypass the
+  one you are not using. A bypassed slot no longer claims the input, no longer counts as a
+  second source in guided mode, and no longer has to pass a value through for a consumer
+  something else already feeds or that does not require one. Its own unwired inputs are also
+  no longer demanded: it is auto-wired if that is unambiguous, and otherwise left alone.
+  Bypassing the ONLY source of a required input still blocks, with the same message.
+- **Blocking messages are no longer cropped.** The generation readout kept a long error on
+  one unwrapped line, so most of it ran off the canvas. The error state now wraps, scrolls
+  past 40vh, can be selected, and carries a copy button. The running readout is unchanged.
+
+### Added
+- **`FUNPACK_FAULTHANDLER=1` makes a silent death talk.** Installs Python's faulthandler, so
+  a crash in native code prints every thread's stack instead of nothing — and registers
+  SIGUSR1, so `kill -USR1 <pid>` dumps where a HUNG ComfyUI actually is, from another
+  terminal, without py-spy, gdb or a restart. Off by default; costs nothing while idle.
+- **`FUNPACK_PINNED_MEMORY` caps ComfyUI's pinned host-memory budget.** ComfyUI page-locks up
+  to 90% of system RAM for weight streaming; pinned pages cannot be swapped or reclaimed, so
+  once that budget is committed a further allocation wedges the host instead of killing the
+  process — no traceback, nothing in the log. `--disable-pinned-memory` is the supported
+  switch, but a rented image often bakes its launch command in where it cannot be edited.
+  FunPack is imported after the budget is computed and before any model is staged, so the
+  same control works from here: `off` to disable, `64` for 64 GB, `50%` for half the RAM.
+  It only ever lowers the number, and says what it did.
+- **The negative prompt does something at CFG 1 (experimental).** MiniMax H3 always runs at
+  CFG 1.0, so the negative branch is never evaluated and the negative prompt is dead weight.
+  Studio ▸ "Use the negative prompt" encodes it anyway, pools it to one direction, and takes
+  that direction out of the positive conditioning. Default mode is `project` — it removes
+  only the part of each word that points at the negative and leaves the rest alone — with
+  `subtract` kept for comparison. The vision span of an H3 conditioning is never touched.
+  Off by default and unproven: expect concrete things to behave better than quality words.
+- **Studio ▸ "Skip Studio's positive processing".** With both CLIP and a positive CONDITIONING
+  wired, CLIP has always won and the wired conditioning was ignored. This inverts that: the
+  wired conditioning owns the positive while CLIP keeps encoding the negative and the
+  references. It skips shortcuts, $variables and the scene split, which is the point.
+- **A different sampler for the second pass.** The Scene Chain Sampler takes an optional
+  `second_pass_sampler`; unwired, pass 2 reuses pass 1's, which is the old behaviour. In the
+  Editor, Second pass ▸ Own sampler reveals the full algorithm panel for pass 2 — what
+  builds a shot well is often not what finishes it. Off, Studio mirrors the high pass's
+  algorithm into that output, so a project that already used a second pass is unchanged.
+  The console names the pass-2 sampler when it differs.
+- **Numbered reference slots.** A node input can be wired to "Reference image 1" instead of
+  to a particular file — it resolves to whatever is marked first among the image references,
+  so re-ordering marks in the Media Bin re-points every socket without opening a node page.
+  Numbered per kind, so marking an audio file never shifts the image slots. The picker
+  offers one past the highest number that node already uses, and an unmarked slot leaves its
+  socket unconnected in silence — never auto-wired to some other image, never reported.
+- **Export settings… now covers the sampling too** — render geometry, the sampler and its
+  schedule, the second pass when it is running, and the Studio / Chain Sampler overrides.
+  Only the selected algorithm's settings are printed: a pass config always carries the
+  hybrid / distilled / normalizing blocks and just one of them is live.
+- **Models & Pipeline ▸ Export settings…** renders the loaded pipeline as a PNG: every
+  loader with its full filename, every LoRA with its weight, the typed-in values of any
+  custom node, and the host's PyTorch / CUDA / attention / GPU. Only inputs that were typed
+  are printed — a wired input is marked `‹wired›` rather than showing the stale widget
+  behind the socket. The card is drawn in the theme the app is showing, watermarked with the
+  FunPack version, and carries the same data as JSON in a tEXt chunk. The dialog previews it
+  with Download and Copy image.
+- **Quality sharpness now works with a stock KSampler.** The unsharp mask that recovers fine
+  detail lived inside Hybrid Euler 2S and Distilled Flow only. It reads the current x0
+  prediction, the previous one and the step's sigma — nothing that needs a sampler's loop —
+  so it now runs through a denoiser proxy on any `sampler_name`. `sharpen last %` sets the
+  window as a fraction of the schedule, the same meaning as Hybrid's `high quality pct`.
+  Audio on a packed AV latent is excluded, as in-loop. Off by default; a sampler that cannot
+  be wrapped keeps sampling and says so.
+- **Settings ▸ Custom Nodes: install, update and remove ComfyUI node packs.** `＋ Add node`
+  asks for a repository URL and clones it into `custom_nodes`, installing its
+  `requirements.txt` if it has one; each row offers Update (a fast-forward pull, refused if
+  the pack has local changes) and Remove. It is three git operations, not a catalogue — you
+  supply the URL, and nothing about the repository is vetted first, which the dialog says.
+  Removal names the full path it is about to delete and cannot reach outside `custom_nodes`:
+  the name must be a single path segment that resolves to a direct child directory, so a
+  symlink cannot redirect it, and FunPack cannot delete itself. Node packs register at
+  import, so the panel says a restart is needed rather than restarting under you.
+  **Check for updates** fetches each pack's origin and shows how far behind it is, on the
+  row and on its Update button. It is a button rather than part of the listing because it
+  costs a network round trip per pack; the fetches run four at a time, and a pack that
+  cannot be compared says why (detached HEAD, no remote, origin unreachable) instead of
+  quietly reading as up to date.
+
+- **FunPack's loaders take `.gguf` files**, for diffusion models and text encoders alike, and
+  a text-encoder list may mix a `.gguf` with `.safetensors` slots (the usual LTX-2.3 shape).
+  Core's extension set has no `.gguf`, so those files were on disk and invisible to every
+  picker. `gguf` is now one of FunPack's requirements, so a fresh install reads GGUF
+  containers with nothing extra to set up. The runtime is whichever backend is present:
+  ComfyUI-GGUF keeps the weights quantized in VRAM, which is the point of GGUF; failing that,
+  the `gguf` package dequantizes at load — the file loads, but at full size, and the status
+  output says which of the two happened. With neither, the loader names both remedies instead
+  of failing obscurely.
+  Model-family detection reads GGUF containers too, using the same architecture signatures.
+  A GGUF renamed to `.safetensors` is recognised by its container magic and loaded correctly
+  rather than failing in the safetensors parser with a UTF-8 decode error. When ComfyUI-GGUF
+  refuses an architecture it has no handling for (MiniMax H3, today), the load falls back to
+  dequantizing rather than stopping, and says both what refused and what happened instead.
+
+- **Simple mode's Advanced settings button opens the panel it names.** It slides in the
+  Editor's own Properties column — which does nothing at all when that column was collapsed
+  in Editor mode, since Simple mode hides the dock tabs that would uncollapse it. Opening the
+  panel now uncollapses it, and the saved dock state is handed back on the way out of Simple
+  mode. The panel also shows its folded sections again: they are hidden to keep the pinned
+  column tidy, which left a button called "Advanced settings" opening onto the few rows that
+  are not in a fold.
+
+- **Pin up to three shortcuts to the timeline toolbar.** Settings is a window with a sidebar,
+  and its useful places — a specific node's page, one Engine category — are several clicks
+  deep: fine to walk once, tedious while dialling something in. `📌 Pin to a button` in the
+  Settings header puts whatever is open into one of three slots, chosen from a dialog that
+  shows what each slot currently holds and asks before replacing one. Pinning while a node
+  is open pins the NODE, and pinning inside Engine pins the CATEGORY — "Sampler algorithm",
+  not "Engine" — since the section itself was never the slow part. Slot 1 is always the leftmost button
+  and slot 3 the one nearest Assets; an empty slot closes up and the remaining buttons keep
+  their own numbers, so a shortcut's position never moves. Hovering says where it leads.
+  Pins ride with the project, like the other editor preferences. A node opened this way is a
+  destination, not a stop inside Settings: Save and Cancel both close the window and return
+  you to the editor, rather than leaving you in the Models list you never asked for.
+
+- **Reverse a clip**, audio included, in `+ Add → Effects`. Unlike the other clip effects
+  there is no preview-side equivalent, so the monitor switches that clip to a server-rendered
+  segment — what you watch is the reversed encode, not a forward one standing in for it.
+  ffmpeg holds every frame of a reversal in memory, so clips past a frame limit are refused
+  with the count, the limit, and the fix, rather than being rendered forwards silently.
+
+- **Clip geometry on the timeline: flip, crop, and fill-frame**, in `+ Add → Effects`
+  alongside the existing zoom/blur/fades. Flip horizontal and Flip vertical mirror the clip;
+  Crop edges trims a percentage off each side and rescales (a punch-in that composes with
+  Ken Burns rather than replacing it); Fill frame covers the output frame and crops the
+  overflow instead of letterboxing. The preview and the render share one filter definition,
+  so what plays is what renders. Flips and fill are switches — applying one again turns it
+  off — and the timeline clip now shows a chip listing the effects on it, which clears them
+  all when clicked. `Remove all effects` is also a preset, since Ken Burns previously had no
+  way off. Presets are back-filled into libraries created before they existed.
+
+- **SLA block-sparse attention for MiniMax H3**, as a value in the FunPack Diffusion Model
+  Loader's `attention` list rather than a node to wire. ComfyUI ships no sparse-attention
+  backend for H3, which is why lightx2v's SLA turbo LoRA gives no speedup on its own — the
+  LoRA is the adaptation to sparsity, not the acceleration. Roughly 3.7x the attention
+  throughput at 768p/15s. It is a toggle beside the attention backend, not one of its
+  values: SLA takes H3's long packed self-attention and the chosen backend (sage3, int8,
+  flash) takes the text refiner, masked calls and any trailing dense steps, so the two
+  compose. Five settings folded under Advanced and validated at their defaults; skipped
+  with a stated reason on anything that is not H3 or without Triton, leaving the chosen
+  backend installed on its own. Kernel and block map vendored from LightX2V (Apache-2.0) via
+  ComfyUI-H3-SLA-Attention (MIT).
+
+- **MiniMax H3's latent upscaler loads without its custom node pack**, so `second_pass_op`
+  and segmented detailing work on H3 — the operation needs an upsampler whose latents are
+  the model's width, and the only published 24-channel one shipped behind its own node.
+  Architecture and normalisation statistics are read off the checkpoint; verified
+  bit-identical against the reference implementation.
+- **H3 scenes continue from the previous one.** The previous scene's last latent frame
+  becomes the next scene's frame-0 keyframe pin — the only continuity conditioning H3
+  accepts. A carried latent tail is not conditioning on this model, so the seam matched
+  while the rest of the shot knew nothing about the scene before it.
+
+- **A resample factor for the between-pass operation** (`second_pass_upscale`, 1.0-4.0).
+  Only upsamplers that take a factor honour it: MiniMax H3's resizer does, Lightricks' LTX
+  one is a fixed 2x network and reports that it ignored the value rather than rounding
+  quietly. Latent width and height snap to even, since a patchified model cannot take odd.
+
+### Changed
+- **FunPack's own nodes now say what they are.** A card in the Models shelf reads
+  `🧠 Diffusion model` / `🔤 CLIP model` / `🎞️ VAE` / `🧩 LoRA` / `🔑 Refinement key`, tinted
+  to read as built-in, instead of showing the class name. Third-party nodes keep their class
+  name — the difference is the signal: these are the pieces that come wired.
+
+- **The model family is detected from the checkpoint instead of chosen.** Selecting LTX while
+  loading an H3 file wired the entire graph for the wrong model, and the mismatch surfaced as a
+  stray port rather than as a family error. The family now comes from the diffusion model's own
+  safetensors header — key-name signatures only, the same ones ComfyUI's `model_detection` uses,
+  so it costs the same on a 40 GB file as on a small one and never loads weights. Changing the
+  checkpoint rewires the pipeline and migrates the project's frame geometry, which previously
+  only happened if you went through the wizard.
+
+  A file that cannot be identified proposes **no** family: the previous one stands and the panel
+  says why. Nothing silently becomes LTX. A video-only Lightricks checkpoint is wired on the AV
+  graph, as before, but is now named as video-only so an empty audio branch is expected rather
+  than mysterious.
+
+- **Settings the loaded model cannot use are no longer shown.** MiniMax H3 drops Bounded
+  Attention, Best-FaceID (with its four sub-settings) and `v2a_grad_scale`; LTX drops
+  `h3_audio_clock`. Previously each was offered, left switchable, and then reported once per
+  generation as inert — a control that is not offered needs no explanation. Stored values are
+  untouched, so switching family back restores the setting. The main-window chips for these are
+  gone with them: "turn it off in Settings → Engine" named a row that no longer renders.
+
+- **Operations that fail now say so, and standing conditions stop repeating.** Two rules that
+  fight each other unless they share one mechanism, so they now do (`funpack_log.py`). A failure
+  reports what was attempted, why it stopped, and **what the output looks like as a result** —
+  collapsed to one line per run, because these fire inside per-step wrappers. A standing
+  condition ("this model is not LTX", "H3 has no cross-attention to hook") is stated once and
+  restated only when it stops being true, instead of on every generation.
+
+  Newly audible: anchor pin restore, guide and mid-scene-guide append, velocity bias, quality
+  sharpness, the audio-protection mask, the audio clock correction, momentum guidance, template
+  resolution match, learned-direction steering, conditioning memory and repel, Absolute steer,
+  and the temporal-style classifier. Each of those could previously fail and leave a run that
+  looked exactly like one where the feature was switched off.
+
+### Fixed
+- **Updating FunPack in the app installs the dependencies the update needs.** It pulled new
+  code and never new requirements, so a release that added one left the node pack unable to
+  import with nothing said. When an update touches `requirements.txt`, pip runs against the
+  interpreter ComfyUI is using — never a bare `pip`, which in a venv installs somewhere else
+  entirely — before the restart, and a failure names the command to run by hand rather than
+  turning a completed update into an error. Update and branch switch also moved off the event
+  loop; a fetch over a tunnel plus an install was freezing every stream in the meantime.
+
+- **A LoRA that matches by name but not by shape now says so.** Key matching proves a LoRA is
+  *for* a model, not that its weights fit it; a mismatched pair is dropped during the merge,
+  which was visible only as one generic warning per key while FunPack's own status line still
+  read like a clean load. The count now reaches that status line. The common case is named
+  outright: MiniMax H3's pruned "curve-form" checkpoints read adaLN from a compact
+  time-curve basis, so a turbo LoRA trained against the full-width model matches all 51 adaLN
+  keys and merges into none of them. They cannot be projected — the basis that built the
+  table is not in the checkpoint — so the message says that and points at a converted LoRA.
+
+- **Context windowing and ALG's guide blur are switched off and hidden on MiniMax H3.**
+  Core's windowing unpacks the LTXAV stream specifically and measures its window on LTX's 8x
+  latent ratio; ALG's guide blur acts on guide frames appended to the latent, and an H3 guide
+  is a condition row, so that tail is always empty. Context windowing also reported the wrong
+  reason on H3 — it blamed the ComfyUI version for what is a model difference.
+
+- **JoyAI-Echo is switched off and hidden on MiniMax H3, where it was doing damage.** The
+  memory bank places frame *i* at sequence position *i*, but H3's packed layout pins only the
+  first or last frame — so every frame past the first was refused, and the one that landed
+  *replaced the scene's i2v anchor*, because H3 keys pins by frame index. Not an inert toggle:
+  a harmful one. The sampler now forces it off on H3 and says why, and Engine Settings stops
+  offering the whole group.
+- **JoyAI-Echo's tooltips now say it requires the JoyAI-Echo LoRA.** Without it the injected
+  memory frames change nothing on any model, because the base weights were never trained to
+  read them as memory — the controls read as a working feature.
+
+- **Closing Models & Pipeline mid-edit no longer leaves its edit buffer behind.** Escape, the
+  ✕, or switching to another section tore the section down without ending the edit, so the
+  next visit inherited a dirty flag and a baseline belonging to a config that had already
+  been replaced — a spurious "unsaved changes" prompt, and a Cancel that could splice stale
+  slots into freshly loaded ones.
+
+- **Prompt templates can be renamed, deleted, and turned off.** The Composer's Templates bar
+  applied a template and immediately forgot it, so there was no state to leave and no way to
+  leave it — and clearing the prompt box by hand did nothing, because an empty global prompt
+  is refused (an empty parse would wipe the timeline on a stray keystroke). The bar now shows
+  which template is applied, offers `— None —` to clear the whole global prompt — anchor,
+  transitions and scene texts — as a deliberate, undoable action, and gives the applied
+  template Rename and Delete. Saving pre-fills the applied
+  name, so updating a template is the default gesture rather than a trick. Deleting one
+  leaves the prompt alone.
+
+- **"No, I'll use my own pipeline" left the setup modal on screen.** Picking a model family
+  starts a chain of requests that reopens the modal with fresh prerequisites; dismissing it
+  mid-flight closed it, then the reply landed and put it straight back — and since opting out
+  installs nothing, the prerequisites were still missing, so it always reopened. Closes the
+  user asks for now supersede anything in flight. The choice is also recorded before the
+  save round-trip rather than after it, and a save that fails says so instead of leaving the
+  project quietly still on the built-in pipeline.
+
+- **An output can be wired to several destinations while adding a node**, not only after.
+  The Add-node panel offered one destination per output and told you to finish the job on
+  the node's page; it now uses the same multi-destination editor the node page does, with
+  the same rule about what the built-in pipeline will honour.
+
+- **Double-click an image in the Media bin to make it the selected clip's anchor.** Dragging
+  was the only way in, and it could not be relied on: an `<img>` is natively draggable, so
+  inside the card the browser started its own image drag whose payload every drop target
+  rejects — worse the larger the image. The image now opts out of dragging, and the drag
+  ghost is the thumbnail rather than a snapshot of the full-size card.
+
+- **Preview playback could stall at "Video is loading…" and stay there**, with the transport
+  buttons dead. A media reset leaves a `<video>` with no metadata and no load running, and
+  every recovery path keyed on the element having errored — which a reset does not do. Play
+  went down the same wait-for-metadata branch, so pressing it changed nothing. Elements are
+  now checked after a reset and restarted if no load followed; Play restarts a stalled one
+  outright.
+
+- **A linked input driven by `Project · Prompt (global)` claimed to encode "the same text
+  Studio would" and did not.** Studio appends the postfix to every scene itself, so the
+  global prompt is strictly less than what it encodes — and the postfix is usually where
+  audio and style directions live, which went missing with no clue. The hint is now accurate
+  per source, and points at `Project · Prompt + postfix` when a postfix is set.
+
+- **Studio said nothing when both CLIP and a positive CONDITIONING were wired to it.** CLIP
+  wins and the wired conditioning is never read — but the ownership label that knew this was
+  computed and discarded, so a graph feeding Studio from an i2v node looked like it was
+  working while the prompt path quietly supplied everything. Now stated once per run and
+  carried in the encode status.
+
+- **The late-step gate every rating-driven mechanism shares was measuring the wrong thing
+  on H3**, so embed guidance, score slider, DynaShift and output guidance were inert or
+  nearly inert while reporting themselves active. `max(0, 1 - 2*sigma)` reads sigma as
+  schedule progress, which holds on LTX and fails on H3: its schedules are
+  `shift*t / (1 + (shift-1)*t)`, so a large shift keeps sigma high until the final leap.
+  Measured coverage of the old gate — shift 6 / 4 steps (turbo): 0 of 4; shift 12 / 12
+  (H3's default): 0 of 12; shift 3 / 20: 4 of 20, the first two at gate 0.14 and 0.31. The
+  gate now reads position on the schedule's own base grid, recovered from the schedule
+  rather than from a shift constant (the shift is only reliable when MiniMaxH3SigmaShift is
+  wired, which video sampling does not require). LTX keeps the gate it was validated with.
+  Every run now reports its steering window, and says so outright when nothing will steer.
+
+- **Embed guidance crashed every H3 run that reached a steering step**, and score slider
+  silently did nothing on the same models. H3 refines the conditioning inside
+  `extra_conds`, so the DiT consumes 5376-dim hidden state while the taste store captured
+  the raw 5120-dim text conditioning; embed guidance raised the size mismatch, score
+  slider caught it and returned the base prediction every step. Learned directions are now
+  carried into the consumed space through the model's own text preprocessor, once per
+  scene. DynaShift's prompt-similarity weighting was affected too — it compared the raw
+  banked prompt against the refined one and weighted every negative equally.
+  The value function had the same fault one layer down: fitted on raw conditioning, it was
+  handed the refined tensor and threw every step, so the run steered on the fixed direction
+  while the report claimed the value function was driving. It is now asked for its gradient
+  in the space it was fitted in, once per scene rather than once per step.
+
+- **A resolution-changing second pass no longer fails on MiniMax H3.** A keyframe pin is
+  packed as condition rows, so its token count belongs to the grid it was encoded on, and
+  `upscale_2x` handed pass 2 a pin from pass 1 — `value tensor of shape [168, 96] cannot be
+  broadcast to indexing result of shape [672, 96]`. The pins are resampled onto the new
+  grid rather than dropped: on H3 the pin IS the anchor, and pass 2 has to keep holding it.
+- **Multi-scene chains work with a second pass again.** `second_pass_op="upscale_2x"` hands
+  back a scene at twice the latent size, but every later scene is still built from the latent
+  template at the original size — so the carried overlap frames, the anchor's continuation,
+  the soft join, the JoyAI memory frame and per-scene guide sources were all being spliced
+  into a chunk on a different grid, and the second scene died on the shape mismatch. Anything
+  crossing a scene boundary is now brought back to the template's grid on the way. Each scene
+  still samples and outputs at 2x; only the carried material is resampled, and only downwards
+  — the direction that survives it, since those frames exist to say "continue from here"
+  rather than to carry detail. Runs with no resolution-changing op are bit-identical.
+- The About panel reads **FunPack 3 "Auspicious Asparagus"** rather than putting the major
+  on the codename line.
+
+
+## [3.5.1] "Auspicious Asparagus" - 2026-08-11
+
+Compatibility and polish on top of 3.5.0. LTX-2.5 works, and the two places it would have
+broken silently are fixed. Releases now carry a codename per major version.
+
+### Added
+- **Release codenames**, shown in Settings ▸ About.
+- **About reports the machine ComfyUI runs on**: chip, memory, GPU (name, VRAM, compute
+  capability), free disk, OS, ComfyUI, Python, torch, CUDA, and which fast-attention backend
+  is installed. On a rental that is the host, not the browser.
 - **A schedule for every sampler.** Steps and scheduler belong to the pass, not to the
   KSampler branch, so any sampler can now be given a computed schedule instead of only a
   hand-typed sigma list. The frames field became usable in the same pass.

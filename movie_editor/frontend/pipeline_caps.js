@@ -128,55 +128,93 @@
     bounded_attention_enabled:
       "Bounded Attention masks text cross-attention; H3 puts text in the same self-attention "
       + "stream as the video, where the mask would be far too large to hold.",
-    segmented_detailing:
-      "Segmented detailing uses Lightricks' latent upsampler, trained on LTX's 128-channel "
-      + "latent; H3's latent has 24 channels.",
+    context_windows:
+      "Core's context windowing unpacks the LTXAV stream specifically — mapping each video "
+      + "window onto its audio window and re-slicing the guide entries. H3 packs its sequence "
+      + "by a different layout, and the window length is measured on LTX's 8x latent ratio.",
+    alg_blur_guides:
+      "This blurs the trailing GUIDE frames appended to the latent. On H3 a guide is a "
+      + "condition row rather than an appended frame, so that tail is always empty. "
+      + "(alg_anchor is NOT hidden — a continuation scene does carry real latent frames.)",
+    joyai_memory:
+      "JoyAI-Echo is a LoRA-driven technique: the base weights were never trained to read the "
+      + "injected memory frames as memory, the LoRA is what teaches that, and no JoyAI-Echo "
+      + "LoRA exists for H3. There is nothing to load, so this is inaccessible on H3 by "
+      + "design, not merely unwired. It would also actively hurt output if forced on: the "
+      + "bank places memory frame i at sequence position i, and writing index 0 twice "
+      + "replaces whatever was there — evicting the scene's own i2v anchor.",
   };
 
+  // Sub-settings of the two groups above: they configure machinery that cannot run here.
+  const CONTEXT_SUB_INPUTS = [
+    "context_window_length", "context_window_overlap", "context_window_schedule",
+    "context_window_fuse", "context_window_freenoise", "context_window_retain_first",
+  ];
+  const ALG_GUIDE_SUB_INPUTS = ["alg_guide_blur_strength", "alg_guide_blur_sigma_threshold"];
+
+  // JoyAI's own sub-settings: they configure a bank that cannot be built here.
+  const JOYAI_SUB_INPUTS = [
+    "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength",
+    "joyai_audio_memory",
+  ];
+
   // Same idea for non-boolean knobs whose neutral value means "off".
-  function h3DeadValueIssues(si) {
-    const out = [];
-    if (si.second_pass && si.second_pass_op && si.second_pass_op !== "none") {
-      out.push(["second_pass_op",
-        "The second pass still runs on H3, but its latent op ('" + si.second_pass_op + "') uses the "
-        + "same LTX-only upsampler, so the op is skipped."]);
-    }
-    return out;
+  // The latent ops (second_pass_op, segmented detailing) are NOT listed here any more: what
+  // they need is an upsampler whose latents are the same width as the model's, which depends
+  // on what is installed rather than on the family, and the sampler reports a mismatch by
+  // name. A chip here would be a guess about the user's models folder.
+  function h3DeadValueIssues(_si) {
+    return [];
   }
 
   // The mirror image of H3_DEAD_SAMPLER_INPUTS: settings that only mean something ON H3.
   // Left on against an LTX pipeline they are just as silently inert, so they get a chip
   // by the same rule — the user should not have to spend a generation to find out.
   // key -> why it cannot run off H3.
+  const H3_ONLY_REASON =
+    "The render gains scale H3's per-modality AdaLN gates and its token refiner. LTX has "
+    + "neither: one modulation path for all streams, and the prompt reaches it through "
+    + "cross-attention instead of a packed text span.";
+
   const H3_ONLY_SAMPLER_INPUTS = {
-    h3_audio_clock:
-      "The audio clock corrects for H3 denoising video and audio on two different flow "
-      + "schedules. LTX puts both streams on one schedule, so there is nothing to correct.",
+    h3_video_detail: H3_ONLY_REASON,
   };
+
+  // Sub-settings of identity transfer: meaningless wherever the feature itself cannot run,
+  // so they travel with it rather than each needing its own entry above.
+  const IDENTITY_SUB_INPUTS = ["source_id", "phase_scale", "id_strength", "arcface_mode"];
+
+  // Non-boolean knobs H3 cannot use. v2a_grad_scale hooks LTXAV's video_to_audio_attn
+  // submodule; H3 has no separate video->audio cross-attention to scale, and the sampler
+  // forces it back to 1.0. Its parent feature (joyai_audio_memory) DOES work on H3, so only
+  // the coupling knob goes.
+  const H3_DEAD_VALUE_INPUTS = ["v2a_grad_scale"];
+
+  // The sampler inputs the LOADED model cannot use. Engine Settings hides these outright
+  // rather than offering a control and explaining once per run that it does nothing — a
+  // toggle that is not offered needs no explanation. The stored value is left untouched, so
+  // switching family back restores the user's setting instead of silently resetting it.
+  //
+  // Safe because the sampler already forces every one of these off for the family in
+  // question, so hiding removes a control that was inert either way — it never makes a
+  // working knob unreachable.
+  function familyInertInputs(st) {
+    if (!usesChainSampler(st)) return new Set();
+    if (!isH3(st)) return new Set(Object.keys(H3_ONLY_SAMPLER_INPUTS));
+    return new Set([...Object.keys(H3_DEAD_SAMPLER_INPUTS), ...IDENTITY_SUB_INPUTS,
+                    ...JOYAI_SUB_INPUTS, ...CONTEXT_SUB_INPUTS, ...ALG_GUIDE_SUB_INPUTS,
+                    ...H3_DEAD_VALUE_INPUTS]);
+  }
 
   // Returns [{short, detail}] for settings that are ON but cannot do anything on H3.
   function h3InertSettings(st) {
     const p = st && st.project;
     if (!p || !usesChainSampler(st)) return [];
-    const si = p.sampler_inputs || {};
-    if (!isH3(st)) {
-      return Object.keys(H3_ONLY_SAMPLER_INPUTS)
-        .filter((key) => si[key])
-        .map((key) => ({
-          short: key.replace(/_/g, " ") + " needs MiniMax H3",
-          detail: H3_ONLY_SAMPLER_INPUTS[key]
-            + " Turn it off in Settings → Engine to stop it showing here.",
-        }));
-    }
-    const issues = [];
-    Object.keys(H3_DEAD_SAMPLER_INPUTS).forEach((key) => {
-      if (si[key]) issues.push([key, H3_DEAD_SAMPLER_INPUTS[key]]);
-    });
-    issues.push(...h3DeadValueIssues(si));
-    const out = issues.map(([key, detail]) => ({
-      short: "H3: " + key.replace(/_enabled$/, "").replace(/_/g, " ") + " can't run",
-      detail: detail + " Turn it off in Settings → Engine to stop it showing here.",
-    }));
+    // Everything family-inert is now HIDDEN from Engine Settings, so a chip here would
+    // point at a control the user cannot find ("turn it off in Settings → Engine" names a
+    // row that is not rendered). What is left is the one issue hiding cannot express: a
+    // frame rate the model will not honour, which is a value the user must change.
+    const out = [];
     const fps = frameRateIssue(st);
     if (fps) out.push(fps);
     return out;
@@ -194,9 +232,13 @@
     return CHAIN_ONLY.has(type);
   }
 
+  // "t2v" = shots start from the prompt. Mirrors pipeline_caps.is_t2v on the backend.
+  function isT2V(st) {
+    return String(st?.project?.generation_mode || "i2v").toLowerCase() === "t2v";
+  }
+
   function defaultSceneSourceType(st) {
-    // t2v ("empty") is no longer a user-facing mode — new scenes default to an i2v
-    // anchor (image). Anchorless scenes still fall back to t2v in the engine.
+    if (isT2V(st)) return usesChainSampler(st) ? "carry" : "empty";
     return usesChainSampler(st) ? "carry" : "image";
   }
 
@@ -206,6 +248,7 @@
   const ANCHOR_MEDIA_SOURCES = new Set(["image", "mixed", "generated_frame", "v2v", "anchor_guide"]);
 
   function sourceNeedsAnchorMedia(scene, st) {
+    if (isT2V(st)) return false;   // a t2v project expects no anchors
     return ANCHOR_MEDIA_SOURCES.has(effectiveSourceType(scene, st));
   }
 
@@ -297,7 +340,7 @@
     return map[type] || type;
   }
 
-  window.PipelineCaps = {
+  const api = {
     usesFunpackStudio,
     usesChainSampler,
     caps,
@@ -309,8 +352,10 @@
     snapFramesIfRequired,
     frameRateIssue,
     h3InertSettings,
+    familyInertInputs,
     effectiveSourceType,
     isChainOnlySource,
+    isT2V,
     defaultSceneSourceType,
     sourceNeedsAnchorMedia,
     isMissingAnchorMedia,
@@ -318,4 +363,9 @@
     promptSourceIssue,
     sourceLabel,
   };
+  // Node can require this for the pure predicates (familyInertInputs, snapFramesTo, …);
+  // the browser keeps the window global. `window` does not exist under Node, so neither
+  // assignment may assume the other's environment.
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (typeof window !== "undefined") window.PipelineCaps = api;
 })();

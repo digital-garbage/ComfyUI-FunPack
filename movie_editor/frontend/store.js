@@ -52,6 +52,10 @@
     // cycle. Carried here purely so the project can put it back on a new instance;
     // the server copy stays the single source of truth while the app is running.
     revolver: null,   // {enabled, random} | null = never recorded
+    // Up to three toolbar shortcuts: [slot1, slot2, slot3], each null or
+    // {kind:"section"|"node", id, label}. Node ids are project-scoped, which is why these
+    // ride with the project rather than living in the browser alone.
+    pinnedButtons: null,
   };
   function _loadEditorSettings() {
     try {
@@ -160,6 +164,13 @@
   let _selectionAnchorId = null;  // shift-click range anchor
   let _modelsSaveTimer = null;    // debounce exposed-control (node input) saves
   let _modelsSaveDirty = false;
+  // Autosave suspension, held while a settings surface is open (see suspendSave). A
+  // debounce firing mid-session saves a half-edited value and echoes it back over
+  // state.project — "I set 0.5 and it went back to 1.0". Counted: surfaces nest.
+  let _saveSuspended = 0;
+  // In-flight reload of state.models (funpack-models-changed). commit() copies it into
+  // project.models, so committing mid-reload would write the pre-edit node list.
+  let _modelsLoad = null;
 
   function notify() { listeners.forEach((fn) => { try { fn(state); } catch (e) { console.error(e); } }); }
   function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -185,6 +196,7 @@
 
   function scheduleSaveFromHistory() {
     _localDirty = true;
+    if (_saveSuspended) { _notifySaveChip(); return; }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { saveTimer = null; commit(); }, SAVE_DEBOUNCE_MS);
     _notifySaveChip();
@@ -816,7 +828,6 @@
     refreshPreview();
     await loadModels();
     _validateSceneRenders();
-    window.WelcomePage?.close?.();
     window.PipelineSetup?.maybePrompt?.();
   }
 
@@ -841,7 +852,7 @@
     if (state.projects[0]) await loadProject(state.projects[0].id);
     else {
       notify();
-      if (window.WelcomePage) window.WelcomePage.open();
+      window.Onboarding?.open?.();
     }
   }
 
@@ -903,6 +914,7 @@
   // edits something visible, or when prompt preview actually needs refreshing.
   function scheduleSave() {
     _localDirty = true;
+    if (_saveSuspended) { _notifySaveChip(); return; }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { saveTimer = null; commit(); }, SAVE_DEBOUNCE_MS);
     _notifySaveChip();
@@ -911,9 +923,27 @@
   // For free-text / number fields: queue a save without re-rendering; blur/generate flush.
   function scheduleSaveSilent() {
     _localDirty = true;
+    if (_saveSuspended) { _notifySaveChip(); return; }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { saveTimer = null; commit(); }, SAVE_SILENT_DEBOUNCE_MS);
     _notifySaveChip();
+  }
+
+  // Hold scheduled saves until the matching resumeSave(). Edits still land locally and
+  // still mark the project unsaved; only the network write waits. An explicit flushSave()
+  // (Generate, restart, tab hidden) ignores the hold.
+  function suspendSave() {
+    _saveSuspended++;
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+
+  // Balanced with suspendSave(). Returns the commit promise if this released the last
+  // hold and there was something to write, else null.
+  function resumeSave() {
+    if (_saveSuspended > 0) _saveSuspended--;
+    if (_saveSuspended > 0) return null;
+    return flushSave();
   }
 
   // Commit any pending save immediately (field blur / before generate). Returns the
@@ -930,6 +960,7 @@
     if (_commitPromise) { _commitQueued = true; return _commitPromise; }
     const skipPreviewRefresh = !!opts.skipPreviewRefresh;
     _commitPromise = (async () => {
+      if (_modelsLoad) { try { await _modelsLoad; } catch (_) {} }
       // Sync BEFORE snapshotting: the snapshot is what gets uploaded, and a snapshot taken
       // first carries the models config (and renders/ghosts) from the PREVIOUS sync — every
       // autosave then silently reverted exposed-control edits (bypass/input/link changes
@@ -986,7 +1017,16 @@
     const touches = ["num_frames_per_scene", "frame_rate", "width", "height"].some((k) => k in patch);
     if (!touches) return;
     for (const sc of p.scenes || []) {
-      if (patch.num_frames_per_scene != null && (sc.frames_mode || "project") === "project" && !isVideoClip(sc)) {
+      // Editing the project's length wins over a length the TIMELINE gave a shot. A resize,
+      // trim or split moves a shot off project length as a side effect of a drag, and it
+      // never moved back — so the field looked live while reaching nothing.
+      //
+      // "custom" is the exception, and the same exception the rest of the app already makes:
+      // a shot set to Custom is locked against timeline resize too (resizeScene, splitScene).
+      // It is the one length the user typed on purpose, so it is the one this leaves alone.
+      if (patch.num_frames_per_scene != null && !isVideoClip(sc)
+          && (sc.frames_mode || "project") !== "custom") {
+        sc.frames_mode = "project";
         sc.frames = null;
       }
       if (patch.frame_rate != null && (sc.fps_mode || "project") === "project") {
@@ -1013,8 +1053,19 @@
     notify();
     scheduleSave();
   }
+  // Whether this patch is about to throw away lengths the timeline gave shots. Quiet patches
+  // record no history — they fire per keystroke — but this one discards work, so it gets one
+  // undo point. Only the FIRST keystroke of a burst finds anything left in "timeline" mode,
+  // so the stack gets one entry rather than one per character.
+  function _willDiscardTimelineLengths(patch) {
+    if (!state.project || patch.num_frames_per_scene == null) return false;
+    return (state.project.scenes || []).some(
+      (s) => s && !isVideoClip(s) && (s.frames_mode || "project") === "timeline");
+  }
+
   function patchProjectQuiet(patch) {
     if (!state.project) return;
+    if (_willDiscardTimelineLengths(patch)) _historyRecord();
     const before = {
       num_frames_per_scene: state.project.num_frames_per_scene,
       frame_rate: state.project.frame_rate,
@@ -1054,15 +1105,63 @@
   }
   function deletePromptTemplate(name) {
     if (!state.project) return;
-    patchProject({ prompt_templates: (state.project.prompt_templates || []).filter((t) => t && t.name !== name) });
+    const patch = {
+      prompt_templates: (state.project.prompt_templates || []).filter((t) => t && t.name !== name),
+    };
+    // Deleting the one in use leaves nothing selected — the prompt itself is untouched,
+    // it is just no longer "from" a template.
+    if (state.project.active_prompt_template === name) patch.active_prompt_template = "";
+    patchProject(patch);
+  }
+  function renamePromptTemplate(oldName, newName) {
+    if (!state.project) return false;
+    const nm = String(newName || "").trim();
+    if (!nm || nm === oldName) return false;
+    const list = state.project.prompt_templates || [];
+    if (list.some((t) => t && t.name === nm)) return false;   // caller reports the clash
+    const patch = {
+      prompt_templates: list.map((t) => (t && t.name === oldName ? { ...t, name: nm } : t)),
+    };
+    if (state.project.active_prompt_template === oldName) patch.active_prompt_template = nm;
+    patchProject(patch);
+    return true;
   }
   async function applyPromptTemplate(name) {
     if (!state.project) return;
     const tpl = (state.project.prompt_templates || []).find((t) => t && t.name === name);
     if (!tpl) return;
     // Restore the saved variables first, then distribute the prompt (re-splits the timeline).
-    patchProjectQuiet({ variables: JSON.parse(JSON.stringify(tpl.variables || [])) });
+    patchProjectQuiet({
+      variables: JSON.parse(JSON.stringify(tpl.variables || [])),
+      active_prompt_template: name,
+    });
     await applyGlobalPromptQuiet(tpl.prompt || "");
+  }
+  // Back to no template. applyGlobalPromptQuiet REFUSES empty text (an empty parse would
+  // wipe the timeline as a side effect of a stray keystroke), which is why clearing the
+  // box by hand never did anything — the scene texts it is built from stayed put. Clearing
+  // is therefore its own deliberate operation, and it is recorded for undo.
+  function clearGlobalPrompt() {
+    if (!state.project) return false;
+    // Drop any debounced edit first. It carries the text that is being cleared, and would
+    // otherwise land half a second later and redistribute it back onto the scenes.
+    if (_globalApplyTimer) { clearTimeout(_globalApplyTimer); _globalApplyTimer = null; }
+    _pendingGlobalPromptText = null;
+    _historyRecord();
+    // Everything the global prompt is built from — anchor + transitions + scene texts —
+    // so the box really does end up empty rather than empty-looking. The postfix is a
+    // separate project setting that outlives any one prompt, and is left alone.
+    (state.project.scenes || []).forEach((sc) => {
+      sc.text = "";
+      sc.transition_to_next = "";
+    });
+    patchProject({
+      anchor: "",
+      intro_transition: "",
+      active_prompt_template: "",
+    });
+    syncGlobalPromptFromTimeline();
+    return true;
   }
 
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
@@ -1809,6 +1908,29 @@
     if (!sc || !p) return p?.num_frames_per_scene || 97;
     if ((sc.frames_mode || "project") === "project") return p.num_frames_per_scene || 97;
     return sc.frames != null ? sc.frames : p.num_frames_per_scene;
+  }
+
+  // Generative scenes the project's Frames field does not reach. Editing that field now
+  // resets a timeline-derived length (see _propagateProjectSettingsToScenes), so the only
+  // ones left are those set to Custom on purpose.
+  function scenesOverridingProjectFrames() {
+    if (!state.project) return [];
+    return (state.project.scenes || []).filter(
+      (s) => s && !isVideoClip(s) && s.frames_mode === "custom");
+  }
+
+  // Put those back on the project's length too — the explicit version of what editing the
+  // Frames field does implicitly, for the one mode that field deliberately leaves alone.
+  // Video clips keep theirs: their length is the source file's, not a preference.
+  function useProjectFramesEverywhere() {
+    if (!state.project) return;
+    const targets = scenesOverridingProjectFrames();
+    if (!targets.length) return;
+    _historyRecord();
+    targets.forEach((s) => { s.frames_mode = "project"; s.frames = null; });
+    _afterTimelineStructureChange();
+    notify();
+    scheduleSave();
   }
 
   function sceneEffFps(sc, project) {
@@ -3525,6 +3647,21 @@
           run_hash: r.validation.run_hash,
         };
       }
+      // The builder reports values the user SET that did not reach the graph — a linked
+      // input pointing at a node that was replaced, a widget renamed out from under it. The
+      // run is valid, it just isn't the one they configured, and nothing used to say so:
+      // the whole report was being thrown away here.
+      const ignored = (r.report && r.report.ignored) || [];
+      // Positive confirmation, console-only: which linked inputs fired and with what value.
+      // Checking that a project setting actually reached the graph should not require
+      // reading the queued prompt, but it is not worth a UI element on every run either.
+      const fired = ((r.report && r.report.wired) || []).filter((w) => w.startsWith("linked "));
+      if (fired.length) console.info("[FunPack] linked inputs sent this run:\n  " + fired.join("\n  "));
+      if (ignored.length) {
+        state.notice = ignored.length === 1
+          ? ignored[0]
+          : `${ignored.length} settings didn't reach the pipeline — ${ignored[0]}`;
+      }
       pollStart = Date.now();
       let runMsg = `${prefix}: generating…`;
       if (r.prompt_repairs_cleared) {
@@ -3988,7 +4125,12 @@
 
   // ── pluggable models / exposed controls ──────────────────────────────────────
   async function loadModels() {
-    try { state.models = await API.getModels(state.project?.id); } catch (_) { state.models = { slots: [] }; }
+    const p = (async () => {
+      try { state.models = await API.getModels(state.project?.id); } catch (_) { state.models = { slots: [] }; }
+    })();
+    _modelsLoad = p;
+    await p;
+    if (_modelsLoad === p) _modelsLoad = null;
     if (state.project) {
       state.project.models = JSON.parse(JSON.stringify(state.models || { slots: [] }));
     }
@@ -4017,8 +4159,13 @@
   async function flushModelsSave() {
     if (!_modelsSaveTimer && !_modelsSaveDirty) return;
     clearTimeout(_modelsSaveTimer); _modelsSaveTimer = null; _modelsSaveDirty = false;
-    try { state.models = await API.saveModels(state.project?.id, state.models); notify(); }
-    catch (e) { console.error("saveModels failed", e); }
+    try {
+      const saved = await API.saveModels(state.project?.id, state.models);
+      // Same guard commit() has: an edit made during this write is newer than the echo,
+      // so adopting the echo would roll it back. Keep local; the queued save wins.
+      if (!_modelsSaveDirty) state.models = saved;
+      notify();
+    } catch (e) { console.error("saveModels failed", e); }
   }
 
   // Edit a configured node input from the main editor (an "exposed" control) and persist.
@@ -4189,6 +4336,21 @@
       blur: (v) => ({ effects: { ...(sc.effects || {}), blur: v } }),
       fade_in: (v) => ({ effects: { ...(sc.effects || {}), fade_in: v } }),
       fade_out: (v) => ({ effects: { ...(sc.effects || {}), fade_out: v } }),
+      // Geometry ops. The flips and fill are switches, and the Add-effect modal has no
+      // "off" — so applying one again turns it off. Anything else would be a setting the
+      // user can turn on and never turn off.
+      flip_h: () => ({ effects: { ...(sc.effects || {}), flip_h: !sc.effects?.flip_h } }),
+      flip_v: () => ({ effects: { ...(sc.effects || {}), flip_v: !sc.effects?.flip_v } }),
+      fill_frame: () => ({
+        effects: { ...(sc.effects || {}), fit: sc.effects?.fit === "fill" ? "contain" : "fill" },
+      }),
+      crop: (v) => ({
+        effects: { ...(sc.effects || {}), crop_inset: Math.max(0, Math.min(0.4, (+v || 0) / 100)) },
+      }),
+      // Reverse is server-side only (ffmpeg has to produce the frames backwards), so the
+      // preview switches to a rendered segment for this clip. Toggle, like the flips.
+      reverse: () => ({ effects: { ...(sc.effects || {}), reverse: !sc.effects?.reverse } }),
+      reset: () => ({ effects: {} }),
     };
     const fn = patches[effectId]; if (!fn) return false;
     patchScene(sc.id, fn(paramValue)); return true;
@@ -4303,14 +4465,22 @@
       }
     } catch (_) { /* queue unreachable — boot normally */ }
     notify();
-    if (!resumed && window.WelcomePage) window.WelcomePage.open();
+    // One front door: the full-screen welcome, unless a running generation was resumed.
+    if (resumed) return;
+    window.Onboarding?.maybeOpen();
   }
+
+  // Backstop for a suspended save the user walks away from. Unconditional is safe:
+  // nobody is mid-edit in a tab that just went to the background.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") { try { flushSave(); } catch (_) {} }
+  });
 
   window.Store = {
     get, set, subscribe, notify, init,
     scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, removeFromPlan, restoreToPlan, dismissGhost, moveScene, moveSceneTo, moveTimelineClip, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, suspendSave, resumeSave, selectScene, addScene, removeScene, removeSelectedScenes, removeFromPlan, restoreToPlan, dismissGhost, moveScene, moveSceneTo, moveTimelineClip, scene,
     addVideoClip, addImageClip, convertToVideo, convertToScene, isVideoClip, isGenerativeScene,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
@@ -4327,10 +4497,11 @@
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
     addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,
     isOverlayAudioTrack, isSeparatedAudioTrack,
-    resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
+    resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, scenesOverridingProjectFrames, useProjectFramesEverywhere, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate: _clockedGenerate, generateMontage: _clockedMontage, generateSelected: _clockedSelected, genElapsed, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
+    renamePromptTemplate, clearGlobalPrompt,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, clearShortcuts, addCategory,

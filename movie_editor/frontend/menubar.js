@@ -164,6 +164,8 @@
     return {
       File: [
         { label: "New Project", hint: "⌘N", action: promptNewProject },
+        { label: "Project Setup Wizard…", hint: "theme · model · tour",
+          action: () => window.Onboarding?.reopen?.() },
         { sep: true },
         { menulabel: "Open recent" },
         ...(recent.length ? recent : [{ label: "No projects", disabled: true }]),
@@ -210,7 +212,38 @@
 
   function openMenu(name) { openName = name; veil.hidden = false; render(); }
 
+  // Simple ⇄ Editor, beside the wordmark. Both drive the same project and pipeline; the
+  // mode only decides how much of the app is on screen.
+  function renderModeSwitch() {
+    const M = window.FunPackMode;
+    const host = document.getElementById("mode-switch");
+    if (!M || !host) return;
+    clear(host);
+    [["simple", "Simple", "Prompt, Generate, result — nothing else"],
+     ["editor", "Editor", "Timeline, inspector, ratings, every setting"]].forEach(([key, label, title]) => {
+      const b = el("button", "mode-btn" + (M.is(key) ? " on" : ""), label);
+      b.type = "button";
+      b.title = title;
+      b.onclick = () => {
+        // Once, the first time: Simple genuinely changes what a run does, and finding
+        // that out from a scene report is too late.
+        if (key === "simple" && !M.warned()) {
+          const ok = confirm(
+            "Simple mode turns refinement off — rating-driven steering, taste and value "
+            + "guidance, DynaShift, velocity bias. There is no rating UI here to feed them.\n\n"
+            + "Everything else runs as it does in the Editor, including the second pass.\n\n"
+            + "Your project settings are kept — switch back to Editor to use them again.");
+          if (!ok) return;
+          M.markWarned();
+        }
+        M.set(key);
+      };
+      host.append(b);
+    });
+  }
+
   function render() {
+    renderModeSwitch();
     const spec = menuSpec();
     clear(menusEl);
     Object.keys(spec).forEach((name) => {
@@ -273,6 +306,7 @@
 
   window.addEventListener("funpack-save-status", (e) => renderSaveChip(S.get(), e.detail));
   window.addEventListener("funpack-history-state", () => render());
+  window.addEventListener("funpack-ui-mode", () => render());
   window.addEventListener("keydown", (e) => {
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
     const t = document.activeElement;

@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
@@ -493,9 +495,27 @@ def test_h3_family_drops_the_ltx_only_core_nodes():
     # LTXVAudioVAEDecode reads an output_sample_rate H3's audio VAE does not define
     assert "LTXVAudioVAEDecode" not in classes
     assert "VAEDecodeAudio" in classes
+    # LTXFloatToInt only converted the project's frame rate for user slots. H3's rate is
+    # fixed at 24 by the model, so keeping it made an LTX pack a hard requirement of a
+    # pipeline that has no use for it.
+    assert "LTXFloatToInt" not in classes
     # the shared half is untouched
     assert {"FunPackStudio", "FunPackLTXAVSceneChainSampler", "LTXVSeparateAVLatent"} <= classes
     assert not report["blocking"], report["blocking"]
+
+
+def test_h3_does_not_offer_the_dropped_frame_rate_converter_as_a_producer():
+    """A dropped core node must not be auto-wired into a slot that wants an INT."""
+    models = dict(H3_MODELS)
+    models["slots"] = H3_MODELS["slots"] + [
+        {"id": "ip", "role": "image_processing", "node_class": "IntEater", "label": "eats an int"},
+    ]
+    oi = dict(H3_OI)
+    oi["IntEater"] = {"input": {"required": {"n": ["INT", {"default": 0}]}}, "output": ["IMAGE"]}
+    graph, _report = builder.build(oi, models, {"prompt": "a shot"})
+    for node in graph.values():
+        for value in node["inputs"].values():
+            assert not (isinstance(value, list) and value and value[0] == "f2i"), value
 
 
 def test_h3_wires_studio_conditioning_straight_to_the_sampler():
@@ -777,6 +797,100 @@ def test_two_sockets_on_one_reference_share_a_single_loader():
     assert ins["ref_images.ref_image0"] == ins["ref_images.ref_image1"] == [loaders[0], 0]
 
 
+# ── numbered reference SLOTS ("Reference image 1") ────────────────────────────
+# Wiring a socket to a particular media id means re-opening the node page every time you
+# change your mind about which reference goes where. A slot is wired once and re-points
+# itself: "Reference image 1" is whatever is marked first among the image references.
+
+
+def _slot_models(**srcs):
+    return {"slots": [
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": dict(srcs)},
+    ]}
+
+
+def _ref_problems(report):
+    """Complaints about the reference wiring only — these fixtures are deliberately partial
+    pipelines, so unrelated core inputs are expected to be unsatisfied."""
+    return [m for m in report["blocking"] + report["unsatisfied"]
+            if "ref" in m.lower()]
+
+
+def _img(mid, name):
+    return {"id": mid, "kind": "image", "name": name, "filename": f"funpack_movie_{mid}.png"}
+
+
+def test_reference_slot_one_resolves_to_the_first_marked_image():
+    graph, report = builder.build(
+        REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:1"}),
+        _ref_params(_img("m1", "a.png"), _img("m2", "b.png")))
+    load = graph[graph["slot_r"]["inputs"]["ref_images.ref_image0"][0]]
+    assert load["inputs"]["image"] == "funpack_movie_m1.png"
+    assert not _ref_problems(report)
+
+
+def test_reordering_the_marks_repoints_the_same_wiring():
+    """The whole point: shuffle references in the bin, touch no node settings."""
+    models = _slot_models(**{"ref_images.ref_image0": "ref#image:1"})
+    first, second = _img("m1", "a.png"), _img("m2", "b.png")
+    g1, _ = builder.build(REF_OI, models, _ref_params(first, second))
+    g2, _ = builder.build(REF_OI, models, _ref_params(second, first))
+    assert (g1[g1["slot_r"]["inputs"]["ref_images.ref_image0"][0]]["inputs"]["image"]
+            == "funpack_movie_m1.png")
+    assert (g2[g2["slot_r"]["inputs"]["ref_images.ref_image0"][0]]["inputs"]["image"]
+            == "funpack_movie_m2.png")
+
+
+def test_slots_are_numbered_per_kind():
+    """Marking an audio file must not shift the image slots out from under the wiring."""
+    audio = {"id": "a1", "kind": "audio", "name": "v.wav", "filename": "funpack_movie_a1.wav"}
+    graph, _ = builder.build(
+        REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:1"}),
+        _ref_params(audio, _img("m1", "a.png")))
+    load = graph[graph["slot_r"]["inputs"]["ref_images.ref_image0"][0]]
+    assert load["inputs"]["image"] == "funpack_movie_m1.png"
+
+
+def test_an_unmarked_slot_leaves_the_socket_empty_and_says_nothing():
+    """An unused reference slot is a normal state, not a setup mistake."""
+    graph, report = builder.build(
+        REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:1",
+                                "ref_images.ref_image1": "ref#image:2"}),
+        _ref_params(_img("m1", "a.png")))
+    ins = graph["slot_r"]["inputs"]
+    assert isinstance(ins["ref_images.ref_image0"], list)
+    assert not isinstance(ins.get("ref_images.ref_image1"), list)
+    assert not _ref_problems(report)
+
+
+def test_no_references_at_all_is_silent():
+    _graph, report = builder.build(
+        REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:1"}), _ref_params())
+    assert not _ref_problems(report)
+
+
+def test_an_empty_slot_is_not_quietly_filled_with_something_else():
+    """Auto-wire must not substitute a different image for the reference you asked for."""
+    models = {"slots": [
+        {"id": "img", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": {"ref_images.ref_image0": "ref#image:1"}},
+    ]}
+    graph, _ = builder.build(REF_OI, models, _ref_params())
+    assert not isinstance(graph["slot_r"]["inputs"].get("ref_images.ref_image0"), list)
+
+
+def test_a_malformed_slot_says_it_is_malformed_not_that_nothing_is_marked():
+    """"No reference marked" sends the user to the Media Bin to fix a value that is wrong in
+    the node. The two are different problems and must not read the same."""
+    _graph, report = builder.build(
+        REF_OI, _slot_models(**{"ref_images.ref_image0": "ref#image:nope"}),
+        _ref_params(_img("m1", "a.png")))
+    assert any("not a reference slot" in u for u in report["unsatisfied"])
+    assert not any("none marked" in w for w in report["wired"])
+
+
 def test_the_loader_matches_what_the_destination_socket_asks_for():
     """An audio reference feeding an AUDIO socket needs LoadAudio, not LoadImage — the
     loader is chosen by the socket's type, not by guessing from the file."""
@@ -831,3 +945,350 @@ def test_h3_audio_decodes_from_the_sampler_latent_not_a_separated_stream():
 
     ltx, _ = builder.build(OI, {"slots": []}, PARAMS)
     assert ltx["audiodec"]["inputs"]["samples"] == ["separate", 1]
+
+
+# ── a link that does not fire says so ────────────────────────────────────────
+# Every one of these used to be silent: the node kept its own widget value, so a project
+# setting the user had just changed did not reach the graph and nothing said which value won.
+
+def _link_models(members, **link):
+    return {
+        "slots": [{"id": "a", "node_class": "ImgProc", "inputs": {"length": 50}, "wires": {}}],
+        "links": [{"id": "L", "name": "Project · Size", "source": "editor",
+                   "editor_key": "num_frames_per_scene", "members": members, **link}],
+    }
+
+
+def test_a_link_that_fires_is_reported_with_its_value():
+    graph, report = builder.build(OI, _link_models([{"slotId": "a", "input": "length"}]), PARAMS)
+    assert graph["slot_a"]["inputs"]["length"] == 121
+    assert any("Project · Size" in w and "121" in w for w in report["wired"])
+
+
+def test_a_link_pointing_at_a_deleted_node_is_reported():
+    """Re-adding a node gives it a new slot id; the link still names the old one."""
+    models = _link_models([{"slotId": "gone", "input": "length"}])
+    _graph, report = builder.build(OI, models, PARAMS)
+    assert any("no longer in the pipeline" in u for u in report["ignored"])
+    # Reported, never blocking: the run is still valid, it just isn't what was set.
+    assert not any("no longer in the pipeline" in b for b in report["blocking"])
+
+
+def test_a_link_naming_a_widget_the_node_does_not_have_is_reported():
+    """Writing an unknown key sends ComfyUI something it ignores, so the node keeps its
+    default and the link looks like it fired."""
+    models = _link_models([{"slotId": "a", "input": "widht"}])
+    graph, report = builder.build(OI, models, PARAMS)
+    assert "widht" not in graph["slot_a"]["inputs"]
+    assert graph["slot_a"]["inputs"]["length"] == 50
+    assert any("has no widget called" in u for u in report["ignored"])
+
+
+def test_a_link_with_nothing_to_send_is_reported():
+    models = _link_models([{"slotId": "a", "input": "length"}], editor_key="nonesuch")
+    graph, report = builder.build(OI, models, PARAMS)
+    assert graph["slot_a"]["inputs"]["length"] == 50
+    assert any("had no value to send" in u for u in report["ignored"])
+
+
+def test_a_link_beats_the_value_saved_on_the_slot():
+    """The whole point: the project's number wins over whatever the node was left set to."""
+    graph, _ = builder.build(OI, _link_models([{"slotId": "a", "input": "length"}]), PARAMS)
+    assert graph["slot_a"]["inputs"]["length"] == 121 != 50
+
+
+def test_bypassing_a_connected_run_of_nodes_is_not_refused_by_its_own_members():
+    """Two chained LoRAs bypassed together. The first one's MODEL is read only by the
+    second, which is also going — so once both are gone nothing reads it and it needs no
+    pass-through. Judging each node against a graph that still held its doomed siblings
+    refused this, which meant no group of connected nodes could ever be bypassed at once.
+    """
+    models = {"slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {}},
+        {"id": "l1", "node_class": "LTXICLoRALoaderModelOnly", "bypassed": True,
+         "inputs": {}, "input_sources": {"model": "out:u:MODEL"}, "wires": {}},
+        {"id": "l2", "node_class": "LTXICLoRALoaderModelOnly", "bypassed": True,
+         "inputs": {}, "input_sources": {"model": "out:l1:model"},
+         "wires": {"model": "port:FunPackStudio.model"}},
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    assert "slot_l1" not in graph and "slot_l2" not in graph
+    assert not any("bypass" in b for b in report["blocking"]), report["blocking"]
+    # both collapse away and Studio ends up on the loader itself
+    assert graph["studio"]["inputs"]["model"] == ["slot_u", 0]
+
+
+# ── the default pipeline actually builds ──────────────────────────────────────
+# Seeding loaders is only worth anything if the graph they produce is complete. This runs
+# the real recipe through the real builder: what a user gets on a fresh project, minus the
+# model files they still have to pick.
+from movie_editor.backend import pipeline_wiring  # noqa: E402
+
+OI_DEFAULTS = dict(OI, **{
+    "FunPackDiffusionModelLoader": {
+        "input": {"required": {"model_name": [["m.safetensors"]],
+                               "weight_dtype": [["default", "fp8_e4m3fn"], {"default": "default"}]}},
+        "output": ["MODEL", "STRING"], "output_name": ["MODEL", "status"]},
+    "FunPackCLIPLoader": {
+        "input": {"required": {"clip_list": ["STRING", {"default": "[]", "funpack_list": {}}],
+                               "type": [["ltxv"], {"default": "ltxv"}]}},
+        "output": ["CLIP", "STRING"], "output_name": ["CLIP", "status"]},
+    "FunPackVAELoader": {
+        "input": {"required": {"vae_name": [["v.safetensors"]],
+                               "dtype": [["default", "bf16"], {"default": "default"}]}},
+        "output": ["VAE", "STRING"], "output_name": ["VAE", "status"]},
+    "LTXVEmptyLatentAudio": {
+        "input": {"required": {"frames_number": ["INT", {"default": 97}],
+                               "frame_rate": ["FLOAT,INT", {"default": 25.0, "widgetType": "FLOAT"}],
+                               "audio_vae": ["VAE", {}]}},
+        "output": ["LATENT"], "output_name": ["Latent"]},
+    "CLIPTextEncode": {
+        "input": {"required": {"text": ["STRING", {"default": ""}], "clip": ["CLIP", {}]}},
+        "output": ["CONDITIONING"], "output_name": ["CONDITIONING"]},
+    "FunPackLoraLoader": {
+        "input": {"required": {"model": ["MODEL", {}],
+                               "lora_list": ["STRING", {"default": "[]",
+                                                        "funpack_list": {"allow_empty": True}}]},
+                  "optional": {"clip": ["CLIP", {}],
+                               "per_block": ["BOOLEAN", {"default": False}]}},
+        "output": ["MODEL", "CLIP", "FP_LORA_STACK", "STRING"],
+        "output_name": ["MODEL", "CLIP", "lora_stack", "status"]},
+})
+
+
+def _seeded_models(family="ltxav"):
+    models = {"slots": [], "model_family": family}
+    pipeline_wiring.seed_default_pipeline(models, OI_DEFAULTS)
+    for slot in models["slots"]:            # the files the user picks; everything else is set
+        if slot["node_class"] == "FunPackDiffusionModelLoader":
+            slot["inputs"]["model_name"] = "m.safetensors"
+        if slot["node_class"] == "FunPackVAELoader":
+            slot["inputs"]["vae_name"] = "v.safetensors"
+    return models
+
+
+def test_a_freshly_seeded_pipeline_builds_with_nothing_left_to_wire():
+    """t2v: only the i2v anchor is unfed, and that comes from a scene's image, not a loader."""
+    _graph, report = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS)
+    assert report["blocking"] == []
+    assert len(report["unsatisfied"]) == 1
+    assert "source_image" in report["unsatisfied"][0]
+
+
+def test_a_freshly_seeded_pipeline_is_complete_for_i2v_too():
+    """With a scene image the builder materialises it as a LoadImage, which is the IMAGE
+    producer Studio's anchor was waiting for — so nothing is left over at all."""
+    _graph, report = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS,
+                                   media={"filename": "scene.png"})
+    assert report["blocking"] == []
+    assert report["unsatisfied"] == []
+
+
+def test_the_seeded_loaders_reach_the_core_ports_they_were_wired_to():
+    graph, _ = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS)
+    by_class = {n["class_type"]: nid for nid, n in graph.items()}
+    assert graph["studio"]["inputs"]["model"] == [by_class["FunPackLoraLoader"], 0]
+    assert graph["studio"]["inputs"]["clip"] == [by_class["FunPackCLIPLoader"], 0]
+    # two VAE loaders: the video one feeds the sampler, the audio one the audio decode
+    video_vae = graph["sampler"]["inputs"]["vae"]
+    audio_vae = graph["audiodec"]["inputs"]["audio_vae"]
+    assert graph[video_vae[0]]["class_type"] == "FunPackVAELoader"
+    assert graph[audio_vae[0]]["class_type"] == "FunPackVAELoader"
+    assert video_vae[0] != audio_vae[0]
+
+
+def test_the_seeded_lora_loader_is_a_wire_the_model_passes_through():
+    """It is seeded empty on purpose: the hop every LoRA needs is already in the graph, so
+    using one is picking a file — not adding a node and rewiring the model path."""
+    graph, report = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS)
+    by_class = {n["class_type"]: nid for nid, n in graph.items()}
+    lora = by_class["FunPackLoraLoader"]
+    assert graph[lora]["inputs"]["model"] == [by_class["FunPackDiffusionModelLoader"], 0]
+    assert graph[lora]["inputs"]["lora_list"] == "[]"
+    assert graph["studio"]["inputs"]["model"] == [lora, 0]
+    assert report["blocking"] == []
+
+
+def test_the_seeded_audio_latent_follows_the_project_not_its_own_widgets():
+    graph, _ = builder.build(OI_DEFAULTS, _seeded_models(), PARAMS)
+    audio = next(n for n in graph.values() if n["class_type"] == "LTXVEmptyLatentAudio")
+    assert audio["inputs"]["frames_number"] == ["frames", 0]
+    assert audio["inputs"]["frame_rate"] == ["fps", 0]
+    # and it takes the AUDIO vae, not whichever VAE auto-wire happened to reach first
+    assert audio["inputs"]["audio_vae"] == graph["audiodec"]["inputs"]["audio_vae"]
+
+
+def test_a_conditioning_node_never_captures_the_prompt_by_itself():
+    """positive_conditioning replaces the typed prompt wholesale — shortcuts, $variables and
+    the per-scene split all go with it — so it must be something the user wired on purpose."""
+    models = _seeded_models()
+    models["slots"].append({
+        "id": "enc", "role": "custom", "node_class": "CLIPTextEncode",
+        "inputs": {"text": "hello"}, "wires": {}, "input_sources": {}})
+    graph, report = builder.build(OI_DEFAULTS, models, PARAMS)
+    assert "positive_conditioning" not in graph["studio"]["inputs"]
+    assert not any("positive_conditioning" in m for m in report["blocking"])
+
+
+def test_a_conditioning_wire_the_user_asked_for_is_honoured():
+    models = _seeded_models()
+    models["slots"].append({
+        "id": "enc", "role": "custom", "node_class": "CLIPTextEncode",
+        "inputs": {"text": "hello"},
+        "wires": {"CONDITIONING": ["port:FunPackStudio.positive_conditioning"]},
+        "input_sources": {}})
+    graph, report = builder.build(OI_DEFAULTS, models, PARAMS)
+    assert isinstance(graph["studio"]["inputs"]["positive_conditioning"], list)
+    assert report["blocking"] == []
+
+
+def test_an_unwired_pass_through_is_not_counted_as_a_source():
+    """The seeded LoRA loader hands CLIP straight back. With its clip input unwired it emits
+    nothing, and counting it made every other CLIP consumer read as ambiguous."""
+    models = _seeded_models()
+    models["slots"].append({
+        "id": "enc", "role": "custom", "node_class": "CLIPTextEncode",
+        "inputs": {"text": "hello"},
+        "wires": {"CONDITIONING": ["port:FunPackStudio.positive_conditioning"]},
+        "input_sources": {}})
+    graph, report = builder.build(OI_DEFAULTS, models, PARAMS)
+    by_class = {n["class_type"]: nid for nid, n in graph.items()}
+    assert graph[by_class["CLIPTextEncode"]]["inputs"]["clip"] == [by_class["FunPackCLIPLoader"], 0]
+    assert report["ambiguous"] == []
+
+
+# ── bypass as an A/B switch ───────────────────────────────────────────────────
+# Wiring two alternatives at one input and bypassing the one you are not using is the
+# natural way to switch between them (MiniMax H3's ref-to-video and first-last-to-video
+# both produce the sampler's LATENT). Before this, bypassing either one failed: the
+# bypassed node still won the input, and then could not pass anything through it.
+
+# Two distinct i2v-shaped classes, so a message can be attributed to ONE of them. Both have
+# a LATENT output and no LATENT input — exactly the node that cannot pass its own output
+# through, which is what made this case fail.
+OI_AB = dict(OI, **{
+    "RefToVideo": {"input": {"required": {"vae": ["VAE"], "image": ["IMAGE"]}},
+                   "output": ["LATENT"], "output_name": ["latent"]},
+    "FirstLastToVideo": {"input": {"required": {"vae": ["VAE"], "image": ["IMAGE"]}},
+                         "output": ["LATENT"], "output_name": ["latent"]},
+})
+
+
+def _two_alternatives(bypassed):
+    return {"full_control": True, "slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {},
+         "wires": {"MODEL": "port:FunPackStudio.model"}},
+        {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {}},
+        {"id": "img", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r2v", "node_class": "RefToVideo", "inputs": {}, "bypassed": bypassed == "r2v",
+         "wires": {"latent": "port:FunPackStudio.latent"}},
+        {"id": "fl2v", "node_class": "FirstLastToVideo", "inputs": {},
+         "bypassed": bypassed == "fl2v",
+         "wires": {"latent": "port:FunPackStudio.latent"}},
+    ]}
+
+
+def _bypass_blocks(report):
+    return [b for b in report["blocking"] if "bypass" in b]
+
+
+@pytest.mark.parametrize("off,on", [("r2v", "fl2v"), ("fl2v", "r2v")])
+def test_bypassing_one_of_two_alternatives_hands_the_input_to_the_other(off, on):
+    graph, report = builder.build(OI_AB, _two_alternatives(off), PARAMS)
+    assert f"slot_{off}" not in graph
+    assert f"slot_{on}" in graph
+    assert graph["studio"]["inputs"]["latent"] == [f"slot_{on}", 0]
+    assert _bypass_blocks(report) == []
+
+
+def test_bypassing_the_only_producer_of_a_required_input_still_blocks():
+    """The relaxation is 'somebody else feeds it', not 'stop checking'. With no alternative
+    the bypass is still the thing that would silently empty a required input."""
+    models = {"full_control": True, "slots": [
+        {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {}},
+        {"id": "img", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r2v", "node_class": "RefToVideo", "inputs": {}, "bypassed": True,
+         "wires": {"latent": "port:LTXVConcatAVLatent.video_latent"}},
+    ]}
+    _graph, report = builder.build(OI_AB, models, PARAMS)
+    assert any("bypass needs exactly one input" in b for b in report["blocking"])
+
+
+def test_a_bypassed_nodes_own_unwired_inputs_are_not_demanded():
+    """Telling someone to wire a node they explicitly switched off is asking them to fix
+    something they already decided not to use."""
+    models = _two_alternatives("r2v")
+    models["slots"] = [s for s in models["slots"] if s["id"] != "img"]   # no IMAGE producer
+    _graph, report = builder.build(OI_AB, models, PARAMS)
+    assert not any("RefToVideo" in b for b in report["blocking"]), report["blocking"]
+    # the ACTIVE alternative is still held to the same standard
+    assert any("FirstLastToVideo" in b for b in report["blocking"]), report["blocking"]
+
+
+def test_a_bypassed_node_feeding_an_optional_input_needs_no_passthrough():
+    """Studio's source_image is optional. Losing it means Studio runs without it — which is
+    what bypassing the node that fed it means, not a graph to repair."""
+    models = {"full_control": True, "slots": [
+        {"id": "um", "node_class": "UpscaleModelLoader", "inputs": {}, "wires": {}},
+        {"id": "img", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "up", "node_class": "ImageUpscaleWithModel", "inputs": {}, "bypassed": True,
+         "wires": {"IMAGE": "port:FunPackStudio.source_image"}},
+    ]}
+    _graph, report = builder.build(OI, models, PARAMS)
+    assert _bypass_blocks(report) == []
+
+
+def test_two_alternatives_at_one_port_are_not_a_double_claim_when_one_is_bypassed():
+    """Guided mode allows one source per built-in input. A bypassed slot is not a source."""
+    from movie_editor.backend import pipeline_wiring
+    models = {k: v for k, v in _two_alternatives("r2v").items() if k != "full_control"}
+    assert not any("already wired from" in e
+                   for e in pipeline_wiring.validate_models_wiring(models))
+
+
+def test_two_ACTIVE_sources_on_one_port_are_still_refused():
+    from movie_editor.backend import pipeline_wiring
+    models = {k: v for k, v in _two_alternatives("none").items() if k != "full_control"}
+    assert any("already wired from" in e
+               for e in pipeline_wiring.validate_models_wiring(models))
+
+
+def test_an_empty_editor_negative_clears_studios_saved_one():
+    """Studio falls back to studio_settings.refiner.negative_prompt whenever the wired
+    negative is blank. The editor has no field for that stored copy, so clearing the visible
+    Negative prompt box left an old negative in force with nothing on screen saying so."""
+    import json
+    graph, _report = builder.build(OI, {"slots": []}, {**PARAMS, "negative_prompt": ""})
+    settings = json.loads(graph["studio"]["inputs"]["studio_settings"])
+    assert settings["refiner"]["negative_prompt"] == ""
+
+
+def test_the_editor_negative_reaches_studios_settings_too():
+    import json
+    graph, _report = builder.build(OI, {"slots": []},
+                                   {**PARAMS, "negative_prompt": "no hats"})
+    settings = json.loads(graph["studio"]["inputs"]["studio_settings"])
+    assert settings["refiner"]["negative_prompt"] == "no hats"
+    assert graph["neg"]["inputs"]["value"] == "no hats"
+
+
+def test_an_imported_negative_does_not_survive_an_empty_box():
+    """`neg` is seeded from the imported workflow's widget values. Overwriting it only when
+    the editor sent a non-None negative meant an imported one kept encoding forever, with an
+    empty editable box on screen claiming otherwise."""
+    params = dict(PARAMS)
+    params.pop("negative_prompt", None)
+    graph, _report = builder.build(OI, {"slots": []}, params)
+    assert graph["neg"]["inputs"]["value"] == ""
+
+
+def test_studio_receives_the_texts_linked_nodes_were_given():
+    """Studio keeps the RAW prompt on its own port and expands per scene, so without this it
+    cannot know what string a wired conditioning was built from — and anything that has to
+    line up with those tokens is guessing."""
+    import json
+    params = {**PARAMS, "expanded": {"prompt": "cinematic rain", "full_prompt": "cinematic rain now"}}
+    graph, _report = builder.build(OI, {"slots": []}, params)
+    settings = json.loads(graph["studio"]["inputs"]["studio_settings"])
+    assert settings["refiner"]["link_texts"]["prompt"] == "cinematic rain"
+    assert settings["refiner"]["link_texts"]["full_prompt"] == "cinematic rain now"

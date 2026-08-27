@@ -84,6 +84,10 @@
     activePicker = null;
     activeCleanup?.();
     activeCleanup = null;
+    // The picker is opened from a button in the timeline but mounts on document.body, so
+    // with "Show timeline on hover" enabled, moving onto it leaves the zone and the timeline
+    // would shut underneath it. Held open for as long as it is up.
+    window.TimelinePeek?.release?.("rating-picker");
   }
 
   function makeOption(r, accent, onPick, allOptions) {
@@ -191,6 +195,7 @@
 
     setActive(currentBase, currentLoved);
     document.body.append(picker);
+    window.TimelinePeek?.hold?.("rating-picker");
 
     const cx = event?.clientX ?? window.innerWidth / 2;
     const cy = event?.clientY ?? window.innerHeight / 2;

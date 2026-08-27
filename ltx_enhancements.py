@@ -26,6 +26,11 @@ from hashlib import md5
 
 import torch
 
+try:
+    from . import funpack_log as _log
+except ImportError:  # flat import when ComfyUI loads the pack as a top-level module
+    import funpack_log as _log
+
 TEMPORAL_STYLES = [
     "natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse",
     "rapid_start", "rapid_end", "rapid_start_end",
@@ -249,9 +254,8 @@ def make_rapid_temporal_wrapper(old_wrapper, mode, fraction=None, mult=None):
 # smooths it like any other cut — after enough steps the sequence is consistent under
 # rotation, i.e. it loops. WanVideoWrapper's "Loop Args" is the same trick for WAN.
 #
-# Roll starts below the near-noise plateau: content is ~pure noise up there (nothing to
-# smooth) and the plateau step-cache reuses base forwards, which a per-step roll would
-# invalidate. Appended guide frames (carry_i2v_guides / mid-scene guide / JoyAI memory /
+# Roll starts below the near-noise plateau: content is ~pure noise up there, so there is
+# nothing to smooth. Appended guide frames (carry_i2v_guides / mid-scene guide / JoyAI memory /
 # custom stacks) live at the TAIL of the same T range, pinned to absolute positions by
 # keyframe_idxs — so only the content region [0, T - tail) rolls and the tail (plus
 # keyframe_idxs and attention entries, which reference tail tokens) stays canonical.
@@ -1262,16 +1266,30 @@ def _funpack_locate_blocks(model):
     return None
 
 
+def funpack_diffusion_model(model):
+    """The shared nn.Module every ModelPatcher clone points at."""
+    return getattr(getattr(model, "model", None), "diffusion_model", None)
+
+
+def _hook_stores(module):
+    return (getattr(module, "_forward_hooks", None),
+            getattr(module, "_forward_pre_hooks", None))
+
+
 def strip_funpack_block_hooks(model):
-    """Remove forward / forward-pre hooks this module installed on the shared
-    diffusion blocks in a previous run. Idempotent; safe to call every run."""
-    bl = _funpack_locate_blocks(model)
-    if bl is None:
+    """Remove forward / forward-pre hooks FunPack installed on the shared diffusion model
+    in a previous run. Idempotent; safe to call every run.
+
+    Sweeps every submodule, not only the blocks: the v2a scale sits on each block's
+    `video_to_audio_attn` and bounded attention on its `attn2`, so a block-only sweep left
+    those to accumulate silently. Foreign hooks are never touched — only tagged ones.
+    """
+    diff = funpack_diffusion_model(model)
+    if diff is None:
         return 0
     removed = 0
-    for block in bl:
-        for store in (getattr(block, "_forward_hooks", None),
-                      getattr(block, "_forward_pre_hooks", None)):
+    for module in diff.modules():
+        for store in _hook_stores(module):
             if not store:
                 continue
             for hid in [hid for hid, fn in list(store.items())
@@ -1279,8 +1297,27 @@ def strip_funpack_block_hooks(model):
                 store.pop(hid, None)
                 removed += 1
     if removed:
-        print(f"[FunPackEnhancements] Stripped {removed} leaked block hook(s) from a previous run")
+        print(f"[FunPackEnhancements] Stripped {removed} leaked hook(s) from a previous run")
     return removed
+
+
+def count_module_hooks(model):
+    """(hooks, modules) currently installed anywhere under the shared diffusion model.
+
+    Read at the start of a run, when FunPack has installed nothing yet, this should be 0.
+    A number that climbs generation after generation IS the progressive-corruption bug —
+    each leftover hook keeps rewriting activations with a previous run's state.
+    """
+    diff = funpack_diffusion_model(model)
+    if diff is None:
+        return 0, 0
+    hooks = modules = 0
+    for module in diff.modules():
+        n = sum(len(store) for store in _hook_stores(module) if store)
+        if n:
+            hooks += n
+            modules += 1
+    return hooks, modules
 
 
 # ---------------------------------------------------------------------------
@@ -1298,7 +1335,10 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         return model
 
     if not _is_ltx_model(model):
-        print("[FunPackEnhancements] Non-LTX model detected - skipping all LTX enhancements, passing model through unchanged.")
+        # A standing condition, not an event: on an H3 project this is true of every run, and
+        # saying it every run buries the lines that ARE news. Restated only if it changes.
+        _log.feature("FunPackEnhancements", "LTX enhancements", False,
+                     "non-LTX model loaded. The model is passed through unchanged.")
         return model
 
     temporal_style = str(temporal_style or "natural").strip().lower()

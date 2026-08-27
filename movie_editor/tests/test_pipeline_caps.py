@@ -1,4 +1,5 @@
 """Tests for pipeline capability flags (Studio / Chain Sampler availability)."""
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,6 +66,20 @@ def test_scenes_missing_anchor_media_flags_only_the_unset_ones():
     skipped = _scene("mixed"); skipped.id = "s_excluded"; skipped.excluded = True
     p.scenes = [ok, bad, carry, skipped]
     assert pipeline_caps.scenes_missing_anchor_media(p, True) == ["s_bad"]
+
+
+def test_scenes_missing_anchor_media_silent_in_t2v():
+    """A t2v project starts shots from the prompt, so an unset anchor is the norm."""
+    p = Project(name="t", generation_mode="t2v")
+    bad = _scene("image"); bad.id = "s_bad"
+    p.scenes = [bad]
+    assert pipeline_caps.is_t2v(p) is True
+    # from_dict is an explicit field list — a field missing from it round-trips to the default.
+    assert Project.from_dict(p.to_dict()).generation_mode == "t2v"
+    assert Project.from_dict({"name": "x"}).generation_mode == "i2v"
+    assert pipeline_caps.scenes_missing_anchor_media(p, True) == []
+    # ...and the default is unchanged for everyone else.
+    assert pipeline_caps.is_t2v(Project(name="t")) is False
 
 
 def test_scenes_missing_anchor_media_silent_without_chain_sampler():
@@ -134,3 +149,76 @@ def test_h3_does_not_offer_ports_on_nodes_its_graph_never_emits():
     ltx_ports = {p["id"] for p in nodes.pipeline_ports(oi, "ltxav")}
     assert "LTXVAudioVAEDecode.audio_vae" in ltx_ports
     assert "VAEDecodeAudio.vae" not in ltx_ports
+
+
+# ── Simple mode ───────────────────────────────────────────────────────────────
+
+def test_simple_mode_switches_refinement_off():
+    si, ss = pipeline_caps.apply_simple_mode(
+        {"embed_guidance": True, "dynashift": True, "score_slider": True,
+         "taste_nearest_prompt": True, "output_guidance": True, "cfg": 1.0},
+        {"refiner": {"value_guidance": True, "steer_mode": "absolute", "vision_conditioning": True}},
+    )
+    for key in ("embed_guidance", "dynashift", "score_slider", "taste_nearest_prompt",
+                "output_guidance"):
+        assert si[key] is False, key
+    assert ss["refiner"]["value_guidance"] is False
+    assert ss["refiner"]["steer_mode"] == "relative"
+    # untouched: not refinement, just how the scene is generated
+    assert si["cfg"] == 1.0
+    assert ss["refiner"]["vision_conditioning"] is True
+
+
+def test_simple_mode_leaves_everything_that_is_not_refinement_alone():
+    """Cross-shot memory, guides, experimental sampling and the second pass all work here.
+    None of them need a rating to do their job, so none of them are Simple mode's business —
+    and the second pass in particular was allowed by Easy Gen, which this mode replaced."""
+    on = {
+        "second_pass": True, "second_pass_op": "upscale_2x",
+        "joyai_memory": True, "joyai_audio_memory": True,
+        "carry_i2v_guides": True, "alg_anchor": True, "alg_blur_guides": True,
+        "bounded_attention_enabled": True, "identity_transfer_enabled": True,
+        "segmented_detailing": True, "context_windows": True,
+    }
+    si, _ss = pipeline_caps.apply_simple_mode(dict(on), {})
+    for key, value in on.items():
+        assert si[key] == value, f"{key} was stripped but is not refinement"
+
+
+def test_simple_mode_stops_the_velocity_bank_replaying():
+    """velocity_bias / rescue live per-sampler inside studio_settings and are hidden in
+    Simple mode. Hidden AND live is the worst of both."""
+    ss_in = {"samplers": {"high": {"velocity_bias_mode": "apply", "rescue_mode": True, "eta": 1.0},
+                          "low": {"velocity_bias_mode": "capture_and_apply", "rescue_mode": True}}}
+    _si, ss = pipeline_caps.apply_simple_mode({}, ss_in)
+    for entry in ss["samplers"].values():
+        assert entry["velocity_bias_mode"] == "off"
+        assert entry["rescue_mode"] is False
+    assert ss["samplers"]["high"]["eta"] == 1.0     # nothing else touched
+
+
+def test_the_strip_list_matches_what_the_ui_hides():
+    """engine_settings.js hides exactly the rating-gated controls in Simple mode. A key
+    stripped here but visible there is a control that lies; visible there but live here is
+    the same lie inverted. This pins the backend half against the frontend source."""
+    js = (ROOT / "movie_editor" / "frontend" / "engine_settings.js").read_text(encoding="utf-8")
+    hidden = set(re.findall(r'"([a-z0-9_]+)"', js[js.index("RATING_GATED_KNOBS"):js.index("let _mounted")]))
+    for key in pipeline_caps.SIMPLE_MODE_SAMPLER_OFF:
+        assert key in hidden, f"{key} is stripped in Simple mode but its control is not hidden"
+    for key in pipeline_caps.SIMPLE_MODE_REFINER_OFF:
+        assert key in hidden, f"{key} is stripped in Simple mode but its control is not hidden"
+
+
+def test_simple_mode_does_not_mutate_the_project_settings():
+    """The project keeps what the Editor set — only the run is stripped."""
+    stored_si = {"embed_guidance": True}
+    stored_ss = {"refiner": {"value_guidance": True}}
+    pipeline_caps.apply_simple_mode(stored_si, stored_ss)
+    assert stored_si == {"embed_guidance": True}
+    assert stored_ss == {"refiner": {"value_guidance": True}}
+
+
+def test_simple_mode_handles_an_empty_project():
+    si, ss = pipeline_caps.apply_simple_mode(None, None)
+    assert si["embed_guidance"] is False
+    assert ss["refiner"]["value_guidance"] is False

@@ -477,8 +477,7 @@ def test_mixing_pins_and_references_is_called_out(capsys):
         "minimax_keyframes": [{"resolved_frame_index": 0}],
         "minimax_refs": [{"kind": "image"}],
     }]])
-    out = capsys.readouterr().out
-    assert "BOTH" in out and "fl2va" in out and "ref2va" in out
+    assert "BOTH keyframe pins and references" in capsys.readouterr().out
 
 
 # ── pins rescued from a wired MiniMax H3 Image to Video node ─────────────────
@@ -556,3 +555,393 @@ def test_a_wired_first_frame_overrides_the_timeline_anchor_on_frame_zero():
     out, _labels = node._apply_h3_external_pins(positive, pins, scene_index=0, scene_count=1)
     kfs = out[0][1]["minimax_keyframes"]
     assert len(kfs) == 1 and kfs[0]["latent"] is not anchor
+
+
+# ── continuing a scene from the one before it ────────────────────────────────
+
+def _pins(cond):
+    return (cond[0][1] or {}).get("minimax_keyframes") or []
+
+
+def test_a_continuation_scene_is_pinned_to_the_previous_scenes_last_frame():
+    """H3 has no latent conditioning: a carried tail is, in the model's terms, noise it may
+    overwrite. Without a pin the seam matched and the rest of the shot knew nothing about the
+    scene before it — the chain produced unrelated clips."""
+    node = h3_node()
+    previous = av_latent(video_t=37)
+    previous["samples"].unbind()[0][:, :, -1] = 7.0        # a mark only the last frame has
+    positive = [[torch.zeros(1, 8, 16), {}]]
+
+    out, applied = node._h3_continuation_pin(positive, previous)
+    assert applied is True
+    pins = _pins(out)
+    assert [p["resolved_frame_index"] for p in pins] == [0]
+    latent = pins[0]["latent"]
+    assert latent.shape == (1, 24, 1, 48, 84)              # exactly one latent frame
+    assert float(latent.max()) == 7.0                      # and it is the LAST one
+
+
+def test_an_explicit_anchor_outranks_the_carried_tail():
+    """An anchor image (or a wired first_frame) is the user saying where this scene starts;
+    the tail is inferred. Two pins cannot share frame 0."""
+    node = h3_node()
+    anchored = [[torch.zeros(1, 8, 16), {"minimax_keyframes": [
+        {"resolved_frame_index": 0, "latent": torch.full((1, 24, 1, 48, 84), 3.0)}]}]]
+    out, applied = node._h3_continuation_pin(anchored, av_latent())
+    assert applied is False
+    assert float(_pins(out)[0]["latent"].max()) == 3.0
+
+
+def test_the_opening_scene_has_nothing_to_continue_from():
+    node = h3_node()
+    positive = [[torch.zeros(1, 8, 16), {}]]
+    out, applied = node._h3_continuation_pin(positive, None)
+    assert applied is False and _pins(out) == []
+
+
+def test_an_unreadable_carry_source_skips_rather_than_failing_the_render():
+    node = h3_node()
+    positive = [[torch.zeros(1, 8, 16), {}]]
+    out, applied = node._h3_continuation_pin(positive, {"samples": torch.zeros(1, 24, 4)})
+    assert applied is False and _pins(out) == []
+
+
+# ── the two carry toggles that had no H3 path at all ─────────────────────────
+
+def _template(video_t=37, protected=1):
+    latent = av_latent(video_t=video_t)
+    video = latent["samples"].unbind()[0]
+    mask = torch.ones_like(video)
+    mask[:, :, :protected] = 0.0                       # protected = pinned prefix
+    latent["noise_mask"] = NT([mask, torch.ones_like(latent["samples"].unbind()[1])])
+    video[:, :, 0] = 5.0                               # the reference frame
+    return latent
+
+
+def test_carry_i2v_guides_pins_the_reference_instead_of_growing_the_latent():
+    """The LTX path prepends the template's protected frames to the chunk. On H3 that adds
+    video frames off its 5k+2 grid and attaches conditioning the model does not read."""
+    node = h3_node()
+    chunk = av_latent(video_t=37)
+    before = chunk["samples"].unbind()[0].shape
+    out_chunk, positive, _neg, carried = node._append_i2v_guides(
+        chunk, _template(), [[torch.zeros(1, 8, 16), {}]], None)
+    assert out_chunk["samples"].unbind()[0].shape == before   # latent untouched
+    assert carried == 0                                       # nothing to crop later
+    pins = _pins(positive)
+    assert [p["resolved_frame_index"] for p in pins] == [0]
+    assert float(pins[0]["latent"].max()) == 5.0              # the ORIGINAL reference
+
+
+def test_holding_the_reference_outranks_continuing_from_the_last_shot():
+    """Continuing is the default; carry_i2v_guides is the user asking for the opposite."""
+    node = h3_node()
+    _c, positive, _n, _t = node._append_i2v_guides(
+        av_latent(), _template(), [[torch.zeros(1, 8, 16), {}]], None)
+    out, applied = node._h3_continuation_pin(positive, av_latent())
+    assert applied is False
+    assert float(_pins(out)[0]["latent"].max()) == 5.0
+
+
+
+
+# ── pins vs a resolution-changing second pass ────────────────────────────────
+
+def test_keyframe_pins_are_resampled_onto_the_pass_two_grid():
+    """A pin is packed as condition ROWS, so its token count belongs to the grid it was
+    encoded on. Handing pass 2 a pass-1 pin fails inside the model as
+    "value tensor of shape [168, 96] cannot be broadcast to [672, 96]" — 2x spatial is 4x
+    the tokens, and 96 is 24 channels x the 2x2 patch."""
+    node = h3_node()
+    positive = [[torch.zeros(1, 8, 16), {"minimax_keyframes": [
+        {"resolved_frame_index": 0, "latent": torch.randn(1, 24, 1, 24, 28)}]}]]
+    out, changed = node._h3_rescale_pins(positive, 48, 56)
+    assert changed == 1
+    assert _pins(out)[0]["latent"].shape == (1, 24, 1, 48, 56)
+    assert _pins(out)[0]["resolved_frame_index"] == 0     # position is untouched
+    # the original conditioning is not mutated in place
+    assert _pins(positive)[0]["latent"].shape == (1, 24, 1, 24, 28)
+
+
+def test_a_pin_already_on_the_right_grid_is_left_exactly_alone():
+    node = h3_node()
+    latent = torch.randn(1, 24, 1, 48, 56)
+    positive = [[torch.zeros(1, 8, 16), {"minimax_keyframes": [
+        {"resolved_frame_index": 0, "latent": latent}]}]]
+    out, changed = node._h3_rescale_pins(positive, 48, 56)
+    assert changed == 0
+    assert _pins(out)[0]["latent"] is latent
+
+
+def test_conditioning_without_pins_passes_through_untouched():
+    node = h3_node()
+    positive = [[torch.zeros(1, 8, 16), {"minimax_refs": [{"kind": "image"}]}]]
+    out, changed = node._h3_rescale_pins(positive, 48, 56)
+    assert changed == 0 and out == positive
+
+
+def test_every_pin_in_a_multi_pin_conditioning_is_brought_along():
+    """first_frame and last_frame can both be set; one surviving on the old grid still
+    fails the whole render."""
+    node = h3_node()
+    positive = [[torch.zeros(1, 8, 16), {"minimax_keyframes": [
+        {"resolved_frame_index": 0, "latent": torch.randn(1, 24, 1, 24, 28)},
+        {"resolved_frame_index": 123, "latent": torch.randn(1, 24, 1, 24, 28)}]}]]
+    out, changed = node._h3_rescale_pins(positive, 48, 56)
+    assert changed == 2
+    assert all(p["latent"].shape == (1, 24, 1, 48, 56) for p in _pins(out))
+    assert [p["resolved_frame_index"] for p in _pins(out)] == [0, 123]
+
+
+# --- taste directions across a text preprocessor ---------------------------------
+# H3 refines the conditioning inside extra_conds, so what the DiT consumes is NOT what the
+# taste store captured. Adding one to the other crashed embed_guidance outright and was
+# silently swallowed by score_slider's except clause.
+
+TEXT_DIM, HIDDEN = 5120, 5376
+
+
+class _RefinerModel:
+    """Stands in for MiniMaxH3Model: condition_proj + a nonlinear token refiner."""
+
+    def __init__(self, seed=0):
+        g = torch.Generator().manual_seed(seed)
+        self.w = torch.randn(TEXT_DIM, HIDDEN, generator=g) / (TEXT_DIM ** 0.5)
+
+    def preprocess_text_embeds(self, text_states):
+        if text_states.shape[-1] == HIDDEN:
+            return text_states
+        return torch.tanh(text_states @ self.w)
+
+
+def _h3ish_model(with_preprocessor=True):
+    inner = types.SimpleNamespace()
+    if with_preprocessor:
+        inner.diffusion_model = _RefinerModel()
+    else:
+        inner.diffusion_model = types.SimpleNamespace()
+    return types.SimpleNamespace(model=inner, model_options={})
+
+
+def test_a_direction_already_in_the_models_space_is_left_alone():
+    node = FunPackLTXAVSceneChainSampler()
+    direction = torch.randn(HIDDEN)
+    cond = torch.randn(1, 8, HIDDEN)
+    out = node._direction_in_cond_space(_h3ish_model(), None, direction, cond)
+    assert out is direction  # LTX: capture space == consumed space
+
+
+def test_a_taste_direction_is_lifted_through_the_models_text_preprocessor():
+    node = FunPackLTXAVSceneChainSampler()
+    raw = torch.randn(1, 12, TEXT_DIM)
+    direction = torch.randn(TEXT_DIM)
+    cond = torch.randn(1, 12, HIDDEN)
+    out = node._direction_in_cond_space(_h3ish_model(), raw, direction, cond)
+    assert out is not None
+    assert tuple(out.shape) == (HIDDEN,)
+    assert torch.isfinite(out).all()
+    assert float(out.norm()) == pytest.approx(1.0, abs=1e-4)
+
+
+def test_the_lift_follows_the_direction_rather_than_returning_a_constant():
+    node = FunPackLTXAVSceneChainSampler()
+    raw = torch.randn(1, 12, TEXT_DIM)
+    cond = torch.randn(1, 12, HIDDEN)
+    model = _h3ish_model()
+    a = node._direction_in_cond_space(model, raw, torch.randn(TEXT_DIM), cond)
+    b = node._direction_in_cond_space(model, raw, torch.randn(TEXT_DIM), cond)
+    assert float(torch.nn.functional.cosine_similarity(a, b, dim=0)) < 0.9
+
+
+def test_a_direction_that_cannot_be_mapped_is_declined_not_forced():
+    node = FunPackLTXAVSceneChainSampler()
+    out = node._direction_in_cond_space(
+        _h3ish_model(with_preprocessor=False), torch.randn(1, 12, TEXT_DIM),
+        torch.randn(TEXT_DIM), torch.randn(1, 12, HIDDEN))
+    assert out is None
+
+
+def _run_embed_wrapper(model, raw_cond, direction, cond):
+    node = FunPackLTXAVSceneChainSampler()
+    node._build_embed_guidance_wrapper(model, direction, 0.3, raw_cond=raw_cond)
+    wrapper = model.model_options["model_function_wrapper"]
+    seen = {}
+
+    def apply_fn(x, t, **c):
+        seen["cond"] = c.get("c_crossattn")
+        return torch.zeros(1, 4)
+
+    args = {"input": torch.zeros(1, 4), "timestep": torch.tensor([0.2]),
+            "c": {"c_crossattn": cond}}
+    return wrapper(apply_fn, args), seen
+
+
+def test_embed_guidance_steers_the_refined_conditioning_instead_of_crashing():
+    cond = torch.randn(1, 12, HIDDEN)
+    _, seen = _run_embed_wrapper(_h3ish_model(), torch.randn(1, 12, TEXT_DIM),
+                                 torch.randn(TEXT_DIM), cond)
+    assert seen["cond"].shape == cond.shape
+    assert not torch.equal(seen["cond"], cond)  # the nudge actually landed
+
+
+def test_embed_guidance_passes_through_when_the_direction_cannot_be_mapped(capsys):
+    cond = torch.randn(1, 12, HIDDEN)
+    out, seen = _run_embed_wrapper(_h3ish_model(with_preprocessor=False),
+                                   torch.randn(1, 12, TEXT_DIM), torch.randn(TEXT_DIM), cond)
+    assert torch.equal(seen["cond"], cond)   # untouched, and no exception escaped
+    assert out.shape == (1, 4)
+    assert "steering skipped" in capsys.readouterr().out
+
+
+def test_dynashift_weights_negatives_against_the_raw_prompt_not_the_refined_one():
+    node = FunPackLTXAVSceneChainSampler()
+    raw = torch.randn(1, 12, TEXT_DIM)
+    pooled = raw.mean(dim=0).mean(dim=0)
+    negatives = [{"latent": torch.randn(3, 2, 4, 4), "cond": pooled.clone()},
+                 {"latent": torch.randn(3, 2, 4, 4), "cond": -pooled.clone()}]
+    model = _h3ish_model()
+    node._build_dynashift_wrapper(model, negatives, 0.3, 0.6, raw_cond=raw)
+    captured = {}
+
+    def apply_fn(x, t, **c):
+        captured["ran"] = True
+        return torch.zeros(1, 1, 8)
+
+    # The bank's cond is 5120-wide; the model consumes 5376. Before the fix the numel guard
+    # weighted every negative 1.0 regardless of how unrelated its prompt was.
+    args = {"input": torch.zeros(1, 1, 8), "timestep": torch.tensor([0.2]),
+            "c": {"c_crossattn": torch.randn(1, 12, HIDDEN)}}
+    model.model_options["model_function_wrapper"](apply_fn, args)
+    assert captured["ran"]
+
+
+class _RawSpaceValueFunction:
+    """A value function fitted on raw conditioning: it refuses anything else, the way a
+    [5120, 256] first layer refuses a 5376-wide tensor."""
+
+    def __init__(self):
+        self.seen = []
+
+    def gradient(self, conditioning):
+        self.seen.append(int(conditioning.shape[-1]))
+        if conditioning.shape[-1] != TEXT_DIM:
+            raise RuntimeError(
+                f"mat1 and mat2 shapes cannot be multiplied (1x{conditioning.shape[-1]} and {TEXT_DIM}x256)")
+        return torch.ones_like(conditioning)
+
+
+def _run_embed_wrapper_with_vf(model, raw_cond, cond, value_fn, steps=1):
+    node = FunPackLTXAVSceneChainSampler()
+    node._build_embed_guidance_wrapper(model, torch.randn(TEXT_DIM), 0.3,
+                                       value_fn=value_fn, raw_cond=raw_cond)
+    wrapper = model.model_options["model_function_wrapper"]
+    seen = {}
+
+    def apply_fn(x, t, **c):
+        seen["cond"] = c.get("c_crossattn")
+        return torch.zeros(1, 4)
+
+    for _ in range(steps):
+        wrapper(apply_fn, {"input": torch.zeros(1, 4), "timestep": torch.tensor([0.2]),
+                           "c": {"c_crossattn": cond}})
+    return seen
+
+
+def test_the_value_function_is_asked_for_a_gradient_in_the_space_it_was_fitted_in():
+    vf = _RawSpaceValueFunction()
+    cond = torch.randn(1, 12, HIDDEN)
+    seen = _run_embed_wrapper_with_vf(_h3ish_model(), torch.randn(1, 12, TEXT_DIM), cond, vf)
+    assert vf.seen == [TEXT_DIM]          # never handed the refined conditioning
+    assert not torch.equal(seen["cond"], cond)
+
+
+def test_the_value_function_gradient_is_taken_once_per_scene_not_once_per_step():
+    vf = _RawSpaceValueFunction()
+    _run_embed_wrapper_with_vf(_h3ish_model(), torch.randn(1, 12, TEXT_DIM),
+                               torch.randn(1, 12, HIDDEN), vf, steps=5)
+    assert len(vf.seen) == 1
+
+
+def test_an_unusable_value_function_falls_back_to_the_fixed_direction(capsys):
+    class Broken:
+        def gradient(self, conditioning):
+            raise RuntimeError("no")
+
+    cond = torch.randn(1, 12, HIDDEN)
+    seen = _run_embed_wrapper_with_vf(_h3ish_model(), torch.randn(1, 12, TEXT_DIM),
+                                      cond, Broken(), steps=3)
+    out = capsys.readouterr().out
+    assert out.count("value function gradient failed") == 1   # once per run, not per step
+    assert not torch.equal(seen["cond"], cond)                # fixed direction still steers
+
+
+def test_a_working_value_function_says_so_instead_of_steering_silently(capsys):
+    _run_embed_wrapper_with_vf(_h3ish_model(), torch.randn(1, 12, TEXT_DIM),
+                               torch.randn(1, 12, HIDDEN), _RawSpaceValueFunction(), steps=4)
+    out = capsys.readouterr().out
+    assert out.count("steering on the value function gradient") == 1
+    assert "5120 -> 5376" in out
+
+
+# --- the late-step gate on shifted schedules --------------------------------------
+# `max(0, 1 - 2*sigma)` reads sigma as schedule progress. True on LTX, false on H3, where
+# a large shift keeps sigma high until the final leap and left the wrappers with no window.
+
+from samplers import _make_steer_ramp, _steer_ramp_coverage  # noqa: E402
+
+
+def _h3_schedule(shift, steps):
+    return torch.tensor([shift * (1 - i / steps) / (1 + (shift - 1) * (1 - i / steps))
+                         for i in range(steps + 1)])
+
+
+@pytest.mark.parametrize("shift,steps", [(6, 4), (6, 6), (12, 12), (3, 20)])
+def test_the_old_gate_left_h3_schedules_with_almost_no_window(shift, steps):
+    sigmas = _h3_schedule(shift, steps)
+    legacy = _make_steer_ramp(sigmas, h3=False)
+    gated, total, _peak = _steer_ramp_coverage(legacy, sigmas)
+    assert total == steps
+    assert gated <= max(1, steps // 5)          # the bug: a sliver at best
+    if (shift, steps) in ((6, 4), (6, 6), (12, 12)):
+        assert gated == 0                        # turbo and the H3 default: nothing at all
+
+
+@pytest.mark.parametrize("shift,steps", [(6, 4), (6, 6), (12, 12), (3, 20)])
+def test_the_base_grid_gate_opens_the_back_half_at_any_shift(shift, steps):
+    sigmas = _h3_schedule(shift, steps)
+    ramp = _make_steer_ramp(sigmas, h3=True)
+    gated, total, peak = _steer_ramp_coverage(ramp, sigmas)
+    assert total == steps
+    assert gated >= 1                            # turbo included
+    assert gated <= steps // 2 + 1               # back half, never the whole schedule
+    assert peak > 0.0
+
+
+def test_the_gate_is_the_same_at_every_shift_for_the_same_step_count():
+    # The whole point: coverage is a property of the schedule's shape, not of its shift.
+    cov = [_steer_ramp_coverage(_make_steer_ramp(_h3_schedule(sh, 20), h3=True),
+                                _h3_schedule(sh, 20))[0] for sh in (2, 3, 6, 12)]
+    assert len(set(cov)) == 1
+
+
+def test_the_gate_still_ramps_from_nothing_to_full_authority():
+    sigmas = _h3_schedule(3, 20)
+    ramp = _make_steer_ramp(sigmas, h3=True)
+    gates = [ramp(float(v)) for v in sigmas]
+    assert gates[0] == 0.0                       # first step: untouched
+    assert gates[-1] == pytest.approx(1.0)       # terminal: full
+    assert gates == sorted(gates)                # monotone, no jumps
+
+
+def test_ltx_keeps_the_gate_it_was_validated_with():
+    sigmas = torch.tensor([1.0, 0.75, 0.5, 0.25, 0.0])
+    ramp = _make_steer_ramp(sigmas, h3=False)
+    assert ramp(1.0) == 0.0
+    assert ramp(0.25) == pytest.approx(0.5)
+    assert ramp(0.0) == pytest.approx(1.0)
+
+
+def test_a_degenerate_schedule_falls_back_instead_of_dividing_by_zero():
+    ramp = _make_steer_ramp(torch.tensor([1.0]), h3=True)
+    assert ramp(0.25) == pytest.approx(0.5)      # legacy gate
+    assert _make_steer_ramp(None, h3=True)(0.0) == pytest.approx(1.0)

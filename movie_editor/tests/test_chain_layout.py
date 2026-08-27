@@ -1,7 +1,6 @@
 import json
 
 from movie_editor.backend.chain_layout import (
-    latent_overlap_frames,
     latent_to_pixel_frame,
     layout_from_boundaries_json,
     layout_from_history_entry,

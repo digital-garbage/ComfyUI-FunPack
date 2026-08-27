@@ -62,7 +62,9 @@
     cleanup = null;
   }
 
-  function show(id) {
+  // `sub` names a place INSIDE a section (an Engine category, say). Sections that have
+  // inner views read it from ctx on mount; the rest ignore it harmlessly.
+  function show(id, subView) {
     const spec = registry.find((s) => s.id === id) || orderedSections()[0];
     if (!spec || !overlay) return;
     teardownSection();
@@ -78,23 +80,30 @@
     const ctx = {
       setActions: (nodes) => { clear(actionsEl); (nodes || []).forEach((n) => actionsEl.append(n)); },
       openSection: (sid) => show(sid),
+      sub: subView || null,
     };
     cleanup = spec.mount(bodyEl, ctx) || null;
     renderNav();
   }
 
   function close() {
+    const wasOpen = !!overlay;
     teardownSection();
     if (overlay) overlay.remove();
     overlay = null; activeId = null;
+    // One save on the way out, with the values on screen. A save landing mid-edit used
+    // to come back and overwrite the knob under the cursor.
+    if (wasOpen) window.Store?.resumeSave?.();
   }
 
-  function open(id) {
+  function open(id, subView) {
     // Recover if something removed our overlay from the DOM directly
     // (e.g. the tour's closeModalOverlay sweep) without calling close().
     if (overlay && !overlay.isConnected) { close(); }
-    if (overlay) { show(id || activeId); return; }
+    if (overlay) { show(id || activeId, subView); return; }
     query = "";
+    // Held until close(). Paired with the overlay's lifetime, so only on this branch.
+    window.Store?.suspendSave?.();
 
     overlay = el("div", "modal-overlay sw-overlay");
     const win = el("div", "settings-win");
@@ -113,9 +122,14 @@
     subEl = el("div", "sw-head-sub");
     ht.append(titleEl, subEl);
     actionsEl = el("div", "sw-head-actions");
+    const pin = el("button", "btn ghost tiny sw-pin", "📌 Pin to a button");
+    pin.type = "button";
+    pin.title = "Put a shortcut to whatever is open here on the timeline toolbar";
+    pin.onclick = () => window.PinnedButtons?.pinCurrent();
     const x = el("button", "btn ghost tiny sw-close", "✕");
     x.onclick = close;
-    head.append(ht, actionsEl, x);
+    head.append(ht, actionsEl, pin, x);
+    if (!window.PinnedButtons) pin.hidden = true;
     bodyEl = el("div", "sw-body");
     main.append(head, bodyEl);
 
@@ -123,7 +137,7 @@
     overlay.append(win);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
     document.body.append(overlay);
-    show(id);
+    show(id, subView);
   }
 
   window.addEventListener("keydown", (e) => {
@@ -149,7 +163,43 @@
     return it;
   }
 
-  window.SettingsWindow = { open, close, register, navItem };
+  // Mount ONE registered section into an arbitrary container — no sidebar, no search, no
+  // window chrome. Used by the setup wizard to show a section as a screen of its own.
+  // Returns { spec, cleanup }, or null when nothing has registered that id.
+  function mountSection(id, host, opts = {}) {
+    const spec = registry.find((s) => s.id === id);
+    if (!spec) return null;
+    host.classList.toggle("sw-flush", !!spec.flush);
+    const cleanup = spec.mount(host, {
+      setActions: opts.setActions || (() => {}),
+      openSection: opts.openSection || (() => {}),
+    });
+    return { spec, cleanup: () => { if (typeof cleanup === "function") { try { cleanup(); } catch (_) {} } } };
+  }
+
+  function hasSection(id) { return registry.some((s) => s.id === id); }
+
+  /** What a pinned button should reopen to get back to what is on screen now.
+   *
+   * A section can override this (Models points at the open NODE rather than at itself),
+   * which is the whole value of the feature: the deep places are the slow ones to reach.
+   */
+  function currentTarget() {
+    const spec = registry.find((s) => s.id === activeId);
+    if (!spec) return null;
+    let custom = null;
+    try { custom = typeof spec.pinTarget === "function" ? spec.pinTarget() : null; } catch (_) {}
+    return custom || { kind: "section", id: spec.id, label: spec.title };
+  }
+
+  /** Every section, for the pin dialog's "somewhere else" list. */
+  function sectionList() {
+    return orderedSections().map((s) => ({ id: s.id, title: s.title, group: s.group || "" }));
+  }
+
+  window.SettingsWindow = {
+    open, close, register, navItem, mountSection, hasSection, currentTarget, sectionList,
+  };
 
   // ── shared row builders for settings panels ────────────────────────────
   function actionRow(title, hint, btnLabel, onClick, opts = {}) {
@@ -245,15 +295,11 @@
         clear(wrap);
         const git = G ? G.get() : null;
         wrap.append(el("div", "sw-about-mark", "◉"));
-        wrap.append(el("div", "sw-about-name", "FunPack"));
-        // Ubuntu-style release codename, carried on the git status alongside the version.
-        // Keyed by major, so it reads "3 “Auspicious Asparagus”". Omitted entirely when the
-        // backend is older than the field or the major has no name yet — an empty quoted
-        // string would look like a bug.
+        const major = String(git?.version || "").split(".")[0];
+        wrap.append(el("div", "sw-about-name", "FunPack" + (major ? " " + major : "")));
+        // Omitted when absent — empty quotes would look like a bug.
         if (git?.codename) {
-          const major = String(git.version || "").split(".")[0];
-          wrap.append(el("div", "sw-about-codename",
-            (major ? major + " " : "") + "“" + git.codename + "”"));
+          wrap.append(el("div", "sw-about-codename", "“" + git.codename + "”"));
         }
         // window.FunPackAppName lets a different frontend sharing this file (e.g. Easy
         // Gen) relabel the app name without forking the whole section; Editor leaves it

@@ -18,11 +18,13 @@ def test_installed_version_is_parseable():
 
 
 def test_current_major_has_a_codename():
-    assert git_update.funpack_codename() == "Auspicious Asparagus"
+    assert git_update.funpack_codename() == "Blinding Blackout"
 
 
 def test_codename_is_keyed_by_major_not_by_release():
-    """Every 3.x release ships under one name; only a new major earns a new letter."""
+    """Every 4.x release ships under one name; only a new major earns a new letter."""
+    for version in ("4.0.0", "4.5.1", "4.99.12"):
+        assert git_update.funpack_codename(version) == "Blinding Blackout"
     for version in ("3.0.0", "3.5.1", "3.99.12"):
         assert git_update.funpack_codename(version) == "Auspicious Asparagus"
 
@@ -33,14 +35,13 @@ def test_unknown_major_has_no_codename():
     assert git_update.funpack_codename("") != None  # noqa: E711 - never None, always str
 
 
-@pytest.mark.parametrize("version", ["3", "3.5", "3.5.1", " 3.5.1 "])
+@pytest.mark.parametrize("version", ["4", "4.0", "4.0.0", " 4.0.0 "])
 def test_codename_tolerates_short_and_padded_versions(version):
-    assert git_update.funpack_codename(version) == "Auspicious Asparagus"
+    assert git_update.funpack_codename(version) == "Blinding Blackout"
 
 
 def test_codenames_advance_alphabetically():
-    """The Ubuntu rule this follows: adjective and vegetable share an initial, and the
-    initial advances with the major. A future entry that breaks it should fail here."""
+    """Adjective and vegetable share an initial; initials advance with the major."""
     for major, name in sorted(git_update.CODENAMES.items()):
         adjective, _, noun = name.partition(" ")
         assert noun, f"{name!r} should be two words"

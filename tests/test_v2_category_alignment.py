@@ -1472,8 +1472,10 @@ def test_refiner_v2_advisor_skips_when_no_generation_clip_is_available(tmp_path)
     )
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert "Advisor: unavailable; connected CLIP does not expose text generation" in status
-    assert "Advisor: unavailable; connected CLIP does not expose text generation" in training_info
+    assert "does not expose text generation" in status
+    # the message names the socket to wire a generator into, not just the fault
+    assert "advisor_clip" in status
+    assert "does not expose text generation" in training_info
     assert state["last_run"]["encoded_prompt"] == "person smoking"
     assert state["last_run"]["advisor"]["applied"] is False
 
@@ -1584,7 +1586,7 @@ def test_refiner_v2_accepts_conditioning_without_clip_and_loads_gemma3_tokenizer
     assert modified[0][0].shape == positive_conditioning[0][0].shape
 
 
-def test_refiner_v2_prefers_clip_when_both_clip_and_conditioning_are_connected(tmp_path, monkeypatch):
+def test_refiner_v2_keeps_the_wired_conditioning_when_both_are_connected(tmp_path, monkeypatch):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"
     refiner._v2_state_path = lambda refinement_key: str(state_path)
@@ -1599,8 +1601,9 @@ def test_refiner_v2_prefers_clip_when_both_clip_and_conditioning_are_connected(t
         positive_conditioning=positive_conditioning,
     )
 
-    assert not torch.allclose(modified[0][0], torch.full((1, 4, 3), 9.0))
-    assert torch.allclose(modified[0][0], torch.ones(1, 4, 3))
+    # The wired tensor survives: re-encoding it from text is not the same conditioning when
+    # the node that built it saw a reference image Studio cannot reach.
+    assert torch.allclose(modified[0][0], torch.full((1, 4, 3), 9.0))
 
 
 def test_refiner_v2_errors_without_clip_or_conditioning(tmp_path):
@@ -2228,3 +2231,36 @@ def test_appearance_anchor_not_applied_on_non_wrong_appearance_rating():
     )
 
     assert "appearance-anchor idle" in status
+
+
+def _lora_relation(name, lora_type, phrase_text, phrase_category):
+    """The relevance the suggester assigns one LoRA for one prompt phrase."""
+    refiner = FunPackVideoRefinerV2()
+    history = {}
+    profile = normalize_refiner_v2_rating("Like")
+    refiner._v2_update_lora_suggestions(
+        {"loras": [{"id": "x", "name": name, "type": lora_type, "base_model_weight": 1.0}]},
+        history,
+        {"lora_weight_memory": {}},
+        [{"text": phrase_text, "primary": phrase_category}],
+        profile,
+        refiner._v2_axis_feedback(profile, []),
+    )
+    return history["lora_weight_suggestions"]["x"]["relation"]
+
+
+def test_a_loras_filename_does_not_decide_how_relevant_it_is():
+    """Splitting the file's NAME into words and matching them against the prompt guessed at
+    what a LoRA does from what someone happened to call it. Two identical LoRAs must score
+    the same whether or not the filename echoes the prompt."""
+    echoes = _lora_relation("running_motion.safetensors", "general", "running", "action")
+    opaque = _lora_relation("v3_final_ep12.safetensors", "general", "running", "action")
+    assert echoes == opaque
+
+
+def test_relevance_still_comes_from_the_type_and_the_prompt():
+    """The replacement must not be inert: a LoRA typed 'action' is still more relevant to an
+    action prompt than an untyped one."""
+    typed = _lora_relation("v3_final_ep12.safetensors", "action", "running", "action")
+    untyped = _lora_relation("v3_final_ep12.safetensors", "general", "running", "action")
+    assert typed > untyped

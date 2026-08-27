@@ -1,6 +1,24 @@
 # ComfyUI-FunPack/__init__.py
 
 if __package__:
+    # BEFORE anything loads a model. ComfyUI computes its pinned-memory budget when
+    # model_management is imported (core, so already done) and commits it as models are
+    # staged (custom nodes, so not yet) — this import sits in the only window where the
+    # number can still be lowered. No-op unless FUNPACK_PINNED_MEMORY is set.
+    try:
+        from . import diagnostics as _fp_diagnostics
+        _fp_diag_note = _fp_diagnostics.enable()
+        if _fp_diag_note:
+            print(f"[FunPack] {_fp_diag_note}")
+    except Exception as _e:  # noqa: BLE001
+        print(f"[FunPack] could not enable faulthandler: {_e}")
+    try:
+        from . import host_memory as _fp_host_memory
+        _fp_mem_note = _fp_host_memory.apply()
+        if _fp_mem_note:
+            print(f"[FunPack] {_fp_mem_note}")
+    except Exception as _e:  # noqa: BLE001
+        print(f"[FunPack] could not adjust pinned memory: {_e}")
     from .conditioning import (
         FunPackAdvisorLLM,
         FunPackConditioningAdjust,
@@ -19,6 +37,7 @@ if __package__:
         FunPackStoryMemLastFrameExtractor,
         FunPackVideoStitch,
     )
+    from .loaders import FunPackCLIPLoader, FunPackDiffusionModelLoader, FunPackVAELoader
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     from .templates import FunPackRefinementKeyLoader
@@ -27,17 +46,9 @@ if __package__:
     except Exception as _e:
         print(f"[FunPack] batch_training routes unavailable: {_e}")
     try:
-        from . import hub  # noqa: F401  registers /funpack/ (the UI picker)
+        from .movie_editor import server as _movie_editor_server  # noqa: F401  registers /funpack/* routes
     except Exception as _e:
-        print(f"[FunPack] Hub route unavailable: {_e}")
-    try:
-        from .movie_editor import server as _movie_editor_server  # noqa: F401  registers /funpack/movie/* routes
-    except Exception as _e:
-        print(f"[FunPack] Movie Editor routes unavailable: {_e}")
-    try:
-        from . import easy_gen  # noqa: F401  registers /funpack/easy/* routes
-    except Exception as _e:
-        print(f"[FunPack] Easy Gen routes unavailable: {_e}")
+        print(f"[FunPack] FunPack UI routes unavailable: {_e}")
 else:
     # Standalone tests may not have the full ComfyUI/CUDA runtime loaded.
     from conditioning import (
@@ -70,6 +81,12 @@ else:
     except Exception:
         FunPackApplyLoraWeights = None
         FunPackLoraLoader = None
+    try:
+        from loaders import FunPackCLIPLoader, FunPackDiffusionModelLoader, FunPackVAELoader
+    except Exception:
+        FunPackCLIPLoader = None
+        FunPackDiffusionModelLoader = None
+        FunPackVAELoader = None
     try:
         from samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     except Exception:
@@ -104,6 +121,9 @@ NODE_CLASS_MAPPINGS = {
     "FunPackLTXAVSceneChainSampler": FunPackLTXAVSceneChainSampler,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
+    "FunPackDiffusionModelLoader": FunPackDiffusionModelLoader,
+    "FunPackCLIPLoader": FunPackCLIPLoader,
+    "FunPackVAELoader": FunPackVAELoader,
     "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
 }
 NODE_CLASS_MAPPINGS = {name: cls for name, cls in NODE_CLASS_MAPPINGS.items() if cls is not None}
@@ -129,6 +149,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackLTXAVSceneChainSampler": "FunPack LTXAV Scene Chain Sampler",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
+    "FunPackDiffusionModelLoader": "FunPack Diffusion Model Loader",
+    "FunPackCLIPLoader": "FunPack CLIP Loader",
+    "FunPackVAELoader": "FunPack VAE Loader",
     "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
 }
 

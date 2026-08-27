@@ -4,9 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FunPack · Cutting Room</title>
+  <!-- Before the stylesheet on purpose: data-theme has to be on <html> for the
+       first paint, or a light-theme user gets a dark flash on every load. -->
+  <script src="theme.js"></script>
+  <!-- Beside the theme for the same reason: both are browser preferences that decide
+       what the first paint looks like, so neither may load after the layout does. -->
+  <script src="timeline_peek.js"></script>
+  <script src="ui_mode.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
   <script>
     // Boot-time error surface: if any script fails, show it instead of a blank app.
@@ -16,11 +23,11 @@
         if (!b) {
           b = document.createElement("div"); b.id = "boot-error";
           b.style.cssText = "position:fixed;z-index:99999;left:0;right:0;top:0;padding:10px 34px 10px 14px;" +
-            "background:#3a1320;color:#ffb3c1;font:12px/1.5 monospace;border-bottom:1px solid #e0566b;white-space:pre-wrap";
+            "background:#3a1320;color:#ffb3c1;font:12px/1.5 var(--font-ui, system-ui, sans-serif);border-bottom:1px solid #e0566b;white-space:pre-wrap";
           var x = document.createElement("button");
           x.textContent = "✕"; x.title = "Dismiss";
           x.style.cssText = "position:absolute;top:6px;right:8px;background:transparent;border:1px solid #e0566b;" +
-            "color:#ffb3c1;border-radius:6px;cursor:pointer;font:12px monospace;padding:1px 7px;line-height:1.4";
+            "color:#ffb3c1;border-radius:6px;cursor:pointer;font:12px var(--font-ui, system-ui, sans-serif);padding:1px 7px;line-height:1.4";
           x.onclick = function () { b.remove(); };
           b.appendChild(x);
           (document.body || document.documentElement).appendChild(b);
@@ -45,7 +52,8 @@
 <body>
   <!-- ───────────────────────── MENU BAR ───────────────────────── -->
   <nav class="menubar" id="menubar">
-    <div class="brand"><span class="brand-mark">◉</span> FunPack <span class="brand-sub">Cutting Room</span></div>
+    <span class="brand"><span class="brand-mark">◉</span> FunPack</span>
+    <div class="mode-switch" id="mode-switch" role="group" aria-label="Interface mode"></div>
     <div class="menus" id="menus"><!-- populated by menubar.js --></div>
     <div class="menubar-right">
       <span class="save-chip" id="save-chip"></span>
@@ -66,9 +74,14 @@
       <section class="zone preview dock-panel" id="preview-zone" data-dock="preview">
         <div class="zone-head">
           <span class="zone-title">Preview</span>
+          <!-- Simple mode parks the transport here: its home is the timeline header, and
+               that whole zone is hidden. -->
+          <div class="mode-actions" id="simple-actions"></div>
           <span class="zone-head-right" id="preview-status"></span>
         </div>
         <div class="zone-body program" id="preview-body"></div>
+        <!-- Simple mode only: the big prompt + the two panel buttons. -->
+        <div class="simple-bar" id="simple-bar" hidden></div>
       </section>
 
       <div class="splitter splitter-v" id="split-right" title="Drag to resize"></div>
@@ -88,6 +101,7 @@
         <div class="transport-actions" id="transport-actions" aria-label="Generate and render"></div>
         <div class="zone-head-right">
           <span id="timeline-meta"></span>
+          <nav class="dock-tabs pinned-tabs" id="pinned-tabs" aria-label="Pinned shortcuts"></nav>
           <nav class="dock-tabs" id="dock-tabs" aria-label="Workspace panels"></nav>
           <button class="composer-btn" id="composer-btn" type="button" title="Open the Composer — global prompt, shortcuts, split markers">
             <span class="composer-dot">◆</span> Composer
@@ -104,6 +118,7 @@
   <script src="api.js"></script>
   <script src="dom.js"></script>
   <script src="settings_window.js"></script>
+  <script src="appearance_settings.js"></script>
   <script src="floating_window.js"></script>
   <script src="restart_ui.js"></script>
   <script src="git_actions.js"></script>
@@ -119,6 +134,7 @@
   <script src="menubar.js"></script>
   <script src="actionbar.js"></script>
   <script src="layout.js"></script>
+  <script src="pinned_buttons.js"></script>
   <script src="mediabrowser.js"></script>
   <script src="log.js"></script>
   <script src="player.js"></script>
@@ -129,17 +145,19 @@
   <script src="engine_settings.js"></script>
   <script src="editor_settings.js"></script>
   <script src="temp_browser.js"></script>
+  <script src="custom_nodes.js"></script>
   <script src="autocomplete.js"></script>
   <script src="suggestions.js"></script>
   <script src="slot_picker.js"></script>
-  <script src="welcome.js"></script>
   <script src="pipeline_setup.js"></script>
+  <script src="onboarding.js"></script>
   <script src="inspector.js"></script>
   <script src="rating_picker.js"></script>
   <script src="waveform.js"></script>
   <script src="timeline.js"></script>
   <script src="composer.js"></script>
   <script src="tour.js"></script>
+  <script src="simple_bar.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

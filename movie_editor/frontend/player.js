@@ -162,7 +162,10 @@
     for (const list of groups.values()) {
       const shared = list.length >= 2;
       for (const c of list) {
-        if (!shared && (c.inSec || 0) <= 0.5) continue;  // shallow single clip: direct URL is fine
+        // Reverse is the one effect with no preview-side equivalent — the server has to
+        // produce the reversed bytes, so the shallow-clip shortcut cannot apply to it.
+        const wantsReverse = !!(c.sceneId && S.scene(c.sceneId)?.effects?.reverse);
+        if (!wantsReverse && !shared && (c.inSec || 0) <= 0.5) continue;  // shallow single clip: direct URL is fine
         if (c.ghost) {
           // No scene server-side — the trim window travels entirely in the query.
           c.streamUrl = API.previewSegmentUrl(pid, c.ghostId, {
@@ -174,7 +177,7 @@
         const sourceIn = sc?.source_in || 0;
         const renderIn = Math.max(0, (c.inSec || 0) - sourceIn);
         c.streamUrl = API.previewSegmentUrl(pid, c.sceneId, {
-          media: c.media, renderIn, dur: c.durationSec,
+          media: c.media, renderIn, dur: c.durationSec, reverse: wantsReverse,
         });
       }
     }
@@ -477,6 +480,34 @@
     }, delayMs != null ? delayMs : 1500 * n);
   }
 
+  // A media reset (browser dropping an aborted/poisoned stream, a src swap that never
+  // started, the resource being reclaimed) leaves an element with no metadata AND no load
+  // in flight. Nothing will ever fire `loadedmetadata` for it, and because `error` never
+  // fired it has v.error === null — which is what every other recovery path here keys on.
+  // Left alone it sits behind "Video is loading…" forever and the transport freezes, since
+  // _isSeeking() treats readyState < 1 as a seek in progress and the tick refuses to
+  // advance the playhead. networkState 2 is NETWORK_LOADING: bytes are on the way, leave
+  // it be.
+  function _isStalledEmpty(v) {
+    if (!v || v.readyState >= 1) return false;
+    try { return v.networkState !== 2; } catch (_) { return false; }
+  }
+
+  // Confirm the stall before acting on it: a fresh `v.src = …` also reads as EMPTY for a
+  // beat before the resource selection algorithm starts, so an immediate check would
+  // cancel loads that were about to succeed.
+  const STALL_WATCHDOG_MS = 1200;
+  function _armStallWatchdog(url, v) {
+    clearTimeout(v._pmStallTimer);
+    v._pmStallTimer = setTimeout(() => {
+      v._pmStallTimer = null;
+      if (pool.get(url) !== v || !_urlClips.has(url)) return;
+      if (!_isStalledEmpty(v)) return;   // loading, or metadata already arrived
+      if (v._pmRetryTimer) return;       // an error-driven retry already owns recovery
+      _scheduleVideoRetry(url, v, 0);
+    }, STALL_WATCHDOG_MS);
+  }
+
   // If the active clip's element changed readiness, repaint the slate/badge over it.
   function _refreshClipStatusUi(url) {
     if (_currentClip && !_currentClip.pending && _clipUrl(_currentClip) === url) {
@@ -529,6 +560,7 @@
     viewport.append(zoom);
     v.addEventListener("loadedmetadata", () => {
       v._pmRetries = 0; // healthy again — restore the full retry budget
+      clearTimeout(v._pmStallTimer); v._pmStallTimer = null;
       v._pmStatus = "ready";
       _refreshClipStatusUi(url);
       const pending = v._pmSeekPending != null ? v._pmSeekPending : (v === _active ? _seekPending : null);
@@ -552,6 +584,8 @@
       // A media reset means the bytes are gone — downgrade so the slate covers the element
       // instead of it blinking black while the retry reloads.
       if (v._pmStatus === "ready") { v._pmStatus = "loading"; _refreshClipStatusUi(url); }
+      // The reset may or may not be followed by a load. Check back and restart it if not.
+      _armStallWatchdog(url, v);
       if (v !== _active || !_currentClip || _currentClip.pending) return;
       if (_clipUrl(_currentClip) !== url) return;
       if (v._pmSeekPending == null) {
@@ -613,6 +647,7 @@
     if (_active === v) _active = null;
     v.pause();
     clearTimeout(v._pmRetryTimer);
+    clearTimeout(v._pmStallTimer); v._pmStallTimer = null;
     // Release the socket BEFORE detaching: a detached media element that still has a
     // src holds its per-origin connection until GC (media-connection-pool class).
     try { v.removeAttribute("src"); v.load(); } catch (_) {}
@@ -653,7 +688,9 @@
       if (clip) _registerUrlClip(u, clip);
       // Clip rebuild (e.g. a run just completed): give exhausted-but-errored elements a
       // fresh recovery attempt — the failure was likely the server being busy back then.
-      if (v.error && !v._pmRetryTimer) { v._pmRetries = 0; _scheduleVideoRetry(u, v); }
+      if ((v.error || _isStalledEmpty(v)) && !v._pmRetryTimer) {
+        v._pmRetries = 0; _scheduleVideoRetry(u, v);
+      }
     }
   }
 
@@ -726,7 +763,21 @@
     const dur = (clip && clip.durationSec) || 0;
     const blur = +fx.blur || 0;
     v.style.filter = blur > 0 ? `blur(${(blur * 8).toFixed(1)}px)` : "";
-    const scale = _zoomScale(fx, within, dur, _fpsCur || 25);
+    // Flips: on the element itself, so they compose with the zoom layer's transform rather
+    // than overwrite it. Mirrors ffmpeg hflip/vflip exactly.
+    const flips = [];
+    if (fx.flip_h) flips.push("scaleX(-1)");
+    if (fx.flip_v) flips.push("scaleY(-1)");
+    v.style.transform = flips.join(" ");
+    // Fit: `contain` letterboxes (ffmpeg scale=decrease + pad), `cover` fills the frame and
+    // crops the overflow (ffmpeg scale=increase + crop). Same geometry either way.
+    v.style.objectFit = fx.fit === "fill" ? "cover" : "contain";
+    // Crop-inset punches in by trimming each edge, then rescaling to the frame — which is a
+    // static scale of 1/(1-2f) on the clipped viewport. Multiplied with Ken Burns, so the
+    // two compose instead of one silently winning.
+    const inset = Math.max(0, Math.min(0.4, +fx.crop_inset || 0));
+    const cropScale = inset > 0 ? 1 / (1 - 2 * inset) : 1;
+    const scale = _zoomScale(fx, within, dur, _fpsCur || 25) * cropScale;
     if (fxLayer?.zoom) {
       fxLayer.zoom.style.transform = scale !== 1 ? `scale(${scale.toFixed(4)})` : "";
     }
@@ -846,6 +897,14 @@
       _seekPending = null;
       if (play) { v.play().catch(() => {}); _startTick(); } else { _playPending = false; _clipBoundaryToken = 0; }
     } else {
+      // Waiting on loadedmetadata is only correct while a load is actually running. On a
+      // stalled-empty element it waits forever — and this is the branch Play goes through,
+      // which is why play/pause reads as dead. Restart it, with a fresh budget: the user
+      // asking again is a better reason to retry than any timer.
+      if (_isStalledEmpty(v) && !v._pmRetryTimer) {
+        v._pmRetries = 0;
+        _scheduleVideoRetry(_clipUrl(clip), v, 0);
+      }
       v._pmSeekPending = target;
       _seekPending = target;
       _playPending = !!play;
@@ -1310,7 +1369,9 @@
       const empty = el("div", "program-empty");
       empty.append(el("div", "reel", "🎬"));
       empty.append(el("div", null, p ? "No render yet" : "Open or create a project"));
-      empty.append(el("div", "pj-meta", "Use Generate in the timeline header"));
+      empty.append(el("div", "pj-meta", window.FunPackMode?.isSimple()
+        ? "Write a prompt, then press Generate"
+        : "Use Generate in the timeline header"));
       canvas.append(empty);
     }
     // generation progress overlay (visible even when there's already media). Built once per
@@ -1322,6 +1383,21 @@
       const ro = el("div", "gen-readout" + (gen.state === "error" ? " error" : ""));
       ro.append(el("span", "pulse"));
       _genMsgEl = el("span", null, gen.msg || gen.state); ro.append(_genMsgEl);
+      if (!busy) {
+        // A blocking message names a node, an input and a fix. Being able to take it
+        // somewhere — a note, a bug report — beats retyping it from a screenshot.
+        const copy = el("button", "btn ghost tiny gen-copy", "⧉");
+        copy.title = "Copy this message";
+        copy.onclick = async (e) => {
+          e.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(gen.msg || "");
+            copy.textContent = "✓";
+            setTimeout(() => { copy.textContent = "⧉"; }, 1200);
+          } catch (_) { copy.textContent = "✕"; }
+        };
+        ro.append(copy);
+      }
       if (busy) {
         const bar = el("div", "gen-bar"); _genBarEl = bar;
         _genFillEl = el("div", "gen-bar-fill");

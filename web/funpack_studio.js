@@ -85,13 +85,13 @@ function defaultSettings() {
   return {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6 },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6, negative_erase: false, negative_erase_strength: 0.5, negative_erase_mode: "project", negative_erase_renorm: true, h3_phrase_emphasis: false, h3_render_gains: true, prompt_enhance: false, prompt_enhance_system: "", prompt_enhance_temperature: 0.7, prompt_enhance_top_p: 0.92, prompt_enhance_max_length: 400, prompt_enhance_thinking: false },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
     samplers: {
-      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: "use_user_sigmas" },
-      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: "use_user_sigmas" },
+      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: "use_user_sigmas", ksampler_sharpness: 0.0, ksampler_sharpen_start_pct: 0.35 },
+      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: "use_user_sigmas", ksampler_sharpness: 0.0, ksampler_sharpen_start_pct: 0.35 },
     },
   };
 }
@@ -1097,6 +1097,53 @@ function openPanel(node) {
       "How hard Absolute/Both pull toward the global taste direction. 0.6 is visible but non-destructive; raise to override the prompt more strongly."));
     body.append(row("Absolute strength", absStrengthInput));
 
+    // Using the negative prompt at CFG 1. H3 never evaluates the negative branch, so the text
+    // is otherwise dead; this takes its direction out of the positive conditioning instead.
+    const negOn = el("input"); negOn.type = "checkbox";
+    negOn.checked = !!settings.refiner.negative_erase;
+    negOn.addEventListener("change", () => {
+      settings.refiner.negative_erase = negOn.checked; renderRefiner();
+    });
+    body.append(row("Use the negative prompt", negOn));
+    body.append(el("div", "funpack-studio-hint",
+      "EXPERIMENTAL. At CFG 1 the negative prompt is never read and does nothing. This encodes "
+      + "it and removes its direction from the positive conditioning instead. Unproven — "
+      + "concrete things ('a hat', 'red') should behave better than vague quality words."));
+    if (settings.refiner.negative_erase) {
+      const negStr = numInput(settings.refiner.negative_erase_strength ?? 0.5, 0, 2, 0.05);
+      negStr.addEventListener("change", () => {
+        const v = parseFloat(negStr.value);
+        settings.refiner.negative_erase_strength = Number.isFinite(v) ? Math.max(0, Math.min(2, v)) : 0.5;
+      });
+      body.append(row("Negative strength", negStr));
+      body.append(el("div", "funpack-studio-hint",
+        "1.0 removes the negative's component completely; below is partial, above pushes into "
+        + "the opposite. Start at 0.5 — this changes the prompt the model sees, so it can lose "
+        + "the prompt as well as the thing you did not want."));
+      const negMode = selectEl(["project", "subtract"], settings.refiner.negative_erase_mode || "project");
+      negMode.addEventListener("change", () => { settings.refiner.negative_erase_mode = negMode.value; });
+      body.append(row("Negative mode", negMode));
+      body.append(el("div", "funpack-studio-hint",
+        "'project' removes only the part of each word that points at the negative. 'subtract' "
+        + "moves every word by the same amount either way — closer to CFG, and blunter."));
+      const negRe = el("input"); negRe.type = "checkbox";
+      negRe.checked = settings.refiner.negative_erase_renorm !== false;
+      negRe.addEventListener("change", () => { settings.refiner.negative_erase_renorm = negRe.checked; });
+      body.append(row("Keep prompt strength", negRe));
+    }
+
+    const phraseEmph = el("input"); phraseEmph.type = "checkbox";
+    phraseEmph.checked = !!settings.refiner.h3_phrase_emphasis;
+    phraseEmph.addEventListener("change", () => {
+      settings.refiner.h3_phrase_emphasis = phraseEmph.checked;
+    });
+    body.append(row("Rating-driven phrase emphasis (H3)", phraseEmph));
+    body.append(el("div", "funpack-studio-hint",
+      "EXPERIMENTAL, unvalidated. Boosts the attention paid to phrases the rating said were "
+      + "MISSING, by biasing their attention logits in H3's packed stream. Needs a rated run "
+      + "first. Turn it off if generations drift away from the prompt — and note it forces "
+      + "SLA to run dense."));
+
     const vfActiveKey = () => settings.refinement_key || linkedRefinementKey(node);
     const vfExportBtn = btn("Export", "secondary");
     const vfImportBtn = btn("Import", "secondary");
@@ -1250,6 +1297,23 @@ function openPanel(node) {
     function renderPassSection(passKey, label) {
       const cfg = settings.samplers[passKey];
       body.append(sectionTitle(label));
+
+      // The low pass drives the Scene Chain Sampler's second_pass_sampler. Off, Studio
+      // mirrors the HIGH pass's algorithm into that output, so a graph that already used a
+      // second pass keeps doing exactly what it did; on, the settings below are pass 2's.
+      if (passKey === "low") {
+        const own = el("input"); own.type = "checkbox"; own.checked = !!cfg.own_sampler;
+        own.addEventListener("change", () => { cfg.own_sampler = own.checked; renderSampler(); });
+        body.append(row("Own sampler", own));
+        body.append(el("div", "funpack-studio-hint",
+          "Off, the second pass reuses the high pass's sampler and only its schedule below "
+          + "applies. On, it gets its own algorithm — what builds a shot well is often not "
+          + "what finishes it."));
+        if (!cfg.own_sampler) {
+          body.append(el("div", "funpack-studio-hint",
+            "Mirroring the high pass. Only Sigmas / Schedule / Steps below are in effect."));
+        }
+      }
 
       // Type selector
       const typeSelect = selectEl(SAMPLER_TYPES, cfg.type || "Hybrid Euler 2S");
@@ -1490,6 +1554,29 @@ function openPanel(node) {
         body.append(el("div", "funpack-studio-hint",
           "A KSampler is only the step function — it carries no schedule of its own, so the "
           + "schedule / steps above are the only thing that can give it one."));
+        // The unsharp FunPack's own samplers run in-loop, lifted out through a denoiser
+        // proxy so a stock KSampler gets it too. renderSampler() on change, because the
+        // window control only exists while it is on.
+        const kqs = numInput(cfg.ksampler_sharpness, 0, 1, 0.01);
+        kqs.addEventListener("change", () => {
+          cfg.ksampler_sharpness = parseFloat(kqs.value); renderSampler();
+        });
+        body.append(row("quality sharpness", kqs));
+        body.append(el("div", "funpack-studio-hint",
+          "The same free unsharp mask FunPack's own samplers have, driven from outside this "
+          + "sampler's loop. Recovers the fine detail that goes missing at low resolution. "
+          + "0 = off, 0.2-0.4 typical."));
+        if (+cfg.ksampler_sharpness > 0) {
+          const kqp = numInput(cfg.ksampler_sharpen_start_pct, 0, 1, 0.05);
+          kqp.addEventListener("input", () => {
+            cfg.ksampler_sharpen_start_pct = parseFloat(kqp.value);
+          });
+          body.append(row("sharpen last %", kqp));
+          body.append(el("div", "funpack-studio-hint",
+            "Fraction of the schedule it applies to, counted from the end — the same meaning as "
+            + "Hybrid Euler 2S's high quality pct. Sharpening the noisy early steps amplifies "
+            + "noise, not detail."));
+        }
       }
     }
 

@@ -44,6 +44,15 @@
     parent.append(el("div", "insp-hint", isMixed
       ? "Starting frame for this scene; prior-scene guides stay active (◐+⇥ on the timeline)."
       : "Image-to-video anchor for this scene. Drag from the Media bin onto the clip, or Browse here."));
+    // Only on H3: the region lock is a property of the anchor FILE, so there is no toggle to
+    // find and nothing announces it. On any other family a transparent anchor is just an
+    // anchor, so the line would be a lie.
+    if (window.PipelineCaps && window.PipelineCaps.isH3(st)) {
+      parent.append(el("div", "insp-hint",
+        "Transparent parts of the anchor are not conditioned — the model invents them. "
+        + "Use a PNG with the background erased to keep a character and let the scene change "
+        + "around it. Experimental."));
+    }
   }
 
   // "Anchor as guide": the image still feeds the pipeline (it's the anchor — e.g. an Image
@@ -137,7 +146,7 @@
     wrap.append(el("span", null, m.label));
 
     const sel = el("select"); sel.dataset.k = "sc-" + kind + "mode";
-    [["project", "Inherit project global"], ["timeline", "Inherit timeline (trim)"], ["custom", "Custom"]]
+    [["project", "Project default"], ["timeline", "Timeline trim"], ["custom", "Custom"]]
       .forEach(([v, l]) => { const o = el("option", null, l); o.value = v; if (v === mode) o.selected = true; sel.append(o); });
     sel.onchange = () => {
       const patch = { [kind + "_mode"]: sel.value };
@@ -447,14 +456,20 @@
       (v) => S.patchProjectQuiet({ num_frames_per_scene: v }), "pj-frames");
     const framesInput = framesField.querySelector("input");
     if (framesInput) {
+      // Says what editing this does to shots that already have their own length, because it
+      // discards timeline trims and there is no other place that would tell you.
+      const reach = "Sets the length of every shot, including ones trimmed or split on the "
+        + "timeline. Shots set to Custom keep theirs.";
       if (spec) {
         framesInput.step = String(spec.step);
         framesInput.min = String(spec.min);
-        framesInput.title = spec.snap
-          ? "MiniMax H3 only generates on its " + grid.label + " frame grid, so this snaps to it "
+        framesInput.title = reach + (spec.snap
+          ? " MiniMax H3 only generates on its " + grid.label + " frame grid, so this snaps to it "
             + "— the arrows move a whole " + spec.step + " frames."
-          : "Any length works; the arrows walk this model's " + grid.label + " grid, and an "
-            + "off-grid number is rounded up to it when the graph is built.";
+          : " Any length works; the arrows walk this model's " + grid.label + " grid, and an "
+            + "off-grid number is rounded up to it when the graph is built.");
+      } else {
+        framesInput.title = reach;
       }
       framesInput.onchange = () => {
         const typed = parseInt(framesInput.value || "0", 10);
@@ -473,10 +488,39 @@
     }
     row1.append(fpsField);
     body.append(row1);
+
+    // Editing Frames resets a shot the timeline gave its own length — the field used to look
+    // live while reaching nothing. Custom is the exception, so it is the only one worth a
+    // warning: it is also the only one that can still silently disagree with this number.
+    const overridden = S.scenesOverridingProjectFrames ? S.scenesOverridingProjectFrames() : [];
+    const gen = (p.scenes || []).filter((s) => s && !S.isVideoClip?.(s));
+    if (overridden.length) {
+      const warn = el("div", "insp-hint warn");
+      warn.textContent = overridden.length >= gen.length
+        ? `Frames doesn't reach any shot — all ${overridden.length} are set to Custom.`
+        : `Frames doesn't reach ${overridden.length} of ${gen.length} shots — they're set to Custom.`;
+      const fix = el("button", "btn ghost tiny", "Use project length everywhere");
+      fix.title = "Put those shots back on the project's Frames value. Video clips keep their "
+        + "own length. Undoable.";
+      fix.onclick = () => S.useProjectFramesEverywhere();
+      warn.append(fix);
+      body.append(warn);
+    }
     const row2 = el("div", "fields-row");
     row2.append(numberField("Width", p.width != null ? p.width : 768, (v) => S.patchProjectQuiet({ width: v }), "pj-w"));
     row2.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));
     body.append(row2);
+
+    // Sets what a new scene starts from and whether a missing anchor is worth mentioning.
+    // Images stay wireable in either mode.
+    const mode = el("select"); mode.dataset.k = "pj-genmode";
+    [["i2v", "From an image"], ["t2v", "From a prompt"]].forEach(([v, lbl]) => {
+      const o = new Option(lbl, v);
+      if ((p.generation_mode || "i2v") === v) o.selected = true;
+      mode.append(o);
+    });
+    mode.onchange = () => S.patchProject({ generation_mode: mode.value });
+    body.append(field("Start shots", mode));
 
     const promptTag = el("div", "insp-tag"); promptTag.textContent = "Prompt"; body.append(promptTag);
     const anchor = el("textarea"); anchor.rows = 2; anchor.value = p.anchor || ""; anchor.dataset.k = "pj-anchor";
@@ -926,15 +970,16 @@
     if (!st.project) { title.textContent = "Inspector"; body.append(el("div", "pj-meta", "No project open.")); return; }
     const ov = st.selectedOverlayId ? S.overlayTrack(st.selectedOverlayId) : null;
     const scene = !ov && st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
-    renderSwitch(st, scene);
-    renderEngineStrip(st);
+    const simple = !!window.FunPackMode?.isSimple();
+    renderSwitch(st, scene);   // stays: it is the only route to project settings
+    if (!simple) renderEngineStrip(st);
     if (ov) renderOverlayInspector(st, ov);
     else if (scene) {
       if (S.isVideoClip(scene)) renderVideoClip(st, scene);
       else renderScene(st, scene);
     } else renderProject(st);
-    renderExposed(st);
-    renderSplit(st);
+    renderExposed(st);   // knobs the user chose to surface — deliberate, not clutter
+    if (!simple) renderSplit(st);
     body.scrollTop = scrollTop;  // restore so editing doesn't jump to the top
   }
 

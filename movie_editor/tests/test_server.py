@@ -157,17 +157,6 @@ def test_mixed_solo_sampler_inputs():
     assert guides["scenes"][0][0]["media_ref"] == "img1"
 
 
-def test_carry_chain_auto_mid_scene_guide():
-    import json
-    full = _project(scenes=[
-        {"id": "s1", "text": "a"},
-        {"id": "s2", "text": "b", "source": {"type": "carry"}},
-    ])
-    samp = _run_sampler_inputs(full, 2, full=full)
-    assert samp["mid_scene_guide"] is True
-    assert samp["carry_i2v_guides"] is False
-    guides = json.loads(samp["funpack_scene_guides"])
-    assert guides["scenes"][1][0]["source"] == "template"
 
 
 def test_identity_pin_media_refs_without_mixed_anchors():
@@ -563,3 +552,22 @@ def test_h3_references_round_trip_on_the_project():
     assert Project.from_dict(p.to_dict()).h3_references == refs
     # absent on every project that predates the feature, never None
     assert Project.from_dict({}).h3_references == []
+
+
+def test_the_ports_endpoint_answers_for_the_project_not_the_global_default(monkeypatch):
+    """/api/pipeline-ports resolves its family the same way, from ?pid=.
+
+    Without that it described whatever project was saved last, so opening one on the other
+    family read its saved wires back as "(not allowed)" and let the panel's reconcile drop
+    them against overrides for a core that isn't there.
+    """
+    from movie_editor.backend import nodes, pipeline_wiring
+
+    monkeypatch.setattr(nodes, "load_models", lambda: {"slots": [], "model_family": "ltxav"})
+    p = _project(scenes=[{"id": "s1", "text": "a"}])
+    p.models = {"slots": [{"id": "a", "role": "unet"}], "model_family": "minimax_h3"}
+
+    assert pipeline_wiring.family_of(_project_models(p)) == "minimax_h3"
+    assert pipeline_wiring.family_of(nodes.load_models()) == "ltxav"
+    # No pid — an app with no project open — still answers with the global default.
+    assert pipeline_wiring.family_of(_project_models(None)) == "ltxav"

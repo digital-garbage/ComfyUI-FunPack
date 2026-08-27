@@ -1,7 +1,7 @@
 // Thin backend client. Served by ComfyUI, so all URLs are same-origin (relative):
 // the browser automatically uses whatever host:port ComfyUI runs on.
 (function () {
-  // Base = the directory this app is served from, e.g. /funpack/movie
+  // Base = the directory this app is served from, i.e. /funpack
   const BASE = window.location.pathname.replace(/\/+$/, "").replace(/\/index\.html$/, "");
   const API = (p) => `${BASE}/api${p}`;
   const FUNPACK = "/funpack";
@@ -97,6 +97,11 @@
     deleteFile: (group, name) => j("DELETE", API(`/files/${encodeURIComponent(group)}/${encodeURIComponent(name)}`)),
     clearFiles: (group) => j("POST", API(`/files/${encodeURIComponent(group)}/clear`), {}),
     nleLibrary: () => j("GET", API("/library/nle")),
+    customNodes: () => j("GET", API("/custom-nodes")),
+    customNodesCheck: () => j("POST", API("/custom-nodes/check"), {}),
+    customNodeInstall: (url) => j("POST", API("/custom-nodes/install"), { url }),
+    customNodeUpdate: (name) => j("POST", API("/custom-nodes/update"), { name }),
+    customNodeRemove: (name) => j("POST", API("/custom-nodes/remove"), { name }),
 
     // media bin
     listMedia: () => j("GET", API("/media")),
@@ -116,9 +121,9 @@
     nodeCandidates: (role, refresh) => j("GET", API(`/node-candidates/${role}${refresh ? "?refresh=true" : ""}`)),
     allNodes: () => j("GET", API("/all-nodes")),
     nodeSpec: (cls) => j("GET", API(`/node/${encodeURIComponent(cls)}`)),
-    pipelinePorts: () => j("GET", API("/pipeline-ports")),
     // pid is optional but should be passed whenever a project is open: without it the answer
     // describes the GLOBAL default, which is not necessarily this project's family.
+    pipelinePorts: (pid) => j("GET", API("/pipeline-ports" + (pid ? "?pid=" + encodeURIComponent(pid) : ""))),
     pipelineDeps: (pid) => j("GET", API("/pipeline-deps" + (pid ? "?pid=" + encodeURIComponent(pid) : ""))),
     pipelineDepsInstall: (packIds) => j("POST", API("/pipeline-deps/install"), { pack_ids: packIds }),
     pipelineDepsInstallManager: () => j("POST", API("/pipeline-deps/install"), { install_manager: true }),
@@ -129,6 +134,16 @@
     // default route (used as the seed/template) when no project is given.
     coreGraph: (pid) => j("GET", API("/core-graph" + (pid ? `?pid=${encodeURIComponent(pid)}` : ""))),
     getModels: (pid) => j("GET", API(pid ? `/projects/${pid}/models` : "/models")),
+    // The settings card is a PNG, not JSON — fetched as a blob so the modal can show it,
+    // download it and put it on the clipboard from the one response.
+    settingsCard: async (pid, theme) => {
+      const q = new URLSearchParams();
+      if (pid) q.set("pid", pid);
+      if (theme) q.set("theme", theme);
+      const r = await fetch(API("/settings-card") + (q.toString() ? `?${q}` : ""));
+      if (!r.ok) throw new Error(await r.text().catch(() => r.statusText));
+      return r.blob();
+    },
     saveModels: (pid, data) => j("PUT", API(pid ? `/projects/${pid}/models` : "/models"), data),
     refreshModels: () => j("POST", API("/models/refresh")),
     parseWorkflow: (workflow) => j("POST", API("/workflow/parse"), { workflow }),
@@ -141,8 +156,9 @@
     gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),
 
     // generate (a single scene, or an explicit run of scene ids = one chain request)
+    // `simple` strips the enhancements for THIS run only (see pipeline_caps.apply_simple_mode).
     generate: (id, onlyScene, sceneIds, resetSession, nodeOverrides) =>
-      j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession, node_overrides: nodeOverrides || null }),
+      j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession, node_overrides: nodeOverrides || null, simple: !!window.FunPackMode?.isSimple() }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
     progress: () => j("GET", API("/progress")),
     // The editor's own in-flight generation, recovered from ComfyUI's queue (survives a UI reload).
@@ -192,6 +208,9 @@
         // window must travel in the query), and it versions the browser cache — segments
         // are cached for an hour, so a timeline trim must produce a different URL.
         if (spec.dur != null) q.set("dur", String(spec.dur));
+        // Reverse changes the bytes, so it must change the URL — segments are cached for
+        // an hour and would otherwise replay the forward encode.
+        if (spec.reverse) q.set("rev", "1");
         u += "?" + q.toString();
       }
       return u;

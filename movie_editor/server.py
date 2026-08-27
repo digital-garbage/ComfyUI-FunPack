@@ -1,7 +1,7 @@
 """Movie Editor routes, served by ComfyUI's own aiohttp server.
 
-UI:   GET  /funpack/movie/            (and static assets under /funpack/movie/<file>)
-API:  /funpack/movie/api/*
+UI:   GET  /funpack/               (and static assets under /funpack/<file>)
+API:  /funpack/api/*
 
 Registered on PromptServer like the other /funpack/* routes (see templates.py,
 batch_training.py). Pure logic lives in backend/ (timeline, projects, workflow);
@@ -9,6 +9,7 @@ bridge.py talks to ComfyUI (parse/library in-process, queue/history/view over lo
 """
 from __future__ import annotations
 
+import json
 import mimetypes
 from typing import Optional
 
@@ -19,8 +20,8 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, sysinfo, workflow_import
-from .backend.nle_effects import zoompan_z_expr
+from .backend import bridge, builder, config, custom_nodes, git_update, media, model_probe, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, settings_card, sysinfo, workflow_import
+from .backend.nle_effects import geometry_filters, reverse_refusal, zoompan_z_expr
 from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_export
 from .backend.timeline import (
     Project,
@@ -36,7 +37,7 @@ from .backend.timeline import (
     is_video_clip,
 )
 
-UI_PREFIX = "/funpack/movie"
+UI_PREFIX = "/funpack"
 
 
 def _restart_comfy() -> None:
@@ -185,7 +186,8 @@ def _clip_needs_trim(clip: dict) -> bool:
     return inn > 0.001 or dur is not None
 
 
-def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur, fast: bool = False) -> None:
+def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur, fast: bool = False,
+                      reverse: bool = False) -> None:
     import shutil
     import subprocess
     ff = shutil.which("ffmpeg")
@@ -196,7 +198,11 @@ def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur, fast: bool = False
         cmd += ["-ss", f"{float(inn):.3f}"]
     if dur is not None:
         cmd += ["-t", f"{float(dur):.3f}"]
-    cmd += ["-i", src_path, "-c:v", "libx264", "-pix_fmt", "yuv420p"]
+    cmd += ["-i", src_path]
+    if reverse:
+        # Applied AFTER the -ss/-t trim above, so only the clip's own frames are buffered.
+        cmd += ["-vf", "reverse", "-af", "areverse"]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
     if fast:
         # Preview segments: latency matters far more than a few % of bitrate — the player
         # is waiting on this encode to unfreeze a scrub across a chain boundary.
@@ -334,17 +340,19 @@ def _scene_playback_clip_spec(
     if not media.get("filename"):
         raise KeyError(f"no render for {scene_id}")
     in_sec = float(scene.source_in or 0) + float(render.get("inSec") or 0)
+    fps = float(scene.eff_fps(project) or 25)
     if scene.source_dur is not None:
         dur = float(scene.source_dur)
     else:
-        fps = scene.eff_fps(project) or 25
-        dur = scene.eff_frames(project) / float(fps)
+        dur = scene.eff_frames(project) / fps
     return {
         "filename": media.get("filename", ""),
         "subfolder": media.get("subfolder") or "",
         "type": media.get("type") or "output",
         "in": in_sec,
         "dur": dur,
+        # Carried for the reverse guard, which is a frame-count limit, not a time limit.
+        "fps": fps,
     }
 
 
@@ -357,10 +365,12 @@ _faststart_locks: dict = {}  # source path -> asyncio.Lock (dedupe concurrent re
 _FASTSTART_RETRY_SEC = 30.0  # min gap between remux re-attempts on a file that failed to remux
 
 
-def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict) -> str:
+def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict,
+                               reverse: bool = False) -> str:
     return (
         f"{pid}:{scene_id}:{clip.get('filename')}:{clip.get('subfolder') or ''}:"
         f"{clip.get('type') or 'output'}:{clip.get('in')}:{clip.get('dur')}"
+        f"{':rev' if reverse else ''}"
     )
 
 
@@ -723,10 +733,6 @@ def _run_sampler_inputs(
     if scene_count > 1 and not guides:
         samp["carry_i2v_guides"] = True
 
-    if cs["auto_enabled"] and scene_count > 1 and cs["mid_scene_guide"]:
-        samp["mid_scene_guide"] = True
-        samp["mid_scene_guide_strength"] = cs["mid_scene_guide_strength"]
-
     return samp
 
 
@@ -858,12 +864,17 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
         for i, c in enumerate(clips):
             fx = c.get("fx") or {}
             dur = float(c.get("dur") or 0) or 0.0
-            # Normalize first: fit into the canvas (letterbox), fixed fps + square pixels.
-            vf: list[str] = [
-                f"scale={cw}:{ch}:force_original_aspect_ratio=decrease",
-                f"pad={cw}:{ch}:-1:-1:color=black",
-                "setsar=1", f"fps={cfps:g}",
-            ]
+            # Normalize first: flips, crop, and fit into the canvas (letterbox or fill),
+            # then fixed fps + square pixels. Shared with the live preview so the render
+            # cannot drift from what was shown.
+            vf: list[str] = []
+            if fx.get("reverse"):
+                refusal = reverse_refusal(dur, cfps)
+                if refusal:
+                    raise ValueError(f"clip {i + 1}: {refusal}")
+                # Before the geometry so the reversal is of the source, matching preview.
+                vf.append("reverse")
+            vf += geometry_filters(fx, cw, ch) + ["setsar=1", f"fps={cfps:g}"]
             zoom = fx.get("zoom")
             if zoom in ("in", "out") and dur > 0:
                 nframes = max(1, round(dur * cfps))
@@ -888,6 +899,10 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
             if keep_original:
                 vol = float(c.get("volume", 1.0))
                 af = "aformat=sample_fmts=fltp:channel_layouts=stereo"
+                if fx.get("reverse"):
+                    # Audio has to turn around with the picture, or a reversed clip plays
+                    # its own soundtrack forwards against it.
+                    af += ",areverse"
                 if abs(vol - 1.0) > 1e-3:
                     af += f",volume={max(0.0, vol):.3f}"
                 parts.append(f"[{i}:a:0]{af}[a{i}]")
@@ -1331,7 +1346,15 @@ if web is not None and PromptServer is not None:
         # projects, so copy it whole and let the per-key rules below decide the rest.
         glob = nodes.load_models()
         if isinstance(glob, dict) and glob:
-            p.models = glob
+            try:
+                oi = await bridge.object_info()
+            except Exception:
+                oi = None
+            # ...except when the global is an IMPORTED WORKFLOW. That is one project's
+            # graph, not a template: copying it starts every new project with a pile of
+            # third-party loaders to wire, which is precisely what FunPack's own loaders
+            # exist to remove. The files it picked are carried over; the graph is not.
+            p.models = pipeline_wiring.new_project_models(glob, oi)
             projects.save(p)
         return web.json_response(p.to_dict())
 
@@ -1767,6 +1790,19 @@ if web is not None and PromptServer is not None:
             sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p, models=models_cfg)
             if caps["chain_sampler"]:
                 _attach_scene_anchors(sampler_inputs, media_pack, target)
+            studio_inputs = _run_studio_inputs(
+                target, active_scenes, prompt_changed=prompt_changed, models=models_cfg,
+            )
+            # Simple mode generates what was asked for and nothing else. Applied to the
+            # RUN, never written back: the project keeps the Editor's settings.
+            if bool(body.get("simple")):
+                _settings = {}
+                try:
+                    _settings = json.loads(studio_inputs.get("studio_settings") or "{}")
+                except Exception:  # noqa: BLE001
+                    _settings = {}
+                sampler_inputs, _settings = pipeline_caps.apply_simple_mode(sampler_inputs, _settings)
+                studio_inputs["studio_settings"] = json.dumps(_settings)
             graph, report = builder.build(oi, models_cfg, {
                 "prompt": prompt, "seed": _resolve_run_seed(target),
                 "num_frames_per_scene": effective_frames,
@@ -1774,9 +1810,7 @@ if web is not None and PromptServer is not None:
                 "width": target.width, "height": target.height,
                 "negative_prompt": effective_negative_prompt(target) or None,
                 "max_scenes": active_scene_count,
-                "studio_inputs": _run_studio_inputs(
-                    target, active_scenes, prompt_changed=prompt_changed, models=models_cfg,
-                ),
+                "studio_inputs": studio_inputs,
                 # Scene boundaries handed to Studio structurally (the editor knows them) so the
                 # generation prompt stays clean — no injected `scene N` delimiters.
                 "scene_segments": build_generation_scene_segments(target),
@@ -1803,6 +1837,13 @@ if web is not None and PromptServer is not None:
         # silently when anchors are assembled — it still renders, just without the
         # anchor it was configured for. Report it rather than block: the run is valid,
         # it just may not be the shot the user set up.
+        if bool(body.get("simple")):
+            report["unsatisfied"].append(
+                "Simple mode: refinement (rating-driven steering, taste and value guidance, "
+                "DynaShift, velocity bias) was switched off for this run — there is no "
+                "rating UI here to feed it. Everything else ran as configured. Your project "
+                "settings are unchanged."
+            )
         anchorless = pipeline_caps.scenes_missing_anchor_media(target, caps["chain_sampler"])
         if anchorless:
             report["unsatisfied"].append(
@@ -2168,7 +2209,12 @@ if web is not None and PromptServer is not None:
                 status=503, headers={"Retry-After": "2"})
         # Source signature in the key: a re-rendered source at the SAME path must not keep
         # serving the segment encoded from the old bytes (stale previews).
-        key = _preview_segment_cache_key(pid, scene_id, clip) + f":{src_sig[0]}:{src_sig[1]}"
+        want_reverse = str(req.query.get("rev") or "") in ("1", "true", "yes")
+        if want_reverse:
+            refusal = reverse_refusal(clip.get("dur"), clip.get("fps") or 24)
+            if refusal:
+                return web.json_response({"detail": refusal}, status=400)
+        key = _preview_segment_cache_key(pid, scene_id, clip, want_reverse) + f":{src_sig[0]}:{src_sig[1]}"
         # Serialize per segment: the pool preloads every clip at once after a run, and a
         # scrub can re-request the same URL — without this lock each request would start
         # its own duplicate encode of the same segment.
@@ -2193,7 +2239,7 @@ if web is not None and PromptServer is not None:
                 # the whole editor API for its duration (stale/black previews on scrub).
                 await asyncio.to_thread(
                     _ffmpeg_trim_clip, src_path, out_path, clip.get("in"), clip.get("dur"),
-                    fast=True,
+                    fast=True, reverse=want_reverse,
                 )
             except FileNotFoundError as e:
                 return web.json_response({"detail": str(e)}, status=400)
@@ -2359,18 +2405,27 @@ if web is not None and PromptServer is not None:
         return web.json_response({"cancelled": True, "job_id": job_id})
 
     @routes.get(UI_PREFIX + "/api/pipeline-ports")
-    async def _pipeline_ports(_req):
+    async def _pipeline_ports(req):
         try:
             oi = await bridge.object_info()
         except Exception:
             oi = None
-        fam = pipeline_wiring.family_of(nodes.load_models())
+        # The family decides which ports exist and which wires are legal, and it lives on the
+        # PROJECT. Answering from the global default described whatever project was saved last,
+        # so opening one on the other family read its saved wires back as "(not allowed)" and
+        # let reconcile drop them against stale overrides.
+        pid = req.query.get("pid")
+        fam = pipeline_wiring.family_of(
+            _project_models(projects.get(pid)) if pid else nodes.load_models())
         return web.json_response({
             "family": fam,
             "ports": nodes.pipeline_ports(oi, fam),
             "core_producers": nodes.core_producers(oi),
             "requirements": nodes.pipeline_requirements(fam),
             "wiring": pipeline_wiring.wiring_rules_payload(fam),
+            # What a project with no pipeline yet should start as: FunPack's own loaders,
+            # already wired. Sent with the rules because it is derived from the same family.
+            "default_slots": pipeline_wiring.default_pipeline_slots(fam, oi) if oi else [],
         })
 
     @routes.get(UI_PREFIX + "/api/image-targets")
@@ -2433,9 +2488,59 @@ if web is not None and PromptServer is not None:
         # machines and the host is the one worth looking at.
         return web.json_response(sysinfo.collect())
 
+    @routes.get(UI_PREFIX + "/api/settings-card")
+    async def _settings_card(req):
+        import asyncio
+        # to_thread for the same reason every other slow route uses it: sysinfo shells out
+        # to the OS (and can wait on nvidia), and one blocking second here stalls every
+        # preview stream on the page.
+        pid = req.query.get("pid")
+        theme = req.query.get("theme") or "dark"
+        p = projects.get(pid) if pid else None
+        models_cfg = _project_models(p) if pid else nodes.load_models()
+        name = getattr(p, "name", None) if p else None
+
+        # The sampling settings matter at least as much as the model files: two runs on the
+        # same checkpoint with different schedules are different renders. Read off the project
+        # so the card describes THIS project, not the global defaults.
+        render = studio_in = sampler_in = None
+        if p is not None:
+            render = {
+                "size": f"{getattr(p, 'width', '?')}x{getattr(p, 'height', '?')}",
+                "frames per scene": getattr(p, "num_frames_per_scene", None),
+                "frame rate": getattr(p, "frame_rate", None),
+                "max scenes": getattr(p, "max_scenes", None),
+                "mode": getattr(p, "generation_mode", None),
+            }
+            studio_in = dict(getattr(p, "studio_inputs", None) or {})
+            sampler_in = dict(getattr(p, "sampler_inputs", None) or {})
+
+        def _build():
+            st = git_update.status()
+            report = settings_card.collect(
+                models_cfg, sysinfo.collect(), project_name=name,
+                version=st.get("version"), codename=st.get("codename"),
+                render=render, studio_inputs=studio_in, sampler_inputs=sampler_in)
+            return settings_card.render_png(report, theme)
+
+        try:
+            png = await asyncio.to_thread(_build)
+        except Exception as e:
+            raise web.HTTPInternalServerError(reason=f"Could not render the card: {e}")
+        return web.Response(body=png, content_type="image/png")
+
     @routes.get(UI_PREFIX + "/api/git/status")
     async def _git_status(_req):
         return web.json_response(git_update.status())
+
+    # install_deps is opt-in on the library side: pressing Update is what means "install
+    # what this update needs", and no other caller of pull()/checkout() should acquire a
+    # pip run by accident.
+    def _pull_with_deps(branch):
+        return git_update.pull(branch, install_deps=True)
+
+    def _checkout_with_deps(branch):
+        return git_update.checkout(branch, pull_after=True, install_deps=True)
 
     @routes.post(UI_PREFIX + "/api/git/update")
     async def _git_update(req):
@@ -2443,7 +2548,11 @@ if web is not None and PromptServer is not None:
         body = await req.json() if req.can_read_body else {}
         branch = body.get("branch")
         try:
-            result = git_update.pull(str(branch).strip() if branch else None)
+            # to_thread: git fetch over a tunnel takes seconds, and a requirements install
+            # can take a minute. Inline, both freeze the one event loop ComfyUI has —
+            # stalling every playing /result stream and the whole editor API meanwhile.
+            result = await asyncio.to_thread(
+                _pull_with_deps, str(branch).strip() if branch else None)
         except git_update.GitUpdateError as e:
             return web.json_response({"detail": str(e)}, status=400)
         asyncio.get_event_loop().call_later(0.7, _restart_comfy)
@@ -2457,11 +2566,57 @@ if web is not None and PromptServer is not None:
         if not branch:
             return web.json_response({"detail": "Branch name is required."}, status=400)
         try:
-            result = git_update.checkout(branch, pull_after=True)
+            result = await asyncio.to_thread(_checkout_with_deps, branch)
         except git_update.GitUpdateError as e:
             return web.json_response({"detail": str(e)}, status=400)
         asyncio.get_event_loop().call_later(0.7, _restart_comfy)
         return web.json_response({"restarting": True, **result})
+
+    # --- API: custom node packs (a small stand-in for ComfyUI-Manager: clone, pull, delete) ---
+    # Every one of these shells out to git or pip, which take seconds to minutes. Inline they
+    # would freeze the one event loop ComfyUI has, stalling playback and the whole editor API.
+
+    @routes.get(UI_PREFIX + "/api/custom-nodes")
+    async def _custom_nodes_list(_req):
+        import asyncio
+        return web.json_response(await asyncio.to_thread(custom_nodes.list_nodes))
+
+    @routes.post(UI_PREFIX + "/api/custom-nodes/check")
+    async def _custom_nodes_check(_req):
+        import asyncio
+        return web.json_response(await asyncio.to_thread(custom_nodes.check_updates))
+
+    @routes.post(UI_PREFIX + "/api/custom-nodes/install")
+    async def _custom_nodes_install(req):
+        import asyncio
+        body = await req.json() if req.can_read_body else {}
+        try:
+            result = await asyncio.to_thread(custom_nodes.install, str(body.get("url") or ""))
+        except custom_nodes.CustomNodeError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        return web.json_response(result)
+
+    @routes.post(UI_PREFIX + "/api/custom-nodes/update")
+    async def _custom_nodes_update(req):
+        import asyncio
+        body = await req.json() if req.can_read_body else {}
+        try:
+            result = await asyncio.to_thread(custom_nodes.update, str(body.get("name") or ""))
+        except custom_nodes.CustomNodeError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        return web.json_response(result)
+
+    @routes.post(UI_PREFIX + "/api/custom-nodes/remove")
+    async def _custom_nodes_remove(req):
+        import asyncio
+        body = await req.json() if req.can_read_body else {}
+        try:
+            result = await asyncio.to_thread(custom_nodes.remove, str(body.get("name") or ""))
+        except custom_nodes.CustomNodeError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        except OSError as e:
+            return web.json_response({"detail": f"Could not delete it: {e}"}, status=500)
+        return web.json_response(result)
 
     @routes.post(UI_PREFIX + "/api/restart")
     async def _restart(_req):
@@ -2529,7 +2684,20 @@ if web is not None and PromptServer is not None:
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}/models")
     async def _project_models_get(req):
-        return web.json_response(_project_models(_project_or_404(req.match_info["pid"])))
+        p = _project_or_404(req.match_info["pid"])
+        models = _project_models(p)
+        # First look at a pipeline that has never been set up: it becomes FunPack's own
+        # loaders, already wired. Seeded HERE rather than in the panel so it happens once,
+        # server-side, and never travels into the global default the way a save does.
+        if not models.get("defaults_seeded") and not models.get("slots"):
+            try:
+                oi = await bridge.object_info()
+            except Exception:
+                oi = None
+            if pipeline_wiring.seed_default_pipeline(models, oi).get("slots"):
+                p.models = models
+                projects.save(p)
+        return web.json_response(models)
 
     @routes.put(UI_PREFIX + "/api/projects/{pid}/models")
     async def _project_models_put(req):
@@ -2538,19 +2706,73 @@ if web is not None and PromptServer is not None:
         if not isinstance(body, dict):
             body = {"slots": []}
         body.setdefault("slots", [])
+        # A pipeline that has never been set up starts as FunPack's own loaders, already
+        # wired — the wizard's family step reaches here before the Models panel is ever
+        # opened, so seeding only in the panel would leave "Continue" with no pipeline.
+        # The family follows the CHECKPOINT, not a button. Picking LTX while loading an H3
+        # file used to wire the whole graph for the wrong model and surface as a stray port
+        # rather than as a family error. Detection is a header read, so it costs the same on
+        # a 40 GB file as on a small one. A file we cannot identify leaves the existing
+        # family alone — guessing is what this replaced.
+        probe = model_probe.probe_models(body)
+        if probe.get("family") and probe["family"] != body.get("model_family"):
+            body["model_family"] = probe["family"]
+        body["model_family_probe"] = probe
+
+        seeded_now = False
+        if not body.get("defaults_seeded"):
+            oi = None
+            if not body.get("slots"):
+                try:
+                    oi = await bridge.object_info()
+                except Exception:
+                    oi = None
+            before = len(body.get("slots") or [])
+            pipeline_wiring.seed_default_pipeline(body, oi)
+            seeded_now = len(body.get("slots") or []) > before
+        # The family step can land here after seeding, and a pipeline nobody has touched
+        # must follow the answer: being handed LTX's nodes after choosing H3 is the setup
+        # contradicting the user. Only an untouched seed is rebuilt.
+        elif body.get("model_family") != (getattr(p, "models", None) or {}).get("model_family") \
+                and pipeline_wiring.is_seeded_pipeline(body):
+            try:
+                oi = await bridge.object_info()
+            except Exception:
+                oi = None
+            if pipeline_wiring.reseed_for_family(body, oi):
+                seeded_now = True
         p.models = body
         projects.save(p)
-        # Keep the global default in sync (it seeds new projects) — but never let a save that
-        # simply omits `model_family` erase the one already recorded there. A caller that
-        # means to change the family sends it; one that is only rearranging loaders does not,
-        # and silently clearing it is how every later project ends up with no family at all.
-        glob = dict(body)
-        if not glob.get("model_family"):
-            inherited = nodes.load_models().get("model_family")
-            if inherited:
-                glob["model_family"] = inherited
-        nodes.save_models(glob)
+        # A SEED is not a user edit and must not reach the global default at all: opening a
+        # new project would otherwise replace the loaders someone configured with empty ones.
+        if seeded_now:
+            return web.json_response(body)
+        glob = pipeline_wiring.global_template_update(nodes.load_models(), body)
+        if glob is not None:
+            nodes.save_models(glob)
         return web.json_response(body)
+
+    # --- UI: legacy entry points ---
+    # /funpack/movie/ and /funpack/easy/ were the Cutting Room and Easy Gen when they were
+    # two apps. Both are the same app now, so old bookmarks land on it rather than 404.
+    # Registered BEFORE the catch-all below, which would otherwise swallow them.
+    #
+    # The API prefix has to move too. Those frontends build their API base from
+    # location.pathname, so a page still open on the old URL after an update polls
+    # /funpack/<old>/api/health. Answering 404 leaves its restart overlay spinning on
+    # "Reloading ComfyUI" forever — it only reloads once health says ok, and the reload is
+    # what would have reached the redirect below. 307 keeps the method and body.
+    for _old in ("/movie", "/easy"):
+        @routes.route("*", UI_PREFIX + _old + "/api/{tail:.*}")
+        async def _legacy_api(req):
+            target = f"{UI_PREFIX}/api/{req.match_info['tail']}"
+            raise web.HTTPTemporaryRedirect(
+                f"{target}?{req.query_string}" if req.query_string else target)
+
+        for _path in (UI_PREFIX + _old, UI_PREFIX + _old + "/"):
+            @routes.get(_path)
+            async def _legacy_ui(_req):
+                raise web.HTTPFound(UI_PREFIX + "/")
 
     # --- UI: static frontend (must be registered AFTER api routes) ---
     @routes.get(UI_PREFIX)
@@ -2565,4 +2787,4 @@ if web is not None and PromptServer is not None:
     async def _static(req):
         return _serve_static(req.match_info["tail"])
 
-    print(f"[FunPack] Movie Editor available at {config.comfy_display_url()}{UI_PREFIX}/")
+    print(f"[FunPack] FunPack available at {config.comfy_display_url()}{UI_PREFIX}/")

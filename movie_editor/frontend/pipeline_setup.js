@@ -20,10 +20,25 @@
     try { localStorage.setItem(LS_KEY, "1"); } catch (_) {}
   }
 
+  // Bumped by every close the USER asked for. chooseFamily / applyFamily / useOwnPipeline
+  // each span two or three round-trips and then reopen the modal with fresh deps; without
+  // this, a continuation that started before the user dismissed the modal reopens it
+  // afterwards — which is exactly what "No, I'll use my own pipeline" looked like, since
+  // disabling the built-in pipeline installs nothing, so `needs_setup` is still true when
+  // the in-flight chooseFamily lands.
+  let _closeToken = 0;
+
   function closeModal() {
     if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
     overlay?.remove();
     overlay = null;
+  }
+
+  // Close AND supersede anything already in flight. Use this for every close the user
+  // initiates; closeModal() alone is for internal teardown before a reopen.
+  function dismissModal() {
+    _closeToken += 1;
+    closeModal();
   }
 
   function builtInPipelineActive(st) {
@@ -31,14 +46,41 @@
     return !m.disable_core;
   }
 
+  // The Editor keeps the live model config at state.models and reloads it from the
+  // server; Easy Gen has neither, and reads it off state.project.models (see
+  // PipelineCaps.models). Write back to whichever this host actually has.
+  async function refreshModels(saved) {
+    if (typeof S.loadModels === "function") { await S.loadModels(); return; }
+    const p = S.get().project;
+    if (p) p.models = JSON.parse(JSON.stringify(saved));
+    if (typeof S.notify === "function") S.notify();
+    else S.set?.({});   // Easy Gen's store notifies through set()
+  }
+
   async function useOwnPipeline() {
-    if (!S.get().project) return;
-    const models = JSON.parse(JSON.stringify(S.get().models || { slots: [] }));
-    models.disable_core = true;
-    await API.saveModels(S.get().project.id, models);
-    await S.loadModels();
+    const proj = S.get().project;
+    if (!proj) {
+      // Nothing to write the choice to. Still close: leaving the modal up with a button
+      // that does nothing when pressed is the worse of the two failures.
+      dismissModal();
+      return;
+    }
+    // Dismissed BEFORE the awaits: the decision is already made, and holding the modal open
+    // for two round-trips is what let an in-flight family lookup reopen it afterwards.
     setDismissed();
-    closeModal();
+    dismissModal();
+    const models = JSON.parse(JSON.stringify(S.get().models || proj.models || { slots: [] }));
+    models.disable_core = true;
+    try {
+      await API.saveModels(proj.id, models);
+    } catch (e) {
+      // The choice did NOT persist — saying so beats a project that quietly still runs the
+      // built-in pipeline on the next Generate.
+      alert("Could not save the pipeline choice: " + (e?.message || e)
+            + "\n\nSet it in Models → Enable built-in pipeline.");
+      return;
+    }
+    await refreshModels(models);
   }
 
   function packList(deps) {
@@ -183,16 +225,25 @@
 
   // The family decides which nodes and which model files the project needs, so it is the
   // FIRST question — asking it after an install would have installed the wrong thing.
-  async function chooseFamily(key) {
-    if (!S.get().project) return;
-    const models = JSON.parse(JSON.stringify(S.get().models || { slots: [] }));
+  // Persist the family and bring the project onto its frame geometry. Split out from
+  // chooseFamily so the onboarding wizard can pick a family without the modal reopening
+  // itself on top of the wizard.
+  async function applyFamily(key) {
+    if (!S.get().project) return "";
+    geometryNote = "";   // otherwise a previous pick's note is returned again
+    const models = JSON.parse(JSON.stringify(S.get().models || S.get().project?.models || { slots: [] }));
     models.model_family = key;
     await API.saveModels(S.get().project.id, models);
-    await S.loadModels();
-    // Frame geometry belongs to the model, not to taste: the new family may generate on a
-    // different frame grid (LTX 8k+1 / H3 17k+5) and at a fixed rate (H3 is always 24 fps).
-    // Bring the project onto them now, while the user is looking at the choice that caused
-    // it — the alternative is a run that fails, or plays back at the wrong speed, later.
+    await refreshModels(models);
+    return applyFamilyGeometry();
+  }
+
+  // Frame geometry belongs to the model, not to taste: a family change may move the project
+  // onto a different frame grid (LTX 8k+1 / H3 17k+5) and a fixed rate (H3 is always 24 fps).
+  // Split out from applyFamily because the family is now DETECTED from the checkpoint, so a
+  // change can arrive from the Models panel without anyone visiting the wizard — and the
+  // migration has to happen either way or the run fails, or plays back at the wrong speed.
+  function applyFamilyGeometry() {
     const st = S.get();
     const grid = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(st) : null;
     if (grid && st.project) {
@@ -211,8 +262,17 @@
           + " (grid " + grid.label + ").";
       }
     }
+    return geometryNote;
+  }
+
+  async function chooseFamily(key) {
+    if (!S.get().project) return;
+    const tok = _closeToken;
+    await applyFamily(key);
+    if (tok !== _closeToken) return;   // user closed the modal while this was in flight
     let deps;
     try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { closeModal(); return; }
+    if (tok !== _closeToken) return;
     if (!deps?.needs_setup) { closeModal(); return; }
     openModal(deps);
   }
@@ -356,22 +416,32 @@
     foot.append(ownBtn);
     const dismissBtn = el("button", "btn ghost", "Close");
     dismissBtn.type = "button";
-    dismissBtn.onclick = () => closeModal();
+    dismissBtn.onclick = () => dismissModal();
     foot.append(dismissBtn);
     modal.append(foot);
 
     overlay.append(modal);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) dismissModal(); });
     document.body.append(overlay);
+  }
+
+  // The onboarding wizard asks the same questions in its own chrome, so this modal must
+  // not open behind it — or, worse, on top of the editor the moment the wizard finishes.
+  function markHandled() {
+    setDismissed();
+    dismissModal();
   }
 
   async function maybePrompt() {
     if (window.__FUNPACK_TOUR__) return;
+    if (window.Onboarding?.isOpen?.()) return;
     if (dismissed()) return;
     const st = S.get();
     if (!st.project || !builtInPipelineActive(st)) return;
+    const tok = _closeToken;
     let deps;
     try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { return; }
+    if (tok !== _closeToken) return;
     if (!deps?.needs_setup) return;
     openModal(deps);
   }
@@ -380,10 +450,21 @@
   // after it has been dismissed once (the auto-prompt is one-shot per browser).
   async function open() {
     if (!S.get().project) return;
+    const tok = _closeToken;
     let deps;
     try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { return; }
+    if (tok !== _closeToken) return;
     openModal(deps);
   }
 
-  window.PipelineSetup = { maybePrompt, open, close: closeModal };
+  window.PipelineSetup = {
+    maybePrompt, open, close: closeModal,
+    // Exposed for the onboarding wizard, which renders the prerequisite step in its
+    // own full-screen chrome but must not re-implement the install/poll/restart
+    // machinery below.
+    applyFamily, applyFamilyGeometry, useOwnPipeline, markHandled,
+    installPacks: startInstall,
+    installManager: startManagerInstall,
+    restartComfy: restartComfyOnly,
+  };
 })();

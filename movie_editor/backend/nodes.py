@@ -102,6 +102,12 @@ def _combo_default(opts: dict, choices: list | None = None):
         return d
     return choices[0] if choices else ""
 
+
+def _is_list_widget(t, opts: dict) -> bool:
+    """A FunPack list input (see widgets.py): a STRING carrying a `funpack_list` row spec."""
+    return t == "STRING" and isinstance(opts.get("funpack_list"), dict)
+
+
 def _is_autogrow_type(t) -> bool:
     """A V3 autogrow list input (COMFY_AUTOGROW_V3): not a socket itself, but a template
     that ComfyUI expands into one real socket per index (ref_image0, ref_image1, …)."""
@@ -307,7 +313,12 @@ def connection_inputs(node_def: dict) -> list[dict]:
                 continue
             # V3 nodes can mark a required-group input as optional via the flag.
             is_required = group == "required" and not opts.get("optional", False)
-            out.append({"name": name, "type": _normalize_type(t), "required": is_required})
+            entry = {"name": name, "type": _normalize_type(t), "required": is_required}
+            # An input the node itself calls advanced is one the normal path never wires;
+            # the panel folds it away so the normal path stays the obvious one.
+            if opts.get("advanced"):
+                entry["advanced"] = True
+            out.append(entry)
     return out
 
 
@@ -343,6 +354,11 @@ def widget_inputs(node_def: dict) -> list[dict]:
             if opts.get("forceInput"):
                 continue
             field = {"name": name, "required": group == "required", "options": opts}
+            # A widget the node itself calls advanced: real, tweakable, and validated at
+            # its default, so the panel folds it away rather than putting five of them
+            # between the user and the file picker.
+            if opts.get("advanced"):
+                field["advanced"] = True
             # A MultiType widget ("FLOAT,INT") renders as its widget member, not the union.
             if isinstance(t, str):
                 t = widget_type_of(t, opts) or t
@@ -358,6 +374,12 @@ def widget_inputs(node_def: dict) -> list[dict]:
                 field["kind"] = "combo"
                 field["choices"] = choices
                 field["default"] = _combo_default(opts, choices)
+            elif _is_list_widget(t, opts):
+                # A FunPack list input: one STRING holding a JSON array of rows, with the row
+                # shape declared alongside it so this renders as rows, not raw JSON.
+                field["kind"] = "list"
+                field["list"] = opts["funpack_list"]
+                field["default"] = opts.get("default", "[]")
             elif t in WIDGET_PRIMITIVES:
                 field["kind"] = t.lower()
                 field["default"] = opts.get("default")

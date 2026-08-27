@@ -20,6 +20,9 @@
   document.body.append(panel);
 
   let timer = null, autoscroll = true, lastText = "", isFrozen = false, isManuallyPaused = false, pendingText = null;
+  // Set when a poll fails. Held so the panel keeps the last lines the server managed to send
+  // instead of replacing them with the error that means the server is gone.
+  let disconnected = false;
 
   // Helper to check if a node is inside bodyEl (handles text nodes too).
   function nodeInBody(node) {
@@ -40,8 +43,13 @@
       const r = await API.log(800);
       const newText = (r.lines || []).join("\n");
 
-      // Skip DOM write if text hasn't changed.
-      if (newText === lastText) return;
+      // Skip DOM write if text hasn't changed — unless we are coming back from a
+      // disconnect, where the body still carries the "connection lost" note to clear.
+      if (newText === lastText && !disconnected) return;
+      if (disconnected) {
+        disconnected = false;
+        updateConnectionIndicator();
+      }
 
       // If user is selecting, freeze updates and keep polling. textContent assignment
       // destroys the text node tree, which nukes the selection mid-copy, so we defer the
@@ -55,17 +63,44 @@
 
       // Update is safe to apply.
       lastText = newText;
-      bodyEl.textContent = newText;
-      if (autoscroll) bodyEl.scrollTop = bodyEl.scrollHeight;
+      render(newText);
       if (isFrozen) {
         isFrozen = false;
         pendingText = null;
         updateFreezeIndicator();
       }
     } catch (e) {
-      const errMsg = "(log unavailable: " + e.message + ")";
-      lastText = errMsg;
-      bodyEl.textContent = errMsg;
+      // KEEP what we already have. The log going unavailable almost always means the backend
+      // just died — which is the one moment its last lines matter most, and replacing them
+      // with the error destroyed the evidence (and what Copy would have put on the
+      // clipboard). Say it is disconnected; do not wipe it.
+      if (!disconnected) {
+        disconnected = true;
+        render(lastText, "\n\n— connection lost (" + (e && e.message ? e.message : "backend "
+               + "unreachable") + "). The lines above are the last the server sent. —");
+        updateConnectionIndicator();
+      }
+    }
+  }
+
+  // The body is the last good log plus an optional trailing note. `lastText` stays the log
+  // ALONE, so Copy hands over the log rather than the log plus our commentary.
+  function render(text, note) {
+    bodyEl.textContent = text + (note || "");
+    if (autoscroll) bodyEl.scrollTop = bodyEl.scrollHeight;
+  }
+
+  function updateConnectionIndicator() {
+    const existing = actions.querySelector(".log-disconnected");
+    if (disconnected) {
+      if (!existing) {
+        const chip = document.createElement("span");
+        chip.className = "log-freeze-indicator log-disconnected";
+        chip.textContent = "disconnected — log held";
+        actions.insertBefore(chip, actions.firstChild);
+      }
+    } else if (existing) {
+      existing.remove();
     }
   }
 
@@ -96,6 +131,7 @@
     pendingText = null;
     updatePauseButton();
     updateFreezeIndicator();
+    updateConnectionIndicator();
     refresh();
     timer = setInterval(refresh, 1500);
   }

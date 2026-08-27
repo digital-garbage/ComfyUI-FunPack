@@ -3,7 +3,7 @@
 A web app for assembling LTXAV montages over the FunPack pipeline: scenes on an editable
 timeline, per-scene prompts, a transition library between scenes, and one-click generation.
 It runs **inside ComfyUI** — routes are registered on ComfyUI's own server, so the editor
-opens at **`http://<your-comfyui-host>:<port>/funpack/movie/`** (same host/port as ComfyUI;
+opens at **`http://<your-comfyui-host>:<port>/funpack/`** (same host/port as ComfyUI;
 no separate process, no extra dependencies).
 
 > **V1 scope.** Editable timeline + transition library feeding the **existing** uniform
@@ -16,8 +16,8 @@ no separate process, no extra dependencies).
 
 ```
 Browser ──(same origin)──► ComfyUI server (aiohttp)
-  vanilla JS frontend         /funpack/movie/         static UI
-                              /funpack/movie/api/*     this module (project store, prompt assembly)
+  vanilla JS frontend         /funpack/              static UI
+                              /funpack/api/*         this module (project store, prompt assembly)
                                  ├─ in-process: parse_timeline / transitions (FunPack functions)
                                  └─ loopback HTTP: /prompt /history /view (queue + results)
 ```
@@ -41,7 +41,7 @@ If the app can't find the text node that feeds Studio's prompt, create
 { "prompt": [{ "node_id": "12", "input_key": "text" }] }
 ```
 
-(Find node ids via `GET /funpack/movie/api/health` then inspect the template, or read the
+(Find node ids via `GET /funpack/api/health` then inspect the template, or read the
 exported JSON.) Editing the timeline and the split preview work **without** the template —
 only the Generate button needs it.
 
@@ -51,7 +51,7 @@ Nothing to start separately — the editor loads with ComfyUI:
 
 ```
 1. Start ComfyUI normally (any --port). ComfyUI-FunPack registers the routes on load.
-2. Open  http://<comfyui-host>:<port>/funpack/movie/
+2. Open  http://<comfyui-host>:<port>/funpack/
 ```
 
 ### Environment (all optional)

@@ -1,4 +1,5 @@
 """Bridge import helpers and parse error formatting."""
+import pytest
 
 from movie_editor.backend import bridge
 
@@ -82,3 +83,63 @@ def test_rating_labels_hide_internal_editor_values(monkeypatch):
     assert "__funpack_fresh_prompt__" not in labels
     assert all(not str(l).startswith("__funpack_") for l in labels)
     assert "Perfect" in labels
+
+
+# ── the log panel has to survive a restart ────────────────────────────────────
+# The in-memory buffer only holds what THIS process printed, so a crash-and-restart left the
+# panel empty — exactly when the lines before the crash are the ones worth reading.
+
+
+@pytest.fixture
+def logfile(tmp_path, monkeypatch):
+    path = tmp_path / "comfyui.log"
+    monkeypatch.setattr(bridge, "_comfy_log_file", lambda: path if path.is_file() else None)
+    bridge._LOG_FILE_CACHE.update({"at": 0.0, "lines": []})
+    with bridge._LOG_LOCK:
+        bridge._LOG.clear()
+    return path
+
+
+def test_a_short_buffer_is_backfilled_from_comfyuis_own_log(logfile):
+    logfile.write_text("older 1\nolder 2\nolder 3\n")
+    assert bridge.recent_log(10) == ["older 1", "older 2", "older 3"]
+
+
+def test_the_seam_is_not_shown_twice(logfile):
+    """The file contains what the buffer holds. Without cutting the overlap the panel shows
+    the same lines once from the file and once from the buffer."""
+    logfile.write_text("old\nlive 1\nlive 2\n")
+    with bridge._LOG_LOCK:
+        bridge._LOG.extend(["live 1", "live 2"])
+    assert bridge.recent_log(10) == ["old", "live 1", "live 2"]
+
+
+def test_a_full_buffer_never_touches_the_file(logfile, monkeypatch):
+    """Polled every 1.5s — once this process has enough of its own output, reading the file
+    every time would be a file read per poll for nothing."""
+    logfile.write_text("should not be read\n")
+    monkeypatch.setattr(bridge, "_log_file_tail",
+                        lambda n: pytest.fail("read the file with a full buffer"))
+    with bridge._LOG_LOCK:
+        bridge._LOG.extend(["a", "b", "c"])
+    assert bridge.recent_log(3) == ["a", "b", "c"]
+
+
+def test_no_log_file_is_not_an_error(logfile):
+    with bridge._LOG_LOCK:
+        bridge._LOG.extend(["only live"])
+    assert bridge.recent_log(10) == ["only live"]
+
+
+def test_an_unreadable_log_file_is_not_an_error(logfile, monkeypatch):
+    logfile.write_text("x\n")
+    monkeypatch.setattr(bridge, "_comfy_log_file",
+                        lambda: (_ for _ in ()).throw(OSError("nope")))
+    assert isinstance(bridge.recent_log(10), list)
+
+
+def test_only_the_tail_of_a_huge_log_is_read(logfile):
+    """A log can be hundreds of MB on a long-running box; the panel wants the last lines."""
+    logfile.write_text("\n".join(f"line {i}" for i in range(200_000)) + "\n")
+    out = bridge.recent_log(5)
+    assert len(out) == 5 and out[-1] == "line 199999"

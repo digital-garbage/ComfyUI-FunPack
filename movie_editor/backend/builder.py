@@ -59,9 +59,11 @@ CORE_LINKS: dict[str, dict[str, tuple[str, int]]] = {
                  # Studio has always emitted a second schedule (low_pass_sigmas, output 7);
                  # the Editor just never wired it. second_pass reads it as pass 2's schedule
                  # and ignores it when empty, so this link costs nothing when the feature is
-                 # off. Only the SIGMAS is taken — pass 2 reuses the main sampler object, so
-                 # the low pass's sampler-type settings deliberately do not apply.
+                 # off. The low pass's SAMPLER (output 6) is wired too — but Studio mirrors
+                 # the high pass's algorithm into it unless the pass is explicitly given its
+                 # own, so this link changes nothing for a project that had one already.
                  "second_pass_sigmas": ("studio", 7),
+                 "second_pass_sampler": ("studio", 6),
                  "latent_template": ("concat", 0), "refinement_key_input": ("keyloader", 0),
                  "num_frames_per_scene": ("frames", 0)},
     "concat":   {"video_latent": ("studio", 12)},
@@ -81,10 +83,19 @@ OPEN_PORTS: list[tuple[str, str, str, bool]] = [   # (core_id, input, type, requ
     ("studio", "clip", "CLIP", True),
     ("studio", "source_image", "IMAGE", False),
     ("studio", "latent", "LATENT", False),
+    ("studio", "positive_conditioning", "CONDITIONING", False),
     ("sampler", "vae", "VAE", True),
     ("concat", "audio_latent", "LATENT", True),
     ("audiodec", "audio_vae", "VAE", True),
 ]
+
+# Ports that may be wired but must never AUTO-wire. A pre-encoded conditioning replaces
+# the whole prompt path — no shortcuts, no $variables, no per-scene split — so it has to be
+# something the user asked for. A lone CLIPTextEncode someone added for another purpose
+# would otherwise capture the prompt silently.
+EXPLICIT_ONLY_PORTS: frozenset[tuple[str, str]] = frozenset({
+    ("studio", "positive_conditioning"),
+})
 
 # A required port another input can stand in for: {(core_id, input): (alternative inputs…)}.
 # Studio encodes the prompt through `clip`, but a pre-encoded CONDITIONING wired into
@@ -116,15 +127,18 @@ CORE_PRODUCERS: list[tuple[str, int, str]] = [  # (core_id, output_index, type)
 #     concat and the latent slot feeds the sampler directly.
 #   * LTXVAudioVAEDecode reads `audio_vae.first_stage_model.output_sample_rate`, which
 #     H3's audio VAE does not define — it would raise. Core's VAEDecodeAudio is generic.
+#   * LTXFloatToInt only exists to offer an INT copy of the project's frame rate to user
+#     slots. H3's frame rate is fixed at 24 by the model, so there is nothing to convert —
+#     and keeping it made an LTX node pack a hard requirement of a non-LTX pipeline.
 #
 # Anything not listed here is shared, so a fix to the core graph reaches both families.
 DEFAULT_FAMILY = "ltxav"
 
 FAMILIES: dict[str, dict] = {
-    "ltxav": {"label": "LTX-2 / LTXAV"},
+    "ltxav": {"label": "LTX2 / LTX2.3 / LTX2.5"},
     "minimax_h3": {
         "label": "MiniMax H3 (Hailuo)",
-        "drop": ("cond", "concat"),
+        "drop": ("cond", "concat", "f2i"),
         "core": {"audiodec": "VAEDecodeAudio"},
         "links": {
             # positive/negative come straight from Studio, with no LTXVConditioning between
@@ -375,7 +389,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     ref_wv = load_reference()
     graph: dict[str, dict] = {}
     # `blocking` is the subset of problems that should stop generation (required inputs).
-    report: dict[str, list] = {"wired": [], "auto_wired": [], "ambiguous": [], "unsatisfied": [], "blocking": []}
+    # "ignored" is its own bucket, not part of "unsatisfied": it means a value the user SET
+    # did not reach the graph, so the run is valid but is not the one they configured. That
+    # is the only class worth interrupting them about, and it is surfaced in the editor.
+    report: dict[str, list] = {"wired": [], "auto_wired": [], "ambiguous": [], "unsatisfied": [],
+                               "ignored": [], "blocking": []}
     # (node_id, input) edges the cycle-breaker must never drop: fixed core-internal links and
     # explicit user/override wires. Auto-wires and role-default wires are left droppable.
     protected_edges: set[tuple[str, str]] = set()
@@ -403,8 +421,12 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
 
         # 2. param overrides on the primitives + sampler seed.
         graph["pos"]["inputs"]["value"] = params.get("prompt", "")
-        if params.get("negative_prompt") is not None:
-            graph["neg"]["inputs"]["value"] = params["negative_prompt"]
+        # Unconditional, like the positive above it. Guarded on `is not None`, an absent key
+        # left the node holding the widget value harvested from the IMPORTED workflow — so a
+        # negative that came in with someone else's graph kept encoding on every run while
+        # the editor's Negative prompt box sat empty and editable. The box is the only
+        # negative the editor has; empty has to mean empty.
+        graph["neg"]["inputs"]["value"] = params.get("negative_prompt") or ""
         if params.get("num_frames_per_scene") is not None:
             graph["frames"]["inputs"]["value"] = family_frames(family, params["num_frames_per_scene"])
         if params.get("frame_rate") is not None:
@@ -487,6 +509,18 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         # (first run after the user clicks "Reset Studio session"); explicit so it's never
         # left on from a previous run.
         _rf["reset_session"] = bool(params.get("reset_session"))
+        # The editor's Negative prompt box is the ONLY negative in the editor, so it is
+        # authoritative — including when it is empty. Studio falls back to this stored
+        # setting whenever the wired negative is blank, which meant clearing the box left a
+        # negative from a previous session in force with nothing on screen saying so.
+        _rf["negative_prompt"] = str(params.get("negative_prompt") or "")
+        # The strings a node OUTSIDE Studio actually received — shortcuts rolled, $variables
+        # resolved. Studio keeps the raw prompt on its own port and expands per scene, so
+        # without this it cannot know what text a wired conditioning was built from, and
+        # anything that has to line up with those tokens is guessing.
+        _exp = params.get("expanded")
+        if isinstance(_exp, dict) and _exp:
+            _rf["link_texts"] = {k: str(v) for k, v in _exp.items() if isinstance(v, str)}
         # Project `$name` variables — Studio resolves them dead-last (after split), per scene.
         _vars = params.get("variables")
         if isinstance(_vars, (list, dict)) and _vars:
@@ -549,6 +583,15 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # sockets fed from the same reference share it instead of decoding it twice.
     references = {str(r.get("id")): r for r in (params.get("references") or []) if r.get("id")}
 
+    # References by SLOT rather than by id: "Reference image 1" is whatever is marked first
+    # among the image references, so re-ordering marks in the bin re-points every socket
+    # wired this way without opening a single node page. Numbered per kind, so marking an
+    # audio file never shifts the image slots out from under you.
+    def _reference_by_slot(kind: str, n: int):
+        same_kind = [r for r in references.values() if (r.get("kind") or "image") == kind]
+        same_kind.sort(key=lambda r: int(r.get("index") or 0))
+        return same_kind[n - 1] if 1 <= n <= len(same_kind) else None
+
     def _reference_link(ref_id: str, want_type: Optional[str], where: str):
         ref = references.get(ref_id)
         if not ref or not ref.get("filename"):
@@ -567,6 +610,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                                "inputs": {**_widget_defaults(object_info.get(cls)),
                                           file_input: ref["filename"]}})
         return [nid, oidx]
+
+    # Sockets the user pointed at an empty reference slot. Left alone by auto-wire: the
+    # answer to "Reference image 2 is not marked" is an unconnected socket, not a different
+    # image silently substituted for it.
+    deliberately_empty: set = set()
 
     # 3b. explicit input sources: user-chosen source for a slot's connection input.
     # Runs before auto-wire so these pre-empt the uniqueness heuristic.
@@ -588,6 +636,40 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     graph[sid]["inputs"][ci_name] = ["media_load", 0]
                     protected_edges.add((sid, ci_name))
                     report["wired"].append(f"timeline image -> {sid}.{ci_name}")
+                continue
+            if source.startswith("ref#"):
+                # "ref#image:2" — the second image reference, whichever that currently is.
+                kind, _, num = source[4:].partition(":")
+                try:
+                    n = int(num)
+                except ValueError:
+                    n = 0
+                if n <= 0:
+                    # A malformed slot is not "no reference marked" — reporting it as that
+                    # sends the user to the Media Bin to fix a value that is wrong in the
+                    # node. Say which it is.
+                    report["unsatisfied"].append(
+                        f"{s.get('node_class')}.{ci_name}: input source '{source}' is not a "
+                        f"reference slot (expected e.g. 'ref#image:1').")
+                    continue
+                ref = _reference_by_slot(kind, n)
+                if ref is None:
+                    # Nothing marked in that slot. The socket is simply left unconnected —
+                    # an unused reference slot is a normal state, not a setup mistake, so it
+                    # is neither auto-wired to something else nor reported as missing.
+                    deliberately_empty.add((sid, ci_name))
+                    report["wired"].append(
+                        f"Reference {kind} {n} -> {sid}.{ci_name}: none marked, left unconnected")
+                    continue
+                want = next((ci["type"] for ci in connection_inputs(nd_s or {})
+                             if ci["name"] == ci_name), None)
+                link = _reference_link(str(ref.get("id")), want,
+                                       f"{s.get('node_class')}.{ci_name}")
+                if link:
+                    graph[sid]["inputs"][ci_name] = link
+                    protected_edges.add((sid, ci_name))
+                    report["wired"].append(
+                        f"Reference {kind} {n} ({ref.get('name')}) -> {sid}.{ci_name}")
                 continue
             if source.startswith("ref:"):
                 want = next((ci["type"] for ci in connection_inputs(nd_s or {})
@@ -627,12 +709,39 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                 val = family_frame_rate(family, val)
         else:
             val = link.get("value")
+        # Every way a link can fail to fire is reported below. It used to fail in silence —
+        # the node kept its own widget value, so a project setting the user had just changed
+        # simply did not reach the graph, and nothing anywhere said which value won.
+        label = str(link.get("name") or link.get("editor_key") or "link")
         if val is None:
+            report["ignored"].append(
+                f"Linked input '{label}' had no value to send"
+                + (f" — the project has no '{link.get('editor_key')}'." if link.get("source") == "editor"
+                   else " — set one in Models ▸ Linked inputs.")
+                + " Every input it drives kept its own value.")
             continue
+        applied = []
         for m in link.get("members") or []:
-            sid = slot_node_id.get(m.get("slotId"))
-            if sid and sid in graph:
-                graph[sid]["inputs"][m.get("input")] = val
+            slot_id, inp = m.get("slotId"), m.get("input")
+            sid = slot_node_id.get(slot_id)
+            if not sid or sid not in graph:
+                report["ignored"].append(
+                    f"Linked input '{label}' drives a node that is no longer in the pipeline, "
+                    f"so its '{inp}' kept its own value. Re-pick it in Models ▸ Linked inputs.")
+                continue
+            # A member naming a widget the node does not have writes a key ComfyUI ignores —
+            # the node keeps its default and the link looks like it fired. Renaming an input
+            # upstream is enough to cause it.
+            nd = slot_def.get(slot_id)
+            if nd is not None and inp not in _widget_defaults(nd):
+                report["ignored"].append(
+                    f"Linked input '{label}': {graph[sid].get('class_type')} has no widget called "
+                    f"'{inp}' — nothing was set. Re-pick it in Models ▸ Linked inputs.")
+                continue
+            graph[sid]["inputs"][inp] = val
+            applied.append(f"{graph[sid].get('class_type')}.{inp}")
+        if applied:
+            report["wired"].append(f"linked '{label}' = {val} -> " + ", ".join(applied))
 
     port_to_core = _port_index(object_info, core=CORE)
 
@@ -655,6 +764,21 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
 
     # 4. explicit wires (slot OUTPUT -> port:<id> | node:<slotId>:<input>).
     # target may be a string (legacy single) or a list of strings (multi-wire).
+    #
+    # Targets an ACTIVE slot claims. A bypassed slot yields any of these rather than
+    # overwriting them: wiring two alternatives at one input (H3's ref-to-video and
+    # first-last-to-video both feeding the latent port) and bypassing the one you are not
+    # using is how you switch between them, and it only works if bypassing actually gets
+    # out of the way. Without this the bypassed node still won the input, and the bypass
+    # then failed for having nothing to pass through.
+    active_targets = set()
+    for s in slots:
+        if s.get("bypassed"):
+            continue
+        for target in (s.get("wires") or {}).values():
+            for t in (target if isinstance(target, list) else [target]):
+                if t:
+                    active_targets.add(t)
     for s in slots:
         sid = slot_node_id[s["id"]]
         nd = slot_def[s["id"]]
@@ -670,6 +794,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             is_default = role_defaults.get(out_type) == target
             for t in targets:
                 if not t:
+                    continue
+                if s.get("bypassed") and t in active_targets:
+                    report["wired"].append(
+                        f"{s.get('node_class')}.{out_name} -> {t} skipped (bypassed; an active "
+                        f"node feeds it)")
                     continue
                 # Global editor outputs: feed the synthesized combine node. global:video ->
                 # its IMAGE frames, global:audio -> its AUDIO (muxed into the same video+audio
@@ -754,13 +883,21 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         for src in (ovs or {}).values():
             if isinstance(src, str) and src.startswith("out:"):
                 active_slots.add(src.split(":", 2)[1])
+    # A bypassed node is leaving the graph. Auto-wire it if that is unambiguous — the
+    # pass-through reads its input — but never demand it: telling someone to wire a node
+    # they have explicitly switched off is asking them to fix something they already
+    # decided not to use. If the pass-through then genuinely has nothing to carry,
+    # _apply_bypass says so precisely, naming the consumer that would lose its source.
+    quiet_nodes = {slot_node_id[s["id"]] for s in slots
+                   if s.get("bypassed") and s["id"] in slot_node_id}
     _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots,
-              open_ports=OPEN_PORTS, core=CORE)
+              open_ports=OPEN_PORTS, core=CORE, quiet_nodes=quiet_nodes,
+              skip_inputs=deliberately_empty)
 
     # 5b. bypass: drop a slot's node from the graph and rewire its consumers straight to
     # whatever fed its matching-type input, so the node's effect is skipped without losing
     # its saved configuration (vs. removing the node or zeroing a strength widget every time).
-    _apply_bypass(graph, slots, slot_node_id, slot_def, report)
+    _apply_bypass(graph, slots, slot_node_id, slot_def, report, object_info)
 
     # Cycle-guard: a default/auto wire that loops (e.g. an upscale node whose IMAGE both feeds the
     # export AND defaults back to Studio · source_image while it consumes the decoded frames) is
@@ -976,12 +1113,26 @@ def _resolve_target(target: str, port_to_core, slot_node_id) -> Optional[tuple[s
 def _producers(graph, slots, slot_node_id, slot_def, object_info):
     """type -> list of (node_id, output_index). Slots + core producers."""
     out: dict[str, list] = {}
+    # Only what this family's core actually built — offering a producer the graph dropped
+    # would auto-wire a slot to a node that is not there.
     for cid, oidx, t in CORE_PRODUCERS:
+        if cid not in graph:
+            continue
         out.setdefault(t, []).append((cid, oidx))
     for s in slots:
         nd = slot_def[s["id"]]
+        node_id = slot_node_id[s["id"]]
+        # A pass-through output is only real once its own input is fed: the LoRA loader
+        # hands CLIP straight back, so an unwired one emits nothing while still making
+        # every other CLIP consumer look ambiguous ("2 possible sources").
+        dead = set()
+        for ci in connection_inputs(nd or {}):
+            if not isinstance((graph.get(node_id) or {}).get("inputs", {}).get(ci["name"]), list):
+                dead.add(ci["type"])
         for i, o in enumerate(node_outputs(nd or {})):
-            out.setdefault(o["type"], []).append((slot_node_id[s["id"]], i))
+            if o["type"] in dead:
+                continue
+            out.setdefault(o["type"], []).append((node_id, i))
     return out
 
 
@@ -1104,7 +1255,8 @@ def _node_labels(slots, slot_node_id, object_info, core=None):
 
 
 def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report,
-              active_slots=None, open_ports=None, core=None):
+              active_slots=None, open_ports=None, core=None, quiet_nodes=None,
+              skip_inputs=None):
     label = _node_labels(slots, slot_node_id, object_info, core=core)
     L = lambda nid: label.get(nid, nid)
 
@@ -1121,12 +1273,27 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
                 continue
             targets.append((slot_node_id[s["id"]], ci["name"], ci["type"], ci.get("required", False)))
 
+    quiet_nodes = quiet_nodes or set()
+    skip_inputs = skip_inputs or set()
     for node_id, inp, t, required in targets:
         node = graph.get(node_id)
         if not node:
             continue
+        if (node_id, inp) in skip_inputs:
+            continue
+        if node_id in quiet_nodes:
+            # Fill it if there is exactly one obvious source, then stop. No ambiguity note,
+            # no unsatisfied entry, no block — this node is on its way out.
+            if not isinstance(node["inputs"].get(inp), list):
+                cands = [p for p in _matching_producers(producers, t)
+                         if p[0] != node_id and not _reaches_upstream(graph, p[0], node_id)]
+                if len(cands) == 1:
+                    node["inputs"][inp] = [cands[0][0], cands[0][1]]
+            continue
         if isinstance(node["inputs"].get(inp), list):
             continue  # already wired (explicit/core)
+        if (node_id, inp) in EXPLICIT_ONLY_PORTS:
+            continue  # wirable, never automatic — see EXPLICIT_ONLY_PORTS
         alt_wired = next((alt for alt in PORT_ALTERNATIVES.get((node_id, inp), ())
                           if isinstance(node["inputs"].get(alt), list)), None)
         if alt_wired:
@@ -1161,7 +1328,25 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
                 report["blocking"].append(msg)
 
 
-def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
+def _input_is_required(graph, object_info, node_id, inp_name) -> bool:
+    """Whether `node_id.inp_name` is a REQUIRED connection input.
+
+    An optional input that loses its source is not a broken graph — it is a node running
+    without that option, which is exactly what bypassing the thing that fed it means. Unknown
+    class or unknown input errs on the side of required, because silently dropping a link the
+    node did need is the failure that produces a wrong render rather than a message.
+    """
+    node = graph.get(node_id) or {}
+    nd = (object_info or {}).get(node.get("class_type"))
+    if not nd:
+        return True
+    for ci in connection_inputs(nd):
+        if ci["name"] == inp_name:
+            return bool(ci.get("required", False))
+    return True
+
+
+def _apply_bypass(graph, slots, slot_node_id, slot_def, report, object_info=None):
     """Drop each bypassed slot's node, rewiring its consumers to whatever already feeds its
     matching-type input (same idea as ComfyUI's node bypass) — only when that mapping is
     unambiguous (exactly one connection_input per output type) AND that input actually has
@@ -1170,6 +1355,13 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
     explicitly asked for must never be silently ignored. Runs after auto-wire so the
     passthrough source is already resolved to a concrete value/link.
     """
+    # Every node going away, known up front. A node that only feeds OTHER bypassed nodes
+    # needs no pass-through for that output, because once they are all gone nothing reads
+    # it. Judging each one against a graph that still holds its doomed siblings refused
+    # perfectly sound bypasses — and refused every group bypass of a connected run of nodes.
+    leaving = {slot_node_id.get(s["id"]) for s in slots if s.get("bypassed")}
+    leaving.discard(None)
+
     for s in slots:
         if not s.get("bypassed"):
             continue
@@ -1184,24 +1376,29 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
         # FLOAT (latent_downscale_factor) alongside its MODEL, and the editor's graph wires
         # only the MODEL — and demanding a matching input for an output that feeds nothing
         # would refuse a bypass that is completely unambiguous for every link that exists.
+        # Only links a surviving node actually NEEDS count as consumption. A bypassed node
+        # feeding an OPTIONAL input is not a problem to solve: the link goes away with the
+        # node and the consumer runs without that option, which is what was asked for.
         consumed = set()
         for nid, ndata in graph.items():
-            if nid == sid:
+            if nid == sid or nid in leaving:
                 continue
-            for val in (ndata.get("inputs") or {}).values():
-                if isinstance(val, list) and len(val) == 2 and val[0] == sid:
+            for inp_name, val in (ndata.get("inputs") or {}).items():
+                if (isinstance(val, list) and len(val) == 2 and val[0] == sid
+                        and _input_is_required(graph, object_info, nid, inp_name)):
                     consumed.add(val[1])
         passthrough = {}
         blocked = None
         for i, o in enumerate(outs):
-            if i not in consumed:
-                continue
             # A union-typed input ("IMAGE,MASK") can carry any of its members through.
             names = [ci["name"] for ci in cis if type_accepts(ci["type"], o["type"])]
-            if len(names) != 1:
+            if i in consumed and len(names) != 1:
                 blocked = (o, names)
                 break
-            passthrough[i] = graph[sid]["inputs"].get(names[0])
+            # Resolved even for outputs only OTHER leaving nodes read, so a chain of
+            # bypasses collapses to the surviving producer instead of to a deleted one.
+            if len(names) == 1:
+                passthrough[i] = graph[sid]["inputs"].get(names[0])
         if blocked is not None:
             # Silently leaving the node active would mean a user who explicitly bypassed it
             # (e.g. to skip an i2v preprocessing node) gets generation output as if they
@@ -1225,6 +1422,16 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
                     replacement = passthrough.get(val[1])
                     if replacement is not None:
                         ndata["inputs"][inp_name] = replacement
+                    elif nid in leaving:
+                        # The consumer is being bypassed too, so there is nothing to repair
+                        # and nothing to warn about — it will not be in the graph either.
+                        del ndata["inputs"][inp_name]
+                    elif not _input_is_required(graph, object_info, nid, inp_name):
+                        # Optional: the consumer runs without it. Noted, not blocked.
+                        report["wired"].append(
+                            f"{s.get('node_class')} bypassed — {nid}.{inp_name} (optional) left "
+                            f"unconnected")
+                        del ndata["inputs"][inp_name]
                     else:
                         # The bypassed node's own matching input was never wired — passing
                         # nothing through would silently drop {nid}.{inp_name} instead of
