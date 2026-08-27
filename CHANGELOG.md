@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [4.0.0] "Blinding Blackout" - 2026-08-27
+
+### Removed
+
+Experimental features that never proved out are gone. Their widget names disappear from
+saved projects and workflows; nothing else carries over.
+
+- **Plateau step-cache** — never worked as intended on a real run.
+- **H3 audio clock** — did not work. Its per-step correction, the proxy for samplers whose
+  loop FunPack does not own, and the sampler-suitability tables go with it.
+- **H3 render gains** — the three per-modality write gains, prompt loudness, the taste push,
+  and the learned/manual mode. Moving the picture gain past ±0.1 added distortion and latent
+  noise; the rest changed nothing legible. The rating loop behind them is gone too, so the
+  refinement key no longer holds any sampler value.
+- **Reference weight** (`h3_prompt_time`) — shipped and measured across its whole range in
+  one session: below 0.5 the picture breaks up, above 0.5 it reproduces the reference
+  outright, and it never improved prompt adherence, which is what it was for.
+- **Mid-scene guide** — including the auto-enable that turned it on for every multi-scene
+  carry chain.
+- **Prompt repair** — the last path that appended missing phrases back onto a prompt. The
+  rated axes stay: they tell the advisor what is missing and never edit a prompt themselves.
+- **Segmented detailing** is no longer offered in the Editor. The code stays, marked for
+  future reference, and a raw ComfyUI graph can still enable it.
+
+### Kept, with honest labels
+
+- **Picture detail** (`h3_video_detail`) survives the render-gain removal and now reads its
+  own widget. Above 1.0 is more detail and contrast; the sound is bit-for-bit unchanged,
+  because it runs past the model's last attention pass. Experimental, lightly tested.
+- **Bounded attention** is labelled experimental and untested: built, never run, and its
+  left/right split is fixed.
+
 ### Added
 - **The rating's per-phrase emphasis now reaches MiniMax H3.** Studio has decomposed every
   run into phrases, words and n-grams and scored each against the rating since 2.0, but the
