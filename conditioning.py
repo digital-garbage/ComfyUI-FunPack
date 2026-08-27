@@ -3073,237 +3073,6 @@ class FunPackVideoRefiner:
     # SIGMA REFINEMENT
     # =========================================================================
 
-    # ── rating-learned H3 render gains ──────────────────────────────────────
-    #
-    # Four scalars — how hard each block writes into the video, prompt and audio rows, and
-    # how loudly the prompt is read. They are learned rather than typed: four dimensions is
-    # SMALLER than the sigma profile's search space, which already converges on ratings
-    # alone, so asking the user to hand-tune them would be asking them to do a search the
-    # machine can do.
-    #
-    # Same update as the sigma profile — perturb, generate, rate, move toward the
-    # perturbation that earned reward — with one difference: the sigma profile is centred on
-    # 0, so its applied value IS its perturbation. These are centred on 1.0, so the
-    # perturbation is `applied - value` and that is what the reward is credited to.
-    #
-    # Unlike anything in conditioning space these transfer between prompts: 0.85 means the
-    # same thing on every prompt, so a value learned on one run is worth something on the
-    # next. That is the property that makes them worth learning at all.
-    H3_GAIN_KEYS = ("video", "prompt", "audio", "prompt_scale", "refiner_bias",
-                    "video_detail")
-    # Which rated AXIS each gain answers to. A rating carries three per-axis signals in
-    # [-1, +1] alongside its overall reward, and they say far more than the scalar does:
-    # "Missing concept" is reward +0.10 (quality was fine) but concept_signal -1.00. Read as
-    # the scalar, that rating nudges every gain slightly TOWARD the run that missed the
-    # prompt. Read per axis, it pushes the two prompt gains hard away from it and leaves the
-    # audio gain alone, which is what the user actually said.
-    #
-    # Signals share the reward's [-1, +1] scale, so they drop straight into the same update.
-    # An empty tuple means no axis is rated for that gain — audio has none — so it falls back
-    # to the overall reward rather than inventing a signal for it.
-    H3_GAIN_AXES = {
-        "video": ("detail_signal", "quality_signal"),
-        "prompt": ("concept_signal",),
-        "prompt_scale": ("concept_signal",),
-        "audio": (),
-        "refiner_bias": (),
-        # The final-layer read strength: the same axes as the block gain it is the
-        # audio-safe twin of. `prompt_time` is deliberately absent from these keys — its
-        # off value (0.0) sits at the far end of its own range rather than in the middle,
-        # so exploring around it would step straight into "the prompt is pure noise".
-        # It stays a manual dial until a rental run says what a good value looks like.
-        "video_detail": ("detail_signal", "quality_signal"),
-    }
-    H3_GAIN_MIN = 0.60
-    H3_GAIN_MAX = 1.40
-    H3_GAIN_LR = 0.08
-    H3_GAIN_EXPLORE_BASE = 0.05
-    H3_GAIN_EXPLORE_MIN = 0.012
-    H3_GAIN_EXPLORE_MAX = 0.09
-    #: gains that are not multipliers. `refiner_bias` is how far to push the prompt rows
-    #: along the taste direction learned from liked runs, as a fraction of a typical prompt
-    #: row's magnitude — so its neutral value is 0.0, not 1.0, and it is signed: a negative
-    #: value pushes AWAY from what was liked, which the loop must be able to choose.
-    H3_GAIN_CENTRES = {"refiner_bias": 0.0}
-    H3_GAIN_BOUNDS = {"refiner_bias": (-0.30, 0.30)}
-
-    def _h3_gain_centre(self, key):
-        return float(self.H3_GAIN_CENTRES.get(key, 1.0))
-
-    def _h3_gain_bounds(self, key):
-        return self.H3_GAIN_BOUNDS.get(key, (self.H3_GAIN_MIN, self.H3_GAIN_MAX))
-
-    def _h3_gain_explore(self, key, base):
-        """This key's exploration width, scaled to the span it explores.
-
-        One stored `explore` drives every gain, so a key with a narrower range has to shrink
-        it proportionally — otherwise its perturbations clip against the bounds and the
-        reward gets credited to a move that never fully happened.
-        """
-        low, high = self._h3_gain_bounds(key)
-        span = float(high) - float(low)
-        reference = self.H3_GAIN_MAX - self.H3_GAIN_MIN
-        return float(base) * (span / reference if reference else 1.0)
-
-    def _ensure_h3_gain_state(self, global_state: dict):
-        state = global_state.setdefault("h3_gains", {})
-        neutral = {k: self._h3_gain_centre(k) for k in self.H3_GAIN_KEYS}
-        state.setdefault("values", dict(neutral))
-        state.setdefault("last_applied", dict(neutral))
-        state.setdefault("iterations", 0)
-        state.setdefault("reward_ema", 0.0)
-        state.setdefault("explore", self.H3_GAIN_EXPLORE_BASE)
-        for key in self.H3_GAIN_KEYS:            # a key added later starts neutral
-            state["values"].setdefault(key, neutral[key])
-            state["last_applied"].setdefault(key, neutral[key])
-        return state
-
-    def _h3_gain_credit(self, key, rating_profile):
-        """The reward THIS gain should be credited with, from the axes it answers to.
-
-        Recovering four parameters from one scalar works, but slowly — it relies on the
-        random perturbations decorrelating over many runs. The per-axis signals are already
-        on every rating, so each rating can teach the parameter it is actually about.
-
-        Falls back to the overall reward when a gain has no rated axis (audio), or when a
-        profile carries no signals at all.
-        """
-        axes = self.H3_GAIN_AXES.get(key, ())
-        signals = []
-        for axis in axes:
-            value = rating_profile.get(axis)
-            if value is None:
-                continue
-            try:
-                signals.append(float(value))
-            except (TypeError, ValueError):
-                continue
-        if not signals:
-            return float(rating_profile.get("reward", 0.0) or 0.0)
-        # The WORST axis, not the average. These axes are conjunctive — the video gain has to
-        # satisfy detail AND quality — so a satisfied axis must not mask a failed one.
-        # Averaging let it: "Missing details" is detail -1.00 with quality +0.85, which
-        # averages to -0.08 and barely moves the gain the rating is actually about.
-        return min(signals)
-
-    def _v2_update_h3_gains(self, global_state: dict, rating_profile: dict):
-        """Credit this rating to the perturbation that was actually rendered."""
-        if not isinstance(global_state, dict) or not isinstance(rating_profile, dict):
-            return None
-        if rating_profile.get("skip_learning"):
-            return None
-        state = self._ensure_h3_gain_state(global_state)
-        reward = float(rating_profile.get("reward", 0.0) or 0.0)
-        values, applied = state["values"], state["last_applied"]
-        moved = []
-        for key in self.H3_GAIN_KEYS:
-            centre = float(values.get(key, self._h3_gain_centre(key)))
-            perturbation = float(applied.get(key, centre)) - centre
-            if perturbation == 0.0:
-                continue
-            credit = self._h3_gain_credit(key, rating_profile)
-            low, high = self._h3_gain_bounds(key)
-            updated = min(high, max(
-                low, centre + perturbation * credit * self.H3_GAIN_LR))
-            if updated != centre:
-                values[key] = updated
-                moved.append(f"{key}={updated:.3f}")
-        state["reward_ema"] = 0.85 * float(state.get("reward_ema", 0.0)) + 0.15 * reward
-        # Landing well narrows the search; landing badly widens it.
-        decay = 0.97 if reward > 0 else 1.02
-        state["explore"] = min(self.H3_GAIN_EXPLORE_MAX, max(
-            self.H3_GAIN_EXPLORE_MIN, float(state.get("explore", self.H3_GAIN_EXPLORE_BASE)) * decay))
-        state["iterations"] = int(state.get("iterations", 0)) + 1
-        return ", ".join(moved) if moved else None
-
-    def _v2_h3_gains_for_run(self, global_state: dict, seed=0, explore=True):
-        """The gains to render with, and the record of what was rendered.
-
-        Exploration is what makes the next rating informative — without a perturbation there
-        is nothing for the reward to be credited to, and the profile can never move. Seeded
-        from the run's seed so a repeated run repeats its perturbation.
-        """
-        if not isinstance(global_state, dict):
-            return {k: self._h3_gain_centre(k) for k in self.H3_GAIN_KEYS}
-        state = self._ensure_h3_gain_state(global_state)
-        values = state["values"]
-        base = float(state.get("explore", self.H3_GAIN_EXPLORE_BASE))
-        out = {}
-        if explore:
-            rng = np.random.RandomState(int(seed) % (2 ** 32))
-        for key in self.H3_GAIN_KEYS:
-            centre = float(values.get(key, self._h3_gain_centre(key)))
-            if explore:
-                centre += float(rng.normal(0.0, self._h3_gain_explore(key, base)))
-            low, high = self._h3_gain_bounds(key)
-            out[key] = min(high, max(low, centre))
-        state["last_applied"] = dict(out)
-        return out
-
-    #: where the learned taste direction rides to the sampler
-    H3_TASTE_DIR_META = "funpack_h3_taste_dir"
-    #: liked runs needed before the direction is worth pushing along — the same threshold
-    #: the conditioning-space consumers of `liked_dir` already use, not a new one
-    H3_TASTE_DIR_MIN_COUNT = 3
-
-    def _h3_taste_direction(self, global_state):
-        """The liked direction, as a UNIT vector the sampler can project into refiner space.
-
-        This is the same `liked_dir` that conditioning ascent already steers along — the
-        difference is where it lands. Steering edits the Qwen tensor, which then goes through
-        condition_proj and the two refiner blocks and a final RMSNorm: the blocks mix it
-        across tokens and the norm scales its magnitude away, so the direction that arrives
-        is not the direction that was learned. Handing the sampler the raw direction lets it
-        add the same thing AFTER the refiner, where it lands as sent.
-
-        Unit, not scaled: the magnitude belongs to the refiner's own space and is decided at
-        apply time. How far to push is the `refiner_bias` gain, and that is learned.
-        """
-        if not isinstance(global_state, dict):
-            return None
-        slot = global_state.get("liked_dir") or {}
-        if int(slot.get("direction_count", 0)) < self.H3_TASTE_DIR_MIN_COUNT:
-            return None
-        try:
-            vector = serializable_to_tensor(slot.get("direction")).float().reshape(-1)
-        except Exception:  # noqa: BLE001
-            return None
-        norm = float(vector.norm().item())
-        if not norm or norm != norm:                 # zero, or NaN from a corrupted slot
-            return None
-        return (vector / norm).cpu()
-
-    def _v2_tag_h3_gains(self, conditioning_list, global_state, seed=0):
-        """Attach this run's render gains to entry 0 so the sampler can apply them."""
-        try:
-            gains = self._v2_h3_gains_for_run(global_state, seed=seed)
-        except Exception as error:  # noqa: BLE001
-            _log.failed("FunPackStudio", "H3 render gains", error,
-                        "this run renders at the model's trained strengths")
-            return conditioning_list
-        neutral = all(abs(v - self._h3_gain_centre(k)) < 1e-6 for k, v in gains.items())
-        direction = self._h3_taste_direction(global_state)
-        if (not gains or neutral) and direction is None:
-            return conditioning_list
-        out = []
-        for index, entry in enumerate(conditioning_list or []):
-            if index == 0 and isinstance(entry, (list, tuple)) and len(entry) >= 2 \
-                    and isinstance(entry[1], dict):
-                meta = dict(entry[1])
-                meta["funpack_h3_gains"] = dict(gains)
-                if direction is not None:
-                    meta[self.H3_TASTE_DIR_META] = direction
-                out.append([entry[0], meta])
-            else:
-                out.append(entry)
-        _log.feature(
-            "FunPackStudio", "Rating-learned render gains", True,
-            ", ".join(f"{k}={gains[k]:.3f}" for k in self.H3_GAIN_KEYS if k in gains)
-            + ("; taste direction attached" if direction is not None
-               else f"; no taste direction yet (needs {self.H3_TASTE_DIR_MIN_COUNT} liked runs)")
-            + " (learned from ratings, perturbed to keep learning; the Chain Sampler applies "
-              "them and its h3_gain_* widgets are ignored unless h3_gain_mode is manual)")
-        return out
 
     def _ensure_sigma_state_defaults(self, global_adaptive: dict):
         global_adaptive.setdefault("sigma_profile", [0.0] * 32)
@@ -4998,7 +4767,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         successful-seed-memory status string. Shared by the project key and every non-default
         key bound to the scene's shortcuts (multi-key rating)."""
         self._v2_update_phrase_memory(target_global, scene_run, profile, iter_num, axis_feedback)
-        self._v2_update_h3_gains(target_global, profile)
         self._v2_update_concept_delta_memory(target_global, scene_run, profile)
         self._v2_update_concept_pair_dirs(target_global, scene_run, profile)
         seed_memory_status = self._v2_update_successful_seed_memory(
@@ -10136,7 +9904,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
                   h3_phrase_emphasis=False,
-                  h3_render_gains=True,
                   prompt_enhance=False, prompt_enhance_system="",
                   prompt_enhance_temperature=0.7, prompt_enhance_top_p=0.92,
                   prompt_enhance_max_length=400, prompt_enhance_thinking=False,
@@ -11201,14 +10968,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"entry 1 is steered and the other "
                 f"{len(positive_conditioning) - 1} pass through unchanged. They used to be "
                 f"discarded, which cut everything after the first entry out of the prompt.")
-        # Rating-learned render gains ride the conditioning to the sampler, the same bridge
-        # H3 token weighting uses: Studio owns the key and the learning, the sampler owns the
-        # application. Perturbed here, once per run, so the NEXT rating has something to
-        # credit — a run with no perturbation teaches nothing.
-        if h3_render_gains:
-            output_conditioning = self._v2_tag_h3_gains(
-                output_conditioning, global_state, seed=int(_seed or 0))
-
         # Batch Training packs N variant entries (tagged 'funpack_batch_variant') onto the FINAL
         # conditioning just before each return below — so it wraps whatever output_conditioning
         # ends up being: single-scene OR multi-scene (transition split). Works WITH transitions.
@@ -13512,7 +13271,6 @@ class FunPackStudio:
             refinement_key_input=refinement_key_input,
             positive_conditioning=positive_conditioning,
             h3_phrase_emphasis=bool(rf.get("h3_phrase_emphasis", False)),
-            h3_render_gains=bool(rf.get("h3_render_gains", True)),
             prompt_enhance=bool(rf.get("prompt_enhance", False)),
             prompt_enhance_system=str(rf.get("prompt_enhance_system", "") or ""),
             prompt_enhance_temperature=float(rf.get("prompt_enhance_temperature", 0.7)),

@@ -158,9 +158,13 @@ def _pass_rows(cfg: dict) -> list:
 # Two rules, both the user's: skip a value that equals the widget's own default, and skip a
 # value whose feature is off.
 
-#: knob -> (the toggle that owns it, the value of that toggle which switches it on).
+#: knob -> (the toggle that owns it, the values of that toggle which switch it on).
 #: None means "any truthy value". Mirrored from the Editor's own dependsOn wiring, and a
 #: test regenerates this from engine_settings.js so the two cannot drift apart.
+#:
+#: A tuple, not one value: `absolute_strength` belongs to `steer_mode` and is live for BOTH
+#: "absolute" and "both". Reading only the singular `dependsValue` missed the plural
+#: `dependsVals` the Studio rows use, so it printed under `relative`, where it does nothing.
 #: knobs the Editor renders by hand rather than from its knob table, so they carry no
 #: dependsOn for the test below to find. Kept separate so the generated half stays generated.
 _OWNED_EXTRA = {
@@ -169,7 +173,7 @@ _OWNED_EXTRA = {
 
 _OWNED_BY = {
     **_OWNED_EXTRA,
-    "absolute_strength": ("steer_mode", None),
+    "absolute_strength": ("steer_mode", ('absolute', 'both')),
     "alg_anchor_sigma_threshold": ("alg_anchor", None),
     "alg_anchor_strength": ("alg_anchor", None),
     "alg_guide_blur_sigma_threshold": ("alg_blur_guides", None),
@@ -191,12 +195,6 @@ _OWNED_BY = {
     "dynashift_threshold": ("dynashift", None),
     "embed_guidance_source": ("embed_guidance", None),
     "embed_guidance_strength": ("embed_guidance", None),
-    "h3_gain_audio": ("h3_gain_mode", "manual"),
-    "h3_gain_prompt": ("h3_gain_mode", "manual"),
-    "h3_gain_video": ("h3_gain_mode", "manual"),
-    "h3_prompt_scale": ("h3_gain_mode", "manual"),
-    "h3_taste_bias": ("h3_gain_mode", "manual"),
-    "h3_video_detail": ("h3_gain_mode", "manual"),
     "id_strength": ("identity_transfer_enabled", None),
     "joyai_audio_memory": ("joyai_memory", None),
     "joyai_fix_frames": ("joyai_memory", None),
@@ -204,16 +202,16 @@ _OWNED_BY = {
     "joyai_memory_size": ("joyai_memory", None),
     "joyai_memory_strength": ("joyai_memory", None),
     "mid_scene_guide_strength": ("mid_scene_guide", None),
-    "negative_erase_mode": ("negative_erase", None),
-    "negative_erase_renorm": ("negative_erase", None),
-    "negative_erase_strength": ("negative_erase", None),
+    "negative_erase_mode": ("negative_erase", ('true',)),
+    "negative_erase_renorm": ("negative_erase", ('true',)),
+    "negative_erase_strength": ("negative_erase", ('true',)),
     "output_guidance_strength": ("output_guidance", None),
     "phase_scale": ("identity_transfer_enabled", None),
-    "prompt_enhance_max_length": ("prompt_enhance", None),
-    "prompt_enhance_system": ("prompt_enhance", None),
-    "prompt_enhance_temperature": ("prompt_enhance", None),
-    "prompt_enhance_thinking": ("prompt_enhance", None),
-    "prompt_enhance_top_p": ("prompt_enhance", None),
+    "prompt_enhance_max_length": ("prompt_enhance", ('true',)),
+    "prompt_enhance_system": ("prompt_enhance", ('true',)),
+    "prompt_enhance_temperature": ("prompt_enhance", ('true',)),
+    "prompt_enhance_thinking": ("prompt_enhance", ('true',)),
+    "prompt_enhance_top_p": ("prompt_enhance", ('true',)),
     "score_slider_strength": ("score_slider", None),
     "source_id": ("identity_transfer_enabled", None),
     "v2a_grad_scale": ("joyai_audio_memory", None),
@@ -262,14 +260,7 @@ _EDITOR_DEFAULTS = {
     "embed_guidance_strength": 0.02,
     "frame_overlap": 16,
     "h3_audio_clock": False,
-    "h3_gain_audio": 1.0,
-    "h3_gain_mode": "learned",
-    "h3_gain_prompt": 1.0,
-    "h3_gain_video": 1.0,
     "h3_phrase_emphasis": False,
-    "h3_prompt_scale": 1.0,
-    "h3_render_gains": True,
-    "h3_taste_bias": 0.0,
     "h3_video_detail": 1.0,
     "id_strength": 1.0,
     "identity_transfer_enabled": False,
@@ -352,7 +343,10 @@ def _switched_on(name: str, values: dict, defaults: dict, _seen=None) -> bool:
         return True
     seen.add(owner)
     current = values.get(owner, defaults.get(owner))
-    live = bool(current) if wanted is None else str(current) == str(wanted)
+    # Lowercased both sides: the Editor writes JS literals, so a boolean owner arrives as
+    # "true" while Python's own str(True) is "True".
+    live = bool(current) if wanted is None \
+        else str(current).lower() in {str(w).lower() for w in wanted}
     return live and _switched_on(owner, values, defaults, seen)
 
 

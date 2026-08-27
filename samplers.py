@@ -3147,33 +3147,9 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "EXPERIMENTAL, MiniMax H3 only: integrate the audio stream on its OWN flow schedule. H3 denoises video and audio on two different schedules (the MiniMax H3 Sigma Shift node's shift_video 12 / shift_audio 3), but only one sigma grid reaches a sampler, so the model reconciles them by scaling the audio velocity by the slope between the two schedules at the START of each step. That is exact for infinitesimal steps and increasingly wrong as steps get bigger: on a 4-step schedule the last step drives audio roughly 2.5x past where its own schedule puts it, which is heard as distortion. This replaces that start-of-step slope with the one that actually spans the step, so audio lands where its schedule says. Costs one scalar multiply per step — no extra model call. Aimed at few-step schedules (turbo/distilled LoRAs, 4-8 steps), where nothing else fixes this. NO-OP when shift_video and shift_audio are EQUAL — the streams are then on one schedule and there is nothing to correct (it says so on the console). SAMPLER MATTERS, measured against a perfect predictor so the numbers are pure schedule error (audio error as a % of the stream's full range, 4/8/20 steps): WORKS BEST — FunPack Distilled Flow and Hybrid Euler 2S (runs inside their step loop, exact), and stock `euler` (85/38/14% -> 0/0/0%, exact at every step count). PERFORMS POORLY — the higher-order multistep family (`res_multistep`, `dpmpp_2m`, `gradient_estimation`, `ipndm`, `lms`, `deis`): they already absorb most of this error themselves, so the clock helps them at 4 steps (69% -> 21%) but HURTS at 20 (1% -> 15%); leave it off there. NO EFFECT — two-evals-per-step samplers (`heun`, `dpm_2`, `dpmpp_2s_ancestral`, `dpmpp_sde`, `seeds_2`): a model call cannot be tied to a step from outside their loop, so the wrapper detects that on the first call and switches itself off with a console note rather than guessing. Ancestral/SDE samplers additionally add noise to the audio stream, which this does not address. The clock never touches the video stream directly, though on H3 the two share one attention sequence, so a changed audio latent can still shift the video slightly.",
                 }),
-                "h3_gain_video": ("FLOAT", {
-                    "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Per-block write gain on the VIDEO rows. Every DiT block carries three sets of AdaLN modulation — one per modality (video / prompt / audio) — and the GATE is what scales that block's attention and MLP output as it is written back into a row range. This multiplies the video gate on all 50 blocks: below 1.0 each block contributes less to the picture (softer, calmer, less detail and less motion), above 1.0 more (harder, busier, and past ~1.3 it overcooks). 1.0 = untouched, and the model is not even cloned. Free — one small vector multiply per block, no extra model calls. KEYFRAME PINS AND REFERENCE IMAGES RIDE THE VIDEO TAG, so this moves them with the picture; they are separated from the target video by timestep row, not by modality, and only early in the schedule. Attached with add_object_patch, which ComfyUI restores on unpatch, so nothing survives the run.",
-                }),
-                "h3_gain_prompt": ("FLOAT", {
-                    "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Per-block write gain on the PROMPT rows (see h3_gain_video for the mechanism). H3 keeps the text in the same sequence as the picture and lets every block rewrite it, so the prompt the model reads at block 50 is not the one the encoder produced. 0.0 freezes the text at its encoded value for the whole forward — the video still attends to it, but it can no longer drift toward what is being drawn. Lower values are the lever to try when a scene slowly stops matching what you asked for; higher values let the text move further with the picture. 1.0 = untouched. Free. The <Picture N> vision rows inside the text span carry the VIDEO tag, not this one, so a reference is not affected.",
-                }),
-                "h3_gain_audio": ("FLOAT", {
-                    "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Per-block write gain on the AUDIO rows (see h3_gain_video for the mechanism). This is the one modality whose gate can be moved without touching the other two at the point of writing — though the streams still share one attention pass, so a changed audio row is read by the video on the NEXT block. Below 1.0 the soundtrack is built more conservatively. Free. 1.0 = untouched.",
-                }),
-                "h3_taste_bias": ("FLOAT", {
-                    "default": 0.0, "min": -0.30, "max": 0.30, "step": 0.01,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Pushes the prompt toward what you have RATED WELL, in the model's own space. The Refiner already learns a 'liked direction' from your ratings and steers the conditioning along it — but that edit then goes through H3's token refiner, whose two attention blocks mix it across tokens and whose final norm scales its magnitude away, so what the model reads is not what was learned. This adds the same direction AFTER the refiner, where it lands as sent. Measured as a fraction of a typical prompt row's magnitude, so it means the same thing on every prompt and every checkpoint. Negative pushes AWAY from what you liked. Needs a refinement key with at least 3 liked runs; without one it does nothing and says so. Free. IGNORED unless h3_gain_mode is 'manual' — in 'learned' mode this is learned from your ratings like the other gains. 0.0 = off.",
-                }),
-                "h3_gain_mode": (["learned", "manual"], {
-                    "default": "learned",
-                    "tooltip": "Where the six H3 render strengths come from. 'learned' (default) takes them from the refinement key: Studio learns them from your ratings alone and tags them onto the conditioning, and the six widgets below are IGNORED — nothing to tune by hand, which is the point. Six scalars is a smaller search than the sigma schedule already learns from ratings, so it converges in tens of rated runs. With no key wired, or before the first rating, 'learned' renders at the model's trained strengths (untouched, and the taste push at 0). 'manual' ignores the learned values and uses the widgets below exactly as set — for deliberately probing one strength, or for a graph with no Refiner in it.",
-                }),
-                "h3_prompt_scale": ("FLOAT", {
-                    "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. How LOUD the prompt is when the picture reads it. H3 puts the Qwen text through condition_proj + a 2-block token refiner (ending in an RMSNorm) before the DiT sees it, and the blocks then read the text through attention — so the magnitude of those refined rows is how strongly the prompt competes for attention against the picture and the reference. This multiplies them: above 1.0 the prompt is harder to ignore, below 1.0 it recedes and the reference or the anchor gets more say. Applied AFTER the refiner's final norm, so it lands as set rather than being renormalized away. 1.0 = untouched, and the model is not cloned. Free — one multiply on the text rows, no extra model calls. Confined to the PROMPT rows: the <Picture N> label and vision block sit ahead of them and are left alone (read from minimax_token_tags; if those cannot be read the whole text span is scaled and the console says so). DIFFERENT from h3_gain_prompt, which controls how much each block WRITES BACK into the text rows — this controls how loudly they are READ.",
-                }),
                 "h3_video_detail": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
-                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Makes the picture crisper or softer WITHOUT changing the sound at all. Above 1.0 = more detail and contrast, below 1.0 = softer and calmer. The step from 1.0 is small, so reach for 1.4-1.8 before deciding it does nothing. 1.0 = untouched, and the model is not cloned. This is the audio-safe twin of h3_gain_video: everything earlier in the model shares one attention pass, so a change to the picture reaches the soundtrack, but this runs after the last one — there is no path left for it to travel. Free. UNVALIDATED.",
+                    "tooltip": "EXPERIMENTAL, MiniMax H3 only. Makes the picture crisper or softer WITHOUT changing the sound at all. Above 1.0 = more detail and contrast, below 1.0 = softer and calmer. The step from 1.0 is small, so reach for 1.4-1.8 before deciding it does nothing. 1.0 = untouched, and the model is not cloned. Everything earlier in the model shares one attention pass, so any other change to the picture also reaches the soundtrack; this runs after the last one, where there is no path left for it to travel. Free. EXPERIMENTAL and lightly tested: 1.25 read as more detail and better contrast on one rental run, and nothing beyond that has been measured.",
                 }),
                 "alg_anchor": ("BOOLEAN", {
                     "default": False,
@@ -3987,9 +3963,7 @@ class FunPackLTXAVSceneChainSampler:
         # Per-modality AdaLN gain. Sampler-side and self-contained: it reads no refinement
         # key, no rating and no Studio state, so it works on a graph with the Refiner absent
         # entirely. 1.0 on all three does not even clone the model.
-        model = self._install_h3_adaln_gains(model, positive)
         model = self._install_h3_final_layer(model, positive)
-        model = self._install_h3_token_refiner(model, positive)
 
         try:
             sampled = comfy.sample.sample_custom(
@@ -6666,204 +6640,6 @@ class FunPackLTXAVSceneChainSampler:
         w_idx = idx % w
         return (w_idx >= (w // 2)).long()
 
-    #: what Studio tags onto entry 0 when it has learned gains for this key
-    H3_GAINS_META = "funpack_h3_gains"
-    #: and the learned taste direction that rides with them
-    H3_TASTE_DIR_META = "funpack_h3_taste_dir"
-    #: the value of each render gain that means "untouched". Not all of them are 1.0:
-    #: refiner_bias is a signed push along a learned direction, so its neutral is 0.0.
-    H3_GAIN_NEUTRAL = {"video": 1.0, "prompt": 1.0, "audio": 1.0,
-                       "prompt_scale": 1.0, "refiner_bias": 0.0,
-                       "video_detail": 1.0}
-
-    def _h3_render_gains(self, positive):
-        """The four render strengths for this run: learned from ratings, or the widgets.
-
-        Learned is the default because rating is the only input the user wants to give — four
-        scalars is a smaller search than the sigma profile already runs on ratings alone, so a
-        hand-tuned value here is the user doing work the loop can do. `manual` is the explicit
-        override, and it still works with no Refiner in the graph at all.
-
-        Reading the CONDITIONING META rather than a refinement key keeps the boundary intact:
-        Studio owns the key and the learning, the sampler owns the application — the same
-        bridge H3 token weighting already uses.
-        """
-        manual = {"video": float(getattr(self, "_h3_gain_video", 1.0)),
-                  "prompt": float(getattr(self, "_h3_gain_prompt", 1.0)),
-                  "audio": float(getattr(self, "_h3_gain_audio", 1.0)),
-                  "prompt_scale": float(getattr(self, "_h3_prompt_scale", 1.0)),
-                  "refiner_bias": float(getattr(self, "_h3_taste_bias", 0.0)),
-                  "video_detail": float(getattr(self, "_h3_video_detail", 1.0))}
-        if str(getattr(self, "_h3_gain_mode", "learned")).lower() == "manual":
-            return manual
-        learned = None
-        try:
-            entry = positive[0] if isinstance(positive, list) and positive else None
-            if isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict):
-                candidate = entry[1].get(self.H3_GAINS_META)
-                if isinstance(candidate, dict):
-                    learned = {k: float(v) for k, v in candidate.items()}
-        except Exception:  # noqa: BLE001
-            learned = None
-        if learned is None:
-            # No key, or nothing rated yet. Trained strengths — NOT the widgets, which in
-            # this mode are not what the user is steering with.
-            if any(value != self.H3_GAIN_NEUTRAL[key] for key, value in manual.items()):
-                _log.feature(
-                    "FunPackSceneChain", "Rating-learned render gains", False,
-                    "nothing rated on this key yet, so the run uses the model's trained "
-                    "strengths. The h3_gain_* widgets are IGNORED in 'learned' mode — set "
-                    "h3_gain_mode to 'manual' to use them as typed.")
-            return dict(self.H3_GAIN_NEUTRAL)
-        return {k: learned.get(k, self.H3_GAIN_NEUTRAL[k]) for k in manual}
-
-    def _h3_prompt_rows(self, positive):
-        """Where the PROMPT starts inside the text span, from the conditioning's own tags.
-
-        Returns (start, note). The `<Picture N>` label and a reference's vision block sit at
-        the head of the span and are not ours to edit, so everything the refiner edit does is
-        confined to the rows after them.
-        """
-        try:
-            from . import h3_token_weights as _tw
-        except ImportError:
-            import h3_token_weights as _tw
-        try:
-            entry = positive[0] if isinstance(positive, list) and positive else None
-            meta = entry[1] if isinstance(entry, (list, tuple)) and len(entry) >= 2 else {}
-            cond = entry[0] if entry is not None else None
-            cond_len = int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0
-            region = _tw.prompt_region(meta.get("minimax_token_tags"), cond_len)
-            if region:
-                return int(region[0]), None
-            if cond_len:
-                return 0, ("the prompt/reference boundary could not be read from the token "
-                           "tags, so the WHOLE text span is edited — including a reference's "
-                           "vision block, if one is wired")
-        except Exception as error:  # noqa: BLE001
-            _log.failed("FunPackSceneChain", "h3 token-refiner row range", error,
-                        "the whole text span is edited instead of just the prompt")
-        return 0, None
-
-    def _h3_taste_bias_vector(self, model, positive, strength):
-        """The learned taste direction, projected into the refiner's own space.
-
-        Studio learns `liked_dir` in Qwen space and already steers the conditioning along it.
-        That edit then goes through condition_proj, two refiner blocks and a final RMSNorm —
-        which mixes it across tokens and normalizes its magnitude away, so the direction that
-        reaches the 50 DiT blocks is not the one that was learned. Adding it AFTER the
-        refiner lands it unchanged, in the space the blocks actually read.
-
-        Added to every prompt row equally, which is what makes it transferable: Qwen does not
-        pad, so the row COUNT changes with every prompt edit and a per-position bias would
-        mean something different on each run.
-
-        Returns a unit vector for `TokenRefinerEdit(bias_relative=True)` to rescale, or None.
-        """
-        if not strength:
-            return None
-        try:
-            from . import minimax_h3 as h3mod
-        except ImportError:
-            import minimax_h3 as h3mod
-        direction = None
-        try:
-            entry = positive[0] if isinstance(positive, list) and positive else None
-            if isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict):
-                direction = entry[1].get(self.H3_TASTE_DIR_META)
-        except Exception:  # noqa: BLE001
-            direction = None
-        if direction is None:
-            _log.feature(
-                "FunPackSceneChain", "Taste push", False,
-                "the conditioning carries no learned direction. "
-                "It needs a refinement key with at least 3 liked runs on it.")
-            return None
-        projected = h3mod.project_into_refiner_space(model, direction)
-        if projected is None:
-            _log.feature(
-                "FunPackSceneChain", "Taste push", False,
-                "the learned direction does not fit the token refiner's space. "
-                "Its width does not match condition_proj.")
-            return None
-        norm = float(projected.float().norm().item())
-        if not norm or norm != norm:
-            return None
-        return (projected.float() / norm) * float(strength)
-
-    def _install_h3_token_refiner(self, model, positive):
-        """Edit the token refiner's OUTPUT: prompt loudness, and the learned taste push.
-
-        One patch for both. They act on the same rows through the same wrapper, so applying
-        them separately would nest two wrappers and make the second one's `bias_relative`
-        rescale read a span the first had already scaled.
-        """
-        gains = self._h3_render_gains(positive)
-        scale = float(gains.get("prompt_scale", 1.0))
-        strength = float(gains.get("refiner_bias", 0.0))
-        if scale == 1.0 and not strength:
-            return model
-        try:
-            from . import minimax_h3 as h3mod
-        except ImportError:
-            import minimax_h3 as h3mod
-        if not h3mod.is_h3_model(model):
-            _log.feature(
-                "FunPackSceneChain", "Token-refiner edit", False,
-                "not a MiniMax H3 model. There is no token refiner to edit.")
-            return model
-        start, note = self._h3_prompt_rows(positive)
-        if note:
-            _log.feature("FunPackSceneChain", "Token-refiner edit", True, note)
-        bias = self._h3_taste_bias_vector(model, positive, strength)
-        if scale == 1.0 and bias is None:
-            return model
-        try:
-            patched, applied = h3mod.apply_token_refiner_edit(
-                model, scale=scale, bias=bias, row_start=start, bias_relative=bias is not None)
-        except Exception as error:  # noqa: BLE001
-            _log.failed("FunPackSceneChain", "h3 token-refiner edit", error,
-                        "the prompt is read at its trained strength and unbiased")
-            return model
-        if applied:
-            print(f"[FunPackSceneChain] {applied}")
-        return patched
-
-    def _install_h3_adaln_gains(self, model, positive):
-        """Scale every DiT block's AdaLN gates per modality, from the three sampler widgets.
-
-        Deliberately NOT part of the refinement path. This is a visual-behaviour op, so it
-        lives on the sampler (Studio produces conditioning; the sampler decides how the model
-        renders it) and it reads only its own widgets. Nothing here consults a refinement key,
-        a rating, or a learned direction — turning conditioning steering off does not turn
-        this off, and turning this on does not require the Refiner to be wired at all.
-
-        Returns `model` untouched when all three gains are 1.0, which is every default run.
-        """
-        gains = self._h3_render_gains(positive)
-        if all(gains.get(k, 1.0) == 1.0 for k in ("video", "prompt", "audio")):
-            return model
-        try:
-            from . import minimax_h3 as h3mod
-        except ImportError:
-            import minimax_h3 as h3mod
-        if not h3mod.is_h3_model(model):
-            _log.feature(
-                "FunPackSceneChain", "AdaLN render gains", False,
-                "not a MiniMax H3 model. The per-modality gates only exist there.")
-            return model
-        # MODALITY_TAGS names the text modality "text"; the widget says "prompt" because that
-        # is what it is to the person setting it.
-        tagged = {"video": gains["video"], "text": gains["prompt"], "audio": gains["audio"]}
-        try:
-            patched, note = h3mod.apply_adaln_edits(model, tagged)
-        except Exception as error:  # noqa: BLE001
-            _log.failed("FunPackSceneChain", "AdaLN modality gain", error,
-                        "the blocks write at their trained strength for every modality")
-            return model
-        if note:
-            print(f"[FunPackSceneChain] {note}")
-        return patched
 
 
     def _install_h3_final_layer(self, model, positive):
@@ -6873,8 +6649,7 @@ class FunPackLTXAVSceneChainSampler:
         blocks share one attention sequence. This one cannot: there is no attention after
         the final layer, so the audio branch is untouched by construction.
         """
-        gains = self._h3_render_gains(positive)
-        detail = float(gains.get("video_detail", 1.0))
+        detail = float(getattr(self, "_h3_video_detail", 1.0))
         if detail == 1.0:
             return model
         try:
@@ -7222,8 +6997,6 @@ class FunPackLTXAVSceneChainSampler:
                second_pass=False, second_pass_op="none", second_pass_sigmas=None,
                second_pass_sampler=None,
                h3_audio_clock=False,
-               h3_gain_video=1.0, h3_gain_prompt=1.0, h3_gain_audio=1.0,
-               h3_prompt_scale=1.0, h3_taste_bias=0.0, h3_gain_mode="learned",
                h3_video_detail=1.0,
                audio_vae=None, h3_keyframes=None,
                unique_id=None, prompt=None):
@@ -7239,14 +7012,8 @@ class FunPackLTXAVSceneChainSampler:
         # happened last run is reported again rather than deduped away forever.
         _log.begin_run()
         self._is_h3 = self._set_stream_axes(model)
-        # Read once per run, consumed by _install_h3_adaln_gains at each scene's sample call.
-        self._h3_gain_video = max(0.0, min(2.0, float(h3_gain_video)))
-        self._h3_gain_prompt = max(0.0, min(2.0, float(h3_gain_prompt)))
-        self._h3_gain_audio = max(0.0, min(2.0, float(h3_gain_audio)))
-        self._h3_prompt_scale = max(0.0, min(2.0, float(h3_prompt_scale)))
-        self._h3_taste_bias = max(-0.30, min(0.30, float(h3_taste_bias)))
+        # Read once per run, consumed by _install_h3_final_layer at each scene's sample call.
         self._h3_video_detail = max(0.0, min(2.0, float(h3_video_detail)))
-        self._h3_gain_mode = str(h3_gain_mode or "learned").strip().lower()
         # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's
         # own base grid; on LTX it stays the absolute-sigma gate it was validated with.
         _steer_ramp = _make_steer_ramp(sigmas, self._is_h3)

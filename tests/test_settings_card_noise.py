@@ -28,7 +28,7 @@ def defaults(monkeypatch):
         "segmented_detailing": False, "detail_targets": "hands, face",
         "context_windows": False, "context_window_overlap": 40,
         "joyai_memory": False, "joyai_audio_memory": False, "v2a_grad_scale": 1.0,
-        "h3_gain_mode": "learned", "h3_video_detail": 1.0,
+        "h3_video_detail": 1.0,
         "cfg": 1.0, "frame_overlap": 8,
     }
     declared = frozenset(table) | {"mystery", "adjustments"}
@@ -89,6 +89,29 @@ def test_an_unrecognised_refiner_key_is_kept():
     assert "prompt_repair" in got
 
 
+def test_an_owner_live_for_more_than_one_value_is_matched_on_any_of_them():
+    """absolute_strength belongs to steer_mode and is live for BOTH "absolute" and "both".
+    Reading only the singular dependsValue missed the plural dependsVals the Studio rows
+    use, so it printed under "relative", where it does nothing."""
+    assert sc._OWNED_BY["absolute_strength"] == ("steer_mode", ("absolute", "both"))
+    rows = dict(sc._live_rows({"steer_mode": "relative", "absolute_strength": 0.05},
+                              defaults=sc._EDITOR_DEFAULTS))
+    assert "absolute_strength" not in rows
+    for mode in ("absolute", "both"):
+        got = dict(sc._live_rows({"steer_mode": mode, "absolute_strength": 0.05},
+                                 defaults=sc._EDITOR_DEFAULTS))
+        assert "absolute_strength" in got, mode
+
+
+def test_a_boolean_owner_survives_the_journey_from_javascript():
+    """The Editor writes JS literals, so a boolean owner arrives as "true" while Python's
+    own str(True) is "True"."""
+    assert sc._OWNED_BY["negative_erase_mode"] == ("negative_erase", ("true",))
+    got = dict(sc._live_rows({"negative_erase": True, "negative_erase_mode": "subtract"},
+                             defaults=sc._EDITOR_DEFAULTS))
+    assert got["negative_erase_mode"] == "subtract"
+
+
 def test_a_hand_built_control_still_gets_an_owner():
     """identity_projector is rendered by hand in the Editor, so it carries no dependsOn for
     the generator to find — and it was printing a model filename under a disabled feature."""
@@ -122,11 +145,13 @@ def test_a_chain_of_owners_is_walked_to_the_end(defaults):
     assert "v2a_grad_scale" in got
 
 
-def test_an_owner_matched_by_value_not_by_truthiness(defaults):
-    """h3_gain_mode is a combo: 'manual' switches its dials on, 'learned' does not — and
-    'learned' is a perfectly truthy string."""
+def test_an_owner_can_be_matched_by_value_not_just_truthiness(monkeypatch, defaults):
+    """A combo owner switches its dials on for ONE of its values, and the others are
+    perfectly truthy strings. No shipped knob uses this today; the rule still has to."""
+    monkeypatch.setitem(sc._OWNED_BY, "h3_video_detail", ("mode", ("manual",)))
+    monkeypatch.setitem(defaults, "mode", "learned")
     assert rows({"h3_video_detail": 1.4}) == {}
-    assert "h3_video_detail" in rows({"h3_gain_mode": "manual", "h3_video_detail": 1.4})
+    assert "h3_video_detail" in rows({"mode": "manual", "h3_video_detail": 1.4})
 
 
 def test_a_cycle_in_the_table_does_not_hang(monkeypatch, defaults):
@@ -142,11 +167,20 @@ def test_the_ownership_table_is_the_editors_own():
     copies of one rule in two languages, so the test regenerates this one from that one."""
     src = (FRONTEND / "engine_settings.js").read_text(encoding="utf-8")
     found = {}
-    for name, body in re.findall(r'\{\s*name:\s*"([a-z0-9_]+)"(.*?)\n\s*(?=\{ name:|\];)',
+    for name, body in re.findall(r'\{\s*name:\s*"([a-z0-9_.]+)"(.*?)\n\s*(?=\{ name:|\];)',
                                  src, re.S):
-        m = re.search(r'dependsOn:\s*"([a-z0-9_]+)"(?:,\s*dependsValue:\s*"([^"]*)")?', body)
-        if m:
-            found[name] = (m.group(1), m.group(2))
+        m = re.search(r'dependsOn:\s*"([a-z0-9_]+)"', body)
+        if not m:
+            continue
+        one = re.search(r'dependsValue:\s*"([^"]*)"', body)
+        many = re.search(r'dependsVals:\s*\[([^\]]*)\]', body)
+        if one:
+            vals = (one.group(1),)
+        elif many:
+            vals = tuple(v.strip().strip('"') for v in many.group(1).split(",") if v.strip())
+        else:
+            vals = None
+        found[name] = (m.group(1), vals)
     assert found, "no dependsOn rows parsed — the parser, not the table, is what broke"
     assert {**found, **sc._OWNED_EXTRA} == sc._OWNED_BY
 

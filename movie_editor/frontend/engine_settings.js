@@ -133,8 +133,6 @@
     { name: "prompt_enhance_thinking", label: "Enhancer thinking mode", kind: "bool", default: false,
       dependsOn: "prompt_enhance", dependsVals: [true],
       hint: "Let the model reason before answering, if it supports it. Slower, and the reasoning is stripped from the result." },
-    { name: "h3_render_gains", label: "Rating-learned render gains (H3)", kind: "bool", default: true,
-      hint: "Learns six render strengths from your ratings alone: how hard each block writes into the picture, the prompt and the soundtrack, how loudly the prompt is read, how far to push the prompt toward what you have rated well, and how much detail the picture gets. Six numbers is a smaller search than the sigma schedule already learns, so there is nothing to tune by hand — each run is rendered slightly off the learned values so the next rating has something to credit. The taste push needs at least 3 liked runs on the key before it does anything. Free. The learned values live in the refinement key, not in this project — clearing your keys resets them. Off leaves the model at its trained strengths; the Chain Sampler's h3_gain_*, h3_taste_bias and h3_video_detail widgets then do nothing unless its h3_gain_mode is set to manual." }
   ];
 
   function parseStudioSettings(p) {
@@ -325,31 +323,8 @@
     { name: "h3_audio_clock", label: "H3 audio clock (few-step audio)", kind: "bool", default: false,
       hint: "MiniMax H3 only: removes audio distortion on few-step turbo schedules. Free.",
       detail: "H3 runs video and audio on different flow schedules but only one sigma grid reaches the sampler, so audio drifts further the bigger the step. This corrects it for one multiply per step. Exact with FunPack Distilled Flow, Hybrid Euler 2S and euler; leave it off with res_multistep / dpmpp_2m and the rest of the multistep family, which already absorb most of the error. No effect when both sigma shifts are equal, or on two-evals-per-step samplers." },
-    { name: "h3_gain_mode", label: "H3 render gains", kind: "combo", choices: ["learned", "manual"], default: "learned",
-      clearsOnDefault: ["h3_gain_video", "h3_gain_prompt", "h3_gain_audio",
-                        "h3_prompt_scale", "h3_taste_bias", "h3_video_detail"],
-      hint: "MiniMax H3 only. 'learned' takes six render strengths from your ratings and ignores the dials below. 'Prompt is settled' is not one of them and works in either mode. 'manual' uses the dials as typed.",
-      detail: "Learned needs the Refiner's 'Rating-learned render gains (H3)' left on — with it off, or before anything is rated, learned mode renders at the model's trained strengths and the dials still do nothing. Switch to manual to drive them yourself." },
-    { name: "h3_gain_video", label: "Write gain · picture", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "How hard each block writes into the picture rows. Below 1.0 is a calmer, less-committed image; above pushes harder. 1.0 = untouched. Free.",
-      detail: "Keyframe pins and reference images ride the same modality tag as the video, so this moves the anchor with it." },
-    { name: "h3_gain_prompt", label: "Write gain · prompt", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "How much each block rewrites the prompt as it draws. Lower it when a scene slowly stops matching what you asked for; 0.0 freezes the text at its encoded value. 1.0 = untouched. Free." },
-    { name: "h3_gain_audio", label: "Write gain · soundtrack", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "How hard each block writes into the audio rows. Below 1.0 builds the soundtrack more conservatively. 1.0 = untouched. Free." },
-    { name: "h3_prompt_scale", label: "Prompt loudness", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "How loudly the prompt is READ, as opposed to how much it is rewritten. Above 1.0 it is harder to ignore; below, the anchor or the reference gets more say. 1.0 = untouched. Free." },
-    { name: "h3_taste_bias", label: "Taste push", kind: "float", default: 0.0, min: -0.30, max: 0.30, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "Pushes the prompt toward what you have rated well. Negative pushes away from it. Needs at least 3 liked runs on the refinement key; without them it does nothing and says so. 0.0 = off. Free.",
-      detail: "The Refiner already steers along your liked direction, but on H3 that edit is mixed and renormalized by the token refiner before the model reads it. This adds the same direction after the refiner, where it lands as sent. Measured as a fraction of a typical prompt row, so one value means the same thing on every prompt." },
-    { name: "h3_video_detail", label: "Picture detail (audio-safe)", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
-      dependsOn: "h3_gain_mode", dependsValue: "manual",
-      hint: "Makes the picture crisper or softer without changing the sound at all. Above 1.0 = more detail and contrast, below is softer. The step from 1.0 is small — reach for 1.4-1.8 before deciding it does nothing. Free.",
+    { name: "h3_video_detail", label: "Picture detail (experimental)", kind: "float", default: 1.0, min: 0.0, max: 2.0, step: 0.01,
+      hint: "Makes the picture crisper or softer without changing the sound at all. Above 1.0 = more detail and contrast, below is softer. The step from 1.0 is small — reach for 1.4-1.8 before deciding it does nothing. Free. Experimental, lightly tested.",
       detail: "Every block of the model shares one attention pass, so anything that moves the picture also reaches the soundtrack. This runs after the last one, where there is no path left for it to travel — it is the audio-safe twin of Write gain \u00b7 picture." },
     { name: "segmented_detailing", label: "Segmented detailing (region refine)", kind: "bool", default: false,
       hint: "Re-renders small regions like hands at higher detail after each scene. Costs about 15%.",
@@ -482,12 +457,6 @@
   function writeSamplerInput(k, value, immediate) {
     if (value === k.default) {
       S.unsetSamplerInput(k.name);
-      // A knob whose default hands ownership BACK to something else takes the values it
-      // owned with it. Without this, switching H3 render gains from manual to learned left
-      // the six hand-typed values behind: inert, invisible (the dials hide in learned mode),
-      // and not cleared until the project was next opened. Deferred invisible state is the
-      // whole problem this rule exists to remove.
-      (k.clearsOnDefault || []).forEach((name) => S.unsetSamplerInput(name));
       if (immediate) S.flushSave?.();
       return;
     }
@@ -557,7 +526,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_audio_clock", "h3_gain_mode", "h3_gain_video", "h3_gain_prompt", "h3_gain_audio", "h3_prompt_scale", "h3_taste_bias", "h3_video_detail", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_audio_clock", "h3_video_detail", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id, st) {

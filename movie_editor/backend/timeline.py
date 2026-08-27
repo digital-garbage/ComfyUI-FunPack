@@ -544,37 +544,6 @@ class Scene:
         return project.frame_rate
 
 
-#: Sampler knobs whose values belong to the REFINEMENT KEY, not to the project.
-#:
-#: These are learned from ratings and live in the key's own state. A copy in the project file
-#: was a second source of truth that outlived the key it came from: deleting every key left
-#: the old values still applying, with no way to clear them but typing the neutral value back
-#: in by hand.
-#:
-#: TWO THINGS THIS IS NOT, both learned the hard way:
-#:
-#: 1. It is not `h3_gain_mode`. A mode is a choice, and clearing it on open would throw
-#:    away a setting the user made on purpose, which is not what "untie from the project
-#:    file" meant.
-#: 2. It does not apply in MANUAL mode. There, these are hand-typed settings like any other
-#:    and must persist; there is no learned state to reset, because nothing learned them.
-KEY_SCOPED_SAMPLER_INPUTS = frozenset({
-    "h3_gain_video", "h3_gain_prompt", "h3_gain_audio",
-    "h3_prompt_scale", "h3_taste_bias", "h3_video_detail",
-})
-
-
-def without_key_scoped(raw) -> dict:
-    """Drop the rating-learned values, so a project opens at whatever the key now says.
-
-    Applied when a project is READ FROM DISK — never on the save round-trip. `from_dict`
-    runs on both, and stripping there meant the editor sent a value, got a project back
-    without it, and showed the default again: the knobs could not be set at all.
-    """
-    values = dict(raw or {})
-    if str(values.get("h3_gain_mode", "learned")).strip().lower() == "manual":
-        return values
-    return {k: v for k, v in values.items() if k not in KEY_SCOPED_SAMPLER_INPUTS}
 
 
 @dataclass
