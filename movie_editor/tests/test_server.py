@@ -157,17 +157,6 @@ def test_mixed_solo_sampler_inputs():
     assert guides["scenes"][0][0]["media_ref"] == "img1"
 
 
-def test_carry_chain_auto_mid_scene_guide():
-    import json
-    full = _project(scenes=[
-        {"id": "s1", "text": "a"},
-        {"id": "s2", "text": "b", "source": {"type": "carry"}},
-    ])
-    samp = _run_sampler_inputs(full, 2, full=full)
-    assert samp["mid_scene_guide"] is True
-    assert samp["carry_i2v_guides"] is False
-    guides = json.loads(samp["funpack_scene_guides"])
-    assert guides["scenes"][1][0]["source"] == "template"
 
 
 def test_identity_pin_media_refs_without_mixed_anchors():

@@ -271,7 +271,6 @@ def test_continuity_defaults_auto_on():
     cs = normalize_continuity_settings({})
     assert cs["auto_enabled"] is True
     assert cs["prior_scene_guides"] is True
-    assert cs["mid_scene_guide"] is True
 
 
 def test_auto_continuity_solo_image_no_prior_guides():

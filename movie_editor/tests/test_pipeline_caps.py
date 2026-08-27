@@ -175,7 +175,7 @@ def test_simple_mode_leaves_everything_that_is_not_refinement_alone():
     and the second pass in particular was allowed by Easy Gen, which this mode replaced."""
     on = {
         "second_pass": True, "second_pass_op": "upscale_2x",
-        "mid_scene_guide": True, "joyai_memory": True, "joyai_audio_memory": True,
+        "joyai_memory": True, "joyai_audio_memory": True,
         "carry_i2v_guides": True, "alg_anchor": True, "alg_blur_guides": True,
         "bounded_attention_enabled": True, "identity_transfer_enabled": True,
         "segmented_detailing": True, "context_windows": True,

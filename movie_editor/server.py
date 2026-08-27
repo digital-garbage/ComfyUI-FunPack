@@ -733,10 +733,6 @@ def _run_sampler_inputs(
     if scene_count > 1 and not guides:
         samp["carry_i2v_guides"] = True
 
-    if cs["auto_enabled"] and scene_count > 1 and cs["mid_scene_guide"]:
-        samp["mid_scene_guide"] = True
-        samp["mid_scene_guide_strength"] = cs["mid_scene_guide_strength"]
-
     return samp
 
 

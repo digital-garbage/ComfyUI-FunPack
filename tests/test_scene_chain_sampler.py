@@ -480,7 +480,6 @@ def test_overlap_diagnostics_report_latent_blend_zone():
             {"index": 2, "text": "hero runs", "encode_text": "hero runs", "mechanisms": ["latent_overlap(16px)"]},
         ],
         carry_i2v_guides=True,
-        mid_scene_guide=False,
         embed_guidance=True,
         embed_guidance_strength=0.15,
         embed_guidance_source="absolute",

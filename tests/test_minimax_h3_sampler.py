@@ -643,16 +643,6 @@ def test_holding_the_reference_outranks_continuing_from_the_last_shot():
     assert float(_pins(out)[0]["latent"].max()) == 5.0
 
 
-def test_mid_scene_guide_declines_on_h3_instead_of_damaging_the_latent(capsys):
-    """H3's packed layout places a pin at the first or last frame, nowhere between."""
-    node = h3_node(frame_count=124)
-    chunk = av_latent(video_t=37)
-    before = chunk["samples"].unbind()[0].shape
-    out_chunk, positive, _neg, tail = node._append_mid_scene_guide(
-        chunk, av_latent(video_t=37), [[torch.zeros(1, 8, 16), {}]], None, LTXVAE(), 1.0)
-    assert out_chunk["samples"].unbind()[0].shape == before
-    assert tail == 0 and _pins(positive) == []
-    assert "pins only the first" in capsys.readouterr().out
 
 
 # ── pins vs a resolution-changing second pass ────────────────────────────────

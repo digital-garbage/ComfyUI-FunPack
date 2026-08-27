@@ -1157,7 +1157,7 @@ def _alg_blur_frames(model, latent_image, kappa, frame_indices=(), tail_count=0)
 
     `frame_indices` is any iterable of frame indices within the video stream's T dimension to
     blur (each filtered independently) — frame 0 for the genuine i2v anchor, and/or the trailing
-    indices of newly-appended guide-attention frames (mid_scene_guide / carry_i2v_guides-as-guide /
+    indices of newly-appended guide-attention frames (carry_i2v_guides-as-guide /
     configured guides / JoyAI memory — see EXPERIMENTAL alg_blur_guides) when extending the same
     idea to those. Indices outside the actual frame count are silently skipped.
 
@@ -2358,7 +2358,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
       no i2v anchor (denoise_mask is None) or the packed latent layout can't be read.
     - EXPERIMENTAL alg_guide_tail_frames (>0 extends the same idea, not from the paper):
       additionally blurs that many trailing video frames — the newly-appended guide-
-      attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide /
+      attention frames this scene (carry_i2v_guides-as-guide /
       configured guides / JoyAI memory), set by the Scene Chain Sampler's alg_blur_guides
       toggle right before this chunk's sample call. 0 = untouched (default). Standalone:
       works with alg_enabled off (anchor stays sharp, only the guide tail is blurred), with
@@ -2867,14 +2867,6 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "Carry protected frames from latent_template noise_mask into each continuation chunk as a style guide.",
                 }),
-                "mid_scene_guide": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Experimental: append the middle frame of the previous scene as a guide for the current scene via LTX guide attention. Helps maintain character positioning across scenes.",
-                }),
-                "mid_scene_guide_strength": ("FLOAT", {
-                    "default": 0.25, "min": 0.0, "max": 1.0, "step": 0.05,
-                    "tooltip": "Guide attention strength for mid-scene anchor. Full 0..1 range. 0.25-0.35 is the measured sweet spot: below 0.25 audio degrades and character appearance drifts, above 0.35 spatial conflicts appear when scene composition shifts. Outside that band is yours to explore — 0 disables the guide's pull entirely.",
-                }),
                 "embed_guidance": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Apply the Refiner's learned quality direction at each denoising step, not just once before sampling. Requires refinement_key_input and enough liked generations to have a direction. Adds ~20-30% inference overhead.",
@@ -2922,7 +2914,7 @@ class FunPackLTXAVSceneChainSampler:
                 # mapping and lands a numeric on a combo (e.g. joyai_frame_select got 0).
                 "joyai_memory": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "JoyAI-Echo cross-shot memory bank. REQUIRES the JoyAI-Echo LoRA — without it the injected memory frames change nothing, because the base model was never trained to read them as memory. Generalizes mid_scene_guide from one anchor to a managed set of clean prior-shot frames injected into each scene via LTX guide attention, so character/scene identity carries across the whole chain (JoyAI-Echo's story-level consistency). The first joyai_fix_frames scenes are pinned permanently as a global anchor; the rest is a rolling most-recent window capped at joyai_memory_size. Supersedes mid_scene_guide when on. Video memory only; pair it with joyai_audio_memory for the soundtrack.",
+                    "tooltip": "JoyAI-Echo cross-shot memory bank. REQUIRES the JoyAI-Echo LoRA — without it the injected memory frames change nothing, because the base model was never trained to read them as memory. Injects a managed set of clean prior-shot frames injected into each scene via LTX guide attention, so character/scene identity carries across the whole chain (JoyAI-Echo's story-level consistency). The first joyai_fix_frames scenes are pinned permanently as a global anchor; the rest is a rolling most-recent window capped at joyai_memory_size. Video memory only; pair it with joyai_audio_memory for the soundtrack.",
                 }),
                 "joyai_memory_size": ("INT", {
                     "default": 7, "min": 1, "max": 32,
@@ -2938,7 +2930,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "joyai_memory_strength": ("FLOAT", {
                     "default": 0.3, "min": 0.25, "max": 10.0, "step": 0.05,
-                    "tooltip": "Guide-attention strength for each memory frame. 0.25 floor as mid_scene_guide (below it audio degrades and identity drifts). Uncapped at the top: 0.25-0.5 is the audio-safe band, higher values push identity harder but may degrade audio/over-constrain motion.",
+                    "tooltip": "Guide-attention strength for each memory frame. 0.25 floor (below it audio degrades and identity drifts). Uncapped at the top: 0.25-0.5 is the audio-safe band, higher values push identity harder but may degrade audio/over-constrain motion.",
                 }),
                 # NOTE: append-only — keep new sampler widgets at the END of this block so the
                 # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
@@ -2979,7 +2971,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "alg_blur_guides": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL: extends ALG (see alg_anchor) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. Standalone: works even with the anchor blur off (anchor stays sharp), with its own alg_guide_blur_strength / alg_guide_blur_sigma_threshold controls below. Works with ANY wired sampler — inside the loop on FunPack Distilled Flow, and through a denoiser proxy (same sigma schedule, same result) on everything else. No effect if no guide frames were appended this scene.",
+                    "tooltip": "EXPERIMENTAL: extends ALG (see alg_anchor) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. Standalone: works even with the anchor blur off (anchor stays sharp), with its own alg_guide_blur_strength / alg_guide_blur_sigma_threshold controls below. Works with ANY wired sampler — inside the loop on FunPack Distilled Flow, and through a denoiser proxy (same sigma schedule, same result) on everything else. No effect if no guide frames were appended this scene.",
                 }),
                 "bounded_attention_enabled": ("BOOLEAN", {
                     "default": False,
@@ -4530,7 +4522,6 @@ class FunPackLTXAVSceneChainSampler:
         boundaries,
         scene_runs,
         carry_i2v_guides,
-        mid_scene_guide,
         embed_guidance,
         embed_guidance_strength,
         embed_guidance_source,
@@ -4567,12 +4558,6 @@ class FunPackLTXAVSceneChainSampler:
                 "scope": "scene_2_onward",
                 "note": "Scene 1 template frames are prepended as hidden guide tokens in continuation chunks only — "
                         "does not inject scene 2 into scene 1.",
-            })
-        if mid_scene_guide:
-            global_steering.append({
-                "mechanism": "mid_scene_guide",
-                "scope": "scene_2_onward",
-                "note": "Middle frame of scene N guides scene N+1 denoising — does not retroactively change scene N.",
             })
         global_steering.append({
             "mechanism": "studio_absolute_steer",
@@ -6037,84 +6022,6 @@ class FunPackLTXAVSceneChainSampler:
             tail_crop += tail
         return chunk, positive, negative, head_crop, tail_crop, identity_ref_filename
 
-    def _append_mid_scene_guide(self, chunk, previous_output, positive, negative, vae, strength):
-        """Append the middle frame of the previous scene as a guide for the current chunk
-        using LTX's guide attention mechanism (keyframe_idxs + guide_attention_entries).
-        Audio-safe: appends only to the video tensor, guide tokens influence denoising
-        through attention weights rather than overwriting hidden states."""
-        prev_tensors = self._latent_tensors(previous_output)
-        chunk_tensors = self._latent_tensors(chunk)
-        if not prev_tensors or not chunk_tensors:
-            return chunk, positive, negative, 0
-
-        # Middle frame of previous scene as guide source
-        F_prev = self._tensor_frames(prev_tensors[0])
-        guide_frame = self._time_slice(prev_tensors[0], F_prev // 2, F_prev // 2 + 1)
-        guide_frame = guide_frame.to(device=chunk_tensors[0].device, dtype=chunk_tensors[0].dtype)
-
-        if self._is_h3:
-            # A mid-clip pin is not something H3's packed layout can place, and the LTX path
-            # below would append a latent frame off its grid rather than refuse. Routed
-            # through the keyframe path so it declines by the same rule, and says so.
-            positive, negative, tail = self._append_h3_keyframe(
-                guide_frame, max(1, int(self._h3_frame_count)) // 2, strength,
-                positive, negative)
-            return chunk, positive, negative, tail
-
-        # LTX from here down. Imported after the H3 branch so the H3 path does not depend on
-        # an LTX-only module importing.
-        try:
-            from comfy_extras.nodes_lt import LTXVAddGuide, _append_guide_attention_entry
-        except ImportError as _e:
-            _log.failed("FunPackSceneChain", "mid-scene guide (ComfyUI LTX guide API)", _e,
-                        "the scene renders with NO mid-scene guide")
-            return chunk, positive, negative, 0
-
-        # Target temporal position: middle of current chunk in pixel space
-        F_chunk = self._tensor_frames(chunk_tensors[0])
-        mid_chunk = F_chunk // 2
-        scale_factors = getattr(vae, 'downscale_index_formula', [8, 8, 8])
-        time_scale = int(scale_factors[0]) if hasattr(scale_factors, '__getitem__') else 8
-        causal_fix = (mid_chunk == 0)
-        pixel_frame_idx = 0 if causal_fix else 1 + (mid_chunk - 1) * time_scale
-
-        # Add keyframe positional indices to conditioning
-        positive = LTXVAddGuide.add_keyframe_index(
-            positive, pixel_frame_idx, guide_frame, scale_factors, causal_fix=causal_fix
-        )
-        negative = LTXVAddGuide.add_keyframe_index(
-            negative, pixel_frame_idx, guide_frame, scale_factors, causal_fix=causal_fix
-        )
-
-        # Register guide attention entry (strength controls how strongly noisy frames
-        # attend to the guide tokens vs. ignoring them)
-        guide_latent_shape = [guide_frame.shape[2], guide_frame.shape[3], guide_frame.shape[4]]
-        pre_filter_count = guide_frame.shape[2] * guide_frame.shape[3] * guide_frame.shape[4]
-        positive, negative = _append_guide_attention_entry(
-            positive, negative, pre_filter_count, guide_latent_shape, strength=float(strength)
-        )
-
-        # Append guide frame to video tensor (mask = 1-strength, partially pinned)
-        result = self._clone_latent(chunk)
-        tensors = self._latent_tensors(result)
-        masks = self._latent_masks(result, len(tensors))
-        if masks[0] is None:
-            masks[0] = torch.ones(
-                tensors[0].shape[0], 1, tensors[0].shape[2], 1, 1,
-                dtype=torch.float32, device=tensors[0].device,
-            )
-        guide_mask = torch.full_like(masks[0][:, :, :1], max(0.0, 1.0 - float(strength)))
-        tensors[0] = torch.cat([tensors[0], guide_frame], dim=2)
-        masks[0] = torch.cat([masks[0], guide_mask.to(masks[0].device, masks[0].dtype)], dim=2)
-
-        if self._is_nested(result.get("samples")):
-            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
-            result["noise_mask"] = comfy.nested_tensor.NestedTensor(masks)
-        else:
-            result["samples"] = tensors[0]
-            result["noise_mask"] = masks[0]
-
-        return result, positive, negative, 1
 
     def _harvest_joyai_frame(self, sampled, select):
         """Pick one clean latent frame from a finished scene for the memory bank.
@@ -6136,7 +6043,7 @@ class FunPackLTXAVSceneChainSampler:
     def _append_joyai_memory_guides(self, chunk, frames, positive, negative, vae, strength):
         """JoyAI-Echo memory injection: attach every banked prior-shot frame to the current chunk
         as a clean LTX guide, so attention carries identity/scene forward across the whole chain.
-        The single-anchor mid_scene_guide generalized to N frames — reuses _append_guide_latent
+        N clean prior-shot frames — reuses _append_guide_latent
         per entry. Memory frames are placed at distinct early (prefix) positions, matching JoyAI's
         sequence-prefix concat. Audio-safe (guide tokens influence via attention, not overwrite).
         Returns the total appended-frame count so the caller crops them off the output tail."""
@@ -6964,7 +6871,6 @@ class FunPackLTXAVSceneChainSampler:
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
                carry_i2v_guides=False,
-               mid_scene_guide=False, mid_scene_guide_strength=0.4,
                joyai_memory=False, joyai_memory_size=7, joyai_fix_frames=3,
                joyai_frame_select="center", joyai_memory_strength=0.3,
                joyai_audio_memory=False, v2a_grad_scale=1.0,
@@ -7169,7 +7075,7 @@ class FunPackLTXAVSceneChainSampler:
             return self._run_batch_training(
                 model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed,
-                carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
+                carry_i2v_guides,
                 embed_guidance, embed_guidance_strength, transition_duration,
                 decode_tile_size, refinement_key_input, embed_guidance_source,
                 score_slider, score_slider_strength,
@@ -7495,11 +7401,6 @@ class FunPackLTXAVSceneChainSampler:
                         chunk, audio_tail = self._append_joyai_audio_memory(chunk, joyai_bank.audio())
                         if audio_tail > 0:
                             run_mechanisms.append(f"joyai_audio_memory({audio_tail})")
-                elif mid_scene_guide and not custom_guides:
-                    run_mechanisms.append("mid_scene_guide")
-                    chunk, scene_positive, scene_negative, guide_tail = self._append_mid_scene_guide(
-                        chunk, output, scene_positive, scene_negative, vae, mid_scene_guide_strength,
-                    )
                 elif not custom_guides:
                     guide_tail = 0
 
@@ -7752,7 +7653,7 @@ class FunPackLTXAVSceneChainSampler:
                                    "previous scene, not an anchor, and cutting them would break "
                                    "the join with it")
                     elif guide_tail > 0 or audio_tail > 0:
-                        _reason = ("scene is carrying appended frames (mid_scene_guide / carried "
+                        _reason = ("scene is carrying appended frames (carried "
                                    "i2v guides / JoyAI audio memory) that are stripped after "
                                    "sampling — the audio crop is derived from the video length, "
                                    "which those extra frames would make wrong")
@@ -8207,7 +8108,6 @@ class FunPackLTXAVSceneChainSampler:
             boundaries=boundary_entries,
             scene_runs=scene_runs,
             carry_i2v_guides=bool(carry_i2v_guides),
-            mid_scene_guide=bool(mid_scene_guide),
             embed_guidance=bool(embed_guidance),
             embed_guidance_strength=float(embed_guidance_strength),
             embed_guidance_source=str(embed_guidance_source or "relative"),
@@ -8373,7 +8273,7 @@ class FunPackLTXAVSceneChainSampler:
 
     def _run_batch_training(self, model, vae, positive, negative, sampler, sigmas, seed,
                             latent_template, num_frames_per_scene, frame_overlap, cfg, max_scenes,
-                            use_same_seed, carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
+                            use_same_seed, carry_i2v_guides,
                             embed_guidance, embed_guidance_strength, transition_duration,
                             decode_tile_size, refinement_key_input, embed_guidance_source="relative",
                             score_slider=False, score_slider_strength=1.0,
@@ -8429,8 +8329,7 @@ class FunPackLTXAVSceneChainSampler:
             out = self.sample(
                 model, vae, pos_i, negative, sampler, sigmas, iter_seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=use_same_seed,
-                carry_i2v_guides=carry_i2v_guides, mid_scene_guide=mid_scene_guide,
-                mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
+                carry_i2v_guides=carry_i2v_guides, embed_guidance=embed_guidance,
                 embed_guidance_strength=embed_guidance_strength, embed_guidance_source=embed_guidance_source,
                 score_slider=score_slider, score_slider_strength=score_slider_strength,
                 joyai_memory=joyai_memory, joyai_memory_size=joyai_memory_size,

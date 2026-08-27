@@ -83,8 +83,6 @@ def normalize_continuity_settings(raw: Optional[dict]) -> dict[str, Any]:
         "identity_pin_strength": float(raw.get("identity_pin_strength", 0.35)),
         "prior_scene_guides": bool(raw.get("prior_scene_guides", True)),
         "prior_scene_strength": float(raw.get("prior_scene_strength", 0.35)),
-        "mid_scene_guide": bool(raw.get("mid_scene_guide", True)),
-        "mid_scene_guide_strength": float(raw.get("mid_scene_guide_strength", 0.3)),
         "guide_decay": float(raw.get("guide_decay", 0.85)),
         "solo_scene_guides": bool(raw.get("solo_scene_guides", True)),
     }

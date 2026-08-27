@@ -269,10 +269,6 @@
       hint: "How much freedom the decoder gets while adding that detail. Higher looks more detailed but drifts further from what was actually generated. Only used when Decode noise scale is above 0." },
     { name: "decode_tile_size",      label: "Decode tile size",      kind: "int",   default: 0,     min: 0, max: 4096, step: 64,
       hint: "Decodes the video in tiles instead of all at once, to fit in less VRAM. 0 is off — set it to 512 if decoding runs out of memory." },
-    { name: "mid_scene_guide",       label: "Mid-scene guide",       kind: "bool",  default: false,
-      hint: "Shows each scene the middle frame of the one before it, so people and layout stay put across a cut. Costs about 45% more time per scene, and JoyAI-Echo memory replaces it when that's on." },
-    { name: "mid_scene_guide_strength", label: "Guide strength",   kind: "float", default: 0.25,  min: 0.0, max: 1.0, step: 0.05, dependsOn: "mid_scene_guide",
-      hint: "How hard that frame pulls. 0.25-0.35 is the measured band: below it the audio degrades and appearance drifts, above it the guide fights any real change of composition." },
     { name: "joyai_memory",          label: "JoyAI-Echo memory",     kind: "bool",  default: false,
       hint: "Keeps a bank of frames from earlier shots and shows them to every new scene, so a character stays the same across the whole video. Costs guide tokens (slower scenes), and takes over from Mid-scene guide." },
     { name: "joyai_memory_size",     label: "Memory size",           kind: "int",   default: 7,     min: 1, max: 32, step: 1, dependsOn: "joyai_memory",
@@ -387,8 +383,6 @@
     identity_pin_strength: 0.35,
     prior_scene_guides: true,
     prior_scene_strength: 0.35,
-    mid_scene_guide: true,
-    mid_scene_guide_strength: 0.3,
     guide_decay: 0.85,
     solo_scene_guides: true,
   };
@@ -401,8 +395,6 @@
       identity_pin_strength: cs.identity_pin_strength != null ? +cs.identity_pin_strength : CONTINUITY_DEFAULTS.identity_pin_strength,
       prior_scene_guides: cs.prior_scene_guides !== false,
       prior_scene_strength: cs.prior_scene_strength != null ? +cs.prior_scene_strength : CONTINUITY_DEFAULTS.prior_scene_strength,
-      mid_scene_guide: cs.mid_scene_guide !== false,
-      mid_scene_guide_strength: cs.mid_scene_guide_strength != null ? +cs.mid_scene_guide_strength : CONTINUITY_DEFAULTS.mid_scene_guide_strength,
       guide_decay: cs.guide_decay != null ? +cs.guide_decay : CONTINUITY_DEFAULTS.guide_decay,
       solo_scene_guides: cs.solo_scene_guides !== false,
     };
@@ -526,7 +518,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_audio_clock", "h3_video_detail", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_audio_clock", "h3_video_detail", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id, st) {
@@ -821,9 +813,6 @@
       { hint: "Lets each scene look at frames from the one before it, so the look carries down the chain." });
     mk("Prior guides on solo mixed runs", cs.solo_scene_guides, "solo_scene_guides",
       { hint: "Does the same when you render a single scene out of a mixed timeline. Off, that scene uses only its own anchor." });
-    mk("Mid-scene layout guide (carry chains)", cs.mid_scene_guide, "mid_scene_guide",
-      { disabled: !multiScene, title: multiScene ? "" : "Only applies to multi-scene carry chains",
-        hint: "Shows each scene the middle frame of the one before it, so people stay where they were. Only applies to multi-scene carry chains." });
     const num = (label, val, key, min, max, step, hint) => {
       const i = el("input"); i.type = "number"; i.min = String(min); i.max = String(max); i.step = String(step);
       i.value = val; i.disabled = !cs.auto_enabled; i.dataset.k = "cs-" + key;
@@ -834,8 +823,6 @@
       "How hard the identity pin pulls. Higher holds the face better and follows the prompt less.");
     num("Prior guide strength", cs.prior_scene_strength, "prior_scene_strength", 0.0, 1.0, 0.05,
       "How hard borrowed frames from earlier scenes pull. Higher keeps the look, lower lets each scene be its own shot.");
-    num("Mid-scene strength", cs.mid_scene_guide_strength, "mid_scene_guide_strength", 0.0, 1.0, 0.05,
-      "How hard the mid-scene layout frame pulls. 0.25-0.35 is the safe band — below it the audio degrades, above it the guide fights real changes of composition.");
     num("Guide decay / scene", cs.guide_decay, "guide_decay", 0.5, 1, 0.05,
       "How much weaker guides get with each scene further down the chain. 1.0 keeps them at full strength the whole way.");
 
