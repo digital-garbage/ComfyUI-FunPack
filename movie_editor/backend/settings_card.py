@@ -148,6 +148,127 @@ def _pass_rows(cfg: dict) -> list:
     return rows
 
 
+# ── what is worth printing ───────────────────────────────────────────────────
+#
+# The card answers "what produced this video". A setting left at its default produced
+# nothing, and a setting belonging to a switched-off feature produced nothing either — a
+# region-sharpening prompt printed under a disabled sharpener reads as if it ran. Both are
+# noise, and enough of it buries the handful of values that DID decide the render.
+#
+# Two rules, both the user's: skip a value that equals the widget's own default, and skip a
+# value whose feature is off.
+
+#: knob -> (the toggle that owns it, the value of that toggle which switches it on).
+#: None means "any truthy value". Mirrored from the Editor's own dependsOn wiring, and a
+#: test regenerates this from engine_settings.js so the two cannot drift apart.
+_OWNED_BY = {
+    "absolute_strength": ("steer_mode", None),
+    "alg_anchor_sigma_threshold": ("alg_anchor", None),
+    "alg_anchor_strength": ("alg_anchor", None),
+    "alg_guide_blur_sigma_threshold": ("alg_blur_guides", None),
+    "alg_guide_blur_strength": ("alg_blur_guides", None),
+    "arcface_mode": ("identity_transfer_enabled", None),
+    "context_window_freenoise": ("context_windows", None),
+    "context_window_fuse": ("context_windows", None),
+    "context_window_length": ("context_windows", None),
+    "context_window_overlap": ("context_windows", None),
+    "context_window_retain_first": ("context_windows", None),
+    "context_window_schedule": ("context_windows", None),
+    "debug_log": ("identity_transfer_enabled", None),
+    "detail_max_area": ("segmented_detailing", None),
+    "detail_mode": ("segmented_detailing", None),
+    "detail_strength": ("segmented_detailing", None),
+    "detail_targets": ("segmented_detailing", None),
+    "detail_threshold": ("segmented_detailing", None),
+    "dynashift_strength": ("dynashift", None),
+    "dynashift_threshold": ("dynashift", None),
+    "embed_guidance_source": ("embed_guidance", None),
+    "embed_guidance_strength": ("embed_guidance", None),
+    "h3_gain_audio": ("h3_gain_mode", "manual"),
+    "h3_gain_prompt": ("h3_gain_mode", "manual"),
+    "h3_gain_video": ("h3_gain_mode", "manual"),
+    "h3_prompt_scale": ("h3_gain_mode", "manual"),
+    "h3_taste_bias": ("h3_gain_mode", "manual"),
+    "h3_video_detail": ("h3_gain_mode", "manual"),
+    "id_strength": ("identity_transfer_enabled", None),
+    "joyai_audio_memory": ("joyai_memory", None),
+    "joyai_fix_frames": ("joyai_memory", None),
+    "joyai_frame_select": ("joyai_memory", None),
+    "joyai_memory_size": ("joyai_memory", None),
+    "joyai_memory_strength": ("joyai_memory", None),
+    "mid_scene_guide_strength": ("mid_scene_guide", None),
+    "negative_erase_mode": ("negative_erase", None),
+    "negative_erase_renorm": ("negative_erase", None),
+    "negative_erase_strength": ("negative_erase", None),
+    "output_guidance_strength": ("output_guidance", None),
+    "phase_scale": ("identity_transfer_enabled", None),
+    "plateau_cache_threshold": ("plateau_cache", None),
+    "prompt_enhance_max_length": ("prompt_enhance", None),
+    "prompt_enhance_system": ("prompt_enhance", None),
+    "prompt_enhance_temperature": ("prompt_enhance", None),
+    "prompt_enhance_thinking": ("prompt_enhance", None),
+    "prompt_enhance_top_p": ("prompt_enhance", None),
+    "score_slider_strength": ("score_slider", None),
+    "source_id": ("identity_transfer_enabled", None),
+    "v2a_grad_scale": ("joyai_audio_memory", None),
+}
+
+
+def _node_defaults(node_class: str) -> dict:
+    """Declared defaults for one node's widgets, read off the node itself.
+
+    Off the NODE rather than a table here: the node is the thing whose value is being
+    printed, so a default copied to this file would be one more thing to keep in step.
+    """
+    try:
+        from . import bridge
+        spec = bridge._funpack_attr("samplers" if "Sampler" in node_class else "conditioning",
+                                    node_class).INPUT_TYPES()
+    except Exception:
+        return {}
+    out = {}
+    for group in ("required", "optional"):
+        for name, decl in (spec.get(group) or {}).items():
+            if not isinstance(decl, (list, tuple)) or not decl:
+                continue
+            if len(decl) >= 2 and isinstance(decl[1], dict) and "default" in decl[1]:
+                out[name] = decl[1]["default"]
+            elif isinstance(decl[0], (list, tuple)) and decl[0]:
+                out[name] = decl[0][0]          # a combo's first entry is its default
+    return out
+
+
+def _switched_on(name: str, values: dict, defaults: dict, _seen=None) -> bool:
+    """Is the feature this knob belongs to actually running?
+
+    Walks the chain: v2a_grad_scale belongs to joyai_audio_memory, which belongs to
+    joyai_memory. An owner that is itself off takes everything under it with it.
+    """
+    owner, wanted = _OWNED_BY.get(name, (None, None))
+    if owner is None:
+        return True
+    seen = _seen or set()
+    if owner in seen:                            # a cycle in the table is a bug, not a hang
+        return True
+    seen.add(owner)
+    current = values.get(owner, defaults.get(owner))
+    live = bool(current) if wanted is None else str(current) == str(wanted)
+    return live and _switched_on(owner, values, defaults, seen)
+
+
+def _live_rows(values: dict, node_class: str) -> list:
+    """`values` filtered down to what actually decided this render."""
+    defaults = _node_defaults(node_class)
+    rows = []
+    for name, value in (values or {}).items():
+        if name in defaults and value == defaults[name]:
+            continue
+        if not _switched_on(name, values, defaults):
+            continue
+        rows.append((name, _short(value)))
+    return rows
+
+
 def _sampling_sections(studio_inputs: dict, sampler_inputs: dict) -> list:
     """Everything that decided HOW it was sampled, as card sections.
 
@@ -184,13 +305,13 @@ def _sampling_sections(studio_inputs: dict, sampler_inputs: dict) -> list:
         out.append({"title": "Studio", "node_class": "",
                     "rows": [(k, _short(v)) for k, v in refiner.items()]})
 
-    extras = {k: v for k, v in studio_inputs.items() if k not in _SKIP_STUDIO_KEYS}
+    extras = _live_rows({k: v for k, v in studio_inputs.items()
+                         if k not in _SKIP_STUDIO_KEYS}, "FunPackStudio")
     if extras:
-        out.append({"title": "Studio inputs", "node_class": "",
-                    "rows": [(k, _short(v)) for k, v in extras.items()]})
-    if sampler_inputs:
-        out.append({"title": "Chain Sampler", "node_class": "",
-                    "rows": [(k, _short(v)) for k, v in sampler_inputs.items()]})
+        out.append({"title": "Studio inputs", "node_class": "", "rows": extras})
+    chain = _live_rows(sampler_inputs, "FunPackLTXAVSceneChainSampler")
+    if chain:
+        out.append({"title": "Chain Sampler", "node_class": "", "rows": chain})
     return out
 
 
