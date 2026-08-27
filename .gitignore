@@ -1,0 +1,23 @@
+.testvenv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+
+# Local tooling / agent config
+.claude/
+.cursor/
+
+# Runtime artifacts (generated refinement stores, attn maps, etc.)
+refinements/
+
+# Large local research docs
+*.pdf
+
+# Never track saved ComfyUI workflow dumps — they carry whatever was typed in the graph.
+movie_editor/backend/reference/*.workflow.json
