@@ -9,9 +9,11 @@
 
 :root {
   /* ── type ───────────────────────────────────────────────────────────── */
-  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-display: "Inter Tight", "Inter", system-ui, -apple-system, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* Bundled in app/assets/fonts. The fallbacks matter: they are what shows
+   * while the woff2 loads, and what shows if a file ever goes missing. */
+  --font-ui: "Figtree", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Archivo", "Figtree", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* display steps */
   --fs-d1: 56px;  --lh-d1: 1;

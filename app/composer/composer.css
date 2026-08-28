@@ -1,5 +1,6 @@
 /* The kit's single stylesheet. Order matters: reset, then tokens, then the
  * shared bases, then one file per element (added as each element lands). */
+@import "./tokens/fonts.css";
 @import "./tokens/reset.css";
 @import "./tokens/tokens.css";
 @import "./tokens/base.css";
