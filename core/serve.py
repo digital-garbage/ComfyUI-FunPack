@@ -12,6 +12,13 @@ from typing import FrozenSet
 # The editor iterates fast; a cached stale module is worse than a re-read.
 NO_STORE = {"Cache-Control": "no-store, max-age=0"}
 
+# Fonts are the exception: the bytes for a given filename never change (family,
+# weight range and subset are all in the name), and they are by far the largest
+# thing served. Re-fetching 133 KB on every reload to stay honest about a file
+# that cannot go stale is a bad trade. Replacing a face means a new filename.
+IMMUTABLE = {"Cache-Control": "public, max-age=31536000, immutable"}
+IMMUTABLE_SUFFIXES = frozenset({".woff2"})
+
 # Some platforms guess text/plain for .js. With ES modules that is fatal — the
 # browser refuses the module outright — so every type we care about is explicit.
 EXPLICIT_TYPES = {
@@ -30,6 +37,12 @@ class Served:
     body: bytes = b""
     content_type: str = "text/plain"
     headers: dict = field(default_factory=lambda: dict(NO_STORE))
+
+
+def headers_for(path: Path) -> dict:
+    if path.suffix.lower() in IMMUTABLE_SUFFIXES:
+        return dict(IMMUTABLE)
+    return dict(NO_STORE)
 
 
 def content_type_for(path: Path) -> str:
@@ -77,4 +90,5 @@ def serve(root: Path, rel: str, allowed: FrozenSet[str]) -> Served:
         return Served(403)
     except LookupError:
         return Served(404)
-    return Served(200, target.read_bytes(), content_type_for(target))
+    return Served(200, target.read_bytes(), content_type_for(target),
+                  headers_for(target))

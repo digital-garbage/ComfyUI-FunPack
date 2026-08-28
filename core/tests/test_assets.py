@@ -43,6 +43,26 @@ def test_every_declared_face_resolves_to_a_servable_file(url):
     assert served.body[:4] == b"wOF2", "not a woff2 file"
 
 
+def test_fonts_are_cacheable_but_code_is_not():
+    # A font filename encodes family, weight range and subset, so its bytes
+    # never change -- but everything else must not be cached, because the editor
+    # is edited while it is running.
+    font = serve(config.APP_DIR, font_urls()[0][len(URL_PREFIX):], config.APP_EXTS)
+    assert "immutable" in font.headers["Cache-Control"]
+
+    code = serve(config.APP_DIR, "boot.js", config.APP_EXTS)
+    assert code.headers["Cache-Control"] == "no-store, max-age=0"
+
+
+def test_cache_headers_are_not_shared_between_responses():
+    # Served.headers is a mutable dict handed to callers; two responses must not
+    # end up pointing at the same one.
+    a = serve(config.APP_DIR, "boot.js", config.APP_EXTS)
+    b = serve(config.APP_DIR, "boot.js", config.APP_EXTS)
+    a.headers["X-Test"] = "1"
+    assert "X-Test" not in b.headers
+
+
 def test_every_bundled_font_is_actually_referenced():
     # The reverse direction: a font file nothing declares is dead weight in the
     # repo, and usually means a face was renamed and its file left behind.
