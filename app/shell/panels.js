@@ -36,6 +36,7 @@ export async function mountAll(manifest, { load = (path) => import(path) } = {})
 
       let ui = null;
       if (spec.ui) ui = await load(spec.ui);
+      let teardown = null;
 
       const panel = renderPanel(spec, {
         values: values.valuesOf(spec.id),
@@ -46,7 +47,9 @@ export async function mountAll(manifest, { load = (path) => import(path) } = {})
       host.appendChild(panel.node);
 
       if (ui && typeof ui.setup === "function") {
-        ui.setup({
+        // Kept, not discarded: setup() returns the unsubscribe from on(), and
+        // dropping it means every re-mount leaves another live listener behind.
+        teardown = ui.setup({
           composer,
           values: {
             get: () => values.valuesOf(spec.id),
@@ -65,7 +68,14 @@ export async function mountAll(manifest, { load = (path) => import(path) } = {})
         });
       }
 
-      mounted.push({ id: spec.id, panel });
+      mounted.push({
+        id: spec.id,
+        panel,
+        destroy() {
+          if (typeof teardown === "function") teardown();
+          panel.destroy();
+        },
+      });
     } catch (err) {
       hidden.push({ id: spec.id, why: `${err.name}: ${err.message}` });
       console.warn(`[FunPack] ${spec.id} did not mount: ${err.message}`);

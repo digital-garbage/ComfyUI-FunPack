@@ -158,3 +158,66 @@ def test_traits_are_names_the_model_offers_not_model_names(scanned):
     for spec in scanned.specs.values():
         for trait in spec.requires:
             assert trait.islower() and " " not in trait
+
+
+# --- ordering: what a bad relation must not take with it -------------------
+
+def test_a_cycle_does_not_drop_the_modules_that_merely_depend_on_it():
+    # A module saying "after B" is not itself circular. Once B is gone its
+    # relation has nothing to wait for -- exactly like a relation naming a
+    # module that was never installed.
+    from core.schema import validate
+    b = validate({"id": "b", "title": "B", "mount": "m", "after": ["c"]})
+    c = validate({"id": "c", "title": "C", "mount": "m", "after": ["b"]})
+    a = validate({"id": "a", "title": "A", "mount": "m", "after": ["b"]})
+    d = validate({"id": "d", "title": "D", "mount": "m"})
+
+    ordered, rejected = order([a, b, c, d])
+    assert {s.id for s in ordered} == {"a", "d"}
+    assert {s.id for s, _ in rejected} == {"b", "c"}
+
+
+def test_a_longer_cycle_is_found_whole():
+    from core.schema import validate
+    ring = [
+        validate({"id": "x", "title": "X", "mount": "m", "after": ["z"]}),
+        validate({"id": "y", "title": "Y", "mount": "m", "after": ["x"]}),
+        validate({"id": "z", "title": "Z", "mount": "m", "after": ["y"]}),
+    ]
+    healthy = validate({"id": "ok", "title": "OK", "mount": "m", "after": ["x"]})
+    ordered, rejected = order(ring + [healthy])
+    assert [s.id for s in ordered] == ["ok"]
+    assert {s.id for s, _ in rejected} == {"x", "y", "z"}
+
+
+def test_a_relation_may_not_overturn_the_stage_order():
+    # Stage is the coarse order. Honouring "load after conditioning" would put a
+    # whole stage out of sequence to satisfy one module's relation.
+    from core.schema import validate
+    late = validate({"id": "late", "title": "L", "mount": "m", "stage": "post"})
+    early = validate({"id": "early", "title": "E", "mount": "m", "stage": "load",
+                      "after": ["mid"]})
+    mid = validate({"id": "mid", "title": "M", "mount": "m", "stage": "conditioning"})
+
+    ordered, rejected = order([late, early, mid])
+    ids = [s.id for s in ordered]
+    assert rejected == [], "the module is kept; only its impossible relation is dropped"
+    assert ids == ["early", "mid", "late"], f"stages out of order: {ids}"
+
+
+def test_before_may_not_overturn_the_stage_order_either():
+    from core.schema import validate
+    early = validate({"id": "early", "title": "E", "mount": "m", "stage": "load"})
+    late = validate({"id": "late", "title": "L", "mount": "m", "stage": "post",
+                     "before": ["early"]})
+    ordered, _ = order([late, early])
+    assert [s.id for s in ordered] == ["early", "late"]
+
+
+def test_a_relation_within_a_stage_is_still_honoured():
+    from core.schema import validate
+    first = validate({"id": "first", "title": "F", "mount": "m", "stage": "latent"})
+    second = validate({"id": "second", "title": "S", "mount": "m", "stage": "latent",
+                       "after": ["first"]})
+    ordered, _ = order([second, first])
+    assert [s.id for s in ordered] == ["first", "second"]
