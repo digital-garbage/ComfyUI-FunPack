@@ -6,7 +6,7 @@
 import { define } from "../internals/register.js";
 import { el } from "../internals/el.js";
 import { mount, unmount } from "../internals/portal.js";
-import { claim } from "../internals/zlayer.js";
+import { claimFor } from "../internals/zlayer.js";
 import { push } from "../internals/dismiss.js";
 import { anchorTo } from "../internals/anchor.js";
 
@@ -18,9 +18,8 @@ function nodeOf(control, where) {
 
 function floatOn(rung, cls, { anchor, side = "bottom", align = "start", gap = 6, onClose, closeOnOutside = true, content, role, label }) {
   const anchorNode = anchor && anchor.node ? anchor.node : anchor;
-  const layer = claim(rung);
   const node = el("div", { cls, attrs: { role, "aria-label": label } });
-  node.style.zIndex = String(layer.z);
+  const layer = claimFor(rung, node);
   if (content) node.append(content);
 
   // Mounted before measuring: a hidden element measures 0x0 and lands in the

@@ -12,7 +12,7 @@
 import { define } from "../internals/register.js";
 import { el, svg } from "../internals/el.js";
 import { mount, unmount } from "../internals/portal.js";
-import { claim } from "../internals/zlayer.js";
+import { claimFor } from "../internals/zlayer.js";
 import { push } from "../internals/dismiss.js";
 
 const MIN = 2;
@@ -127,11 +127,10 @@ function buildWheel({ items, onPick, onClose, geo, recentre, cancelOnCentre, cls
   }
 
   const { size } = geo;
-  const layer = claim("popover");
   const centre = recentre();
 
   const node = el("div", { cls, attrs: { role: "menu", "aria-label": "Quick pick" } });
-  node.style.zIndex = String(layer.z);
+  const layer = claimFor("popover", node);
   node.style.width = `${size}px`;
   node.style.height = `${size}px`;
 

@@ -12,7 +12,7 @@ import { define } from "../internals/register.js";
 import { el } from "../internals/el.js";
 import { uid } from "../internals/ids.js";
 import { mount, unmount } from "../internals/portal.js";
-import { claim } from "../internals/zlayer.js";
+import { claimFor } from "../internals/zlayer.js";
 import { push } from "../internals/dismiss.js";
 import { trap } from "../internals/focus.js";
 
@@ -33,7 +33,6 @@ function open({
   closeOnOutside = true, stacked = false, describedBy,
 } = {}) {
   const titleId = uid("modal-title");
-  const layer = claim(stacked ? "modal" : "modal");
 
   const card = el("div", {
     cls: ["cx-modal", `cx-modal-${size}`, stacked ? "cx-modal-stacked" : null],
@@ -66,7 +65,9 @@ function open({
 
   const backdrop = el("div", { cls: "cx-backdrop" });
   const root = el("div", { cls: "cx-modal-layer", children: [backdrop, card] });
-  root.style.zIndex = String(layer.z);
+  // A stacked modal shares the modal rung with the one beneath it: peers stack
+  // by claim order, so it lands above without needing a rung of its own.
+  const layer = claimFor("modal", root);
   mount(root);
 
   // Trap after mounting: focusables() must be able to see the card.

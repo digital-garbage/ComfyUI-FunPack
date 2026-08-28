@@ -7,11 +7,14 @@ import { setupDom, teardownDom, key, fire } from "./_dom.js";
 import { EDGES, sectorAt, sectorInArc } from "../elements/wheel.js";
 
 let composer;
+let entries;
+let DEMOS;
 let ROOT_ID;
 let baseOf;
 test.before(async () => {
   setupDom();
-  ({ composer } = await import("../composer.js"));
+  ({ composer, entries } = await import("../composer.js"));
+  ({ DEMOS } = await import("../../catalogue/demos.js"));
   ({ ROOT_ID } = await import("../internals/portal.js"));
   ({ baseOf } = await import("../internals/zlayer.js"));
 });
@@ -453,4 +456,57 @@ test("gallery thumbnails are decorative, because the caption names them", () => 
   assert.equal(g.node.querySelector("img").getAttribute("alt"), "",
     "an alt here would make a screen reader say the name twice");
   g.destroy();
+});
+
+// --- z-index staleness ------------------------------------------------------
+
+test("a peer closing does not leave two overlays sharing a z-index", () => {
+  // A rung compacts when a claim is released, so every overlay's z can move
+  // without it doing anything. A caller that reads z once at open time keeps a
+  // number that is later handed to something else: two overlays at one level,
+  // where DOM order decides which one wins and which one eats the clicks.
+  const anchor = composer.button.md({ label: "x" });
+  document.body.appendChild(anchor.node);
+
+  const a = composer.menu.dropdown({ anchor, items: [{ id: "a", label: "A" }] });
+  const b = composer.menu.dropdown({ anchor, items: [{ id: "b", label: "B" }] });
+  assert.notEqual(a.node.style.zIndex, b.node.style.zIndex);
+
+  a.close();
+  const c = composer.menu.dropdown({ anchor, items: [{ id: "c", label: "C" }] });
+  assert.notEqual(b.node.style.zIndex, c.node.style.zIndex,
+    "the newest overlay must not land on a number still in use");
+  assert.ok(Number(c.node.style.zIndex) > Number(b.node.style.zIndex),
+    "and it must be above, not merely different");
+
+  b.close(); c.close();
+});
+
+test("every overlay keeps its z-index bound, not just windows", () => {
+  // The failure above was one call site remembering and six forgetting, so the
+  // test walks every overlay the registry has rather than naming them.
+  const anchor = composer.button.md({ label: "x" });
+  document.body.appendChild(anchor.node);
+
+  const opened = [];
+  for (const { group, variant, factory } of entries()) {
+    const demo = DEMOS[`${group}.${variant}`];
+    if (!demo) continue;
+    const handle = factory(typeof demo === "function" ? demo(composer) : demo);
+    if (!handle.isOverlay || !handle.node.style.zIndex) { handle.destroy(); continue; }
+    opened.push({ name: `${group}.${variant}`, handle });
+  }
+
+  // Closing the oldest compacts every rung it was in; nothing may go stale.
+  const before = opened.map(({ handle }) => handle.node.style.zIndex);
+  if (opened.length > 1) opened.shift().handle.close();
+
+  const seen = new Map();
+  for (const { name, handle } of opened) {
+    const z = handle.node.style.zIndex;
+    assert.ok(!seen.has(z), `${name} collides with ${seen.get(z)} at z ${z}`);
+    seen.set(z, name);
+  }
+  void before;
+  for (const { handle } of opened) handle.destroy();
 });

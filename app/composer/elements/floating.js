@@ -4,7 +4,7 @@ import { define } from "../internals/register.js";
 import { el } from "../internals/el.js";
 import { uid } from "../internals/ids.js";
 import { mount, unmount } from "../internals/portal.js";
-import { claim } from "../internals/zlayer.js";
+import { claimFor } from "../internals/zlayer.js";
 import { push } from "../internals/dismiss.js";
 import { trap } from "../internals/focus.js";
 import { drag } from "../internals/drag.js";
@@ -27,16 +27,14 @@ define("floating", "window", ({
   width = 420, height = 320, x = 80, y = 80,
   resizable = true, rollup = true, onClose,
 } = {}) => {
-  // The callback matters: another window coming to the front shifts this one's
-  // z, and without it the DOM keeps the number it had at open time.
-  const layer = claim("floatingWindow", (z) => { node.style.zIndex = String(z); });
   const saved = recall(id) || {};
   const box = { x: saved.x ?? x, y: saved.y ?? y, width: saved.width ?? width, height: saved.height ?? height };
 
   const titleId = uid("win-title");
   const node = el("div", { cls: "cx-window",
     attrs: { role: "dialog", "aria-labelledby": titleId } });
-  node.style.zIndex = String(layer.z);
+  // Bound, because another window coming to the front shifts this one's z.
+  const layer = claimFor("floatingWindow", node);
 
   const apply = () => {
     node.style.left = `${box.x}px`;
@@ -140,7 +138,6 @@ define("floating", "window", ({
 
 /** A full-screen "please wait" that genuinely blocks. */
 define("overlay", "blocking", ({ message, progress, cancel } = {}) => {
-  const layer = claim("wizard");
   const card = el("div", { cls: "cx-blocking-card", children: [
     el("span", { cls: ["cx-spinner", "cx-spinner-md"], attrs: { "aria-hidden": "true" } }),
     el("p", { cls: "cx-t cx-t-sm", text: message }),
@@ -151,7 +148,7 @@ define("overlay", "blocking", ({ message, progress, cancel } = {}) => {
   const node = el("div", { cls: "cx-blocking",
     attrs: { role: "alertdialog", "aria-busy": "true", "aria-label": message },
     children: card });
-  node.style.zIndex = String(layer.z);
+  const layer = claimFor("wizard", node);
   mount(node);
   const release = trap(card);
 
@@ -166,7 +163,6 @@ define("overlay", "blocking", ({ message, progress, cancel } = {}) => {
 
 /** A panel that slides in from an edge. Simple mode uses these over the preview. */
 define("slideOver", "md", ({ side = "right", title, body, onClose } = {}) => {
-  const layer = claim("modal");
   const titleId = uid("slide-title");
 
   const panel = el("aside", { cls: ["cx-slideover", `cx-slideover-${side}`],
@@ -179,7 +175,7 @@ define("slideOver", "md", ({ side = "right", title, body, onClose } = {}) => {
   panel.append(el("div", { cls: "cx-slideover-body", children: nodeOf(body, "slideOver.md") }));
 
   const root = el("div", { cls: "cx-slideover-layer", children: [el("div", { cls: "cx-backdrop" }), panel] });
-  root.style.zIndex = String(layer.z);
+  const layer = claimFor("modal", root);
   mount(root);
 
   const release = trap(panel);

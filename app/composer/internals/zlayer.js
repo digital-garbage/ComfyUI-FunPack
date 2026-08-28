@@ -95,6 +95,23 @@ function notify(list, start) {
   list.forEach((entry, i) => { if (entry.onChange) entry.onChange(start + i); });
 }
 
+/**
+ * Claim a rung AND keep `node`'s z-index in sync with it -- the form every
+ * overlay should use.
+ *
+ * `claim()` alone hands back a number and trusts the caller to notice when it
+ * changes, and a caller that forgets gets a z-index that was right at open time
+ * and silently wrong afterwards: a peer releasing compacts the rung, and the
+ * next overlay opened lands on the number this one is still displaying. Six of
+ * the seven call sites forgot. Binding the node here means there is nothing
+ * left to forget.
+ */
+export function claimFor(rung, node) {
+  const handle = claim(rung, (z) => { node.style.zIndex = String(z); });
+  node.style.zIndex = String(handle.z);
+  return handle;
+}
+
 /** Live claims in a rung, bottom to top. Diagnostics and tests. */
 export const liveCount = (rung) => (stacks.get(rung) || []).length;
 

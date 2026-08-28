@@ -8,7 +8,7 @@ import { define } from "../internals/register.js";
 import { el } from "../internals/el.js";
 import { setText } from "../internals/text.js";
 import { portal } from "../internals/portal.js";
-import { claim } from "../internals/zlayer.js";
+import { claimFor } from "../internals/zlayer.js";
 
 const TONES = ["neutral", "good", "warn", "danger", "info"];
 
@@ -122,8 +122,7 @@ let stackLayer = null;
 function toastStack() {
   if (stack && stack.isConnected) return stack;
   stack = el("div", { cls: "cx-toasts" });
-  stackLayer = claim("toast");
-  stack.style.zIndex = String(stackLayer.z);
+  stackLayer = claimFor("toast", stack);
   stack.style.pointerEvents = "auto";
   portal().appendChild(stack);
   return stack;
