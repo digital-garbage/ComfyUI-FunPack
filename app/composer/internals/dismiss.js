@@ -24,7 +24,10 @@ function onPointerDown(event) {
   const top = stack[stack.length - 1];
   if (!top.closeOnOutside) return;
   for (const node of top.nodes) {
-    if (node && node.contains(event.target)) return;
+    // Guarded: an anchor can be a VIRTUAL point (a context menu is anchored to
+    // coordinates, not an element), and those have no .contains. Letting one
+    // through threw on the first click anywhere in the app.
+    if (node && typeof node.contains === "function" && node.contains(event.target)) return;
   }
   top.dismiss("outside");
 }
@@ -53,7 +56,8 @@ function unlisten() {
  */
 export function push({ nodes = [], onDismiss, closeOnEsc = true, closeOnOutside = true } = {}) {
   const entry = {
-    nodes: [].concat(nodes).filter(Boolean),
+    // Only real nodes can answer "was the click inside me".
+    nodes: [].concat(nodes).filter((n) => n && typeof n.contains === "function"),
     closeOnEsc,
     closeOnOutside,
     done: false,

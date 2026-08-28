@@ -12,7 +12,7 @@ import { claim } from "../internals/zlayer.js";
 import { push } from "../internals/dismiss.js";
 
 const SIZE = 240;          // diameter in px
-const DEAD_ZONE = 34;      // centre radius that means "cancel"
+const DEAD_ZONE = 42;      // centre radius that means "cancel"; matches the hub exactly
 const MIN = 2;
 const MAX = 12;
 
@@ -28,10 +28,13 @@ const point = (cx, cy, radius, degrees) => {
  * target legible -- the lit shape IS the region your pointer has to be in, so
  * aiming stops being a guess about where one item's zone ends.
  */
-export function wedgePath(index, count, { cx = SIZE / 2, cy = SIZE / 2, rIn = DEAD_ZONE, rOut = SIZE / 2 - 3 } = {}) {
-  const slice = 360 / count;
-  const start = index * slice - slice / 2;
-  const end = index * slice + slice / 2;
+export function wedgePath(index, count, {
+  cx = SIZE / 2, cy = SIZE / 2, rIn = DEAD_ZONE, rOut = SIZE / 2 - 3,
+  startDeg = -(360 / count) / 2, spanDeg = 360,
+} = {}) {
+  const slice = spanDeg / count;
+  const start = startDeg + index * slice;
+  const end = start + slice;
   const largeArc = slice > 180 ? 1 : 0;
 
   const [x1, y1] = point(cx, cy, rOut, start);
@@ -44,29 +47,46 @@ export function wedgePath(index, count, { cx = SIZE / 2, cy = SIZE / 2, rIn = DE
          `L ${f(x3)} ${f(y3)} A ${rIn} ${rIn} 0 ${largeArc} 0 ${f(x4)} ${f(y4)} Z`;
 }
 
-/** Which sector a point falls in, or -1 for the dead zone. */
-export function sectorAt(dx, dy, count, deadZone = DEAD_ZONE) {
-  const distance = Math.hypot(dx, dy);
-  if (distance < deadZone) return -1;
-  // Angles run clockwise from straight up, so item 0 is at 12 o'clock and the
-  // arrangement matches how people describe it ("the one at the top").
-  const angle = (Math.atan2(dx, -dy) + Math.PI * 2) % (Math.PI * 2);
-  const slice = (Math.PI * 2) / count;
-  return Math.floor((angle + slice / 2) % (Math.PI * 2) / slice) % count;
+/**
+ * Which sector of an arc a point falls in; -1 for the dead zone or outside it.
+ *
+ * Angles run clockwise from straight up, so 0 is 12 o'clock and the arrangement
+ * matches how people describe it ("the one at the top"). Everything radial in
+ * the kit goes through here, so a full wheel and an edge panel cannot disagree
+ * about which item a direction means.
+ */
+export function sectorInArc(dx, dy, count, { startDeg = 0, spanDeg = 360, deadZone = DEAD_ZONE } = {}) {
+  if (Math.hypot(dx, dy) < deadZone) return -1;
+  const angle = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
+  const rel = (angle - startDeg + 720) % 360;
+  if (rel > spanDeg) return -1;              // outside a partial arc
+  return Math.min(Math.floor(rel / (spanDeg / count)), count - 1);
 }
 
-define("wheel", "picker", ({ items = [], onPick, onClose, x, y, cancelOnCentre = true } = {}) => {
+/** The full circle: item 0 centred at the top. */
+export function sectorAt(dx, dy, count, deadZone = DEAD_ZONE) {
+  return sectorInArc(dx, dy, count, { startDeg: -(360 / count) / 2, spanDeg: 360, deadZone });
+}
+
+// Which half of the circle faces inward from each edge, and where a panel
+// pinned there sits. An edge panel opens AWAY from its edge, which is the whole
+// reason it works with a thumb: the arc lands where the thumb already is.
+export const EDGES = {
+  right:  { startDeg: 180, spanDeg: 180, anchor: (w, h, at) => [w, at ?? h / 2] },
+  left:   { startDeg: 0,   spanDeg: 180, anchor: (w, h, at) => [0, at ?? h / 2] },
+  bottom: { startDeg: 270, spanDeg: 180, anchor: (w, h, at) => [at ?? w / 2, h] },
+  top:    { startDeg: 90,  spanDeg: 180, anchor: (w, h, at) => [at ?? w / 2, 0] },
+};
+
+function buildWheel({
+  items, onPick, onClose, centre, arc, cancelOnCentre, cls, hubText,
+}) {
   if (items.length < MIN || items.length > MAX) {
-    throw new RangeError(`wheel.picker takes ${MIN}-${MAX} items; got ${items.length}. More than that and nobody can aim.`);
+    throw new RangeError(`A picker takes ${MIN}-${MAX} items; got ${items.length}. More than that and nobody can aim.`);
   }
 
   const layer = claim("popover");
-  const centre = {
-    x: x ?? Math.round(window.innerWidth / 2),
-    y: y ?? Math.round(window.innerHeight / 2),
-  };
-
-  const node = el("div", { cls: "cx-wheel", attrs: { role: "menu", "aria-label": "Quick pick" } });
+  const node = el("div", { cls, attrs: { role: "menu", "aria-label": "Quick pick" } });
   node.style.zIndex = String(layer.z);
   node.style.left = `${centre.x - SIZE / 2}px`;
   node.style.top = `${centre.y - SIZE / 2}px`;
@@ -80,14 +100,15 @@ define("wheel", "picker", ({ items = [], onPick, onClose, x, y, cancelOnCentre =
   const canvas = svg("svg", { class: "cx-wheel-canvas", viewBox: `0 0 ${SIZE} ${SIZE}`,
                               width: SIZE, height: SIZE, "aria-hidden": "true" });
   const shapes = items.map((_, i) => {
-    const path = svg("path", { class: "cx-wheel-wedge", d: wedgePath(i, items.length) });
+    const path = svg("path", { class: "cx-wheel-wedge", d: wedgePath(i, items.length, arc) });
     canvas.append(path);
     return path;
   });
   node.append(canvas);
 
+  const slice = arc.spanDeg / items.length;
   const wedges = items.map((item, i) => {
-    const angle = (360 / items.length) * i;
+    const angle = arc.startDeg + slice * (i + 0.5);
     const wedge = el("button", {
       cls: ["cx-wheel-item", "cx-focusable"],
       attrs: { type: "button", role: "menuitem", title: item.label },
@@ -107,14 +128,19 @@ define("wheel", "picker", ({ items = [], onPick, onClose, x, y, cancelOnCentre =
     return wedge;
   });
 
-  const hub = el("div", { cls: "cx-wheel-hub", attrs: { "aria-hidden": "true" },
-    children: el("span", { cls: "cx-hint", text: cancelOnCentre ? "release here to cancel" : "" }) });
+  // A glyph, not a sentence: the hub is small and round, and wrapped text in a
+  // circle reads badly at any size. The label survives as the accessible name.
+  const hub = el("div", {
+    cls: "cx-wheel-hub",
+    attrs: cancelOnCentre ? { role: "img", "aria-label": hubText, title: hubText } : { "aria-hidden": "true" },
+    children: cancelOnCentre ? el("span", { cls: "cx-wheel-hub-glyph", text: "✕" }) : null,
+  });
   node.append(hub);
 
   function highlight(index) {
     active = index;
     wedges.forEach((w, i) => w.classList.toggle("cx-on", i === index));
-    shapes.forEach((s, i) => s.classList.toggle("cx-on", i === index));
+    shapes.forEach((sh, i) => sh.classList.toggle("cx-on", i === index));
     hub.classList.toggle("cx-on", index === -1);
   }
 
@@ -133,9 +159,9 @@ define("wheel", "picker", ({ items = [], onPick, onClose, x, y, cancelOnCentre =
   // has actually gone somewhere.
   let armed = false;
 
-  const at = (event) => sectorAt(
+  const at = (event) => sectorInArc(
     event.clientX - centre.x, event.clientY - centre.y, items.length,
-    cancelOnCentre ? DEAD_ZONE : 0);
+    { ...arc, deadZone: cancelOnCentre ? DEAD_ZONE : 0 });
 
   const onMove = (event) => { armed = true; highlight(at(event)); };
   const onUp = (event) => {
@@ -186,4 +212,40 @@ define("wheel", "picker", ({ items = [], onPick, onClose, x, y, cancelOnCentre =
     destroy() { handle.close("destroy"); },
   };
   return handle;
+}
+
+define("wheel", "picker", ({ items = [], onPick, onClose, x, y, cancelOnCentre = true } = {}) =>
+  buildWheel({
+    items, onPick, onClose, cancelOnCentre,
+    cls: "cx-wheel",
+    hubText: "Release here to cancel",
+    centre: {
+      x: x ?? Math.round(window.innerWidth / 2),
+      y: y ?? Math.round(window.innerHeight / 2),
+    },
+    arc: { startDeg: -(360 / Math.max(items.length, 1)) / 2, spanDeg: 360 },
+  }));
+
+/**
+ * Half a wheel, pinned to a screen edge -- the Samsung edge-panel shape.
+ *
+ * A control living at the edge has nowhere to open a full wheel: half of it
+ * would be off-screen, and the items that landed there would be unreachable.
+ * This puts the centre ON the edge and fans the items into the screen, so the
+ * arc lands exactly where the thumb already is and every item is in reach.
+ *
+ * `at` is the position along that edge (y for left/right, x for top/bottom);
+ * it defaults to the middle.
+ */
+define("wheel", "half", ({ items = [], edge = "right", at, onPick, onClose, cancelOnCentre = true } = {}) => {
+  const spec = EDGES[edge];
+  if (!spec) throw new RangeError(`Unknown edge "${edge}". Known: ${Object.keys(EDGES).join(", ")}.`);
+  const [cx, cy] = spec.anchor(window.innerWidth, window.innerHeight, at);
+  return buildWheel({
+    items, onPick, onClose, cancelOnCentre,
+    cls: `cx-wheel cx-wheel-half cx-wheel-${edge}`,
+    hubText: "Release here to cancel",
+    centre: { x: cx, y: cy },
+    arc: { startDeg: spec.startDeg, spanDeg: spec.spanDeg },
+  });
 });

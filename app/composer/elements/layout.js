@@ -103,11 +103,15 @@ define("list", "rows", ({ items = [], reorder = false, onRemove, onAdd, onReorde
     items.forEach((item, index) => {
       const controls = [];
       if (reorder) {
-        controls.push(el("button", { cls: ["cx-icon-btn", "cx-icon-btn-sm", "cx-focusable"], text: "▲",
-          attrs: { type: "button", "aria-label": `Move ${item.label} up`, disabled: index === 0 },
+        // "Move up/down", not bare arrows: next to a numeric control, an
+        // unlabelled ▲▼ pair reads as increment/decrement.
+        controls.push(el("button", { cls: ["cx-icon-btn", "cx-icon-btn-sm", "cx-list-move", "cx-focusable"], text: "▲",
+          attrs: { type: "button", title: `Move ${item.label} up`,
+                   "aria-label": `Move ${item.label} up`, disabled: index === 0 },
           on: { click: () => move(index, index - 1) } }));
-        controls.push(el("button", { cls: ["cx-icon-btn", "cx-icon-btn-sm", "cx-focusable"], text: "▼",
-          attrs: { type: "button", "aria-label": `Move ${item.label} down`, disabled: index === items.length - 1 },
+        controls.push(el("button", { cls: ["cx-icon-btn", "cx-icon-btn-sm", "cx-list-move", "cx-focusable"], text: "▼",
+          attrs: { type: "button", title: `Move ${item.label} down`,
+                   "aria-label": `Move ${item.label} down`, disabled: index === items.length - 1 },
           on: { click: () => move(index, index + 1) } }));
       }
       if (onRemove) {
@@ -115,9 +119,15 @@ define("list", "rows", ({ items = [], reorder = false, onRemove, onAdd, onReorde
           attrs: { type: "button", "aria-label": `Remove ${item.label}` },
           on: { click: () => onRemove(item, index) } }));
       }
+      // A row's control is a real element -- a LoRA's weight is edited here,
+      // not implied by a number printed beside the reorder arrows, which reads
+      // as a stepper for that number and is not one.
+      const control = item.control ? nodeOf(item.control, "list.rows item.control") : null;
+
       body.append(el("div", { cls: "cx-list-row", children: [
         el("span", { cls: "cx-list-label", text: item.label }),
         item.hint ? el("span", { cls: "cx-list-hint", text: item.hint }) : null,
+        control ? el("div", { cls: "cx-list-control", children: control }) : null,
         controls.length ? el("div", { cls: "cx-list-actions", children: controls }) : null,
       ].filter(Boolean) }));
     });

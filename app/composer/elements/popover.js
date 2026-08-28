@@ -90,7 +90,13 @@ define("menu", "dropdown", ({ items = [], onPick, ...rest } = {}) => {
   return handle;
 });
 
-/** Right-click menu: anchored to a point rather than an element. */
+/**
+ * Right-click menu: anchored to a POINT rather than an element.
+ *
+ * The anchor is a stand-in object with only getBoundingClientRect, because that
+ * is all anchorTo needs. It is not a node, so it never reaches the dismiss stack
+ * -- that filters to things that can answer "was the click inside me".
+ */
 define("menu", "context", ({ x = 0, y = 0, items = [], onPick, onClose } = {}) => {
   const point = { getBoundingClientRect: () => ({ x, y, width: 0, height: 0, top: y, left: x, right: x, bottom: y }) };
   const handle = floatOn("popover", "cx-popover cx-popover-menu", {

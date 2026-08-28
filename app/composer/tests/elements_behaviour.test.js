@@ -269,3 +269,81 @@ test("range thumbs cannot pass each other", () => {
   const { from, to } = r.value;
   assert.ok(from <= to, `from ${from} must not exceed to ${to}`);
 });
+
+// --- regressions found by the adversarial pass ------------------------------
+
+test("finishing a busy spell does not re-enable a button that was disabled", () => {
+  // busy and disabled are independent reasons a button cannot be clicked.
+  // Deriving the attribute from the constructor's value meant the later call
+  // silently lost to the earlier one.
+  const b = mount(composer.button.md({ label: "Save" }));
+  b.setDisabled(true);
+  b.setBusy(true);
+  b.setBusy(false);
+  assert.equal(b.node.disabled, true);
+  b.setDisabled(false);
+  assert.equal(b.node.disabled, false);
+});
+
+test("a busy button stays disabled even if setDisabled(false) is called", () => {
+  const b = mount(composer.button.md({ label: "Save" }));
+  b.setBusy(true);
+  b.setDisabled(false);
+  assert.equal(b.node.disabled, true);
+});
+
+test("clearing a number field keeps the last committed value", () => {
+  // A browser normalises invalid text in a number input to "", and Number("")
+  // is 0 -- finite, so it sails past an isFinite guard and lands on min,
+  // discarding what the user had actually entered.
+  const seen = [];
+  const n = mount(composer.number.md({ value: 3, min: 1, max: 10, onChange: (v) => seen.push(v) }));
+  const input = n.node.querySelector("input") || n.node;
+
+  input.value = "7";
+  fire(input, "blur");
+  assert.equal(n.value, 7);
+
+  input.value = "";
+  fire(input, "blur");
+  assert.equal(n.value, 7, "an emptied field is not a zero");
+  assert.equal(input.value, "7", "and the field shows what is actually held");
+  assert.deepEqual(seen, [7, 7]);
+});
+
+test("a number field ignores unparseable text on commit", () => {
+  const n = mount(composer.number.md({ value: 5, min: 0, max: 10 }));
+  const input = n.node.querySelector("input") || n.node;
+  input.value = "abc";
+  fire(input, "blur");
+  assert.equal(n.value, 5);
+});
+
+test("a list row carries a real control, separate from its reorder arrows", () => {
+  // A bare number printed beside up/down arrows reads as a stepper for that
+  // number. The weight is edited in a control; the arrows only move the row.
+  const weight = composer.number.md({ value: 0.8, min: -2, max: 2, step: 0.05, label: "Weight" });
+  const l = mount(composer.list.rows({
+    reorder: true,
+    items: [{ label: "detail_v3", control: weight }, { label: "motion_lift" }],
+  }));
+  assert.ok(l.node.querySelector(".cx-list-control input"), "the row has an editable control");
+
+  const moves = [...l.node.querySelectorAll(".cx-list-move")];
+  assert.ok(moves.length >= 2);
+  for (const m of moves) {
+    assert.match(m.getAttribute("aria-label"), /^Move .* (up|down)$/,
+      "reorder buttons say they reorder");
+  }
+});
+
+test("reordering a list reports the new order", () => {
+  let order = null;
+  const l = mount(composer.list.rows({
+    reorder: true, onReorder: (items) => { order = items.map((i) => i.label); },
+    items: [{ label: "a" }, { label: "b" }],
+  }));
+  // the second row's "up" button
+  l.node.querySelectorAll(".cx-list-row")[1].querySelector(".cx-list-move").click();
+  assert.deepEqual(order, ["b", "a"]);
+});

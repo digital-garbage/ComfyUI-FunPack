@@ -50,8 +50,9 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChan
   });
   input.value = String(value);
 
+  let committed = Number(value);
+
   const clamp = (n) => {
-    if (!Number.isFinite(n)) return value;
     if (min !== undefined && n < min) return min;
     if (max !== undefined && n > max) return max;
     return precision === undefined ? n : Number(n.toFixed(precision));
@@ -59,8 +60,16 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChan
 
   // Clamping on commit rather than on input: clamping mid-typing makes "-" or
   // a leading "0." impossible to type.
+  //
+  // An emptied or unparseable field reverts to the last committed value rather
+  // than being read as a number. A browser normalises invalid text in a number
+  // input to "", and Number("") is 0 -- which is finite, so it sails past any
+  // isFinite guard and lands on min, silently discarding what the user had.
   const commit = () => {
-    const next = clamp(Number(input.value));
+    const raw = input.value.trim();
+    const parsed = raw === "" ? NaN : Number(raw);
+    const next = Number.isFinite(parsed) ? clamp(parsed) : committed;
+    committed = next;
     input.value = String(next);
     if (onChange) onChange(next);
   };
@@ -73,8 +82,12 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChan
 
   return {
     node,
-    get value() { return Number(input.value); },
-    setValue(v) { input.value = String(clamp(Number(v))); },
+    get value() { return committed; },
+    setValue(v) {
+      const parsed = Number(v);
+      committed = Number.isFinite(parsed) ? clamp(parsed) : committed;
+      input.value = String(committed);
+    },
     destroy: () => node.remove(),
   };
 });

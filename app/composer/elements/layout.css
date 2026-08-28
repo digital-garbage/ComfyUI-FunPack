@@ -53,7 +53,16 @@
 .cx-list-row:last-child { border-bottom: 0; }
 .cx-list-label { font-size: var(--fs-4); flex: 1; min-width: 0; }
 .cx-list-hint { font-size: var(--fs-7); color: var(--muted); }
-.cx-list-actions { display: flex; gap: var(--sp-1); }
+.cx-list-control { flex: none; width: 92px; }
+/* Separated from the row's own control by a rule, so the arrows read as
+ * "reorder this row" rather than "adjust that number". */
+.cx-list-actions {
+  display: flex; gap: var(--sp-1); flex: none;
+  padding-left: var(--sp-4); margin-left: var(--sp-2);
+  border-left: var(--bw) solid var(--line-2);
+}
+.cx-list-move { color: var(--faint); }
+.cx-list-move:hover:not(:disabled) { color: var(--accent); }
 .cx-list-empty { padding: var(--sp-6); font-size: var(--fs-6); color: var(--faint); text-align: center; }
 
 .cx-tabs { display: flex; gap: var(--sp-1); }

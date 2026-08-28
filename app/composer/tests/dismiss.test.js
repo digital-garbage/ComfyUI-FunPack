@@ -162,3 +162,13 @@ test("keys other than Escape are ignored", () => {
   key(document.body, "a");
   assert.equal(closed, false);
 });
+
+test("a virtual anchor never reaches the outside-click check", () => {
+  // A context menu is anchored to coordinates, not an element. That stand-in
+  // has no .contains, and passing it through threw on the first click anywhere.
+  let closed = false;
+  const point = { getBoundingClientRect: () => ({ x: 10, y: 10, width: 0, height: 0 }) };
+  push({ nodes: [panel("menu"), point], onDismiss: () => { closed = true; } });
+  assert.doesNotThrow(() => fire(document.body, "pointerdown"));
+  assert.equal(closed, true);
+});

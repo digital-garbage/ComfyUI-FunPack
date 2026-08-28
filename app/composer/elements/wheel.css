@@ -34,13 +34,29 @@
   transform: translate(-50%, -50%) scale(1.06);
 }
 
+/* Sized to the dead zone exactly (radius 42), so the cancel target you can see
+ * is the cancel target you can hit. */
 .cx-wheel-hub {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: 68px; height: 68px; border-radius: var(--r-pill);
+  width: 84px; height: 84px; border-radius: var(--r-pill);
   border: var(--bw) dashed var(--line);
   display: flex; align-items: center; justify-content: center;
-  text-align: center; padding: var(--sp-2);
+  color: var(--faint);
+  transition: border-color var(--dur-1) var(--ease-standard),
+              color var(--dur-1) var(--ease-standard),
+              background var(--dur-1) var(--ease-standard);
 }
-.cx-wheel-hub .cx-hint { font-size: var(--fs-8); line-height: 1.1; }
-.cx-wheel-hub.cx-on { border-color: var(--danger); }
-.cx-wheel-hub.cx-on .cx-hint { color: var(--danger); }
+.cx-wheel-hub-glyph { font-size: var(--fs-2); line-height: 1; }
+.cx-wheel-hub.cx-on {
+  border-color: var(--danger); color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* Half wheels sit ON the edge: the off-screen half is simply clipped by the
+ * viewport, which is what gives the edge-panel silhouette. The flat side gets a
+ * straight edge so it reads as pinned rather than cropped by accident. */
+.cx-wheel-half { backdrop-filter: blur(8px); }
+.cx-wheel-right  { border-radius: var(--r-pill) 0 0 var(--r-pill); border-right: 0; }
+.cx-wheel-left   { border-radius: 0 var(--r-pill) var(--r-pill) 0; border-left: 0; }
+.cx-wheel-bottom { border-radius: var(--r-pill) var(--r-pill) 0 0; border-bottom: 0; }
+.cx-wheel-top    { border-radius: 0 0 var(--r-pill) var(--r-pill); border-top: 0; }

@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { setupDom, teardownDom, key, fire } from "./_dom.js";
-import { sectorAt } from "../elements/wheel.js";
+import { EDGES, sectorAt, sectorInArc } from "../elements/wheel.js";
 
 let composer;
 let ROOT_ID;
@@ -296,6 +296,53 @@ test("releasing in the dead zone cancels without picking", () => {
   window.dispatchEvent(new window.PointerEvent("pointerup", { clientX: 405, clientY: 305, bubbles: true }));
   assert.equal(picked, null);
   w.destroy();
+});
+
+// --- half wheel -------------------------------------------------------------
+
+test("an edge panel's arc faces into the screen, not off it", () => {
+  // The point of pinning to an edge is that every item stays reachable; an arc
+  // pointing the wrong way would put half of them off-screen.
+  const count = 4;
+  for (const [edge, spec] of Object.entries(EDGES)) {
+    const inward = { right: 270, left: 90, bottom: 0, top: 180 }[edge];
+    const rad = (inward - 90) * (Math.PI / 180);
+    const i = sectorInArc(Math.cos(rad) * 100, Math.sin(rad) * 100, count, spec);
+    assert.ok(i >= 0, `${edge} panel does not cover its own inward direction`);
+  }
+});
+
+test("a direction outside a half wheel's arc selects nothing", () => {
+  // Off the edge is off the panel: it must not wrap round to the far item.
+  const spec = EDGES.right;                       // opens leftward
+  const right = sectorInArc(100, 0, 4, spec);     // pointing off-screen
+  assert.equal(right, -1);
+});
+
+test("every inward angle of a half wheel lands in a sector", () => {
+  const spec = EDGES.right;
+  for (let deg = spec.startDeg + 1; deg < spec.startDeg + spec.spanDeg; deg += 1) {
+    const rad = (deg - 90) * (Math.PI / 180);
+    const i = sectorInArc(Math.cos(rad) * 100, Math.sin(rad) * 100, 4, spec);
+    assert.ok(i >= 0 && i < 4, `${deg}deg gave ${i}`);
+  }
+});
+
+test("a half wheel opens on its edge and picks by key", () => {
+  let picked = null;
+  const w = composer.wheel.half({
+    edge: "right", at: 300,
+    items: [{ label: "Split" }, { label: "Duplicate" }, { label: "Rate" }],
+    onPick: (item) => { picked = item.label; },
+  });
+  assert.ok(w.node.classList.contains("cx-wheel-right"));
+  key(document.body, "3");
+  assert.equal(picked, "Rate");
+  w.destroy();
+});
+
+test("an unknown edge is refused rather than guessed", () => {
+  assert.throws(() => composer.wheel.half({ edge: "diagonal", items: [{ label: "a" }, { label: "b" }] }), RangeError);
 });
 
 test("the wheel refuses a count nobody could aim at", () => {

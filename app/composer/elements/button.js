@@ -29,15 +29,26 @@ function base(size, { label, onClick, tone = "neutral", icon, disabled = false, 
 
   if (onClick) node.addEventListener("click", onClick);
 
+  // Busy and disabled are two independent reasons a button is not clickable, so
+  // both are tracked. Deriving the attribute from the constructor's `disabled`
+  // meant finishing a busy spell re-enabled a button that had been disabled
+  // since -- the later call silently lost to the earlier value.
+  let isDisabled = Boolean(disabled);
+  let isBusy = Boolean(busy);
+  const sync = () => node.toggleAttribute("disabled", isDisabled || isBusy);
+
   return {
     node,
     setLabel: (value) => setText(text, value),
     setBusy(value) {
-      node.toggleAttribute("disabled", Boolean(value) || disabled);
-      if (value) { node.setAttribute("aria-busy", "true"); node.appendChild(spinner); }
+      isBusy = Boolean(value);
+      sync();
+      if (isBusy) { node.setAttribute("aria-busy", "true"); node.appendChild(spinner); }
       else { node.removeAttribute("aria-busy"); spinner.remove(); }
     },
-    setDisabled(value) { node.toggleAttribute("disabled", Boolean(value)); },
+    setDisabled(value) { isDisabled = Boolean(value); sync(); },
+    get disabled() { return isDisabled; },
+    get busy() { return isBusy; },
     destroy: () => node.remove(),
   };
 }

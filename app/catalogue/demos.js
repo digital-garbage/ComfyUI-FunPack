@@ -154,16 +154,18 @@ export const DEMOS = {
     note: "Nothing is saved until you press Save.",
     actions: [c.button.lg({ label: "Cancel" }), c.button.lg({ label: "Save", tone: "primary" })],
   }),
-  "list.rows": {
+  "list.rows": (c) => ({
     reorder: true,
     addLabel: "Add LoRA",
     onAdd: () => {},
     onRemove: () => {},
     items: [
-      { label: "detail_v3.safetensors", hint: "0.8" },
-      { label: "motion_lift.safetensors", hint: "0.4" },
+      { label: "detail_v3.safetensors",
+        control: c.number.md({ value: 0.8, min: -2, max: 2, step: 0.05, precision: 2, label: "Weight" }) },
+      { label: "motion_lift.safetensors",
+        control: c.number.md({ value: 0.4, min: -2, max: 2, step: 0.05, precision: 2, label: "Weight" }) },
     ],
-  },
+  }),
   "tabs.underline": { value: "compose", tabs: [
     { value: "compose", label: "Compose" }, { value: "shortcuts", label: "Shortcuts" }, { value: "files", label: "Files" },
   ] },
@@ -289,6 +291,10 @@ export const DEMOS = {
   "gallery.strip": { label: "Segments", items: [
     { id: "1", icon: "▦", label: "Scene 1" }, { id: "2", icon: "▦", label: "Scene 2" },
     { id: "3", icon: "▦", label: "Scene 3" }, { id: "4", icon: "▦", label: "Scene 4" },
+  ] },
+  "wheel.half": { edge: "right", items: [
+    { icon: "✂", label: "Split" }, { icon: "⧉", label: "Duplicate" },
+    { icon: "★", label: "Rate" }, { icon: "◐", label: "Anchor" },
   ] },
   "wheel.picker": { items: [
     { icon: "✂", label: "Split" }, { icon: "⧉", label: "Duplicate" },
