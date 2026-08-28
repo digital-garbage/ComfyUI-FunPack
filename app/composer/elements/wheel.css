@@ -1,0 +1,46 @@
+.cx-wheel {
+  position: fixed; pointer-events: auto; border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--elev-3) 92%, transparent);
+  border: var(--bw) solid var(--line);
+  box-shadow: var(--shadow-3);
+  backdrop-filter: blur(6px);
+  animation: cx-wheel-in var(--dur-1) var(--ease-standard);
+}
+@keyframes cx-wheel-in { from { opacity: 0; transform: scale(.9); } }
+
+/* The lit shape IS the region that picks the item, so the target is legible
+ * instead of implied by a box around a label. */
+.cx-wheel-canvas { position: absolute; inset: 0; pointer-events: none; }
+.cx-wheel-wedge {
+  fill: transparent;
+  stroke: color-mix(in srgb, var(--line) 70%, transparent);
+  stroke-width: 1;
+  transition: fill var(--dur-1) var(--ease-standard), stroke var(--dur-1) var(--ease-standard);
+}
+.cx-wheel-wedge.cx-on { fill: var(--accent-soft); stroke: var(--accent); }
+
+.cx-wheel-item {
+  position: absolute; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-width: 52px; padding: var(--sp-1) var(--sp-2);
+  background: transparent; border: 0; color: var(--muted);
+  font-size: var(--fs-7); cursor: pointer; text-align: center;
+  transition: color var(--dur-1) var(--ease-standard),
+              transform var(--dur-1) var(--ease-standard);
+}
+.cx-wheel-item .cx-wheel-icon { font-size: var(--fs-2); line-height: 1; }
+.cx-wheel-item.cx-on {
+  color: var(--accent-hi);
+  transform: translate(-50%, -50%) scale(1.06);
+}
+
+.cx-wheel-hub {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 68px; height: 68px; border-radius: var(--r-pill);
+  border: var(--bw) dashed var(--line);
+  display: flex; align-items: center; justify-content: center;
+  text-align: center; padding: var(--sp-2);
+}
+.cx-wheel-hub .cx-hint { font-size: var(--fs-8); line-height: 1.1; }
+.cx-wheel-hub.cx-on { border-color: var(--danger); }
+.cx-wheel-hub.cx-on .cx-hint { color: var(--danger); }

@@ -4,3 +4,14 @@
 @import "./tokens/reset.css";
 @import "./tokens/tokens.css";
 @import "./tokens/base.css";
+
+@import "./elements/text.css";
+@import "./elements/button.css";
+@import "./elements/input.css";
+@import "./elements/choice.css";
+@import "./elements/slider.css";
+@import "./elements/layout.css";
+@import "./elements/status.css";
+@import "./elements/overlay.css";
+@import "./elements/gallery.css";
+@import "./elements/wheel.css";

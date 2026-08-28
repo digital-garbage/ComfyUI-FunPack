@@ -1,0 +1,93 @@
+/* The native input stays in the DOM -- it carries the state, the keyboard
+ * behaviour and the accessibility -- but it is invisible; .cx-check-box is what
+ * you see. Hiding it with opacity rather than display:none keeps it focusable. */
+.cx-check-input, .cx-radio-input, .cx-toggle-input {
+  position: absolute; opacity: 0; width: 0; height: 0; margin: 0;
+}
+
+.cx-check { display: inline-flex; }
+.cx-check-box {
+  width: 16px; height: 16px; flex: none;
+  border: var(--bw) solid var(--line); border-radius: var(--r-2);
+  background: var(--elev-2);
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background var(--dur-1) var(--ease-standard), border-color var(--dur-1) var(--ease-standard);
+}
+.cx-check-box::after {
+  content: ""; width: 9px; height: 5px;
+  border-left: 2px solid var(--on-accent); border-bottom: 2px solid var(--on-accent);
+  transform: rotate(-45deg) translateY(-1px) scale(.6);
+  opacity: 0; transition: opacity var(--dur-1) var(--ease-standard), transform var(--dur-1) var(--ease-standard);
+}
+.cx-check-input:checked + .cx-check-box { background: var(--accent); border-color: var(--accent); }
+.cx-check-input:checked + .cx-check-box::after { opacity: 1; transform: rotate(-45deg) translateY(-1px) scale(1); }
+.cx-check-input:indeterminate + .cx-check-box { background: var(--accent); border-color: var(--accent); }
+.cx-check-input:indeterminate + .cx-check-box::after {
+  opacity: 1; width: 8px; height: 0; border-bottom: 2px solid var(--on-accent);
+  border-left: 0; transform: none;
+}
+.cx-check-input:focus-visible + .cx-check-box { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.cx-check-input:disabled + .cx-check-box { opacity: var(--disabled-opacity); }
+
+.cx-check-row, .cx-radio, .cx-toggle-row {
+  display: flex; align-items: flex-start; gap: var(--sp-4);
+  cursor: pointer; padding: var(--sp-2) 0;
+}
+.cx-check-text { display: flex; flex-direction: column; gap: 2px; }
+.cx-check-label { font-size: var(--fs-4); line-height: var(--lh-4); color: var(--text); }
+.cx-checklist {
+  display: flex; flex-direction: column;
+  max-height: 200px; overflow-y: auto;
+  border: var(--bw) solid var(--line); border-radius: var(--r-3);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.cx-radio-group { display: flex; gap: var(--sp-4); }
+.cx-radio-vertical { flex-direction: column; gap: var(--sp-2); }
+.cx-radio-dot {
+  width: 16px; height: 16px; flex: none; border-radius: var(--r-pill);
+  border: var(--bw) solid var(--line); background: var(--elev-2);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.cx-radio-dot::after {
+  content: ""; width: 8px; height: 8px; border-radius: var(--r-pill);
+  background: var(--accent); transform: scale(0);
+  transition: transform var(--dur-1) var(--ease-standard);
+}
+.cx-radio-input:checked + .cx-radio-dot { border-color: var(--accent); }
+.cx-radio-input:checked + .cx-radio-dot::after { transform: scale(1); }
+.cx-radio-input:focus-visible + .cx-radio-dot { border-color: var(--accent); box-shadow: var(--focus-ring); }
+
+.cx-select-md { height: var(--ctl-h-lg); padding: 0 var(--ctl-pad-x-md); font-size: var(--fs-4); }
+.cx-select-sm { height: var(--ctl-h-md); padding: 0 var(--ctl-pad-x-sm); font-size: var(--fs-5); }
+
+.cx-segmented {
+  display: inline-flex; border: var(--bw) solid var(--line);
+  border-radius: var(--ctl-r); overflow: hidden; background: var(--elev-2);
+}
+.cx-segment {
+  border: 0; background: transparent; color: var(--muted);
+  cursor: pointer; font-family: var(--font-ui);
+  border-left: var(--bw) solid var(--line);
+  transition: background var(--dur-1) var(--ease-standard), color var(--dur-1) var(--ease-standard);
+}
+.cx-segment:first-child { border-left: 0; }
+.cx-segmented-md .cx-segment { height: var(--ctl-h-lg); padding: 0 var(--ctl-pad-x-lg); font-size: var(--fs-5); }
+.cx-segmented-sm .cx-segment { height: var(--ctl-h-md); padding: 0 var(--ctl-pad-x-md); font-size: var(--fs-6); }
+.cx-segment:hover { background: var(--hover); color: var(--text); }
+.cx-segment.cx-on { background: var(--accent-soft); color: var(--accent-hi); }
+
+.cx-toggle-row { align-items: center; justify-content: space-between; gap: var(--sp-6); }
+.cx-toggle-track {
+  width: 34px; height: 20px; flex: none; border-radius: var(--r-pill);
+  background: var(--line); position: relative;
+  transition: background var(--dur-1) var(--ease-standard);
+}
+.cx-toggle-knob {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  border-radius: var(--r-pill); background: var(--elev-1);
+  transition: transform var(--dur-1) var(--ease-standard);
+}
+.cx-toggle-input:checked + .cx-toggle-track { background: var(--accent); }
+.cx-toggle-input:checked + .cx-toggle-track .cx-toggle-knob { transform: translateX(14px); }
+.cx-toggle-input:focus-visible + .cx-toggle-track { box-shadow: var(--focus-ring); }

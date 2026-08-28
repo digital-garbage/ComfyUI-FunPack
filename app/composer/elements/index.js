@@ -4,3 +4,16 @@
 // no way to discover siblings at runtime without a build step.
 //
 // Elements land here one at a time, each with its catalogue section and tests.
+
+import "./text.js";
+import "./button.js";
+import "./input.js";
+import "./choice.js";
+import "./slider.js";
+import "./layout.js";
+import "./status.js";
+import "./modal.js";
+import "./popover.js";
+import "./floating.js";
+import "./gallery.js";
+import "./wheel.js";

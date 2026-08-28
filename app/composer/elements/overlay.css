@@ -1,0 +1,131 @@
+/* Every overlay lives on the portal root, which is fixed and inset:0 with
+ * pointer-events:none; each layer turns its own events back on. */
+.cx-modal-layer, .cx-slideover-layer, .cx-blocking {
+  position: fixed; inset: 0; display: flex; pointer-events: auto;
+}
+.cx-modal-layer { align-items: flex-start; justify-content: center; padding: 7vh var(--sp-6); }
+.cx-backdrop { position: absolute; inset: 0; background: var(--backdrop); }
+
+.cx-modal {
+  position: relative; width: 100%;
+  display: flex; flex-direction: column; max-height: 86vh;
+  background: var(--elev-3); color: var(--text);
+  border: var(--bw) solid var(--line); border-radius: var(--r-5);
+  box-shadow: var(--shadow-3);
+  animation: cx-pop var(--dur-2) var(--ease-standard);
+}
+.cx-modal-stacked { box-shadow: var(--shadow-3), 0 0 0 100vmax var(--backdrop); }
+@keyframes cx-pop { from { opacity: 0; transform: translateY(-6px) scale(.99); } }
+
+.cx-modal-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-5);
+  padding: var(--sp-6); border-bottom: var(--bw) solid var(--line);
+}
+.cx-modal-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cx-modal-title { font-family: var(--font-display); font-size: var(--fs-2); font-weight: var(--fw-semibold); }
+.cx-modal-body { padding: var(--sp-6); overflow-y: auto; }
+.cx-modal-foot {
+  display: flex; justify-content: flex-end; gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-6); border-top: var(--bw) solid var(--line);
+  background: var(--elev-2);
+}
+
+.cx-choice-list { display: flex; flex-direction: column; gap: var(--sp-1); }
+.cx-choice-row {
+  display: flex; flex-direction: column; gap: 2px; text-align: left;
+  padding: var(--sp-4) var(--sp-5);
+  border: var(--bw) solid var(--line); border-radius: var(--r-3);
+  background: var(--elev-2); color: var(--text); cursor: pointer;
+}
+.cx-choice-row:hover { border-color: var(--accent); background: var(--accent-soft); }
+.cx-choice-label { font-size: var(--fs-4); }
+
+.cx-popover {
+  position: fixed; pointer-events: auto;
+  background: var(--elev-3); color: var(--text);
+  border: var(--bw) solid var(--line); border-radius: var(--r-4);
+  box-shadow: var(--shadow-3);
+  padding: var(--sp-2);
+  max-height: 60vh; overflow-y: auto;
+  animation: cx-pop var(--dur-1) var(--ease-standard);
+}
+.cx-popover-menu { min-width: 180px; }
+
+.cx-menu { display: flex; flex-direction: column; gap: 1px; }
+.cx-menu-item {
+  display: flex; align-items: center; gap: var(--sp-3); width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  border: 0; border-radius: var(--r-2); background: transparent;
+  color: var(--text); font-size: var(--fs-5); text-align: left; cursor: pointer;
+}
+.cx-menu-item:hover:not(:disabled), .cx-menu-item.cx-on { background: var(--hover); }
+.cx-menu-item:disabled { opacity: var(--disabled-opacity); cursor: default; }
+.cx-menu-item.cx-danger { color: var(--danger); }
+.cx-menu-label { flex: 1; }
+.cx-menu-hint { font-size: var(--fs-7); color: var(--faint); }
+.cx-menu-icon { width: 16px; text-align: center; color: var(--muted); }
+.cx-menu-sep { height: 1px; background: var(--line); margin: var(--sp-2) 0; }
+
+.cx-tooltip {
+  position: fixed; pointer-events: none;
+  background: var(--elev-3); color: var(--text);
+  border: var(--bw) solid var(--line); border-radius: var(--r-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-6); box-shadow: var(--shadow-2);
+  max-width: 260px;
+}
+
+.cx-autocomplete { min-width: 220px; padding: var(--sp-1); }
+
+.cx-split-btn { display: inline-flex; }
+.cx-split-btn .cx-btn:first-child { border-radius: var(--ctl-r) 0 0 var(--ctl-r); }
+.cx-split-arrow { border-radius: 0 var(--ctl-r) var(--ctl-r) 0; margin-left: calc(var(--bw) * -1); padding: 0 var(--sp-3); }
+
+.cx-window {
+  position: fixed; pointer-events: auto;
+  display: flex; flex-direction: column;
+  background: var(--elev-3); color: var(--text);
+  border: var(--bw) solid var(--line); border-radius: var(--r-4);
+  box-shadow: var(--shadow-3); overflow: hidden;
+}
+.cx-window-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-5);
+  background: var(--elev-2); border-bottom: var(--bw) solid var(--line);
+  cursor: grab; user-select: none; flex: none;
+}
+.cx-window-bar:active { cursor: grabbing; }
+.cx-window-titles { display: flex; align-items: baseline; gap: var(--sp-3); min-width: 0; }
+.cx-window-title { font-size: var(--fs-5); font-weight: var(--fw-semibold); }
+.cx-window-controls { display: flex; gap: var(--sp-1); }
+.cx-window-body { flex: 1; overflow: auto; padding: var(--sp-5); }
+.cx-rolled .cx-window-body, .cx-rolled .cx-window-grip { display: none; }
+.cx-window-grip {
+  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--line) 50%, var(--line) 60%, transparent 60%);
+}
+
+.cx-blocking { align-items: center; justify-content: center; background: var(--backdrop); }
+.cx-blocking-card {
+  display: flex; flex-direction: column; align-items: center; gap: var(--sp-5);
+  padding: var(--sp-9) var(--sp-10);
+  background: var(--elev-3); border: var(--bw) solid var(--line);
+  border-radius: var(--r-5); box-shadow: var(--shadow-3); text-align: center;
+}
+
+.cx-slideover-layer { align-items: stretch; }
+.cx-slideover {
+  position: relative; margin-left: auto;
+  width: min(420px, 92vw); display: flex; flex-direction: column;
+  background: var(--elev-1); border-left: var(--bw) solid var(--line);
+  box-shadow: var(--shadow-3);
+  animation: cx-slide-in var(--dur-2) var(--ease-standard);
+}
+.cx-slideover-left { margin-left: 0; margin-right: auto; border-left: 0; border-right: var(--bw) solid var(--line); }
+@keyframes cx-slide-in { from { transform: translateX(12px); opacity: 0; } }
+.cx-slideover-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--sp-5) var(--sp-6); border-bottom: var(--bw) solid var(--line);
+}
+.cx-slideover-body { flex: 1; overflow-y: auto; padding: var(--sp-6); }

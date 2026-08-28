@@ -15,12 +15,13 @@ export function portal() {
   if (!root) {
     root = document.createElement("div");
     root.id = ROOT_ID;
-    // No transform, filter, backdrop-filter or contain on this element, ever:
-    // each of those would create a stacking context and undo the whole point.
+    // No transform, filter, backdrop-filter, contain -- OR z-index -- on this
+    // element, ever. Each creates a stacking context, and then the whole ladder
+    // is measured against this one element's number instead of against the page:
+    // a modal at 800 would still paint under a sticky header at 30.
     root.style.position = "fixed";
     root.style.inset = "0";
     root.style.pointerEvents = "none";
-    root.style.zIndex = "0";
   }
   if (!root.isConnected) document.body.appendChild(root);
   return root;

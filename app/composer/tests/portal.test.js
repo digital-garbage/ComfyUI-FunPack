@@ -22,8 +22,11 @@ test("the root is a direct child of body", () => {
 
 test("the root creates no stacking context of its own", () => {
   const root = portal();
-  for (const prop of ["transform", "filter", "backdropFilter", "contain", "willChange"]) {
-    assert.ok(!root.style[prop], `${prop} would trap every overlay inside the root`);
+  // z-index belongs in this list: it is positioned and fixed, so ANY z-index
+  // (0 included) makes it a stacking context, and every overlay inside is then
+  // ranked by that single number rather than by the ladder.
+  for (const prop of ["transform", "filter", "backdropFilter", "contain", "willChange", "zIndex"]) {
+    assert.ok(!root.style[prop], `${prop} on the overlay root traps every overlay inside it`);
   }
 });
 

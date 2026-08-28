@@ -1,0 +1,47 @@
+.cx-slider { display: flex; align-items: center; gap: var(--sp-4); width: 100%; }
+
+.cx-range {
+  appearance: none; -webkit-appearance: none;
+  flex: 1; min-width: 80px; height: 18px; background: transparent; cursor: pointer;
+  /* --fill is written by the element as the value changes, so the filled part
+   * of the track follows the theme's accent without JS naming a colour. */
+  --fill: 0%;
+}
+.cx-range::-webkit-slider-runnable-track {
+  height: 4px; border-radius: var(--r-pill);
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--line) var(--fill));
+}
+.cx-range::-moz-range-track {
+  height: 4px; border-radius: var(--r-pill);
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--line) var(--fill));
+}
+.cx-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; margin-top: -5px;
+  border-radius: var(--r-pill); background: var(--elev-1);
+  border: 2px solid var(--accent);
+  transition: transform var(--dur-1) var(--ease-standard);
+}
+.cx-range::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: var(--r-pill);
+  background: var(--elev-1); border: 2px solid var(--accent);
+}
+.cx-range:hover::-webkit-slider-thumb { transform: scale(1.12); }
+.cx-range:focus-visible { outline: none; }
+.cx-range:focus-visible::-webkit-slider-thumb { box-shadow: var(--focus-ring); }
+.cx-range:focus-visible::-moz-range-thumb { box-shadow: var(--focus-ring); }
+.cx-range:disabled { opacity: var(--disabled-opacity); cursor: default; }
+
+.cx-slider-sm .cx-range { height: 14px; }
+
+.cx-readout {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: var(--fs-6); color: var(--muted);
+  min-width: 4ch; text-align: right;
+}
+
+.cx-macro { display: flex; flex-direction: column; gap: var(--sp-3); width: 100%; }
+.cx-macro-presets { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+.cx-macro-presets .cx-on { color: var(--accent); background: var(--accent-soft); }
+
+.cx-range-pair { display: flex; flex-direction: column; gap: var(--sp-1); width: 100%; }

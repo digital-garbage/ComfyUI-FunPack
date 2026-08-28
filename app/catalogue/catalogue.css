@@ -58,3 +58,20 @@
 .cat-motion-track { border: var(--bw) dashed var(--line); border-radius: var(--r-pill); padding: 3px; }
 .cat-motion-track:hover .cat-motion { transform: translateX(140px); }
 .cat-motion { transition: transform var(--dur-2) var(--ease-standard); }
+
+/* elements.html */
+.cat-variant { font-family: var(--font-mono); font-size: var(--fs-6); color: var(--accent);
+               margin: var(--sp-6) 0 var(--sp-3); }
+.cat-specimens { display: flex; flex-wrap: wrap; gap: var(--sp-5); align-items: flex-start; }
+.cat-specimen { display: flex; }
+.cat-broke { font-size: var(--fs-7); color: var(--danger); font-family: var(--font-mono); }
+.cat-link { color: var(--muted); font-size: var(--fs-5); text-decoration: none;
+            padding: 0 var(--sp-3); }
+.cat-link:hover { color: var(--accent); }
+
+.cat-launch {
+  height: var(--ctl-h-lg); padding: 0 var(--ctl-pad-x-lg);
+  border: var(--bw) dashed var(--accent); border-radius: var(--ctl-r);
+  background: var(--accent-soft); color: var(--accent-hi);
+  font-family: var(--font-mono); font-size: var(--fs-6); cursor: pointer;
+}

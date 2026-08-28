@@ -40,11 +40,12 @@ export function baseOf(rung) {
 }
 
 /**
- * Take a z-index in `rung`. Returns { z, raise(), release() }.
- * `raise()` moves this claim above its peers -- click-to-front, without anyone
- * outside the kit knowing what a z-index is.
+ * Take a z-index in `rung`. `onChange(z)` fires whenever this claim's z moves --
+ * which happens when a PEER raises or releases, not only when this one does.
+ * Without it a window that was above becomes stale in the DOM the moment
+ * another is brought to the front.
  */
-export function claim(rung) {
+export function claim(rung, onChange) {
   const start = baseOf(rung);
   if (!stacks.has(rung)) stacks.set(rung, []);
   const list = stacks.get(rung);
@@ -56,7 +57,7 @@ export function claim(rung) {
     throw new RangeError(`z rung "${rung}" is full (${SLOTS} live claims). Something is not releasing.`);
   }
 
-  const entry = {};
+  const entry = { onChange };
   list.push(entry);
   let live = true;
   let lastZ = start + list.indexOf(entry);
@@ -75,6 +76,7 @@ export function claim(rung) {
       if (i === -1 || i === list.length - 1) return handle;
       list.splice(i, 1);
       list.push(entry);
+      notify(list, start);
       return handle;
     },
     release() {
@@ -83,9 +85,14 @@ export function claim(rung) {
       const i = list.indexOf(entry);
       if (i !== -1) list.splice(i, 1);
       live = false;
+      notify(list, start);
     },
   };
   return handle;
+}
+
+function notify(list, start) {
+  list.forEach((entry, i) => { if (entry.onChange) entry.onChange(start + i); });
 }
 
 /** Live claims in a rung, bottom to top. Diagnostics and tests. */

@@ -39,6 +39,22 @@ export function el(tag, opts = {}) {
   return node;
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * An SVG element. Separate because SVG needs createElementNS -- createElement
+ * would produce an HTMLUnknownElement that renders as nothing at all.
+ * Attributes only: SVG carries no module content, so there is no text path here.
+ */
+export function svg(tag, attrs = {}) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [name, value] of Object.entries(attrs)) {
+    if (value == null || value === false) continue;
+    node.setAttribute(name, String(value));
+  }
+  return node;
+}
+
 /** A detached fragment. Panels build into one so a half-built tree never lands. */
 export function frag() {
   return document.createDocumentFragment();
