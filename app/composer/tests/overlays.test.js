@@ -275,13 +275,28 @@ test("the click that opens the wheel does not also pick", () => {
     onPick: (item) => { picked = item.label; },
     x: 400, y: 300,
   });
-  window.dispatchEvent(new window.PointerEvent("pointerup", { clientX: 400, clientY: 100, bubbles: true }));
+  // 80px straight up from the centre: inside the ring, pointing at item 0.
+  window.dispatchEvent(new window.PointerEvent("pointerup", { clientX: 400, clientY: 220, bubbles: true }));
   assert.equal(picked, null, "a release with no movement is not a pick");
   assert.ok(portalRoot().childElementCount > 0, "the wheel is still open");
 
-  window.dispatchEvent(new window.PointerEvent("pointermove", { clientX: 400, clientY: 100, bubbles: true }));
-  window.dispatchEvent(new window.PointerEvent("pointerup", { clientX: 400, clientY: 100, bubbles: true }));
+  window.dispatchEvent(new window.PointerEvent("pointermove", { clientX: 400, clientY: 220, bubbles: true }));
+  window.dispatchEvent(new window.PointerEvent("pointerup", { clientX: 400, clientY: 220, bubbles: true }));
   assert.equal(picked, "Split", "after moving, a release picks");
+  w.destroy();
+});
+
+test("a pointer beyond the rim points at nothing", () => {
+  // The lit wedge IS the region that picks the item. Highlighting one from
+  // outside the ring promises a pick that release would not deliver.
+  const w = composer.wheel.picker({
+    items: [{ label: "Split" }, { label: "Duplicate" }, { label: "Rate" }],
+    x: 400, y: 300,
+  });
+  window.dispatchEvent(new window.PointerEvent("pointermove", { clientX: 400, clientY: 60, bubbles: true }));
+  assert.equal(w.active, -1, "240px out is off the wheel");
+  window.dispatchEvent(new window.PointerEvent("pointermove", { clientX: 400, clientY: 220, bubbles: true }));
+  assert.equal(w.active, 0, "80px out is on it");
   w.destroy();
 });
 
@@ -339,6 +354,58 @@ test("a half wheel opens on its edge and picks by key", () => {
   key(document.body, "3");
   assert.equal(picked, "Rate");
   w.destroy();
+});
+
+test("an edge panel's hub sits fully on screen, not sliced by the edge", () => {
+  // A hub centred on the edge is cut in half by it, and half a cancel target is
+  // not a target. It is pushed inward by its own radius.
+  const w = composer.wheel.half({ edge: "right", at: 300, items: [{ label: "a" }, { label: "b" }] });
+  const hub = w.node.querySelector(".cx-wheel-hub");
+  const size = Number(w.node.style.width.replace("px", ""));
+  assert.ok(parseFloat(hub.style.left) < size / 2, "the hub leans into the screen");
+  const radius = parseFloat(hub.style.width) / 2;
+  assert.ok(parseFloat(hub.style.left) + radius <= size / 2 + 0.01,
+    "and its far edge does not cross the screen edge");
+  w.destroy();
+});
+
+test("cancel is where the hub actually is, not where the centre is", () => {
+  const spec = EDGES.right;
+  const hubR = 40;
+  const arc = { ...spec, rIn: 84, rOut: 147, hubX: -hubR, hubY: 0, hubR };
+  // A point over the drawn hub cancels...
+  assert.equal(sectorInArc(-hubR, 0, 4, arc), -1);
+  // ...while the geometric centre, which is now outside the hub, is simply off
+  // the ring rather than a pick.
+  assert.equal(sectorInArc(0, 0, 4, arc), -1);
+});
+
+test("an edge panel follows its edge when the window resizes", () => {
+  // It is pinned to an edge; the edge moving is the one thing it must follow.
+  const w = composer.wheel.half({ edge: "right", items: [{ label: "a" }, { label: "b" }] });
+  const before = w.centre.x;
+
+  window.innerWidth = window.innerWidth + 400;
+  window.dispatchEvent(new window.Event("resize"));
+
+  assert.equal(w.centre.x, before + 400, "the centre moved with the edge");
+  const size = Number(w.node.style.width.replace("px", ""));
+  assert.equal(parseFloat(w.node.style.left), w.centre.x - size / 2);
+  window.innerWidth = window.innerWidth - 400;
+  w.destroy();
+});
+
+test("edge panels stay pinned at any viewport shape", () => {
+  for (const [w, h] of [[320, 640], [1920, 1080], [2560, 1080], [800, 2000]]) {
+    window.innerWidth = w;
+    window.innerHeight = h;
+    for (const edge of Object.keys(EDGES)) {
+      const p = composer.wheel.half({ edge, items: [{ label: "a" }, { label: "b" }, { label: "c" }] });
+      const [ex, ey] = EDGES[edge].anchor(w, h);
+      assert.deepEqual(p.centre, { x: ex, y: ey }, `${edge} at ${w}x${h}`);
+      p.destroy();
+    }
+  }
 });
 
 test("an unknown edge is refused rather than guessed", () => {

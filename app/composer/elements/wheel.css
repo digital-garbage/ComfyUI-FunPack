@@ -1,8 +1,10 @@
+/* The ring is an INSET shadow, not a border. A border pushes every absolutely
+ * positioned child inward by its own width, which put the hub a pixel past the
+ * screen edge on an edge panel -- the one place a pixel shows. */
 .cx-wheel {
   position: fixed; pointer-events: auto; border-radius: var(--r-pill);
   background: color-mix(in srgb, var(--elev-3) 92%, transparent);
-  border: var(--bw) solid var(--line);
-  box-shadow: var(--shadow-3);
+  box-shadow: var(--shadow-3), inset 0 0 0 var(--bw) var(--line);
   backdrop-filter: blur(6px);
   animation: cx-wheel-in var(--dur-1) var(--ease-standard);
 }
@@ -36,9 +38,11 @@
 
 /* Sized to the dead zone exactly (radius 42), so the cancel target you can see
  * is the cancel target you can hit. */
+/* left/top/size come from the geometry so the drawn hub and the cancel region
+ * are the same circle. */
 .cx-wheel-hub {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: 84px; height: 84px; border-radius: var(--r-pill);
+  position: absolute; transform: translate(-50%, -50%);
+  border-radius: var(--r-pill);
   border: var(--bw) dashed var(--line);
   display: flex; align-items: center; justify-content: center;
   color: var(--faint);
@@ -56,7 +60,3 @@
  * viewport, which is what gives the edge-panel silhouette. The flat side gets a
  * straight edge so it reads as pinned rather than cropped by accident. */
 .cx-wheel-half { backdrop-filter: blur(8px); }
-.cx-wheel-right  { border-radius: var(--r-pill) 0 0 var(--r-pill); border-right: 0; }
-.cx-wheel-left   { border-radius: 0 var(--r-pill) var(--r-pill) 0; border-left: 0; }
-.cx-wheel-bottom { border-radius: var(--r-pill) var(--r-pill) 0 0; border-bottom: 0; }
-.cx-wheel-top    { border-radius: 0 0 var(--r-pill) var(--r-pill); border-top: 0; }
