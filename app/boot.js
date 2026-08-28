@@ -1,2 +1,10 @@
-// Entry point. Increment 0: prove the app is served and modules resolve.
-document.querySelector("#app").textContent = "FunPack v5";
+// Entry point. Increment 2: the kit's internals exist and the module graph
+// loads; no elements are defined yet, so there is nothing to render.
+
+import { entries } from "./composer/composer.js";
+
+const count = [...entries()].length;
+document.querySelector("#app").textContent =
+  count === 0
+    ? "FunPack v5 — Composer internals loaded, no elements defined yet"
+    : `FunPack v5 — ${count} elements registered`;

@@ -21,3 +21,6 @@ refinements/
 
 # Never track saved ComfyUI workflow dumps — they carry whatever was typed in the graph.
 movie_editor/backend/reference/*.workflow.json
+
+# Dev-only: the app ships as plain ES modules, users never run npm.
+node_modules/

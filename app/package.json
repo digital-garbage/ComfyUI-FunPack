@@ -1,0 +1,12 @@
+{
+  "name": "funpack-app",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only. Users never run npm: the app is served as plain ES modules with no build step.",
+  "scripts": {
+    "test": "node --test 'composer/tests/**/*.test.js'"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1"
+  }
+}
