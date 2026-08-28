@@ -1,0 +1,22 @@
+/* The minimum normalisation the kit needs. Not a general-purpose reset. */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--elev-0);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-4);
+  line-height: var(--lh-4);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Headings and paragraphs carry no margin of their own — spacing is the
+ * container's job, so an element can be dropped anywhere without surprises. */
+h1, h2, h3, h4, h5, h6, p, figure { margin: 0; font-size: inherit; font-weight: inherit; }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+
+:focus:not(:focus-visible) { outline: none; }

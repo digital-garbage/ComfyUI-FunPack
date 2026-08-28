@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Composer catalogue</title>
+  <script src="/funpack/app/shell/theme.js"></script>
+  <link rel="stylesheet" href="/funpack/app/composer/composer.css">
+  <link rel="stylesheet" href="/funpack/app/catalogue/catalogue.css">
+</head>
+<body>
+  <header class="cat-bar">
+    <h1>Composer catalogue</h1>
+    <div class="cat-bar-spacer"></div>
+    <button id="toggle-panes" aria-pressed="true">Both themes</button>
+    <button data-theme-set="dark">Dark</button>
+    <button data-theme-set="light">Light</button>
+    <button data-theme-set="auto">Auto</button>
+  </header>
+  <main class="cat-page" id="catalogue"></main>
+  <script type="module" src="/funpack/app/catalogue/catalogue.js"></script>
+</body>
+</html>

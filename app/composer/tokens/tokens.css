@@ -1,0 +1,173 @@
+/* Every value in the design system. Nothing outside this file invents one.
+ *
+ * Theme is an attribute on <html>, stamped by shell/theme.js before first paint:
+ *   data-theme      = "dark" | "light"   (what this file reads)
+ *   data-theme-pref = "dark" | "light" | "auto"
+ * "auto" is resolved in JS on purpose — a @media block cannot be shared across
+ * both selectors, so the palette would be written twice and drift.
+ */
+
+:root {
+  /* ── type ───────────────────────────────────────────────────────────── */
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Inter Tight", "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* display steps */
+  --fs-d1: 56px;  --lh-d1: 1;
+  --fs-d2: 40px;  --lh-d2: 1;
+  --fs-d3: 28px;  --lh-d3: 1.15;
+  /* text steps (Apple HIG macOS scale — 76% of v4's sizes already sat here) */
+  --fs-1: 22px;   --lh-1: 26px;
+  --fs-2: 17px;   --lh-2: 22px;
+  --fs-3: 15px;   --lh-3: 20px;
+  --fs-4: 13px;   --lh-4: 16px;
+  --fs-5: 12px;   --lh-5: 15px;
+  --fs-6: 11px;   --lh-6: 14px;
+  --fs-7: 10px;   --lh-7: 13px;
+  --fs-8: 9px;    --lh-8: 12px;   /* v4 used 9px 26 times without naming it */
+
+  --lh-tight: 1;  --lh-snug: 1.35;  --lh-loose: 1.5;
+
+  --fw-regular: 400;  --fw-medium: 500;  --fw-semibold: 600;  --fw-bold: 700;
+
+  /* ── spacing (2px base; covers 82% of v4's real values) ─────────────── */
+  --sp-0: 0;     --sp-1: 2px;   --sp-2: 4px;   --sp-3: 6px;
+  --sp-4: 8px;   --sp-5: 10px;  --sp-6: 12px;  --sp-7: 16px;
+  --sp-8: 20px;  --sp-9: 24px;  --sp-10: 32px; --sp-11: 40px;
+
+  /* ── radius (v4 shipped 19 distinct values) ─────────────────────────── */
+  --r-1: 2px;  --r-2: 4px;  --r-3: 6px;  --r-4: 8px;  --r-5: 12px;
+  --r-pill: 9999px;
+
+  /* ── controls (v4 shipped 11 distinct heights) ──────────────────────── */
+  --ctl-h-sm: 20px;  --ctl-h-md: 24px;  --ctl-h-lg: 28px;  --ctl-h-xl: 32px;
+  --ctl-h-icon: 18px;  --ctl-h-icon-sm: 16px;
+  --ctl-pad-x-sm: 6px;  --ctl-pad-x-md: 8px;
+  --ctl-pad-x-lg: 10px; --ctl-pad-x-xl: 12px;
+  --ctl-r: var(--r-3);
+  --ctl-gap: var(--sp-3);
+
+  /* ── borders & states ───────────────────────────────────────────────── */
+  --bw: 1px;
+  --disabled-opacity: 0.45;
+
+  /* ── motion ─────────────────────────────────────────────────────────── */
+  --dur-1: 120ms;  --dur-2: 180ms;  --dur-3: 260ms;
+  --ease-standard: cubic-bezier(.22, .61, .36, 1);
+
+  /* ── adaptive density (v4 had 8 different minmax floors) ────────────── */
+  --cell-thumb: 72px;  --cell-card: 144px;  --cell-panel: 240px;
+
+  /* ── layout ─────────────────────────────────────────────────────────── */
+  --menubar-h: 34px;
+}
+
+/* ── dark: the cutting-room palette (default) ─────────────────────────── */
+/* Scoped to any [data-theme] element, not just :root, so a pane can render the
+ * other theme in place — the catalogue shows both side by side that way. */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --elev-0: #0c0b09;   /* page          */
+  --elev-1: #131210;   /* panel         */
+  --elev-2: #1a1814;   /* raised, head  */
+  --elev-3: #1f1c16;   /* overlay       */
+
+  --hover:  #221f19;
+  --active: #2a261e;
+
+  --line:   #2a261e;
+  --line-2: #37322833;
+
+  --text:  #ece7db;
+  --muted: #918a7a;
+  --faint: #645e51;
+
+  --accent:      #f3a93c;
+  --accent-hi:   #ffc36b;
+  --accent-lo:   #e0972a;
+  --accent-soft: rgba(243, 169, 60, .14);
+  --on-accent:   #1a1206;
+
+  --teal:   #57d0c6;   /* render / audio semantic */
+  --violet: #c084fc;   /* overlay / text layer    */
+  --danger: #e8607a;
+  --warn:   #e8a040;
+  --good:   #79c479;
+  --pink:   rgb(255, 120, 180);
+
+  --void: #060606;     /* media letterbox */
+  --shadow-ink: rgba(0, 0, 0, .85);
+  --backdrop: rgba(6, 5, 4, .66);
+}
+
+/* ── light: white, grey and daylight blue ─────────────────────────────── */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --elev-0: #f5f7fa;
+  --elev-1: #ffffff;
+  --elev-2: #eef1f6;
+  --elev-3: #ffffff;
+
+  --hover:  #e1e7ef;
+  --active: #d3dae3;
+
+  --line:   #d3dae3;
+  --line-2: #8a97a833;
+
+  --text:  #16202c;
+  --muted: #59677a;
+  --faint: #8d9aab;
+
+  --accent:      #2f7fd4;
+  --accent-hi:   #5aa4ec;
+  --accent-lo:   #2668b0;
+  --accent-soft: rgba(47, 127, 212, .13);
+  --on-accent:   #ffffff;
+
+  --teal:   #12857c;
+  --violet: #7c3aed;
+  --danger: #c62a48;
+  --warn:   #b26a00;
+  --good:   #2f8f4e;
+  --pink:   rgb(197, 45, 116);
+
+  --void: #0a0c0f;
+  --shadow-ink: rgba(24, 34, 48, .30);
+  --backdrop: rgba(24, 34, 48, .34);
+}
+
+/* Derived values, written once so both themes get them for free. color-mix
+ * percentages come from a fixed set: 12 / 22 / 30 / 45 / 60 / 80 — v4 had float
+ * artefacts like 64.7%.
+ *
+ * The selector must include [data-theme], not just :root. A custom property's
+ * var()s are substituted where the property is DECLARED and inherited already
+ * resolved — so if these lived on :root alone, a scoped [data-theme="light"]
+ * subtree would inherit the root theme's accent and shadow. Declaring them here
+ * too makes each themed element re-derive them from its own palette. */
+:root,
+[data-theme] {
+  --line-hover:  color-mix(in srgb, var(--accent) 30%, var(--line));
+  --line-active: color-mix(in srgb, var(--accent) 60%, var(--line));
+  --focus-ring:  0 0 0 3px var(--accent-soft);
+
+  --shadow-1: 0 1px 2px color-mix(in srgb, var(--shadow-ink) 45%, transparent);
+  --shadow-2: 0 4px 12px color-mix(in srgb, var(--shadow-ink) 60%, transparent);
+  --shadow-3: 0 12px 32px color-mix(in srgb, var(--shadow-ink) 80%, transparent);
+}
+
+/* One guard covers the whole app, because every duration is a token.
+ * v4 had 40 unguarded transitions — unguarded precisely because the durations
+ * were hardcoded at each site. */
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
