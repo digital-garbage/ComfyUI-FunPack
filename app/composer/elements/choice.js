@@ -50,7 +50,16 @@ define("checkboxRow", "default", ({ label, hint, checked, disabled, onChange } =
     hint ? el("span", { cls: "cx-hint", text: hint, attrs: { id: hintId } }) : null,
   ].filter(Boolean) });
 
-  const node = el("label", { cls: "cx-check-row", attrs: { for: id }, children: [input, box, text] });
+  // The input is a SIBLING of its label, not a child of it.
+  //
+  // Both forms are valid, and browsers guard a nested control against being
+  // activated twice by its own label. Keeping them separate means never relying
+  // on that guard -- the CSS reaches the box through the label instead of past
+  // it, which costs one selector and removes a whole class of subtlety.
+  const node = el("div", { cls: "cx-check-row", children: [
+    input,
+    el("label", { cls: "cx-check-face", attrs: { for: id }, children: [box, text] }),
+  ] });
   return {
     node,
     get value() { return input.checked; },
@@ -69,8 +78,11 @@ define("checklist", "default", ({ items = [], values = [], onChange, label } = {
       input.checked ? chosen.add(item.value) : chosen.delete(item.value);
       if (onChange) onChange([...chosen]);
     });
-    node.append(el("label", { cls: "cx-check-row", attrs: { for: id }, children: [
-      input, box, el("span", { cls: "cx-check-label", text: item.label }),
+    node.append(el("div", { cls: "cx-check-row", children: [
+      input,
+      el("label", { cls: "cx-check-face", attrs: { for: id }, children: [
+        box, el("span", { cls: "cx-check-label", text: item.label }),
+      ] }),
     ] }));
   }
   return {
@@ -105,13 +117,15 @@ define("radioGroup", "default", ({ options = [], value, onChange, orientation = 
       current = option.value;
       if (onChange) onChange(current);
     });
-    node.append(el("label", { cls: "cx-radio", attrs: { for: id }, children: [
+    node.append(el("div", { cls: "cx-radio", children: [
       input,
-      el("span", { cls: "cx-radio-dot", attrs: { "aria-hidden": "true" } }),
-      el("span", { cls: "cx-check-text", children: [
-        el("span", { cls: "cx-check-label", text: option.label }),
-        option.hint ? el("span", { cls: "cx-hint", text: option.hint }) : null,
-      ].filter(Boolean) }),
+      el("label", { cls: "cx-check-face", attrs: { for: id }, children: [
+        el("span", { cls: "cx-radio-dot", attrs: { "aria-hidden": "true" } }),
+        el("span", { cls: "cx-check-text", children: [
+          el("span", { cls: "cx-check-label", text: option.label }),
+          option.hint ? el("span", { cls: "cx-hint", text: option.hint }) : null,
+        ].filter(Boolean) }),
+      ] }),
     ] }));
     return { option, input };
   });
@@ -190,14 +204,16 @@ define("toggle", "default", ({ label, hint, checked, disabled, onChange } = {}) 
   input.checked = Boolean(checked);
   if (onChange) input.addEventListener("change", () => onChange(input.checked));
 
-  const node = el("label", { cls: "cx-toggle-row", attrs: { for: id }, children: [
-    el("span", { cls: "cx-check-text", children: [
-      el("span", { cls: "cx-check-label", text: label }),
-      hint ? el("span", { cls: "cx-hint", text: hint }) : null,
-    ].filter(Boolean) }),
+  const node = el("div", { cls: "cx-toggle-row", children: [
     input,
-    el("span", { cls: "cx-toggle-track", attrs: { "aria-hidden": "true" },
-      children: el("span", { cls: "cx-toggle-knob" }) }),
+    el("label", { cls: "cx-check-face cx-toggle-face", attrs: { for: id }, children: [
+      el("span", { cls: "cx-check-text", children: [
+        el("span", { cls: "cx-check-label", text: label }),
+        hint ? el("span", { cls: "cx-hint", text: hint }) : null,
+      ].filter(Boolean) }),
+      el("span", { cls: "cx-toggle-track", attrs: { "aria-hidden": "true" },
+        children: el("span", { cls: "cx-toggle-knob" }) }),
+    ] }),
   ] });
 
   return {

@@ -19,20 +19,24 @@
   transform: rotate(-45deg) translateY(-1px) scale(.6);
   opacity: 0; transition: opacity var(--dur-1) var(--ease-standard), transform var(--dur-1) var(--ease-standard);
 }
-.cx-check-input:checked + .cx-check-box { background: var(--accent); border-color: var(--accent); }
-.cx-check-input:checked + .cx-check-box::after { opacity: 1; transform: rotate(-45deg) translateY(-1px) scale(1); }
-.cx-check-input:indeterminate + .cx-check-box { background: var(--accent); border-color: var(--accent); }
-.cx-check-input:indeterminate + .cx-check-box::after {
+.cx-check-input:checked + .cx-check-face .cx-check-box { background: var(--accent); border-color: var(--accent); }
+.cx-check-input:checked + .cx-check-face .cx-check-box::after { opacity: 1; transform: rotate(-45deg) translateY(-1px) scale(1); }
+.cx-check-input:indeterminate + .cx-check-face .cx-check-box { background: var(--accent); border-color: var(--accent); }
+.cx-check-input:indeterminate + .cx-check-face .cx-check-box::after {
   opacity: 1; width: 8px; height: 0; border-bottom: 2px solid var(--on-accent);
   border-left: 0; transform: none;
 }
-.cx-check-input:focus-visible + .cx-check-box { border-color: var(--accent); box-shadow: var(--focus-ring); }
-.cx-check-input:disabled + .cx-check-box { opacity: var(--disabled-opacity); }
+.cx-check-input:focus-visible + .cx-check-face .cx-check-box { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.cx-check-input:disabled + .cx-check-face .cx-check-box { opacity: var(--disabled-opacity); }
 
-.cx-check-row, .cx-radio, .cx-toggle-row {
+/* The input sits alongside its label, not inside it -- see choice.js. The row
+ * is the positioning context; the .cx-check-face label is what you click. */
+.cx-check-row, .cx-radio, .cx-toggle-row { position: relative; }
+.cx-check-face {
   display: flex; align-items: flex-start; gap: var(--sp-4);
   cursor: pointer; padding: var(--sp-2) 0;
 }
+.cx-toggle-face { align-items: center; justify-content: space-between; gap: var(--sp-6); }
 .cx-check-text { display: flex; flex-direction: column; gap: 2px; }
 .cx-check-label { font-size: var(--fs-4); line-height: var(--lh-4); color: var(--text); }
 .cx-checklist {
@@ -54,9 +58,9 @@
   background: var(--accent); transform: scale(0);
   transition: transform var(--dur-1) var(--ease-standard);
 }
-.cx-radio-input:checked + .cx-radio-dot { border-color: var(--accent); }
-.cx-radio-input:checked + .cx-radio-dot::after { transform: scale(1); }
-.cx-radio-input:focus-visible + .cx-radio-dot { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.cx-radio-input:checked + .cx-check-face .cx-radio-dot { border-color: var(--accent); }
+.cx-radio-input:checked + .cx-check-face .cx-radio-dot::after { transform: scale(1); }
+.cx-radio-input:focus-visible + .cx-check-face .cx-radio-dot { border-color: var(--accent); box-shadow: var(--focus-ring); }
 
 .cx-select-md { height: var(--ctl-h-lg); padding: 0 var(--ctl-pad-x-md); font-size: var(--fs-4); }
 .cx-select-sm { height: var(--ctl-h-md); padding: 0 var(--ctl-pad-x-sm); font-size: var(--fs-5); }
@@ -77,7 +81,7 @@
 .cx-segment:hover { background: var(--hover); color: var(--text); }
 .cx-segment.cx-on { background: var(--accent-soft); color: var(--accent-hi); }
 
-.cx-toggle-row { align-items: center; justify-content: space-between; gap: var(--sp-6); }
+
 .cx-toggle-track {
   width: 34px; height: 20px; flex: none; border-radius: var(--r-pill);
   background: var(--line); position: relative;
@@ -88,6 +92,6 @@
   border-radius: var(--r-pill); background: var(--elev-1);
   transition: transform var(--dur-1) var(--ease-standard);
 }
-.cx-toggle-input:checked + .cx-toggle-track { background: var(--accent); }
-.cx-toggle-input:checked + .cx-toggle-track .cx-toggle-knob { transform: translateX(14px); }
-.cx-toggle-input:focus-visible + .cx-toggle-track { box-shadow: var(--focus-ring); }
+.cx-toggle-input:checked + .cx-check-face .cx-toggle-track { background: var(--accent); }
+.cx-toggle-input:checked + .cx-check-face .cx-toggle-track .cx-toggle-knob { transform: translateX(14px); }
+.cx-toggle-input:focus-visible + .cx-check-face .cx-toggle-track { box-shadow: var(--focus-ring); }

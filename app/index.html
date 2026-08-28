@@ -1,9 +1,18 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FunPack</title>
+  <script src="/funpack/app/shell/theme.js"></script>
+  <link rel="stylesheet" href="/funpack/app/composer/composer.css">
+  <style>
+    /* The app frame itself: the only rule outside the kit, and it sets no
+       colours, sizes or type -- just the shape of the page. */
+    body { display: flex; }
+    #app { flex: 1; display: flex; min-height: 100vh; padding: var(--sp-6); }
+    #app > * { flex: 1; }
+  </style>
 </head>
 <body>
   <div id="app"></div>

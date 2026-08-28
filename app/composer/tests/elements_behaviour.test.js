@@ -88,7 +88,10 @@ test("a checkbox row is labelled by its visible text, not by aria-label", () => 
   const c = composer.checkboxRow.default({ label: "Sync", hint: "Locks timing" });
   const input = c.node.querySelector("input");
   assert.equal(input.getAttribute("aria-label"), null);
-  assert.equal(c.node.getAttribute("for"), input.id);
+  const face = c.node.querySelector("label.cx-check-face");
+  assert.equal(face.getAttribute("for"), input.id,
+    "the label points at the input rather than wrapping it");
+  assert.equal(face.contains(input), false);
   assert.ok(input.getAttribute("aria-describedby"), "the hint is wired as the description");
 });
 

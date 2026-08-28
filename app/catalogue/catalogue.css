@@ -75,3 +75,10 @@
   background: var(--accent-soft); color: var(--accent-hi);
   font-family: var(--font-mono); font-size: var(--fs-6); cursor: pointer;
 }
+
+/* hide.html */
+.cat-mount { display: flex; flex-direction: column; gap: var(--sp-5); }
+.cat-ledger { display: grid; grid-template-columns: 160px 1fr 1fr; gap: var(--sp-3) var(--sp-5);
+              font-size: var(--fs-6); align-items: baseline; }
+.cat-why { color: var(--muted); }
+.cat-caught { color: var(--faint); font-family: var(--font-mono); font-size: var(--fs-7); }

@@ -5,7 +5,10 @@ so the real routes can be mounted on a throwaway app in a test. The handlers are
 thin adapters over pure functions in `serve`.
 """
 
-from . import config, log, serve as static
+from . import config, log, registry as registry_mod, serve as static
+from .contract import CONTRACT_VERSION
+from .relations import order
+from .traits import split
 
 # Two independent imports, two independent guards: aiohttp is installable on its
 # own, and folding them together nulled `web` whenever ComfyUI's `server` was
@@ -40,6 +43,47 @@ def _serve_under(req, root, allowed):
     return _respond(static.serve(root, req.match_info["tail"], allowed))
 
 
+# Scanned once at startup. A module list that changed under the UI mid-session
+# would mean a panel could refer to something that is no longer there.
+_registry = None
+
+
+def modules(rescan=False):
+    global _registry
+    if _registry is None or rescan:
+        _registry = registry_mod.scan()
+    return _registry
+
+
+def manifest(traits=None):
+    """What the browser is told: only modules that loaded and validated.
+
+    A module that failed is absent from `modules` entirely -- the UI renders
+    what announced itself, so absence here is what makes it absent on screen.
+    `failed` is carried alongside for the modules dump, never for rendering.
+    """
+    reg = modules()
+    specs = list(reg.specs.values())
+
+    incompatible = []
+    if traits is not None:
+        specs, incompatible = split(specs, traits)
+
+    ordered, rejected = order(specs)
+
+    return {
+        "contract": CONTRACT_VERSION,
+        "modules": [spec.to_manifest() for spec in ordered],
+        "failed": (
+            [{"where": where, "why": why} for where, why in reg.failed]
+            + [{"where": spec.source, "why": why} for spec, why in rejected]
+        ),
+        "incompatible": [
+            {"id": spec.id, "requires": spec.requires} for spec in incompatible
+        ],
+    }
+
+
 def register(routes, prefix=None):
     """Attach FunPack's routes to an aiohttp route table."""
     P = config.UI_PREFIX if prefix is None else prefix
@@ -47,6 +91,12 @@ def register(routes, prefix=None):
     @routes.get(P + "/api/health")
     async def _health(_req):
         return web.json_response({"ok": True})
+
+    @routes.get(P + "/api/modules")
+    async def _modules(req):
+        raw = req.query.get("traits")
+        traits = [t for t in raw.split(",") if t] if raw is not None else None
+        return web.json_response(manifest(traits))
 
     @routes.get(P + "/app/{tail:.*}")
     async def _app_asset(req):

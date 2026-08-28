@@ -6,23 +6,32 @@ exercised every time you look at the catalogue.
     python tools/devserver.py [port]
 """
 
+import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import config, serve as static  # noqa: E402
+from core import config, routes, serve as static  # noqa: E402
 
 P = config.UI_PREFIX
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        path = unquote(urlparse(self.path).path)
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
 
-        if path in (P, P + "/"):
+        # The same manifest the aiohttp route serves, so what you see in the
+        # browser here is what ComfyUI would send.
+        if path == P + "/api/modules":
+            raw = parse_qs(parsed.query).get("traits")
+            traits = [t for t in raw[0].split(",") if t] if raw else None
+            body = json.dumps(routes.manifest(traits)).encode()
+            served = static.Served(200, body, "application/json")
+        elif path in (P, P + "/"):
             served = static.serve(config.APP_DIR, "index.html", config.APP_EXTS)
         elif path.startswith(P + "/app/"):
             served = static.serve(config.APP_DIR, path[len(P) + 5:], config.APP_EXTS)
