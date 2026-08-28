@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { LADDER, SLOTS, baseOf, claim, _resetLayers } from "../internals/zlayer.js";
+import { LADDER, SLOTS, baseOf, claim, liveCount, _resetLayers } from "../internals/zlayer.js";
 
 test.beforeEach(() => _resetLayers());
 
@@ -65,6 +65,36 @@ test("raise() after release does nothing", () => {
   const z = a.z;
   a.raise();
   assert.equal(a.z, z);
+});
+
+test("raise() works when the rung is nearly full", () => {
+  // With fixed per-claim offsets this returned the LOWEST free slot, so raise()
+  // sent the window to the back -- exactly backwards, and only in the state a
+  // long session actually reaches.
+  const hs = Array.from({ length: SLOTS }, () => claim("popover"));
+  hs[0].release();
+  const mid = hs[50];
+  mid.raise();
+  const peers = hs.filter((h) => h.live && h !== mid).map((h) => h.z);
+  assert.ok(mid.z > Math.max(...peers), "raise must put it above every peer");
+  assert.ok(mid.z < baseOf("backdrop"), "and still inside its own rung");
+});
+
+test("releasing a middle claim keeps the order of the rest", () => {
+  const a = claim("modal");
+  const b = claim("modal");
+  const c = claim("modal");
+  b.release();
+  assert.ok(c.z > a.z);
+  assert.equal(liveCount("modal"), 2);
+});
+
+test("a released claim reports the z it last held", () => {
+  const a = claim("modal");
+  const b = claim("modal");
+  const z = b.z;
+  b.release();
+  assert.equal(b.z, z);
 });
 
 test("exhausting a rung is loud, not silently wrapped", () => {
