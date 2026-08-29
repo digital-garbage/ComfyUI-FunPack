@@ -5,7 +5,7 @@ does not get a best-effort panel -- it does not load at all, and says why once.
 That is the same rule the UI follows: absent, not approximate.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 from .contract import NUMERIC, STAGES, TYPES, UI_HINTS, ModuleSpec
 
@@ -184,6 +184,69 @@ def validate_provides(value: Any, module_id: str) -> dict:
             raise SchemaError(
                 f"module {module_id!r}'s {name!r} capability is not callable.")
     return dict(value)
+
+
+def check_values(spec, values: Any) -> Tuple[Dict[str, Any], List[str]]:
+    """One module's live values, checked against its own declaration.
+
+    Returns (values, problems). Anything missing falls back to the declared
+    default, so a partial payload is fine; anything WRONG is reported rather than
+    coerced. v4 carried these as JSON in a string widget that nothing validated,
+    which is why it needed a hand-maintained mirror of every default and a list of
+    keys that no longer meant anything.
+    """
+    problems: List[str] = []
+    if values is None:
+        return spec.defaults(), problems
+    if not isinstance(values, dict):
+        return spec.defaults(), [f"{spec.id}: settings must be an object, got {type(values).__name__}."]
+
+    clean = spec.defaults()
+    for key, value in values.items():
+        declared = spec.settings.get(key)
+        if declared is None:
+            # Not repaired by dropping it silently: a key nobody declares is
+            # either a typo or a leftover, and both are worth saying once.
+            problems.append(f"{spec.id}: no setting named {key!r}.")
+            continue
+        problem = _value_problem(declared, key, value, spec.id)
+        if problem:
+            problems.append(problem)
+            continue
+        clean[key] = value
+    return clean, problems
+
+
+def _value_problem(declared: dict, key: str, value: Any, module_id: str):
+    kind = declared["type"]
+    where = f"{module_id}.{key}"
+
+    if kind == "bool":
+        if not isinstance(value, bool):
+            return f"{where} is a bool, got {value!r}."
+        return None
+
+    if kind == "enum":
+        allowed = [option["value"] for option in declared["options"]]
+        if value not in allowed:
+            return f"{where} must be one of {allowed}, got {value!r}."
+        return None
+
+    if kind in NUMERIC:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"{where} is a {kind}, got {value!r}."
+        if kind == "int" and not isinstance(value, int):
+            return f"{where} is an int, got {value!r}."
+        low, high = declared.get("min"), declared.get("max")
+        if low is not None and value < low:
+            return f"{where} is below its minimum {low}: {value}."
+        if high is not None and value > high:
+            return f"{where} is above its maximum {high}: {value}."
+        return None
+
+    if not isinstance(value, str):
+        return f"{where} is a {kind}, got {value!r}."
+    return None
 
 
 def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
