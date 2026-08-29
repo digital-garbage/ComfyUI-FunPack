@@ -148,6 +148,10 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
         return {}, problems
 
     known = seen
+    # Built once. Rebuilding it per link made validating a chain of N slots do N
+    # dict rebuilds, and this runs on the event loop: the cost of checking a
+    # pipeline is paid by every other request the server is holding.
+    by_id = slots_by_id(slots)
 
     for slot in slots:
         slot_id, class_type = slot["id"], slot["node"]
@@ -166,7 +170,7 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
                 if source not in known:
                     problems.append(f"{slot_id}.{name} is fed by {source!r}, which is not in the pipeline")
                     continue
-                produced = schemas.outputs(slots_by_id(slots)[source]["node"])
+                produced = schemas.outputs(by_id[source]["node"])
                 if index >= len(produced):
                     problems.append(f"{slot_id}.{name} reads output {index} of {source!r}, "
                                     f"which has {len(produced)}")

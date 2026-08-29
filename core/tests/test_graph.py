@@ -212,6 +212,24 @@ def test_a_long_chain_is_walked_without_running_out_of_stack():
     assert len(problems) == 1
 
 
+def test_checking_a_big_pipeline_does_not_cost_more_than_reading_it():
+    # Slots arrive from a request and nothing caps how many, and build() runs on
+    # the event loop -- so the cost of checking one pipeline is paid by every
+    # other request the server is holding. Looking the source of each link up in
+    # a dict rebuilt per link made this quadratic: 20000 slots took 21 seconds.
+    # The budget is deliberately loose; it is there to catch a return to N^2,
+    # not to measure this machine.
+    import time
+    slots = [{"id": "s0", "node": "LoadModel", "inputs": {"name": "x"}}]
+    slots += [{"id": f"s{i}", "node": "AddLora",
+               "inputs": {"model": [f"s{i - 1}", 0], "strength": 1.0}}
+              for i in range(1, 20000)]
+    started = time.perf_counter()
+    _, problems = graph.build(slots, SCHEMAS)
+    assert problems == []
+    assert time.perf_counter() - started < 2.0
+
+
 def test_a_diamond_is_not_a_cycle():
     # Two paths reaching one source is ordinary wiring; a walk that marks a slot
     # seen without unmarking it would call this a loop.
