@@ -46,6 +46,10 @@ FROZEN = {
     "FunPackCLIPLoader": [
         "clip_name1", "clip_name2", "clip_name3", "clip_name4", "type", "device",
     ],
+    "FunPackSampler": [
+        "model", "positive", "negative", "latent", "seed", "steps", "cfg",
+        "sampler_name", "scheduler", "denoise", "settings",
+    ],
     "FunPackLoadModifiers": ["model", "settings"],
     "FunPackModifierSettings": ["settings"],
     "FunPackDecode": ["samples", "vae", "model", "audio_vae"],

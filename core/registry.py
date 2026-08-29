@@ -20,7 +20,7 @@ from .schema import SchemaError, validate
 FIELDS = {
     "id": "ID", "title": "TITLE", "mount": "MOUNT", "settings": "SETTINGS",
     "requires": "REQUIRES", "after": "AFTER", "before": "BEFORE",
-    "stage": "STAGE", "status": "STATUS", "nodes": "NODES", "traits": "TRAITS", "provides": "PROVIDES",
+    "stage": "STAGE", "status": "STATUS", "nodes": "NODES", "traits": "TRAITS", "provides": "PROVIDES", "hooks": "HOOKS",
 }
 
 

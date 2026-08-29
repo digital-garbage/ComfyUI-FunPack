@@ -332,6 +332,7 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
         mount=announcement.get("mount") or "",
         settings=settings,
         requires=_ids("requires"),
+        hooks=_ids("hooks"),
         after=_ids("after"),
         before=_ids("before"),
         stage=stage,

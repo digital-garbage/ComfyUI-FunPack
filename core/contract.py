@@ -66,6 +66,9 @@ class ModuleSpec:
     # name out of here and never defines one: it is a lookup, so a node can ask
     # "who can build one of these" without core learning what the thing is.
     provides: Dict[str, Callable] = field(default_factory=dict)
+    # Hook points a sampler must offer before this module can run. Empty means
+    # "any sampler will do", the same narrowing rule traits follow.
+    hooks: List[str] = field(default_factory=list)
     ui: Optional[str] = None                            # served path to its ui.js
     status: str = "experimental"                        # or "proven"
     source: str = ""                                    # dotted import path
