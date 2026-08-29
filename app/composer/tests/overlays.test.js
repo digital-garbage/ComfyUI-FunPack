@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { setupDom, teardownDom, key, fire } from "./_dom.js";
 import { EDGES, sectorAt, sectorInArc } from "../elements/wheel.js";
 
-let composer;
+let composer, liveCount, LADDER;
 let entries;
 let DEMOS;
 let ROOT_ID;
@@ -16,7 +16,7 @@ test.before(async () => {
   ({ composer, entries } = await import("../composer.js"));
   ({ DEMOS } = await import("../../catalogue/demos.js"));
   ({ ROOT_ID } = await import("../internals/portal.js"));
-  ({ baseOf } = await import("../internals/zlayer.js"));
+  ({ baseOf, liveCount, LADDER } = await import("../internals/zlayer.js"));
 });
 test.after(() => teardownDom());
 
@@ -498,8 +498,21 @@ test("every overlay keeps its z-index bound, not just windows", () => {
   }
 
   // Closing the oldest compacts every rung it was in; nothing may go stale.
-  const before = opened.map(({ handle }) => handle.node.style.zIndex);
-  if (opened.length > 1) opened.shift().handle.close();
+  //
+  // `before` used to be computed and then discarded with `void before`, so this
+  // checked only that survivors do not collide -- which is trivially true when
+  // nothing moves at all. It would have passed with zlayer's notify() removed,
+  // and notify() is the whole mechanism this names.
+  const before = new Map(opened.map(({ name, handle }) => [name, handle.node.style.zIndex]));
+  const closed = opened.length > 1 ? opened.shift() : null;
+
+  // Some demos close themselves as they are built (a wheel that resolves on
+  // creation), so calling close() on one is a no-op and nothing SHOULD move.
+  // Counting live claims says whether a slot was actually freed; asserting
+  // compaction after a no-op close failed on correct code.
+  const rungOf = (z) => LADDER[Math.floor(Number(z) / 100) - 1];
+  const closedRung = closed ? rungOf(before.get(closed.name)) : null;
+  const liveBefore = closedRung ? liveCount(closedRung) : 0;
 
   const seen = new Map();
   for (const { name, handle } of opened) {
@@ -507,6 +520,49 @@ test("every overlay keeps its z-index bound, not just windows", () => {
     assert.ok(!seen.has(z), `${name} collides with ${seen.get(z)} at z ${z}`);
     seen.set(z, name);
   }
-  void before;
+
+  const freed = Boolean(closed && closedRung && liveCount(closedRung) < liveBefore);
+  if (freed) {
+    // What "nothing goes stale" means, stated exactly: everything that sat
+    // ABOVE the closed overlay in its rung moved down by one, and everything
+    // below did not move at all.
+    //
+    // Not "the rung is contiguous from its base" -- earlier tests in this file
+    // leave live claims, so this test does not own the whole rung and a gap at
+    // the base is somebody else's slot, not a fault. That version failed on
+    // correct code.
+    const closedZ = Number(before.get(closed.name));
+    const rung = (z) => Math.floor(z / 100);
+
+    for (const { name, handle } of opened) {
+      const was = Number(before.get(name));
+      const now = Number(handle.node.style.zIndex);
+      if (rung(was) !== rung(closedZ)) {
+        assert.equal(now, was, `${name} moved although it is in another rung`);
+      } else if (was > closedZ) {
+        assert.equal(now, was - 1,
+          `${name} was above ${closed.name} and did not compact down`);
+      } else {
+        assert.equal(now, was, `${name} was below ${closed.name} and moved anyway`);
+      }
+    }
+  }
   for (const { handle } of opened) handle.destroy();
+
+  // The sweep above only checks compaction when a demo happened to leave a live
+  // claim, which is not something to rely on. Two overlays this test opens
+  // itself, so the invariant is exercised every run whatever the demos do.
+  const first = composer.popover.anchored({
+    anchor: anchor.node, body: composer.text.md({ text: "a" }) });
+  const second = composer.popover.anchored({
+    anchor: anchor.node, body: composer.text.md({ text: "b" }) });
+  const firstZ = Number(first.node.style.zIndex);
+  const secondZ = Number(second.node.style.zIndex);
+  assert.equal(secondZ, firstZ + 1, "two peers did not stack");
+
+  first.close();
+  assert.equal(Number(second.node.style.zIndex), firstZ,
+    "the survivor did not compact into the freed slot");
+  second.close();
+  anchor.destroy();
 });

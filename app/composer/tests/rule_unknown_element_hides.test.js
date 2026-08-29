@@ -112,10 +112,32 @@ test("a module is handed no way to touch the document", async () => {
     { load: async () => ({ setup: (ctx) => { context = ctx; } }) },
   );
 
-  assert.deepEqual(Object.keys(context).sort(), ["composer", "on", "shell", "values"]);
-  for (const value of Object.values(context)) {
-    assert.equal(value instanceof globalThis.Node, false, "no DOM node is reachable from a module");
+  assert.deepEqual(Object.keys(context).sort(), ["on", "shell", "values"]);
+
+  // Not "no value IS a node" -- that was the old assertion, and it passed while
+  // `composer` sat in this object handing out handles whose .node is a real
+  // element, reachable to the whole document through node.ownerDocument. The
+  // property that matters is that nothing here PRODUCES one either.
+  for (const [name, value] of Object.entries(context)) {
+    assert.equal(value instanceof globalThis.Node, false, `${name} is a DOM node`);
   }
+  assert.equal("composer" in context, false,
+    "an element factory is a way to obtain a DOM node");
+
+  // `on` is callable, and must hand back an unsubscribe rather than anything
+  // that leads to the page.
+  const off = context.on(() => {});
+  assert.equal(typeof off, "function");
+  assert.equal(off instanceof globalThis.Node, false);
+
+  // Nothing one level down is a node either -- the services are the other place
+  // a handle could have been tucked away.
+  for (const [name, value] of Object.entries(context.shell)) {
+    for (const [inner, member] of Object.entries(value)) {
+      assert.equal(member instanceof globalThis.Node, false, `shell.${name}.${inner}`);
+    }
+  }
+
   // The service surface is named one by one, so it can be reviewed.
   assert.deepEqual(Object.keys(context.shell).sort(), ["density", "theme"]);
 });

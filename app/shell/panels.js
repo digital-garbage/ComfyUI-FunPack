@@ -1,8 +1,22 @@
 // Turning announcements into panels.
 //
 // Everything a module can reach is decided here, and it is deliberately little:
-// { composer, values, on }. No DOM node, no document, no kit internals. A module
-// cannot style anything because it is never handed anything that could.
+// { values, on, shell }. No DOM node, no document, no element factory.
+//
+// `composer` used to be in that list, and it was the hole in the guarantee: a
+// factory returns a handle whose `.node` is a real element, so a module could
+// take one, style it, and reach the whole document through `node.ownerDocument`
+// -- no lint to evade, just the intended API. No module ever used it. Panels are
+// rendered from the DECLARATION, and a module that wants to draw something is a
+// module that should be declaring it instead.
+//
+// What is true, stated exactly: the kit hands a module nothing that touches the
+// DOM. What is NOT true, and must not be claimed: that a module CANNOT reach the
+// DOM. A ui.js is an ES module in the page realm and `document` is a global.
+// tools/kit_lint raises the cost of doing that accidentally; it is a discipline
+// check and not a boundary, and only real isolation (a worker, another realm)
+// would make it one. First-party modules in this repo are reviewed; a
+// third-party module would need that isolation before it could be trusted.
 
 import { composer } from "../composer/composer.js";
 import { renderPanel, defaultsOf } from "../composer/panel.js";
@@ -56,7 +70,6 @@ export async function mountAll(manifest, { load = (path) => import(path) } = {})
         // Kept, not discarded: setup() returns the unsubscribe from on(), and
         // dropping it means every re-mount leaves another live listener behind.
         teardown = ui.setup({
-          composer,
           values: {
             get: () => values.valuesOf(spec.id),
             set: (key, value) => values.set(spec.id, key, value),
