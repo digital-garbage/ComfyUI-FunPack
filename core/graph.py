@@ -55,6 +55,11 @@ class Schemas:
         found = self.of(class_type)
         return dict(found["inputs"]) if found else {}
 
+    def required(self, class_type: str) -> List[str]:
+        """Inputs that must be filled. Absent from a schema means none are."""
+        found = self.of(class_type)
+        return list(found.get("required", [])) if found else []
+
 
 def from_comfyui() -> Schemas:
     """Schemas read from whatever ComfyUI has registered, FunPack's and everyone
@@ -65,14 +70,20 @@ def from_comfyui() -> Schemas:
         if node is None:
             return None
         spec = node.INPUT_TYPES()
-        inputs = {}
+        inputs, required = {}, []
         for section in ("required", "optional"):
             for name, declared in (spec.get(section) or {}).items():
                 kind = declared[0] if isinstance(declared, (list, tuple)) else declared
                 # A list of choices IS the type for a combo; what matters here is
                 # only that it is not a socket, so it cannot be wired.
                 inputs[name] = kind if isinstance(kind, str) else "COMBO"
-        return {"inputs": inputs, "outputs": list(node.RETURN_TYPES)}
+                if section == "required":
+                    # Kept, because flattening the two sections loses the only
+                    # thing that says a slot is incomplete -- and a slot missing
+                    # a required input built clean and failed once queued.
+                    required.append(name)
+        return {"inputs": inputs, "outputs": list(node.RETURN_TYPES),
+                "required": required}
     return Schemas(lookup)
 
 
@@ -130,6 +141,11 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
                 inputs[name] = [source, index]
             else:
                 inputs[name] = value
+        for name in schemas.required(class_type):
+            if name not in inputs:
+                problems.append(f"{slot_id}: {class_type} needs {name!r} and nothing "
+                                f"fills it")
+
         prompt[slot_id] = {"class_type": class_type, "inputs": inputs}
 
     return prompt, problems

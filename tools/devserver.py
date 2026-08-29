@@ -71,6 +71,19 @@ from core import config, routes, serve as static  # noqa: E402
 P = config.UI_PREFIX
 
 
+def _pipeline_payload():
+    """The same answer the aiohttp route gives, so the preview shows what
+    ComfyUI would."""
+    from core import graph as graph_mod
+    slots = []
+    for _spec, make in routes.modules().providers("default_pipeline"):
+        slots = make()
+        break
+    prompt, incomplete = graph_mod.build(slots)
+    return {"slots": slots, "refused": [], "incomplete": incomplete,
+            "queueable": not incomplete}
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -78,7 +91,10 @@ class Handler(BaseHTTPRequestHandler):
 
         # The same manifest the aiohttp route serves, so what you see in the
         # browser here is what ComfyUI would send.
-        if path == P + "/api/log":
+        if path == P + "/api/pipeline":
+            body = json.dumps(_pipeline_payload()).encode()
+            served = static.Served(200, body, "application/json")
+        elif path == P + "/api/log":
             query = parse_qs(parsed.query)
             level = (query.get("level") or [None])[0]
             body = json.dumps({"levels": list(routes.log.LEVELS),

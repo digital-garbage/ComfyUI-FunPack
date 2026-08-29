@@ -87,7 +87,18 @@ class FunPackModifierSettings(io.ComfyNode):
         the only place it can be understood before the queue accepts it.
         """
         problems = cls._problems(settings)
-        return True if not problems else "FunPack Modifier Settings: " + "; ".join(problems)
+        if not problems:
+            return True
+        # With the guards off a bad value is the user's business, so the queue
+        # accepts it and the warning is said at execution instead.
+        import json as _json
+        try:
+            raw = _json.loads((settings or "").strip() or "{}")
+        except ValueError:
+            raw = {}
+        if cls._guards_off(raw):
+            return True
+        return "FunPack Modifier Settings: " + "; ".join(problems)
 
     @classmethod
     def _problems(cls, settings: str):
@@ -113,6 +124,14 @@ class FunPackModifierSettings(io.ComfyNode):
         return problems
 
     @classmethod
+    def _guards_off(cls, raw) -> bool:
+        """Asked by capability, so nothing here names the module that answers."""
+        if not isinstance(raw, dict):
+            return False
+        return any(answer(raw) for _spec, answer
+                   in registry_mod.current().providers(GUARDS_OFF))
+
+    @classmethod
     def execute(cls, settings: str) -> io.NodeOutput:
         text = (settings or "").strip() or "{}"
         try:
@@ -125,6 +144,7 @@ class FunPackModifierSettings(io.ComfyNode):
                 f"got {type(raw).__name__}.")
 
         specs = registry_mod.current().specs
+        guards_off = cls._guards_off(raw)
         problems, checked = [], {}
         for module_id, values in raw.items():
             spec = specs.get(module_id)
@@ -133,12 +153,13 @@ class FunPackModifierSettings(io.ComfyNode):
                 # nothing and a list of dead keys to remember.
                 problems.append(f"no module named {module_id!r} is installed.")
                 continue
-            clean, said = schema_mod.check_values(spec, values)
+            clean, said = schema_mod.check_values(spec, values, keep_bad=guards_off)
             checked[module_id] = clean
             problems.extend(said)
 
-        if problems:
-            raise RuntimeError("FunPack Modifier Settings:\n  " + "\n  ".join(problems))
+        # Full control reaches this node too: it is in the payload being checked.
+        schema_mod.refuse_or_warn(problems, "FunPack Modifier Settings",
+                                  guards_off=cls._guards_off(raw))
 
         named = ", ".join(sorted(checked)) or "nothing set"
         return io.NodeOutput(checked, f"settings for {named}")
@@ -202,6 +223,8 @@ class FunPackLoadModifiers(io.ComfyNode):
         # as guarded, the safe direction.
         full_control = any(answer(settings)
                            for _spec, answer in registry.providers(GUARDS_OFF))
+        # Read before the values are checked, because it changes what checking
+        # them DOES: refuse, or let it through and say so.
         if full_control:
             notes.append("full control is ON: modifiers are not guarded, and a "
                          "failing one will end the run. Any consequences of "
@@ -219,11 +242,12 @@ class FunPackLoadModifiers(io.ComfyNode):
         problems = []
         chosen = {}
         for spec in ordered:
-            values, said = schema_mod.check_values(spec, (settings or {}).get(spec.id))
+            values, said = schema_mod.check_values(
+                spec, (settings or {}).get(spec.id), keep_bad=full_control)
             chosen[spec.id] = values
             problems.extend(said)
-        if problems:
-            raise RuntimeError("FunPack Load Modifiers:\n  " + "\n  ".join(problems))
+        schema_mod.refuse_or_warn(problems, "FunPack Load Modifiers",
+                                  guards_off=full_control)
 
         for spec in ordered:
             values = chosen[spec.id]

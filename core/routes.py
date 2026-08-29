@@ -5,7 +5,7 @@ so the real routes can be mounted on a throwaway app in a test. The handlers are
 thin adapters over pure functions in `serve`.
 """
 
-from . import config, log, registry as registry_mod, serve as static
+from . import config, graph as graph_mod, log, registry as registry_mod, serve as static
 from .contract import CONTRACT_VERSION
 from .relations import order
 from .traits import split
@@ -91,6 +91,63 @@ def register(routes, prefix=None):
         raw = req.query.get("traits")
         traits = [t for t in raw.split(",") if t] if raw is not None else None
         return web.json_response(manifest(traits))
+
+    def _pipeline():
+        """Whatever module offers a default pipeline, or nothing.
+
+        Core does not hold one: a default pipeline is feature content, and the
+        point of it being data is that it can be replaced by other data.
+        """
+        for _spec, make in modules().providers("default_pipeline"):
+            return make()
+        return []
+
+    @routes.get(P + "/api/pipeline")
+    async def _pipeline_get(_req):
+        slots = _pipeline()
+        prompt, incomplete = graph_mod.build(slots)
+        return web.json_response({"slots": slots, "refused": [],
+                                  "incomplete": incomplete,
+                                  "queueable": not incomplete})
+
+    @routes.post(P + "/api/pipeline")
+    async def _pipeline_edit(req):
+        """Replace or remove a slot, and say what that did to the graph.
+
+        This is what makes "a built-in node can be swapped or removed" a thing
+        the running server can do rather than a property of a library nothing
+        calls. Refusals come back as data, so the app can show the reason.
+        """
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"problems": ["that is not JSON"]}, status=400)
+
+        slots = body.get("slots") or _pipeline()
+        action, slot_id = body.get("action"), body.get("slot")
+
+        if action == "replace":
+            slots, problems = graph_mod.replace(slots, slot_id, body.get("node"))
+        elif action == "remove":
+            slots, problems = graph_mod.remove(slots, slot_id)
+        elif action in (None, "check"):
+            problems = []
+        else:
+            return web.json_response({"problems": [f"unknown action {action!r}"]}, status=400)
+
+        # Two different things, kept apart. "refused" means the edit did not
+        # happen. "incomplete" means it did and the pipeline still is not ready
+        # -- an unset file picker on a fresh install is the normal case, not a
+        # failed edit, and an app that showed them together would say the wrong
+        # thing about both.
+        prompt, incomplete = graph_mod.build(slots)
+        return web.json_response({
+            "slots": slots,
+            "refused": problems,
+            "incomplete": incomplete,
+            "queueable": not (problems or incomplete),
+            "prompt": prompt if not (problems or incomplete) else None,
+        })
 
     @routes.get(P + "/api/log")
     async def _log(req):

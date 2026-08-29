@@ -286,3 +286,68 @@ def test_a_setting_no_module_declares_is_refused_at_this_node_too(registry, patc
     })
     with pytest.raises(RuntimeError, match="no setting named"):
         FunPackLoadModifiers.execute(patcher, settings={"alg": {"strenght": 4.0}})
+
+
+# --- full control turns off the refusals too --------------------------------
+
+def _full_control(registry):
+    """The real module, so the capability is the one the product uses."""
+    from core.contract import ModuleSpec
+    from modules.system import full_control
+    registry.specs["full_control"] = ModuleSpec(
+        id="full_control", title="Full control", mount="settings.general",
+        settings=full_control.SETTINGS, provides=full_control.PROVIDES)
+
+
+def test_full_control_lets_an_out_of_range_value_through(registry, patcher):
+    """The stated intent: a one-step schedule, a width the model cannot use --
+    let them, and say the consequences are theirs."""
+    from core import log
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    got = {}
+    registry.specs["m"] = _spec("m", lambda t, v, key: got.update(v) or "on", settings={
+        "amount": {"type": "float", "default": 0.4, "min": -1.0, "max": 1.0, "label": "A"},
+    })
+    _full_control(registry)
+
+    log._reset()
+    FunPackLoadModifiers.execute(patcher, settings={
+        "m": {"amount": 999.0},
+        "full_control": {"enabled": True},
+    })
+
+    assert got["amount"] == 999.0, "the value was refused with full control on"
+    assert any("consequences are yours" in r["message"] for r in log.history())
+
+
+def test_without_full_control_the_same_value_is_still_refused(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    registry.specs["m"] = _spec("m", lambda t, v, key: "on", settings={
+        "amount": {"type": "float", "default": 0.4, "min": -1.0, "max": 1.0, "label": "A"},
+    })
+    _full_control(registry)
+
+    with pytest.raises(RuntimeError, match="above its maximum"):
+        FunPackLoadModifiers.execute(patcher, settings={
+            "m": {"amount": 999.0}, "full_control": {"enabled": False}})
+
+
+def test_full_control_is_never_silent_about_what_it_allowed(registry, patcher):
+    """A run made without the guards has to be identifiable as one afterwards,
+    because the consequences land later than the choice."""
+    from core import log
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    registry.specs["m"] = _spec("m", lambda t, v, key: "on", settings={
+        "amount": {"type": "float", "default": 0.4, "min": -1.0, "max": 1.0, "label": "A"},
+    })
+    _full_control(registry)
+
+    log._reset()
+    FunPackLoadModifiers.execute(patcher, settings={
+        "m": {"amount": 999.0}, "full_control": {"enabled": True}})
+
+    said = [r for r in log.history() if r["level"] == log.WARNING]
+    assert said, "nothing was said about a value that was let through"

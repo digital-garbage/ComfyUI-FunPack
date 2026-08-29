@@ -194,6 +194,28 @@ def validate_traits(value: Any, module_id: str):
     return value
 
 
+def refuse_or_warn(problems: List[str], where: str, guards_off: bool) -> None:
+    """Raise, or say it and carry on.
+
+    Full control means the user asked for the raw behaviour -- a one-step
+    schedule, a width the model cannot use -- so a refusal becomes a warning.
+    It is never silent: a run made without the guards has to be identifiable as
+    one afterwards, because the consequences land later than the choice.
+    """
+    if not problems:
+        return
+    if not guards_off:
+        # RuntimeError, not SchemaError: SchemaError means a DECLARATION is
+        # wrong and the module does not load. This is a value supplied at run
+        # time, and the run is what stops.
+        raise RuntimeError(f"{where}:\n  " + "\n  ".join(problems))
+
+    from . import log
+    for problem in problems:
+        log.warning(where, f"{problem} -- allowed because full control is on, "
+                           f"and the consequences are yours")
+
+
 def validate_provides(value: Any, module_id: str) -> dict:
     """Named capabilities: {name: callable}."""
     if value is None:
@@ -211,12 +233,20 @@ def validate_provides(value: Any, module_id: str) -> dict:
     return dict(value)
 
 
-def check_values(spec, values: Any) -> Tuple[Dict[str, Any], List[str]]:
+def check_values(spec, values: Any, keep_bad: bool = False) -> Tuple[Dict[str, Any], List[str]]:
     """One module's live values, checked against its own declaration.
 
     Returns (values, problems). Anything missing falls back to the declared
     default, so a partial payload is fine; anything WRONG is reported rather than
-    coerced. v4 carried these as JSON in a string widget that nothing validated,
+    coerced.
+
+    `keep_bad` is full control: the problem is still reported, but the value is
+    passed through instead of being replaced by the default. Reporting a
+    complaint and then quietly using the default would be the worst of both --
+    the user asked for 999 and would get 0.4 with a warning about 999.
+
+    A key NO module declares is never kept, whatever the setting: nothing reads
+    it, so keeping it cannot honour the request, only disguise the typo. v4 carried these as JSON in a string widget that nothing validated,
     which is why it needed a hand-maintained mirror of every default and a list of
     keys that no longer meant anything.
     """
@@ -237,7 +267,8 @@ def check_values(spec, values: Any) -> Tuple[Dict[str, Any], List[str]]:
         problem = _value_problem(declared, key, value, spec.id)
         if problem:
             problems.append(problem)
-            continue
+            if not keep_bad:
+                continue
         clean[key] = value
     return clean, problems
 

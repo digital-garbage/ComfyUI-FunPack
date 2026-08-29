@@ -189,13 +189,15 @@ class FunPackSampler(io.ComfyNode):
         compatible, incompatible = traits_mod.split(offering, available)
         ordered, rejected = relations_mod.order(compatible)
 
+        guards_off = any(answer(settings or {}) for _spec, answer
+                         in registry.providers("guards_off"))
         values, problems = {}, []
         for spec in ordered:
-            clean, said = schema_mod.check_values(spec, (settings or {}).get(spec.id))
+            clean, said = schema_mod.check_values(
+                spec, (settings or {}).get(spec.id), keep_bad=guards_off)
             values[spec.id] = clean
             problems.extend(said)
-        if problems:
-            raise RuntimeError("FunPack Sampler:\n  " + "\n  ".join(problems))
+        schema_mod.refuse_or_warn(problems, "FunPack Sampler", guards_off=guards_off)
 
         chain, notes = chain_mod.build(ordered, values, ACCEPTS, dropped)
         for spec in incompatible:
