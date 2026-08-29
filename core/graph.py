@@ -87,6 +87,38 @@ def from_comfyui() -> Schemas:
     return Schemas(lookup)
 
 
+def shape_problems(slots: Any) -> List[str]:
+    """Whether this is even a pipeline, before anything indexes into it.
+
+    A payload arrives from HTTP, so "it parsed as JSON" is all that has been
+    established. Reading slot["id"] off a string raised a TypeError and the
+    route answered 500 in plain text -- which the app cannot turn into a reason
+    to show, and a refusal nobody can read is the failure this file exists to
+    avoid.
+
+    Separate from build() so a caller can refuse a malformed REQUEST before
+    reporting on an incomplete PIPELINE: those are different things and an app
+    showing them together says the wrong thing about both.
+    """
+    if not isinstance(slots, (list, tuple)):
+        return [f"a pipeline is a list of slots, not {type(slots).__name__}"]
+
+    problems: List[str] = []
+    for index, slot in enumerate(slots):
+        where = f"slot {index}"
+        if not isinstance(slot, dict):
+            problems.append(f"{where} is {type(slot).__name__}, not an object")
+            continue
+        for key in ("id", "node"):
+            value = slot.get(key)
+            if not isinstance(value, str) or not value.strip():
+                problems.append(f"{where} has no {key}")
+        inputs = slot.get("inputs")
+        if inputs is not None and not isinstance(inputs, dict):
+            problems.append(f"{where}'s inputs must be an object, not {type(inputs).__name__}")
+    return problems
+
+
 def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dict, List[str]]:
     """(prompt, problems) -- the graph ComfyUI queues, and why it should not.
 
@@ -96,6 +128,11 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
     schemas = schemas or from_comfyui()
     problems: List[str] = []
     prompt: Dict[str, dict] = {}
+
+    # The shape first, because everything below indexes into a slot.
+    problems = shape_problems(slots)
+    if problems:
+        return {}, problems
 
     # A set of ids cannot see a duplicate, and writing the prompt by id would
     # then silently overwrite one slot with the other -- losing a node, or

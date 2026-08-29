@@ -191,3 +191,22 @@ def test_removing_slots_one_by_one_never_resurrects_the_default(server):
     assert len(slots) < started_with, "nothing was actually removed"
     assert counts == sorted(counts, reverse=True), (
         f"the pipeline grew back part way through: {counts}")
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"action": "check", "slots": ["not-a-dict"]}, "not an object"),
+    ({"action": "check", "slots": [{"node": "LoadModel"}]}, "has no id"),
+    ({"action": "check", "slots": [{"id": "a"}]}, "has no node"),
+    ({"action": "check", "slots": [{"id": "a", "node": "X", "inputs": "nope"}]}, "must be an object"),
+    ({"action": "check", "slots": "a pipeline"}, "is a list of slots"),
+])
+def test_a_malformed_pipeline_comes_back_as_a_reason_not_a_500(server, payload, expected):
+    """A payload arrives from HTTP, so "it is a list" is all that has been
+    established. Reading slot["id"] off a string raised a TypeError and the
+    route answered 500 with plain text, which the app cannot parse into
+    anything to show."""
+    status, body = _request(server, "POST", "/funpack/api/pipeline", payload)
+    assert status in (200, 400), f"a malformed payload crashed the route: {status}"
+    reasons = body.get("refused", []) + body.get("problems", [])
+    assert any(expected in r for r in reasons), reasons
+    assert body.get("queueable") is False

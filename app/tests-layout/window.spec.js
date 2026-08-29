@@ -85,3 +85,50 @@ test("a window cannot be dragged somewhere it cannot be dragged back from", asyn
   expect(box.y).toBeLessThan(box.vh);
   expect(box.x + box.w).toBeGreaterThan(0);
 });
+
+test("a window cannot be resized until its own controls leave the screen", async ({ page }) => {
+  // The other half of "a window must stay reachable". Position was clamped and
+  // size was not, so a corner drag grew the window past every edge and carried
+  // its close and maximise buttons off with it -- 4937px wide in a 900px
+  // viewport, with Escape the only way back.
+  await page.setViewportSize({ width: 900, height: 700 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await openWindow(page, "resized");
+
+  const grip = page.locator(".cx-window-grip").first();
+  await grip.hover();
+  await page.mouse.down();
+  await page.mouse.move(5000, 5000, { steps: 5 });
+  await page.mouse.up();
+
+  const closeButton = page.locator('.cx-window [aria-label="Close"]').first();
+  await expect(closeButton, "the close button is off screen").toBeInViewport();
+
+  const box = await page.evaluate(() => {
+    const r = document.querySelector(".cx-window").getBoundingClientRect();
+    return { w: r.width, h: r.height, vw: innerWidth, vh: innerHeight };
+  });
+  expect(box.w, "the window is wider than the viewport").toBeLessThanOrEqual(box.vw);
+  expect(box.h, "the window is taller than the viewport").toBeLessThanOrEqual(box.vh);
+});
+
+test("a window cannot be resized into nothing", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await openWindow(page, "shrunk");
+
+  const grip = page.locator(".cx-window-grip").first();
+  await grip.hover();
+  await page.mouse.down();
+  await page.mouse.move(0, 0, { steps: 5 });
+  await page.mouse.up();
+
+  const box = await page.evaluate(() => {
+    const r = document.querySelector(".cx-window").getBoundingClientRect();
+    return { w: r.width, h: r.height };
+  });
+  expect(box.w, "the window collapsed to nothing").toBeGreaterThanOrEqual(100);
+  expect(box.h).toBeGreaterThanOrEqual(100);
+});

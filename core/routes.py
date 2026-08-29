@@ -131,6 +131,16 @@ def register(routes, prefix=None):
             slots = _pipeline()
         action, slot_id = body.get("action"), body.get("slot")
 
+        # A malformed payload is a bad REQUEST, not an unfinished pipeline --
+        # so it comes back as a refusal with a reason and a 400, rather than
+        # among the "you have not picked a model yet" notes.
+        malformed = graph_mod.shape_problems(slots)
+        if malformed:
+            return web.json_response(
+                {"refused": malformed, "incomplete": [], "queueable": False,
+                 "slots": [], "prompt": None},
+                status=400)
+
         if action == "replace":
             slots, problems = graph_mod.replace(slots, slot_id, body.get("node"))
         elif action == "remove":

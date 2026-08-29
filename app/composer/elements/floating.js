@@ -41,8 +41,17 @@ define("floating", "window", ({
   // because the one path that did not was the one that lost it.
   const GRABBABLE = 80;
   const TITLEBAR = 32;
+  const MIN_SIZE = 120;
 
   const clampIntoView = () => {
+    // SIZE first, because position is clamped against it. Resizing had no upper
+    // bound at all: a corner drag grew the window to 4937px and carried its own
+    // close and maximise buttons off the screen with it. Position was clamped
+    // and the controls were still unreachable, so "a window can never be put
+    // somewhere it cannot be recovered from" was only ever half true.
+    box.width = Math.max(MIN_SIZE, Math.min(box.width, window.innerWidth));
+    box.height = Math.max(MIN_SIZE, Math.min(box.height, window.innerHeight));
+
     // Math.max(0, ...) matters on a viewport narrower than the reachable strip:
     // without it the upper bound goes negative and the clamp pushes the window
     // further off rather than back on.
@@ -130,8 +139,18 @@ define("floating", "window", ({
   const stopResize = grip ? drag(grip, {
     onStart: () => { start = { ...box }; },
     onMove: ({ dx, dy }) => {
-      box.width = Math.max(220, start.width + dx);
-      box.height = Math.max(120, start.height + dy);
+      // Resizing may not push the window's own controls off the screen. The
+      // grip is bottom-right and the close button is top-right, so growing
+      // right takes the buttons with it -- a corner drag reached 4937px wide
+      // in a 900px viewport and left Escape as the only way out.
+      //
+      // Different rule from dragging on purpose: a window may be DRAGGED partly
+      // off (that is ordinary, and a grabbable strip is guaranteed), but it may
+      // not be GROWN past the edge it is anchored to.
+      const roomRight = Math.max(MIN_SIZE, window.innerWidth - Math.max(0, box.x));
+      const roomBelow = Math.max(MIN_SIZE, window.innerHeight - Math.max(0, box.y));
+      box.width = Math.min(Math.max(220, start.width + dx), roomRight);
+      box.height = Math.min(Math.max(120, start.height + dy), roomBelow);
       apply();
     },
     onEnd: () => remember(id, box),
