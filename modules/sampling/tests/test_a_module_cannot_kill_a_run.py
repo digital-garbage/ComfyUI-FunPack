@@ -282,3 +282,32 @@ def test_detail_is_offered_on_a_model_whose_latent_it_can_handle(patcher):
     patched, _status = FunPackLoadModifiers.execute(
         patcher, settings={"sharpen": {"enabled": True, "amount": 0.4}}).result
     assert len(patched.model_options.get("sampler_pre_cfg_function", [])) == 1
+
+
+def test_a_modifier_that_breaks_while_installing_is_not_called_absent(patcher, monkeypatch):
+    """Loaded, chosen, and broke on the way in.
+
+    The note beside it already said "failed to install"; the log line said "did
+    not load", which is a different thing and a different place to go looking.
+    """
+    from core import log
+    from modules.sampling.modifiers import nodes as mod
+
+    def explode(_patcher, _values, key=None):
+        raise RuntimeError("the wrapper is upside down")
+
+    # Named, because picking the first provider found lands on one whose traits
+    # exclude this model -- it is then never installed, nothing is logged, and a
+    # test asserting "nothing said did not load" passes having run nothing.
+    spec = mod.registry_mod.current().specs["sharpen"]
+    monkeypatch.setitem(spec.provides, mod.CAPABILITY, explode)
+
+    log._reset()
+    mod.FunPackLoadModifiers.execute(
+        patcher, settings={spec.id: {"enabled": True, "amount": 0.4}}).result
+
+    said = [r["message"] for r in log.history()]
+    # Asserted positively FIRST: "nothing says did not load" is also true of a
+    # test where the modifier was never chosen and nothing was logged at all.
+    assert any("failed while installing itself" in m for m in said), said
+    assert not any("did not load" in m for m in said), said

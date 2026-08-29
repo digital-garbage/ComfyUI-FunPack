@@ -259,7 +259,7 @@ class FunPackLoadModifiers(io.ComfyNode):
             except Exception as exc:             # noqa: BLE001
                 # Absent, and said out loud. A modifier that half-installed and
                 # carried on is how a run silently stops meaning what it says.
-                log.failed(f"{spec.id}.{CAPABILITY}", exc)
+                log.broke(f"{spec.id}.{CAPABILITY}", exc, "installing itself")
                 notes.append(f"{spec.id}: failed to install -- {type(exc).__name__}: {exc}")
                 continue
             if note is None:

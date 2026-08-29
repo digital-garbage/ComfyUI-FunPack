@@ -50,7 +50,7 @@ def collect(registry=None) -> Tuple[List[type], List[Tuple[str, str]]]:
                     where = f"{spec.id}.{name}"
                 schema = _schema_of(node)
             except Exception as exc:             # noqa: BLE001 -- absence, not a crash
-                log.failed(where, exc)
+                log.broke(where, exc, "describing itself")
                 rejected.append((where, f"{type(exc).__name__}: {exc}"))
                 continue
 

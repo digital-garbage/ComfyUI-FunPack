@@ -135,7 +135,7 @@ def contributed(model: Any, specs: Iterable[ModuleSpec]) -> Set[str]:
         try:
             offered = provider(model)
         except Exception as exc:                 # noqa: BLE001
-            log.failed(f"{spec.id}.TRAITS", exc)
+            log.broke(f"{spec.id}.TRAITS", exc, "working out this model's traits")
             continue
         if not offered:
             continue

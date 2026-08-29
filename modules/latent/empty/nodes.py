@@ -127,13 +127,7 @@ class FunPackEmptyLatent(io.ComfyNode):
                 # broke. Carrying on to the derivation would answer a question
                 # this module had already claimed, with a shape that is wrong in
                 # a way nothing downstream reports.
-                # Not log.failed: that word means "did not load", and this one
-                # loaded, claimed the model, and broke while working. Reporting
-                # it as absent sends whoever reads the log looking for an import
-                # error that never happened.
-                log.warning(f"{spec.id}.{CAPABILITY}",
-                            f"handles this model's latent and failed while building it "
-                            f"-- {type(exc).__name__}: {exc}")
+                log.broke(f"{spec.id}.{CAPABILITY}", exc, "building this model's latent")
                 raise RuntimeError(
                     f"{spec.id} handles this model's latent and failed to build it: "
                     f"{type(exc).__name__}: {exc}. Refusing to substitute a generic "

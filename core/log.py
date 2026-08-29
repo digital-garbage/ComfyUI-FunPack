@@ -97,6 +97,20 @@ def failed(what: str, exc: BaseException) -> dict:
     return warning(what, f"did not load -- {type(exc).__name__}: {exc}")
 
 
+def broke(what: str, exc: BaseException, doing: Optional[str] = None) -> dict:
+    """Something that DID load, and then failed while working.
+
+    Kept apart from `failed` because the two send a reader to different places.
+    "did not load" points at an import, a missing dependency, a module that was
+    never there -- and someone who reads that about a provider which loaded,
+    recognised the model and then raised goes looking for a failure that never
+    happened. Said three times in three files before it was noticed, so it is one
+    function now rather than three hand-written strings.
+    """
+    return warning(what, f"failed while {doing or 'working'} "
+                         f"-- {type(exc).__name__}: {exc}")
+
+
 def new_run() -> None:
     """A generation is starting: whatever was said once may be said again."""
     _said.clear()

@@ -114,7 +114,7 @@ def build(specs, values, accepts: Sequence[str], dropped: patching.Dropped,
         try:
             member = make(values.get(spec.id) or {}, tuple(offered))
         except Exception as exc:                 # noqa: BLE001
-            log.failed(f"{spec.id}.{capability}", exc)
+            log.broke(f"{spec.id}.{capability}", exc, "starting up for this run")
             notes.append(f"{spec.id}: failed to start -- {type(exc).__name__}: {exc}")
             continue
 

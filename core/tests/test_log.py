@@ -98,6 +98,27 @@ def test_failed_is_a_warning_because_it_means_a_feature_is_absent():
     assert "ValueError" in entry["message"] and "bad" in entry["message"]
 
 
+def test_broke_says_it_worked_and_then_did_not_which_is_a_different_search():
+    """The distinction, stated where it is defined.
+
+    "did not load" points a reader at an import; "failed while ..." points at
+    the work. Something that loaded, recognised its model and then raised was
+    reported as absent in three separate files before anyone noticed, which is
+    why this is one function and not three hand-written strings.
+    """
+    log.broke("some.module", ValueError("bad"), "building this model's latent")
+    entry = log.history()[-1]
+    assert entry["level"] == log.WARNING
+    assert "did not load" not in entry["message"]
+    assert "failed while building this model's latent" in entry["message"]
+    assert "ValueError" in entry["message"] and "bad" in entry["message"]
+
+
+def test_broke_still_says_something_useful_with_no_description():
+    log.broke("some.module", ValueError("bad"))
+    assert "failed while working" in log.history()[-1]["message"]
+
+
 # --- once, and what "once" means -------------------------------------------
 
 def test_once_says_it_a_single_time():

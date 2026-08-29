@@ -62,13 +62,7 @@ class FunPackDecode(io.ComfyNode):
                 # Same protocol as the empty latent: returning None means "not my
                 # model", so getting this far means it WAS and it broke. Falling
                 # back would decode a nested latent as if it were one tensor.
-                # Not log.failed: that word means "did not load", and this one
-                # loaded, claimed the model, and broke while working. Reporting
-                # it as absent sends whoever reads the log looking for an import
-                # error that never happened.
-                log.warning(f"{spec.id}.{CAPABILITY}",
-                            f"handles this model's decode and failed while building it "
-                            f"-- {type(exc).__name__}: {exc}")
+                log.broke(f"{spec.id}.{CAPABILITY}", exc, "decoding this model's latent")
                 raise RuntimeError(
                     f"{spec.id} handles this model's decode and failed: "
                     f"{type(exc).__name__}: {exc}. Refusing to decode it as a plain "

@@ -74,6 +74,31 @@ def test_a_provider_that_raises_does_not_silence_the_others():
     assert "temporal_latent" in found
 
 
+def test_a_provider_that_raises_is_not_reported_as_one_that_never_loaded():
+    """The log line, not only the surviving traits.
+
+    A traits provider checks whether the model is its own FIRST, so reaching the
+    exception means it loaded, recognised the model and then broke. Saying "did
+    not load" sends a reader after an import error that never happened -- and
+    losing a model's traits quietly narrows which modifiers are considered
+    compatible, so the log is the only thing pointing at the cause.
+    """
+    from core import log
+
+    def explodes(model):
+        raise RuntimeError("adaln lookup exploded")
+
+    log._reset()
+    traits_of(_Model(), [ModuleSpec(id="bad", title="B", mount="", traits=explodes)])
+
+    said = log.history()
+    assert said, "a provider broke and nothing was said"
+    assert not any("did not load" in r["message"] for r in said), \
+        [r["message"] for r in said]
+    assert any("failed while" in r["message"] for r in said), [r["message"] for r in said]
+    assert said[-1]["level"] == log.WARNING
+
+
 def test_declaring_no_traits_means_compatible_with_everything():
     # Narrowing, not opting in -- the property that lets a modifier reach models
     # FunPack knows nothing about.
