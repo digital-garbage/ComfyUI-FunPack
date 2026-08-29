@@ -91,13 +91,40 @@ def attention_override(name):
     def override(_func, *args, **kwargs):
         return inner(*args, **kwargs)
 
+    # Some backends carry a zero-copy path that takes the attention tensors still
+    # in their containers, and `wrap_attn` only offers it when the OVERRIDE has
+    # the attribute -- otherwise it unpacks each container and calls the slow way.
+    # Forgetting to forward it is invisible: the backend is selected, the maths is
+    # right, and the fast path it exists for is silently never used. ComfyUI's own
+    # `ModelPatcher.set_model_optimized_attention` forwards it for this reason.
+    container_function = getattr(chosen, "container_function", None)
+    if container_function is not None:
+        override.container_function = container_function
+
     return override
 
 
 def set_fp16_accumulation(enabled):
-    """torch's fp16 accumulation switch, or None where the build has no such knob."""
+    """torch's fp16 accumulation switch, or None where the build has no such knob.
+
+    PROCESS-WIDE, and there is no scoped version of it: torch has one flag for the
+    whole interpreter. So this cannot mean "for this model" however it is spelled
+    on a node -- a second loader setting it differently changes the first model's
+    maths, and because ComfyUI caches loader outputs the last value set outlives
+    the run that set it, reaching models loaded by core's own nodes.
+
+    It is therefore never changed silently. Every transition says so once, which
+    is the difference between a documented global and an invisible one. The real
+    fix is to move this to a machine-level setting, where its scope is honest.
+    """
     matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
     if matmul is None or not hasattr(matmul, "allow_fp16_accumulation"):
         return None
-    matmul.allow_fp16_accumulation = bool(enabled)
-    return bool(enabled)
+    wanted = bool(enabled)
+    before = bool(getattr(matmul, "allow_fp16_accumulation", False))
+    matmul.allow_fp16_accumulation = wanted
+    if before != wanted:
+        logging.warning(
+            "[FunPack] fp16 accumulation is now %s for EVERY model in this process, "
+            "not just this one -- torch has a single process-wide flag.", wanted)
+    return wanted

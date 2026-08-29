@@ -154,3 +154,51 @@ def test_an_unavailable_backend_does_not_silently_become_a_broken_override(monke
     from modules.loaders import common
     monkeypatch.setattr(attn, "get_attention_function", lambda name, default: None)
     assert common.attention_override("sage") is None
+
+
+def test_an_unknown_encoder_family_is_refused_not_silently_downgraded(monkeypatch):
+    """Falling back to STABLE_DIFFUSION loads against the wrong family and
+    reports success. A family mismatch here reads as an unrelated fault."""
+    from modules.loaders.clip import nodes
+    with pytest.raises(RuntimeError, match="no encoder family"):
+        nodes.FunPackCLIPLoader.execute(clip_name1="e.safetensors", type="not_a_family")
+
+
+def test_changing_the_process_wide_fp16_flag_is_never_silent(monkeypatch, caplog):
+    """torch has ONE flag for the interpreter, so this cannot mean "for this
+    model". A second loader setting it differently changes the first model's
+    maths, and ComfyUI's loader caching means the last value outlives its run."""
+    import logging
+    import torch
+    from modules.loaders import common
+
+    class FakeMatmul:
+        allow_fp16_accumulation = False
+
+    fake = FakeMatmul()
+    monkeypatch.setattr(torch.backends, "cuda", type("C", (), {"matmul": fake}))
+
+    with caplog.at_level(logging.WARNING):
+        assert common.set_fp16_accumulation(True) is True
+    assert fake.allow_fp16_accumulation is True
+    assert any("EVERY model in this process" in r.getMessage() for r in caplog.records)
+
+    # No transition, nothing said.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        common.set_fp16_accumulation(True)
+    assert not caplog.records
+
+    # And turning it back off is a transition too: it is another model's setting
+    # being undone.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        common.set_fp16_accumulation(False)
+    assert caplog.records
+
+
+def test_a_torch_build_without_the_flag_reports_that_rather_than_pretending():
+    import torch
+    from modules.loaders import common
+    if getattr(getattr(torch.backends, "cuda", None), "matmul", None) is None:
+        assert common.set_fp16_accumulation(True) is None

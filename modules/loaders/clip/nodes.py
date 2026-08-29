@@ -90,8 +90,17 @@ class FunPackCLIPLoader(io.ComfyNode):
         if not names:
             raise RuntimeError("FunPack CLIP Loader: pick at least one text encoder file.")
 
-        clip_type = getattr(comfy.sd.CLIPType, str(type).upper(),
-                            comfy.sd.CLIPType.STABLE_DIFFUSION)
+        # Refuse rather than repair. Falling back to STABLE_DIFFUSION loads the
+        # encoder against the wrong family and reports success, and a family
+        # mismatch in this project reads as an unrelated phantom fault rather
+        # than as a family error. Reachable when CLIPType renames a member that
+        # a saved workflow still names.
+        clip_type = getattr(comfy.sd.CLIPType, str(type).upper(), None)
+        if clip_type is None:
+            known = ", ".join(sorted(t.name.lower() for t in comfy.sd.CLIPType))
+            raise RuntimeError(
+                f"FunPack CLIP Loader: this ComfyUI has no encoder family {type!r}. "
+                f"Known families: {known}.")
         model_options = {}
         if device == "cpu":
             model_options["load_device"] = model_options["offload_device"] = torch.device("cpu")

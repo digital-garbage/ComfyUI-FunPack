@@ -117,3 +117,40 @@ def test_a_model_comfy_could_not_identify_fails_at_the_loader(comfyui, monkeypat
         nodes.FunPackDiffusionModelLoader.execute(
             model_name="actually_a_vae.safetensors", weight_dtype="default",
             compute_dtype="default", attention="default")
+
+
+def test_a_backends_zero_copy_path_is_forwarded_to_the_override(comfyui, monkeypatch):
+    """`wrap_attn` offers the container fast path only when the OVERRIDE carries
+    `container_function`. Dropping it is invisible -- the backend is selected and
+    the maths is right, while the path it exists for is never used. ComfyUI's own
+    set_model_optimized_attention forwards it for exactly this reason."""
+    from comfy.ldm.modules import attention as attn
+    from modules.loaders import common
+
+    def backend(*args, **kwargs):
+        raise AssertionError("took the slow path")
+
+    backend.__wrapped__ = lambda *a, **k: "slow"
+    backend.container_function = lambda *a, **k: "fast"
+
+    monkeypatch.setattr(attn, "get_attention_function", lambda name, default: backend)
+    override = common.attention_override("kitchen")
+
+    assert getattr(override, "container_function", None) is not None
+    assert override.container_function() == "fast"
+
+
+def test_a_backend_without_a_container_path_does_not_grow_one(comfyui, monkeypatch):
+    from comfy.ldm.modules import attention as attn
+    from modules.loaders import common
+
+    def backend(*args, **kwargs):
+        return "x"
+
+    backend.__wrapped__ = lambda *a, **k: "x"
+    monkeypatch.setattr(attn, "get_attention_function", lambda name, default: backend)
+
+    override = common.attention_override("plain")
+    # hasattr is what wrap_attn tests, so an attribute set to None would still
+    # divert every call into a container path that does not exist.
+    assert not hasattr(override, "container_function")
