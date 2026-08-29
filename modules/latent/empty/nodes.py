@@ -8,8 +8,15 @@ Two paths, and the order matters:
    reports, and its length snaps to a model-specific frame grid. So a model module
    may provide `empty_latent` and build it itself.
 2. **Otherwise it is derived** from `latent_format`, which is correct for every
-   single-tensor model: SDXL (4ch, /8), Wan21 (16ch, /8, /4) and LTXV (128ch,
-   /32, /8) all come out right, including models that ship after this is written.
+   single-tensor model with a spatial latent: SDXL (4ch, /8), Wan21 (16ch, /8,
+   /4) and LTXV (128ch, /32, /8) all come out right, including models that ship
+   after this is written.
+
+A one-axis latent is neither: its length is not published anywhere, and the same
+rank means seconds of audio for StableAudio and tokens of geometry for
+Hunyuan3D. That is refused here rather than guessed, on the same reasoning as
+point 1 -- deriving it produced a latent a thousandth of the length asked for and
+reported success.
 
 The provider protocol, and it matters: **return None for "not my model", and let
 anything else raise.** A provider decides whether it recognises the model FIRST,
@@ -62,7 +69,17 @@ def derive(model, width, height, length, batch_size):
         frames = ((max(1, length) - 1) // temporal) + 1
         samples = torch.zeros([batch_size, channels, frames, h, w], device=device)
     elif rank == 1:
-        samples = torch.zeros([batch_size, channels, max(1, length)], device=device)
+        # Refused, not guessed. A one-axis latent's length is not derivable from
+        # anything the format publishes: core's own EmptyLatentAudio turns
+        # SECONDS into samples with a rate and a hop that live in the node
+        # (44100 and 2048), not in latent_format, and EmptyLatentHunyuan3Dv2
+        # counts tokens for a resolution -- the same rank meaning two unrelated
+        # things. Building `length` samples produced a latent three orders of
+        # magnitude short of a soundtrack and called it a success.
+        raise RuntimeError(
+            "This model's latent has a single axis whose length is not derivable "
+            "from what the model publishes -- seconds, sample rate and hop are "
+            "not in its latent format. A module for this model can supply it.")
     else:
         samples = torch.zeros([batch_size, channels, h, w], device=device)
 
@@ -87,7 +104,9 @@ class FunPackEmptyLatent(io.ComfyNode):
                 io.Int.Input("width", default=768, min=16, max=16384, step=16),
                 io.Int.Input("height", default=512, min=16, max=16384, step=16),
                 io.Int.Input("length", default=1, min=1, max=16384,
-                             tooltip="Frames. Ignored by models whose latent has no time axis."),
+                             tooltip="Frames. Ignored by models whose latent has no "
+                                     "time axis, and it is frames -- not seconds and "
+                                     "not samples."),
                 io.Int.Input("batch_size", default=1, min=1, max=4096, optional=True),
             ],
             outputs=[

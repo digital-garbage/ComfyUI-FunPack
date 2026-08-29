@@ -230,15 +230,16 @@ def test_wan22_matches_what_comfys_own_node_produces():
     assert tuple(ours["samples"].shape) == tuple(theirs.shape)
 
 
-def test_every_model_comfyui_ships_gets_a_latent_of_the_rank_it_asked_for():
+def test_every_spatial_model_comfyui_ships_gets_a_latent_matching_its_own_format():
     """The whole catalogue, not a list somebody maintained.
 
-    A model family is supported here when its latent comes out right, and the
-    derivation reads the format rather than knowing the family -- so the honest
-    test is every config upstream ships, including the ones added after this was
-    written. A family needing more than its format publishes has to say so with
-    a module of its own; H3 is the only one that does, and it is skipped here
-    because its latent is not a single tensor.
+    What this proves and what it does not, said plainly. It proves the
+    derivation agrees with what each model PUBLISHES, for every config upstream
+    ships including ones added after this was written. It does not prove the
+    published format is the whole truth: MiniMax H3 reports 32 channels for a
+    video branch that has 24, and passes this sweep while being wrong. A model
+    whose real latent differs from its format needs a module, and H3's own tests
+    are where that is checked -- so passing here is a floor, not a certificate.
     """
     import comfy.supported_models as sm
     from modules.latent.empty.nodes import derive
@@ -249,7 +250,7 @@ def test_every_model_comfyui_ships_gets_a_latent_of_the_rank_it_asked_for():
         if fmt is None:
             continue
         rank = getattr(fmt, "latent_dimensions", 2)
-        if rank not in (1, 2, 3):
+        if rank not in (2, 3):
             continue
         out = derive(_Model(cfg), 832, 480, 81, 1)
         shape = tuple(out["samples"].shape)
@@ -261,3 +262,27 @@ def test_every_model_comfyui_ships_gets_a_latent_of_the_rank_it_asked_for():
         checked += 1
 
     assert checked > 80, f"only {checked} model configs were reached; upstream moved"
+
+
+def test_a_one_axis_latent_is_refused_rather_than_guessed():
+    """Every rank-1 family upstream ships, by name at the time of writing and by
+    enumeration after it.
+
+    The length of a single-axis latent is in the NODE that builds it, never in
+    the format: core turns seconds into samples with a 44100 rate and a 2048 hop
+    that latent_format does not carry, and the same rank means tokens of geometry
+    for Hunyuan3D. Deriving `length` samples gave a StableAudio latent of 1 where
+    core's own default is 1024 -- three orders of magnitude short, reported as
+    success, which is the shape of failure this node exists to refuse.
+    """
+    import comfy.supported_models as sm
+    from modules.latent.empty.nodes import derive
+
+    families = [cfg for cfg in sm.models
+                if getattr(getattr(cfg, "latent_format", None), "latent_dimensions", 2) == 1]
+    assert {c.__name__ for c in families} >= {"StableAudio", "ACEStep15", "Hunyuan3Dv2"}, (
+        [c.__name__ for c in families])
+
+    for cfg in families:
+        with pytest.raises(RuntimeError, match="not derivable"):
+            derive(_Model(cfg), 832, 480, 81, 1)
