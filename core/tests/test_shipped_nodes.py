@@ -43,6 +43,15 @@ def test_every_shipped_node_is_a_real_comfy_node(shipped, comfyui):
 # breaks graphs that already exist, so this test is meant to FAIL on a rename and
 # make that a decision rather than an accident.
 FROZEN = {
+    "FunPackCLIPLoader": [
+        "clip_name1", "clip_name2", "clip_name3", "clip_name4", "type", "device",
+    ],
+    "FunPackDiffusionModelLoader": [
+        "model_name", "weight_dtype", "compute_dtype", "attention", "fp16_accumulation",
+    ],
+    "FunPackLoraLoader": [
+        "model", "lora_name", "strength_model", "clip", "strength_clip",
+    ],
     "FunPackVAELoader": ["vae_name", "dtype"],
 }
 
