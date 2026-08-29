@@ -28,7 +28,8 @@ import json
 
 from comfy_api.latest import io
 
-from ..._core import log, registry as registry_mod, schema as schema_mod
+from ..._core import (log, registry as registry_mod, relations as relations_mod,
+                      schema as schema_mod)
 
 CAPABILITY = "modifier"
 
@@ -139,7 +140,7 @@ class FunPackLoadModifiers(io.ComfyNode):
     @classmethod
     def execute(cls, model, settings=None) -> io.NodeOutput:
         from ..._core import traits as traits_mod
-        from core.relations import order
+        order = relations_mod.order
 
         if settings is not None and not isinstance(settings, dict):
             raise RuntimeError(

@@ -11,8 +11,8 @@ leading underscore keeps it out of the module scan.
 """
 
 try:                                             # root on sys.path: tests, dev server
-    from core import log, registry, schema, traits
+    from core import contract, log, registry, relations, schema, traits
 except ImportError:                              # inside ComfyUI: a subpackage of the pack
-    from ..core import log, registry, schema, traits
+    from ..core import contract, log, registry, relations, schema, traits
 
-__all__ = ["log", "registry", "schema", "traits"]
+__all__ = ["contract", "log", "registry", "relations", "schema", "traits"]

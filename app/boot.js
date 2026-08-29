@@ -29,12 +29,21 @@ async function start() {
   }
 
   const { mounted, hidden } = await mountAll(manifest);
-  console.info(`[FunPack] ${mounted.length} module(s) mounted`,
-    hidden.length ? `· ${hidden.length} hidden` : "");
-  for (const { id, why } of hidden) console.warn(`[FunPack] ${id} is hidden: ${why}`);
+  const failed = manifest.failed || [];
 
-  // Handy while there is no generate button to send them anywhere.
-  window.FunPack = { manifest, values: allValues, mounted: mounted.map((m) => m.id), hidden };
+  console.info(`[FunPack] ${mounted.length} module(s) mounted`,
+    hidden.length ? `· ${hidden.length} hidden` : "",
+    failed.length ? `· ${failed.length} failed to load` : "");
+  for (const { id, why } of hidden) console.warn(`[FunPack] ${id} is hidden: ${why}`);
+  // These never reached the manifest, so no panel could be missing "in a way
+  // the user notices" -- which is exactly why they have to be said. A module
+  // that failed to import looks identical to one nobody installed.
+  for (const { where, why } of failed) console.warn(`[FunPack] ${where} did not load: ${why}`);
+
+  window.FunPack = {
+    manifest, values: allValues, failed, hidden,
+    mounted: mounted.map((m) => m.id),
+  };
 }
 
 start();

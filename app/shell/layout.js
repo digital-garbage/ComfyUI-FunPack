@@ -28,8 +28,11 @@ export function build(root) {
   // The mount point IS the contract with modules; the region behind it can be
   // rearranged freely as long as the name survives.
   offer("settings.general", general.body);
-  offer("generation.timing", generation.body);
   offer("generation.model", generation.body);
+  offer("generation.latent", generation.body);
+  offer("generation.sampling", generation.body);
+  offer("generation.timing", generation.body);
+  offer("generation.post", generation.body);
 
   return { general, generation, page };
 }
