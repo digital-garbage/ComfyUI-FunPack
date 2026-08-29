@@ -13,6 +13,11 @@ two consequences worth stating:
   sampler can own them -- which is the whole architectural claim, made physical.
 * `ModelPatcher.clone()` copies the wrapper lists per key, so installing on the
   clone cannot touch the model everyone else is holding.
+* A module never gets the real patcher. It gets one that guards every hook it
+  installs, so a modifier that raises mid-sampling is dropped for the rest of
+  that run instead of ending it. Catching a failure to INSTALL was never the
+  hard part: the one that costs a rental is the hook that works at step 0 and
+  raises at step 3, after the GPU time is spent.
 
 That second point protects the ORIGINAL, and on its own it does not stop this
 node's own output being fed back in. `add_wrapper_with_key` APPENDS to a list
@@ -32,6 +37,9 @@ from ..._core import (log, patching, registry as registry_mod,
                       relations as relations_mod, schema as schema_mod)
 
 CAPABILITY = "modifier"
+
+# Anything answering this decides whether the foundation's guards step aside.
+GUARDS_OFF = "guards_off"
 
 # Namespaced so removing ours never touches a wrapper somebody else installed.
 KEY_PREFIX = "funpack."
@@ -140,6 +148,21 @@ class FunPackLoadModifiers(io.ComfyNode):
         patched = model.clone()
         stripped = patching.strip(patched, KEY_PREFIX)
         applied, notes = [], []
+
+        # One per run, so a long session reports every generation that went
+        # inert rather than only the first one after a restart.
+        dropped = patching.Dropped()
+        patched.funpack_dropped = dropped
+
+        # Asked for by capability, so nothing here names the module that answers
+        # and a build without it installed has nobody saying yes -- which reads
+        # as guarded, the safe direction.
+        full_control = any(answer(settings)
+                           for _spec, answer in registry.providers(GUARDS_OFF))
+        if full_control:
+            notes.append("full control is ON: modifiers are not guarded, and a "
+                         "failing one will end the run. Any consequences of "
+                         "these settings are yours.")
         if stripped:
             notes.append(f"replaced {stripped} modifier(s) already on this model")
 
@@ -162,8 +185,10 @@ class FunPackLoadModifiers(io.ComfyNode):
         for spec in ordered:
             values = chosen[spec.id]
             install = spec.provides[CAPABILITY]
+            key = KEY_PREFIX + spec.id
+            guarded = patching.GuardedPatcher(patched, key, dropped, guarding=not full_control)
             try:
-                note = install(patched, values, key=KEY_PREFIX + spec.id)
+                note = install(guarded, values, key=key)
             except Exception as exc:             # noqa: BLE001
                 # Absent, and said out loud. A modifier that half-installed and
                 # carried on is how a run silently stops meaning what it says.
@@ -174,6 +199,10 @@ class FunPackLoadModifiers(io.ComfyNode):
                 continue                          # the module decided it is off
             applied.append(spec.id)
             notes.append(f"{spec.id}: {note}")
+            for name in guarded.unguarded:
+                # Named rather than assumed safe: this hook shape has no known
+                # neutral result, so a failure inside it can still end the run.
+                notes.append(f"{spec.id}: {name} could not be guarded")
 
         for spec in incompatible:
             notes.append(f"{spec.id}: needs {', '.join(traits_mod.missing_for(spec, available))}")

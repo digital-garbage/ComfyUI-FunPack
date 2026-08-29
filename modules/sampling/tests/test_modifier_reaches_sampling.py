@@ -23,12 +23,7 @@ def registry(monkeypatch):
     from core import registry as registry_mod
     from core.contract import ModuleSpec
 
-    class Fake:
-        specs = {}
-        failed = []
-
-    fake = Fake()
-    fake.specs = {}
+    fake = registry_mod.Registry()
     monkeypatch.setattr(registry_mod, "current", lambda rescan=False: fake)
     return fake, ModuleSpec
 

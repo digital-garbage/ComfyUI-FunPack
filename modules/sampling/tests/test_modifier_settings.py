@@ -20,8 +20,8 @@ def registry(monkeypatch):
     from core import registry as registry_mod
     from core.contract import ModuleSpec
 
-    class Fake:
-        specs = {
+    fake = registry_mod.Registry()
+    fake.specs = {
             "alg": ModuleSpec(id="alg", title="ALG", mount="", settings={
                 "enabled": {"type": "bool", "default": False, "label": "On"},
                 "strength": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "label": "S"},
@@ -29,10 +29,7 @@ def registry(monkeypatch):
                 "mode": {"type": "enum", "default": "beat", "label": "M", "options": [
                     {"value": "beat", "label": "Beat"}, {"value": "flat", "label": "Flat"}]},
             }),
-        }
-        failed = []
-
-    fake = Fake()
+    }
     monkeypatch.setattr(registry_mod, "current", lambda rescan=False: fake)
     return fake
 

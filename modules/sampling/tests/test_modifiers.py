@@ -33,17 +33,17 @@ def _spec(module_id, install, requires=(), settings=None, stage="sampling"):
 
 @pytest.fixture
 def registry(monkeypatch):
-    """A registry holding only what a test puts in it."""
+    """A REAL Registry holding only what a test puts in it.
+
+    Not a hand-rolled stand-in. One of those was missing `providers()` and every
+    test using it passed until the code started calling that method -- a fixture
+    cleaner than the real thing tests the fixture, not the code.
+    """
     from core import registry as registry_mod
 
-    class Fake:
-        def __init__(self):
-            self.specs = {}
-            self.failed = []
-
-    fake = Fake()
-    monkeypatch.setattr(registry_mod, "current", lambda rescan=False: fake)
-    return fake
+    empty = registry_mod.Registry()
+    monkeypatch.setattr(registry_mod, "current", lambda rescan=False: empty)
+    return empty
 
 
 # --- installing ------------------------------------------------------------
