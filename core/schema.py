@@ -136,8 +136,12 @@ def validate_nodes(value: Any, module_id: str) -> list:
     outside it. The ComfyUI-specific checks (a FunPack-prefixed node_id, and no
     two modules claiming one id) happen in `core.nodes`, where ComfyUI exists.
     """
+    if value is None:
+        return []
     if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
-        raise SchemaError(f"module {module_id!r}'s nodes must be a list.")
+        raise SchemaError(
+            f"module {module_id!r}'s nodes must be a list; got {value!r}."
+        )
 
     for node in value:
         if not isinstance(node, type):
@@ -200,7 +204,9 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
     settings = {key: validate_setting(key, spec, raw) for key, spec in raw.items()}
 
     def _ids(name: str) -> list:
-        value = announcement.get(name) or []
+        value = announcement.get(name)
+        if value is None:
+            return []
         if isinstance(value, str) or not isinstance(value, (list, tuple)):
             raise SchemaError(f"module {announcement['id']!r}'s {name} must be a list.")
         for item in value:
@@ -209,7 +215,7 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
         return list(value)
 
     return ModuleSpec(
-        nodes=validate_nodes(announcement.get("nodes") or [], announcement["id"]),
+        nodes=validate_nodes(announcement.get("nodes"), announcement["id"]),
         traits=validate_traits(announcement.get("traits"), announcement["id"]),
         id=announcement["id"],
         title=announcement["title"],

@@ -60,6 +60,14 @@ def has_block(model: Any, class_name: str) -> bool:
     The structural probe model modules are expected to use. It asks "does this
     model have the thing I touch", which is the question a modifier actually has
     -- unlike "is this H3", it stays true for anything built the same way.
+
+    Pass a DOTTED name to require the defining module too
+    (`"comfy.ldm.minimax.model.AdalnProj"`, matched on the tail of the module
+    path). A bare name matches on the class name alone, which is fine for
+    something distinctive like `AdalnProj` and actively wrong for names as
+    common as `Attention`, `MLP` or `Block` -- those collide across unrelated
+    architectures, and a false positive here enables a modifier on a model it
+    was never written for. When in doubt, qualify.
     """
     root = getattr(getattr(model, "model", None), "diffusion_model", None)
     if root is None:
@@ -68,8 +76,20 @@ def has_block(model: Any, class_name: str) -> bool:
         modules = root.modules()
     except Exception:                            # noqa: BLE001 -- not an nn.Module
         return False
+
+    if "." in class_name:
+        wanted_module, _, wanted = class_name.rpartition(".")
+    else:
+        wanted_module, wanted = "", class_name
+
     for sub in modules:
-        if type(sub).__name__ == class_name:
+        kind = type(sub)
+        if kind.__name__ != wanted:
+            continue
+        if not wanted_module:
+            return True
+        origin = getattr(kind, "__module__", "") or ""
+        if origin == wanted_module or origin.endswith("." + wanted_module):
             return True
     return False
 

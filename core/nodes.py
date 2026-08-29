@@ -38,9 +38,16 @@ def collect(registry=None) -> Tuple[List[type], List[Tuple[str, str]]]:
     # Sorted so the set of registered nodes does not depend on filesystem order.
     for spec in sorted(reg.specs.values(), key=lambda s: s.id):
         for node in spec.nodes:
-            name = getattr(node, "__name__", repr(node))
-            where = f"{spec.id}.{name}"
+            # Named inside the guard, and starting from a name that cannot fail.
+            # `getattr(node, "__name__", repr(node))` looks safe and is not:
+            # Python evaluates the default eagerly, so a class whose metaclass
+            # raises in __repr__ threw BEFORE the try and took every other
+            # module's nodes with it -- the one thing this loop exists to stop.
+            where = f"{spec.id}.<unnamed node>"
             try:
+                name = getattr(node, "__name__", None)
+                if isinstance(name, str) and name:
+                    where = f"{spec.id}.{name}"
                 schema = _schema_of(node)
             except Exception as exc:             # noqa: BLE001 -- absence, not a crash
                 log.failed(where, exc)

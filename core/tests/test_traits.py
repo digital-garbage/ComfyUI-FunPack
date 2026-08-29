@@ -161,3 +161,39 @@ def test_traits_describe_the_tensor_not_an_assumed_modality(real_configs):
 
     assert "temporal_latent" in read(qwen)
     assert "temporal_latent" in read(ltxv)
+
+
+def test_a_bare_probe_name_collides_across_architectures():
+    """`Attention`, `MLP`, `Block` are not distinctive. A bare name matches any
+    of them, which is why a probe that needs to be sure must qualify."""
+
+    class Root:
+        def modules(self):
+            # A class named Attention, but from an unrelated architecture.
+            other = type("Attention", (), {})
+            other.__module__ = "somewhere.else.entirely"
+            return [self, other()]
+
+    class Model:
+        class model:
+            diffusion_model = Root()
+
+    assert has_block(Model(), "Attention")           # the collision, unqualified
+    assert not has_block(Model(), "comfy.ldm.minimax.model.Attention")
+
+
+def test_a_qualified_probe_matches_its_own_architecture():
+    class Root:
+        def modules(self):
+            target = type("AdalnProj", (), {})
+            target.__module__ = "comfy.ldm.minimax.model"
+            return [self, target()]
+
+    class Model:
+        class model:
+            diffusion_model = Root()
+
+    assert has_block(Model(), "comfy.ldm.minimax.model.AdalnProj")
+    assert has_block(Model(), "minimax.model.AdalnProj")     # tail match
+    assert has_block(Model(), "AdalnProj")                   # distinctive enough
+    assert not has_block(Model(), "other.pack.AdalnProj")
