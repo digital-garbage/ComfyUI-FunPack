@@ -114,11 +114,19 @@ def _validate_numeric(spec: dict, where: str, kind: str) -> None:
         raise SchemaError(f"{where} is a {kind} but its default is {default!r}.")
     if kind == "int" and not isinstance(default, int):
         raise SchemaError(f"{where} is an int but its default is a float.")
+    # The same check the OVERRIDE path makes, on the door nobody was watching.
+    # A caller-supplied NaN was refused while a module's own NaN default sailed
+    # through -- and a default is the value MOST runs use, because a setting
+    # nobody touches never reaches the override check at all.
+    if not math.isfinite(default):
+        raise SchemaError(f"{where}'s default must be a finite number, got {default!r}.")
 
     low, high = spec.get("min"), spec.get("max")
     for name, bound in (("min", low), ("max", high)):
         if bound is not None and (isinstance(bound, bool) or not isinstance(bound, (int, float))):
             raise SchemaError(f"{where}'s {name} must be a number.")
+        if bound is not None and not math.isfinite(bound):
+            raise SchemaError(f"{where}'s {name} must be a finite number, got {bound!r}.")
     if low is not None and high is not None and low > high:
         raise SchemaError(f"{where} has min {low} above max {high}.")
     if low is not None and default < low:

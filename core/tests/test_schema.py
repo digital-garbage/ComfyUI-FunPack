@@ -206,3 +206,32 @@ def test_the_manifest_carries_what_the_ui_needs():
 
 def test_the_contract_has_a_version():
     assert isinstance(CONTRACT_VERSION, int)
+
+
+# --- the door nobody was watching ------------------------------------------
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_modules_own_default_cannot_be_non_finite(bad):
+    """The override path refused NaN while a module's own default sailed
+    through -- and a default is the value MOST runs use, because a setting
+    nobody names never reaches the override check at all. `sigma > nan` is
+    False at every step, so it becomes a permanent silent no-op."""
+    with pytest.raises(SchemaError, match="finite"):
+        validate({"id": "m", "title": "M", "mount": "x", "settings": {
+            "strength": {"type": "float", "default": bad, "min": 0.0, "max": 1.0,
+                         "label": "S"}}})
+
+
+@pytest.mark.parametrize("bound", ["min", "max"])
+def test_a_non_finite_bound_is_refused_too(bound):
+    """An infinite bound makes the range check meaningless in one direction."""
+    settings = {"strength": {"type": "float", "default": 0.5, "label": "S",
+                             bound: float("inf")}}
+    with pytest.raises(SchemaError, match="finite"):
+        validate({"id": "m", "title": "M", "mount": "x", "settings": settings})
+
+
+def test_an_ordinary_default_still_passes():
+    spec = validate({"id": "m", "title": "M", "mount": "x", "settings": {
+        "strength": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "label": "S"}}})
+    assert spec.defaults() == {"strength": 0.5}

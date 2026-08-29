@@ -135,3 +135,28 @@ def test_an_output_nobody_wired_does_not_block_removal():
     slots, problems = graph.remove(slots, "spare", SCHEMAS)
     assert problems == []
     assert graph.slots_by_id(slots)["sample"]["inputs"]["model"] == ["model", 0]
+
+
+def test_two_slots_cannot_share_an_id():
+    """A set of ids cannot see a duplicate, so writing the prompt by id used to
+    overwrite one slot with the other: a node silently missing from the queued
+    graph, or one left reading its own output."""
+    slots = [
+        {"id": "n1", "node": "LoadModel", "inputs": {}},
+        {"id": "n1", "node": "AddLora", "inputs": {"model": ["n1", 0]}},
+    ]
+    prompt, problems = graph.build(slots, SCHEMAS)
+    assert prompt == {}
+    assert any("more than one slot" in p for p in problems)
+
+
+def test_a_duplicate_id_is_refused_before_anything_else_is_reported():
+    """Ids are how a link names what feeds it, so every other check downstream
+    is meaningless while two slots answer to one name."""
+    slots = [
+        {"id": "a", "node": "LoadModel", "inputs": {}},
+        {"id": "a", "node": "LoadModel", "inputs": {}},
+        {"id": "b", "node": "AddLora", "inputs": {"nonsense": 1}},
+    ]
+    _prompt, problems = graph.build(slots, SCHEMAS)
+    assert len(problems) == 1 and "more than one slot" in problems[0]

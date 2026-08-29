@@ -83,9 +83,23 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
     here rather than surfacing as a traceback from inside sampling.
     """
     schemas = schemas or from_comfyui()
-    known = {slot["id"] for slot in slots}
     problems: List[str] = []
     prompt: Dict[str, dict] = {}
+
+    # A set of ids cannot see a duplicate, and writing the prompt by id would
+    # then silently overwrite one slot with the other -- losing a node, or
+    # leaving one reading its own output. Refused, because a graph quietly
+    # missing a node is the shape of fault this whole file exists to prevent.
+    seen = set()
+    for slot in slots:
+        if slot["id"] in seen:
+            problems.append(f"{slot['id']!r} is used by more than one slot; ids are how "
+                            f"a link names what feeds it, so they have to be unique")
+        seen.add(slot["id"])
+    if problems:
+        return {}, problems
+
+    known = seen
 
     for slot in slots:
         slot_id, class_type = slot["id"], slot["node"]
