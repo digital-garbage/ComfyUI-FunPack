@@ -14,7 +14,11 @@ CONTRACT_VERSION = 1
 
 # Closed set. A type outside it has no renderer and no validation, so accepting
 # one would mean rendering something approximate.
-TYPES = frozenset({"bool", "int", "float", "enum", "text", "multiline", "path"})
+# A setting is a PREFERENCE. Anything that is data -- an image, a drawn mask,
+# a video -- travels as a ComfyUI socket instead, because it is a tensor the app
+# uploads and the graph wires, not a value that belongs in a JSON payload. That
+# is why there is no "image" or "mask" here despite both being planned features.
+TYPES = frozenset({"bool", "int", "float", "enum", "text", "multiline", "path", "color"})
 
 NUMERIC = frozenset({"int", "float"})
 
@@ -29,6 +33,7 @@ UI_HINTS: Dict[str, List[str]] = {
     "text": ["input", "search"],
     "multiline": ["textarea", "autoTextarea"],
     "path": ["filterList"],
+    "color": ["swatch"],
 }
 
 # Ordering is coarse-grained by stage, then by declared relations within it.

@@ -21,6 +21,7 @@ export const DEFAULT_UI = {
   text: "input",
   multiline: "textarea",
   path: "filterList",
+  color: "swatch",
 };
 
 // Renderers that carry their own visible label, so wrapping them in a settings
@@ -46,6 +47,8 @@ const RENDERERS = {
   select: (s, v, on) => composer.select.md({ options: s.options, value: v, label: s.label, onChange: on }),
   segmented: (s, v, on) => composer.segmented.md({ options: s.options, value: v, label: s.label, onChange: on }),
   radioGroup: (s, v, on) => composer.radioGroup.default({ options: s.options, value: v, label: s.label, onChange: on }),
+  swatch: (s, v, on) => composer.color.swatch({ label: s.label, value: v, onChange: on }),
+
   filterList: (s, v, on) => composer.filterList.md({
     items: (s.options || []).map((o) => ({ id: o.value, label: o.label, hint: o.hint })),
     value: v, placeholder: s.placeholder, onChange: on }),

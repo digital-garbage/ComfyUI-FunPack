@@ -223,3 +223,49 @@ define("toggle", "default", ({ label, hint, checked, disabled, onChange } = {}) 
     destroy: () => node.remove(),
   };
 });
+
+// A colour, picked or typed.
+//
+// Two controls over one value because neither is enough alone: the swatch is how
+// you choose one you have not named, the field is how you paste the one you were
+// given. They stay in step, and the field only commits when what it holds is a
+// real colour -- a half-typed "#ff8" must not repaint the app mid-keystroke.
+define("color", "swatch", ({ label, value = "#000000", onChange, disabled = false } = {}) => {
+  const full = (v) => (v.length === 4
+    ? "#" + v.slice(1).split("").map((c) => c + c).join("")
+    : v.slice(0, 7));
+
+  const swatch = el("input", { cls: ["cx-swatch", "cx-focusable"],
+    attrs: { type: "color", value: full(value), disabled: disabled || null,
+             "aria-label": label ? `${label} colour` : "colour" } });
+
+  const field = el("input", { cls: ["cx-input", "cx-input-md", "cx-swatch-hex", "cx-focusable"],
+    attrs: { type: "text", value, spellcheck: "false", disabled: disabled || null,
+             "aria-label": label ? `${label} hex value` : "hex value" } });
+
+  let current = value;
+
+  const valid = (v) => /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v);
+
+  function commit(next, from) {
+    if (!valid(next) || next === current) return;
+    current = next;
+    if (from !== "swatch") swatch.value = full(next);
+    if (from !== "field") field.value = next;
+    if (onChange) onChange(next);
+  }
+
+  swatch.addEventListener("input", () => commit(swatch.value, "swatch"));
+  field.addEventListener("change", () => {
+    if (valid(field.value)) commit(field.value, "field");
+    else field.value = current;          // reject rather than half-apply
+  });
+
+  const node = el("div", { cls: "cx-swatch-row", children: [swatch, field] });
+  return {
+    node,
+    get value() { return current; },
+    setValue: (next) => commit(next, null),
+    destroy: () => node.remove(),
+  };
+});

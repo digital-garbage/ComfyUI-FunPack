@@ -60,6 +60,8 @@ def validate_setting(key: str, spec: Any, siblings: Dict[str, dict]) -> dict:
     elif kind == "bool":
         if not isinstance(spec["default"], bool):
             raise SchemaError(f"{where} is a bool but its default is {spec['default']!r}.")
+    elif kind == "color":
+        _validate_colour(spec["default"], where)
     else:
         if not isinstance(spec["default"], str):
             raise SchemaError(f"{where} is a {kind} but its default is not a string.")
@@ -90,6 +92,20 @@ def _validate_enum(spec: dict, where: str) -> None:
         raise SchemaError(f"{where} has duplicate option values.")
     if spec["default"] not in values:
         raise SchemaError(f"{where}'s default {spec['default']!r} is not one of its options.")
+
+
+# Accepted as #rgb, #rrggbb or #rrggbbaa. One spelling in, one spelling out --
+# a module that has to guess whether it was handed "red", "#f00" or "255,0,0"
+# will guess wrong somewhere.
+_HEX = frozenset("0123456789abcdefABCDEF")
+
+
+def _validate_colour(value, where: str) -> None:
+    if not isinstance(value, str) or not value.startswith("#"):
+        raise SchemaError(f"{where} is a colour and must be a hex string like '#ff8800'; got {value!r}.")
+    digits = value[1:]
+    if len(digits) not in (3, 6, 8) or any(c not in _HEX for c in digits):
+        raise SchemaError(f"{where} is not a valid hex colour: {value!r}.")
 
 
 def _validate_numeric(spec: dict, where: str, kind: str) -> None:
@@ -231,6 +247,13 @@ def _value_problem(declared: dict, key: str, value: Any, module_id: str):
         allowed = [option["value"] for option in declared["options"]]
         if value not in allowed:
             return f"{where} must be one of {allowed}, got {value!r}."
+        return None
+
+    if kind == "color":
+        try:
+            _validate_colour(value, where)
+        except SchemaError as exc:
+            return str(exc)
         return None
 
     if kind in NUMERIC:

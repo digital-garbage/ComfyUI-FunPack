@@ -6,14 +6,16 @@ so it is pinned rather than left to drift line by line.
 
 import pytest
 
-from core import log
+from core import log, run
 
 
 @pytest.fixture(autouse=True)
 def clean():
     log._reset()
+    run._reset()
     yield
     log._reset()
+    run._reset()
 
 
 def test_the_shape_is_label_severity_source_message():
@@ -31,9 +33,42 @@ def test_a_message_with_no_source_does_not_print_an_empty_one():
 ])
 def test_each_level_records_itself(fn, level):
     fn("somewhere", "something")
-    assert log.history()[-1] == {
-        "at": log.history()[-1]["at"], "level": level,
-        "source": "somewhere", "message": "something"}
+    entry = log.history()[-1]
+    assert entry["level"] == level
+    assert entry["source"] == "somewhere"
+    assert entry["message"] == "something"
+
+
+def test_a_record_carries_the_run_it_happened_in():
+    """So a report can say which generation a line belongs to, and two runs in
+    one session can be told apart."""
+    log.info("before", "no run yet")
+    assert log.history()[-1]["run"] is None
+
+    first = run.start()
+    log.info("during", "inside a run")
+    assert log.history()[-1]["run"] == first
+
+    second = run.start()
+    log.info("during", "inside the next one")
+    assert log.history()[-1]["run"] == second
+    assert first != second
+
+
+def test_history_can_be_filtered_to_one_run():
+    first = run.start()
+    log.info("a", "one")
+    run.start()
+    log.info("b", "two")
+    assert [r["source"] for r in log.history(run=first)] == ["a"]
+
+
+def test_starting_a_run_clears_what_was_said_once():
+    run.start()
+    log.once("k", log.ALERT, "src", "inert")
+    run.start()
+    log.once("k", log.ALERT, "src", "inert")
+    assert len(log.history()) == 2
 
 
 def test_it_prints_as_well_as_records(capsys):

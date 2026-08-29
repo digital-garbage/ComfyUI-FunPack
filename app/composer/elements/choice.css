@@ -95,3 +95,33 @@
 .cx-toggle-input:checked + .cx-check-face .cx-toggle-track { background: var(--accent); }
 .cx-toggle-input:checked + .cx-check-face .cx-toggle-track .cx-toggle-knob { transform: translateX(14px); }
 .cx-toggle-input:focus-visible + .cx-check-face .cx-toggle-track { box-shadow: var(--focus-ring); }
+
+/* Colour: the swatch sized to the control height so it lines up with every
+   other field in a settings column, and the hex field kept narrow because six
+   characters in a full-width input reads as an empty box. */
+.cx-swatch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.cx-swatch {
+  inline-size: var(--ctl-h-lg);
+  block-size: var(--ctl-h-lg);
+  padding: 0;
+  border: var(--bw) solid var(--line);
+  border-radius: var(--ctl-r);
+  background: var(--elev-1);
+  cursor: pointer;
+}
+
+.cx-swatch::-webkit-color-swatch-wrapper { padding: 2px; }
+.cx-swatch::-webkit-color-swatch { border: 0; border-radius: var(--r-2); }
+.cx-swatch::-moz-color-swatch { border: 0; border-radius: var(--r-2); }
+
+.cx-swatch:disabled { opacity: var(--disabled-opacity); cursor: default; }
+
+.cx-swatch-hex {
+  inline-size: 10ch;
+  font-family: var(--font-mono);
+}

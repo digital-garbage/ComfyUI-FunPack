@@ -53,7 +53,11 @@ def line(level: str, source: str, message: str) -> str:
 
 
 def record(level: str, source: str, message: str) -> dict:
-    entry = {"at": time.time(), "level": level, "source": source, "message": message}
+    # Imported here rather than at module level: `run` starts a run by clearing
+    # what this module holds, so a top-level import would be circular.
+    from . import run as run_mod
+    entry = {"at": time.time(), "level": level, "source": source,
+             "message": message, "run": run_mod.current()}
     _records.append(entry)
     print(line(level, source, message), file=sys.stderr, flush=True)
     return entry
@@ -98,9 +102,12 @@ def new_run() -> None:
     _said.clear()
 
 
-def history(level: Optional[str] = None, limit: int = HISTORY) -> list:
+def history(level: Optional[str] = None, limit: int = HISTORY,
+            run: Optional[str] = None) -> list:
     """Recent records, newest last. For the app, and for the modules page."""
-    items = [r for r in _records if level is None or r["level"] == level]
+    items = [r for r in _records
+             if (level is None or r["level"] == level)
+             and (run is None or r.get("run") == run)]
     return items[-limit:]
 
 

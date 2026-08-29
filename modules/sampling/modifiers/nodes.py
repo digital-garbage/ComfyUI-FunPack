@@ -34,7 +34,8 @@ import json
 from comfy_api.latest import io
 
 from ..._core import (log, patching, registry as registry_mod,
-                      relations as relations_mod, schema as schema_mod)
+                      relations as relations_mod, run as run_mod,
+                      schema as schema_mod)
 
 CAPABILITY = "modifier"
 
@@ -156,7 +157,7 @@ class FunPackLoadModifiers(io.ComfyNode):
         # The limit, stated: a graph without this node never marks a run, so
         # once-per-run reverts to once-per-process there. That is the honest
         # cost of ComfyUI having no notion of "a run started" a node can hook.
-        log.new_run()
+        run = run_mod.start()
         dropped = patching.Dropped()
         patched.funpack_dropped = dropped
 
@@ -215,5 +216,6 @@ class FunPackLoadModifiers(io.ComfyNode):
         for spec, why in rejected:
             notes.append(f"{spec.id}: {why}")
 
-        headline = f"{len(applied)} modifier(s) applied" + (f": {', '.join(applied)}" if applied else "")
+        headline = (f"{run}: {len(applied)} modifier(s) applied"
+                    + (f": {', '.join(applied)}" if applied else ""))
         return io.NodeOutput(patched, "\n".join([headline, f"model traits: {', '.join(available) or 'none read'}", *notes]))

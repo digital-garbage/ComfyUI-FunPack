@@ -63,6 +63,7 @@ export const DEMOS = {
       { value: "detail", label: "Detail tail" },
     ],
   },
+  "color.swatch": { label: "Overlay colour", value: "#f3a93c" },
   "radioGroup.default": {
     label: "Alignment",
     value: "beat",
