@@ -126,14 +126,21 @@ class FunPackSampler(io.ComfyNode):
         # is missing, and already reports steps to whatever is watching.
         callback = latent_preview.prepare_callback(model, max(0, len(sigmas) - 1))
 
-        samples = guider.sample(
-            Noise_RandomNoise(seed).generate_noise(latent),
-            samples_in, sampler, sigmas,
-            denoise_mask=latent.get("noise_mask"),
-            callback=callback,
-            disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,
-            seed=seed,
-        )
+        try:
+            samples = guider.sample(
+                Noise_RandomNoise(seed).generate_noise(latent),
+                samples_in, sampler, sigmas,
+                denoise_mask=latent.get("noise_mask"),
+                callback=callback,
+                disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,
+                seed=seed,
+            )
+        except comfy.model_management.InterruptProcessingException:
+            # Said, then re-raised. Cancelling is a normal thing to do and the
+            # log should show it happening rather than a run simply stopping --
+            # but it is not ours to absorb: ComfyUI ends the queue item.
+            log.alert("FunPack Sampler", f"{run} was cancelled part way through")
+            raise
         # Back to the device every other sampler returns on. Leaving it on the
         # GPU works until something downstream is on the CPU, and then it is a
         # device mismatch a long way from here.
