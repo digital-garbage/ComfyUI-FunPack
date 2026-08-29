@@ -149,8 +149,14 @@ class FunPackLoadModifiers(io.ComfyNode):
         stripped = patching.strip(patched, KEY_PREFIX)
         applied, notes = [], []
 
-        # One per run, so a long session reports every generation that went
-        # inert rather than only the first one after a restart.
+        # A run starts here: whatever was said once may be said again, and the
+        # dropped-modifier record starts empty. Both are per-run state and they
+        # begin together so they cannot disagree about when a run began.
+        #
+        # The limit, stated: a graph without this node never marks a run, so
+        # once-per-run reverts to once-per-process there. That is the honest
+        # cost of ComfyUI having no notion of "a run started" a node can hook.
+        log.new_run()
         dropped = patching.Dropped()
         patched.funpack_dropped = dropped
 

@@ -78,7 +78,13 @@ class Handler(BaseHTTPRequestHandler):
 
         # The same manifest the aiohttp route serves, so what you see in the
         # browser here is what ComfyUI would send.
-        if path == P + "/api/modules":
+        if path == P + "/api/log":
+            query = parse_qs(parsed.query)
+            level = (query.get("level") or [None])[0]
+            body = json.dumps({"levels": list(routes.log.LEVELS),
+                               "records": routes.log.history(level)}).encode()
+            served = static.Served(200, body, "application/json")
+        elif path == P + "/api/modules":
             raw = parse_qs(parsed.query).get("traits")
             traits = [t for t in raw[0].split(",") if t] if raw else None
             body = json.dumps(routes.manifest(traits)).encode()

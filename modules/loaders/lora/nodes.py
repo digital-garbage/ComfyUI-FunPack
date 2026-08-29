@@ -12,6 +12,8 @@ import comfy.utils
 import folder_paths
 from comfy_api.latest import io
 
+from ..._core import log
+
 
 class FunPackLoraLoader(io.ComfyNode):
     @classmethod
@@ -45,6 +47,10 @@ class FunPackLoraLoader(io.ComfyNode):
         # rather than clones: a clone here would silently drop patches a later
         # loader in the chain applied to the original.
         if strength_model == 0 and (clip is None or strength_clip == 0):
+            # Loud, because "applied a LoRA at strength 0" is indistinguishable
+            # from "forgot to set the strength" by looking at the picture.
+            log.alert("FunPack LoRA Loader",
+                      f"{lora_name} has both strengths at 0 and was not applied")
             return io.NodeOutput(model, clip, f"{lora_name}: both strengths are 0, not applied")
 
         path = folder_paths.get_full_path_or_raise("loras", lora_name)
@@ -54,5 +60,6 @@ class FunPackLoraLoader(io.ComfyNode):
 
         applied = [f"model={strength_model}"]
         applied.append(f"clip={strength_clip}" if clip is not None else "clip=not wired")
+        log.info("FunPack LoRA Loader", f"{lora_name} applied ({', '.join(applied)})")
         return io.NodeOutput(patched_model, patched_clip,
                              f"FunPack LoRA Loader | {lora_name} ({', '.join(applied)})")

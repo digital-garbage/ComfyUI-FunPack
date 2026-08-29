@@ -75,10 +75,10 @@ async function start() {
 function composal(title, hint, items) {
   return composer.panel.default({
     title,
-    body: items.length
-      ? composer.group.default({ children: [
-          composer.hint.default({ text: hint }), rows(items)] })
-      : composer.hint.default({ text: "None." }),
+    body: composer.group.default({
+      hint,
+      rows: items.length ? [rows(items)] : [composer.hint.default({ text: "None." })],
+    }),
   });
 }
 

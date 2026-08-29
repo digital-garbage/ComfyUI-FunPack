@@ -164,12 +164,12 @@ def test_an_unknown_encoder_family_is_refused_not_silently_downgraded(monkeypatc
         nodes.FunPackCLIPLoader.execute(clip_name1="e.safetensors", type="not_a_family")
 
 
-def test_changing_the_process_wide_fp16_flag_is_never_silent(monkeypatch, caplog):
+def test_changing_the_process_wide_fp16_flag_is_never_silent(monkeypatch):
     """torch has ONE flag for the interpreter, so this cannot mean "for this
     model". A second loader setting it differently changes the first model's
     maths, and ComfyUI's loader caching means the last value outlives its run."""
-    import logging
     import torch
+    from core import log
     from modules.loaders import common
 
     class FakeMatmul:
@@ -178,23 +178,21 @@ def test_changing_the_process_wide_fp16_flag_is_never_silent(monkeypatch, caplog
     fake = FakeMatmul()
     monkeypatch.setattr(torch.backends, "cuda", type("C", (), {"matmul": fake}))
 
-    with caplog.at_level(logging.WARNING):
-        assert common.set_fp16_accumulation(True) is True
+    log._reset()
+    assert common.set_fp16_accumulation(True) is True
     assert fake.allow_fp16_accumulation is True
-    assert any("EVERY model in this process" in r.getMessage() for r in caplog.records)
+    assert any("EVERY model in this process" in r["message"] for r in log.history())
 
     # No transition, nothing said.
-    caplog.clear()
-    with caplog.at_level(logging.WARNING):
-        common.set_fp16_accumulation(True)
-    assert not caplog.records
+    log._reset()
+    common.set_fp16_accumulation(True)
+    assert log.history() == []
 
     # And turning it back off is a transition too: it is another model's setting
     # being undone.
-    caplog.clear()
-    with caplog.at_level(logging.WARNING):
-        common.set_fp16_accumulation(False)
-    assert caplog.records
+    log._reset()
+    common.set_fp16_accumulation(False)
+    assert log.history()
 
 
 def test_a_torch_build_without_the_flag_reports_that_rather_than_pretending():

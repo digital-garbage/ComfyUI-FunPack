@@ -12,6 +12,8 @@ import folder_paths
 import torch
 from comfy_api.latest import io
 
+from ..._core import log
+
 # Chosen, not inferred. bf16 is the default because fp16 is a known failure on
 # the AV VAEs, and fp32 decodes slowly for no visible gain.
 DTYPES = {
@@ -53,4 +55,5 @@ class FunPackVAELoader(io.ComfyNode):
         state_dict = comfy.utils.load_torch_file(path)
         vae = comfy.sd.VAE(sd=state_dict, dtype=DTYPES[dtype])
         vae.throw_exception_if_invalid()
+        log.info("FunPack VAE Loader", f"{vae_name} loaded as {dtype}")
         return io.NodeOutput(vae, f"{vae_name} loaded as {dtype}")

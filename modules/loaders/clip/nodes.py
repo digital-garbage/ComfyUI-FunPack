@@ -28,6 +28,8 @@ import folder_paths
 import torch
 from comfy_api.latest import io
 
+from ..._core import log
+
 MAX_ENCODERS = 4
 
 
@@ -118,5 +120,8 @@ class FunPackCLIPLoader(io.ComfyNode):
             raise RuntimeError(
                 f"Could not load a text encoder from {', '.join(names)} as type {type!r}.")
 
+        log.info("FunPack CLIP Loader",
+                 f"{len(names)} encoder file(s) loaded as type {type}, device {device}: "
+                 + ", ".join(names))
         listing = "\n".join(f"  {i + 1}. {name}" for i, name in enumerate(names))
         return io.NodeOutput(clip, f"FunPack CLIP Loader | type={type} device={device}\n{listing}")

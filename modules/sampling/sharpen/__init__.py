@@ -71,7 +71,7 @@ def install(patcher, values, key):
     if amount == 0.0:
         # Zero is a request for nothing, and saying so beats reporting that a
         # modifier ran when it could not have changed a single pixel.
-        log.note("[FunPack] detail is enabled at amount 0, which changes nothing")
+        log.alert("FunPack Detail", "enabled at amount 0, which changes nothing")
         return None
 
     radius = int(values.get("radius", 5))

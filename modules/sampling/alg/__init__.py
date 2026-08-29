@@ -61,14 +61,11 @@ SETTINGS = {
     },
 }
 
-_said = set()
-
-
 def _once(message: str) -> None:
-    """Say an inert reason once per process, not once per step."""
-    if message not in _said:
-        _said.add(message)
-        log.note(message)
+    """Say an inert reason once per RUN, not once per step and not once per
+    process -- a session that deduped for the life of the interpreter reported
+    the first generation that went inert and stayed quiet for every one after."""
+    log.once(f"alg:{message}", log.ALERT, "FunPack ALG", message)
 
 
 def install(patcher, values, key):
@@ -87,14 +84,14 @@ def install(patcher, values, key):
         # No anchor pinned means nothing to de-static; a sampler that is not
         # KSAMPLER-shaped has no loop to stand between.
         if inner_fn is None or latent_image is None or denoise_mask is None:
-            _once("[FunPack] ALG is off this run: no pinned anchor to loosen.")
+            _once("off this run: there is no pinned anchor to loosen")
             return executor(model_wrap, sigmas, extra_args, callback, noise,
                             latent_image, denoise_mask, disable_pbar)
 
         blurred = blur_frames(latent_image, strength, frame_indices=(0,))
         if blurred is None:
-            _once("[FunPack] ALG is off this run: this model's anchor is not a "
-                  "plain video latent, and reshaping it would be guesswork.")
+            _once("off this run: this model's anchor is not a plain video latent, "
+                  "and reshaping it would be guesswork")
             return executor(model_wrap, sigmas, extra_args, callback, noise,
                             latent_image, denoise_mask, disable_pbar)
 

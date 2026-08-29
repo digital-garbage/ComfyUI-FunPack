@@ -56,14 +56,14 @@ def collect(registry=None) -> Tuple[List[type], List[Tuple[str, str]]]:
 
             if schema is None:
                 rejected.append((where, "is not a comfy_api io.ComfyNode (no GET_SCHEMA)"))
-                log.note(f"{where} is not a ComfyUI V3 node; not registered.")
+                log.warning(where, "is not a ComfyUI V3 node and was not registered")
                 continue
 
             node_id = getattr(schema, "node_id", None)
             if not isinstance(node_id, str) or not node_id.startswith(PREFIX):
                 rejected.append((where, f"node_id {node_id!r} does not start with {PREFIX!r}"))
-                log.note(f"{where} declares node_id {node_id!r}, which is not "
-                         f"prefixed {PREFIX!r}; not registered.")
+                log.warning(where, f"declares node_id {node_id!r}, which is not prefixed "
+                                   f"{PREFIX!r}, and was not registered")
                 continue
 
             if node_id in claimed:
@@ -71,8 +71,8 @@ def collect(registry=None) -> Tuple[List[type], List[Tuple[str, str]]]:
                 # and which one wins would depend on import order.
                 rejected.append((where, f"duplicate node_id {node_id!r}, already "
                                         f"declared by {claimed[node_id]}"))
-                log.note(f"{where} reuses node_id {node_id!r}, already declared by "
-                         f"{claimed[node_id]}; not registered.")
+                log.warning(where, f"reuses node_id {node_id!r}, already declared by "
+                                   f"{claimed[node_id]}, and was not registered")
                 continue
 
             claimed[node_id] = where
@@ -96,7 +96,7 @@ def extension():
             return list(nodes)
 
     if rejected:
-        log.note(f"{len(rejected)} node(s) were not registered; "
-                 + "; ".join(f"{where}: {why}" for where, why in rejected))
-    log.note(f"registered {len(nodes)} node(s)")
+        log.warning("nodes", f"{len(rejected)} node(s) were not registered; "
+                    + "; ".join(f"{where}: {why}" for where, why in rejected))
+    log.info("nodes", f"registered {len(nodes)} node(s)")
     return FunPackExtension()

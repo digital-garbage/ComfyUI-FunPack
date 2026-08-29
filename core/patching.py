@@ -136,9 +136,10 @@ def guard(fn, key: str, neutral, dropped: Dropped):
         except Exception as exc:                 # noqa: BLE001 -- the whole point
             if dropped.record(key, exc):
                 from . import log
-                log.note(
-                    f"{key} failed during sampling and is now OFF for the rest of "
-                    f"this run. The run continues without it.\n"
+                log.warning(
+                    key,
+                    "failed during sampling and is now OFF for the rest of this run; "
+                    "the run continues without it\n"
                     + "".join(traceback.format_exception(exc)).rstrip())
             return neutral(*args, **kwargs)
 

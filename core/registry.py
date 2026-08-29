@@ -122,7 +122,7 @@ def scan(root: Optional[Path] = None, package: Optional[str] = None) -> Registry
         try:
             registry.add(validate(raw, source=dotted))
         except SchemaError as exc:
-            log.note(f"{dotted} declares an invalid module: {exc}")
+            log.warning(dotted, f"is not a valid module and was not loaded -- {exc}")
             registry.failed.append((dotted, str(exc)))
 
     return registry

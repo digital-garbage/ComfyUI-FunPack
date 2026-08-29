@@ -10,9 +10,9 @@ which the loader cannot be handed by anyone else. Feature knobs -- strengths,
 sigma windows, anything a modifier owns -- are settings, and never appear here.
 """
 
-import logging
-
 import torch
+
+from .._core import log
 
 # Named exactly as core's UNETLoader names them where they overlap, so a value
 # copied from a stock workflow means the same thing here.
@@ -80,11 +80,13 @@ def attention_override(name):
     try:
         from comfy.ldm.modules.attention import get_attention_function
     except ImportError:
-        logging.warning("[FunPack] this ComfyUI has no attention registry; leaving attention alone")
+        log.warning("attention", "this ComfyUI has no attention registry, so the "
+                                 "chosen backend cannot be applied")
         return None
     chosen = get_attention_function(name, None)
     if chosen is None:
-        logging.warning("[FunPack] attention backend %r is not available; leaving attention alone", name)
+        log.warning("attention", f"backend {name!r} is not available on this machine, "
+                                 f"so it was not applied")
         return None
     inner = getattr(chosen, "__wrapped__", chosen)
 
@@ -124,7 +126,7 @@ def set_fp16_accumulation(enabled):
     before = bool(getattr(matmul, "allow_fp16_accumulation", False))
     matmul.allow_fp16_accumulation = wanted
     if before != wanted:
-        logging.warning(
-            "[FunPack] fp16 accumulation is now %s for EVERY model in this process, "
-            "not just this one -- torch has a single process-wide flag.", wanted)
+        log.alert("fp16 accumulation",
+                  f"now {wanted} for EVERY model in this process, not just this one -- "
+                  f"torch has a single process-wide flag")
     return wanted

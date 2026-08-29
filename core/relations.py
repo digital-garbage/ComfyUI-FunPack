@@ -39,7 +39,8 @@ def order(specs: Iterable[ModuleSpec]) -> Tuple[List[ModuleSpec], List[Tuple[Mod
         # that would put a whole stage out of sequence to satisfy one module.
         # The relation is dropped and said out loud rather than silently obeyed.
         if stage_of[later] < stage_of[earlier]:
-            log.note(
+            log.alert(
+                "module ordering",
                 f"ignoring {later!r} after {earlier!r}: {later!r} is in stage "
                 f"{STAGES[stage_of[later]]!r}, which runs before {STAGES[stage_of[earlier]]!r}"
             )

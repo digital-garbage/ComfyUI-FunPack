@@ -10,6 +10,7 @@ import comfy.utils
 import folder_paths
 from comfy_api.latest import io
 
+from ..._core import log
 from ..common import (COMPUTE_DTYPES, WEIGHT_DTYPES, attention_choices,
                       attention_override, dtype_of, set_fp16_accumulation,
                       weight_model_options)
@@ -90,4 +91,11 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
         else:
             notes.append("attention: default (as launched)")
 
+        # Never reach into the model's shape to describe it: a log line that
+        # assumes structure can fail the load it was only meant to narrate.
+        kind = type(getattr(model, "model", model)).__name__
+        log.info("FunPack Diffusion Model Loader",
+                 f"{model_name} loaded as {kind}, weights "
+                 f"{weight_dtype}, compute {compute_dtype}, attention "
+                 f"{attention if override is not None else 'default (as launched)'}")
         return io.NodeOutput(model, "\n".join(notes))

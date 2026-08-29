@@ -92,6 +92,16 @@ def register(routes, prefix=None):
         traits = [t for t in raw.split(",") if t] if raw is not None else None
         return web.json_response(manifest(traits))
 
+    @routes.get(P + "/api/log")
+    async def _log(req):
+        level = req.query.get("level") or None
+        try:
+            limit = int(req.query.get("limit", log.HISTORY))
+        except ValueError:
+            limit = log.HISTORY
+        return web.json_response({"levels": list(log.LEVELS),
+                                  "records": log.history(level, limit)})
+
     @routes.get(P + "/app/{tail:.*}")
     async def _app_asset(req):
         return _serve_under(req, config.APP_DIR, config.APP_EXTS)
@@ -121,4 +131,4 @@ if web is not None and PromptServer is not None:
     except Exception as exc:  # noqa: BLE001
         log.failed("route registration", exc)
     else:
-        log.note(f"serving the app at {config.UI_PREFIX}/")
+        log.info("routes", f"serving the app at {config.UI_PREFIX}/")
