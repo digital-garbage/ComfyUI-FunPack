@@ -123,6 +123,15 @@ def register(routes, prefix=None):
         except Exception:  # noqa: BLE001
             return web.json_response({"problems": ["that is not JSON"]}, status=400)
 
+        # Everything below reads named fields off the body, so the body has to
+        # be a thing with names. `[]` and `"slots"` are both valid JSON and
+        # neither is a request; asking them for `.get` is an AttributeError and
+        # a 500 nothing can read.
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"problems": [f"a request is an object, not a {type(body).__name__}"],
+                 "queueable": False}, status=400)
+
         # `or` would resurrect the default here: an explicitly empty pipeline is
         # falsy, and a client that has removed every slot is entitled to be told
         # it has none rather than handed the defaults back.
@@ -140,6 +149,22 @@ def register(routes, prefix=None):
                 {"refused": malformed, "incomplete": [], "queueable": False,
                  "slots": [], "prompt": None},
                 status=400)
+
+        # An id and a node name are strings, and only a string can be looked up
+        # in the dicts below: `{"slot": ["a"]}` reaches a `in`-on-dict as an
+        # unhashable key and the refusal turns into a 500. The slots array is
+        # shape-checked above; these two fields are read from the same body and
+        # were not.
+        if action in ("replace", "remove") and not isinstance(slot_id, str):
+            return web.json_response(
+                {"problems": [f"which slot to {action} is named by a string, "
+                              f"not a {type(slot_id).__name__}"],
+                 "queueable": False}, status=400)
+        if action == "replace" and not isinstance(body.get("node"), str):
+            return web.json_response(
+                {"problems": [f"a node is named by a string, not a "
+                              f"{type(body.get('node')).__name__}"],
+                 "queueable": False}, status=400)
 
         if action == "replace":
             slots, problems = graph_mod.replace(slots, slot_id, body.get("node"))

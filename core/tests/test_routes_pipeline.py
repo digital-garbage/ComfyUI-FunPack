@@ -199,6 +199,18 @@ def test_removing_slots_one_by_one_never_resurrects_the_default(server):
     ({"action": "check", "slots": [{"id": "a"}]}, "has no node"),
     ({"action": "check", "slots": [{"id": "a", "node": "X", "inputs": "nope"}]}, "must be an object"),
     ({"action": "check", "slots": "a pipeline"}, "is a list of slots"),
+    # The body itself. Every case above is already a well-formed object, so the
+    # layer that reads named fields off it had never been handed something with
+    # no names: `body.get` on a list is an AttributeError and a 500.
+    ([], "an object, not a list"),
+    ("just a string", "an object, not a str"),
+    (42, "an object, not a int"),
+    # The fields naming what to edit. The slots array is shape-checked; these
+    # come from the same body and were not, and both reach an `in` against a
+    # dict, where an unhashable value is a TypeError rather than a miss.
+    ({"action": "replace", "slot": ["a"], "node": "X", "slots": []}, "named by a string"),
+    ({"action": "remove", "slot": {"x": 1}, "slots": []}, "named by a string"),
+    ({"action": "replace", "slot": "a", "node": ["X"], "slots": []}, "named by a string"),
 ])
 def test_a_malformed_pipeline_comes_back_as_a_reason_not_a_500(server, payload, expected):
     """A payload arrives from HTTP, so "it is a list" is all that has been
