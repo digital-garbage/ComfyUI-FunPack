@@ -59,6 +59,37 @@ def traits(model):
     return found
 
 
+def decode(latent, vae, audio_vae=None):
+    """H3's two branches, each through the VAE that understands it.
+
+    Returns None when the latent is not nested, so this never speaks for a model
+    it does not own -- the branch order is H3's own arrangement, and reading it
+    wrongly would decode noise as a picture rather than fail.
+    """
+    if not getattr(latent, "is_nested", False):
+        return None
+
+    parts = latent.unbind()
+    if len(parts) != 2:
+        raise RuntimeError(
+            f"expected a video and an audio branch, got {len(parts)} parts")
+    video_latent, audio_latent = parts
+
+    images = vae.decode(video_latent)
+    if len(images.shape) == 5:
+        images = images.reshape(-1, *images.shape[-3:])
+
+    if audio_vae is None:
+        # Silence would look like a decoded soundtrack. Say what is missing.
+        raise RuntimeError(
+            "this model generates sound and no audio VAE is wired into the "
+            "decode, so there is nothing to turn the audio branch into")
+
+    from comfy_extras.nodes_audio import vae_decode_audio
+    audio = vae_decode_audio(audio_vae, {"samples": audio_latent})
+    return images, audio
+
+
 def empty_latent(model, width, height, length, batch_size=1):
     """H3's joint video+audio latent, or None if this is not an H3 model."""
     if not is_h3(model):
@@ -77,4 +108,4 @@ def empty_latent(model, width, height, length, batch_size=1):
 
 
 TRAITS = traits
-PROVIDES = {"empty_latent": empty_latent}
+PROVIDES = {"empty_latent": empty_latent, "decode": decode}
