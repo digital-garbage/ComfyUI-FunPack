@@ -5,9 +5,17 @@ rental is the hook that works at step 0 and raises at step 3 -- the generation
 dies after the GPU time is spent. This is the guarantee that it does not.
 
 The case is real, not invented: the Detail modifier's maths comes from ComfyUI's
-LatentOperationSharpen, which raises on a 5-D video latent. It is deliberately
-NOT being fixed -- it exists to be watchable on a machine with no GPU -- so it
+LatentOperationSharpen, which raises on a 5-D latent. It is deliberately NOT
+being fixed -- it exists to be watchable on a machine with no GPU -- so it
 stands as the permanent regression case for this.
+
+Detail now declares `spatial_latent`, so it is not OFFERED where the shape it
+cannot handle comes from. That closes the ordinary route to this failure and
+does not close the failure: a hook meets the tensor it was handed, not the one
+its module reasoned about. The model here says spatial and the hook is given
+five dimensions, which is precisely the mismatch the guard exists for -- if the
+only way to test it were a modifier that is wrong about itself, there would be
+nothing to test.
 """
 
 import pytest
@@ -16,18 +24,6 @@ import pytest
 @pytest.fixture(autouse=True)
 def _needs_comfy(comfyui):
     """Imports comfy."""
-
-
-@pytest.fixture
-def patcher():
-    import torch
-    from comfy.model_patcher import ModelPatcher
-
-    class Stub(torch.nn.Module):
-        pass
-
-    return ModelPatcher(Stub(), load_device=torch.device("cpu"),
-                        offload_device=torch.device("cpu"))
 
 
 def _pre_cfg_args(conds):
@@ -255,3 +251,34 @@ def test_a_keyboard_interrupt_is_not_swallowed_either():
                              lambda args: args["conds_out"], patching.Dropped())
     with pytest.raises(KeyboardInterrupt):
         guarded({"conds_out": "untouched"})
+
+
+def test_detail_is_absent_on_a_model_whose_latent_it_cannot_handle(temporal_patcher):
+    """Not dropped: absent.
+
+    Being dropped mid-run is the safety net, and a safety net is not a design.
+    A knob that can be switched on, reports nothing at the knob, and does
+    nothing is the exact fault this project has already shipped once -- so a
+    modifier whose maths cannot take the shape a model produces has to say so
+    in what it REQUIRES, and stop being offered there.
+    """
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    patched, status = FunPackLoadModifiers.execute(
+        temporal_patcher, settings={"sharpen": {"enabled": True, "amount": 0.4}}).result
+
+    assert patched.model_options.get("sampler_pre_cfg_function", []) == []
+    assert not getattr(patched, "funpack_dropped", None) or \
+        "funpack.sharpen" not in patched.funpack_dropped, \
+        "it was installed and then failed, rather than never being offered"
+    assert "sharpen" in status and "spatial_latent" in status, status
+
+
+def test_detail_is_offered_on_a_model_whose_latent_it_can_handle(patcher):
+    """The other half, or the test above passes on a modifier that is simply
+    broken everywhere."""
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    patched, _status = FunPackLoadModifiers.execute(
+        patcher, settings={"sharpen": {"enabled": True, "amount": 0.4}}).result
+    assert len(patched.model_options.get("sampler_pre_cfg_function", [])) == 1

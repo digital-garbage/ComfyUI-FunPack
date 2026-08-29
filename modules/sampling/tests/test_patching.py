@@ -15,18 +15,6 @@ def _needs_comfy(comfyui):
     """Imports comfy."""
 
 
-@pytest.fixture
-def patcher():
-    import torch
-    from comfy.model_patcher import ModelPatcher
-
-    class Stub(torch.nn.Module):
-        pass
-
-    return ModelPatcher(Stub(), load_device=torch.device("cpu"),
-                        offload_device=torch.device("cpu"))
-
-
 def test_a_tagged_pre_cfg_hook_is_removed(patcher):
     from core import patching
 

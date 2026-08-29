@@ -1,8 +1,13 @@
 """Detail: sharpen or soften what the model is producing, while it produces it.
 
-Declares NO traits, so it applies to every model -- image, video, anything that
-ships later. That is the other half of the compatibility rule: ALG narrows itself
-to models with a time axis, and this narrows itself to nothing.
+`REQUIRES` is `spatial_latent`, which is a statement about the KERNEL and not
+about what the picture is for: core's unsharp mask pads in two dimensions and
+raises on anything with more, so on a latent with a time axis this modifier
+cannot do the thing its label says. It used to declare no traits at all, which
+read as "works everywhere" and meant "is offered everywhere and silently drops
+itself on half of them" -- a knob that is present and inert, which is the one
+thing this project does not ship. Offered where it works; absent where it does
+not.
 
 It is also the modifier that can be SEEN on a laptop. Ratings, anchors and audio
 clocks all need hardware or history before they mean anything; this changes the
@@ -22,6 +27,7 @@ TITLE = "Detail"
 MOUNT = "generation.sampling"
 STAGE = "sampling"
 STATUS = "proven"
+REQUIRES = ["spatial_latent"]
 
 SETTINGS = {
     "enabled": {
