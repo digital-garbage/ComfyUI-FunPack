@@ -214,3 +214,50 @@ def test_the_derivation_really_is_wrong_for_h3(monkeypatch):
     derived = derive(_Model(Cfg()), 1344, 768, 124, 1)
     assert derived["samples"].shape[2] != real_latent_t, (
         "if these ever agree, the refusal above is no longer load-bearing")
+
+
+def test_wan22_matches_what_comfys_own_node_produces():
+    """Wan 2.2 changes both the channel count and the spatial ratio from 2.1,
+    and neither number appears anywhere in FunPack -- they are read off the
+    format. If the derivation were carrying its own copy, this is where it would
+    disagree."""
+    import torch
+    from modules.latent.empty.nodes import derive
+
+    width, height, length = 832, 480, 81
+    theirs = torch.zeros([1, 48, ((length - 1) // 4) + 1, height // 16, width // 16])
+    ours = derive(_Model(_config_named("WAN22_T2V")), width, height, length, 1)
+    assert tuple(ours["samples"].shape) == tuple(theirs.shape)
+
+
+def test_every_model_comfyui_ships_gets_a_latent_of_the_rank_it_asked_for():
+    """The whole catalogue, not a list somebody maintained.
+
+    A model family is supported here when its latent comes out right, and the
+    derivation reads the format rather than knowing the family -- so the honest
+    test is every config upstream ships, including the ones added after this was
+    written. A family needing more than its format publishes has to say so with
+    a module of its own; H3 is the only one that does, and it is skipped here
+    because its latent is not a single tensor.
+    """
+    import comfy.supported_models as sm
+    from modules.latent.empty.nodes import derive
+
+    checked = 0
+    for cfg in sm.models:
+        fmt = getattr(cfg, "latent_format", None)
+        if fmt is None:
+            continue
+        rank = getattr(fmt, "latent_dimensions", 2)
+        if rank not in (1, 2, 3):
+            continue
+        out = derive(_Model(cfg), 832, 480, 81, 1)
+        shape = tuple(out["samples"].shape)
+        assert len(shape) == rank + 2, f"{cfg.__name__}: {shape} is not rank {rank}"
+        assert all(dim >= 1 for dim in shape), f"{cfg.__name__}: {shape} has an empty axis"
+        assert shape[1] == int(getattr(fmt, "latent_channels", 4)), (
+            f"{cfg.__name__}: {shape[1]} channels, format says "
+            f"{getattr(fmt, 'latent_channels', 4)}")
+        checked += 1
+
+    assert checked > 80, f"only {checked} model configs were reached; upstream moved"
