@@ -78,8 +78,9 @@ def test_every_module_that_announces_a_node_actually_registers_it(loaded, comfyu
 
 def test_no_module_failed_to_import_under_comfyui(loaded):
     _, stderr = loaded
-    # core.routes is expected to fail here: PromptServer has no instance outside
-    # a running server, and that failure is guarded on purpose.
+    # Expected outside a running server: there is no PromptServer instance to
+    # attach routes to. Both spellings are the same guarded failure.
+    expected = ("core.routes", "route registration")
     bad = [line for line in stderr.splitlines()
-           if "failed to load" in line and "core.routes" not in line]
+           if "failed to load" in line and not any(e in line for e in expected)]
     assert not bad, "a module failed to import under ComfyUI:\n" + "\n".join(bad)

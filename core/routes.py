@@ -112,5 +112,13 @@ def register(routes, prefix=None):
 
 
 if web is not None and PromptServer is not None:
-    register(PromptServer.instance.routes)
-    log.note(f"serving the app at {config.UI_PREFIX}/")
+    # `PromptServer.instance` only exists once a server has been constructed.
+    # Importing `server` successfully is not the same as running inside one --
+    # a test run with ComfyUI on the path gets the class and no instance -- and
+    # an unguarded attribute here takes the whole pack down with it.
+    try:
+        register(PromptServer.instance.routes)
+    except Exception as exc:  # noqa: BLE001
+        log.failed("route registration", exc)
+    else:
+        log.note(f"serving the app at {config.UI_PREFIX}/")
