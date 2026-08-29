@@ -221,3 +221,37 @@ def test_is_on_reads_the_switch_the_same_way_everywhere():
     assert fc.is_on({"full_control": {"enabled": False}}) is False
     assert fc.is_on({}) is False
     assert fc.is_on(None) is False
+
+
+def test_the_guard_never_swallows_a_cancel():
+    """Cancel reaches a hook as an exception like any other, and a guard that
+    caught it would leave the user pressing stop on a run that will not stop.
+
+    It works today only because ComfyUI made InterruptProcessingException a
+    BaseException rather than an Exception -- a detail this depends on and does
+    not control, so it is pinned here. Widening the guard to BaseException would
+    break Cancel with nothing else failing.
+    """
+    from comfy.model_management import InterruptProcessingException
+    from core import patching
+
+    def cancelled(args):
+        raise InterruptProcessingException()
+
+    guarded = patching.guard(cancelled, "funpack.x",
+                             lambda args: args["conds_out"], patching.Dropped())
+
+    with pytest.raises(InterruptProcessingException):
+        guarded({"conds_out": "untouched"})
+
+
+def test_a_keyboard_interrupt_is_not_swallowed_either():
+    from core import patching
+
+    def interrupted(args):
+        raise KeyboardInterrupt()
+
+    guarded = patching.guard(interrupted, "funpack.x",
+                             lambda args: args["conds_out"], patching.Dropped())
+    with pytest.raises(KeyboardInterrupt):
+        guarded({"conds_out": "untouched"})
