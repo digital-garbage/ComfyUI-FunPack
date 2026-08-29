@@ -28,34 +28,13 @@ import json
 
 from comfy_api.latest import io
 
-from ..._core import (log, registry as registry_mod, relations as relations_mod,
-                      schema as schema_mod)
+from ..._core import (log, patching, registry as registry_mod,
+                      relations as relations_mod, schema as schema_mod)
 
 CAPABILITY = "modifier"
 
 # Namespaced so removing ours never touches a wrapper somebody else installed.
 KEY_PREFIX = "funpack."
-
-
-def strip_ours(patcher) -> int:
-    """Remove every wrapper and callback THIS pack installed, and nothing else.
-
-    Keys are namespaced, so a foreign wrapper is never in scope. Without this,
-    running a model through the loader twice appends a second copy of each
-    wrapper under the same key and it runs twice per step -- the accumulation
-    this design is supposed to make impossible, arriving through a different door.
-    """
-    removed = 0
-    for holder in (getattr(patcher, "wrappers", None), getattr(patcher, "callbacks", None)):
-        if not isinstance(holder, dict):
-            continue
-        for by_key in holder.values():
-            if not isinstance(by_key, dict):
-                continue
-            for key in [k for k in by_key if isinstance(k, str) and k.startswith(KEY_PREFIX)]:
-                by_key.pop(key, None)
-                removed += 1
-    return removed
 
 
 class FunPackModifierSettings(io.ComfyNode):
@@ -159,7 +138,7 @@ class FunPackLoadModifiers(io.ComfyNode):
         ordered, rejected = order(compatible)
 
         patched = model.clone()
-        stripped = strip_ours(patched)
+        stripped = patching.strip(patched, KEY_PREFIX)
         applied, notes = [], []
         if stripped:
             notes.append(f"replaced {stripped} modifier(s) already on this model")

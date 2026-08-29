@@ -8,6 +8,43 @@ def _needs_comfy(comfyui):
     """Imports comfy."""
 
 
+class _FakeOf:
+    """An object reporting another class's identity, so no weights are needed."""
+
+    def __init__(self, cls):
+        self.__class__ = type(cls.__name__, (object,), {"__module__": cls.__module__})
+
+
+def _h3_model():
+    """A model tree carrying H3's own classes, so the probe fires for the reason
+    it would fire on a real one."""
+    import comfy.ldm.minimax.model as h3
+
+    class Root:
+        def modules(self):
+            return [_FakeOf(h3.MiniMaxH3Model), _FakeOf(h3.AdalnProj)]
+
+    class Inner:
+        diffusion_model = Root()
+        model_config = None
+
+    class Model:
+        model = Inner()
+
+    return Model()
+
+
+class _NotH3Model:
+    """A model tree with none of H3's classes in it."""
+
+    class model:
+        class diffusion_model:
+            @staticmethod
+            def modules():
+                return []
+        model_config = None
+
+
 class _Vae:
     def __init__(self, out=None):
         self.seen = []
@@ -60,7 +97,7 @@ def test_a_nested_latent_nobody_claims_is_refused_not_decoded_as_one_tensor(monk
 
     nested = NestedTensor((torch.zeros(1, 24, 2, 8, 8), torch.zeros(1, 32, 2, 16)))
     with pytest.raises(RuntimeError, match="more than one part"):
-        FunPackDecode.execute({"samples": nested}, _Vae())
+        FunPackDecode.execute({"samples": nested}, _Vae(), model=_h3_model())
 
 
 def test_h3_claims_a_nested_latent_and_uses_both_vaes(monkeypatch):
@@ -75,7 +112,8 @@ def test_h3_claims_a_nested_latent_and_uses_both_vaes(monkeypatch):
                         lambda vae, samples: {"waveform": "decoded", "sample_rate": 32000})
 
     nested = NestedTensor((torch.zeros(1, 24, 2, 8, 8), torch.zeros(1, 32, 2, 16)))
-    images, audio = minimax_h3.decode(nested, vae=video_vae, audio_vae=audio_vae)
+    images, audio = minimax_h3.decode(nested, model=_h3_model(),
+                                      vae=video_vae, audio_vae=audio_vae)
 
     assert images.shape == (3, 8, 8, 3)
     assert audio["waveform"] == "decoded"
@@ -84,7 +122,38 @@ def test_h3_claims_a_nested_latent_and_uses_both_vaes(monkeypatch):
 def test_h3_does_not_speak_for_a_plain_latent():
     import torch
     from modules.models import minimax_h3
-    assert minimax_h3.decode(torch.zeros(1, 4, 8, 8), vae=_Vae()) is None
+    assert minimax_h3.decode(torch.zeros(1, 4, 8, 8), model=_h3_model(), vae=_Vae()) is None
+
+
+def test_h3_does_not_claim_another_models_two_part_latent():
+    """The reason the node takes a model at all. "Two parts" describes plenty of
+    models that are not this one, and H3's branch order is its own -- reading
+    someone else's by shape decodes noise as a picture rather than failing."""
+    import torch
+    from comfy.nested_tensor import NestedTensor
+    from modules.models import minimax_h3
+
+    nested = NestedTensor((torch.zeros(1, 24, 2, 8, 8), torch.zeros(1, 32, 2, 16)))
+    assert minimax_h3.decode(nested, model=_NotH3Model(), vae=_Vae()) is None
+
+
+def test_h3_declines_when_the_model_is_not_wired_rather_than_guessing():
+    import torch
+    from comfy.nested_tensor import NestedTensor
+    from modules.models import minimax_h3
+
+    nested = NestedTensor((torch.zeros(1, 24, 2, 8, 8), torch.zeros(1, 32, 2, 16)))
+    assert minimax_h3.decode(nested, model=None, vae=_Vae()) is None
+
+
+def test_an_unrecognised_nested_latent_says_the_model_was_not_wired():
+    import torch
+    from comfy.nested_tensor import NestedTensor
+    from modules.output.decode.nodes import FunPackDecode
+
+    nested = NestedTensor((torch.zeros(1, 24, 2, 8, 8), torch.zeros(1, 32, 2, 16)))
+    with pytest.raises(RuntimeError, match="model input is not wired"):
+        FunPackDecode.execute({"samples": nested}, _Vae())
 
 
 def test_a_missing_audio_vae_is_named_rather_than_silently_silent():
@@ -95,7 +164,8 @@ def test_a_missing_audio_vae_is_named_rather_than_silently_silent():
 
     nested = NestedTensor((torch.zeros(1, 24, 2, 8, 8), torch.zeros(1, 32, 2, 16)))
     with pytest.raises(RuntimeError, match="audio VAE"):
-        minimax_h3.decode(nested, vae=_Vae(out=torch.zeros(1, 3, 8, 8, 3)), audio_vae=None)
+        minimax_h3.decode(nested, model=_h3_model(),
+                          vae=_Vae(out=torch.zeros(1, 3, 8, 8, 3)), audio_vae=None)
 
 
 def test_a_claiming_module_that_breaks_stops_the_decode(monkeypatch):
@@ -104,7 +174,7 @@ def test_a_claiming_module_that_breaks_stops_the_decode(monkeypatch):
     from core import registry as registry_mod
     from modules.output.decode.nodes import FunPackDecode
 
-    def broken(latent, vae, audio_vae=None):
+    def broken(latent, model=None, vae=None, audio_vae=None):
         if not getattr(latent, "is_nested", False):
             return None
         raise RuntimeError("branch order changed")

@@ -59,13 +59,17 @@ def traits(model):
     return found
 
 
-def decode(latent, vae, audio_vae=None):
+def decode(latent, model=None, vae=None, audio_vae=None):
     """H3's two branches, each through the VAE that understands it.
 
-    Returns None when the latent is not nested, so this never speaks for a model
-    it does not own -- the branch order is H3's own arrangement, and reading it
-    wrongly would decode noise as a picture rather than fail.
+    Claims by IDENTITY, not by shape. "Two parts" describes plenty of models that
+    are not this one, and the branch order is H3's own arrangement -- reading
+    someone else's wrongly would decode noise as a picture rather than fail. When
+    the model is not wired we decline rather than guess, and the node then says
+    what is missing.
     """
+    if model is None or not is_h3(model):
+        return None
     if not getattr(latent, "is_nested", False):
         return None
 

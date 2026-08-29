@@ -11,6 +11,13 @@ one tensor. An AV latent carries a video branch and an audio branch that need
 different VAEs, and how they are arranged is the model's business. So the same
 rule as the empty latent applies: a model's own module may claim the decode, and
 otherwise it is the ordinary single-tensor path.
+
+The node takes the MODEL for one reason: so a provider can answer "is this mine"
+by IDENTITY rather than by shape. Without it, the H3 module claimed any latent
+that happened to have two parts -- correct today, because H3 is the only thing
+producing one, and silently wrong the moment a second AV model exists. Deciding
+from shape is how a model mismatch turns into an unrelated-looking fault instead
+of an error.
 """
 
 from comfy_api.latest import io
@@ -31,6 +38,9 @@ class FunPackDecode(io.ComfyNode):
             inputs=[
                 io.Latent.Input("samples"),
                 io.Vae.Input("vae", tooltip="The picture VAE."),
+                io.Model.Input("model", optional=True,
+                               tooltip="The model this latent came from. Needed only when a "
+                                       "model has its own way of being decoded."),
                 io.Vae.Input("audio_vae", optional=True,
                              tooltip="Only for models that generate sound alongside the video."),
             ],
@@ -42,12 +52,12 @@ class FunPackDecode(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, samples, vae, audio_vae=None) -> io.NodeOutput:
+    def execute(cls, samples, vae, model=None, audio_vae=None) -> io.NodeOutput:
         latent = samples["samples"]
 
         for spec, decode in registry_mod.current().providers(CAPABILITY):
             try:
-                claimed = decode(latent, vae=vae, audio_vae=audio_vae)
+                claimed = decode(latent, model=model, vae=vae, audio_vae=audio_vae)
             except Exception as exc:             # noqa: BLE001
                 # Same protocol as the empty latent: returning None means "not my
                 # model", so getting this far means it WAS and it broke. Falling
@@ -67,7 +77,10 @@ class FunPackDecode(io.ComfyNode):
             # raise somewhere confusing or quietly decode the wrong branch.
             raise RuntimeError(
                 "This latent has more than one part and no installed module knows "
-                "how to decode it. The module for this model is missing.")
+                "how to decode it."
+                + ("" if model is not None else
+                   " The model input is not wired, so no module could recognise it.")
+                + " The module for this model is missing.")
 
         images = vae.decode(latent)
         if len(images.shape) == 5:               # a batch of clips -> a strip of frames

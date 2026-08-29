@@ -48,7 +48,7 @@ FROZEN = {
     ],
     "FunPackLoadModifiers": ["model", "settings"],
     "FunPackModifierSettings": ["settings"],
-    "FunPackDecode": ["samples", "vae", "audio_vae"],
+    "FunPackDecode": ["samples", "vae", "model", "audio_vae"],
     "FunPackEmptyLatent": ["model", "width", "height", "length", "batch_size"],
     "FunPackDiffusionModelLoader": [
         "model_name", "weight_dtype", "compute_dtype", "attention", "fp16_accumulation",
