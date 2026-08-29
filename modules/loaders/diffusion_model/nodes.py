@@ -69,8 +69,15 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
 
         dtype = dtype_of(compute_dtype)
         if dtype is not None and hasattr(model, "set_model_compute_dtype"):
+            # Do NOT clear force_cast_weights afterwards. set_model_compute_dtype
+            # sets it deliberately, and it is what casts each layer's WEIGHTS to
+            # match. Without it the model still casts its INPUT to the requested
+            # dtype (_apply_model reads manual_cast_dtype), so the first Linear
+            # gets a bf16 activation against fp32 weights and sampling dies with
+            # "mat1 and mat2 must have the same dtype". v4 cleared it and shipped
+            # that way; it survives on constrained hardware only because the
+            # low-VRAM path forces the cast back on regardless.
             model.set_model_compute_dtype(dtype)
-            model.force_cast_weights = False
             notes.append(f"compute dtype: {compute_dtype}")
         elif dtype is not None:
             notes.append("compute dtype: unsupported by this ComfyUI, ignored")
