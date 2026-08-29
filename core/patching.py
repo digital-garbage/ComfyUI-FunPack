@@ -100,6 +100,12 @@ class Dropped:
     def __init__(self):
         self.reasons: dict = {}
 
+    def clear(self) -> None:
+        """Forget what was dropped. Called when a generation starts, because a
+        modifier that failed on the last one deserves its chance at this one --
+        and because ComfyUI's cache hands the same object to both."""
+        self.reasons.clear()
+
     def record(self, key: str, exc: BaseException) -> bool:
         """True the first time this key fails, so callers report once."""
         if key in self.reasons:

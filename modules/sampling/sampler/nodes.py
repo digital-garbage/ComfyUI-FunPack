@@ -88,8 +88,17 @@ class FunPackSampler(io.ComfyNode):
 
         from comfy_extras.nodes_custom_sampler import Noise_RandomNoise
 
-        run = run_mod.current() or run_mod.start()
+        # A generation begins here, every time. Taking the id only when none
+        # exists left every run after the first reporting as the first, because
+        # the node that used to start them is cached away by ComfyUI.
+        run = run_mod.start()
+
+        # The record travels on the model, which ComfyUI may hand us again from
+        # its cache -- so it is emptied here rather than trusted to be fresh.
+        # Otherwise a modifier dropped in one generation stays dropped in every
+        # later one, with nothing said.
         dropped = getattr(model, "funpack_dropped", None) or patching.Dropped()
+        dropped.clear()
 
         latent = latent.copy()
         # The latent says what ratios it was BUILT at; this is where a model that

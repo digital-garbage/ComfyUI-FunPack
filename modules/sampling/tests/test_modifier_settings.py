@@ -115,3 +115,44 @@ def test_nan_specifically_is_not_silently_accepted(registry):
         return                      # refused, which is the point
     pytest.fail(f"NaN was accepted as {values['alg']['strength']!r} "
                 f"(isnan={math.isnan(values['alg']['strength'])})")
+
+
+# --- refused at queue time, not at execution time --------------------------
+
+def test_a_bad_payload_is_refused_before_anything_runs(registry):
+    """ComfyUI calls validate_inputs inside validate_prompt, before any node
+    executes. Without it a typo'd module id was found only after the checkpoint
+    had already loaded -- on a rented GPU that is the cost paid before the guard
+    fires, which is the thing this project builds guards to avoid."""
+    from modules.sampling.modifiers.nodes import FunPackModifierSettings
+
+    said = FunPackModifierSettings.validate_inputs('{"ghost": {"x": 1}}')
+    assert said is not True and "no module named 'ghost'" in said
+
+
+def test_a_good_payload_passes_validation(registry):
+    from modules.sampling.modifiers.nodes import FunPackModifierSettings
+    assert FunPackModifierSettings.validate_inputs('{"alg": {"enabled": true}}') is True
+
+
+def test_an_empty_payload_passes_validation(registry):
+    from modules.sampling.modifiers.nodes import FunPackModifierSettings
+    assert FunPackModifierSettings.validate_inputs("") is True
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ("{not json", "not valid JSON"),
+    ("[1,2]", "keyed by module id"),
+    ('{"alg": {"strength": 9.0}}', "above its maximum"),
+    ('{"alg": {"strength": NaN}}', "finite"),
+])
+def test_validation_catches_the_same_things_execution_would(registry, payload, expected):
+    """The two doors must agree. A payload the queue accepts and execution
+    rejects is worse than either alone."""
+    from modules.sampling.modifiers.nodes import FunPackModifierSettings
+
+    said = FunPackModifierSettings.validate_inputs(payload)
+    assert said is not True and expected in said
+
+    with pytest.raises(RuntimeError):
+        _run(payload)

@@ -74,6 +74,45 @@ class FunPackModifierSettings(io.ComfyNode):
         )
 
     @classmethod
+    def validate_inputs(cls, settings: str = "{}"):
+        """Checked at QUEUE time, not at execution time.
+
+        ComfyUI runs this inside validate_prompt, before any node executes. That
+        matters on a rented GPU: without it a typo'd module id was found only
+        after the checkpoint had already loaded, which is the same "cost paid
+        before the guard fires" this project builds guards to avoid -- just one
+        layer up from sampling.
+
+        The payload is an opaque string to ComfyUI's own validator, so this is
+        the only place it can be understood before the queue accepts it.
+        """
+        problems = cls._problems(settings)
+        return True if not problems else "FunPack Modifier Settings: " + "; ".join(problems)
+
+    @classmethod
+    def _problems(cls, settings: str):
+        """Everything wrong with this payload, or an empty list."""
+        import json as _json
+        text = (settings or "").strip() or "{}"
+        try:
+            raw = _json.loads(text)
+        except ValueError as exc:
+            return [f"this is not valid JSON -- {exc}"]
+        if not isinstance(raw, dict):
+            return [f"expected an object keyed by module id, got {type(raw).__name__}"]
+
+        specs = registry_mod.current().specs
+        problems = []
+        for module_id, values in raw.items():
+            spec = specs.get(module_id)
+            if spec is None:
+                problems.append(f"no module named {module_id!r} is installed")
+                continue
+            _clean, said = schema_mod.check_values(spec, values)
+            problems.extend(said)
+        return problems
+
+    @classmethod
     def execute(cls, settings: str) -> io.NodeOutput:
         text = (settings or "").strip() or "{}"
         try:
@@ -150,14 +189,11 @@ class FunPackLoadModifiers(io.ComfyNode):
         stripped = patching.strip(patched, KEY_PREFIX)
         applied, notes = [], []
 
-        # A run starts here: whatever was said once may be said again, and the
-        # dropped-modifier record starts empty. Both are per-run state and they
-        # begin together so they cannot disagree about when a run began.
-        #
-        # The limit, stated: a graph without this node never marks a run, so
-        # once-per-run reverts to once-per-process there. That is the honest
-        # cost of ComfyUI having no notion of "a run started" a node can hook.
-        run = run_mod.start()
+        # This node does NOT start the run. ComfyUI caches a node whose inputs
+        # have not changed, and only the seed changes between most generations --
+        # so this executes once and every later run would report under the first
+        # one's id. The sampler marks the run instead: it is what generates, and
+        # it re-executes whenever anything about the generation differs.
         dropped = patching.Dropped()
         patched.funpack_dropped = dropped
 
@@ -216,6 +252,6 @@ class FunPackLoadModifiers(io.ComfyNode):
         for spec, why in rejected:
             notes.append(f"{spec.id}: {why}")
 
-        headline = (f"{run}: {len(applied)} modifier(s) applied"
+        headline = (f"{len(applied)} modifier(s) applied"
                     + (f": {', '.join(applied)}" if applied else ""))
         return io.NodeOutput(patched, "\n".join([headline, f"model traits: {', '.join(available) or 'none read'}", *notes]))
