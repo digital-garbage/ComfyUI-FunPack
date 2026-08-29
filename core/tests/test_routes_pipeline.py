@@ -147,3 +147,47 @@ def test_an_unknown_action_is_refused(server):
     status, body = _request(server, "POST", "/funpack/api/pipeline",
                             {"action": "explode", "slot": "model"})
     assert status == 400 and body["problems"]  # a malformed request, not an edit
+
+
+def test_an_explicitly_empty_pipeline_is_not_replaced_by_the_default(server):
+    """`slots or default()` resurrects the default, because an empty list is
+    falsy. A client that removed every slot is entitled to be told it has none
+    rather than handed the built-ins back."""
+    status, body = _request(server, "POST", "/funpack/api/pipeline",
+                            {"action": "check", "slots": []})
+    assert status == 200
+    assert body["slots"] == [], "an empty pipeline came back full"
+
+
+def test_omitting_slots_still_falls_back_to_the_default(server):
+    """The distinction that matters: absent means "use the default", empty means
+    "there is nothing". Only one of them is a fallback."""
+    status, body = _request(server, "POST", "/funpack/api/pipeline",
+                            {"action": "check"})
+    assert status == 200
+    assert body["slots"], "omitting slots should use the default pipeline"
+
+
+def test_removing_slots_one_by_one_never_resurrects_the_default(server):
+    """The failure this guards: each request carries the client's current slots,
+    so a fallback that fires on an empty list would silently hand the built-ins
+    back mid-way through and the count would jump UP."""
+    _status, body = _request(server, "GET", "/funpack/api/pipeline")
+    slots = body["slots"]
+    started_with = len(slots)
+    assert started_with > 1, "the default pipeline is too small to test this"
+
+    counts = [started_with]
+    # Consumers before sources: removing a source nothing can replace is refused,
+    # which is correct and not what this test is about.
+    for slot_id in [s["id"] for s in reversed(slots)]:
+        _status, body = _request(server, "POST", "/funpack/api/pipeline",
+                                 {"action": "remove", "slot": slot_id, "slots": slots})
+        if body["refused"]:
+            continue
+        slots = body["slots"]
+        counts.append(len(slots))
+
+    assert len(slots) < started_with, "nothing was actually removed"
+    assert counts == sorted(counts, reverse=True), (
+        f"the pipeline grew back part way through: {counts}")

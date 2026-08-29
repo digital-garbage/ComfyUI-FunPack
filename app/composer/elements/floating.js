@@ -36,7 +36,27 @@ define("floating", "window", ({
   // Bound, because another window coming to the front shifts this one's z.
   const layer = claimFor("floatingWindow", node);
 
+  // Enough of the window to grab: a strip of titlebar wide enough to hit and
+  // tall enough to see. Everything that positions the window goes through here,
+  // because the one path that did not was the one that lost it.
+  const GRABBABLE = 80;
+  const TITLEBAR = 32;
+
+  const clampIntoView = () => {
+    // Math.max(0, ...) matters on a viewport narrower than the reachable strip:
+    // without it the upper bound goes negative and the clamp pushes the window
+    // further off rather than back on.
+    box.x = Math.min(Math.max(box.x, -box.width + GRABBABLE),
+                     Math.max(0, window.innerWidth - GRABBABLE));
+    box.y = Math.min(Math.max(box.y, 0), Math.max(0, window.innerHeight - TITLEBAR));
+  };
+
   const apply = () => {
+    // Clamped on EVERY apply, not only while dragging. A position is remembered
+    // per window id, so a window moved to the right of a wide screen and reopened
+    // on a narrow one opened entirely off it -- no titlebar to grab, nothing to
+    // drag back, and the only way out was clearing localStorage by hand.
+    clampIntoView();
     node.style.left = `${box.x}px`;
     node.style.top = `${box.y}px`;
     node.style.width = `${box.width}px`;
@@ -89,14 +109,19 @@ define("floating", "window", ({
   const toFront = () => { layer.raise(); };
   node.addEventListener("pointerdown", toFront);
 
+  // A window open while the viewport shrinks has the same problem as one
+  // reopened on a smaller screen.
+  const onViewportResize = () => apply();
+  window.addEventListener("resize", onViewportResize);
+
   let start = null;
   const stopDrag = drag(titlebar, {
     onStart: () => { start = { ...box }; toFront(); },
     onMove: ({ dx, dy }) => {
-      // Clamped so a window can never be dragged somewhere it cannot be
-      // dragged back from.
-      box.x = Math.min(Math.max(start.x + dx, -box.width + 80), window.innerWidth - 80);
-      box.y = Math.min(Math.max(start.y + dy, 0), window.innerHeight - 32);
+      // apply() does the clamping, so a window can never be dragged somewhere
+      // it cannot be dragged back from -- and the rule lives in one place.
+      box.x = start.x + dx;
+      box.y = start.y + dy;
       apply();
     },
     onEnd: () => remember(id, box),
@@ -127,6 +152,7 @@ define("floating", "window", ({
       remember(id, box);
       dismissal.release();
       stopDrag(); stopResize();
+      window.removeEventListener("resize", onViewportResize);
       layer.release();
       unmount(node);
       if (onClose) onClose(reason);

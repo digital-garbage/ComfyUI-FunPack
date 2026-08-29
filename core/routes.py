@@ -123,7 +123,12 @@ def register(routes, prefix=None):
         except Exception:  # noqa: BLE001
             return web.json_response({"problems": ["that is not JSON"]}, status=400)
 
-        slots = body.get("slots") or _pipeline()
+        # `or` would resurrect the default here: an explicitly empty pipeline is
+        # falsy, and a client that has removed every slot is entitled to be told
+        # it has none rather than handed the defaults back.
+        slots = body.get("slots")
+        if slots is None:
+            slots = _pipeline()
         action, slot_id = body.get("action"), body.get("slot")
 
         if action == "replace":
