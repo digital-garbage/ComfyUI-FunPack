@@ -185,7 +185,61 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
 
         prompt[slot_id] = {"class_type": class_type, "inputs": inputs}
 
+    problems.extend(cycles(prompt))
     return prompt, problems
+
+
+def cycles(prompt: Dict[str, dict]) -> List[str]:
+    """Slots that feed each other, named in the order the loop runs.
+
+    Every other refusal here is local -- a type, a name, an index -- and a cycle
+    is the one wrong graph that is correct at every link and impossible as a
+    whole. ComfyUI does catch it, but at execution: the run is queued, accepted,
+    and dies inside the executor with a message the app has no reason to be
+    reading, which is the "refused somewhere nobody looks" shape this file
+    exists to prevent.
+
+    Walked with an explicit stack rather than recursion. Slots arrive from a
+    request, so how many there are is the caller's choice, and a long enough
+    chain would turn a refusal into a RecursionError -- a 500 instead of a
+    reason.
+    """
+    feeds = {slot_id: [value[0] for value in node["inputs"].values() if is_link(value)]
+             for slot_id, node in prompt.items()}
+    cleared: set = set()
+    reported: set = set()
+    found: List[str] = []
+
+    for root in prompt:
+        if root in cleared:
+            continue
+        stack: List[List] = [[root, 0]]     # [slot, index of its next feed]
+        path: List[str] = [root]            # what we are currently inside
+        on_path = {root}
+        while stack:
+            slot_id, i = stack[-1]
+            sources = feeds.get(slot_id, ())
+            if i >= len(sources):
+                cleared.add(slot_id)
+                on_path.discard(slot_id)
+                path.pop()
+                stack.pop()
+                continue
+            stack[-1][1] = i + 1
+            source = sources[i]
+            if source in on_path:
+                loop = path[path.index(source):]
+                # One loop, reported once, however many links close it.
+                key = frozenset(loop)
+                if key not in reported:
+                    reported.add(key)
+                    found.append(f"{' feeds '.join(reversed(loop))} feeds {loop[-1]}: "
+                                 f"a slot cannot end up feeding itself")
+            elif source not in cleared:
+                stack.append([source, 0])
+                path.append(source)
+                on_path.add(source)
+    return found
 
 
 def slots_by_id(slots: Sequence[dict]) -> Dict[str, dict]:

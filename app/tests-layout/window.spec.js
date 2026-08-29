@@ -132,3 +132,68 @@ test("a window cannot be resized into nothing", async ({ page }) => {
   expect(box.w, "the window collapsed to nothing").toBeGreaterThanOrEqual(100);
   expect(box.h).toBeGreaterThanOrEqual(100);
 });
+
+// A window that FITS the screen must be placed whole on it. The size clamp and
+// the position clamp used to be measured against two different budgets -- the
+// viewport, and the viewport minus a grabbable strip -- which do not add up, so
+// a wide window came back with its own controls past the right edge while every
+// assertion about "a strip is reachable" still passed.
+
+async function openSizedWindow(page, id, size) {
+  return page.evaluate(async ({ id, size }) => {
+    const { composer } = await import("/funpack/app/composer/composer.js");
+    composer.floating.window({
+      id, title: "Attack", body: composer.text.md({ text: "content" }), ...size,
+    });
+  }, { id, size });
+}
+
+test("a wide window remembered off a wider screen opens with its controls reachable", async ({ page }) => {
+  await page.goto("/funpack/");
+  await page.evaluate(() => localStorage.setItem(
+    "cx.win.wide", JSON.stringify({ x: 1000, y: 40, width: 900, height: 320 })));
+
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await openSizedWindow(page, "wide", {});
+
+  await expect(page.locator('.cx-window [aria-label="Close"]').first(),
+    "the close button is off screen").toBeInViewport();
+  await expect(page.locator(".cx-window-grip").first(),
+    "the resize grip is off screen").toBeInViewport();
+});
+
+test("a wide window stays whole when the viewport shrinks under it", async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await openSizedWindow(page, "wide-shrink", { x: 600, y: 40, width: 700, height: 300 });
+
+  await page.setViewportSize({ width: 800, height: 600 });
+  await expect(page.locator('.cx-window [aria-label="Close"]').first(),
+    "the close button is off screen").toBeInViewport();
+});
+
+test("dragging may still leave part of a window off the edge", async ({ page }) => {
+  // The looseness is deliberate and is what makes the rule above safe to
+  // tighten: putting a window half off the screen is an ordinary thing to do,
+  // and it must not snap back while the pointer is still holding it.
+  await page.setViewportSize({ width: 900, height: 700 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await openSizedWindow(page, "loose", { x: 100, y: 100, width: 420, height: 320 });
+
+  const bar = page.locator(".cx-window-bar").first();
+  await bar.hover();
+  await page.mouse.down();
+  await page.mouse.move(5000, 300, { steps: 5 });
+  await page.mouse.up();
+
+  const box = await page.evaluate(() => {
+    const r = document.querySelector(".cx-window").getBoundingClientRect();
+    return { x: r.x, w: r.width, vw: innerWidth };
+  });
+  expect(box.x + box.w, "dragging snapped the window fully back on screen")
+    .toBeGreaterThan(box.vw);
+});

@@ -160,3 +160,65 @@ def test_a_duplicate_id_is_refused_before_anything_else_is_reported():
     ]
     _prompt, problems = graph.build(slots, SCHEMAS)
     assert len(problems) == 1 and "more than one slot" in problems[0]
+
+
+# --- cycles ----------------------------------------------------------------
+#
+# Every other refusal is local: one link, one type, one name. A cycle is correct
+# at every link and impossible as a whole, so it is the one wrong graph that can
+# pass a per-link check and be queued.
+
+def test_two_slots_feeding_each_other_are_refused():
+    prompt, problems = graph.build([
+        {"id": "a", "node": "AddLora", "inputs": {"model": ["b", 0], "strength": 1.0}},
+        {"id": "b", "node": "AddLora", "inputs": {"model": ["a", 0], "strength": 1.0}},
+    ], SCHEMAS)
+    assert len(problems) == 1
+    assert "a" in problems[0] and "b" in problems[0]
+    assert prompt  # the graph is still returned; it is `problems` that stops it
+
+
+def test_a_slot_feeding_itself_is_refused():
+    _, problems = graph.build([
+        {"id": "loop", "node": "AddLora", "inputs": {"model": ["loop", 0], "strength": 1.0}},
+    ], SCHEMAS)
+    assert problems and "loop" in problems[0]
+
+
+def test_one_loop_is_reported_once_however_many_links_close_it():
+    _, problems = graph.build([
+        {"id": "a", "node": "LoadModel", "inputs": {"name": "x"}},
+        {"id": "b", "node": "TwoIn", "inputs": {"a": ["a", 0], "b": ["c", 0]}},
+        {"id": "c", "node": "TwoIn", "inputs": {"a": ["b", 0], "b": ["b", 0]}},
+    ], SCHEMAS)
+    assert len(problems) == 1
+
+
+def test_a_long_chain_is_walked_without_running_out_of_stack():
+    # Slots come from a request, so their number is the caller's choice: a chain
+    # deeper than Python's recursion limit must be a refusal or a graph, never a
+    # RecursionError from inside the check.
+    depth = 3000
+    slots = [{"id": "s0", "node": "LoadModel", "inputs": {"name": "x"}}]
+    slots += [{"id": f"s{i}", "node": "AddLora",
+               "inputs": {"model": [f"s{i - 1}", 0], "strength": 1.0}}
+              for i in range(1, depth)]
+    _, problems = graph.build(slots, SCHEMAS)
+    assert problems == []
+
+    slots[0] = {"id": "s0", "node": "AddLora",
+                "inputs": {"model": [f"s{depth - 1}", 0], "strength": 1.0}}
+    _, problems = graph.build(slots, SCHEMAS)
+    assert len(problems) == 1
+
+
+def test_a_diamond_is_not_a_cycle():
+    # Two paths reaching one source is ordinary wiring; a walk that marks a slot
+    # seen without unmarking it would call this a loop.
+    _, problems = graph.build([
+        {"id": "model", "node": "LoadModel", "inputs": {"name": "x"}},
+        {"id": "left", "node": "AddLora", "inputs": {"model": ["model", 0], "strength": 1.0}},
+        {"id": "right", "node": "AddLora", "inputs": {"model": ["model", 0], "strength": 1.0}},
+        {"id": "join", "node": "TwoIn", "inputs": {"a": ["left", 0], "b": ["right", 0]}},
+    ], SCHEMAS)
+    assert problems == []

@@ -43,6 +43,11 @@ define("floating", "window", ({
   const TITLEBAR = 32;
   const MIN_SIZE = 120;
 
+  // True only while the user is dragging or resizing THIS window. A window may
+  // be put partly off the right edge on purpose; it may not end up there because
+  // the screen changed under it.
+  let direct = false;
+
   const clampIntoView = () => {
     // SIZE first, because position is clamped against it. Resizing had no upper
     // bound at all: a corner drag grew the window to 4937px and carried its own
@@ -52,12 +57,27 @@ define("floating", "window", ({
     box.width = Math.max(MIN_SIZE, Math.min(box.width, window.innerWidth));
     box.height = Math.max(MIN_SIZE, Math.min(box.height, window.innerHeight));
 
+    // Two rules, because the two situations are not the same one.
+    //
+    // Dragging: a grabbable strip is guaranteed and the rest may hang off the
+    // edge, because that is a placement the user just made.
+    //
+    // Everything else -- opening, restoring a remembered box, the viewport
+    // shrinking -- is not a placement anybody made HERE, so the window comes
+    // fully back on screen. Clamping the width against the viewport and the
+    // position against GRABBABLE are two budgets that do not add up: a 900px
+    // window remembered at x=1000 came back at x=720 of an 800px screen, still
+    // carrying its close and maximise buttons past the right edge. The size
+    // clamp above guarantees the window FITS, so it can be placed whole.
+    //
     // Math.max(0, ...) matters on a viewport narrower than the reachable strip:
     // without it the upper bound goes negative and the clamp pushes the window
     // further off rather than back on.
-    box.x = Math.min(Math.max(box.x, -box.width + GRABBABLE),
-                     Math.max(0, window.innerWidth - GRABBABLE));
-    box.y = Math.min(Math.max(box.y, 0), Math.max(0, window.innerHeight - TITLEBAR));
+    const leftMost = direct ? -box.width + GRABBABLE : 0;
+    const rightMost = direct ? window.innerWidth - GRABBABLE : window.innerWidth - box.width;
+    const lowest = direct ? window.innerHeight - TITLEBAR : window.innerHeight - box.height;
+    box.x = Math.min(Math.max(box.x, leftMost), Math.max(0, rightMost));
+    box.y = Math.min(Math.max(box.y, 0), Math.max(0, lowest));
   };
 
   const apply = () => {
@@ -125,7 +145,7 @@ define("floating", "window", ({
 
   let start = null;
   const stopDrag = drag(titlebar, {
-    onStart: () => { start = { ...box }; toFront(); },
+    onStart: () => { start = { ...box }; direct = true; toFront(); },
     onMove: ({ dx, dy }) => {
       // apply() does the clamping, so a window can never be dragged somewhere
       // it cannot be dragged back from -- and the rule lives in one place.
@@ -133,11 +153,11 @@ define("floating", "window", ({
       box.y = start.y + dy;
       apply();
     },
-    onEnd: () => remember(id, box),
+    onEnd: () => { direct = false; remember(id, box); },
   });
 
   const stopResize = grip ? drag(grip, {
-    onStart: () => { start = { ...box }; },
+    onStart: () => { start = { ...box }; direct = true; },
     onMove: ({ dx, dy }) => {
       // Resizing may not push the window's own controls off the screen. The
       // grip is bottom-right and the close button is top-right, so growing
@@ -153,7 +173,7 @@ define("floating", "window", ({
       box.height = Math.min(Math.max(120, start.height + dy), roomBelow);
       apply();
     },
-    onEnd: () => remember(id, box),
+    onEnd: () => { direct = false; remember(id, box); },
   }) : () => {};
 
   // Escape closes, but a window does not close on an outside click: it is a
