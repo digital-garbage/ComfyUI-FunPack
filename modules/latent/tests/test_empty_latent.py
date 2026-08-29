@@ -143,3 +143,74 @@ class _FakeOf:
 
     def __init__(self, cls):
         self.__class__ = type(cls.__name__, (object,), {"__module__": cls.__module__})
+
+
+# --- execute(), through the real registry ---------------------------------
+#
+# The dispatch between "claimed" and "derived" is the whole point of this node
+# and had no coverage at all: the tests above only ever called derive() and the
+# provider directly, never the node that chooses between them.
+
+def test_execute_uses_the_real_registry_and_lets_h3_claim_its_own_latent():
+    from modules.latent.empty.nodes import FunPackEmptyLatent
+
+    out = FunPackEmptyLatent.execute(_H3Model(), width=1344, height=768, length=124)
+    latent, status = out.result
+
+    assert "model_minimax_h3" in status, f"H3 did not claim its latent: {status!r}"
+    video, _audio = latent["samples"].unbind()
+    assert video.shape[1] == 24
+
+
+def test_execute_derives_for_a_model_nothing_claims():
+    from modules.latent.empty.nodes import FunPackEmptyLatent
+
+    out = FunPackEmptyLatent.execute(_Model(_config_named("SDXL")), 512, 512, 1)
+    latent, status = out.result
+    assert "latent format" in status
+    assert tuple(latent["samples"].shape) == (1, 4, 64, 64)
+
+
+def test_a_provider_that_breaks_on_its_own_model_stops_the_node(monkeypatch):
+    """The fault this replaced: a claiming provider that raised was treated like
+    "not my model", so the node fell through and derived a shape that is wrong
+    for exactly the model the provider existed to handle -- and said it worked."""
+    from modules.latent.empty import nodes
+    from modules.models import minimax_h3
+
+    def broken(model, **kw):
+        if not minimax_h3.is_h3(model):
+            return None
+        raise RuntimeError("upstream moved temporal_shape")
+
+    monkeypatch.setattr(minimax_h3, "empty_latent", broken)
+    # The registry holds the function object, so patch what it hands out too.
+    from core import registry as registry_mod
+    spec = registry_mod.current().specs["model_minimax_h3"]
+    monkeypatch.setitem(spec.provides, "empty_latent", broken)
+
+    with pytest.raises(RuntimeError, match="Refusing to substitute"):
+        nodes.FunPackEmptyLatent.execute(_H3Model(), width=1344, height=768, length=124)
+
+
+def test_the_derivation_really_is_wrong_for_h3(monkeypatch):
+    """Why the refusal above matters, in numbers. H3's grid is not linear, so the
+    generic formula is not close -- it is 16% short, with nothing downstream
+    reporting it."""
+    from comfy_extras.nodes_minimax_h3 import temporal_shape
+    from modules.latent.empty.nodes import derive
+
+    _frames, real_latent_t, _audio_t = temporal_shape(124)
+
+    class H3Format:
+        latent_channels = 32
+        latent_dimensions = 3
+        spacial_downscale_ratio = 16
+        temporal_downscale_ratio = 4
+
+    class Cfg:
+        latent_format = H3Format()
+
+    derived = derive(_Model(Cfg()), 1344, 768, 124, 1)
+    assert derived["samples"].shape[2] != real_latent_t, (
+        "if these ever agree, the refusal above is no longer load-bearing")

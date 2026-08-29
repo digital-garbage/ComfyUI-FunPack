@@ -11,6 +11,14 @@ Two paths, and the order matters:
    single-tensor model: SDXL (4ch, /8), Wan21 (16ch, /8, /4) and LTXV (128ch,
    /32, /8) all come out right, including models that ship after this is written.
 
+The provider protocol, and it matters: **return None for "not my model", and let
+anything else raise.** A provider decides whether it recognises the model FIRST,
+before touching anything that can fail, so an exception means it had already
+claimed the model. Such a failure therefore stops the node instead of falling
+through to the derivation -- deriving a claimed model produces a latent that is
+quietly wrong rather than absent. For H3 at length=124 the derivation gives 31
+latent frames where the real grid is 37: a 16% shorter video, reported as success.
+
 The consequence worth stating: nothing here knows the name of a single model, and
 nothing here assumes video. A 2-D latent format yields an image latent because
 that is what the model says it wants.
@@ -96,9 +104,16 @@ class FunPackEmptyLatent(io.ComfyNode):
                 claimed = build(model, width=width, height=height,
                                 length=length, batch_size=batch_size)
             except Exception as exc:             # noqa: BLE001
-                # One module's mistake must not decide the shape for every model.
+                # It got past recognising the model, so this IS its model and it
+                # broke. Carrying on to the derivation would answer a question
+                # this module had already claimed, with a shape that is wrong in
+                # a way nothing downstream reports.
                 log.failed(f"{spec.id}.{CAPABILITY}", exc)
-                continue
+                raise RuntimeError(
+                    f"{spec.id} handles this model's latent and failed to build it: "
+                    f"{type(exc).__name__}: {exc}. Refusing to substitute a generic "
+                    f"shape, which would be silently wrong for this model."
+                ) from exc
             if claimed is not None:
                 return io.NodeOutput(claimed, f"{spec.id} built this latent")
 
