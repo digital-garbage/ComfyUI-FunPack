@@ -1,10 +1,7 @@
-# pyproject.toml
 [project]
 name = "ComfyUI-FunPack" # Unique identifier for your node. Immutable after creation.
-description = "An AI movie studio inside ComfyUI: the Cutting Room browser-based video editor with timeline, per-scene prompts and one-click montage generation, plus a self-improving engine that learns from your ratings. Includes the full node stack (Studio, Refiner V2, LTXAV Scene Chain Sampler) for classic graph workflows."
-version = "4.0.0" # Custom Node version. Must be semantically versioned.
-# Release codename ("Auspicious Asparagus" for all of 3.x) lives in
-# movie_editor/backend/git_update.py:CODENAMES — keyed by major, shown in Settings ▸ About.
+description = "An AI movie studio inside ComfyUI: a browser-based studio with timeline, per-scene prompts and one-click montage generation, plus a self-improving engine that learns from your ratings. Every feature is a module, so a broken one is simply absent."
+version = "5.0.0" # Custom Node version. Must be semantically versioned.
 license = { text = "GNU GPL v3" }
 dependencies  = [] # Filled in from requirements.txt
 
@@ -15,3 +12,11 @@ Repository = "https://github.com/digital-garbage/ComfyUI-FunPack"
 PublisherId = "digital-garbage" # TODO (fill in Publisher ID from Comfy Registry Website).
 DisplayName = "ComfyUI-FunPack" # Display name for the Custom Node. Can be changed later.
 Icon = "https://example.com/icon.png" # SVG, PNG, JPG or GIF (MAX. 800x400px)
+
+[tool.pytest.ini_options]
+# importlib mode so pytest does not walk up into the repo root looking for a
+# package name. The root __init__.py is ComfyUI's entry point: it uses relative
+# imports because ComfyUI loads the pack by file location, and importing it
+# outside that context fails by design.
+addopts = "--import-mode=importlib"
+testpaths = ["core/tests", "modules"]

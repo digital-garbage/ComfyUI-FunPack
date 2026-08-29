@@ -20,7 +20,7 @@ from .schema import SchemaError, validate
 FIELDS = {
     "id": "ID", "title": "TITLE", "mount": "MOUNT", "settings": "SETTINGS",
     "requires": "REQUIRES", "after": "AFTER", "before": "BEFORE",
-    "stage": "STAGE", "status": "STATUS",
+    "stage": "STAGE", "status": "STATUS", "nodes": "NODES", "traits": "TRAITS",
 }
 
 
@@ -63,8 +63,24 @@ def _feature_dirs(root: Path) -> List[Path]:
     return found
 
 
-def scan(root: Optional[Path] = None, package: str = "modules") -> Registry:
+def package_root() -> str:
+    """The dotted prefix `modules` lives under, or "" when it is top-level.
+
+    ComfyUI imports a pack with `spec_from_file_location(<full path>, ...)`, so
+    the pack's own name is that path string and its subpackages are only
+    reachable beneath it -- an absolute `import modules` finds nothing. Under the
+    dev server and the tests the repo root IS on sys.path, so the prefix is empty.
+    Deriving it means one code path works in both.
+    """
+    parent = (__package__ or "").rsplit(".", 1)
+    return parent[0] if len(parent) == 2 else ""
+
+
+def scan(root: Optional[Path] = None, package: Optional[str] = None) -> Registry:
     """Import every module under `root` and collect the valid announcements."""
+    if package is None:
+        prefix = package_root()
+        package = f"{prefix}.modules" if prefix else "modules"
     root = Path(root or config.MODULES_DIR)
     registry = Registry()
 

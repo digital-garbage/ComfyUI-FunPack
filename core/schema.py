@@ -128,12 +128,63 @@ def _validate_when(when: Any, where: str, siblings: Dict[str, dict], key: str) -
             raise SchemaError(f"{where}'s when value for {other!r} must be a scalar or a list.")
 
 
+def validate_nodes(value: Any, module_id: str) -> list:
+    """The node classes a module contributes.
+
+    Checked structurally, not by isinstance against `io.ComfyNode`, so core stays
+    importable without ComfyUI -- the same property that lets the whole suite run
+    outside it. The ComfyUI-specific checks (a FunPack-prefixed node_id, and no
+    two modules claiming one id) happen in `core.nodes`, where ComfyUI exists.
+    """
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        raise SchemaError(f"module {module_id!r}'s nodes must be a list.")
+
+    for node in value:
+        if not isinstance(node, type):
+            raise SchemaError(
+                f"module {module_id!r} lists {node!r} as a node, which is not a class."
+            )
+        for method in ("define_schema", "execute"):
+            if not callable(getattr(node, method, None)):
+                raise SchemaError(
+                    f"module {module_id!r}'s node {node.__name__} has no {method}(). "
+                    f"A FunPack node is a comfy_api io.ComfyNode subclass."
+                )
+    return list(value)
+
+
+def validate_traits(value: Any, module_id: str):
+    """A module's trait provider: callable(model) -> iterable of trait names."""
+    if value is None:
+        return None
+    if not callable(value):
+        raise SchemaError(
+            f"module {module_id!r}'s traits must be a callable(model), got "
+            f"{type(value).__name__}."
+        )
+    return value
+
+
 def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
     """A validated ModuleSpec, or SchemaError naming what is wrong."""
-    for required in ("id", "title", "mount"):
+    for required in ("id", "title"):
         value = announcement.get(required)
         if not isinstance(value, str) or not value.strip():
             raise SchemaError(f"module {source or '?'} has no {required}.")
+
+    # A mount point is only meaningful for a module with something to render.
+    # A loader or a node-only module has no panel, and forcing it to name a
+    # region would make it invent one -- which then shows up as "hidden", i.e.
+    # a module reported as broken for having nothing to show.
+    mount = announcement.get("mount")
+    renders = bool(announcement.get("settings")) or bool(announcement.get("ui"))
+    if renders and (not isinstance(mount, str) or not mount.strip()):
+        raise SchemaError(
+            f"module {announcement.get('id') or source or '?'} has settings to render "
+            f"but no mount."
+        )
+    if mount is not None and not isinstance(mount, str):
+        raise SchemaError(f"module {announcement.get('id')!r}'s mount must be a string.")
 
     stage = announcement.get("stage", "sampling")
     if stage not in STAGES:
@@ -158,9 +209,11 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
         return list(value)
 
     return ModuleSpec(
+        nodes=validate_nodes(announcement.get("nodes") or [], announcement["id"]),
+        traits=validate_traits(announcement.get("traits"), announcement["id"]),
         id=announcement["id"],
         title=announcement["title"],
-        mount=announcement["mount"],
+        mount=announcement.get("mount") or "",
         settings=settings,
         requires=_ids("requires"),
         after=_ids("after"),

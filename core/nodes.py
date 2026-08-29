@@ -1,0 +1,95 @@
+"""Collecting the ComfyUI nodes that modules announced.
+
+Core holds no list of nodes. It walks the registry, takes whatever each module
+declared in `NODES`, and hands the result to ComfyUI -- the same inversion the
+panels use, applied to node registration.
+
+Nothing here may raise. ComfyUI wraps `comfy_entrypoint` in one try/except and
+skips the ENTIRE pack on any exception (nodes.py, the `elif` branch), so a single
+bad module must not take every other node down with it. Every failure is caught,
+logged once, and turns into that node's absence.
+"""
+
+from typing import List, Optional, Tuple
+
+from . import log, registry as registry_mod
+
+# Node ids are global in ComfyUI: `NODE_CLASS_MAPPINGS[schema.node_id]`, with no
+# collision check -- a clash silently overwrites whoever registered first. The
+# prefix is what keeps FunPack out of everyone else's namespace.
+PREFIX = "FunPack"
+
+
+def _schema_of(node) -> Optional[object]:
+    """The node's V3 schema, or None if it cannot produce one."""
+    getter = getattr(node, "GET_SCHEMA", None)
+    if not callable(getter):
+        return None
+    return getter()
+
+
+def collect(registry=None) -> Tuple[List[type], List[Tuple[str, str]]]:
+    """(nodes, rejected) -- rejected carries the reason, for the modules dump."""
+    reg = registry if registry is not None else registry_mod.scan()
+    nodes: List[type] = []
+    rejected: List[Tuple[str, str]] = []
+    claimed = {}                                 # node_id -> module id
+
+    # Sorted so the set of registered nodes does not depend on filesystem order.
+    for spec in sorted(reg.specs.values(), key=lambda s: s.id):
+        for node in spec.nodes:
+            name = getattr(node, "__name__", repr(node))
+            where = f"{spec.id}.{name}"
+            try:
+                schema = _schema_of(node)
+            except Exception as exc:             # noqa: BLE001 -- absence, not a crash
+                log.failed(where, exc)
+                rejected.append((where, f"{type(exc).__name__}: {exc}"))
+                continue
+
+            if schema is None:
+                rejected.append((where, "is not a comfy_api io.ComfyNode (no GET_SCHEMA)"))
+                log.note(f"{where} is not a ComfyUI V3 node; not registered.")
+                continue
+
+            node_id = getattr(schema, "node_id", None)
+            if not isinstance(node_id, str) or not node_id.startswith(PREFIX):
+                rejected.append((where, f"node_id {node_id!r} does not start with {PREFIX!r}"))
+                log.note(f"{where} declares node_id {node_id!r}, which is not "
+                         f"prefixed {PREFIX!r}; not registered.")
+                continue
+
+            if node_id in claimed:
+                # ComfyUI would let the second one silently replace the first,
+                # and which one wins would depend on import order.
+                rejected.append((where, f"duplicate node_id {node_id!r}, already "
+                                        f"declared by {claimed[node_id]}"))
+                log.note(f"{where} reuses node_id {node_id!r}, already declared by "
+                         f"{claimed[node_id]}; not registered.")
+                continue
+
+            claimed[node_id] = where
+            nodes.append(node)
+
+    return nodes, rejected
+
+
+def extension():
+    """A ComfyExtension over whatever announced itself, or None without ComfyUI."""
+    try:
+        from comfy_api.latest import ComfyExtension
+    except Exception as exc:                     # noqa: BLE001 -- not inside ComfyUI
+        log.failed("comfy_api.latest", exc)
+        return None
+
+    nodes, rejected = collect()
+
+    class FunPackExtension(ComfyExtension):
+        async def get_node_list(self) -> List[type]:
+            return list(nodes)
+
+    if rejected:
+        log.note(f"{len(rejected)} node(s) were not registered; "
+                 + "; ".join(f"{where}: {why}" for where, why in rejected))
+    log.note(f"registered {len(nodes)} node(s)")
+    return FunPackExtension()

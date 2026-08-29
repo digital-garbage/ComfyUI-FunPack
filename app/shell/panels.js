@@ -23,6 +23,12 @@ export async function mountAll(manifest, { load = (path) => import(path) } = {})
   const hidden = [];
 
   for (const spec of manifest.modules || []) {
+    // Nothing to render. A module may exist purely to contribute ComfyUI nodes
+    // (a loader, a model's compatibility module), and those have no panel and
+    // no mount. Skipping is not hiding: there is no failure to report.
+    const renders = Object.keys(spec.settings || {}).length > 0 || spec.ui;
+    if (!renders) continue;
+
     const host = hostFor(spec.mount);
     if (!host) {
       hidden.push({ id: spec.id, why: `no region offers "${spec.mount}" (offered: ${offered().join(", ") || "none"})` });
