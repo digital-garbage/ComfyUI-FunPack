@@ -286,3 +286,41 @@ def test_a_one_axis_latent_is_refused_rather_than_guessed():
     for cfg in families:
         with pytest.raises(RuntimeError, match="not derivable"):
             derive(_Model(cfg), 832, 480, 81, 1)
+
+
+def test_a_claimant_that_breaks_is_not_reported_as_absent(monkeypatch, capsys):
+    """The log line, not just the exception.
+
+    `log.failed` means "did not load". A provider that loaded, recognised the
+    model and then broke is a different thing, and calling it absent sends
+    whoever reads the log looking for an import error that never happened --
+    which is the whole reason this project separated the levels.
+    """
+    from core import log, registry as registry_mod
+    from modules.latent.empty.nodes import FunPackEmptyLatent
+
+    class Spec:
+        id = "pretend_model"
+
+    def explode(model, **_kw):
+        raise RuntimeError("the frame grid is upside down")
+
+    class Registry:
+        specs = {}
+
+        def providers(self, _capability):
+            return [(Spec(), explode)]
+
+    monkeypatch.setattr(registry_mod, "current", Registry)
+    log._reset()
+
+    with pytest.raises(RuntimeError, match="upside down"):
+        FunPackEmptyLatent.execute(_Model(_config_named("SDXL")), 512, 512, 1, 1)
+
+    said = log.history()
+    assert said, "nothing was said about a provider that broke mid-build"
+    assert not any("did not load" in r["message"] for r in said), \
+        [r["message"] for r in said]
+    assert any("failed while building" in r["message"] for r in said), \
+        [r["message"] for r in said]
+    assert said[-1]["level"] == log.WARNING
