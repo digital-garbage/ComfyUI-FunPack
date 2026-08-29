@@ -159,3 +159,12 @@ def test_the_proxy_is_transparent_for_everything_else():
     assert proxy.inner_model == "the real model"
     proxy.something = 7
     assert inner.something == 7, "an assignment did not reach the real denoiser"
+
+
+def test_a_threshold_that_is_not_a_number_would_disable_it_everywhere():
+    """Why the check at the load node matters, in ALG's own terms. NaN compares
+    False against every sigma, so the anchor is never loosened at any step --
+    and nothing about the run looks wrong."""
+    from modules.sampling.alg.blur import use_blurred
+    assert all(use_blurred(sigma, float("nan")) is False
+               for sigma in (0.99, 0.5, 0.01))

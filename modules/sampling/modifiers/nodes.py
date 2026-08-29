@@ -163,8 +163,24 @@ class FunPackLoadModifiers(io.ComfyNode):
         if stripped:
             notes.append(f"replaced {stripped} modifier(s) already on this model")
 
+        # Checked HERE, not only where the payload was made. A FUNPACK_SETTINGS
+        # socket is typed by a string tag, so a dict can reach this node without
+        # ever passing through FunPackModifierSettings -- a raw API prompt, or a
+        # second producer of that type. Validating only at the producer is a
+        # guard on one of two doors, and the one left open let NaN through:
+        # `sigma > nan` is False at every step, so a modifier became a permanent
+        # no-op while reporting that it had been applied.
+        problems = []
+        chosen = {}
         for spec in ordered:
-            values = (settings or {}).get(spec.id) or spec.defaults()
+            values, said = schema_mod.check_values(spec, (settings or {}).get(spec.id))
+            chosen[spec.id] = values
+            problems.extend(said)
+        if problems:
+            raise RuntimeError("FunPack Load Modifiers:\n  " + "\n  ".join(problems))
+
+        for spec in ordered:
+            values = chosen[spec.id]
             install = spec.provides[CAPABILITY]
             try:
                 note = install(patched, values, key=KEY_PREFIX + spec.id)

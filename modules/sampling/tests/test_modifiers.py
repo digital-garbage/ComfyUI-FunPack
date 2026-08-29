@@ -252,3 +252,37 @@ def test_a_settings_payload_of_the_wrong_shape_is_refused_clearly(registry, patc
 
     with pytest.raises(RuntimeError, match="keyed by module id"):
         FunPackLoadModifiers.execute(patcher, settings=["not", "a", "dict"])
+
+
+def test_values_are_checked_where_they_are_used_not_only_where_they_were_made(registry, patcher):
+    """The settings socket is typed by a string tag, so a dict can reach this
+    node without passing through FunPackModifierSettings. Validating only at the
+    producer guards one of two doors, and NaN walked through the other: sigma >
+    nan is False at every step, so the modifier became a permanent no-op while
+    reporting that it had been applied."""
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    registry.specs["alg"] = _spec("alg", lambda t, v, key: "on", settings={
+        "until_sigma": {"type": "float", "default": 0.6, "min": 0.0, "max": 1.0, "label": "T"},
+    })
+
+    with pytest.raises(RuntimeError, match="finite"):
+        FunPackLoadModifiers.execute(patcher, settings={"alg": {"until_sigma": float("nan")}})
+
+
+def test_an_out_of_range_value_is_refused_at_this_node_too(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    registry.specs["alg"] = _spec("alg", lambda t, v, key: "on", settings={
+        "strength": {"type": "float", "default": 4.0, "min": 1.0, "max": 16.0, "label": "S"},
+    })
+    with pytest.raises(RuntimeError, match="above its maximum"):
+        FunPackLoadModifiers.execute(patcher, settings={"alg": {"strength": 99.0}})
+
+
+def test_a_setting_no_module_declares_is_refused_at_this_node_too(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    registry.specs["alg"] = _spec("alg", lambda t, v, key: "on", settings={
+        "strength": {"type": "float", "default": 4.0, "min": 1.0, "max": 16.0, "label": "S"},
+    })
+    with pytest.raises(RuntimeError, match="no setting named"):
+        FunPackLoadModifiers.execute(patcher, settings={"alg": {"strenght": 4.0}})

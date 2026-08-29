@@ -13,6 +13,15 @@ of its own. It attaches to the MODEL, so it applies to whatever sampler is wired
 H3" -- it needs a latent with a time axis and a pinned anchor, and any model with
 both gets it, including ones nobody here has heard of.
 
+KNOWN ASSUMPTION: the anchor is latent frame 0. That is true of every i2v setup
+this can currently be wired into, and it is what v4 assumed. It is NOT true in
+general -- H3 can pin a keyframe at any frame -- so if an interior-pin mechanism
+is ever ported, ALG must take the frame indices from the pin rather than assume
+the first. The information to do it properly is already present in the
+denoise_mask, which is what marks the locked frames; deriving from it is left
+undone deliberately, because there is nothing yet that pins anywhere else and a
+derivation with no consumer cannot be checked against reality.
+
 What is NOT ported from v4: the packed-layout path, which reached into a
 model-specific arrangement of the latent to find the video stream. Where the
 anchor is not a plain [B, C, T, H, W] tensor this stands down and says so once,
