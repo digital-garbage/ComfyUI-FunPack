@@ -88,6 +88,15 @@
 .cx-split-v { flex-direction: column; }
 .cx-split-pane { flex: 1 1 0; min-width: 0; min-height: 0; overflow: auto; }
 .cx-split > .cx-split-pane:first-child { flex: 0 0 auto; }
+
+/* A horizontal split stacks rather than overflowing when there is not room for
+   two columns. The first pane carries an inline size, so on a narrow screen it
+   could not shrink and the whole page scrolled sideways -- 407px of content in
+   a 360px viewport. Wrapping rather than a media query because the kit sizes
+   itself from its container, not from the window. */
+.cx-split-h { flex-wrap: wrap; }
+.cx-split-h > .cx-split-pane { min-inline-size: min(100%, 260px); }
+.cx-split-h > .cx-split-pane:first-child { max-inline-size: 100%; }
 .cx-split-bar { flex: none; background: transparent; position: relative; }
 .cx-split-h > .cx-split-bar { width: 7px; cursor: col-resize; }
 .cx-split-v > .cx-split-bar { height: 7px; cursor: row-resize; }

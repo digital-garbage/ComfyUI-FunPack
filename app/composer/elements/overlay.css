@@ -46,7 +46,14 @@
   border: var(--bw) solid var(--line); border-radius: var(--r-4);
   box-shadow: var(--shadow-3);
   padding: var(--sp-2);
+  /* Both axes bounded, not just one. The height was capped from the start and
+     the width was not, so a long unbroken string -- a file path, a prompt, a
+     model filename -- made the popover wider than the screen and no amount of
+     repositioning could bring it back: anchor.js can move a box, it cannot
+     shrink one. Measured at 1436px inside a 1280px viewport. */
   max-height: 60vh; overflow-y: auto;
+  max-inline-size: min(92vw, 480px);
+  overflow-wrap: anywhere;
   animation: cx-pop var(--dur-1) var(--ease-standard);
 }
 .cx-popover-menu { min-width: 180px; }

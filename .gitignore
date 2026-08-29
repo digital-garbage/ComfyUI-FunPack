@@ -24,3 +24,7 @@ movie_editor/backend/reference/*.workflow.json
 
 # Dev-only: the app ships as plain ES modules, users never run npm.
 node_modules/
+
+# Playwright: browsers live in a shared cache, results and traces are per-run
+app/test-results/
+app/playwright-report/
