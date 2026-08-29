@@ -192,3 +192,63 @@ def test_a_modifier_with_no_values_gets_its_declared_defaults(registry, patcher)
     })
     FunPackLoadModifiers.execute(patcher)
     assert got == {"strength": 0.5}
+
+
+def test_running_a_model_through_the_loader_twice_does_not_double_the_modifier(registry, patcher):
+    """The first version protected the ORIGINAL model and not its own output.
+    `add_wrapper_with_key` appends, and a clone carries the list, so chaining two
+    of these -- two passes, a flattened subgraph -- installed the same wrapper
+    twice and ran it twice per step at double strength, reporting "1 modifier
+    applied" both times."""
+    from comfy.patcher_extension import WrappersMP
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    def install(target, values, key):
+        target.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, key, lambda e, *a, **k: e(*a, **k))
+        return "on"
+
+    registry.specs["alg"] = _spec("alg", install)
+
+    once = FunPackLoadModifiers.execute(patcher).result[0]
+    twice = FunPackLoadModifiers.execute(once).result[0]
+
+    installed = twice.wrappers.get(WrappersMP.SAMPLER_SAMPLE, {}).get("funpack.alg", [])
+    assert len(installed) == 1, f"the modifier is installed {len(installed)} times"
+
+
+def test_chaining_says_that_it_replaced_the_earlier_pass(registry, patcher):
+    from comfy.patcher_extension import WrappersMP
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    def install(target, values, key):
+        target.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, key, lambda e, *a, **k: e(*a, **k))
+        return "on"
+
+    registry.specs["alg"] = _spec("alg", install)
+    once = FunPackLoadModifiers.execute(patcher).result[0]
+    _model, status = FunPackLoadModifiers.execute(once).result
+    assert "replaced 1 modifier" in status
+
+
+def test_stripping_leaves_wrappers_this_pack_did_not_install(registry, patcher):
+    """Namespaced keys exist so cleanup is surgical. Removing someone else's
+    wrapper would be a worse fault than the one being fixed."""
+    from comfy.patcher_extension import WrappersMP
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    patcher.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, "someone_else",
+                                 lambda e, *a, **k: e(*a, **k))
+    registry.specs["m"] = _spec("m", lambda t, v, key: "on")
+
+    out = FunPackLoadModifiers.execute(patcher).result[0]
+    assert "someone_else" in out.wrappers.get(WrappersMP.SAMPLER_SAMPLE, {})
+
+
+def test_a_settings_payload_of_the_wrong_shape_is_refused_clearly(registry, patcher):
+    """The socket type is a string match, so anything can arrive on it. An
+    AttributeError traceback is not the error reporting the rest of this uses."""
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    registry.specs["m"] = _spec("m", lambda t, v, key: "on")
+
+    with pytest.raises(RuntimeError, match="keyed by module id"):
+        FunPackLoadModifiers.execute(patcher, settings=["not", "a", "dict"])

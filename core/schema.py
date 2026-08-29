@@ -5,6 +5,7 @@ does not get a best-effort panel -- it does not load at all, and says why once.
 That is the same rule the UI follows: absent, not approximate.
 """
 
+import math
 from typing import Any, Dict, List, Tuple
 
 from .contract import NUMERIC, STAGES, TYPES, UI_HINTS, ModuleSpec
@@ -235,6 +236,11 @@ def _value_problem(declared: dict, key: str, value: Any, module_id: str):
     if kind in NUMERIC:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return f"{where} is a {kind}, got {value!r}."
+        # NaN and the infinities compare False against BOTH bounds, so a range
+        # check alone lets them through -- and json.loads accepts all three by
+        # default. A NaN strength reaches sampling and poisons it silently.
+        if not math.isfinite(value):
+            return f"{where} must be a finite number, got {value!r}."
         if kind == "int" and not isinstance(value, int):
             return f"{where} is an int, got {value!r}."
         low, high = declared.get("min"), declared.get("max")

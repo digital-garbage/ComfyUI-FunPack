@@ -12,10 +12,16 @@ two consequences worth stating:
   per-step modifier still runs. The sampler's cooperation is not required, so no
   sampler can own them -- which is the whole architectural claim, made physical.
 * `ModelPatcher.clone()` copies the wrapper lists per key, so installing on the
-  clone cannot touch the model everyone else is holding. Accumulation across runs
-  -- the fault that once degraded output for a hundred generations and survived
-  every reset short of a restart -- is structurally impossible here rather than
-  something to remember to clean up.
+  clone cannot touch the model everyone else is holding.
+
+That second point protects the ORIGINAL, and on its own it does not stop this
+node's own output being fed back in. `add_wrapper_with_key` APPENDS to a list
+under the key, and a clone carries that list, so running a model through here
+twice -- two passes, a flattened subgraph, anything that chains -- installed the
+same wrapper twice and ran it twice per step at double strength, reporting
+"1 modifier applied" both times. So every install is preceded by stripping our
+own keys: tag, then strip, which is the discipline the leaked-hook fault taught
+this project the first time. Foreign keys are never touched.
 """
 
 import json
@@ -28,6 +34,27 @@ CAPABILITY = "modifier"
 
 # Namespaced so removing ours never touches a wrapper somebody else installed.
 KEY_PREFIX = "funpack."
+
+
+def strip_ours(patcher) -> int:
+    """Remove every wrapper and callback THIS pack installed, and nothing else.
+
+    Keys are namespaced, so a foreign wrapper is never in scope. Without this,
+    running a model through the loader twice appends a second copy of each
+    wrapper under the same key and it runs twice per step -- the accumulation
+    this design is supposed to make impossible, arriving through a different door.
+    """
+    removed = 0
+    for holder in (getattr(patcher, "wrappers", None), getattr(patcher, "callbacks", None)):
+        if not isinstance(holder, dict):
+            continue
+        for by_key in holder.values():
+            if not isinstance(by_key, dict):
+                continue
+            for key in [k for k in by_key if isinstance(k, str) and k.startswith(KEY_PREFIX)]:
+                by_key.pop(key, None)
+                removed += 1
+    return removed
 
 
 class FunPackModifierSettings(io.ComfyNode):
@@ -114,6 +141,12 @@ class FunPackLoadModifiers(io.ComfyNode):
         from ..._core import traits as traits_mod
         from core.relations import order
 
+        if settings is not None and not isinstance(settings, dict):
+            raise RuntimeError(
+                f"FunPack Load Modifiers: settings must be an object keyed by module "
+                f"id, got {type(settings).__name__}. Wire FunPack Modifier Settings "
+                f"into this input.")
+
         registry = registry_mod.current()
         specs = list(registry.specs.values())
 
@@ -125,7 +158,10 @@ class FunPackLoadModifiers(io.ComfyNode):
         ordered, rejected = order(compatible)
 
         patched = model.clone()
+        stripped = strip_ours(patched)
         applied, notes = [], []
+        if stripped:
+            notes.append(f"replaced {stripped} modifier(s) already on this model")
 
         for spec in ordered:
             values = (settings or {}).get(spec.id) or spec.defaults()

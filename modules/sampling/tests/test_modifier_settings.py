@@ -99,3 +99,22 @@ def test_every_problem_is_reported_at_once(registry):
         _run('{"alg": {"strength": 9.0, "steps": 99}}')
     message = str(raised.value)
     assert "above its maximum 1.0" in message and "above its maximum 8" in message
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_a_non_finite_number_is_refused(registry, literal):
+    """json.loads accepts all three by default, and NaN compares False against
+    BOTH bounds -- so a range check alone lets it through and it reaches sampling
+    as a strength that poisons everything it touches."""
+    with pytest.raises(RuntimeError, match="finite|maximum|minimum"):
+        _run('{"alg": {"strength": %s}}' % literal)
+
+
+def test_nan_specifically_is_not_silently_accepted(registry):
+    import math
+    try:
+        values, _ = _run('{"alg": {"strength": NaN}}')
+    except RuntimeError:
+        return                      # refused, which is the point
+    pytest.fail(f"NaN was accepted as {values['alg']['strength']!r} "
+                f"(isnan={math.isnan(values['alg']['strength'])})")
