@@ -46,6 +46,7 @@ FROZEN = {
     "FunPackCLIPLoader": [
         "clip_name1", "clip_name2", "clip_name3", "clip_name4", "type", "device",
     ],
+    "FunPackEmptyLatent": ["model", "width", "height", "length", "batch_size"],
     "FunPackDiffusionModelLoader": [
         "model_name", "weight_dtype", "compute_dtype", "attention", "fp16_accumulation",
     ],

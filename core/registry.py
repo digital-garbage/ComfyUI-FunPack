@@ -20,7 +20,7 @@ from .schema import SchemaError, validate
 FIELDS = {
     "id": "ID", "title": "TITLE", "mount": "MOUNT", "settings": "SETTINGS",
     "requires": "REQUIRES", "after": "AFTER", "before": "BEFORE",
-    "stage": "STAGE", "status": "STATUS", "nodes": "NODES", "traits": "TRAITS",
+    "stage": "STAGE", "status": "STATUS", "nodes": "NODES", "traits": "TRAITS", "provides": "PROVIDES",
 }
 
 
@@ -32,6 +32,19 @@ class Registry:
     @property
     def ids(self) -> List[str]:
         return sorted(self.specs)
+
+    def providers(self, capability: str) -> List[Tuple[ModuleSpec, object]]:
+        """Every module offering this capability, in a stable order.
+
+        Sorted by id so which provider answers first is a property of the tree
+        rather than of filesystem order.
+        """
+        found = []
+        for spec in sorted(self.specs.values(), key=lambda s: s.id):
+            fn = spec.provides.get(capability)
+            if fn is not None:
+                found.append((spec, fn))
+        return found
 
     def add(self, spec: ModuleSpec) -> None:
         if spec.id in self.specs:
@@ -113,3 +126,15 @@ def scan(root: Optional[Path] = None, package: Optional[str] = None) -> Registry
             registry.failed.append((dotted, str(exc)))
 
     return registry
+
+
+# Scanned once. A module list that changed under a running graph would mean two
+# nodes in one run disagreeing about what exists.
+_current: Optional[Registry] = None
+
+
+def current(rescan: bool = False) -> Registry:
+    global _current
+    if _current is None or rescan:
+        _current = scan()
+    return _current

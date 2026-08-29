@@ -169,6 +169,23 @@ def validate_traits(value: Any, module_id: str):
     return value
 
 
+def validate_provides(value: Any, module_id: str) -> dict:
+    """Named capabilities: {name: callable}."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SchemaError(
+            f"module {module_id!r}'s provides must be a dict of name -> callable; "
+            f"got {type(value).__name__}.")
+    for name, fn in value.items():
+        if not isinstance(name, str) or not name.strip():
+            raise SchemaError(f"module {module_id!r} provides a capability with no name.")
+        if not callable(fn):
+            raise SchemaError(
+                f"module {module_id!r}'s {name!r} capability is not callable.")
+    return dict(value)
+
+
 def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
     """A validated ModuleSpec, or SchemaError naming what is wrong."""
     for required in ("id", "title"):
@@ -217,6 +234,7 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
     return ModuleSpec(
         nodes=validate_nodes(announcement.get("nodes"), announcement["id"]),
         traits=validate_traits(announcement.get("traits"), announcement["id"]),
+        provides=validate_provides(announcement.get("provides"), announcement["id"]),
         id=announcement["id"],
         title=announcement["title"],
         mount=announcement.get("mount") or "",

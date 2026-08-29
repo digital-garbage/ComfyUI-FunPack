@@ -30,7 +30,7 @@ def _schema_of(node) -> Optional[object]:
 
 def collect(registry=None) -> Tuple[List[type], List[Tuple[str, str]]]:
     """(nodes, rejected) -- rejected carries the reason, for the modules dump."""
-    reg = registry if registry is not None else registry_mod.scan()
+    reg = registry if registry is not None else registry_mod.current()
     nodes: List[type] = []
     rejected: List[Tuple[str, str]] = []
     claimed = {}                                 # node_id -> module id

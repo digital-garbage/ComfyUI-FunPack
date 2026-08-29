@@ -43,16 +43,10 @@ def _serve_under(req, root, allowed):
     return _respond(static.serve(root, req.match_info["tail"], allowed))
 
 
-# Scanned once at startup. A module list that changed under the UI mid-session
-# would mean a panel could refer to something that is no longer there.
-_registry = None
-
-
 def modules(rescan=False):
-    global _registry
-    if _registry is None or rescan:
-        _registry = registry_mod.scan()
-    return _registry
+    """The one shared scan. Held in `registry` so the nodes and the app cannot
+    end up describing different sets of modules in the same session."""
+    return registry_mod.current(rescan)
 
 
 def manifest(traits=None):

@@ -57,6 +57,10 @@ class ModuleSpec:
     # its own. This is how a model's own module teaches the system to recognise
     # it, so supporting a new model is a new folder and never an edit to core.
     traits: Optional[Callable] = None
+    # Named capabilities this module offers to OTHER modules. Core never reads a
+    # name out of here and never defines one: it is a lookup, so a node can ask
+    # "who can build one of these" without core learning what the thing is.
+    provides: Dict[str, Callable] = field(default_factory=dict)
     ui: Optional[str] = None                            # served path to its ui.js
     status: str = "experimental"                        # or "proven"
     source: str = ""                                    # dotted import path
