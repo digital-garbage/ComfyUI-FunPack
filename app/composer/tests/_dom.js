@@ -12,7 +12,12 @@ const GLOBALS = [
 ];
 
 export function setupDom(html = "<!doctype html><html><body></body></html>") {
-  const dom = new JSDOM(html, { pretendToBeVisual: true });
+  // A url, because without one jsdom gives the document an OPAQUE ORIGIN and
+  // `window.localStorage` throws a SecurityError on the property access itself
+  // -- not on get or set. Anything that remembers a preference then silently
+  // took its fallback path in every test, so "it is remembered" was untestable
+  // here and looked like it worked.
+  const dom = new JSDOM(html, { pretendToBeVisual: true, url: "http://localhost/funpack/" });
   for (const name of GLOBALS) globalThis[name] = dom.window[name];
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;

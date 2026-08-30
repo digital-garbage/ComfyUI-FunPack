@@ -133,3 +133,59 @@
 .cx-rail-item:hover { background: var(--hover); color: var(--text); }
 .cx-rail-item.cx-on { background: var(--accent-soft); color: var(--accent-hi); }
 .cx-rail-icon { width: 18px; text-align: center; }
+
+/* Workspace: a centre that shrinks, panels docked either side.
+   The rails hold the toggles and never collapse, so the control for a panel is
+   never inside the panel it controls. */
+.cx-workspace { display: flex; align-items: stretch; min-block-size: 0; block-size: 100%; inline-size: 100%; }
+/* Flex containers, not blocks with overflow. A region whose height comes from
+   its content gives a vertical split inside it a basis of `auto`, so the split's
+   second pane resolves to zero and simply is not there -- the prompt under the
+   preview vanished exactly that way, with no error and nothing to see. */
+.cx-workspace-main {
+  flex: 1 1 auto; min-inline-size: 0; min-block-size: 0;
+  display: flex; flex-direction: column;
+}
+.cx-workspace-main > *, .cx-workspace-side > * { flex: 1 1 auto; min-block-size: 0; }
+.cx-workspace-side {
+  /* Allowed to shrink, and sized from the viewport rather than fixed: two
+     fixed 240px panels plus their rails are wider than a 480px window, and the
+     page then scrolls sideways -- the one thing a docked layout must never do,
+     because the transport bar goes with it. Narrow is cramped and legible; the
+     user can collapse either side. */
+  flex: 0 1 auto;
+  inline-size: clamp(0px, 22vw, 340px);
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: auto;
+  display: flex; flex-direction: column;
+  padding: var(--sp-3);
+  border-inline: 1px solid var(--line);
+}
+/* Width nil rather than display:none -- the panel stays in the flow, stays
+   measurable, and can come back without being rebuilt.
+
+   Deliberately not animated. A remembered-closed panel would animate shut on
+   every page load, which reads as the app doing something rather than as a
+   remembered preference, and an in-flight width is a state anything measuring
+   the layout has to wait out. */
+.cx-workspace-side.cx-collapsed {
+  inline-size: 0;
+  padding-inline: 0;
+  border-inline-width: 0;
+  overflow: hidden;
+}
+.cx-workspace-rail {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--sp-2) var(--sp-1);
+}
+
+/* The page frame. The one place a definite height is established, so everything
+   below can fill instead of each pane guessing at a percentage of nothing. */
+.cx-frame { display: flex; flex-direction: column; block-size: 100%; min-block-size: 0; }
+.cx-frame-main { flex: 1 1 auto; min-block-size: 0; display: flex; }
+.cx-frame-main > * { flex: 1 1 auto; min-inline-size: 0; }
+.cx-frame-foot { flex: 0 0 auto; }

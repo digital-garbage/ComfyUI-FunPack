@@ -232,6 +232,109 @@ for (const axis of ["h", "v"]) {
   });
 }
 
+// The page: one region that fills whatever is left, and a bar that does not.
+//
+// Height has to be established SOMEWHERE, and the honest place is one element
+// rather than a percentage on each pane hoping its parent is definite. Without
+// it a vertical split resolves its basis against content, and the app renders
+// as a short strip at the top of an empty window -- which is exactly what the
+// first build of this frame did.
+define("frame", "app", ({ main, footer } = {}) => {
+  const body = el("div", { cls: "cx-frame-main",
+    children: main ? nodeOf(main, "frame.app") : null });
+  const foot = footer
+    ? el("div", { cls: "cx-frame-foot", children: nodeOf(footer, "frame.app") })
+    : null;
+  const node = el("div", { cls: "cx-frame", children: [body, foot].filter(Boolean) });
+  return { node, main: body, footer: foot, destroy: () => node.remove() };
+});
+
+// The app's own shape: a centre that shrinks, with panels docked either side.
+//
+// The toggles live in RAILS, outside the panels they open. v4 put the control
+// inside the region it controlled and then hid the region -- a collapsed column
+// was marked [hidden], which is display:none, and no transform slides a
+// display:none element into view, so the button did nothing at all and said
+// nothing. A control that can be hidden by the thing it operates is not a
+// control, so here the rail is a sibling of the panel and never moves.
+define("workspace", "docked", ({
+  id = "workspace", centre, left, right,
+  leftLabel = "Assets", rightLabel = "Properties",
+  leftOpen = true, rightOpen = true, onToggle,
+} = {}) => {
+  const node = el("div", { cls: "cx-workspace" });
+
+  // window.localStorage, not the bare global: they are the same object in a
+  // browser, and only the explicit one exists under jsdom -- so persistence is
+  // testable where the tests are cheap instead of only in the browser pass.
+  const remember = (side, open) => {
+    try { window.localStorage.setItem(`cx.ws.${id}.${side}`, open ? "1" : "0"); } catch { /* private mode */ }
+  };
+  const recall = (side, fallback) => {
+    try {
+      const v = window.localStorage.getItem(`cx.ws.${id}.${side}`);
+      return v === null ? fallback : v === "1";
+    } catch { return fallback; }
+  };
+
+  const state = { left: recall("left", leftOpen), right: recall("right", rightOpen) };
+  const panels = {};
+  const toggles = {};
+
+  const side = (which, label, content) => {
+    const panelId = uid(`ws-${which}`);
+    const panel = el("div", { cls: ["cx-workspace-side", `cx-workspace-${which}`],
+      attrs: { id: panelId, "aria-label": label },
+      children: content ? nodeOf(content, "workspace.docked") : null });
+
+    const button = el("button", { cls: ["cx-icon-btn", "cx-icon-btn-sm", "cx-focusable"],
+      text: which === "left" ? "▎" : "▐",
+      attrs: { type: "button", "aria-controls": panelId, "aria-label": label,
+               "aria-expanded": String(state[which]) },
+      on: { click: () => set(which, !state[which]) } });
+
+    const rail = el("div", { cls: ["cx-workspace-rail", `cx-workspace-rail-${which}`],
+      children: button });
+
+    panels[which] = panel;
+    toggles[which] = button;
+    return { panel, rail };
+  };
+
+  function set(which, open) {
+    state[which] = Boolean(open);
+    panels[which].classList.toggle("cx-collapsed", !state[which]);
+    // Not [hidden] and not display:none: a panel with no width is out of the
+    // way and still animatable, and its toggle is in the rail either way.
+    panels[which].setAttribute("aria-hidden", String(!state[which]));
+    toggles[which].setAttribute("aria-expanded", String(state[which]));
+    remember(which, state[which]);
+    if (onToggle) onToggle(which, state[which]);
+  }
+
+  const main = el("div", { cls: "cx-workspace-main",
+    children: centre ? nodeOf(centre, "workspace.docked") : null });
+
+  const l = side("left", leftLabel, left);
+  const r = side("right", rightLabel, right);
+  node.append(l.rail, l.panel, main, r.panel, r.rail);
+  set("left", state.left);
+  set("right", state.right);
+
+  return {
+    node,
+    // Hosts, so the shell mounts INTO the regions rather than rebuilding them.
+    get left() { return panels.left; },
+    get right() { return panels.right; },
+    get centre() { return main; },
+    isOpen: (which) => Boolean(state[which]),
+    open: (which) => set(which, true),
+    close: (which) => set(which, false),
+    toggle: (which) => set(which, !state[which]),
+    destroy: () => node.remove(),
+  };
+});
+
 define("collapsible", "default", ({ label, open = false, body, hint } = {}) => {
   const node = el("details", { cls: "cx-collapsible", attrs: { open: open || undefined } });
   const summary = el("summary", { cls: ["cx-collapsible-head", "cx-focusable"], children: [

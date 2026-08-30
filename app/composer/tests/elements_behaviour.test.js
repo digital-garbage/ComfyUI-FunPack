@@ -350,3 +350,72 @@ test("reordering a list reports the new order", () => {
   l.node.querySelectorAll(".cx-list-row")[1].querySelector(".cx-list-move").click();
   assert.deepEqual(order, ["b", "a"]);
 });
+
+// --- workspace -------------------------------------------------------------
+
+const workspace = (props = {}) => mount(composer.workspace.docked({
+  id: `ws-${Math.random().toString(36).slice(2)}`,
+  left: composer.hint.default({ text: "assets" }),
+  centre: composer.hint.default({ text: "preview" }),
+  right: composer.hint.default({ text: "properties" }),
+  ...props,
+}));
+
+test("a docked panel's toggle is not inside the panel it collapses", () => {
+  // The v4 fault, as a test. A collapsed column was marked [hidden], which is
+  // display:none, and the control that would have brought it back was inside
+  // it -- so the button did nothing at all and said nothing.
+  const ws = workspace();
+  for (const side of ["left", "right"]) {
+    const panel = side === "left" ? ws.left : ws.right;
+    const toggle = ws.node.querySelector(`.cx-workspace-rail-${side} button`);
+    assert.ok(toggle, `${side} has no toggle`);
+    assert.ok(!panel.contains(toggle), `the ${side} toggle is inside the panel it hides`);
+  }
+});
+
+test("collapsing keeps the panel in the document rather than removing it", () => {
+  const ws = workspace();
+  ws.close("left");
+  assert.equal(ws.isOpen("left"), false);
+  assert.ok(ws.node.contains(ws.left), "the panel was removed rather than collapsed");
+  assert.ok(!ws.left.hasAttribute("hidden"),
+    "[hidden] is display:none, which is what made this unrecoverable in v4");
+  assert.ok(ws.left.classList.contains("cx-collapsed"));
+});
+
+test("a collapsed panel can be reopened from its toggle", () => {
+  const ws = workspace();
+  const toggle = ws.node.querySelector(".cx-workspace-rail-right button");
+  toggle.click();
+  assert.equal(ws.isOpen("right"), false);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  toggle.click();
+  assert.equal(ws.isOpen("right"), true);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+});
+
+test("the centre keeps its content and the sides keep theirs", () => {
+  const ws = workspace();
+  assert.match(ws.centre.textContent, /preview/);
+  assert.match(ws.left.textContent, /assets/);
+  assert.match(ws.right.textContent, /properties/);
+});
+
+test("which panels were open is remembered per workspace id", () => {
+  const first = workspace({ id: "remembered" });
+  first.close("left");
+  first.destroy();
+
+  const second = workspace({ id: "remembered" });
+  assert.equal(second.isOpen("left"), false, "the closed panel came back open");
+  assert.equal(second.isOpen("right"), true);
+});
+
+test("a workspace with no panels still renders its centre", () => {
+  const ws = mount(composer.workspace.docked({
+    id: "bare", centre: composer.hint.default({ text: "only the middle" }),
+  }));
+  assert.match(ws.centre.textContent, /only the middle/);
+  assert.ok(ws.left && ws.right, "the regions exist even when nothing was put in them");
+});

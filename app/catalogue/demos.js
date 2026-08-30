@@ -180,6 +180,17 @@ export const DEMOS = {
       c.panel.default({ title: "Preview", body: c.hint.default({ text: "Program monitor" }) }),
     ],
   }),
+  "frame.app": (c) => ({
+    main: c.panel.default({ title: "Workspace", body: c.hint.default({ text: "Everything that fills the window" }) }),
+    footer: c.actionBar.sticky({ note: "Ready", actions: [c.button.lg({ label: "Generate", tone: "primary" })] }),
+  }),
+  "workspace.docked": (c) => ({
+    id: "demo",
+    leftLabel: "Assets", rightLabel: "Properties",
+    left: c.panel.default({ title: "Assets", body: c.hint.default({ text: "Media bin" }) }),
+    centre: c.panel.default({ title: "Preview", body: c.hint.default({ text: "Program monitor" }) }),
+    right: c.panel.default({ title: "Properties", body: c.hint.default({ text: "Scene settings" }) }),
+  }),
   "splitPane.v": (c) => ({
     size: 60, label: "Preview and timeline",
     panes: [

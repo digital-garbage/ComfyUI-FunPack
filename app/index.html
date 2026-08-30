@@ -8,10 +8,14 @@
   <link rel="stylesheet" href="/funpack/app/composer/composer.css">
   <style>
     /* The app frame itself: the only rule outside the kit, and it sets no
-       colours, sizes or type -- just the shape of the page. */
-    body { display: flex; }
-    #app { flex: 1; display: flex; min-height: 100vh; padding: var(--sp-6); }
-    #app > * { flex: 1; }
+       colours, sizes or type -- just the shape of the page. A DEFINITE height,
+       because the kit's frame fills what it is given and "100% of auto" is
+       auto: with min-height here the whole app rendered as a strip at the top
+       of an empty window. */
+    html, body { block-size: 100%; }
+    body { display: flex; margin: 0; }
+    #app { flex: 1; display: flex; min-block-size: 0; padding: var(--sp-4); }
+    #app > * { flex: 1; min-inline-size: 0; }
   </style>
 </head>
 <body>
