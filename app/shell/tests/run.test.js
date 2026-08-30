@@ -190,3 +190,134 @@ test("viewUrl escapes what goes into it", () => {
   assert.match(url, /subfolder=s%2F1/);
   assert.match(url, /type=temp/);
 });
+
+// --- while /prompt is still in flight ---------------------------------------
+//
+// Every test above awaits start() before sending a message, so none of them
+// ever enters the window between "queued" and "the server said what this run is
+// called". That window is a real network round trip, the socket is already
+// live, and everything ComfyUI broadcasts arrives during it.
+
+function held() {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push({ url, body: init && init.body ? JSON.parse(init.body) : null });
+    if (url.endsWith("/prompt")) {
+      await gate;
+      return { ok: true, status: 200, json: async () => ({ prompt_id: "mine" }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  return { run: createRun({ fetch: fetchImpl, clientId: "c1" }), sent, release };
+}
+
+test("a stranger's result during the round trip is not adopted as this run's", async () => {
+  const { run, release } = held();
+  const started = run.start({});
+
+  // Another client finishes while this request is still on the wire.
+  run.handle({ type: "executed", data: { prompt_id: "theirs", output: { images: [{ filename: "not-mine.png" }] } } });
+  run.handle({ type: "execution_success", data: { prompt_id: "theirs" } });
+
+  assert.equal(run.state.phase, QUEUED, "somebody else's run finished this one");
+  assert.deepEqual(run.state.images, [], "somebody else's picture was taken as this run's result");
+
+  release();
+  await started;
+  assert.equal(run.state.phase, QUEUED);
+  assert.deepEqual(run.state.images, []);
+});
+
+test("this run's own messages during the round trip are not lost", async () => {
+  // The other half. A short run can finish inside the round trip, and dropping
+  // what arrives early would leave the app waiting for a result it already had.
+  const { run, release } = held();
+  const started = run.start({});
+
+  run.handle({ type: "execution_start", data: { prompt_id: "mine" } });
+  run.handle({ type: "executed", data: { prompt_id: "mine", output: { images: [{ filename: "mine.png" }] } } });
+  run.handle({ type: "execution_success", data: { prompt_id: "mine" } });
+
+  release();
+  await started;
+  assert.equal(run.state.phase, DONE);
+  assert.deepEqual(run.state.images.map((i) => i.filename), ["mine.png"]);
+});
+
+test("cancelling before the run has a name never interrupts anything else", async () => {
+  // ComfyUI reads a missing prompt_id as "interrupt whatever is running". On a
+  // shared box that is another person's generation; the clicking user's own
+  // request may not even be queued yet.
+  const { run, sent, release } = held();
+  const started = run.start({});
+
+  assert.equal(await run.cancel(), true, "the cancel was refused rather than remembered");
+  assert.deepEqual(sent.filter((s) => s.url.endsWith("/interrupt")), [],
+    "an interrupt went out with no prompt id, which is a global interrupt");
+
+  release();
+  await started;
+
+  const interrupts = sent.filter((s) => s.url.endsWith("/interrupt"));
+  assert.equal(interrupts.length, 1, "the cancel the user asked for never happened");
+  assert.equal(interrupts[0].body.prompt_id, "mine");
+});
+
+test("a cancel is never sent with a null prompt id, whatever the phase", async () => {
+  const { run } = runner(ok({ prompt_id: null }));   // a server answering oddly
+  await run.start({});
+  const before = run.state.promptId;
+  assert.equal(before, null);
+  await run.cancel();
+  // Remembered, not sent: there is still nothing to name.
+  assert.equal(run.state.phase, QUEUED);
+});
+
+test("held messages do not grow without bound", async () => {
+  const { run, release } = held();
+  const started = run.start({});
+  for (let i = 0; i < 500; i += 1) {
+    run.handle({ type: "progress_state", data: { prompt_id: "theirs", nodes: {} } });
+  }
+  release();
+  await started;
+  assert.equal(run.state.phase, QUEUED, "a flood of other traffic changed this run");
+});
+
+// --- reattaching after a reload ---------------------------------------------
+
+test("adopting a run already in flight picks up its progress and result", async () => {
+  const { run } = runner(ok({}));
+  assert.equal(run.adopt("was-running"), true);
+  assert.equal(run.state.phase, RUNNING);
+  assert.equal(run.state.promptId, "was-running");
+
+  run.handle(JSON.parse(message("progress_state", {
+    prompt_id: "was-running",
+    nodes: { "5": { state: "running", value: 4, max: 20, node_id: "5" } },
+  }).data));
+  assert.deepEqual(run.state.progress, { value: 4, max: 20 });
+
+  run.handle(JSON.parse(message("executed", {
+    prompt_id: "was-running", output: { images: [{ filename: "late.png" }] },
+  }).data));
+  run.handle(JSON.parse(message("execution_success", { prompt_id: "was-running" }).data));
+  assert.equal(run.state.phase, DONE);
+  assert.deepEqual(run.state.images.map((i) => i.filename), ["late.png"]);
+});
+
+test("adopting nothing does nothing", async () => {
+  const { run } = runner(ok({}));
+  assert.equal(run.adopt(null), false);
+  assert.equal(run.state.phase, IDLE);
+});
+
+test("an adopted run can be cancelled by its own id", async () => {
+  const { run, sent } = runner(ok({}));
+  run.adopt("was-running");
+  await run.cancel();
+  assert.equal(sent[0].url, "/interrupt");
+  assert.equal(sent[0].body.prompt_id, "was-running");
+});

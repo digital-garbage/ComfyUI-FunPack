@@ -51,11 +51,43 @@ export function createRun({
   // of them (an interrupt is broadcast to every client), so a second tab
   // generating would otherwise drive this one's progress bar and, worse, mark
   // this run finished when it was somebody else's that ended.
-  const mine = (data) => !state.promptId || !data || data.prompt_id === state.promptId;
+  //
+  // Strict about the id being KNOWN, which it is not for the length of the
+  // /prompt round trip. Treating "no id yet" as "everything is mine" adopted a
+  // stranger's result during that window -- this run went to Done, showing
+  // somebody else's picture, before it had started.
+  const mine = (data) => Boolean(state.promptId) && Boolean(data)
+    && data.prompt_id === state.promptId;
+
+  // Messages that arrived before the id did. Ours cannot be told apart from
+  // anyone else's yet, so they are kept and sorted out once the id is known --
+  // dropping them would lose a run that finished inside the round trip.
+  // Bounded, because on a busy shared server this fills with other people's
+  // traffic and nothing here needs the older end of it.
+  const PENDING = 200;
+  let pending = [];
+
+  function settle(promptId) {
+    emit({ promptId });
+    const held = pending;
+    pending = [];
+    for (const message of held) handle(message);
+    // A cancel asked for while the id was unknown was never sent, because a
+    // null prompt_id is a GLOBAL interrupt at ComfyUI: it stops whatever any
+    // client is running. Now that the run has a name, it can be stopped by it.
+    if (cancelWanted) sendInterrupt();
+  }
 
   function handle(message) {
     const { type, data } = message || {};
     if (!type) return;
+
+    // Queued and not yet named: hold it rather than guess whose it is.
+    if (!state.promptId && state.phase === QUEUED) {
+      pending.push(message);
+      if (pending.length > PENDING) pending.shift();
+      return;
+    }
 
     switch (type) {
       case "execution_start":
@@ -116,6 +148,18 @@ export function createRun({
     }
   }
 
+  // A cancel asked for before the run had a name.
+  let cancelWanted = false;
+
+  async function sendInterrupt() {
+    cancelWanted = false;
+    return doFetch(`${base}/interrupt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt_id: state.promptId }),
+    });
+  }
+
   let socket = null;
   function listen() {
     if (socket || typeof connect !== "function") return socket;
@@ -148,6 +192,8 @@ export function createRun({
     /** Queue a prompt. Resolves with the prompt id, or throws with the reason. */
     async start(prompt) {
       listen();
+      pending = [];
+      cancelWanted = false;
       emit({ phase: QUEUED, promptId: null, progress: null, images: [], audio: [],
              error: null, node: null });
 
@@ -177,26 +223,47 @@ export function createRun({
         throw new Error(detail || `queue refused: ${response.status}`);
       }
 
-      emit({ promptId: body.prompt_id || null });
+      settle(body.prompt_id || null);
       return body.prompt_id;
     },
 
     /** Ask for the run to stop. */
     async cancel() {
       if (state.phase !== QUEUED && state.phase !== RUNNING) return false;
-      await doFetch(`${base}/interrupt`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt_id: state.promptId }),
-      });
+      if (!state.promptId) {
+        // Nothing to name yet. Remembered rather than sent: ComfyUI reads a
+        // missing prompt_id as "interrupt whatever is running", which on a
+        // shared box is someone else's generation, and on this one is not
+        // necessarily the run the user is looking at.
+        cancelWanted = true;
+        return true;
+      }
+      await sendInterrupt();
       // Not marked cancelled here: the server says when it actually stopped,
       // and claiming it early is how a UI ends up showing "cancelled" over a
       // run that is still burning GPU time.
       return true;
     },
 
+    /**
+     * Take over a run already in flight -- after a reload, the generation the
+     * previous page load queued. The id comes from ComfyUI's own queue, so this
+     * adopts a real run rather than assuming one.
+     */
+    adopt(promptId) {
+      if (!promptId) return false;
+      listen();
+      emit({ phase: RUNNING, images: [], audio: [], error: null, node: null });
+      settle(promptId);
+      return true;
+    },
+
     images: () => state.images.map((image) => viewUrl(image, base)),
-    reset: () => emit({ phase: IDLE, promptId: null, progress: null, images: [],
-                        audio: [], error: null, node: null }),
+    reset() {
+      pending = [];
+      cancelWanted = false;
+      emit({ phase: IDLE, promptId: null, progress: null, images: [],
+             audio: [], error: null, node: null });
+    },
   };
 }

@@ -1,0 +1,49 @@
+// Reattaching to a run that outlived the page.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { runningFor } from "../client.js";
+
+const answering = (body, ok = true) => async () => ({
+  ok, status: ok ? 200 : 500, json: async () => body,
+});
+
+test("the run this browser queued is found by its client id", async () => {
+  const promptId = await runningFor("me", {
+    fetch: answering({
+      queue_running: [
+        [1, "someone-elses", {}, { client_id: "them" }, []],
+        [2, "mine", {}, { client_id: "me" }, []],
+      ],
+    }),
+  });
+  assert.equal(promptId, "mine");
+});
+
+test("another browser's run is not adopted", async () => {
+  const promptId = await runningFor("me", {
+    fetch: answering({ queue_running: [[1, "theirs", {}, { client_id: "them" }, []]] }),
+  });
+  assert.equal(promptId, null);
+});
+
+test("nothing running means nothing to reattach to", async () => {
+  assert.equal(await runningFor("me", { fetch: answering({ queue_running: [] }) }), null);
+});
+
+test("a queue that cannot be reached is not an error the app has to show", async () => {
+  // The dev server has no queue behind it, which is the ordinary case while
+  // working on the UI.
+  const promptId = await runningFor("me", {
+    fetch: async () => { throw new TypeError("Failed to fetch"); },
+  });
+  assert.equal(promptId, null);
+});
+
+test("a malformed queue entry is skipped rather than crashing the load", async () => {
+  const promptId = await runningFor("me", {
+    fetch: answering({ queue_running: [null, "nonsense", [1], [2, "mine", {}, { client_id: "me" }, []]] }),
+  });
+  assert.equal(promptId, "mine");
+});

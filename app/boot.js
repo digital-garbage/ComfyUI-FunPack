@@ -9,13 +9,14 @@ import { mountAll } from "./shell/panels.js";
 import { all as allValues } from "./shell/values.js";
 import { composer } from "./composer/composer.js";
 import { createRun, viewUrl } from "./shell/run.js";
-import { clientId, connect } from "./shell/client.js";
+import { clientId, connect, runningFor } from "./shell/client.js";
 import { check } from "./shell/pipeline.js";
 
 const root = document.querySelector("#app");
 
 async function start() {
-  const run = createRun({ clientId: clientId(), connect });
+  const id = clientId();
+  const run = createRun({ clientId: id, connect });
 
   const page = build(root, {
     async onGenerate() {
@@ -43,6 +44,15 @@ async function start() {
 
   // One subscription draws everything the run affects. Two would be two places
   // that can disagree about what is happening.
+  // The socket opens at load, not at Generate. A generation queued before a
+  // reload keeps running on the server, and a page that only listens once it
+  // starts one of its own hears nothing about it -- sits at Ready, and queues a
+  // SECOND job if the user presses Generate believing nothing is running.
+  run.listen();
+  runningFor(id).then((promptId) => {
+    if (promptId && run.state.phase === "idle") run.adopt(promptId);
+  }).catch(() => { /* no queue to ask: nothing to reattach to */ });
+
   run.subscribe((state) => {
     page.transport.draw(state);
     const last = state.images[state.images.length - 1];
