@@ -63,9 +63,6 @@ export async function mountAll(manifest, { load = (path) => import(path) } = {})
         onChange: (key, value) => values.set(spec.id, key, value),
       });
 
-      // Only now, with a complete panel in hand, does anything reach the DOM.
-      host.appendChild(panel.node);
-
       if (ui && typeof ui.setup === "function") {
         // Kept, not discarded: setup() returns the unsubscribe from on(), and
         // dropping it means every re-mount leaves another live listener behind.
@@ -86,6 +83,12 @@ export async function mountAll(manifest, { load = (path) => import(path) } = {})
           shell: services,
         });
       }
+
+      // Only now, with a complete panel AND a setup() that returned, does
+      // anything reach the DOM. Appending before setup ran left a module whose
+      // setup threw reported as hidden with its panel still on screen -- which
+      // is precisely the guarantee this file states it keeps.
+      host.appendChild(panel.node);
 
       mounted.push({
         id: spec.id,

@@ -195,3 +195,33 @@ test("a settings label is not squeezed into three lines at a square window", asy
   const right = (await widths(page)).right;
   expect(right, "the properties column is too narrow to read").toBeGreaterThanOrEqual(260);
 });
+
+test("a page loaded narrow gives both panels back when there is room", async ({ page }) => {
+  // The asymmetry nothing caught. Loading narrow with both panels remembered
+  // open runs the one-at-a-time rule during construction, which closes the
+  // right one -- and the snapshot of "what to restore" was taken AFTER that, so
+  // it recorded a panel the rule had just closed as a panel the user wanted
+  // closed. Widening then brought back only the left, permanently, with nothing
+  // the user did to explain it.
+  await page.addInitScript(() => {
+    window.localStorage.setItem("cx.ws.main.left", "1");
+    window.localStorage.setItem("cx.ws.main.right", "1");
+  });
+  await page.setViewportSize({ width: 420, height: 780 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  const narrow = await widths(page);
+  expect(narrow.left, "a panel was docked in a window too narrow for it").toBe(0);
+  expect(narrow.right).toBe(0);
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForFunction(() => {
+    const el = document.querySelector(".cx-workspace-right");
+    return el && el.getBoundingClientRect().width > 0;
+  }, null, { timeout: 3000 }).catch(() => {});
+
+  const wide = await widths(page);
+  expect(wide.left, "the left panel did not come back").toBeGreaterThan(0);
+  expect(wide.right, "the right panel never came back").toBeGreaterThan(0);
+});

@@ -118,12 +118,13 @@ export function renderPanel(spec, { values: initial, onChange } = {}) {
   const values = { ...defaultsOf(spec), ...(initial || {}) };
 
   const rows = el("div", { cls: "cx-group-rows" });
-  const handles = new Map();
+  let handles = new Map();
 
   function build() {
-    // Into a fragment first: a row that throws must not leave the previous
-    // half of the panel on screen.
+    // Into a fragment, and into a map of its OWN, so a row that throws leaves
+    // nothing half-made behind and touches nothing already on screen.
     const built = frag();
+    const made = new Map();
     for (const [key, setting] of Object.entries(settings)) {
       if (!visible(setting, values)) continue;
       const render = rendererFor(setting);
@@ -133,14 +134,14 @@ export function renderPanel(spec, { values: initial, onChange } = {}) {
         // Another setting's visibility may depend on this one.
         if (dependents.has(key)) redraw();
       });
-      handles.set(key, control);
+      made.set(key, control);
       built.appendChild(
         SELF_LABELLING.has(rendererNameFor(setting))
           ? control.node
           : composer.settingsRow.default({ label: setting.label, hint: setting.hint, control }).node
       );
     }
-    return built;
+    return { built, made };
   }
 
   // Which keys other rows watch, so a change only redraws when it can matter.
@@ -150,12 +151,21 @@ export function renderPanel(spec, { values: initial, onChange } = {}) {
   }
 
   function redraw() {
+    // Built BEFORE anything is torn down. Destroying first and building second
+    // meant a row that only appears once another value is set -- so a row the
+    // first build never rendered and never checked -- emptied the panel and
+    // then threw, leaving it permanently blank with no way back.
+    const { built, made } = build();
     for (const handle of handles.values()) if (handle.destroy) handle.destroy();
-    handles.clear();
-    rows.replaceChildren(build());
+    handles = made;
+    rows.replaceChildren(built);
   }
 
-  rows.appendChild(build());
+  {
+    const first = build();
+    handles = first.made;
+    rows.appendChild(first.built);
+  }
 
   const node = el("section", { cls: "cx-group", children: [
     el("div", { cls: "cx-eyebrow", text: spec.title }),

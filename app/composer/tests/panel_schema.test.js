@@ -179,3 +179,59 @@ test("every renderer named by the contract exists", async () => {
     assert.doesNotThrow(() => rendererFor({ type, default: null }), `${type} default`);
   }
 });
+
+// --- a redraw is as safe as the first build --------------------------------
+
+test("a row that only appears later cannot empty the panel when it throws", () => {
+  // The initial build is protected by a detached fragment, and the redraw was
+  // not: it destroyed every control and then built, so a setting revealed by
+  // another value -- one the first build never rendered and so never checked --
+  // emptied the panel and threw on the way to refilling it. A blank panel with
+  // no way back, from a typo in a `ui` name.
+  const spec = {
+    id: "late", title: "Late",
+    settings: {
+      mode: { type: "enum", label: "Mode", default: "simple",
+              options: [{ value: "simple", label: "Simple" }, { value: "full", label: "Full" }] },
+      extra: { type: "int", label: "Extra", default: 1, ui: "noSuchRenderer",
+               when: { mode: "full" } },
+    },
+  };
+
+  const panel = renderPanel(spec, {});
+  document.body.replaceChildren(panel.node);
+  // The CONTROLS, not the rows. A control's destroy() takes the control out of
+  // its settings row and leaves the row behind, so counting rows sees a panel
+  // that is intact and is looking at labels with nothing under them -- the
+  // first version of this test did exactly that and passed against the bug.
+  const controls = () => panel.node.querySelectorAll("input, select, textarea").length;
+  const before = controls();
+  assert.ok(before >= 1, "nothing was rendered to begin with");
+
+  assert.throws(() => panel.setValue("mode", "full"), /noSuchRenderer/);
+  assert.equal(controls(), before,
+    "a redraw that could not finish stripped the controls out of the panel");
+});
+
+test("a redraw that succeeds destroys the controls it replaced", () => {
+  // The fix builds before it tears down, which is exactly where a leak would
+  // hide: keeping both maps and forgetting to destroy the old one.
+  const destroyed = [];
+  const spec = {
+    id: "swap", title: "Swap",
+    settings: {
+      mode: { type: "enum", label: "Mode", default: "a",
+              options: [{ value: "a", label: "A" }, { value: "b", label: "B" }] },
+      only_a: { type: "int", label: "Only A", default: 1, when: { mode: "a" } },
+    },
+  };
+  const panel = renderPanel(spec, {});
+  document.body.replaceChildren(panel.node);
+  const was = panel.node.querySelector('[aria-label="Only A"]');
+  assert.ok(was, "the gated row was not rendered");
+
+  panel.setValue("mode", "b");
+  assert.equal(was.isConnected, false, "the replaced control stayed in the document");
+  assert.equal(panel.node.querySelector('[aria-label="Only A"]'), null);
+  void destroyed;
+});

@@ -299,6 +299,15 @@ define("workspace", "docked", ({
   };
 
   const state = { left: recall("left", leftOpen), right: recall("right", rightOpen) };
+  // What the user last chose, kept apart from what is currently on screen.
+  //
+  // `state` is mutated by the one-at-a-time rule below, so it stops being a
+  // record of anyone's preference the moment a window is narrow. Snapshotting
+  // it there recorded a panel the RULE had just closed as a panel the user
+  // wanted closed -- so a page loaded at a narrow width came back from being
+  // widened with the right panel shut, and nothing the user did would explain
+  // why.
+  const wanted = { ...state };
   const panels = {};
   const toggles = {};
 
@@ -345,14 +354,17 @@ define("workspace", "docked", ({
     panels[which].setAttribute("aria-hidden", String(!state[which]));
     toggles[which].setAttribute("aria-expanded", String(state[which]));
     // A window being small is not the user changing their mind, so an automatic
-    // close does not overwrite what they last chose.
-    if (keep) remember(which, state[which]);
+    // close does not overwrite what they last chose -- in storage or here.
+    if (keep) {
+      wanted[which] = state[which];
+      remember(which, state[which]);
+    }
     if (onToggle) onToggle(which, state[which]);
   }
 
   function fit() {
     if (isNarrow()) {
-      if (wide === null) wide = { ...state };
+      if (wide === null) wide = { ...wanted };
       set("left", false, { remember: false });
       set("right", false, { remember: false });
     } else if (wide) {
