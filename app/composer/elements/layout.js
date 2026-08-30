@@ -102,11 +102,22 @@ define("toolbar", "default", ({ items = [], label } = {}) =>
       children: items.map((i) => nodeOf(i, "toolbar.default")) }),
      destroy() { this.node.remove(); } }));
 
-define("actionBar", "sticky", ({ actions = [], note } = {}) =>
+/**
+ * The row a thing is started from: what is being SAID at the start of it, what
+ * is PRESSED at the end.
+ *
+ * `lead` exists because everything used to go in `actions`, which is
+ * right-aligned as a group -- so a status line sat against the button with the
+ * whole width of the bar empty to its left, and read as part of the button.
+ */
+define("actionBar", "sticky", ({ lead = [], actions = [], note } = {}) =>
   ({ node: el("div", { cls: "cx-action-bar", children: [
-      note ? el("p", { cls: "cx-hint", text: note }) : null,
+      el("div", { cls: "cx-action-bar-lead", children: [
+        note ? el("p", { cls: "cx-hint", text: note }) : null,
+        ...lead.map((a) => nodeOf(a, "actionBar.sticky lead")),
+      ].filter(Boolean) }),
       el("div", { cls: "cx-action-bar-buttons", children: actions.map((a) => nodeOf(a, "actionBar.sticky")) }),
-    ].filter(Boolean) }),
+    ] }),
      destroy() { this.node.remove(); } }));
 
 /** A reorderable list of rows: LoRA stacks, text encoders, anything repeatable. */

@@ -70,9 +70,16 @@ export function build(root, handlers = {}) {
     title: "Nothing to set",
     hint: "Modules with settings that are not about one run appear here.",
   });
-  const settings = composer.panel.default({ body: settingsEmpty });
-  const properties = composer.group.default({
-    rows: [generation, composer.collapsible.default({ label: "Settings", body: settings })],
+  // A host, not a panel: a bordered panel inside the collapsible's own bordered
+  // box is two frames drawn around one list of settings.
+  const settings = composer.region.stack({ gap: "sm", label: "Settings",
+                                           children: [settingsEmpty] });
+  // A stack, not a group: a group draws a bordered box with its own padding, so
+  // the two panels in this column sat 11px further in than the panel in the
+  // left column and inside a second border that meant nothing.
+  const properties = composer.region.stack({
+    gap: "sm", label: "Properties",
+    children: [generation, composer.collapsible.default({ label: "Settings", body: settings })],
   });
 
   const workspace = composer.workspace.docked({
@@ -111,7 +118,7 @@ export function build(root, handlers = {}) {
   // rearranged freely as long as the name survives.
   offer("assets.library", assets.body);
   offer("generation.prompt", prompt.body, promptEmpty.node);
-  offer("settings.general", settings.body, settingsEmpty.node);
+  offer("settings.general", settings.node, settingsEmpty.node);
   // One host, five names. Each carries the same stand-in, and settle() takes it
   // down once anything at all has mounted into the panel they share.
   for (const point of ["model", "latent", "sampling", "timing", "post"]) {

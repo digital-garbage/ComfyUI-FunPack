@@ -64,6 +64,18 @@
 
   /* ── layout ─────────────────────────────────────────────────────────── */
   --menubar-h: 34px;
+
+  /* One gutter. Every edge in the app lands on it: the space between the three
+     regions, between two panels stacked in a column, and between a band's
+     content and the window. Three different numbers for those three things is
+     what makes a layout read as accidental. */
+  --gutter: var(--sp-5);
+
+  /* Settings rows put their control in a column of this width, so every
+     control in a list of them has the same two edges. A <select> is sized by
+     its widest OPTION, so one row holding a list of checkpoint filenames was
+     264px wide among four that were 140. */
+  --control-col: 180px;
 }
 
 /* ── dark: the cutting-room palette (default) ─────────────────────────── */

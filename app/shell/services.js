@@ -4,7 +4,7 @@
 // reach for a global -- means the surface is "whatever happens to be on window",
 // which nobody can review and nothing can keep stable.
 
-import { applyDensity, normaliseCols, rememberCols } from "../composer/internals/density.js";
+import { applyDensity, normaliseCols, rememberCols, recallCols } from "../composer/internals/density.js";
 
 export const services = {
   theme: {
@@ -13,6 +13,8 @@ export const services = {
     resolved: () => window.ComposerTheme.resolved(),
   },
   density: {
+    /** What the grids are set to, which the browser remembers between visits. */
+    get: () => recallCols("app"),
     /** Column count for every adaptive grid on the page. */
     set(cols) {
       const n = normaliseCols(cols);

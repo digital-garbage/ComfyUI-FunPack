@@ -115,3 +115,28 @@ test("two names on one host share its stand-in", () => {
   settle();
   assert.equal(standIn.parentNode, null);
 });
+
+test("a value a module adopts in setup is what its control shows", () => {
+  // The theme is applied by the page before any module exists, and the module's
+  // own declared default is something else. Building the panel from a snapshot
+  // taken BEFORE setup meant the control said "Auto" while the app was dark --
+  // and the first click on it, being a change to what it already showed, did
+  // nothing at all.
+  const host = region();
+  const spec = {
+    id: "appearance", mount: "generation.model", ui: "adopts",
+    settings: { theme: { type: "enum", default: "auto", label: "Colour scheme",
+                         options: [{ value: "dark", label: "Dark" },
+                                   { value: "auto", label: "Auto" }] } },
+  };
+  const load = async () => ({
+    setup: ({ values }) => { values.set("theme", "dark"); },
+  });
+
+  return mountAll({ modules: [spec] }, { load }).then(({ mounted }) => {
+    assert.equal(mounted.length, 1);
+    const chosen = [...host.querySelectorAll('[aria-checked="true"], option:checked')]
+      .map((n) => n.textContent.trim());
+    assert.deepEqual(chosen, ["Dark"], "the control showed the default, not what the app was set to");
+  });
+});

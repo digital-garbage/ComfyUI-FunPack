@@ -28,7 +28,11 @@ export function createTransport({ onGenerate, onCancel } = {}) {
   const status = composer.text.sm({ text: "Ready" });
 
   const bar = composer.actionBar.sticky({
-    actions: [status, progress, cancel, generate],
+    // What the run is doing at the start of the row, what starts and stops it
+    // at the end. The progress bar goes with the words, not with the buttons:
+    // it is the same statement in another form.
+    lead: [status, progress],
+    actions: [cancel, generate],
   });
 
   // Something true about the NEXT run, said before it starts and left up while

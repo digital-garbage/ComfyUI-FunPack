@@ -62,3 +62,16 @@ test.describe("themes", () => {
     }
   });
 });
+
+test("the theme you picked survives a reload", async ({ page }) => {
+  // The appearance module applied its own declared default over the choice the
+  // page had already applied from storage, so an explicit Dark came back as
+  // Auto on every load -- silently, and looking like the switch was broken.
+  await page.addInitScript(() => window.localStorage.setItem("funpack_theme", "dark"));
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  await expect.poll(() => page.evaluate(() =>
+    document.documentElement.getAttribute("data-theme-pref"))).toBe("dark");
+  expect(await page.evaluate(() => window.localStorage.getItem("funpack_theme"))).toBe("dark");
+});

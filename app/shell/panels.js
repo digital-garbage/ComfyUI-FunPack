@@ -58,11 +58,6 @@ export async function mountAll(manifest, { load = (path) => import(path) } = {})
       if (spec.ui) ui = await load(spec.ui);
       let teardown = null;
 
-      const panel = renderPanel(spec, {
-        values: values.valuesOf(spec.id),
-        onChange: (key, value) => values.set(spec.id, key, value),
-      });
-
       if (ui && typeof ui.setup === "function") {
         // Kept, not discarded: setup() returns the unsubscribe from on(), and
         // dropping it means every re-mount leaves another live listener behind.
@@ -83,6 +78,16 @@ export async function mountAll(manifest, { load = (path) => import(path) } = {})
           shell: services,
         });
       }
+
+      // Built AFTER setup, so a control shows what setup settled on. The panel
+      // is drawn from a snapshot of the values, so building it first meant a
+      // module that adopted a live value in setup -- the theme, which the page
+      // applies before any module exists -- had a control showing something the
+      // app was not set to.
+      const panel = renderPanel(spec, {
+        values: values.valuesOf(spec.id),
+        onChange: (key, value) => values.set(spec.id, key, value),
+      });
 
       // Only now, with a complete panel AND a setup() that returned, does
       // anything reach the DOM. Appending before setup ran left a module whose
