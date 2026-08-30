@@ -160,14 +160,13 @@
 }
 .cx-workspace-main > *, .cx-workspace-side > * { flex: 1 1 auto; min-block-size: 0; }
 .cx-workspace-side {
-  /* Allowed to shrink, and sized from the viewport rather than fixed: two
-     fixed 240px panels plus their rails are wider than a 480px window, and the
-     page then scrolls sideways -- the one thing a docked layout must never do,
-     because the transport bar goes with it. Narrow is cramped and legible; the
-     user can collapse either side. */
-  flex: 0 1 auto;
-  inline-size: clamp(0px, 22vw, 340px);
-  min-inline-size: 0;
+  /* A width the CONTENT can live in, not a share of the window. Sizing these
+     as a fraction of the viewport gave a 900px-wide window a 198px column, in
+     which "Loosen the starting image" wrapped over three lines and a section
+     heading broke mid-word. A panel is as wide as a settings row needs; when
+     the window cannot afford two of them it stops docking them (below). */
+  flex: 0 0 auto;
+  inline-size: clamp(268px, 24vw, 360px);
   min-block-size: 0;
   overflow: auto;
   display: flex; flex-direction: column;
@@ -201,3 +200,38 @@
 .cx-frame-main { flex: 1 1 auto; min-block-size: 0; display: flex; }
 .cx-frame-main > * { flex: 1 1 auto; min-inline-size: 0; }
 .cx-frame-foot { flex: 0 0 auto; }
+
+/* Not enough room to dock. Below this the two panels plus a usable centre do
+   not fit -- three columns in 375px gave clipped headings and a preview no
+   wider than a thumbnail -- so a panel stops taking space from the centre and
+   sits over it instead. The rails do not move, so the way in and out is the
+   same control in the same place at every size.
+
+   The element closes both panels when it enters this mode and opens only one
+   at a time within it, because two overlays over a narrow centre is the same
+   problem with extra steps. What was open before is restored on the way out,
+   and none of that touches the remembered preference -- a window being small
+   is not the user changing their mind.
+
+   This is also what makes a phone possible later rather than a rewrite: the
+   difference between docked and overlaid is where the panel is drawn, not what
+   it is or how it is opened. */
+@media (max-width: 760px) {
+  .cx-workspace { position: relative; }
+  .cx-workspace-side {
+    position: absolute;
+    inset-block: 0;
+    z-index: 1;
+    inline-size: min(86vw, 360px);
+    background: var(--elev-1);
+    box-shadow: var(--shadow-3);
+  }
+  .cx-workspace-left { inset-inline-start: 0; }
+  .cx-workspace-right { inset-inline-end: 0; }
+  /* Above the overlay, or the panel covers the only control that closes it --
+     which is the whole fault this arrangement was built to avoid, arriving by a
+     different route the moment the panel stopped taking its own space. */
+  .cx-workspace-rail { position: relative; z-index: 2; }
+  /* A collapsed overlay must not keep catching pointers over the centre. */
+  .cx-workspace-side.cx-collapsed { inline-size: 0; box-shadow: none; }
+}

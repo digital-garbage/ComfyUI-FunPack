@@ -281,6 +281,15 @@ define("workspace", "docked", ({
   const panels = {};
   const toggles = {};
 
+  // Below this the panels overlay the centre instead of docking beside it, so
+  // only one may be open and neither starts open. The CSS decides how a panel
+  // is drawn; this decides what is open, and the two have to agree on the
+  // width, which is why it is written once here and matched there.
+  const NARROW = "(max-width: 760px)";
+  const narrow = typeof window.matchMedia === "function" ? window.matchMedia(NARROW) : null;
+  const isNarrow = () => Boolean(narrow && narrow.matches);
+  let wide = null;                    // what was open before the window shrank
+
   const side = (which, label, content) => {
     const panelId = uid(`ws-${which}`);
     const panel = el("div", { cls: ["cx-workspace-side", `cx-workspace-${which}`],
@@ -301,15 +310,36 @@ define("workspace", "docked", ({
     return { panel, rail };
   };
 
-  function set(which, open) {
+  function set(which, open, { remember: keep = true } = {}) {
     state[which] = Boolean(open);
+    // One at a time while overlaid: two panels over a narrow centre is the same
+    // problem the docking rule was avoiding, with an extra step.
+    if (state[which] && isNarrow()) {
+      const other = which === "left" ? "right" : "left";
+      if (state[other]) set(other, false, { remember: false });
+    }
     panels[which].classList.toggle("cx-collapsed", !state[which]);
     // Not [hidden] and not display:none: a panel with no width is out of the
     // way and still animatable, and its toggle is in the rail either way.
     panels[which].setAttribute("aria-hidden", String(!state[which]));
     toggles[which].setAttribute("aria-expanded", String(state[which]));
-    remember(which, state[which]);
+    // A window being small is not the user changing their mind, so an automatic
+    // close does not overwrite what they last chose.
+    if (keep) remember(which, state[which]);
     if (onToggle) onToggle(which, state[which]);
+  }
+
+  function fit() {
+    if (isNarrow()) {
+      if (wide === null) wide = { ...state };
+      set("left", false, { remember: false });
+      set("right", false, { remember: false });
+    } else if (wide) {
+      const was = wide;
+      wide = null;
+      set("left", was.left, { remember: false });
+      set("right", was.right, { remember: false });
+    }
   }
 
   const main = el("div", { cls: "cx-workspace-main",
@@ -318,8 +348,10 @@ define("workspace", "docked", ({
   const l = side("left", leftLabel, left);
   const r = side("right", rightLabel, right);
   node.append(l.rail, l.panel, main, r.panel, r.rail);
-  set("left", state.left);
-  set("right", state.right);
+  set("left", state.left, { remember: false });
+  set("right", state.right, { remember: false });
+  fit();
+  if (narrow && narrow.addEventListener) narrow.addEventListener("change", fit);
 
   return {
     node,
@@ -331,7 +363,11 @@ define("workspace", "docked", ({
     open: (which) => set(which, true),
     close: (which) => set(which, false),
     toggle: (which) => set(which, !state[which]),
-    destroy: () => node.remove(),
+    narrow: isNarrow,
+    destroy() {
+      if (narrow && narrow.removeEventListener) narrow.removeEventListener("change", fit);
+      node.remove();
+    },
   };
 });
 

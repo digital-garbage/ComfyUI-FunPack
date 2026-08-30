@@ -122,3 +122,72 @@ test("the transport reports a refusal beside Generate", async ({ page }) => {
   await expect(bar).not.toHaveText(/^Ready/);
   await expect(bar).toContainText(/no node called|not ready|could not be/);
 });
+
+// Narrow windows: the panels stop docking and overlay instead.
+//
+// Not a phone feature -- a 900px window had a 198px properties column in which
+// a two-word label wrapped over three lines, and 375px put three columns side
+// by side with clipped headings. The behaviour has to hold at both ends.
+
+test("a narrow window opens with the panels out of the way", async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 780 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  const w = await widths(page);
+  expect(w.left, "a panel was docked in a window too narrow for it").toBe(0);
+  expect(w.right).toBe(0);
+  expect(w.main, "the centre did not get the whole window").toBeGreaterThan(300);
+});
+
+test("an overlaid panel does not cover the control that closes it", async ({ page }) => {
+  // The v4 fault, arriving by a different route: the panel stopped taking its
+  // own space and the rail ended up underneath it.
+  await page.setViewportSize({ width: 420, height: 780 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  const toggle = page.locator(".cx-workspace-rail-right button");
+  await toggle.click();
+  expect((await widths(page)).right).toBeGreaterThan(200);
+  await expect(toggle).toBeInViewport();
+  await toggle.click();                       // and it still works
+  expect((await widths(page)).right).toBe(0);
+});
+
+test("only one panel overlays at a time", async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 780 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  await page.locator(".cx-workspace-rail-left button").click();
+  await page.locator(".cx-workspace-rail-right button").click();
+  const w = await widths(page);
+  expect(w.left, "two overlays over one narrow centre").toBe(0);
+  expect(w.right).toBeGreaterThan(200);
+});
+
+test("what was open comes back when there is room again", async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  expect((await widths(page)).left).toBeGreaterThan(200);
+
+  await page.setViewportSize({ width: 420, height: 780 });
+  expect((await widths(page)).left).toBe(0);
+
+  await page.setViewportSize({ width: 1400, height: 900 });
+  expect((await widths(page)).left,
+    "the window getting small was taken as the user closing the panel").toBeGreaterThan(200);
+});
+
+test("a settings label is not squeezed into three lines at a square window", async ({ page }) => {
+  // 1:1 is an ordinary window shape and was the worst case: the column was a
+  // share of the viewport rather than a width its content could live in.
+  await page.setViewportSize({ width: 900, height: 900 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  const right = (await widths(page)).right;
+  expect(right, "the properties column is too narrow to read").toBeGreaterThanOrEqual(260);
+});

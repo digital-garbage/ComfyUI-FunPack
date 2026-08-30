@@ -39,8 +39,12 @@ export function build(root, handlers = {}) {
     title: "Prompt",
     body: composer.hint.default({ text: "Modules that announced generation.prompt." }),
   });
+  // The result gets the room. The prompt is a few lines and a button's worth of
+  // controls; at 38% of the height it was mostly empty space taken from the one
+  // thing on the page anybody is looking at. Draggable, so anyone writing a long
+  // prompt can take it back.
   const centre = composer.splitPane.v({
-    size: 62,
+    size: 74,
     label: "Preview and prompt",
     panes: [preview, prompt],
   });
