@@ -96,3 +96,23 @@ test("Save and Cancel hold the bottom instead of scrolling with the settings", a
   const after = await barIn.boundingBox();
   expect(after.y).toBeCloseTo(bar.y, 0);
 });
+
+test("the button opens one window, however many times it is pressed", async ({ page }) => {
+  // Reported from a real session: two of the same modal, one behind the other.
+  // Two windows over one pipeline are two drafts of it -- whichever is saved
+  // last wins, and the other was edited against a pipeline that had moved.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  const button = page.getByRole("button", { name: "Models and pipeline" });
+  await button.click();
+  await expect(page.locator(".cx-modal")).toHaveCount(1);
+  await button.click({ force: true });
+  await button.click({ force: true });
+  await expect(page.locator(".cx-modal")).toHaveCount(1);
+
+  await page.locator(".cx-modal .cx-icon-btn").click();
+  await expect(page.locator(".cx-modal")).toHaveCount(0);
+  await button.click();
+  await expect(page.locator(".cx-modal")).toHaveCount(1);
+});

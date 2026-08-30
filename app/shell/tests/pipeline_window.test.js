@@ -11,12 +11,15 @@ import assert from "node:assert/strict";
 
 import { setupDom, teardownDom, fire } from "../../composer/tests/_dom.js";
 
-let openWindow, groupsOf;
+let openWindow, groupsOf, resetWindow;
 test.before(async () => {
   setupDom();
   await import("../../composer/composer.js");
-  ({ open: openWindow, groupsOf } = await import("../pipeline_window.js"));
+  ({ open: openWindow, groupsOf, _reset: resetWindow } = await import("../pipeline_window.js"));
 });
+// There is one pipeline and so one window onto it; a test that leaves one open
+// would otherwise hand it to the next test instead of opening a fresh one.
+test.beforeEach(() => resetWindow());
 test.after(() => teardownDom());
 
 // --- the fake server -------------------------------------------------------
@@ -478,5 +481,62 @@ test("a value edit is not mistaken for a structural one", async () => {
   click(button(win, "Save"));
   await new Promise(setImmediate);
   assert.equal(api.held.find((s) => s.id === "sampler").inputs.steps, 35);
+  win.close();
+});
+
+// --- one window, and one edit at a time -----------------------------------
+
+test("pressing the button twice does not stack a second window", async () => {
+  // Two windows over one pipeline are two drafts of it: whichever is saved
+  // last wins and the other was edited against a pipeline that had moved.
+  const api = server();
+  const first = openWindow(api);
+  await first.ready;
+  const second = openWindow(api);
+
+  assert.equal(second, first, "a second window was opened over the first");
+  assert.equal(document.querySelectorAll(".cx-modal").length, 1);
+  first.close();
+  assert.equal(document.querySelectorAll(".cx-modal").length, 0);
+});
+
+test("closing one lets the next press open a fresh one", async () => {
+  const api = server();
+  const first = openWindow(api);
+  await first.ready;
+  first.close();
+
+  const second = openWindow(api);
+  await second.ready;
+  assert.notEqual(second, first, "the button stopped working after one close");
+  second.close();
+});
+
+test("a slow edit answering late does not undo the edit made after it", async () => {
+  // Moving a node carries the whole slot list; removing one carries an id. The
+  // second answers first, and the first's answer describes a pipeline that no
+  // longer exists -- taking it put the removed node back with no refusal and
+  // nothing said.
+  const api = server();
+  const held = [];
+  const slow = { ...api, check: (body) => new Promise((resolve) => {
+    held.push(() => resolve(api.check(body)));
+  }) };
+
+  const win = openWindow(slow);
+  await win.ready;                     // the load does not go through check()
+  win.enter("Sampling");
+
+  const moving = win._moveTo("model", "Sampling");
+  const removing = win._remove("sampler");
+  assert.equal(held.length, 2, "both edits should be in flight");
+
+  held[1]();                           // the remove answers first
+  await removing;
+  held[0]();                           // the move answers second, and is stale
+  await moving;
+
+  assert.equal(win.slots.some((s) => s.id === "sampler"), false,
+    "a removed node came back when an older edit answered late");
   win.close();
 });

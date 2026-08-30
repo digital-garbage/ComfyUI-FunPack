@@ -44,13 +44,28 @@ const isLink = (value) => Array.isArray(value) && value.length === 2
 
 const countOf = (n) => (n === 0 ? "empty" : `${n} node${n === 1 ? "" : "s"}`);
 
+// The one that is open, if one is.
+//
+// There is a single pipeline, so there is a single window onto it. Without this
+// the button opened another one on every press, and two windows over the same
+// pipeline are two drafts of it: whichever was saved last wins, and the other
+// was edited against a pipeline that had already moved.
+let current = null;
+
 /**
  * open({ load, describe, check, search, onApply }) -> handle
  *
  * Every server call is injected. The window is then testable without a server
  * and -- more to the point -- cannot reach for one that is not there.
+ *
+ * Opening while one is already open returns THAT one and focuses it, rather
+ * than stacking a second over it.
  */
 export function open({ load, describe, check, search, onApply } = {}) {
+  if (current) {
+    current.focus();
+    return current;
+  }
   let slots = [];
   const nodes = new Map();          // class name -> description | null
   const extraGroups = [];           // made in this window, no slot in them yet
@@ -68,6 +83,9 @@ export function open({ load, describe, check, search, onApply } = {}) {
     // A half-finished group edit must not vanish because a click landed on the
     // backdrop: the draft is the only copy of it.
     closeOnOutside: false,
+    // However it was closed -- the button, Escape, destroy -- the next press
+    // opens a fresh one rather than finding this one and refusing.
+    onClose: () => { if (current === handle) current = null; },
   });
 
   // ---------------------------------------------------------------- server
@@ -90,16 +108,29 @@ export function open({ load, describe, check, search, onApply } = {}) {
     for (const name of unknown) nodes.set(name, described[name] ?? null);
   }
 
+  // Which edit is the current one. Two structural edits can be in flight at
+  // once -- moving a node carries the whole slot list and a remove carries one
+  // id, so the second can easily answer first -- and the older answer was built
+  // from the pipeline as it stood BEFORE the newer edit. Taking it put the
+  // removed node back with no refusal and nothing said. The picker's search
+  // already guards this; the path that decides what gets QUEUED did not.
+  let edits = 0;
+
   /** Send the pipeline as it now stands and keep what the server says of it. */
   async function commit(next, action = {}) {
+    const mine = ++edits;
     let answer;
     try {
       answer = await check({ slots: next, ...action });
     } catch (err) {
+      if (mine !== edits) return false;
       notes = { refused: [err.message], incomplete: notes.incomplete };
       draw();
       return false;
     }
+    // A newer edit has been sent since. Its answer is the one that describes
+    // the pipeline; this one describes a pipeline that no longer exists.
+    if (mine !== edits) return false;
     // A refused edit did not happen, so what is on screen must stay what it
     // was: showing the refusal beside the change it refused is how someone
     // comes to believe an edit landed when it did not.
@@ -525,9 +556,10 @@ export function open({ load, describe, check, search, onApply } = {}) {
     })]);
   });
 
-  return {
+  const handle = {
     node: modal.node,
     close: (reason) => modal.close(reason),
+    focus: () => modal.node.focus ? modal.node.focus() : undefined,
     ready,
     // The window's own view of things, so a test does not have to infer state
     // by reading the DOM back.
@@ -539,5 +571,15 @@ export function open({ load, describe, check, search, onApply } = {}) {
     leave,
     _replace: (slotId, className) =>
       commit(slots, { action: "replace", slot: slotId, node: className }),
+    _moveTo: moveTo,
+    _remove: remove,
   };
+  current = handle;
+  return handle;
+}
+
+/** For tests, which open and close many windows in one process. */
+export function _reset() {
+  if (current) current.close("reset");
+  current = null;
 }
