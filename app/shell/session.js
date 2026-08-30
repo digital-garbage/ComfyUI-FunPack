@@ -86,7 +86,7 @@ export function createGenerator({ run, transport, check, ready }) {
  * ordering is the thing under test, so the ordering lives where tests can reach
  * it.
  */
-export function wire({ run, page, check, id, runningFor, finishedFor }) {
+export function wire({ run, page, check, id, queuedFor, finishedFor }) {
   // One subscription draws everything a run affects. It lives here rather than
   // beside it in boot.js because subscribe() delivers the CURRENT state at
   // once, and doing that after the button was deliberately disabled handed it
@@ -107,7 +107,7 @@ export function wire({ run, page, check, id, runningFor, finishedFor }) {
   // one on the strength of "phase is idle" is starting one on a guess.
   page.transport.hold("Looking for a run already in progress");
 
-  const ready = reattach(run, id, { runningFor, finishedFor }).then((adopted) => {
+  const ready = reattach(run, id, { queuedFor, finishedFor }).then((adopted) => {
     page.transport.release(run.state);
     return adopted;
   });
@@ -116,11 +116,14 @@ export function wire({ run, page, check, id, runningFor, finishedFor }) {
   return { ready, generate };
 }
 
-export async function reattach(run, id, { runningFor, finishedFor } = {}) {
+export async function reattach(run, id, { queuedFor, finishedFor } = {}) {
   try {
-    const running = await runningFor(id);
-    if (running) {
-      if (run.state.phase === "idle") { run.adopt(running); return running; }
+    const queued = await queuedFor(id);
+    if (queued) {
+      if (run.state.phase === "idle") {
+        run.adopt(queued.promptId, { running: queued.running });
+        return queued.promptId;
+      }
       return null;
     }
 

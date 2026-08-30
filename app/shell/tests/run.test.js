@@ -442,3 +442,14 @@ test("a cancel the server says did nothing does not claim it did", async () => {
   await run.cancel();
   assert.equal(run.state.phase, QUEUED, "the run was declared cancelled on the server's word that it was not");
 });
+
+test("a run adopted while it is still waiting its turn says Queued, not Working", () => {
+  const { run } = runner(ok({}));
+  run.adopt("waiting", { running: false });
+  assert.equal(run.state.phase, QUEUED);
+  assert.equal(run.state.promptId, "waiting");
+
+  // And it becomes running when the server says it did, not before.
+  run.handle(JSON.parse(message("execution_start", { prompt_id: "waiting" }).data));
+  assert.equal(run.state.phase, RUNNING);
+});

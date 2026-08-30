@@ -40,16 +40,25 @@ export function connect(id) {
 }
 
 /**
- * The prompt id this browser already has running, if any.
+ * What this browser already has in the queue: {promptId, running}, or null.
  *
  * Asked of ComfyUI's own queue rather than remembered locally: a run this page
  * queued may have finished, been cancelled, or been dequeued while the page was
  * gone, and a remembered id would reattach the UI to a run that no longer
- * exists. `queue_running` items are
- * [number, prompt_id, prompt, extra_data, outputs], and extra_data carries the
- * client_id ComfyUI was given when the run was queued.
+ * exists.
+ *
+ * BOTH halves. `/queue` answers with `queue_running` and `queue_pending`, and a
+ * job sits in the second one from the moment /prompt returns until the worker
+ * picks it up -- always briefly, and for as long as it takes whenever something
+ * is running ahead of it. Reading only the running half meant a reload in that
+ * window found nothing, handed Generate back, and let the user queue the same
+ * job twice: the first copy then ran unnamed, its messages failing the id check,
+ * burning time while the UI narrated the second.
+ *
+ * Items in both are [number, prompt_id, prompt, extra_data, outputs], and
+ * extra_data carries the client_id ComfyUI was given when the run was queued.
  */
-export async function runningFor(id, { fetch: doFetch = globalThis.fetch, base = "" } = {}) {
+export async function queuedFor(id, { fetch: doFetch = globalThis.fetch, base = "" } = {}) {
   let response;
   try {
     response = await doFetch(`${base}/queue`);
@@ -59,10 +68,17 @@ export async function runningFor(id, { fetch: doFetch = globalThis.fetch, base =
   if (!response.ok) return null;
 
   const body = await response.json().catch(() => ({}));
-  for (const item of body.queue_running || []) {
-    if (!Array.isArray(item) || item.length < 4) continue;
-    const [, promptId, , extra] = item;
-    if (extra && extra.client_id === id) return promptId || null;
+  // Running first: if this browser somehow has both, the one under way is the
+  // one worth showing. Which half it came from is returned as well, because a
+  // job waiting its turn is not a job in progress, and telling the user it is
+  // working when nothing is happening yet is a small lie the UI does not need
+  // to tell.
+  for (const [half, running] of [[body.queue_running, true], [body.queue_pending, false]]) {
+    for (const item of half || []) {
+      if (!Array.isArray(item) || item.length < 4) continue;
+      const [, promptId, , extra] = item;
+      if (extra && extra.client_id === id && promptId) return { promptId, running };
+    }
   }
   return null;
 }

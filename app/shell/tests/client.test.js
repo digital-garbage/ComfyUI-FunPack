@@ -3,49 +3,58 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runningFor, finishedFor } from "../client.js";
+import { queuedFor, finishedFor } from "../client.js";
 
 const answering = (body, ok = true) => async () => ({
   ok, status: ok ? 200 : 500, json: async () => body,
 });
 
 test("the run this browser queued is found by its client id", async () => {
-  const promptId = await runningFor("me", {
+  const found = await queuedFor("me", {
     fetch: answering({
       queue_running: [
         [1, "someone-elses", {}, { client_id: "them" }, []],
         [2, "mine", {}, { client_id: "me" }, []],
       ],
+      queue_pending: [],
     }),
   });
-  assert.equal(promptId, "mine");
+  assert.deepEqual(found, { promptId: "mine", running: true });
 });
 
 test("another browser's run is not adopted", async () => {
-  const promptId = await runningFor("me", {
-    fetch: answering({ queue_running: [[1, "theirs", {}, { client_id: "them" }, []]] }),
+  const promptId = await queuedFor("me", {
+    fetch: answering({
+      queue_running: [[1, "theirs", {}, { client_id: "them" }, []]],
+      queue_pending: [[2, "also-theirs", {}, { client_id: "them" }, []]],
+    }),
   });
   assert.equal(promptId, null);
 });
 
 test("nothing running means nothing to reattach to", async () => {
-  assert.equal(await runningFor("me", { fetch: answering({ queue_running: [] }) }), null);
+  assert.equal(await queuedFor("me", {
+    fetch: answering({ queue_running: [], queue_pending: [] }),
+  }), null);
 });
 
 test("a queue that cannot be reached is not an error the app has to show", async () => {
   // The dev server has no queue behind it, which is the ordinary case while
   // working on the UI.
-  const promptId = await runningFor("me", {
+  const promptId = await queuedFor("me", {
     fetch: async () => { throw new TypeError("Failed to fetch"); },
   });
   assert.equal(promptId, null);
 });
 
 test("a malformed queue entry is skipped rather than crashing the load", async () => {
-  const promptId = await runningFor("me", {
-    fetch: answering({ queue_running: [null, "nonsense", [1], [2, "mine", {}, { client_id: "me" }, []]] }),
+  const found = await queuedFor("me", {
+    fetch: answering({
+      queue_running: [null, "nonsense", [1], [2, "mine", {}, { client_id: "me" }, []]],
+      queue_pending: [undefined, {}, [3, null, {}, { client_id: "me" }, []]],
+    }),
   });
-  assert.equal(promptId, "mine");
+  assert.deepEqual(found, { promptId: "mine", running: true });
 });
 
 test("a finished run is recognised as this browser's from its history entry", async () => {
@@ -86,6 +95,41 @@ test("a history entry with nothing in it is skipped, not trusted", async () => {
 test("no history to ask is not an error", async () => {
   const promptId = await finishedFor("me", ["mine"], {
     fetch: async () => { throw new TypeError("Failed to fetch"); },
+  });
+  assert.equal(promptId, null);
+});
+
+test("a run still waiting its turn is found too", async () => {
+  // /queue answers with both halves, and a job sits in the pending one from the
+  // moment /prompt returns until the worker picks it up -- always briefly, and
+  // for as long as it takes whenever something is running ahead of it. A reload
+  // in that window found nothing and let the same job be queued twice.
+  const promptId = await queuedFor("me", {
+    fetch: answering({
+      queue_running: [[1, "theirs", {}, { client_id: "them" }, []]],
+      queue_pending: [[2, "mine", {}, { client_id: "me" }, []]],
+    }),
+  });
+  assert.deepEqual(promptId, { promptId: "mine", running: false },
+    "a job waiting its turn was reported as one already under way");
+});
+
+test("a run under way is preferred over one still waiting", async () => {
+  const promptId = await queuedFor("me", {
+    fetch: answering({
+      queue_running: [[1, "under-way", {}, { client_id: "me" }, []]],
+      queue_pending: [[2, "waiting", {}, { client_id: "me" }, []]],
+    }),
+  });
+  assert.deepEqual(promptId, { promptId: "under-way", running: true });
+});
+
+test("somebody else's pending run is not adopted either", async () => {
+  const promptId = await queuedFor("me", {
+    fetch: answering({
+      queue_running: [],
+      queue_pending: [[1, "theirs", {}, { client_id: "them" }, []]],
+    }),
   });
   assert.equal(promptId, null);
 });

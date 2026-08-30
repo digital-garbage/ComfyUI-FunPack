@@ -296,10 +296,14 @@ export function createRun({
      * previous page load queued. The id comes from ComfyUI's own queue, so this
      * adopts a real run rather than assuming one.
      */
-    adopt(promptId) {
+    adopt(promptId, { running = true } = {}) {
       if (!promptId) return false;
       listen();
-      emit({ phase: RUNNING, images: [], audio: [], error: null, node: null });
+      // A job waiting its turn is queued, not running. Saying "working" over a
+      // run that has not started is the same small lie as saying "cancelled"
+      // over one that has not stopped.
+      emit({ phase: running ? RUNNING : QUEUED, images: [], audio: [],
+             error: null, node: null });
       settle(promptId);
       return true;
     },

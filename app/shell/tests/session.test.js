@@ -176,7 +176,7 @@ test("a failed attempt leaves Generate usable again", async () => {
 test("a run still in the queue is taken back over", async () => {
   const run = fakeRun();
   const got = await reattach(run, "me", {
-    runningFor: async () => "still-going",
+    queuedFor: async () => ({ promptId: "still-going", running: true }),
     finishedFor: async () => { throw new Error("history should not have been asked"); },
   });
   assert.equal(got, "still-going");
@@ -187,7 +187,7 @@ test("a run that finished during the load is found in history", async () => {
   const run = fakeRun();
   run.seen = () => ["ended-just-now"];
   const got = await reattach(run, "me", {
-    runningFor: async () => null,
+    queuedFor: async () => null,
     finishedFor: async (_id, seen) => (seen.includes("ended-just-now") ? "ended-just-now" : null),
   });
   assert.equal(got, "ended-just-now");
@@ -197,7 +197,7 @@ test("history is not asked about a run this page never saw", async () => {
   const run = fakeRun();
   let asked = false;
   const got = await reattach(run, "me", {
-    runningFor: async () => null,
+    queuedFor: async () => null,
     finishedFor: async () => { asked = true; return "something-old"; },
   });
   assert.equal(got, null);
@@ -207,7 +207,7 @@ test("history is not asked about a run this page never saw", async () => {
 test("a page already running its own generation is not reattached to another", async () => {
   const run = fakeRun("running");
   const got = await reattach(run, "me", {
-    runningFor: async () => "some-other",
+    queuedFor: async () => ({ promptId: "some-other", running: true }),
     finishedFor: async () => null,
   });
   assert.equal(got, null);
@@ -216,7 +216,7 @@ test("a page already running its own generation is not reattached to another", a
 test("no queue and no history is silence, not an error", async () => {
   const run = fakeRun();
   const got = await reattach(run, "me", {
-    runningFor: async () => { throw new TypeError("Failed to fetch"); },
+    queuedFor: async () => { throw new TypeError("Failed to fetch"); },
     finishedFor: async () => null,
   });
   assert.equal(got, null);
@@ -258,7 +258,7 @@ function wired({ running = null, finished = null, phase = "idle" } = {}) {
     page: { transport: t },
     check: plan(),
     id: "me",
-    runningFor: async () => { await queueAnswered; return running; },
+    queuedFor: async () => { await queueAnswered; return running ? { promptId: running, running: true } : null; },
     finishedFor: async () => finished,
   });
   return { t, run, session, releaseQueue };
@@ -319,7 +319,7 @@ test("a queue that cannot be reached still gives the button back", async () => {
   const run = fakeRun();
   const session = wire({
     run, page: { transport: t }, check: plan(), id: "me",
-    runningFor: async () => { throw new TypeError("Failed to fetch"); },
+    queuedFor: async () => { throw new TypeError("Failed to fetch"); },
     finishedFor: async () => null,
   });
   await session.ready;
@@ -337,7 +337,7 @@ test("a state delivered while the page is still looking does not hand Generate b
   const run = fakeRun();
   wire({
     run, page: { transport: t }, check: plan(), id: "me",
-    runningFor: () => new Promise(() => {}),      // never answers
+    queuedFor: () => new Promise(() => {}),      // never answers
     finishedFor: async () => null,
   });
 
@@ -358,7 +358,7 @@ test("the result of a run is shown as it arrives", async () => {
     run,
     page: { transport: t, viewer: { setSource: (src, kind) => shown.push([src, kind]) } },
     check: plan(), id: "me",
-    runningFor: async () => null, finishedFor: async () => null,
+    queuedFor: async () => null, finishedFor: async () => null,
   });
 
   run.state = { ...run.state, phase: "done", images: [{ filename: "a.png", subfolder: "", type: "output" }] };
@@ -368,4 +368,19 @@ test("the result of a run is shown as it arrives", async () => {
   run.state = { ...run.state, images: [{ filename: "clip.mp4", subfolder: "", type: "output" }] };
   run.announce();
   assert.equal(shown[1][1], "video", "a video result was handed to an <img>");
+});
+
+test("a run found waiting in the queue is adopted as waiting", async () => {
+  const t = transport();
+  const run = fakeRun();
+  const adopted = [];
+  run.adopt = (id, opts) => { adopted.push([id, opts]); return true; };
+
+  const session = wire({
+    run, page: { transport: t }, check: plan(), id: "me",
+    queuedFor: async () => ({ promptId: "waiting", running: false }),
+    finishedFor: async () => null,
+  });
+  await session.ready;
+  assert.deepEqual(adopted, [["waiting", { running: false }]]);
 });

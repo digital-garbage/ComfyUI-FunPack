@@ -9,7 +9,7 @@ import { mountAll } from "./shell/panels.js";
 import { all as allValues } from "./shell/values.js";
 import { composer } from "./composer/composer.js";
 import { createRun } from "./shell/run.js";
-import { clientId, connect, runningFor, finishedFor } from "./shell/client.js";
+import { clientId, connect, queuedFor, finishedFor } from "./shell/client.js";
 import { wire } from "./shell/session.js";
 import { check } from "./shell/pipeline.js";
 
@@ -23,7 +23,7 @@ async function start() {
     onGenerate: () => session.generate(),
     onCancel: () => run.cancel(),
   });
-  const session = wire({ run, page, check, id, runningFor, finishedFor });
+  const session = wire({ run, page, check, id, queuedFor, finishedFor });
 
   let manifest;
   try {
