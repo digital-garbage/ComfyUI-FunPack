@@ -9,11 +9,11 @@ import assert from "node:assert/strict";
 
 import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
 
-let createGenerator, reattach, createTransport;
+let createGenerator, reattach, wire, createTransport;
 test.before(async () => {
   setupDom();
   await import("../../composer/composer.js");
-  ({ createGenerator, reattach } = await import("../session.js"));
+  ({ createGenerator, reattach, wire } = await import("../session.js"));
   ({ createTransport } = await import("../transport.js"));
 });
 test.after(() => teardownDom());
@@ -35,15 +35,24 @@ function transport() {
   };
 }
 
-/** A run whose start() can be held open, like a real POST. */
+/** A run whose start() can be held open, like a real POST.
+ *
+ *  Open by DEFAULT, and held only when a test asks. A gate that starts shut
+ *  means any regression letting an extra start() through hangs the suite
+ *  forever instead of failing it, and a hang says far less than an assertion. */
 function fakeRun(phase = "idle") {
   const started = [];
-  let release;
-  const gate = new Promise((r) => { release = r; });
+  let release = () => {};
+  let gate = Promise.resolve();
   return {
+    hold() {
+      gate = new Promise((r) => { release = () => r(); });
+    },
     started,
-    release,
+    release: () => release(),
     state: { phase },
+    listened: 0,
+    listen() { this.listened += 1; },
     seen: () => [],
     adopt(id) { this.state = { ...this.state, phase: "running", promptId: id }; return true; },
     async start(prompt) {
@@ -63,6 +72,7 @@ test("two clicks during the round trip queue one run, not two", async () => {
   // The button only goes dead when the RUN is queued, and getting there takes a
   // round trip to ask what to queue. That round trip is the whole window.
   const run = fakeRun();
+  run.hold();
   const t = transport();
   let asked = 0;
   const check = async () => { asked += 1; return (await plan()()); };
@@ -81,6 +91,7 @@ test("two clicks during the round trip queue one run, not two", async () => {
 
 test("the button goes dead at the click, not at the queue", async () => {
   const run = fakeRun();
+  run.hold();
   const t = transport();
   const onGenerate = createGenerator({ run, transport: t, check: plan() });
   const running = onGenerate();
@@ -214,4 +225,89 @@ test("a run that actually starts outranks the last refusal", () => {
   assert.equal(t.text, "Queued");
   t.draw({ phase: "idle", progress: null, images: [], error: null, node: null });
   assert.equal(t.text, "Ready", "the stale reason came back after a real run");
+});
+
+// --- the load ordering, which is the thing that keeps breaking ---------------
+//
+// Every fault on this path has been an ordering fault, and every one lived in
+// boot.js, where nothing could reach it. These drive the real order.
+
+function wired({ running = null, finished = null, phase = "idle" } = {}) {
+  const t = transport();
+  const run = fakeRun(phase);
+  let releaseQueue;
+  const queueAnswered = new Promise((r) => { releaseQueue = r; });
+
+  const session = wire({
+    run,
+    page: { transport: t },
+    check: plan(),
+    id: "me",
+    runningFor: async () => { await queueAnswered; return running; },
+    finishedFor: async () => finished,
+  });
+  return { t, run, session, releaseQueue };
+}
+
+test("Generate waits for the page to work out whether a run is already going", async () => {
+  // The reload-during-a-generation case. The button is on screen and the phase
+  // still reads idle for the whole length of the queue lookup, so a click in
+  // that window used to queue a second job and orphan the first.
+  const { t, run, session, releaseQueue } = wired({ running: "already-going" });
+
+  assert.equal(t.disabled, true, "Generate was live before anything was known");
+  const clicked = session.generate();
+
+  releaseQueue();
+  await session.ready;
+  assert.equal(await clicked, false, "a second run was queued over the one already going");
+  assert.equal(run.started.length, 0);
+  assert.equal(run.state.promptId, "already-going", "the run in progress was orphaned");
+});
+
+test("with nothing already running, Generate comes back and works", async () => {
+  const { t, run, session, releaseQueue } = wired({ running: null });
+  releaseQueue();
+  await session.ready;
+
+  assert.equal(t.disabled, false, "Generate never came back");
+  assert.equal(t.text, "Ready", `the loading note stuck: ${t.text}`);
+
+  const started = session.generate();
+  run.release();
+  assert.equal(await started, true);
+  assert.equal(run.started.length, 1);
+});
+
+test("the page says what it is doing while it works it out", async () => {
+  const { t, releaseQueue, session } = wired({ running: null });
+  assert.match(t.text, /Looking for a run/);
+  releaseQueue();
+  await session.ready;
+});
+
+test("a run found in history is adopted before Generate is offered again", async () => {
+  const { t, run, session, releaseQueue } = wired({ running: null, finished: "ended-just-now" });
+  run.seen = () => ["ended-just-now"];
+  releaseQueue();
+  await session.ready;
+  assert.equal(run.state.promptId, "ended-just-now");
+  // The button now follows the RUN, not the lookup: the loading note is gone
+  // and what is on screen is whatever that run is doing.
+  assert.doesNotMatch(t.text, /Looking for a run/);
+});
+
+test("a queue that cannot be reached still gives the button back", async () => {
+  // The dev server, and any ComfyUI that is down. Waiting forever on a lookup
+  // that will never answer is the same as no button at all.
+  const t = transport();
+  const run = fakeRun();
+  const session = wire({
+    run, page: { transport: t }, check: plan(), id: "me",
+    runningFor: async () => { throw new TypeError("Failed to fetch"); },
+    finishedFor: async () => null,
+  });
+  await session.ready;
+  assert.equal(t.disabled, false);
+  assert.equal(t.text, "Ready");
 });

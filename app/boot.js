@@ -10,7 +10,7 @@ import { all as allValues } from "./shell/values.js";
 import { composer } from "./composer/composer.js";
 import { createRun, viewUrl } from "./shell/run.js";
 import { clientId, connect, runningFor, finishedFor } from "./shell/client.js";
-import { createGenerator, reattach } from "./shell/session.js";
+import { wire } from "./shell/session.js";
 import { check } from "./shell/pipeline.js";
 
 const root = document.querySelector("#app");
@@ -20,17 +20,10 @@ async function start() {
   const run = createRun({ clientId: id, connect });
 
   const page = build(root, {
-    onGenerate: () => generate(),
+    onGenerate: () => session.generate(),
     onCancel: () => run.cancel(),
   });
-  const generate = createGenerator({ run, transport: page.transport, check });
-
-  // The socket opens at load, not at Generate. A generation queued before a
-  // reload keeps running on the server, and a page that only listens once it
-  // starts one of its own hears nothing about it -- sits at Ready, and queues a
-  // SECOND job if the user presses Generate believing nothing is running.
-  run.listen();
-  reattach(run, id, { runningFor, finishedFor });
+  const session = wire({ run, page, check, id, runningFor, finishedFor });
 
   run.subscribe((state) => {
     page.transport.draw(state);

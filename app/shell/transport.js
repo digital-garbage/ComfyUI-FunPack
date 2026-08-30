@@ -65,10 +65,11 @@ export function createTransport({ onGenerate, onCancel } = {}) {
     status.setText(note || describe(state));
   }
 
-  /** Say why nothing was started. Cleared by the next run that says otherwise. */
-  function say(text) {
-    note = text;
-    status.setText(text);
+  /** Say why nothing was started, or -- with null -- stop saying it. Cleared by
+   *  the next run that says otherwise. */
+  function say(text, state) {
+    note = text || null;
+    status.setText(note || describe(state || { phase: IDLE, images: [] }));
   }
 
   return { node: bar.node, draw, say, generate, cancel, progress, status };
