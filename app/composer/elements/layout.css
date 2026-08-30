@@ -33,7 +33,11 @@
    adds no specificity, so written above them it lost -- and `flex: 0 0 180px`
    in a COLUMN is 180px of HEIGHT, which turned four settings into a panel two
    screens long. */
-@container (max-width: 300px) {
+/* 360, not 300: the control column is 180px and a label needs at least as much
+   again beside it. Written as 300 it depended on the padding around the rows --
+   trimming 4px off two nested boxes widened this container past the threshold
+   and the shredding came straight back, in a commit about something else. */
+@container (max-width: 360px) {
   .cx-settings-row { flex-direction: column; align-items: stretch; gap: var(--sp-2); }
   .cx-settings-control { flex: 0 0 auto; justify-content: flex-start; }
 }
@@ -42,7 +46,13 @@
 .cx-group { display: flex; flex-direction: column; gap: var(--sp-3); }
 .cx-group-rows {
   border: var(--bw) solid var(--line); border-radius: var(--r-4);
-  background: var(--elev-1); padding: 0 var(--sp-6);
+  background: var(--elev-1);
+  /* Weighted to the left. A row's content -- a checkbox, a label, a stepper --
+     starts at the same edge every time, and sitting it hard against the border
+     made the whole card read as leaning left, because what is beside it on the
+     right is usually the shorter half of a wrapped line rather than a control.
+     A few pixels of extra lead-in settles it without costing the text a line. */
+  padding-inline: var(--sp-6) var(--sp-4);
   container-type: inline-size;
 }
 
@@ -226,7 +236,12 @@
   transition: transform var(--dur-1) var(--ease-standard);
 }
 .cx-collapsible[open] > .cx-collapsible-head::before { transform: rotate(90deg); }
-.cx-collapsible-body { padding: var(--sp-6); padding-block-start: 0; }
+/* Its own top padding, not the head's. With none, the first thing in the body
+   -- usually a section label -- sat directly on the head's dividing line, which
+   read as the label belonging to the divider rather than to what is under it.
+   Narrower at the sides than at the top: this is the third box a setting's text
+   is nested inside, and each level of padding comes out of the words. */
+.cx-collapsible-body { padding: var(--sp-6) var(--sp-4) var(--sp-5); }
 
 .cx-rail { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-2); }
 .cx-rail-item {

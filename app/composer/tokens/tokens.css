@@ -122,8 +122,11 @@
   --grain-opacity: .035;
   --grain-blend: overlay;
 
-  /* Hover moves the fill AWAY from the label, and which way that is depends on
-     the theme: dark's accent carries near-black text, so it goes lighter. */
+  /* A filled accent control, at rest and under the pointer.
+     Dark's accent is amber carrying near-black text: it can go as bright as it
+     likes, so the button sits at the accent and LIGHTENS when pressed towards.
+     Which way hover moves is the opposite of light's, below. */
+  --grad-accent:       linear-gradient(180deg, var(--accent), var(--accent-lo));
   --grad-accent-hover: linear-gradient(180deg, var(--accent-hi), var(--accent));
   --accent-hover-edge: var(--accent-hi);
 }
@@ -169,9 +172,15 @@
   --grain-opacity: .015;
   --grain-blend: multiply;
 
-  /* Light's accent carries WHITE text, so brightening it on hover walks the
-     label towards its own background. It goes darker instead. */
-  --grad-accent-hover: linear-gradient(180deg, var(--accent), var(--accent-lo));
+  /* Light's accent carries WHITE text, which caps how bright the fill can be:
+     past the accent itself the label starts disappearing into it. So the button
+     sits AT the accent -- brighter than the accent-to-accent-lo fade it used to
+     wear, which made it look washed against a white page -- and DARKENS under
+     the pointer, where white only reads better. The opposite of dark's. */
+  --grad-accent:       linear-gradient(180deg, var(--accent),
+                                       color-mix(in srgb, var(--accent) 85%, var(--accent-lo)));
+  --grad-accent-hover: linear-gradient(180deg, var(--accent-lo),
+                                       color-mix(in srgb, var(--accent-lo) 82%, black));
   --accent-hover-edge: var(--accent-lo);
 }
 
@@ -207,7 +216,7 @@
                                  color-mix(in srgb, var(--elev-2) 55%, var(--elev-0)));
   --grad-raise:  linear-gradient(180deg, color-mix(in srgb, var(--elev-2) 72%, var(--elev-3)),
                                  var(--elev-2));
-  --grad-accent: linear-gradient(180deg, var(--accent), var(--accent-lo));
+
 
   /* A filled accent control throws a little of its own colour. Negative
      spread, so it is a bloom under the control and not a box around it. */
