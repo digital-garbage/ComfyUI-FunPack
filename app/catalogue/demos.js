@@ -144,6 +144,11 @@ export const DEMOS = {
     actions: [c.iconButton.sm({ icon: "✎", label: "Rename" }), c.iconButton.sm({ icon: "✕", label: "Remove" })],
     body: c.text.sm({ text: "A slow push in on the rooftop as the light goes." }),
   }),
+  "panel.zone": (c) => ({
+    title: "Assets",
+    actions: [c.iconButton.sm({ icon: "▦", label: "Grid" })],
+    body: c.text.sm({ text: "A region of the app: square, edge to edge, divided by a hairline." }),
+  }),
   "region.stack": (c) => ({
     label: "Pipeline",
     children: [

@@ -1,7 +1,7 @@
 .cx-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
   border: var(--bw) solid var(--line); border-radius: var(--ctl-r);
-  background: var(--elev-2); color: var(--text);
+  background: var(--grad-raise); color: var(--text);
   font-family: var(--font-ui); font-weight: var(--fw-medium);
   white-space: nowrap; cursor: pointer;
   transition: background var(--dur-1) var(--ease-standard),
@@ -18,10 +18,13 @@
 .cx-btn:disabled { opacity: var(--disabled-opacity); cursor: default; }
 
 .cx-btn-primary {
-  background: var(--accent); border-color: var(--accent);
+  background: var(--grad-accent); border-color: var(--accent);
   color: var(--on-accent); font-weight: var(--fw-bold);
+  box-shadow: var(--glow-accent);
 }
-.cx-btn-primary:hover:not(:disabled) { background: var(--accent-hi); border-color: var(--accent-hi); }
+/* Brightened rather than repainted: a second accent colour for hover is a
+   second thing to keep in step with the first, and this one cannot drift. */
+.cx-btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
 
 .cx-btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
 .cx-btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: var(--danger); }

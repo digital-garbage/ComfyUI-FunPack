@@ -5,13 +5,32 @@ html, body { height: 100%; }
 
 body {
   margin: 0;
-  background: var(--elev-0);
+  /* A wash over the base, not the base alone: a flat fill across 1440px reads
+     as paper, and every surface above it then has nothing to sit against. */
+  background: var(--wash), var(--elev-0);
+  background-attachment: fixed;
   color: var(--text);
   font-family: var(--font-ui);
   font-size: var(--fs-4);
   line-height: var(--lh-4);
   -webkit-font-smoothing: antialiased;
 }
+
+::selection { background: var(--accent-soft); }
+
+/* Scrollbars are chrome, and the platform's own are sized for a document.
+   Left alone, a 15px light-grey bar cut through every dark panel in the app. */
+* { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb); border-radius: var(--r-4);
+  /* Inset by its own border so the thumb reads as floating in the track
+     rather than as a second edge beside the panel's. */
+  border: 2px solid transparent; background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hi); background-clip: padding-box; }
+*::-webkit-scrollbar-corner { background: transparent; }
 
 /* Headings and paragraphs carry no margin of their own — spacing is the
  * container's job, so an element can be dropped anywhere without surprises. */

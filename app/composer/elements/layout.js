@@ -67,17 +67,36 @@ define("group", "default", ({ label, rows = [], hint } = {}) => {
   return { node, destroy: () => node.remove() };
 });
 
-define("panel", "default", ({ title, actions = [], body } = {}) => {
+/**
+ * A titled box. Two of them, and the difference is only where they are used.
+ *
+ * `default` is a card: rounded, bordered, with a shadow, for a panel that
+ * floats on something -- inside a window, on a page.
+ *
+ * `zone` is a REGION OF THE APP: square, edge to edge, divided from its
+ * neighbours by the same hairline everything else uses. The app is one surface
+ * cut into areas, not a tray of cards with the desk showing between them --
+ * which is what an editing suite looks like, and what v4 was.
+ */
+const panel = (variant) => ({ title, actions = [], body, flush = false } = {}) => {
   const head = (title || actions.length)
     ? el("header", { cls: "cx-panel-head", children: [
         title ? el("h2", { cls: "cx-panel-title", text: title }) : null,
-        actions.length ? el("div", { cls: "cx-panel-actions", children: actions.map((a) => nodeOf(a, "panel.default")) }) : null,
+        actions.length ? el("div", { cls: "cx-panel-actions", children: actions.map((a) => nodeOf(a, `panel.${variant}`)) }) : null,
       ].filter(Boolean) })
     : null;
-  const content = el("div", { cls: "cx-panel-body", children: body ? nodeOf(body, "panel.default") : null });
-  const node = el("section", { cls: "cx-panel", children: [head, content].filter(Boolean) });
+  const content = el("div", { cls: "cx-panel-body", children: body ? nodeOf(body, `panel.${variant}`) : null });
+  // `flush` is for a body that IS the content -- a picture, a video, a canvas.
+  // Padding around one of those is a frame nobody asked for, and the thing
+  // being looked at is the reason the zone exists.
+  const node = el("section", { cls: ["cx-panel", variant === "zone" ? "cx-zone" : null,
+                                     flush ? "cx-panel-flush" : null],
+    children: [head, content].filter(Boolean) });
   return { node, body: content, destroy: () => node.remove() };
-});
+};
+
+define("panel", "default", panel("default"));
+define("panel", "zone", panel("zone"));
 
 // A region whose contents are replaced.
 //

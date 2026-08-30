@@ -116,6 +116,11 @@
   --void: #060606;     /* media letterbox */
   --shadow-ink: rgba(0, 0, 0, .85);
   --backdrop: rgba(6, 5, 4, .66);
+
+  /* Film grain. `overlay` over a dark surface lifts it slightly and breaks up
+     the flatness of a large area of one colour, which is most of this app. */
+  --grain-opacity: .035;
+  --grain-blend: overlay;
 }
 
 /* ── light: white, grey and daylight blue ─────────────────────────────── */
@@ -153,6 +158,11 @@
   --void: #0a0c0f;
   --shadow-ink: rgba(24, 34, 48, .30);
   --backdrop: rgba(24, 34, 48, .34);
+
+  /* The same grain over a light surface with `overlay` reads as dirt, so light
+     multiplies a much fainter one. v4 landed on the same two numbers. */
+  --grain-opacity: .015;
+  --grain-blend: multiply;
 }
 
 /* Derived values, written once so both themes get them for free. color-mix
@@ -173,6 +183,34 @@
   --shadow-1: 0 1px 2px color-mix(in srgb, var(--shadow-ink) 45%, transparent);
   --shadow-2: 0 4px 12px color-mix(in srgb, var(--shadow-ink) 60%, transparent);
   --shadow-3: 0 12px 32px color-mix(in srgb, var(--shadow-ink) 80%, transparent);
+
+  /* ── surfaces ────────────────────────────────────────────────────────
+     Depth, derived from the palette rather than painted per component.
+     A flat fill everywhere is what made this read as a wireframe of itself:
+     every band, control and card was one colour with a 1px line around it,
+     so nothing sat above anything else.
+
+     Each of these is a vertical fall between two steps of the SAME theme's
+     elevation scale, so dark falls darker and light falls lighter, and
+     neither needs a rule of its own. */
+  --grad-band:   linear-gradient(180deg, var(--elev-2),
+                                 color-mix(in srgb, var(--elev-2) 55%, var(--elev-0)));
+  --grad-raise:  linear-gradient(180deg, color-mix(in srgb, var(--elev-2) 72%, var(--elev-3)),
+                                 var(--elev-2));
+  --grad-accent: linear-gradient(180deg, var(--accent), var(--accent-lo));
+
+  /* A filled accent control throws a little of its own colour. Negative
+     spread, so it is a bloom under the control and not a box around it. */
+  --glow-accent: 0 4px 14px -6px var(--accent);
+
+  /* The page is not one flat colour: a soft wash off the top-right corner,
+     which is what stops a 1440px-wide dark background looking like paper. */
+  --wash: radial-gradient(1200px 600px at 80% -10%,
+                          color-mix(in srgb, var(--elev-2) 70%, transparent) 0%,
+                          transparent 60%);
+
+  --scroll-thumb:    color-mix(in srgb, var(--text) 16%, transparent);
+  --scroll-thumb-hi: color-mix(in srgb, var(--text) 28%, transparent);
 }
 
 /* One guard covers the whole app, because every duration is a token.

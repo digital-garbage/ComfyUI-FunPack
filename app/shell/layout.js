@@ -28,12 +28,12 @@ export function build(root, handlers = {}) {
   // bin owns the choice of what the viewer shows -- one place decides, so a
   // click on an older result and a run finishing cannot both be right at once.
   const bin = createBin({ onOpen: (item) => viewer.setSource(item.url, item.kind) });
-  const assets = composer.panel.default({
+  const assets = composer.panel.zone({
     title: "Assets",
     actions: [bin.control],
     body: bin.host,
   });
-  const preview = composer.panel.default({ title: "Preview", body: viewer });
+  const preview = composer.panel.zone({ title: "Preview", body: viewer, flush: true });
   // The stand-ins below are EMPTY STATES, not labels: they say a region is
   // empty, and settle() takes them down once it is not. A line reading "modules
   // appear here" left above the modules that appeared is a region explaining
@@ -43,7 +43,7 @@ export function build(root, handlers = {}) {
     title: "No prompt here",
     hint: "The pipeline decides which of its inputs appear on the main window.",
   });
-  const prompt = composer.panel.default({ title: "Prompt", body: promptEmpty });
+  const prompt = composer.panel.zone({ title: "Prompt", body: promptEmpty });
   // The result gets the room. The prompt is a few lines and a button's worth of
   // controls; at 38% of the height it was mostly empty space taken from the one
   // thing on the page anybody is looking at. Draggable, so anyone writing a long
@@ -63,7 +63,8 @@ export function build(root, handlers = {}) {
     title: "Nothing to set",
     hint: "Modules with settings for a run appear here.",
   });
-  const generation = composer.panel.default({ title: "Generation", body: generationEmpty });
+  const generation = composer.region.stack({ gap: "sm", label: "Generation",
+                                            children: [generationEmpty] });
 
   const settingsEmpty = composer.emptyState.default({
     icon: "⚙",
@@ -74,12 +75,15 @@ export function build(root, handlers = {}) {
   // box is two frames drawn around one list of settings.
   const settings = composer.region.stack({ gap: "sm", label: "Settings",
                                            children: [settingsEmpty] });
-  // A stack, not a group: a group draws a bordered box with its own padding, so
-  // the two panels in this column sat 11px further in than the panel in the
-  // left column and inside a second border that meant nothing.
-  const properties = composer.region.stack({
-    gap: "sm", label: "Properties",
-    children: [generation, composer.collapsible.default({ label: "Settings", body: settings })],
+  // ONE zone, not two panels stacked. A region of the app is one area with one
+  // head on it; two heads in a column means two things, and there is only one
+  // thing here -- what the next run will do.
+  const properties = composer.panel.zone({
+    title: "Generation",
+    body: composer.region.stack({
+      gap: "sm", label: "Properties",
+      children: [generation, composer.collapsible.default({ label: "Settings", body: settings })],
+    }),
   });
 
   const workspace = composer.workspace.docked({
@@ -122,7 +126,7 @@ export function build(root, handlers = {}) {
   // One host, five names. Each carries the same stand-in, and settle() takes it
   // down once anything at all has mounted into the panel they share.
   for (const point of ["model", "latent", "sampling", "timing", "post"]) {
-    offer(`generation.${point}`, generation.body, generationEmpty.node);
+    offer(`generation.${point}`, generation.node, generationEmpty.node);
   }
 
   return { workspace, assets, bin, preview, viewer, prompt, generation, settings,

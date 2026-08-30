@@ -49,23 +49,32 @@ test("the three columns start at the same height", async ({ page }) => {
   expect(new Set(tops), `columns start at ${tops.join(", ")}`).toHaveProperty("size", 1);
 });
 
-test("one gutter, everywhere", async ({ page }) => {
-  // Between the columns, and between two panels stacked in one of them. Three
-  // different numbers for three kinds of gap is what makes a layout read as
-  // accidental.
+test("the regions meet on a hairline, not across a gap", async ({ page }) => {
+  // The app is one surface cut into areas, not a tray of cards with the desk
+  // showing between them. Before this the columns floated with the page
+  // background between them -- and with three different gaps at that.
   await app(page);
-  const g = await gutter(page);
   const cols = await page.evaluate(() => ["left", "main", "right"].map((which) => {
     const b = document.querySelector(`.cx-workspace-${which}`).getBoundingClientRect();
     return { x: Math.round(b.x), r: Math.round(b.right) };
   }));
 
-  expect(cols[1].x - cols[0].r, "left column to centre").toBe(g);
-  expect(cols[2].x - cols[1].r, "centre to right column").toBe(g);
+  expect(cols[1].x - cols[0].r, "a gap between the left column and the centre").toBe(0);
+  expect(cols[2].x - cols[1].r, "a gap between the centre and the right column").toBe(0);
 
+  const divider = await page.evaluate(() =>
+    getComputedStyle(document.querySelector(".cx-workspace-left")).borderRightWidth);
+  expect(divider, "the regions are not divided at all").toBe("1px");
+});
+
+test("two zones stacked in a column are divided by a grabbable splitter", async ({ page }) => {
+  // A splitter is the one place a gap is right: it has to be wide enough to
+  // take hold of, and it draws its own hairline down the middle.
+  await app(page);
+  const g = await gutter(page);
   const stacked = await boxes(page, ".cx-workspace-main .cx-panel");
-  expect(stacked.length, "the centre is not two stacked panels any more").toBe(2);
-  expect(stacked[1].y - stacked[0].b, "between two panels in one column").toBe(g);
+  expect(stacked.length, "the centre is not two stacked zones any more").toBe(2);
+  expect(stacked[1].y - stacked[0].b, "between two zones in one column").toBe(g);
 });
 
 test("every control in a list of settings shares its two edges", async ({ page }) => {
@@ -98,11 +107,8 @@ test("what the app says is at the start of the transport, what you press is at t
   expect(buttons.x).toBeGreaterThan(lead.r);
 });
 
-test("a closed panel leaves one gutter behind it, not two", async ({ page }) => {
-  // A closed panel is still a flex item, so the gap is applied on both sides of
-  // nothing -- a double-width hole where a panel used to be.
+test("a closed panel leaves the rail and nothing else", async ({ page }) => {
   await app(page);
-  const g = await gutter(page);
   const before = (await boxes(page, ".cx-workspace-main"))[0];
 
   await page.locator(".cx-workspace-rail-left button").click();
@@ -110,6 +116,45 @@ test("a closed panel leaves one gutter behind it, not two", async ({ page }) => 
 
   const [rail] = await boxes(page, ".cx-workspace-rail-left");
   const [centre] = await boxes(page, ".cx-workspace-main");
-  expect(centre.x - rail.r, "the closed panel left a double gap").toBe(g);
+  expect(centre.x - rail.r, "a closed panel left a hole behind it").toBe(0);
   expect(centre.w, "the centre did not take the room back").toBeGreaterThan(before.w);
+});
+
+test("the app's own surfaces have depth, and both themes get it", async ({ page }) => {
+  // Every band and every filled control was one flat colour with a 1px line
+  // round it, which is what made this read as a wireframe of itself. The
+  // gradients are derived from each theme's own elevation scale, so this has to
+  // hold in both -- a token that resolves in one theme and not the other is the
+  // exact fault the derived-token rule exists to prevent.
+  for (const theme of ["dark", "light"]) {
+    await page.addInitScript((t) => window.localStorage.setItem("funpack_theme", t), theme);
+    await app(page);
+    await expect.poll(() => page.evaluate(() =>
+      document.documentElement.getAttribute("data-theme"))).toBe(theme);
+
+    const painted = await page.evaluate(() => ({
+      head: getComputedStyle(document.querySelector(".cx-panel-head")).backgroundImage,
+      body: getComputedStyle(document.body).backgroundImage,
+      primary: getComputedStyle(document.querySelector(".cx-btn-primary")).backgroundImage,
+      glow: getComputedStyle(document.querySelector(".cx-btn-primary")).boxShadow,
+      grain: getComputedStyle(document.querySelector(".cx-frame"), "::after").opacity,
+    }));
+
+    expect(painted.head, `${theme}: a band is a flat fill`).toContain("gradient");
+    expect(painted.body, `${theme}: the page is a flat fill`).toContain("gradient");
+    expect(painted.primary, `${theme}: the primary button is a flat fill`).toContain("gradient");
+    expect(painted.glow, `${theme}: the primary button throws no light`).not.toBe("none");
+    expect(Number(painted.grain), `${theme}: no grain`).toBeGreaterThan(0);
+  }
+});
+
+test("a zone is square and a card is not", async ({ page }) => {
+  await app(page);
+  const zone = await page.evaluate(() => {
+    const n = document.querySelector(".cx-zone");
+    const s = getComputedStyle(n);
+    return { radius: s.borderTopLeftRadius, shadow: s.boxShadow };
+  });
+  expect(zone.radius, "a region of the app has rounded corners").toBe("0px");
+  expect(zone.shadow, "a region of the app floats above itself").toBe("none");
 });

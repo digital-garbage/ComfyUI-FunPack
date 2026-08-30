@@ -49,6 +49,7 @@
 .cx-panel {
   border: var(--bw) solid var(--line); border-radius: var(--r-4);
   background: var(--elev-1); overflow: hidden;
+  box-shadow: var(--shadow-1);
   /* A column, so a panel given a height passes it to its body. Without this a
      viewer asking for 100% of its parent got 100% of `auto` and collapsed to
      one line, inside a panel that was the right size around it. */
@@ -59,13 +60,27 @@
    title was 34, so two panels side by side had their titles on different lines
    -- the whole row read as if it had been assembled by hand. The height is the
    band's; a control inside is centred in it. */
+/* A zone is the app's own surface, not a card on it: no corners to round, no
+   shadow to cast, and no border of its own -- the hairline between it and the
+   next region belongs to the region, so two neighbours never draw two lines. */
+.cx-zone { border: 0; border-radius: 0; box-shadow: none; }
+
 .cx-panel-head {
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5);
   padding: 0 var(--sp-6); border-bottom: var(--bw) solid var(--line);
-  background: var(--elev-2);
+  background: var(--grad-band);
   block-size: var(--menubar-h); flex: none;
 }
-.cx-panel-title { font-family: var(--font-display); font-size: var(--fs-3); font-weight: var(--fw-semibold); }
+.cx-panel-title {
+  font-family: var(--font-display); font-size: var(--fs-3); font-weight: var(--fw-semibold);
+  display: flex; align-items: center; gap: var(--sp-3);
+}
+/* One accent mark per panel. Carried over from v4, where it is what makes a
+   head read as the top of something rather than as a strip of grey. */
+.cx-panel-title::before {
+  content: ""; flex: none; inline-size: 5px; block-size: 5px;
+  border-radius: var(--r-pill); background: var(--accent);
+}
 .cx-panel-actions { display: flex; gap: var(--sp-2); }
 /* A column with a gap, not a block: two things put in a body by two different
    parts of the app had whatever space their own line boxes happened to leave,
@@ -78,13 +93,14 @@
 /* One child fills the body -- a viewer, a bin. Several are each their own
    height and the body scrolls, which is what a panel of controls does. */
 .cx-panel-body > .cx-viewer, .cx-panel-body > .cx-stack-fill { flex: 1 1 auto; }
+.cx-panel-flush > .cx-panel-body { padding: 0; }
 
 .cx-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
 
 .cx-action-bar {
   display: flex; align-items: center; gap: var(--sp-6);
   padding: var(--sp-5) var(--gutter);
-  border-top: var(--bw) solid var(--line); background: var(--elev-2);
+  border-top: var(--bw) solid var(--line); background: var(--grad-band);
   position: sticky; bottom: 0;
 }
 /* What the app is SAYING sits at the start of the row and what is PRESSED at
@@ -176,7 +192,12 @@
 .cx-collapsible-head {
   display: flex; align-items: center; gap: var(--sp-3);
   padding: 0 var(--sp-6); block-size: var(--menubar-h); cursor: pointer; list-style: none;
-  font-size: var(--fs-5);
+  font-size: var(--fs-5); background: var(--grad-band);
+  border-radius: calc(var(--r-4) - var(--bw));
+}
+.cx-collapsible[open] > .cx-collapsible-head {
+  border-end-start-radius: 0; border-end-end-radius: 0;
+  border-block-end: var(--bw) solid var(--line);
 }
 .cx-collapsible-head::-webkit-details-marker { display: none; }
 .cx-collapsible-head::before {
@@ -202,10 +223,6 @@
    never inside the panel it controls. */
 .cx-workspace {
   display: flex; align-items: stretch; min-block-size: 0; block-size: 100%; inline-size: 100%;
-  /* The gutter, in the one place that can apply it evenly. Regions carrying
-     their own padding gave a 7px gap on one side of the centre and 19 on the
-     other, and the three columns started at three different heights. */
-  gap: var(--gutter); padding: var(--gutter);
 }
 /* Flex containers, not blocks with overflow. A region whose height comes from
    its content gives a vertical split inside it a basis of `auto`, so the split's
@@ -214,6 +231,7 @@
 .cx-workspace-main {
   flex: 1 1 auto; min-inline-size: 0; min-block-size: 0;
   display: flex; flex-direction: column;
+  background: var(--elev-1);
 }
 .cx-workspace-main > *, .cx-workspace-side > * { flex: 1 1 auto; min-block-size: 0; }
 .cx-workspace-side {
@@ -227,6 +245,11 @@
   min-block-size: 0;
   overflow: auto;
   display: flex; flex-direction: column;
+  background: var(--elev-1);
+  /* The divider between one region and the next. One hairline, the same one a
+     splitter draws, so the app reads as a single surface that has been cut up
+     rather than as three things put next to each other. */
+  border-inline: var(--bw) solid var(--line);
 }
 /* Width nil rather than display:none -- the panel stays in the flow, stays
    measurable, and can come back without being rebuilt.
@@ -238,26 +261,35 @@
 .cx-workspace-side.cx-collapsed {
   inline-size: 0;
   overflow: hidden;
+  border-inline-width: 0;
 }
-/* A closed panel is still a flex item, so the gutter is still applied on both
-   sides of nothing -- a double-width gap where a panel used to be, which is
-   exactly the kind of hole that reads as a bug. One of the two is taken back. */
-.cx-workspace-left.cx-collapsed { margin-inline-end: calc(var(--gutter) * -1); }
-.cx-workspace-right.cx-collapsed { margin-inline-start: calc(var(--gutter) * -1); }
 /* The toggle sits in the head band's height, so it lines up with the panel
    titles either side of it instead of floating a few pixels above them like a
    mark left on the glass. */
+/* The rails are the frame's own edge, so they carry the page colour rather than
+   a zone's -- the one strip of background the app shows. */
 .cx-workspace-rail {
   flex: 0 0 auto;
   display: flex;
   align-items: flex-start;
   justify-content: center;
+  background: var(--elev-0);
+  padding-inline: var(--sp-1);
 }
 .cx-workspace-rail > * { block-size: var(--menubar-h); }
 
 /* The page frame. The one place a definite height is established, so everything
    below can fill instead of each pane guessing at a percentage of nothing. */
 .cx-frame { display: flex; flex-direction: column; block-size: 100%; min-block-size: 0; }
+/* Film grain over the app, and only over the app: no z-index, so anything that
+   opens above the frame -- a modal, a popover -- paints over it and stays
+   crisp. Fixed, so it does not scroll and cannot be captured by a scroller's
+   own stacking context. */
+.cx-frame::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none;
+  opacity: var(--grain-opacity); mix-blend-mode: var(--grain-blend);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
 .cx-frame-main { flex: 1 1 auto; min-block-size: 0; display: flex; }
 .cx-frame-main > * { flex: 1 1 auto; min-inline-size: 0; }
 .cx-frame-head, .cx-frame-foot { flex: 0 0 auto; }
@@ -267,7 +299,7 @@
 .cx-frame-head {
   display: flex; align-items: center;
   block-size: var(--menubar-h); padding-inline: var(--gutter);
-  border-block-end: var(--bw) solid var(--line); background: var(--elev-2);
+  border-block-end: var(--bw) solid var(--line); background: var(--grad-band);
 }
 .cx-frame-head > * { flex: 1 1 auto; min-inline-size: 0; }
 
