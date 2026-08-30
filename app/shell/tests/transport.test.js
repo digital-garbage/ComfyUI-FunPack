@@ -94,3 +94,56 @@ test("every phase says something, including ones added later", () => {
     assert.ok(text && text.trim(), `${phase} draws an empty status`);
   }
 });
+
+// --- a refusal from the queue, which names the nodes ------------------------
+
+test("a graph the queue refused says which node and why", () => {
+  // run.js captured ComfyUI's node_errors from the start; describe() only ever
+  // read the singular `node`, which is set by the WebSocket crash path and
+  // never by this one. So every value refusal showed ComfyUI's top-level
+  // string -- "Prompt outputs failed validation" -- over a pipeline that can
+  // hold a dozen loaders, with nothing saying which to fix.
+  const said = describe({
+    phase: FAILED, images: [],
+    error: {
+      message: "Prompt outputs failed validation",
+      nodes: {
+        vae: {
+          class_type: "FunPackVAELoader",
+          errors: [{ type: "value_not_in_list", message: "Value not in list",
+                     details: "vae_name: 'gone.safetensors' not in []" }],
+        },
+      },
+    },
+  });
+  assert.match(said, /FunPackVAELoader/);
+  assert.match(said, /vae/);
+  assert.match(said, /Value not in list/);
+  assert.match(said, /gone\.safetensors/);
+});
+
+test("a crash during execution still names its one node", () => {
+  const said = describe({
+    phase: FAILED, images: [],
+    error: { node: "sampler", message: "shape mismatch" },
+  });
+  assert.equal(said, "sampler: shape mismatch");
+});
+
+test("a refusal with no node errors falls back to what it did say", () => {
+  const said = describe({
+    phase: FAILED, images: [],
+    error: { message: "the queue could not be reached: fetch failed", nodes: {} },
+  });
+  assert.match(said, /could not be reached/);
+});
+
+test("a node error carrying nothing readable does not swallow the message", () => {
+  // An entry with an empty errors array would otherwise return "" and read as
+  // a run that failed for no reason at all.
+  const said = describe({
+    phase: FAILED, images: [],
+    error: { message: "refused", nodes: { "4": { class_type: "X", errors: [] } } },
+  });
+  assert.equal(said, "refused");
+});

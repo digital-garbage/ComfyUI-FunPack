@@ -96,6 +96,43 @@ export function createTransport({ onGenerate, onCancel } = {}) {
   return { node: bar.node, draw, say, hold, release, generate, cancel, progress, status };
 }
 
+/**
+ * Why a run failed, in one line, from whichever of the two shapes it arrived in.
+ *
+ * A crash during execution names one node -- `node`. A graph the queue refused
+ * names as many as were wrong -- `nodes`, an object keyed by node id, each with
+ * its own reasons. Only the first was ever read, so the whole of the second was
+ * captured and thrown away: the bar showed ComfyUI's top-level string, which is
+ * "Prompt outputs failed validation" and says nothing about which of a dozen
+ * loaders to go and fix.
+ */
+export function failure(error) {
+  if (!error) return "the run failed";
+
+  const first = firstNodeError(error.nodes);
+  if (first) return first;
+  const where = error.node ? `${error.node}: ` : "";
+  return `${where}${error.message || "the run failed"}`;
+}
+
+function firstNodeError(nodes) {
+  if (!nodes || typeof nodes !== "object") return null;
+  for (const [id, entry] of Object.entries(nodes)) {
+    const reasons = entry && Array.isArray(entry.errors) ? entry.errors : [];
+    for (const reason of reasons) {
+      const what = reason && (reason.message || reason.type);
+      if (!what) continue;
+      // The class type as well as the id: a node id is a number in ComfyUI's
+      // own graphs and a slot name in ours, and neither on its own is much to
+      // go on when the message is "Value not in list".
+      const which = entry.class_type ? `${entry.class_type} (${id})` : id;
+      const detail = reason.details ? ` — ${reason.details}` : "";
+      return `${which}: ${what}${detail}`;
+    }
+  }
+  return null;
+}
+
 /** One line saying where the run is. The only place these words are decided. */
 export function describe(state) {
   switch (state.phase) {
@@ -114,10 +151,8 @@ export function describe(state) {
       return state.images.length
         ? `Done — ${state.images.length} result${state.images.length === 1 ? "" : "s"}`
         : "Done, but nothing was saved";
-    case FAILED: {
-      const where = state.error && state.error.node ? `${state.error.node}: ` : "";
-      return `${where}${(state.error && state.error.message) || "the run failed"}`;
-    }
+    case FAILED:
+      return failure(state.error);
     case CANCELLED:
       return "Cancelled";
     default:

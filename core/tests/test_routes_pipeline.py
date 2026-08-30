@@ -302,3 +302,48 @@ def test_every_dropdown_in_the_registry_is_offered_as_one(registered):
                          if w["type"] == comfy_types.COMBO)
 
     assert dropdowns > 100, f"only {dropdowns} dropdowns found; the sweep is not seeing them"
+
+
+def test_a_file_that_is_no_longer_there_is_refused_here_not_at_the_queue(server, registered):
+    """v4's failure, reproduced against real nodes.
+
+    A LoRA file that had been deleted made ComfyUI refuse the WHOLE prompt --
+    a feature that was switched off still stopped every generation, and the
+    message was "Prompt outputs failed validation" over a graph of a dozen
+    loaders. ComfyUI checks this at /prompt, which is one step after our own
+    check says the pipeline is queueable.
+    """
+    _status, body = _request(server, "GET", "/funpack/api/pipeline")
+    slots = body["slots"]
+    for slot in slots:
+        if slot["id"] == "model":
+            slot["inputs"]["model_name"] = "deleted-yesterday.safetensors"
+
+    _status, checked = _request(server, "POST", "/funpack/api/pipeline",
+                                {"action": "check", "slots": slots})
+    assert checked["queueable"] is False
+    assert any("deleted-yesterday.safetensors" in problem and "not one of" in problem
+               for problem in checked["incomplete"]), checked["incomplete"]
+    assert checked["prompt"] is None, "a graph the queue would refuse was handed over"
+
+
+def test_a_value_the_node_does_offer_still_builds(server, registered):
+    """The control. Without it the test above passes on a check that refuses
+    everything."""
+    from core import widgets
+
+    _status, body = _request(server, "GET", "/funpack/api/pipeline")
+    slots = body["slots"]
+    described = widgets.describe("FunPackDiffusionModelLoader")
+    choices = next(w for w in described["widgets"] if w["name"] == "model_name")["choices"]
+    if not choices:
+        pytest.skip("no model files on this machine, so there is no valid value to use")
+
+    for slot in slots:
+        if slot["id"] == "model":
+            slot["inputs"]["model_name"] = choices[0]
+
+    _status, checked = _request(server, "POST", "/funpack/api/pipeline",
+                                {"action": "check", "slots": slots})
+    assert not any("not one of" in problem for problem in checked["incomplete"]), \
+        checked["incomplete"]

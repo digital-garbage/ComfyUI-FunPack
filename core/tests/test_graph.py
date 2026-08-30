@@ -240,3 +240,84 @@ def test_a_diamond_is_not_a_cycle():
         {"id": "join", "node": "TwoIn", "inputs": {"a": ["left", 0], "b": ["right", 0]}},
     ], SCHEMAS)
     assert problems == []
+
+
+# --- a value ComfyUI would refuse -------------------------------------------
+#
+# ComfyUI checks these too, at /prompt, and it refuses the WHOLE graph when one
+# value is wrong. v4 hit exactly that with a LoRA file that had been deleted: a
+# feature that was switched OFF still stopped every generation, and the message
+# was "Prompt outputs failed validation" over a graph of a dozen loaders.
+
+def _schemas_with_limits():
+    return graph.Schemas(lambda ct: {
+        "Loader": {
+            "inputs": {"ckpt_name": "COMBO", "steps": "INT", "on": "BOOLEAN"},
+            "outputs": ["MODEL"], "required": ["ckpt_name"],
+            "limits": {"ckpt_name": {"choices": ["a.safetensors", "b.safetensors"]},
+                       "steps": {"min": 1, "max": 100}},
+        },
+        "Empty": {"inputs": {"pick": "COMBO"}, "outputs": [], "required": [],
+                  "limits": {"pick": {"choices": []}}},
+    }.get(ct))
+
+
+def test_a_combo_value_that_is_no_longer_on_disk_is_refused_before_queueing():
+    _prompt, problems = graph.build(
+        [{"id": "model", "node": "Loader", "inputs": {"ckpt_name": "gone.safetensors"}}],
+        _schemas_with_limits())
+    assert any("gone.safetensors" in p and "not one of" in p for p in problems), problems
+    assert any("model.ckpt_name" in p for p in problems), problems
+
+
+def test_a_combo_value_that_is_on_disk_is_accepted():
+    prompt, problems = graph.build(
+        [{"id": "model", "node": "Loader", "inputs": {"ckpt_name": "b.safetensors"}}],
+        _schemas_with_limits())
+    assert problems == []
+    assert prompt["model"]["inputs"]["ckpt_name"] == "b.safetensors"
+
+
+def test_a_number_outside_what_the_node_takes_is_refused():
+    _prompt, problems = graph.build(
+        [{"id": "model", "node": "Loader",
+          "inputs": {"ckpt_name": "a.safetensors", "steps": 0}}],
+        _schemas_with_limits())
+    assert any("below the smallest" in p for p in problems), problems
+
+    _prompt, problems = graph.build(
+        [{"id": "model", "node": "Loader",
+          "inputs": {"ckpt_name": "a.safetensors", "steps": 1000}}],
+        _schemas_with_limits())
+    assert any("above the largest" in p for p in problems), problems
+
+
+def test_a_bool_is_not_measured_against_a_number_bound():
+    """True is 1 in Python, so a naive comparison lets a checkbox be judged
+    against a step count -- and quietly passes it."""
+    prompt, problems = graph.build(
+        [{"id": "model", "node": "Loader",
+          "inputs": {"ckpt_name": "a.safetensors", "on": True}}],
+        _schemas_with_limits())
+    assert problems == []
+    assert prompt["model"]["inputs"]["on"] is True
+
+
+def test_an_empty_choice_list_is_reported_as_unfilled_not_as_a_wrong_value():
+    """A machine with no files of that kind has not rejected anything. Saying
+    "x is not one of: " helps nobody, and the slot being unfilled is already
+    reported."""
+    _prompt, problems = graph.build(
+        [{"id": "e", "node": "Empty", "inputs": {"pick": "whatever"}}],
+        _schemas_with_limits())
+    assert not any("not one of" in p for p in problems), problems
+
+
+def test_a_schema_that_says_nothing_about_a_value_does_not_refuse_it():
+    """Most injected schemas carry no limits at all. Unknown is not a refusal:
+    a schema that does not say is not a schema that says no."""
+    schemas = graph.Schemas(lambda ct: {"inputs": {"anything": "STRING"},
+                                  "outputs": [], "required": []})
+    _prompt, problems = graph.build(
+        [{"id": "x", "node": "Whatever", "inputs": {"anything": "hello"}}], schemas)
+    assert problems == []

@@ -62,6 +62,15 @@ class Schemas:
         found = self.of(class_type)
         return list(found.get("required", [])) if found else []
 
+    def limits(self, class_type: str) -> Dict[str, dict]:
+        """What each input will ACCEPT: a combo's choices, a number's bounds.
+
+        Absent from a schema means unknown, which is checked as no limit --
+        a schema that does not say is not a schema that says no.
+        """
+        found = self.of(class_type)
+        return dict(found.get("limits", {})) if found else {}
+
 
 def from_comfyui() -> Schemas:
     """Schemas read from whatever ComfyUI has registered, FunPack's and everyone
@@ -72,7 +81,7 @@ def from_comfyui() -> Schemas:
         if node is None:
             return None
         spec = node.INPUT_TYPES()
-        inputs, required = {}, []
+        inputs, required, limits = {}, [], {}
         for section in ("required", "optional"):
             for name, declared in (spec.get(section) or {}).items():
                 kind, options = comfy_types.declared(declared)
@@ -86,8 +95,19 @@ def from_comfyui() -> Schemas:
                     # thing that says a slot is incomplete -- and a slot missing
                     # a required input built clean and failed once queued.
                     required.append(name)
+
+                bounds = {}
+                if inputs[name] == comfy_types.COMBO:
+                    bounds["choices"] = (list(kind) if isinstance(kind, (list, tuple))
+                                         else comfy_types.choices(options))
+                for edge in ("min", "max"):
+                    if edge in options:
+                        bounds[edge] = options[edge]
+                if bounds:
+                    limits[name] = bounds
+
         return {"inputs": inputs, "outputs": list(node.RETURN_TYPES),
-                "required": required}
+                "required": required, "limits": limits}
     return Schemas(lookup)
 
 
@@ -175,6 +195,7 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
             continue
 
         declared = schemas.inputs(class_type)
+        limits = schemas.limits(class_type)
         inputs = {}
         for name, value in (slot.get("inputs") or {}).items():
             if name not in declared:
@@ -200,6 +221,10 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
                     continue
                 inputs[name] = [source, index]
             else:
+                problem = unacceptable(name, value, limits.get(name))
+                if problem:
+                    problems.append(f"{slot_id}.{problem}")
+                    continue
                 inputs[name] = value
         for name in schemas.required(class_type):
             if name not in inputs:
@@ -210,6 +235,42 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
 
     problems.extend(cycles(prompt))
     return prompt, problems
+
+
+def unacceptable(name: str, value: Any, bounds: Optional[dict]) -> Optional[str]:
+    """Why this literal will not do, or None.
+
+    ComfyUI checks these too, at /prompt -- and it refuses the WHOLE graph when
+    one value is wrong, which v4 hit with a LoRA file that had been deleted: a
+    feature that was switched off still stopped every generation. Refusing here
+    means the reason arrives naming the slot and the input, before anything is
+    queued, instead of as "Prompt outputs failed validation".
+
+    No bounds means unknown, and unknown is not a refusal.
+    """
+    if not bounds:
+        return None
+
+    choices = bounds.get("choices")
+    if choices is not None:
+        # An empty list is a machine with no files of that kind, not a value
+        # that was checked and rejected -- the slot being unfilled is what gets
+        # reported, and saying "x is not one of: " helps nobody.
+        if choices and value not in choices:
+            offered = ", ".join(repr(c) for c in choices[:6])
+            more = "" if len(choices) <= 6 else f", and {len(choices) - 6} more"
+            return (f"{name} is {value!r}, which is not one of: {offered}{more}")
+        return None
+
+    # Only a number has bounds, and only a number is compared to them. A bool is
+    # an int in Python and would sail through a naive comparison as 0 or 1.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if "min" in bounds and value < bounds["min"]:
+        return f"{name} is {value}, below the smallest {bounds['min']} it takes"
+    if "max" in bounds and value > bounds["max"]:
+        return f"{name} is {value}, above the largest {bounds['max']} it takes"
+    return None
 
 
 def cycles(prompt: Dict[str, dict]) -> List[str]:
