@@ -108,12 +108,36 @@ export function open({ load, describe, check, search, onApply } = {}) {
       draw();
       return false;
     }
+    forgetDraftsFor(slots, answer.slots);
     slots = answer.slots;
     notes = { refused: [], incomplete: answer.incomplete };
     await learn(slots.map((slot) => slot.node));
     if (onApply) onApply(slots);
     draw();
     return true;
+  }
+
+  /**
+   * Drop edits that were for a node this slot no longer holds.
+   *
+   * A draft is keyed by slot id, and a slot's id survives being pointed at a
+   * different node -- so an unsaved `steps` for one sampler stayed attached
+   * when the slot was changed to another. Most samplers declare `steps`, and
+   * the server only refuses an input the new node does NOT declare, so a
+   * same-named one is written on the next Save with nothing anywhere saying it
+   * was never chosen for that node.
+   *
+   * Keyed on the node CHANGING, not on the slots having come back from the
+   * server: saving goes through this same path, and a rule that fired on every
+   * answer would throw the edit away in the act of saving it.
+   */
+  function forgetDraftsFor(before, after) {
+    if (!draft || !draft.size) return;
+    const was = new Map(before.map((slot) => [slot.id, slot.node]));
+    const now = new Map(after.map((slot) => [slot.id, slot.node]));
+    for (const id of [...draft.keys()]) {
+      if (!now.has(id) || now.get(id) !== was.get(id)) draft.delete(id);
+    }
   }
 
   // ----------------------------------------------------------------- draw
@@ -513,5 +537,7 @@ export function open({ load, describe, check, search, onApply } = {}) {
     get pending() { return draft ? draft.size : 0; },
     enter,
     leave,
+    _replace: (slotId, className) =>
+      commit(slots, { action: "replace", slot: slotId, node: className }),
   };
 }

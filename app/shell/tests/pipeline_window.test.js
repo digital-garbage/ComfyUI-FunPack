@@ -40,6 +40,10 @@ const DESCRIPTIONS = {
       { name: "sampler_name", type: "COMBO", choices: ["euler", "dpmpp_2m"] },
     ], sockets: [{ name: "model", type: "MODEL" }], outputs: ["LATENT"],
   },
+  SamplerV2: {
+    node: "SamplerV2", title: "Sampler II", sockets: [], outputs: ["LATENT"],
+    widgets: [{ name: "steps", type: "INT", default: 8, min: 1, max: 100 }],
+  },
   Toggler: {
     node: "Toggler", title: "Toggler", sockets: [], outputs: [],
     widgets: [{ name: "fp16_accumulation", type: "BOOLEAN", default: false,
@@ -76,7 +80,13 @@ function server({ refuse = null, slots = SLOTS() } = {}) {
       // would replace the pipeline on screen with nothing at all.
       if (refuse) return { slots: [], refused: [refuse], incomplete: [], queueable: false };
       if (body.action === "remove") held = held.filter((s) => s.id !== body.slot);
-      else if (body.slots) held = body.slots;
+      // Inputs cleared, as the real one does: a different node has different
+      // inputs, and keeping the ones whose names happen to match is how a value
+      // ends up meaning something else.
+      else if (body.action === "replace") {
+        held = (body.slots || held).map((s) =>
+          (s.id === body.slot ? { ...s, node: body.node, inputs: {} } : s));
+      } else if (body.slots) held = body.slots;
       return { slots: held, refused: [], incomplete: [], queueable: true };
     },
   };
@@ -414,5 +424,59 @@ test("an unfed socket says wiring is not something this window does", async () =
   await win.ready;
   win.enter("Sampling");
   assert.match(hintOf(rowFor(win, "Model")), /cannot wire it yet/);
+  win.close();
+});
+
+// --- a draft outliving the node it was for --------------------------------
+
+test("changing a node drops the edits that were for the old one", async () => {
+  // The values are the OLD node's. A replacement that happens to declare an
+  // input of the same name -- steps, seed, cfg and denoise are shared across
+  // most samplers -- would take them silently: the server refuses an input the
+  // new node does not declare, and a same-named one sails straight through, so
+  // nothing anywhere says the value was never chosen for this node.
+  const { win, api } = await opened();
+  win.enter("Sampling");
+
+  const steps = rowFor(win, "Steps").querySelector("input");
+  steps.value = "35";
+  fire(steps, "blur");
+  assert.equal(win.pending, 1);
+
+  await win._replace("sampler", "SamplerV2");
+
+  assert.equal(win.pending, 0, "an edit for the old node was still pending");
+  assert.equal(rowFor(win, "Steps").querySelector("input").value, "8",
+    "the new node showed the old node's value as though it had been chosen");
+});
+
+test("removing a node drops its edits with it", async () => {
+  // Otherwise the footer counts an edit to a node that is no longer there, and
+  // says one thing is unsaved when nothing is.
+  const { win } = await opened();
+  win.enter("Sampling");
+  const steps = rowFor(win, "Steps").querySelector("input");
+  steps.value = "35";
+  fire(steps, "blur");
+
+  click(button(win, "Remove"));
+  await new Promise(setImmediate);
+  assert.equal(win.pending, 0);
+  assert.match(win.node.querySelector(".cx-modal-foot").textContent, /No changes to save/);
+  win.close();
+});
+
+test("a value edit is not mistaken for a structural one", async () => {
+  // The rule is "the node this slot points at changed", not "the slots came
+  // back from the server" -- Save itself goes through the same path, and a rule
+  // that fired on any answer would throw the edit away as it was being saved.
+  const { win, api } = await opened();
+  win.enter("Sampling");
+  const steps = rowFor(win, "Steps").querySelector("input");
+  steps.value = "35";
+  fire(steps, "blur");
+  click(button(win, "Save"));
+  await new Promise(setImmediate);
+  assert.equal(api.held.find((s) => s.id === "sampler").inputs.steps, 35);
   win.close();
 });
