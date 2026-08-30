@@ -5,11 +5,12 @@
 // column of overlapping controls passes there and is unusable here.
 
 import { test, expect } from "@playwright/test";
+import { openPipelineWindow } from "./_menu.js";
 
 async function openWindow(page) {
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);
-  await page.getByRole("button", { name: "Models and pipeline" }).click();
+  await openPipelineWindow(page);
   await expect(page.locator(".cx-modal")).toBeVisible();
 }
 
@@ -97,22 +98,32 @@ test("Save and Cancel hold the bottom instead of scrolling with the settings", a
   expect(after.y).toBeCloseTo(bar.y, 0);
 });
 
-test("the button opens one window, however many times it is pressed", async ({ page }) => {
+test("the way in is closed while the window is open", async ({ page }) => {
   // Reported from a real session: two of the same modal, one behind the other.
   // Two windows over one pipeline are two drafts of it -- whichever is saved
   // last wins, and the other was edited against a pipeline that had moved.
+  //
+  // There are two guards and this is the outer one: with the window up, its
+  // backdrop covers the menu it was opened from, so a second one cannot be
+  // asked for by hand at all. The inner guard -- open() called twice -- is in
+  // the jsdom suite, where a second call can actually be made.
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);
 
-  const button = page.getByRole("button", { name: "Models and pipeline" });
-  await button.click();
+  await openPipelineWindow(page);
   await expect(page.locator(".cx-modal")).toHaveCount(1);
-  await button.click({ force: true });
-  await button.click({ force: true });
-  await expect(page.locator(".cx-modal")).toHaveCount(1);
+
+  const settings = page.getByRole("button", { name: "Settings" });
+  await expect(settings).toBeVisible();
+  const blocked = await settings.evaluate((node) => {
+    const b = node.getBoundingClientRect();
+    const top = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+    return !node.contains(top);
+  });
+  expect(blocked, "the opener is still reachable with the window open").toBe(true);
 
   await page.locator(".cx-modal .cx-icon-btn").click();
   await expect(page.locator(".cx-modal")).toHaveCount(0);
-  await button.click();
+  await openPipelineWindow(page);
   await expect(page.locator(".cx-modal")).toHaveCount(1);
 });

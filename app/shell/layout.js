@@ -18,10 +18,19 @@ import { composer } from "../composer/composer.js";
 import { offer } from "./mounts.js";
 import { createTransport } from "./transport.js";
 import { createBin } from "./bin.js";
+import { createMenubar } from "./menubar.js";
+import { createConstructor } from "./constructor.js";
 
 export function build(root, handlers = {}) {
-  // Centre: the result, and the prompt under it. The prompt is the one control
-  // that is always on screen, because it is the one always being edited.
+  // The transport: Generate, Cancel, and what the run is doing. Built before the
+  // zones because its controls are handed to the zone that holds them.
+  const transport = createTransport(handlers);
+
+  // Built here rather than on first open: a mount point has to exist when
+  // modules mount, which is long before anyone opens a window.
+  const constructor = createConstructor();
+
+  // Centre: the result, and the timeline under it.
   const viewer = composer.viewer.media({ empty: "The result of the last run appears here." });
 
   // Left: what a project is made of, which for now is what it has produced. The
@@ -33,25 +42,50 @@ export function build(root, handlers = {}) {
     actions: [bin.control],
     body: bin.host,
   });
+  // v4's preview head carries nothing but the name of the zone: what is being
+  // looked at is not something you act on.
   const preview = composer.panel.zone({ title: "Preview", body: viewer, flush: true });
+
+  // The timeline: what the project IS, and where a run is started from.
+  //
+  // Generate lives here rather than in a bar across the bottom, because a bar
+  // that spans the window belongs to no region and acts on whatever happens to
+  // be in front -- which is a dashboard. v4 puts Generate in the timeline head,
+  // beside the thing it fills, and so does this.
+  //
+  // The warning is the first thing INSIDE the zone rather than in its head: it
+  // is a sentence, not a chip, and it has to sit under the button it is about
+  // -- an inert setting is said where the run is started, not where it was
+  // switched on.
+  const timelineEmpty = composer.emptyState.default({
+    icon: "▭",
+    title: "Nothing on the timeline",
+    hint: "What you generate lands here, in the order it plays.",
+  });
+  const timeline = composer.panel.zone({
+    title: "Timeline",
+    actions: [
+      ...transport.actions,
+      composer.button.sm({
+        label: "Constructor",
+        onClick: () => { if (handlers.onConstructor) handlers.onConstructor(); },
+      }),
+    ],
+    status: transport.status,
+    body: composer.region.stack({ gap: "sm", fill: true,
+                                  children: [transport.warning, timelineEmpty] }),
+  });
+
   // The stand-ins below are EMPTY STATES, not labels: they say a region is
   // empty, and settle() takes them down once it is not. A line reading "modules
   // appear here" left above the modules that appeared is a region explaining
   // itself to nobody.
-  const promptEmpty = composer.emptyState.default({
-    icon: "✎",
-    title: "No prompt here",
-    hint: "The pipeline decides which of its inputs appear on the main window.",
-  });
-  const prompt = composer.panel.zone({ title: "Prompt", body: promptEmpty });
-  // The result gets the room. The prompt is a few lines and a button's worth of
-  // controls; at 38% of the height it was mostly empty space taken from the one
-  // thing on the page anybody is looking at. Draggable, so anyone writing a long
-  // prompt can take it back.
+
+  // The result gets the room. Draggable, so a long timeline can take it back.
   const centre = composer.splitPane.v({
     size: 74,
-    label: "Preview and prompt",
-    panes: [preview, prompt],
+    label: "Preview and timeline",
+    panes: [preview, timeline],
   });
 
   // Right: everything about the run. Generation is open, settings folded away
@@ -95,33 +129,24 @@ export function build(root, handlers = {}) {
     right: properties,
   });
 
-  // The transport. One row, always visible, and the place a run is started and
-  // reported -- an inert setting is said HERE, next to Generate, not in the
-  // panel that would have enabled it.
-  const transport = createTransport(handlers);
 
-  // The top bar: the way into everything that is a WINDOW rather than a panel.
-  // It holds one button today and will hold the rest as they land -- a place
-  // that exists is what stops the next one being wedged into the transport row,
-  // which is the one row that has to keep saying what the run is doing.
-  const bar = composer.toolbar.default({
-    label: "FunPack",
-    items: [
-      composer.button.sm({
-        label: "Models and pipeline",
-        onClick: () => { if (handlers.onPipeline) handlers.onPipeline(); },
-      }),
-    ],
-  });
+  // The menu bar: who this is, what is not a zone, and whether ComfyUI is
+  // still on the other end. A zone head holds what acts on THAT zone, so
+  // anything that acts on the app has nowhere else to live.
+  const menubar = createMenubar({ workspace, onPipeline: handlers.onPipeline });
+  const bar = menubar;
 
-  const page = composer.frame.app({ header: bar, main: workspace, footer: transport });
+  const page = composer.frame.app({ header: bar, main: workspace });
 
   root.replaceChildren(page.node);
 
   // The mount point IS the contract with modules; the region behind it can be
   // rearranged freely as long as the name survives.
   offer("assets.library", assets.body);
-  offer("generation.prompt", prompt.body, promptEmpty.node);
+  // The prompt is written in a WINDOW, not in a zone: it is the longest thing a
+  // person writes and the least often read, and a permanent third of the centre
+  // column is the room the timeline needs.
+  offer("generation.prompt", constructor.host.node, constructor.empty.node);
   offer("settings.general", settings.node, settingsEmpty.node);
   // One host, five names. Each carries the same stand-in, and settle() takes it
   // down once anything at all has mounted into the panel they share.
@@ -129,6 +154,7 @@ export function build(root, handlers = {}) {
     offer(`generation.${point}`, generation.node, generationEmpty.node);
   }
 
-  return { workspace, assets, bin, preview, viewer, prompt, generation, settings,
-           properties, transport, bar, page };
+  return { workspace, assets, bin, preview, viewer, timeline, generation, settings,
+           properties, transport, constructor, menubar,
+           connection: menubar.connection, bar, page };
 }

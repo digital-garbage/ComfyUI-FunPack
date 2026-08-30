@@ -18,6 +18,14 @@ export const DONE = "done";
 export const FAILED = "failed";
 export const CANCELLED = "cancelled";
 
+/** The socket, which is a different question from what a run is doing. */
+export const OFFLINE = "offline";     // not opened yet
+export const LIVE = "live";
+export const LOST = "lost";           // dropped, and trying again
+
+/** How long to wait before the next attempt: 1s, 2s, 4s ... capped at 30. */
+export const backoff = (attempt) => Math.min(30_000, 1000 * 2 ** Math.max(0, attempt));
+
 /** Where ComfyUI serves a produced file from. */
 export function viewUrl(image, base = "") {
   const q = new URLSearchParams({
@@ -38,6 +46,10 @@ export function createRun({
   let state = {
     phase: IDLE, promptId: null, progress: null, images: [], audio: [],
     error: null, node: null,
+    // Whether this page can still hear ComfyUI at all. Part of the run state
+    // rather than a second thing to subscribe to: one state object is what
+    // stops two parts of the UI disagreeing about what is happening.
+    connection: OFFLINE,
   };
 
   const emit = (next) => {
@@ -202,18 +214,54 @@ export function createRun({
   }
 
   let socket = null;
+  let attempt = 0;
+  let waiting = null;
+
+  // A CLOSED socket is still an object. "Already listening" therefore cannot be
+  // "there is a socket": every drop -- a laptop sleeping, a tunnel to a rented
+  // box hiccuping, ComfyUI restarting -- was permanent for that tab, and
+  // silent. Progress and results simply stopped arriving while the GPU carried
+  // on, and only a manual reload brought them back.
+  //
+  // readyState is undefined on a stand-in socket, and a stand-in is a live one.
+  const alive = (s) => Boolean(s) && (s.readyState === undefined || s.readyState <= 1);
+
   function listen() {
-    if (socket || typeof connect !== "function") return socket;
+    if (typeof connect !== "function") return null;
+    if (alive(socket)) return socket;
+
+    if (waiting) { clearTimeout(waiting); waiting = null; }
     socket = connect(clientId);
-    if (socket) {
-      socket.addEventListener("message", (event) => {
-        // Binary frames are previews, which nothing here consumes yet. A parse
-        // failure must not take the socket down with it.
-        if (typeof event.data !== "string") return;
-        try { handle(JSON.parse(event.data)); } catch { /* not for us */ }
-      });
-    }
+    if (!socket) return null;
+
+    socket.addEventListener("open", () => { attempt = 0; emit({ connection: LIVE }); });
+    socket.addEventListener("message", (event) => {
+      // Binary frames are previews, which nothing here consumes yet. A parse
+      // failure must not take the socket down with it.
+      if (typeof event.data !== "string") return;
+      try { handle(JSON.parse(event.data)); } catch { /* not for us */ }
+    });
+
+    // close AND error: a refused connection fires error without ever closing on
+    // some browsers, and a dropped one closes without an error on others.
+    const dropped = (which) => () => {
+      if (which !== socket) return;              // an older socket letting go
+      emit({ connection: LOST });
+      retry();
+    };
+    socket.addEventListener("close", dropped(socket));
+    socket.addEventListener("error", dropped(socket));
     return socket;
+  }
+
+  function retry() {
+    if (waiting) return;
+    const wait = backoff(attempt);
+    attempt += 1;
+    waiting = setTimeout(() => { waiting = null; listen(); }, wait);
+    // Not a reason to keep a process alive: under a test runner a pending timer
+    // is the difference between a suite that finishes and one that hangs.
+    if (waiting && typeof waiting.unref === "function") waiting.unref();
   }
 
   return {
@@ -234,6 +282,12 @@ export function createRun({
     },
     handle,                                       // for tests and for a socket owned elsewhere
     listen,
+    /** Stop trying. Only a page being torn down wants this. */
+    stopListening() {
+      if (waiting) { clearTimeout(waiting); waiting = null; }
+      if (socket && typeof socket.close === "function") socket.close();
+      socket = null;
+    },
 
     /** Queue a prompt. Resolves with the prompt id, or throws with the reason. */
     async start(prompt) {

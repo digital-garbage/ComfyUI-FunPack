@@ -108,6 +108,10 @@ export function wire({ run, page, check, id, queuedFor, finishedFor, slots, valu
   // straight back -- live-looking, and doing nothing when pressed.
   run.subscribe((state) => {
     page.transport.draw(state);
+    // Whether ComfyUI is still there rides on the same state object, so it is
+    // drawn by the same subscription: two things watching the connection is two
+    // things that can disagree about whether the app is talking to anything.
+    if (page.connection) page.connection.draw(state);
     // Results go to the BIN, and the bin decides what is on screen. Pointing
     // the viewer at the newest image from here instead put two things in charge
     // of it: every progress message re-showed the newest result, so clicking an

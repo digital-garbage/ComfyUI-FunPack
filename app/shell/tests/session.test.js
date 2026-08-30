@@ -26,11 +26,17 @@ test.after(() => teardownDom());
 // just before it was overwritten with "Ready" a moment after it appeared. The
 // test passed and the button did nothing on screen.
 function transport() {
+  // The real transport, mounted the way the shell mounts it: its controls go in
+  // a zone head and what it is saying goes at the far end of the same head.
+  // There is no bar -- an editor's controls belong to the region they act on.
   const t = createTransport({});
-  document.body.appendChild(t.node);
+  const head = document.createElement("header");
+  for (const handle of [...t.actions, ...t.status, t.warning]) head.appendChild(handle.node);
+  document.body.replaceChildren(head);
   return {
     ...t,
-    get text() { return t.status.node.textContent; },
+    head,
+    get text() { return t.statusText.node.textContent; },
     get disabled() { return t.generate.node.disabled; },
   };
 }

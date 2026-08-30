@@ -5,13 +5,20 @@
 
 import { test, expect } from "@playwright/test";
 
-test("the prompt is on the main window, and typing in it is what runs", async ({ page }) => {
-  // The prompt is a slot input like any other. Until it was put here the only
-  // way to type one was to open the pipeline window and find the node.
+const openConstructor = (page) =>
+  page.locator(".cx-panel-head").getByRole("button", { name: "Constructor" }).click();
+
+test("the prompt is written in the Constructor, and typing in it is what runs", async ({ page }) => {
+  // The prompt is a slot input like any other. Until it was wired the only way
+  // to type one was to open the pipeline window and find the node; it now has a
+  // window of its own, opened from the timeline that a run fills.
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);
 
-  const boxes = page.locator(".cx-panel textarea");
+  await expect(page.locator("textarea"), "the prompt is on the main window").toHaveCount(0);
+  await openConstructor(page);
+
+  const boxes = page.locator(".cx-modal textarea");
   await expect(boxes).toHaveCount(2);
   await boxes.first().fill("a cat on a rooftop");
 
@@ -27,11 +34,25 @@ test("the prompt is on the main window, and typing in it is what runs", async ({
   expect(positive.inputs.clip, "the wiring was replaced by a value").toEqual(["clip", 0]);
 });
 
+test("what was typed is still there the next time the window opens", async ({ page }) => {
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  await openConstructor(page);
+  await page.locator(".cx-modal textarea").first().fill("a cat on a rooftop");
+  await page.locator(".cx-modal").getByRole("button", { name: "Done" }).click();
+  await expect(page.locator(".cx-modal")).toHaveCount(0);
+
+  await openConstructor(page);
+  await expect(page.locator(".cx-modal textarea").first()).toHaveValue("a cat on a rooftop");
+});
+
 test("a region that filled does not keep its stand-in", async ({ page }) => {
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);
 
-  const prompt = page.locator(".cx-panel", { hasText: "Prompt" }).first();
-  await expect(prompt.locator("textarea")).toHaveCount(2);
-  await expect(prompt.getByText("No prompt here")).toHaveCount(0);
+  await openConstructor(page);
+  const modal = page.locator(".cx-modal");
+  await expect(modal.locator("textarea")).toHaveCount(2);
+  await expect(modal.getByText("Nothing to write yet")).toHaveCount(0);
 });

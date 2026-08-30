@@ -1,10 +1,16 @@
 // Generate, and everything that happens after it.
 //
-// One row that owns the whole lifecycle, because the alternative is a button
+// One object owns the whole lifecycle, because the alternative is a button
 // here and a progress bar there and a status somewhere else, each with its own
 // idea of what is happening. This reads ONE state object and draws it -- so
 // "queued" cannot appear next to a finished result, whatever order the messages
 // arrive in.
+//
+// It owns the CONTROLS, not a row: they are handed out and the shell puts them
+// in the head of the zone the run fills. A bar across the bottom of the window
+// acts on "whatever is in front" and belongs to no region -- which is what made
+// this read as a dashboard rather than an editor. v4 puts Generate in the head
+// of the zone it produces, and so does this.
 //
 // Warnings live here too, beside Generate, rather than in the panel that would
 // have caused them: a setting that will do nothing has to be said where the run
@@ -16,24 +22,17 @@ import { IDLE, QUEUED, RUNNING, DONE, FAILED, CANCELLED } from "./run.js";
 const WORKING = new Set([QUEUED, RUNNING]);
 
 export function createTransport({ onGenerate, onCancel } = {}) {
-  const generate = composer.button.lg({
+  const generate = composer.button.md({
     label: "Generate", tone: "primary",
     onClick: () => { if (onGenerate) onGenerate(); },
   });
-  const cancel = composer.button.md({
+  const cancel = composer.button.sm({
     label: "Cancel", tone: "ghost",
     onClick: () => { if (onCancel) onCancel(); },
   });
   const progress = composer.progress.bar({ value: 0, max: 100, label: "Generating" });
   const status = composer.text.sm({ text: "Ready" });
 
-  const bar = composer.actionBar.sticky({
-    // What the run is doing at the start of the row, what starts and stops it
-    // at the end. The progress bar goes with the words, not with the buttons:
-    // it is the same statement in another form.
-    lead: [status, progress],
-    actions: [cancel, generate],
-  });
 
   // Something true about the NEXT run, said before it starts and left up while
   // it does: a setting that will not be applied is not a status, and putting it
@@ -42,7 +41,6 @@ export function createTransport({ onGenerate, onCancel } = {}) {
   // the panel a person has already stopped looking at.
   const warning = composer.banner.warn({ text: "" });
   warning.node.setAttribute("hidden", "");
-  const row = composer.region.stack({ gap: "none", children: [warning, bar] });
 
   // Something to say that is not about a run in progress: why the last attempt
   // did not become one. It has to survive the next draw(), because a refused
@@ -113,8 +111,16 @@ export function createTransport({ onGenerate, onCancel } = {}) {
     warning.node.toggleAttribute("hidden", !text);
   }
 
-  return { node: row.node, draw, say, warn, hold, release,
-           generate, cancel, progress, status, warning };
+  return {
+    // What the shell puts in a zone head: the controls that start and stop a
+    // run, and -- at the far end of the same head -- what it is doing.
+    actions: [cancel, generate],
+    // The progress bar goes with the words rather than with the buttons: it is
+    // the same statement in another form.
+    status: [progress, status],
+    warning,
+    draw, say, warn, hold, release, generate, cancel, progress, statusText: status,
+  };
 }
 
 /**

@@ -15,12 +15,19 @@ export function portal() {
   if (!root) {
     root = document.createElement("div");
     root.id = ROOT_ID;
-    // No transform, filter, backdrop-filter, contain -- OR z-index -- on this
-    // element, ever. Each creates a stacking context, and then the whole ladder
-    // is measured against this one element's number instead of against the page:
-    // a modal at 800 would still paint under a sticky header at 30.
-    root.style.position = "fixed";
-    root.style.inset = "0";
+    // NO POSITIONING, no transform, no filter, no contain, no z-index -- ever.
+    //
+    // Each of those makes this element a stacking context, and then the whole
+    // ladder is measured INSIDE it rather than against the page: every rung,
+    // from a tooltip at 300 to a modal at 800, collapses to whatever this one
+    // element resolves to. It said exactly that and then set `position: fixed`,
+    // which creates a stacking context all by itself -- so a menu at z 500 was
+    // painted under a button at z 1, and the only reason it was not obvious
+    // everywhere is that almost nothing in the app claims a z-index at all.
+    //
+    // Nothing is needed here anyway: every layer mounted into this root is
+    // itself `position: fixed`, so a static, zero-sized parent lays nothing out
+    // and intercepts nothing.
     root.style.pointerEvents = "none";
   }
   if (!root.isConnected) document.body.appendChild(root);

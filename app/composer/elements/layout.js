@@ -78,11 +78,17 @@ define("group", "default", ({ label, rows = [], hint } = {}) => {
  * cut into areas, not a tray of cards with the desk showing between them --
  * which is what an editing suite looks like, and what v4 was.
  */
-const panel = (variant) => ({ title, actions = [], body, flush = false } = {}) => {
-  const head = (title || actions.length)
+const panel = (variant) => ({ title, actions = [], status = [], body, flush = false } = {}) => {
+  // Title, then what ACTS on this zone, then -- pushed to the far end -- what
+  // this zone has to SAY about itself. That order is the whole difference
+  // between an editing suite and a dashboard: the controls for a region live
+  // in that region's own head, next to the thing they change, instead of in one
+  // bar at the bottom that acts on whatever happens to be in front.
+  const head = (title || actions.length || status.length)
     ? el("header", { cls: "cx-panel-head", children: [
         title ? el("h2", { cls: "cx-panel-title", text: title }) : null,
         actions.length ? el("div", { cls: "cx-panel-actions", children: actions.map((a) => nodeOf(a, `panel.${variant}`)) }) : null,
+        status.length ? el("div", { cls: "cx-panel-status", children: status.map((a) => nodeOf(a, `panel.${variant} status`)) }) : null,
       ].filter(Boolean) })
     : null;
   const content = el("div", { cls: "cx-panel-body", children: body ? nodeOf(body, `panel.${variant}`) : null });
@@ -116,9 +122,16 @@ define("region", "stack", ({ children = [], gap = "md", label, fill = false } = 
   return { node, set, destroy: () => node.remove() };
 });
 
-define("toolbar", "default", ({ items = [], label } = {}) =>
+/** A bar has a start and an end: what you press, and what it tells you. */
+define("toolbar", "default", ({ items = [], trailing = [], label } = {}) =>
   ({ node: el("div", { cls: "cx-toolbar", attrs: { role: "toolbar", "aria-label": label },
-      children: items.map((i) => nodeOf(i, "toolbar.default")) }),
+      children: [
+        ...items.map((i) => nodeOf(i, "toolbar.default")),
+        trailing.length
+          ? el("div", { cls: "cx-toolbar-trailing",
+              children: trailing.map((i) => nodeOf(i, "toolbar.default trailing")) })
+          : null,
+      ].filter(Boolean) }),
      destroy() { this.node.remove(); } }));
 
 /**

@@ -121,6 +121,11 @@
      the flatness of a large area of one colour, which is most of this app. */
   --grain-opacity: .035;
   --grain-blend: overlay;
+
+  /* Hover moves the fill AWAY from the label, and which way that is depends on
+     the theme: dark's accent carries near-black text, so it goes lighter. */
+  --grad-accent-hover: linear-gradient(180deg, var(--accent-hi), var(--accent));
+  --accent-hover-edge: var(--accent-hi);
 }
 
 /* ── light: white, grey and daylight blue ─────────────────────────────── */
@@ -163,6 +168,11 @@
      multiplies a much fainter one. v4 landed on the same two numbers. */
   --grain-opacity: .015;
   --grain-blend: multiply;
+
+  /* Light's accent carries WHITE text, so brightening it on hover walks the
+     label towards its own background. It goes darker instead. */
+  --grad-accent-hover: linear-gradient(180deg, var(--accent), var(--accent-lo));
+  --accent-hover-edge: var(--accent-lo);
 }
 
 /* Derived values, written once so both themes get them for free. color-mix

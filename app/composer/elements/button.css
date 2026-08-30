@@ -22,9 +22,15 @@
   color: var(--on-accent); font-weight: var(--fw-bold);
   box-shadow: var(--glow-accent);
 }
-/* Brightened rather than repainted: a second accent colour for hover is a
-   second thing to keep in step with the first, and this one cannot drift. */
-.cx-btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+/* The SURFACE brightens, not the button.
+   `filter: brightness()` applies to the whole element, text included -- so the
+   label was lightened along with the fill under it and the one thing that had
+   to stay readable lost contrast in both themes. The label's colour is fixed
+   and only the fill moves, one step up the same accent ramp. */
+.cx-btn-primary:hover:not(:disabled) {
+  background: var(--grad-accent-hover); border-color: var(--accent-hover-edge);
+}
+.cx-btn-primary:active:not(:disabled) { background: var(--accent-lo); }
 
 .cx-btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
 .cx-btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: var(--danger); }

@@ -76,10 +76,10 @@ test("the prompt sits under the preview and both have height", async ({ page }) 
     });
   });
   const preview = boxes.find((b) => b.title === "Preview");
-  const prompt = boxes.find((b) => b.title === "Prompt");
+  const timeline = boxes.find((b) => b.title === "Timeline");
   expect(preview?.h, "the preview has no height").toBeGreaterThan(50);
-  expect(prompt?.h, "the prompt has no height").toBeGreaterThan(30);
-  expect(prompt.y).toBeGreaterThan(preview.y);
+  expect(timeline?.h, "the timeline has no height").toBeGreaterThan(30);
+  expect(timeline.y).toBeGreaterThan(preview.y);
 });
 
 // `hidden` has to actually hide.
@@ -117,8 +117,8 @@ test("the transport reports a refusal beside Generate", async ({ page }) => {
   // The dev server has no ComfyUI behind it, so the pipeline genuinely cannot
   // run -- and that is the case worth seeing: the reason appears where the run
   // is started, not in a console nobody has open.
-  await page.locator('.cx-action-bar button:has-text("Generate")').click();
-  const bar = page.locator(".cx-action-bar");
+  await page.locator('.cx-panel-head button:has-text("Generate")').click();
+  const bar = page.locator(".cx-panel-status").first();
   await expect(bar).not.toHaveText(/^Ready/);
   // Whatever the reason is, it names the slot it is about. This used to read
   // "there is no node called X installed", because the dev server had no node

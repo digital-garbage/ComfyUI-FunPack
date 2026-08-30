@@ -38,6 +38,7 @@ async function start() {
   const page = build(root, {
     onGenerate: () => session.generate(),
     onCancel: () => run.cancel(),
+    onConstructor: () => page.constructor.open(),
     onPipeline: () => openPipeline({
       load, describe, check, search,
       onApply: (next) => {

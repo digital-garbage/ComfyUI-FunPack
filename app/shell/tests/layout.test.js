@@ -56,12 +56,30 @@ test("picking an older result in the bin changes what the viewer shows", () => {
   assert.match(p.viewer.node.querySelector("img").getAttribute("src"), /first\.png/);
 });
 
-test("the bin's view control sits in the Assets panel, not in the transport row", () => {
-  // Every control that is about a run belongs beside Generate; this one is not
-  // about a run, and putting it there is how that row stops being readable.
+test("a control sits in the head of the zone it acts on", () => {
+  // The arrangement that makes this an editor rather than a dashboard: the bin's
+  // view control is in the Assets head, and Generate is in the head of the zone
+  // the run fills -- not in one bar at the bottom acting on whatever is in front.
   const p = page();
-  assert.ok(p.assets.node.contains(p.bin.control.node));
-  assert.equal(p.transport.node.contains(p.bin.control.node), false);
+  assert.ok(p.assets.node.contains(p.bin.control.node), "the view control left the Assets head");
+  assert.ok(p.timeline.node.contains(p.transport.generate.node), "Generate is not in the Timeline head");
+  assert.equal(p.assets.node.contains(p.transport.generate.node), false);
+  assert.equal(p.page.footer, null, "there is still a bar across the bottom");
+});
+
+test("what a run is doing is said in the same head that starts it", () => {
+  const p = page();
+  const status = p.timeline.node.querySelector(".cx-panel-status");
+  assert.ok(status, "the Timeline head says nothing about the run");
+  assert.ok(status.contains(p.transport.statusText.node));
+  assert.ok(status.contains(p.transport.progress.node));
+});
+
+test("a warning about the next run sits inside the zone that starts it", () => {
+  // Under the button it is about, not in the head beside it: it is a sentence
+  // rather than a chip, and a 34px band is not where a sentence goes.
+  const p = page();
+  assert.ok(p.timeline.body.contains(p.transport.warning.node));
 });
 
 test("the assets mount point still exists for a module", () => {
@@ -69,4 +87,49 @@ test("the assets mount point still exists for a module", () => {
   p.bin.absorb([file("a.png")]);
   assert.ok(p.assets.body.contains(p.bin.host.node),
     "the bin is not in the panel body a module also mounts into");
+});
+
+test("the prompt is written in a window, not in a zone", () => {
+  // A permanent third of the centre column for the thing that is written in
+  // bursts and read rarely, taken from the timeline, which is what the project
+  // IS. It opens, is written in, and closes.
+  const p = page();
+  assert.equal(p.constructor.isOpen, false, "the Constructor is open before anyone asked");
+  assert.equal(document.querySelector(".cx-modal"), null);
+
+  p.constructor.open();
+  assert.equal(p.constructor.isOpen, true);
+  const modal = document.querySelector(".cx-modal");
+  assert.ok(modal, "the Constructor did not open");
+  assert.ok(modal.contains(p.constructor.host.node), "the prompt is not in the window");
+  assert.match(modal.textContent, /Constructor/);
+
+  p.constructor.close();
+  assert.equal(document.querySelector(".cx-modal"), null);
+});
+
+test("what was typed survives the window being closed", () => {
+  // The host outlives every opening. A window that rebuilt its contents each
+  // time would throw away whatever was written and not saved -- which for a
+  // prompt is the whole of it.
+  const p = page();
+  const box = document.createElement("textarea");
+  p.constructor.host.node.appendChild(box);
+  box.value = "a cat on a rooftop";
+
+  p.constructor.open();
+  p.constructor.close();
+  p.constructor.open();
+
+  const found = document.querySelector(".cx-modal textarea");
+  assert.equal(found, box, "the window built itself a new prompt box");
+  assert.equal(found.value, "a cat on a rooftop");
+  p.constructor.close();
+});
+
+test("the timeline is where a run is started from", () => {
+  const p = page();
+  assert.match(p.timeline.node.textContent, /Nothing on the timeline/);
+  assert.ok(p.timeline.node.querySelector(".cx-panel-actions"));
+  assert.match(p.timeline.node.querySelector(".cx-panel-actions").textContent, /Constructor/);
 });

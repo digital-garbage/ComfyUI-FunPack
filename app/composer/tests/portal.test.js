@@ -62,3 +62,16 @@ test("an existing root in the document is adopted, not duplicated", () => {
   assert.equal(portal(), existing);
   assert.equal(document.querySelectorAll(`#${ROOT_ID}`).length, 1);
 });
+
+test("the overlay root is not a stacking context", () => {
+  // If it is one, every rung of the ladder is measured inside it instead of
+  // against the page, and the whole ordering collapses to one number. It used
+  // to set `position: fixed`, which creates a stacking context on its own --
+  // and a menu at z 500 painted under a button at z 1.
+  const root = portal();
+  for (const property of ["position", "zIndex", "transform", "filter", "contain", "isolation", "opacity", "willChange"]) {
+    const value = root.style[property];
+    assert.ok(!value || value === "auto" || value === "none" || value === "static" || value === "1",
+      `the overlay root sets ${property}: ${value}, which can make it a stacking context`);
+  }
+});

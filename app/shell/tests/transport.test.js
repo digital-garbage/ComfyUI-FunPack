@@ -1,4 +1,4 @@
-// The transport row, driven by run states.
+// The transport, driven by run states.
 //
 // The reason this is one component reading one state object: a button here, a
 // progress bar there and a status somewhere else each get their own idea of
@@ -24,8 +24,12 @@ const state = (over = {}) => ({
 });
 
 const built = (handlers) => {
+  // Mounted the way the shell mounts it: the controls go in a zone head, and
+  // there is no bar of its own to append.
   const t = createTransport(handlers);
-  document.body.appendChild(t.node);
+  const head = document.createElement("header");
+  for (const handle of [...t.actions, ...t.status, t.warning]) head.appendChild(handle.node);
+  document.body.replaceChildren(head);
   return t;
 };
 

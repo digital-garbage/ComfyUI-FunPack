@@ -50,6 +50,8 @@
   border: var(--bw) solid var(--line); border-radius: var(--r-4);
   background: var(--elev-1); overflow: hidden;
   box-shadow: var(--shadow-1);
+  /* A zone is as wide as it is given, never as wide as its head wants to be. */
+  min-inline-size: 0;
   /* A column, so a panel given a height passes it to its body. Without this a
      viewer asking for 100% of its parent got 100% of `auto` and collapsed to
      one line, inside a panel that was the right size around it. */
@@ -66,14 +68,22 @@
 .cx-zone { border: 0; border-radius: 0; box-shadow: none; }
 
 .cx-panel-head {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5);
-  padding: 0 var(--sp-6); border-bottom: var(--bw) solid var(--line);
+  display: flex; align-items: center; gap: var(--sp-2) var(--sp-5);
+  padding: var(--sp-1) var(--sp-6); border-bottom: var(--bw) solid var(--line);
   background: var(--grad-band);
-  block-size: var(--menubar-h); flex: none;
+  /* A MINIMUM height, and it wraps. Fixed, it could not shrink below the width
+     of everything in it -- and a head now holds a title, two or three controls
+     and a status. That min-content width became the whole centre column's, so a
+     768px window laid out 878px wide and scrolled sideways. v4 hit this and
+     landed in the same place: the right-hand block wraps, the head grows a
+     line, and nothing is ever clipped. */
+  min-block-size: var(--menubar-h); flex: none; flex-wrap: wrap;
+  min-inline-size: 0;
 }
 .cx-panel-title {
   font-family: var(--font-display); font-size: var(--fs-3); font-weight: var(--fw-semibold);
   display: flex; align-items: center; gap: var(--sp-3);
+  min-inline-size: 0; white-space: nowrap;
 }
 /* One accent mark per panel. Carried over from v4, where it is what makes a
    head read as the top of something rather than as a strip of grey. */
@@ -81,7 +91,14 @@
   content: ""; flex: none; inline-size: 5px; block-size: 5px;
   border-radius: var(--r-pill); background: var(--accent);
 }
-.cx-panel-actions { display: flex; gap: var(--sp-2); }
+.cx-panel-actions { display: flex; align-items: center; gap: var(--sp-2); }
+/* Whatever the zone has to say, at the far end of its own head: a count, a
+   duration, where a run has got to. Quiet by default -- it is read at a glance
+   and never pressed. */
+.cx-panel-status {
+  margin-inline-start: auto; display: flex; align-items: center; gap: var(--sp-4);
+  min-inline-size: 0; font-size: var(--fs-6); color: var(--faint);
+}
 /* A column with a gap, not a block: two things put in a body by two different
    parts of the app had whatever space their own line boxes happened to leave,
    which is how a prompt box ended up 8px under one label and 3px under the
@@ -95,7 +112,11 @@
 .cx-panel-body > .cx-viewer, .cx-panel-body > .cx-stack-fill { flex: 1 1 auto; }
 .cx-panel-flush > .cx-panel-body { padding: 0; }
 
-.cx-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.cx-toolbar { display: flex; align-items: center; gap: var(--sp-2); min-inline-size: 0; }
+.cx-toolbar-trailing {
+  margin-inline-start: auto; display: flex; align-items: center; gap: var(--sp-3);
+  font-size: var(--fs-6); color: var(--muted);
+}
 
 .cx-action-bar {
   display: flex; align-items: center; gap: var(--sp-6);

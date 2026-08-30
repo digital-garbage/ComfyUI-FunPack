@@ -7,6 +7,7 @@
 // controls in one list at four different widths.
 
 import { test, expect } from "@playwright/test";
+import { openPipelineWindow } from "./_menu.js";
 
 const WIDE = { width: 1440, height: 900 };
 
@@ -81,7 +82,7 @@ test("every control in a list of settings shares its two edges", async ({ page }
   // A <select> takes the width of its widest OPTION, so the row holding a list
   // of checkpoint filenames was 124px wider than the four around it.
   await app(page);
-  await page.getByRole("button", { name: "Models and pipeline" }).click();
+  await openPipelineWindow(page);
   await page.locator(".cx-card", { hasText: "Loaders" }).click();
   await expect(page.locator(".cx-modal .cx-settings-control").first()).toBeVisible();
 
@@ -93,18 +94,20 @@ test("every control in a list of settings shares its two edges", async ({ page }
     .toHaveProperty("size", 1);
 });
 
-test("what the app says is at the start of the transport, what you press is at the end", async ({ page }) => {
-  // Everything used to be in one right-aligned group, so "Ready" sat against
-  // the Generate button with the whole width of the bar empty to its left.
+test("a run is started from the head of the zone it fills, and reported there", async ({ page }) => {
+  // No bar across the bottom. A bar that spans the window belongs to no region
+  // and acts on whatever is in front, which is what made this a dashboard; v4
+  // puts Generate in the timeline head, beside the thing it fills.
   await app(page);
-  const g = await gutter(page);
-  const [bar] = await boxes(page, ".cx-action-bar");
-  const [lead] = await boxes(page, ".cx-action-bar-lead");
-  const [buttons] = await boxes(page, ".cx-action-bar-buttons");
+  await expect(page.locator(".cx-action-bar")).toHaveCount(0);
 
-  expect(lead.x - bar.x, "the status is not at the start of the row").toBe(g);
-  expect(bar.r - buttons.r, "the buttons are not at the end of the row").toBe(g);
-  expect(buttons.x).toBeGreaterThan(lead.r);
+  const head = page.locator(".cx-panel", { hasText: "Timeline" }).first().locator(".cx-panel-head");
+  await expect(head.getByRole("button", { name: "Generate" })).toBeVisible();
+
+  const [bar] = await boxes(page, ".cx-panel-status");
+  const [generate] = await boxes(page, ".cx-panel-head .cx-btn-primary");
+  expect(bar.x, "what the run is doing is not at the far end of its own head")
+    .toBeGreaterThan(generate.r);
 });
 
 test("a closed panel leaves the rail and nothing else", async ({ page }) => {
@@ -157,4 +160,25 @@ test("a zone is square and a card is not", async ({ page }) => {
   });
   expect(zone.radius, "a region of the app has rounded corners").toBe("0px");
   expect(zone.shadow, "a region of the app floats above itself").toBe("none");
+});
+
+test("an open menu is above what it covers", async ({ page }) => {
+  // The overlay root set `position: fixed`, which creates a stacking context on
+  // its own -- so the whole z ladder was measured inside that one element, and
+  // a menu at 500 painted UNDER a button at 1. Every overlay in the app was one
+  // positive z-index away from being buried; nothing had claimed one yet.
+  await app(page);
+  await page.getByRole("button", { name: "View" }).click();
+  const menu = page.locator(".cx-popover");
+  await expect(menu).toBeVisible();
+
+  const covered = await page.evaluate(() => {
+    const pop = document.querySelector(".cx-popover").getBoundingClientRect();
+    // A point well inside the menu, over the zone head it opened across.
+    const x = Math.round(pop.x + 25);
+    const y = Math.round(pop.y + 20);
+    const top = document.elementsFromPoint(x, y)[0];
+    return { inMenu: Boolean(top.closest(".cx-popover")), top: top.className };
+  });
+  expect(covered.inMenu, `${covered.top} is painted over the open menu`).toBe(true);
 });

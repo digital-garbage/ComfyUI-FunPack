@@ -139,6 +139,7 @@ export const DEMOS = {
         control: c.button.md({ label: "Reset", tone: "danger" }) }),
     ],
   }),
+  "brand.default": { name: "FunPack" },
   "panel.default": (c) => ({
     title: "Scene 3",
     actions: [c.iconButton.sm({ icon: "✎", label: "Rename" }), c.iconButton.sm({ icon: "✕", label: "Remove" })],

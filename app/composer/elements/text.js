@@ -34,6 +34,15 @@ define("label", "field", ({ text, for: htmlFor } = {}) =>
 define("label", "section", ({ text } = {}) =>
   handle(el("div", { cls: "cx-eyebrow", text })));
 
+/** Who this is. One mark and one word, in the display face, at the far left of
+ *  the menu bar -- the only place in the app that names the app. */
+define("brand", "default", ({ name = "FunPack" } = {}) =>
+  ({ node: el("span", { cls: "cx-brand", children: [
+      el("span", { cls: "cx-brand-mark", attrs: { "aria-hidden": "true" } }),
+      el("span", { cls: "cx-brand-name", text: name }),
+    ] }),
+     destroy() { this.node.remove(); } }));
+
 define("code", "inline", ({ text } = {}) =>
   handle(el("code", { cls: "cx-code", text })));
 
