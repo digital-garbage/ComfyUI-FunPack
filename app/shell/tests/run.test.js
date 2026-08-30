@@ -321,3 +321,47 @@ test("an adopted run can be cancelled by its own id", async () => {
   assert.equal(sent[0].url, "/interrupt");
   assert.equal(sent[0].body.prompt_id, "was-running");
 });
+
+// --- a run that finishes while the page is loading ---------------------------
+//
+// The socket opens before the queue can be asked which run is ours, so a run
+// that ends in that moment has already left `queue_running` by the time anyone
+// looks. Nothing about it is recoverable unless what arrived on the socket in
+// the meantime was kept.
+
+test("messages arriving before a page has any run of its own are kept", () => {
+  const { run } = runner(ok({}));
+  assert.equal(run.state.phase, IDLE);
+
+  run.handle(JSON.parse(message("executed", {
+    prompt_id: "prev-run",
+    output: { images: [{ filename: "finished-during-reload.png" }] },
+  }).data));
+  run.handle(JSON.parse(message("execution_success", { prompt_id: "prev-run" }).data));
+
+  // Nothing was acted on -- this page does not yet know the run is its own.
+  assert.equal(run.state.phase, IDLE);
+  assert.deepEqual(run.state.images, []);
+  // But the id was noticed, which is what makes it findable.
+  assert.deepEqual(run.seen(), ["prev-run"]);
+});
+
+test("adopting a run that already finished still produces its result", () => {
+  const { run } = runner(ok({}));
+  run.handle(JSON.parse(message("executed", {
+    prompt_id: "prev-run",
+    output: { images: [{ filename: "finished-during-reload.png" }] },
+  }).data));
+  run.handle(JSON.parse(message("execution_success", { prompt_id: "prev-run" }).data));
+
+  run.adopt("prev-run");
+  assert.equal(run.state.phase, DONE, "the result was dropped rather than replayed");
+  assert.deepEqual(run.state.images.map((i) => i.filename), ["finished-during-reload.png"]);
+});
+
+test("what was seen while idle does not become somebody else's run", () => {
+  const { run } = runner(ok({}));
+  run.handle(JSON.parse(message("execution_success", { prompt_id: "theirs" }).data));
+  run.adopt("mine");
+  assert.equal(run.state.phase, RUNNING, "a stranger's finish was replayed onto this run");
+});

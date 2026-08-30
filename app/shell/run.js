@@ -82,8 +82,14 @@ export function createRun({
     const { type, data } = message || {};
     if (!type) return;
 
-    // Queued and not yet named: hold it rather than guess whose it is.
-    if (!state.promptId && state.phase === QUEUED) {
+    // Not yet named: hold it rather than guess whose it is.
+    //
+    // Whenever the id is unknown, not only while queueing. A page that reloads
+    // during a generation opens its socket first and learns which run is its
+    // own a moment later, and everything arriving in between was being dropped
+    // -- including the whole finish of a run that ended inside that moment,
+    // which then left the app at Ready with the result lost.
+    if (!state.promptId) {
       pending.push(message);
       if (pending.length > PENDING) pending.shift();
       return;
@@ -177,6 +183,11 @@ export function createRun({
 
   return {
     get state() { return { ...state }; },
+
+    /** Prompt ids seen on the socket while this page had no run of its own.
+     *  Whoever is reattaching can ask ComfyUI which of them belongs here. */
+    seen: () => [...new Set(pending.map((m) => m && m.data && m.data.prompt_id)
+      .filter(Boolean))],
     subscribe(fn) {
       listeners.add(fn);
       // Guarded like every later delivery. Handing a subscriber the current

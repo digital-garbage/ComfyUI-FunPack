@@ -54,3 +54,34 @@ export async function runningFor(id, { fetch: doFetch = globalThis.fetch, base =
   }
   return null;
 }
+
+/**
+ * Which of these runs was this browser's, among ones that have already
+ * finished.
+ *
+ * Only ids seen on this page's own socket are ever asked about, so nothing here
+ * can resurrect a result from an hour ago: a run that ended while the page was
+ * loading is the case this exists for, and it is indistinguishable from a lost
+ * result without it. A history entry's `prompt` is
+ * [number, prompt_id, prompt, extra_data, outputs].
+ */
+export async function finishedFor(id, candidates, { fetch: doFetch = globalThis.fetch, base = "" } = {}) {
+  for (const promptId of [...(candidates || [])].reverse()) {
+    let response;
+    try {
+      response = await doFetch(`${base}/history/${encodeURIComponent(promptId)}`);
+    } catch {
+      return null;                               // no history reachable
+    }
+    if (!response.ok) continue;
+
+    const body = await response.json().catch(() => ({}));
+    const entry = body && body[promptId];
+    const prompt = entry && entry.prompt;
+    if (Array.isArray(prompt) && prompt.length > 3 && prompt[3]
+        && prompt[3].client_id === id) {
+      return promptId;
+    }
+  }
+  return null;
+}

@@ -9,7 +9,7 @@ import { mountAll } from "./shell/panels.js";
 import { all as allValues } from "./shell/values.js";
 import { composer } from "./composer/composer.js";
 import { createRun, viewUrl } from "./shell/run.js";
-import { clientId, connect, runningFor } from "./shell/client.js";
+import { clientId, connect, runningFor, finishedFor } from "./shell/client.js";
 import { check } from "./shell/pipeline.js";
 
 const root = document.querySelector("#app");
@@ -49,9 +49,7 @@ async function start() {
   // starts one of its own hears nothing about it -- sits at Ready, and queues a
   // SECOND job if the user presses Generate believing nothing is running.
   run.listen();
-  runningFor(id).then((promptId) => {
-    if (promptId && run.state.phase === "idle") run.adopt(promptId);
-  }).catch(() => { /* no queue to ask: nothing to reattach to */ });
+  reattach(run, id);
 
   run.subscribe((state) => {
     page.transport.draw(state);
@@ -89,6 +87,28 @@ async function start() {
     manifest, values: allValues, failed, hidden, run,
     mounted: mounted.map((m) => m.id),
   };
+}
+
+/**
+ * Take back over whatever this browser had running before the page reloaded.
+ *
+ * Two questions, because a run can be in two places: still in the queue, or
+ * already finished. The second is not an edge case -- the socket opens before
+ * the queue can answer, and a run that ends in that moment leaves the queue
+ * before it is asked about, so without this the result is simply lost and the
+ * app says Ready. Only ids this page actually saw on its own socket are asked
+ * about, so nothing older than this page load can be resurrected.
+ */
+async function reattach(run, id) {
+  try {
+    const running = await runningFor(id);
+    if (running) { if (run.state.phase === "idle") run.adopt(running); return; }
+
+    const seen = run.seen();
+    if (!seen.length || run.state.phase !== "idle") return;
+    const finished = await finishedFor(id, seen);
+    if (finished && run.state.phase === "idle") run.adopt(finished);
+  } catch { /* nothing to reattach to, which is the ordinary case */ }
 }
 
 /** Video and image results arrive the same way and cannot be shown the same way. */
