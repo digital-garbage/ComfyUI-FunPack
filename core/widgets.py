@@ -4,7 +4,8 @@
 TYPE and nothing else. Editing a value needs the rest -- the choices a combo
 offers, the bounds on a number, the default, whether the box is multiline -- and
 that is a different question about the same declaration, so it is asked here
-rather than widening the one graph.py asks.
+rather than widening the one graph.py asks. What both of them need to know about
+the SPELLING of a type is in `comfy_types`, so they cannot disagree about it.
 
 Read from ComfyUI's own INPUT_TYPES, the same source its own frontend uses, so a
 node written for ComfyUI is editable here without knowing anything about
@@ -18,17 +19,10 @@ sockets, rather than made editable.
 
 from typing import Any, Dict, List, Optional
 
-# Declared by a list of choices rather than a type name: the list IS the type.
-COMBO = "COMBO"
+from . import comfy_types
 
-# The types a person types INTO. Everything else is filled by a wire.
-#
-# A short list core holds, deliberately: these five are ComfyUI's primitives and
-# the same set its own frontend edits, so a node written for ComfyUI is editable
-# here. Deciding by case instead ("socket types are upper case") looked
-# type-agnostic and was simply wrong -- STRING is upper case, and every prompt
-# box in the pipeline came back as a socket nobody could type in.
-PRIMITIVE = frozenset({"STRING", "INT", "FLOAT", "BOOLEAN", COMBO})
+COMBO = comfy_types.COMBO
+PRIMITIVE = comfy_types.PRIMITIVE
 
 # What a widget's options dict may say that is worth carrying to a form. Named
 # rather than passed through wholesale: an options dict can hold anything a node
@@ -36,24 +30,30 @@ PRIMITIVE = frozenset({"STRING", "INT", "FLOAT", "BOOLEAN", COMBO})
 # business rather than a contract.
 KEPT = ("default", "min", "max", "step", "round", "multiline", "dynamicPrompts",
         "tooltip", "placeholder", "control_after_generate", "image_upload",
-        "label_on", "label_off", "precision", "forceInput")
+        "label_on", "label_off", "precision", "forceInput", "multiselect")
 
 
 def _one(name: str, declared: Any, required: bool) -> Dict[str, Any]:
-    kind = declared[0] if isinstance(declared, (list, tuple)) and declared else declared
-    options = {}
-    if isinstance(declared, (list, tuple)) and len(declared) > 1 and isinstance(declared[1], dict):
-        options = declared[1]
+    kind, options = comfy_types.declared(declared)
 
     widget: Dict[str, Any] = {"name": name, "required": required}
-    if isinstance(kind, str):
-        widget["type"] = kind
-    else:
-        # A list of choices. It may be empty -- a file picker on a machine with
-        # no files -- and that is worth saying rather than rendering a select
-        # with nothing in it and no explanation.
-        widget["type"] = COMBO
-        widget["choices"] = list(kind) if isinstance(kind, (list, tuple)) else []
+    editable = comfy_types.widget_type(kind, options)
+    # The type as it is EDITED, not as it is declared. A MultiType wrapped
+    # around a number arrives as "FLOAT,INT" and is a box you type into; read
+    # literally it becomes a socket demanding a source for a field nobody wires.
+    widget["type"] = editable if editable else (kind if isinstance(kind, str) else COMBO)
+
+    if widget["type"] == COMBO:
+        # A combo may be empty -- a file picker on a machine with no files --
+        # and that is worth saying rather than rendering a select with nothing
+        # in it and no explanation.
+        widget["choices"] = (list(kind) if isinstance(kind, (list, tuple))
+                             else comfy_types.choices(options))
+        if comfy_types.reveals(options):
+            # Each choice carries its own further inputs. Nothing renders those
+            # yet, and a form that dropped them silently would offer an
+            # incomplete node as a complete one.
+            widget["reveals_more"] = True
 
     for key in KEPT:
         if key in options:
@@ -128,3 +128,47 @@ def describe_all(class_types) -> Dict[str, Optional[dict]]:
     other as a bug in the request.
     """
     return {name: describe(name) for name in dict.fromkeys(class_types)}
+
+
+def search(query: str, limit: int = 40) -> Dict[str, Any]:
+    """Installed nodes whose name, title or category matches, for a picker.
+
+    Names only -- not their inputs. Describing every installed node is what
+    ComfyUI's own /object_info does, and on a machine with a few packs that is
+    megabytes to answer "what could go in this slot"; the one the user picks is
+    then described on its own.
+
+    `total` is the count BEFORE the cut, so a picker can say the list is not all
+    of it rather than implying forty is everything there is.
+
+    Ranked so an exact name beats a name that merely contains the query: typing
+    "KSampler" and getting KSamplerAdvanced first is the picker being unhelpful
+    about the thing it was told.
+    """
+    try:
+        import nodes as comfy_nodes
+    except Exception:                            # noqa: BLE001 -- not inside ComfyUI
+        return {"nodes": [], "total": 0}
+
+    needle = (query or "").strip().lower()
+    found = []
+    for class_type, node in comfy_nodes.NODE_CLASS_MAPPINGS.items():
+        title = _display_name(class_type, node)
+        category = getattr(node, "CATEGORY", "") or ""
+        if needle and needle not in f"{class_type}\n{title}\n{category}".lower():
+            continue
+        lowered = class_type.lower()
+        rank = (0 if lowered == needle
+                else 1 if lowered.startswith(needle)
+                else 2 if needle in lowered
+                else 3)
+        found.append((rank, lowered, {
+            "node": class_type,
+            "title": title,
+            "category": category,
+            "outputs": list(getattr(node, "RETURN_TYPES", ()) or ()),
+        }))
+
+    found.sort(key=lambda entry: entry[:2])
+    return {"nodes": [entry[2] for entry in found[:max(0, limit)]],
+            "total": len(found)}

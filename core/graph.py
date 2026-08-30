@@ -25,6 +25,8 @@ the user's word for it was "terrifying".
 
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from . import comfy_types
+
 Link = list          # [slot_id, output_index]
 
 
@@ -73,10 +75,12 @@ def from_comfyui() -> Schemas:
         inputs, required = {}, []
         for section in ("required", "optional"):
             for name, declared in (spec.get(section) or {}).items():
-                kind = declared[0] if isinstance(declared, (list, tuple)) else declared
-                # A list of choices IS the type for a combo; what matters here is
-                # only that it is not a socket, so it cannot be wired.
-                inputs[name] = kind if isinstance(kind, str) else "COMBO"
+                kind, options = comfy_types.declared(declared)
+                # The type as ComfyUI would WIRE it. A list of choices is a
+                # combo; so is the string "COMBO" and every V3 dynamic combo,
+                # and none of them can be fed by a wire.
+                edited = comfy_types.widget_type(kind, options)
+                inputs[name] = edited if edited else kind
                 if section == "required":
                     # Kept, because flattening the two sections loses the only
                     # thing that says a slot is incomplete -- and a slot missing
@@ -116,6 +120,17 @@ def shape_problems(slots: Any) -> List[str]:
         inputs = slot.get("inputs")
         if inputs is not None and not isinstance(inputs, dict):
             problems.append(f"{where}'s inputs must be an object, not {type(inputs).__name__}")
+        # Core does not know what a group MEANS -- it is the pipeline's own way
+        # of arranging itself, and any name is a valid one. It does know a name
+        # is text: a number here becomes a card titled `5`, and two slots
+        # grouped under `5` and `"5"` land in two cards reading the same.
+        group = slot.get("group")
+        if group is not None:
+            if not isinstance(group, str):
+                problems.append(f"{where}'s group must be a name, not {type(group).__name__}")
+            elif not group.strip():
+                problems.append(f"{where}'s group is blank; leave it out to leave the "
+                                f"slot ungrouped")
     return problems
 
 
@@ -175,7 +190,11 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
                     problems.append(f"{slot_id}.{name} reads output {index} of {source!r}, "
                                     f"which has {len(produced)}")
                     continue
-                if produced[index] != declared[name] and declared[name] != "*":
+                # A union on either side, not an exact string. `"IMAGE,MASK"`
+                # takes either, and comparing the whole string refused a MASK
+                # feeding it -- a legal wire refused, which is as bad a failure
+                # as an illegal one accepted, and harder to argue with.
+                if not comfy_types.accepts(declared[name], produced[index]):
                     problems.append(f"{slot_id}.{name} wants {declared[name]} but {source!r} "
                                     f"gives {produced[index]}")
                     continue
@@ -283,7 +302,7 @@ def replace(slots: Sequence[dict], slot_id: str, class_type: str,
         if index >= len(now):
             problems.append(f"{consumer}.{name} reads output {index}, which {class_type} "
                             f"does not have")
-        elif wanted is not None and now[index] != wanted:
+        elif wanted is not None and not comfy_types.accepts(wanted, now[index]):
             problems.append(f"{consumer}.{name} needs {wanted} but {class_type} gives "
                             f"{now[index]} there")
     if problems:
@@ -326,7 +345,8 @@ def remove(slots: Sequence[dict], slot_id: str,
             continue
         kind = produced[index]
         matching = [name for name, wants in declared.items()
-                    if wants == kind and name in wired and is_link(wired[name])]
+                    if comfy_types.accepts(wants, kind)
+                    and name in wired and is_link(wired[name])]
         if len(matching) == 1:
             replacement[index] = wired[matching[0]]
         elif not matching:

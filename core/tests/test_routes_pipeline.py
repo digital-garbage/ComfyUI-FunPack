@@ -211,6 +211,11 @@ def test_removing_slots_one_by_one_never_resurrects_the_default(server):
     ({"action": "replace", "slot": ["a"], "node": "X", "slots": []}, "named by a string"),
     ({"action": "remove", "slot": {"x": 1}, "slots": []}, "named by a string"),
     ({"action": "replace", "slot": "a", "node": ["X"], "slots": []}, "named by a string"),
+    # A group is the pipeline's own arrangement and core knows nothing about
+    # what the names mean -- only that they are names. A number here becomes a
+    # card titled `5`, and `5` and `"5"` become two cards reading the same.
+    ({"action": "check", "slots": [{"id": "a", "node": "X", "group": 5}]}, "must be a name"),
+    ({"action": "check", "slots": [{"id": "a", "node": "X", "group": "  "}]}, "is blank"),
 ])
 def test_a_malformed_pipeline_comes_back_as_a_reason_not_a_500(server, payload, expected):
     """A payload arrives from HTTP, so "it is a list" is all that has been
@@ -222,3 +227,78 @@ def test_a_malformed_pipeline_comes_back_as_a_reason_not_a_500(server, payload, 
     reasons = body.get("refused", []) + body.get("problems", [])
     assert any(expected in r for r in reasons), reasons
     assert body.get("queueable") is False
+
+
+def test_the_default_pipeline_arrives_already_arranged(server):
+    """The window draws a card per group, so a pipeline with no groups is one
+    card holding everything -- which is the arrangement it exists to avoid."""
+    _status, body = _request(server, "GET", "/funpack/api/pipeline")
+    groups = [slot.get("group") for slot in body["slots"]]
+    assert all(groups), f"slots with no group: {[s['id'] for s in body['slots'] if not s.get('group')]}"
+    assert len(set(groups)) > 1, "everything landed in one group"
+
+
+def test_a_group_survives_an_edit(server):
+    """Replacing a node keeps its arrangement. `replace` deliberately drops the
+    slot's inputs -- a different node has different inputs -- and dropping the
+    group with them would scatter the pipeline every time a node was swapped."""
+    _status, before = _request(server, "GET", "/funpack/api/pipeline")
+    was = {slot["id"]: slot.get("group") for slot in before["slots"]}
+
+    _status, after = _request(
+        server, "POST", "/funpack/api/pipeline",
+        {"action": "replace", "slot": "save", "node": "PreviewImage",
+         "slots": before["slots"]})
+    assert not after["refused"], after["refused"]
+    now = {slot["id"]: slot.get("group") for slot in after["slots"]}
+    assert now == was
+
+
+# --- the whole registry, which is the only place the odd shapes live --------
+#
+# This is the one test file that loads ComfyUI's extras, so it is the only place
+# a sweep like this means anything. These were written after a v4 bug report
+# about a node "showing only its LoRA selection"; the shapes themselves are
+# covered in test_comfy_types.py.
+
+def test_no_installed_node_is_described_with_a_type_nothing_can_edit(registered):
+    """A widget's type is what decides which control is drawn. A union like
+    "FLOAT,INT" reaching the form asks for a control for a type that does not
+    exist, and the whole node then renders as nothing."""
+    from core import widgets
+
+    for class_type in registered.NODE_CLASS_MAPPINGS:
+        described = widgets.describe(class_type)
+        if not described:
+            continue
+        for widget in described["widgets"]:
+            assert "," not in widget["type"], f"{class_type}.{widget['name']} is {widget['type']}"
+            assert widget["type"] in widgets.PRIMITIVE, (
+                f"{class_type}.{widget['name']} is {widget['type']}, which has no control")
+
+
+def test_every_dropdown_in_the_registry_is_offered_as_one(registered):
+    """A dropdown classified as a socket is an input the user cannot set and the
+    window claims is wired.
+
+    The check is spelled out here rather than asked of `comfy_types.is_combo`.
+    It was written that way first, and reintroducing the bug did not fail this
+    test: the sweep was asking the broken function whether the function was
+    broken, and got the answer the bug implies. A test that consults the code
+    under test for its own verdict cannot fail.
+    """
+    from core import comfy_types, widgets
+
+    dropdowns = 0
+    for class_type in registered.NODE_CLASS_MAPPINGS:
+        described = widgets.describe(class_type)
+        if not described:
+            continue
+        for socket in described["sockets"]:
+            assert "COMBO" not in str(socket["type"]).upper(), (
+                f"{class_type}.{socket['name']} is a dropdown ({socket['type']}) "
+                f"reported as a wire")
+        dropdowns += sum(1 for w in described["widgets"]
+                         if w["type"] == comfy_types.COMBO)
+
+    assert dropdowns > 100, f"only {dropdowns} dropdowns found; the sweep is not seeing them"
