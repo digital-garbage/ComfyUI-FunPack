@@ -81,6 +81,32 @@ def collect(registry=None) -> Tuple[List[type], List[Tuple[str, str]]]:
     return nodes, rejected
 
 
+def install_into(mapping, display_mapping=None) -> List[type]:
+    """Put FunPack's nodes into a ComfyUI-shaped registry, and say which.
+
+    ComfyUI itself does this from `comfy_entrypoint` and nothing here should
+    replace that -- a NODE_CLASS_MAPPINGS at module level would suppress the
+    entrypoint entirely. This is for the two places that need the registry
+    populated WITHOUT ComfyUI having loaded the pack: the dev server, so the app
+    can be looked at, and the tests that read a node's declaration.
+
+    One function rather than two copies, because the copies would drift and the
+    one that drifted would be the one nobody runs.
+    """
+    installed = []
+    for node in collect()[0]:
+        schema = _schema_of(node)
+        node_id = getattr(schema, "node_id", None)
+        if not node_id:
+            continue
+        mapping[node_id] = node
+        display = getattr(schema, "display_name", None)
+        if display and display_mapping is not None:
+            display_mapping[node_id] = display
+        installed.append(node)
+    return installed
+
+
 def extension():
     """A ComfyExtension over whatever announced itself, or None without ComfyUI."""
     try:

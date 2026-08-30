@@ -16,6 +16,7 @@ aiohttp, and the suite should not need a plugin users would have to install.
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -127,3 +128,43 @@ def test_index_is_served(app):
 def test_health(app):
     status, body = get(app, P + "/api/health")
     assert status == 200 and '"ok"' in body
+
+
+
+# --- the nodes route -------------------------------------------------------
+
+def _nodes(app, target):
+    status, body = get(app, target)
+    return status, json.loads(body)
+
+
+def test_the_nodes_route_describes_what_a_pipeline_points_at(app, comfyui):
+    """The window that edits a pipeline needs the widgets, and asks by name.
+
+    ComfyUI's own /object_info answers with every installed node, which on a
+    machine with a few packs is megabytes for a question about a dozen.
+    """
+    import nodes as comfy_nodes
+    from core import nodes as funpack_nodes
+    funpack_nodes.install_into(comfy_nodes.NODE_CLASS_MAPPINGS,
+                               comfy_nodes.NODE_DISPLAY_NAME_MAPPINGS)
+
+    status, body = _nodes(app, P + "/api/nodes?classes=KSampler,NoSuchNodeAnywhere")
+    assert status == 200
+    assert body["nodes"]["KSampler"]["widgets"], "a node came back with nothing to edit"
+    assert body["nodes"]["NoSuchNodeAnywhere"] is None, (
+        "an absent node was dropped from the answer rather than reported as absent")
+
+
+def test_asking_about_nothing_is_not_an_error(app):
+    status, body = _nodes(app, P + "/api/nodes")
+    assert status == 200 and body["nodes"] == {}
+
+
+def test_asking_about_a_thousand_nodes_is_refused(app):
+    """The query string is the caller's, and describing a thousand nodes one by
+    one on the event loop stops the server answering anything else."""
+    many = ",".join(f"Node{i}" for i in range(1000))
+    status, body = _nodes(app, P + f"/api/nodes?classes={many}")
+    assert status == 400
+    assert any("200" in problem for problem in body["problems"])

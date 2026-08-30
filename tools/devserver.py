@@ -78,6 +78,28 @@ from core import config, routes as funpack_routes  # noqa: E402
 P = config.UI_PREFIX
 
 
+def _register_nodes() -> str:
+    """Put ComfyUI's node registry, and FunPack's own nodes, where the routes
+    can see them.
+
+    Without this the pipeline is entirely "there is no node called X installed"
+    and nothing that edits a node has anything to edit -- so the one thing the
+    dev server exists for, looking at the app, cannot reach the half of the app
+    that matters. ComfyUI itself does both of these at startup; this is the same
+    two steps without the rest of ComfyUI.
+    """
+    try:
+        import nodes as comfy_nodes
+    except Exception as exc:                     # noqa: BLE001
+        return f"  WITHOUT ComfyUI's nodes ({exc}): the pipeline will look empty"
+
+    from core import nodes as funpack_nodes
+    ours = funpack_nodes.install_into(comfy_nodes.NODE_CLASS_MAPPINGS,
+                                      comfy_nodes.NODE_DISPLAY_NAME_MAPPINGS)
+    return (f"  {len(comfy_nodes.NODE_CLASS_MAPPINGS)} nodes registered "
+            f"({len(ours)} of them FunPack's)")
+
+
 def build_app() -> web.Application:
     app = web.Application()
     routes = web.RouteTableDef()
@@ -94,6 +116,7 @@ def build_app() -> web.Application:
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8188
     print(f"FunPack v5 dev server: http://127.0.0.1:{port}{P}/")
+    print(_register_nodes())
     if COMFYUI:
         print(f"  with ComfyUI from {COMFYUI}")
     else:

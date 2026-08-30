@@ -5,7 +5,8 @@ so the real routes can be mounted on a throwaway app in a test. The handlers are
 thin adapters over pure functions in `serve`.
 """
 
-from . import config, graph as graph_mod, log, registry as registry_mod, serve as static
+from . import (config, graph as graph_mod, log, registry as registry_mod,
+               serve as static, widgets)
 from .contract import CONTRACT_VERSION
 from .relations import order
 from .traits import split
@@ -188,6 +189,31 @@ def register(routes, prefix=None):
             "queueable": not (problems or incomplete),
             "prompt": prompt if not (problems or incomplete) else None,
         })
+
+    @routes.get(P + "/api/nodes")
+    async def _nodes(req):
+        """What the nodes in a pipeline look like to someone editing them.
+
+        Asked for by name -- `?classes=A,B,C` -- rather than served whole.
+        ComfyUI's own /object_info answers with every installed node, which on a
+        machine with a few packs is megabytes, and a pipeline needs a dozen.
+
+        A node that is not installed comes back as null rather than missing, so
+        the app can tell "this slot points at something absent" from "I did not
+        ask about that one".
+        """
+        raw = req.query.get("classes") or ""
+        wanted = [name for name in (part.strip() for part in raw.split(",")) if name]
+        if not wanted:
+            return web.json_response({"nodes": {}})
+        # Bounded: the query string is the caller's, and describing a thousand
+        # nodes one by one on the event loop is a request that stops the server
+        # answering anything else.
+        if len(wanted) > 200:
+            return web.json_response(
+                {"problems": [f"asked about {len(wanted)} nodes at once; 200 is the limit"]},
+                status=400)
+        return web.json_response({"nodes": widgets.describe_all(wanted)})
 
     @routes.get(P + "/api/log")
     async def _log(req):
