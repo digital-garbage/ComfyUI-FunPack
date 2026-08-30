@@ -31,6 +31,15 @@ export function createTransport({ onGenerate, onCancel } = {}) {
     actions: [status, progress, cancel, generate],
   });
 
+  // Something true about the NEXT run, said before it starts and left up while
+  // it does: a setting that will not be applied is not a status, and putting it
+  // in the status line meant it was gone the moment the run said "Queued". It
+  // is here rather than in the panel that would have caused it, because that is
+  // the panel a person has already stopped looking at.
+  const warning = composer.banner.warn({ text: "" });
+  warning.node.setAttribute("hidden", "");
+  const row = composer.region.stack({ gap: "none", children: [warning, bar] });
+
   // Something to say that is not about a run in progress: why the last attempt
   // did not become one. It has to survive the next draw(), because a refused
   // attempt leaves the run exactly where it was -- idle -- and drawing an idle
@@ -93,7 +102,15 @@ export function createTransport({ onGenerate, onCancel } = {}) {
     draw(state);
   }
 
-  return { node: bar.node, draw, say, hold, release, generate, cancel, progress, status };
+  /** Say something about the pipeline itself, or -- with null -- stop saying it.
+   *  Unlike say(), this survives a run: it is still true while one is going. */
+  function warn(text) {
+    warning.setText(text || "");
+    warning.node.toggleAttribute("hidden", !text);
+  }
+
+  return { node: row.node, draw, say, warn, hold, release,
+           generate, cancel, progress, status, warning };
 }
 
 /**

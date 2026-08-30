@@ -347,3 +347,62 @@ def test_a_value_the_node_does_offer_still_builds(server, registered):
                                 {"action": "check", "slots": slots})
     assert not any("not one of" in problem for problem in checked["incomplete"]), \
         checked["incomplete"]
+
+
+def test_what_the_ui_holds_reaches_the_graph(server):
+    """The settings a person picked, on the node that carries them.
+
+    Until this existed every panel in the app was decoration: the values were
+    kept in the browser and nothing ever sent them, so a modifier could be
+    switched on and the run would not know.
+    """
+    values = {"sampling_alg": {"enabled": True, "strength": 0.4}}
+    status, body = _request(server, "POST", "/funpack/api/pipeline", {"values": values})
+    assert status == 200, body
+    assert body["refused"] == []
+
+    settings = next(s for s in body["slots"] if s["node"] == "FunPackModifierSettings")
+    assert json.loads(settings["inputs"]["settings"]) == values
+    assert body["notes"] == []
+
+
+def test_settings_with_nowhere_to_go_are_said_and_not_swallowed(server):
+    """A pipeline with nothing to accept them is legitimate -- and has to say so.
+
+    A run that silently ignores every switch in the app is the exact fault this
+    project keeps finding: a knob present and inert.
+    """
+    status, body = _request(server, "GET", "/funpack/api/pipeline")
+    kept = [s for s in body["slots"] if s["node"] != "FunPackModifierSettings"]
+    for slot in kept:                                # nothing may still link to it
+        slot["inputs"] = {k: v for k, v in slot["inputs"].items()
+                          if not (isinstance(v, list) and v and v[0] == "settings")}
+
+    status, body = _request(server, "POST", "/funpack/api/pipeline",
+                            {"slots": kept, "values": {"sampling_alg": {"enabled": True}}})
+    assert status == 200, body
+    assert any("will not be applied" in note for note in body["notes"]), body["notes"]
+    # Said, not blocked: the pipeline is otherwise exactly as valid as it was.
+    assert body["refused"] == []
+
+
+def test_no_settings_sent_means_the_slot_is_left_alone(server):
+    status, body = _request(server, "POST", "/funpack/api/pipeline", {})
+    settings = next(s for s in body["slots"] if s["node"] == "FunPackModifierSettings")
+    assert settings["inputs"]["settings"] == "{}"
+    assert body["notes"] == []
+
+
+def test_settings_that_are_not_an_object_are_refused(server):
+    for payload in (["a"], "everything on", 7):
+        status, body = _request(server, "POST", "/funpack/api/pipeline", {"values": payload})
+        assert status == 400, (payload, status, body)
+        assert body["queueable"] is False
+        assert any("object keyed by module id" in p for p in body["problems"]), body
+
+
+def test_empty_settings_are_not_reported_as_having_nowhere_to_go(server):
+    """Nothing set is not a warning. Every page load starts here."""
+    status, body = _request(server, "POST", "/funpack/api/pipeline", {"values": {}})
+    assert status == 200
+    assert body["notes"] == []

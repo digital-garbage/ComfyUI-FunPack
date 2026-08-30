@@ -9,20 +9,25 @@ const ENDPOINT = "/funpack/api/pipeline";
 const NODES = "/funpack/api/nodes";
 
 /**
- * check(values) -> { slots, refused, incomplete, queueable, prompt }
+ * check({slots, values}) -> { slots, refused, incomplete, notes, queueable, prompt }
  *
  * `refused` and `incomplete` are different things and stay apart: refused means
  * the edit did not happen, incomplete means it did and the pipeline still is
  * not ready -- an unset file picker on a fresh install is the normal case, not
- * a failure.
+ * a failure. `notes` is a third thing again: the pipeline is fine and something
+ * about it is worth saying, such as settings that will not be applied.
  */
-export async function check({ fetch: doFetch = globalThis.fetch, slots,
+export async function check({ fetch: doFetch = globalThis.fetch, slots, values,
                               action = "check", slot, node } = {}) {
   // `slots` and an action travel together on purpose: a remove is "take this
   // one out of THIS pipeline", and sending the action without the pipeline the
   // user is looking at would apply it to the server's defaults instead.
   const body = { action };
   if (slots) body.slots = slots;
+  // Sent with the pipeline, every time. The server holds no copy of what the
+  // panels say: two stores of "what the user picked" is two answers to what a
+  // run used, and the one believed would be whichever was written last.
+  if (values) body.values = values;
   if (slot !== undefined) body.slot = slot;
   if (node !== undefined) body.node = node;
 
@@ -41,6 +46,7 @@ export async function check({ fetch: doFetch = globalThis.fetch, slots,
       slots: payload.slots || [],
       refused: payload.problems || payload.refused || [`the pipeline could not be read (${response.status})`],
       incomplete: [],
+      notes: [],
       queueable: false,
       prompt: null,
     };
@@ -49,6 +55,7 @@ export async function check({ fetch: doFetch = globalThis.fetch, slots,
     slots: payload.slots || [],
     refused: payload.refused || [],
     incomplete: payload.incomplete || [],
+    notes: payload.notes || [],
     queueable: Boolean(payload.queueable),
     prompt: payload.prompt || null,
   };

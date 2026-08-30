@@ -6,6 +6,16 @@
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-7);
   padding: var(--sp-4) 0; border-bottom: var(--bw) solid var(--line-2);
 }
+/* Below the width where a label and a control fit side by side, they stop
+   sitting side by side. The control has a floor of 140px and will not give it
+   up, so in a docked panel the label was squeezed to one word per line and its
+   hint to a four-character column -- readable as damage, not as a layout. The
+   container is the ROWS, not the viewport: the same group is used in a 190px
+   panel and in a 600px window, and only its own width decides. */
+@container (max-width: 300px) {
+  .cx-settings-row { flex-direction: column; align-items: stretch; gap: var(--sp-2); }
+  .cx-settings-control { justify-content: flex-start; min-width: 0; }
+}
 .cx-settings-row:last-child { border-bottom: 0; }
 .cx-settings-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .cx-settings-label { font-size: var(--fs-4); line-height: var(--lh-4); color: var(--text); }
@@ -16,6 +26,7 @@
 .cx-group-rows {
   border: var(--bw) solid var(--line); border-radius: var(--r-4);
   background: var(--elev-1); padding: 0 var(--sp-6);
+  container-type: inline-size;
 }
 
 .cx-panel {

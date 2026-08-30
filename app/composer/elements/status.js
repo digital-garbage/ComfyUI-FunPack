@@ -27,14 +27,19 @@ define("dot", "default", ({ tone = "neutral", label } = {}) =>
      destroy() { this.node.remove(); } }));
 
 for (const tone of ["info", "warn", "danger"]) {
-  define("banner", tone, ({ text, action } = {}) =>
-    ({ node: el("div", { cls: ["cx-banner", `cx-banner-${tone}`],
-        attrs: { role: tone === "danger" ? "alert" : "status" }, children: [
-          el("span", { cls: "cx-dot", attrs: { "aria-hidden": "true" } }),
-          el("span", { cls: "cx-banner-text", text }),
-          action && action.node ? action.node : null,
-        ].filter(Boolean) }),
-       destroy() { this.node.remove(); } }));
+  define("banner", tone, ({ text, action } = {}) => {
+    const words = el("span", { cls: "cx-banner-text", text });
+    const node = el("div", { cls: ["cx-banner", `cx-banner-${tone}`],
+      attrs: { role: tone === "danger" ? "alert" : "status" }, children: [
+        el("span", { cls: "cx-dot", attrs: { "aria-hidden": "true" } }),
+        words,
+        action && action.node ? action.node : null,
+      ].filter(Boolean) });
+    // Settable, because the things worth a banner come and go: a warning that
+    // can only be built is a warning that has to be destroyed and rebuilt to
+    // change, and whatever was holding it then holds a dead handle.
+    return { node, setText: (next) => setText(words, next), destroy: () => node.remove() };
+  });
 }
 
 define("inlineError", "default", ({ text } = {}) =>

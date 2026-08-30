@@ -321,3 +321,45 @@ def test_a_schema_that_says_nothing_about_a_value_does_not_refuse_it():
     _prompt, problems = graph.build(
         [{"id": "x", "node": "Whatever", "inputs": {"anything": "hello"}}], schemas)
     assert problems == []
+
+
+# --- place: what the UI holds, into the graph ---------------------------------
+
+SINK = [{"node": "Sink", "input": "settings"}]
+
+
+def test_place_writes_into_every_slot_a_sink_names():
+    slots = [{"id": "a", "node": "Sink", "inputs": {"settings": "{}"}},
+             {"id": "b", "node": "Other", "inputs": {"settings": "{}"}},
+             {"id": "c", "node": "Sink", "inputs": {}}]
+    out, placed = graph.place(slots, '{"m": {"on": true}}', SINK)
+
+    assert placed == 2
+    assert out[0]["inputs"]["settings"] == '{"m": {"on": true}}'
+    assert out[1]["inputs"]["settings"] == "{}", "a node nobody named was written to"
+    assert out[2]["inputs"]["settings"] == '{"m": {"on": true}}'
+
+
+def test_place_reports_nothing_placed_rather_than_pretending():
+    """The count is the whole point: a value with nowhere to go has to be said."""
+    slots = [{"id": "a", "node": "Other", "inputs": {}}]
+    out, placed = graph.place(slots, "{}", SINK)
+    assert placed == 0
+    assert out[0]["inputs"] == {}
+
+
+def test_place_does_not_edit_the_pipeline_it_was_given():
+    """The default pipeline is handed out by a provider; editing it in place
+    would edit it for every later request in the process."""
+    slots = [{"id": "a", "node": "Sink", "inputs": {"settings": "{}"}}]
+    out, _ = graph.place(slots, "PAYLOAD", SINK)
+    assert slots[0]["inputs"]["settings"] == "{}"
+    assert out[0]["inputs"]["settings"] == "PAYLOAD"
+
+
+def test_a_sink_missing_half_its_answer_is_ignored():
+    slots = [{"id": "a", "node": "Sink", "inputs": {}}]
+    for sink in ({"node": "Sink"}, {"input": "settings"}, {}, "Sink", None):
+        out, placed = graph.place(slots, "PAYLOAD", [sink])
+        assert placed == 0, sink
+        assert out[0]["inputs"] == {}, sink

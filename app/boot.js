@@ -37,7 +37,7 @@ async function start() {
     }),
   });
   const session = wire({ run, page, check, id, queuedFor, finishedFor,
-                         slots: () => slots });
+                         slots: () => slots, values: allValues });
 
   let manifest;
   try {

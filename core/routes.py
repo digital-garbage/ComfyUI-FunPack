@@ -5,6 +5,8 @@ so the real routes can be mounted on a throwaway app in a test. The handlers are
 thin adapters over pure functions in `serve`.
 """
 
+import json
+
 from . import (config, graph as graph_mod, log, registry as registry_mod,
                serve as static, widgets)
 from .contract import CONTRACT_VERSION
@@ -103,6 +105,19 @@ def register(routes, prefix=None):
             return make()
         return []
 
+    def _sinks():
+        """Every place a module says the app's settings can be put."""
+        found = []
+        for _spec, make in modules().providers("settings_sink"):
+            try:
+                sink = make()
+            except Exception as exc:  # noqa: BLE001
+                log.failed("settings_sink", exc)
+                continue
+            if isinstance(sink, dict):
+                found.append(sink)
+        return found
+
     @routes.get(P + "/api/pipeline")
     async def _pipeline_get(_req):
         slots = _pipeline()
@@ -181,11 +196,32 @@ def register(routes, prefix=None):
         # -- an unset file picker on a fresh install is the normal case, not a
         # failed edit, and an app that showed them together would say the wrong
         # thing about both.
+        # What the UI holds, on its way into the graph. Sent with the pipeline
+        # rather than held on the server: two stores of "what the user picked"
+        # is two answers to what a run used, and the one believed would be
+        # whichever was written last.
+        values, notes = body.get("values"), []
+        if values is not None:
+            if not isinstance(values, dict):
+                return web.json_response(
+                    {"problems": [f"settings are an object keyed by module id, "
+                                  f"not a {type(values).__name__}"],
+                     "queueable": False}, status=400)
+            slots, placed = graph_mod.place(slots, json.dumps(values), _sinks())
+            # Said, not swallowed. A pipeline with nothing to accept them is a
+            # legitimate pipeline, so this does not stop the run -- but a panel
+            # full of switches that do nothing has to say so somewhere, and
+            # beside Generate is where the run is started.
+            if values and not placed:
+                notes.append("nothing in this pipeline accepts module settings, "
+                             "so what is set in the panels will not be applied")
+
         prompt, incomplete = graph_mod.build(slots)
         return web.json_response({
             "slots": slots,
             "refused": problems,
             "incomplete": incomplete,
+            "notes": notes,
             "queueable": not (problems or incomplete),
             "prompt": prompt if not (problems or incomplete) else None,
         })

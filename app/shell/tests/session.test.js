@@ -391,3 +391,68 @@ test("a run found waiting in the queue is adopted as waiting", async () => {
   await session.ready;
   assert.deepEqual(adopted, [["waiting", { running: false }]]);
 });
+
+test("what the panels hold is sent with every run", async () => {
+  // Until this was wired, every module panel in the app was decoration: the
+  // values lived in the browser and nothing ever sent them, so a modifier
+  // switched on was a modifier the run never heard about.
+  const run = fakeRun();
+  const asked = [];
+  const check = async (body) => { asked.push(body); return plan()(); };
+  const onGenerate = createGenerator({
+    run, transport: transport(), check,
+    values: () => ({ sampling_alg: { enabled: true } }),
+  });
+
+  await onGenerate();
+  assert.deepEqual(asked[0].values, { sampling_alg: { enabled: true } });
+});
+
+test("with no panels holding anything, an empty set is still sent", async () => {
+  // "Nothing is set" is an answer. Sending nothing at all is a client that
+  // cannot say the difference, and the server would have to guess.
+  const run = fakeRun();
+  const asked = [];
+  const check = async (body) => { asked.push(body); return plan()(); };
+  await createGenerator({ run, transport: transport(), check })();
+  assert.deepEqual(asked[0].values, {});
+});
+
+test("a setting that will not be applied is said, and does not stop the run", async () => {
+  const run = fakeRun();
+  const t = transport();
+  const note = "nothing in this pipeline accepts module settings";
+  const started = await createGenerator({
+    run, transport: t, check: plan({ notes: [note] }),
+  })();
+
+  assert.equal(started, true, "a note stopped a run that was otherwise fine");
+  assert.match(t.warning.node.textContent, /accepts module settings/);
+  assert.equal(t.warning.node.hasAttribute("hidden"), false);
+});
+
+test("a note stays up while the run it is about is going", async () => {
+  // The status line is redrawn by every message a run sends, so a warning put
+  // there was gone the moment the run said "Queued" -- which is roughly when
+  // the user looks at it.
+  const run = fakeRun();
+  const t = transport();
+  await createGenerator({ run, transport: t, check: plan({ notes: ["will not be applied"] }) })();
+
+  t.draw({ phase: "running", images: [], progress: { value: 1, max: 20 } });
+  t.draw({ phase: "done", images: [] });
+  assert.match(t.warning.node.textContent, /will not be applied/);
+  assert.equal(t.warning.node.hasAttribute("hidden"), false);
+});
+
+test("a pipeline with nothing to say takes the note back down", async () => {
+  const run = fakeRun();
+  const t = transport();
+  await createGenerator({ run, transport: t, check: plan({ notes: ["will not be applied"] }) })();
+  assert.equal(t.warning.node.hasAttribute("hidden"), false);
+
+  run.state = { ...run.state, phase: "idle" };
+  await createGenerator({ run, transport: t, check: plan() })();
+  assert.equal(t.warning.node.hasAttribute("hidden"), true, "a stale warning stayed up");
+  assert.equal(t.warning.node.textContent.trim(), "");
+});

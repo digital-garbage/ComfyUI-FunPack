@@ -273,6 +273,33 @@ def unacceptable(name: str, value: Any, bounds: Optional[dict]) -> Optional[str]
     return None
 
 
+def place(slots: Sequence[dict], value: Any,
+          sinks: Sequence[dict]) -> Tuple[List[dict], int]:
+    """Write one value into every slot a sink names. Returns (slots, how many).
+
+    This is how what the UI holds reaches the graph, and it is deliberately
+    ignorant of what the value MEANS: a module says "a node of this class takes
+    it, under this input name" and core does exactly that. Core naming the node
+    itself would make one module's node privileged, which is the thing the whole
+    announcement contract exists to prevent.
+
+    The count is returned rather than a message, because only the caller knows
+    what the value was -- and a value with nowhere to go has to be SAID. Writing
+    it nowhere and reporting success is how a settings panel becomes decoration.
+    """
+    out = [dict(slot, inputs=dict(slot.get("inputs") or {})) for slot in slots]
+    wanted = [(sink.get("node"), sink.get("input")) for sink in sinks
+              if isinstance(sink, dict) and sink.get("node") and sink.get("input")]
+
+    placed = 0
+    for slot in out:
+        for class_type, name in wanted:
+            if slot.get("node") == class_type:
+                slot["inputs"][name] = value
+                placed += 1
+    return out, placed
+
+
 def cycles(prompt: Dict[str, dict]) -> List[str]:
     """Slots that feed each other, named in the order the loop runs.
 

@@ -225,3 +225,36 @@ test("a page loaded narrow gives both panels back when there is room", async ({ 
   expect(wide.left, "the left panel did not come back").toBeGreaterThan(0);
   expect(wide.right, "the right panel never came back").toBeGreaterThan(0);
 });
+
+test("a setting too narrow to sit beside its control stacks instead of shredding", async ({ page }) => {
+  // What a docked panel does to a settings row: the control keeps a 140px floor
+  // and takes it out of the label, so at panel width the label came out one
+  // word per line and its hint four characters wide. It reads as damage rather
+  // than as a layout, and no jsdom test can see it -- there are no widths there.
+  await page.setViewportSize({ width: 800, height: 700 });
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  // Reveal the settings a switch brings with it: those are the wordy ones. The
+  // face, not the input -- the input is visually hidden and the label draws the
+  // box, which is how a real click arrives too.
+  await page.locator(".cx-panel .cx-check-face").first().click();
+  const row = page.locator(".cx-settings-row").first();
+  await expect(row).toBeVisible();
+
+  const { rowWidth, textWidth, labelHeight, lineHeight } = await row.evaluate((node) => {
+    const text = node.querySelector(".cx-settings-text") || node;
+    const label = node.querySelector(".cx-settings-label") || text;
+    return {
+      rowWidth: node.getBoundingClientRect().width,
+      textWidth: text.getBoundingClientRect().width,
+      labelHeight: label.getBoundingClientRect().height,
+      lineHeight: parseFloat(getComputedStyle(label).lineHeight) || 16,
+    };
+  });
+
+  expect(textWidth, "the label was squeezed out of the row by its control")
+    .toBeGreaterThan(rowWidth * 0.75);
+  expect(labelHeight, "a two-word label wrapped onto more than two lines")
+    .toBeLessThanOrEqual(lineHeight * 2 + 2);
+});

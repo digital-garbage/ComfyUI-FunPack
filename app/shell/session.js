@@ -16,7 +16,7 @@
  * was live, so two clicks each posted their own /prompt: two jobs burning GPU
  * time, with the UI following one of them.
  */
-export function createGenerator({ run, transport, check, ready, slots }) {
+export function createGenerator({ run, transport, check, ready, slots, values }) {
   let starting = false;
 
   return async function onGenerate() {
@@ -38,11 +38,21 @@ export function createGenerator({ run, transport, check, ready, slots }) {
         // edited -- none, which asks the server for its own defaults. Sending
         // an empty array instead would be a request to run nothing at all.
         const edited = slots ? slots() : null;
-        plan = await check(edited ? { slots: edited } : {});
+        plan = await check({
+          ...(edited ? { slots: edited } : {}),
+          // What every panel in the app holds. Sent even when empty: "nothing
+          // is set" is an answer, and the server tells the difference between
+          // that and a client too old to send any.
+          values: values ? values() : {},
+        });
       } catch (err) {
         transport.say(`The pipeline could not be read: ${err.message}`);
         return false;
       }
+
+      // True about the pipeline whatever happens next, so it is said before the
+      // run is either started or refused -- and it stays up while the run goes.
+      transport.warn((plan.notes || [])[0] || null);
 
       if (!plan.queueable || !plan.prompt) {
         // The first reason, whichever kind it is. A refusal and an unfinished
@@ -86,7 +96,7 @@ export function createGenerator({ run, transport, check, ready, slots }) {
  * ordering is the thing under test, so the ordering lives where tests can reach
  * it.
  */
-export function wire({ run, page, check, id, queuedFor, finishedFor, slots }) {
+export function wire({ run, page, check, id, queuedFor, finishedFor, slots, values }) {
   // One subscription draws everything a run affects. It lives here rather than
   // beside it in boot.js because subscribe() delivers the CURRENT state at
   // once, and doing that after the button was deliberately disabled handed it
@@ -116,7 +126,7 @@ export function wire({ run, page, check, id, queuedFor, finishedFor, slots }) {
     return adopted;
   });
 
-  const generate = createGenerator({ run, transport: page.transport, check, ready, slots });
+  const generate = createGenerator({ run, transport: page.transport, check, ready, slots, values });
   return { ready, generate };
 }
 
