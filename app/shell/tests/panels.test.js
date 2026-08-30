@@ -11,12 +11,12 @@ import assert from "node:assert/strict";
 
 import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
 
-let mountAll, offer, resetMounts, resetValues;
+let mountAll, offer, settle, resetMounts, resetValues;
 test.before(async () => {
   setupDom();
   await import("../../composer/composer.js");
   ({ mountAll } = await import("../panels.js"));
-  ({ offer, _reset: resetMounts } = await import("../mounts.js"));
+  ({ offer, settle, _reset: resetMounts } = await import("../mounts.js"));
   ({ _reset: resetValues } = await import("../values.js"));
 });
 test.after(() => teardownDom());
@@ -77,4 +77,41 @@ test("a module's setup still runs, and its teardown is kept", async () => {
   assert.equal(host.childElementCount, 1);
   mounted[0].destroy();
   assert.equal(torn, 1, "the unsubscribe setup() returned was dropped");
+});
+
+test("a region's stand-in comes down once something is in it", () => {
+  // A line reading "modules appear here" left above the modules that appeared
+  // is a region explaining itself to nobody.
+  resetMounts();
+  const host = document.createElement("div");
+  const standIn = document.createElement("p");
+  host.append(standIn);
+  document.body.replaceChildren(host);
+  offer("generation.model", host, standIn);
+
+  settle();
+  assert.ok(standIn.parentNode, "a region nothing mounted into lost its stand-in");
+
+  host.append(document.createElement("div"));
+  settle();
+  assert.equal(standIn.parentNode, null, "the stand-in stayed above what mounted");
+});
+
+test("two names on one host share its stand-in", () => {
+  // Five mount points are offered on the Generation panel. Taking the stand-in
+  // down as each one mounted would take down a stand-in belonging to all five,
+  // on behalf of the first.
+  resetMounts();
+  const host = document.createElement("div");
+  const standIn = document.createElement("p");
+  host.append(standIn);
+  document.body.replaceChildren(host);
+  offer("generation.model", host, standIn);
+  offer("generation.sampling", host, standIn);
+
+  settle();
+  assert.ok(standIn.parentNode);
+  host.append(document.createElement("div"));
+  settle();
+  assert.equal(standIn.parentNode, null);
 });

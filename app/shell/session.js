@@ -16,7 +16,7 @@
  * was live, so two clicks each posted their own /prompt: two jobs burning GPU
  * time, with the UI following one of them.
  */
-export function createGenerator({ run, transport, check, ready, slots, values }) {
+export function createGenerator({ run, transport, check, ready, slots, values, inputs }) {
   let starting = false;
 
   return async function onGenerate() {
@@ -40,6 +40,11 @@ export function createGenerator({ run, transport, check, ready, slots, values })
         const edited = slots ? slots() : null;
         plan = await check({
           ...(edited ? { slots: edited } : {}),
+          // What the boxes on the main window hold, addressed by slot. Sent
+          // apart from `slots` on purpose: the pipeline window owns the
+          // structure and these own one value inside it, so neither has to
+          // carry the other's.
+          ...(inputs ? { inputs: inputs() } : {}),
           // What every panel in the app holds. Sent even when empty: "nothing
           // is set" is an answer, and the server tells the difference between
           // that and a client too old to send any.
@@ -96,7 +101,7 @@ export function createGenerator({ run, transport, check, ready, slots, values })
  * ordering is the thing under test, so the ordering lives where tests can reach
  * it.
  */
-export function wire({ run, page, check, id, queuedFor, finishedFor, slots, values }) {
+export function wire({ run, page, check, id, queuedFor, finishedFor, slots, values, inputs }) {
   // One subscription draws everything a run affects. It lives here rather than
   // beside it in boot.js because subscribe() delivers the CURRENT state at
   // once, and doing that after the button was deliberately disabled handed it
@@ -126,7 +131,7 @@ export function wire({ run, page, check, id, queuedFor, finishedFor, slots, valu
     return adopted;
   });
 
-  const generate = createGenerator({ run, transport: page.transport, check, ready, slots, values });
+  const generate = createGenerator({ run, transport: page.transport, check, ready, slots, values, inputs });
   return { ready, generate };
 }
 

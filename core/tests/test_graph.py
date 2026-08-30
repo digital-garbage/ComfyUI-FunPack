@@ -363,3 +363,61 @@ def test_a_sink_missing_half_its_answer_is_ignored():
         out, placed = graph.place(slots, "PAYLOAD", [sink])
         assert placed == 0, sink
         assert out[0]["inputs"] == {}, sink
+
+
+# --- override: a value the app is holding, into a named input -----------------
+
+PAIR = [{"id": "positive", "node": "CLIPTextEncode", "inputs": {"clip": ["clip", 0], "text": ""}},
+        {"id": "latent", "node": "Empty", "inputs": {"width": 512}}]
+
+
+def test_override_writes_a_value_into_the_input_it_names():
+    out, problems = graph.override(PAIR, {"positive": {"text": "a cat"}})
+    assert problems == []
+    assert out[0]["inputs"]["text"] == "a cat"
+    assert out[0]["inputs"]["clip"] == ["clip", 0], "the wiring was disturbed"
+    assert out[1]["inputs"]["width"] == 512
+
+
+def test_override_refuses_a_slot_that_is_not_there():
+    """A prompt typed into a box for a slot somebody removed has gone nowhere,
+    and a run that starts anyway is a run without the prompt in it."""
+    out, problems = graph.override(PAIR, {"gone": {"text": "a cat"}})
+    assert any("no such slot" in p for p in problems)
+    assert out[0]["inputs"]["text"] == ""
+
+
+def test_override_refuses_to_write_over_a_link():
+    out, problems = graph.override(PAIR, {"positive": {"clip": "a string"}})
+    assert any("fed by another node" in p for p in problems)
+    assert out[0]["inputs"]["clip"] == ["clip", 0]
+
+
+def test_override_refuses_a_shape_that_is_not_an_address():
+    for edits in ("text", ["positive"], 7):
+        _out, problems = graph.override(PAIR, edits)
+        assert problems, edits
+    _out, problems = graph.override(PAIR, {"positive": "a cat"})
+    assert any("keyed by input name" in p for p in problems)
+
+
+def test_override_does_not_edit_the_pipeline_it_was_given():
+    graph.override(PAIR, {"positive": {"text": "a cat"}})
+    assert PAIR[0]["inputs"]["text"] == ""
+
+
+def test_a_role_is_checked_for_shape_and_nothing_else():
+    """Core does not know what any of these names MEAN. It knows they are names."""
+    ok = [{"id": "a", "node": "N", "roles": [{"at": "anywhere.at.all", "input": "text",
+                                              "label": "Whatever"}]}]
+    assert graph.shape_problems(ok) == []
+
+    assert graph.shape_problems([{"id": "a", "node": "N", "roles": {}}])
+    assert graph.shape_problems([{"id": "a", "node": "N", "roles": ["text"]}])
+    assert any("has no at" in p for p in
+               graph.shape_problems([{"id": "a", "node": "N", "roles": [{"input": "text"}]}]))
+    assert any("has no input" in p for p in
+               graph.shape_problems([{"id": "a", "node": "N", "roles": [{"at": "x"}]}]))
+    assert any("label must be text" in p for p in
+               graph.shape_problems([{"id": "a", "node": "N",
+                                      "roles": [{"at": "x", "input": "t", "label": 5}]}]))

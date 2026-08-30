@@ -196,6 +196,16 @@ def register(routes, prefix=None):
         # -- an unset file picker on a fresh install is the normal case, not a
         # failed edit, and an app that showed them together would say the wrong
         # thing about both.
+        # Values the app is showing for named inputs -- the prompt box, and
+        # whatever else the pipeline says belongs on the main window. Addressed
+        # by slot rather than sent as a whole pipeline: the window that owns the
+        # STRUCTURE and a control that owns one VALUE then cannot disagree about
+        # the slots between them.
+        edits = body.get("inputs")
+        if edits is not None:
+            slots, refused = graph_mod.override(slots, edits)
+            problems = list(problems) + refused
+
         # What the UI holds, on its way into the graph. Sent with the pipeline
         # rather than held on the server: two stores of "what the user picked"
         # is two answers to what a run used, and the one believed would be

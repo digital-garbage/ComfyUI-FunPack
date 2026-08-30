@@ -456,3 +456,15 @@ test("a pipeline with nothing to say takes the note back down", async () => {
   assert.equal(t.warning.node.hasAttribute("hidden"), true, "a stale warning stayed up");
   assert.equal(t.warning.node.textContent.trim(), "");
 });
+
+test("what is typed on the main window is sent with the run", async () => {
+  const run = fakeRun();
+  const asked = [];
+  const check = async (body) => { asked.push(body); return plan()(); };
+  await createGenerator({
+    run, transport: transport(), check,
+    inputs: () => ({ positive: { text: "a cat on a roof" } }),
+  })();
+
+  assert.deepEqual(asked[0].inputs, { positive: { text: "a cat on a roof" } });
+});

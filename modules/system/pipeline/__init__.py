@@ -13,6 +13,12 @@ the UI an override layer rather than a requirement.
 Nothing about these slots is privileged. Core does not know this list exists; it
 is handed one and builds it.
 
+`roles` is how a slot puts one of its inputs on the app's own surface: the
+prompt is a slot input like any other, and typing it into a box beside the
+picture rather than digging for the node it belongs to is the whole difference
+between a pipeline and an app. The name is a mount point, so a role naming a
+place this shell does not offer is simply not shown.
+
 `group` is the pipeline's own idea of how it reads to a person -- the cards the
 app shows are these names, in the order they first appear. It travels on the
 slot rather than living in the app, so a pipeline that replaced every slot keeps
@@ -33,10 +39,12 @@ DEFAULT = [
     {"id": "clip", "group": "Loaders", "node": "FunPackCLIPLoader", "inputs": {"type": "stable_diffusion"}},
     {"id": "vae", "group": "Loaders", "node": "FunPackVAELoader", "inputs": {"dtype": "bfloat16"}},
 
-    {"id": "positive", "group": "Preparation", "node": "CLIPTextEncode", "inputs": {
-        "clip": ["clip", 0], "text": ""}},
-    {"id": "negative", "group": "Preparation", "node": "CLIPTextEncode", "inputs": {
-        "clip": ["clip", 0], "text": ""}},
+    {"id": "positive", "group": "Preparation", "node": "CLIPTextEncode",
+     "roles": [{"at": "generation.prompt", "input": "text", "label": "Prompt"}],
+     "inputs": {"clip": ["clip", 0], "text": ""}},
+    {"id": "negative", "group": "Preparation", "node": "CLIPTextEncode",
+     "roles": [{"at": "generation.prompt", "input": "text", "label": "Negative"}],
+     "inputs": {"clip": ["clip", 0], "text": ""}},
 
     {"id": "latent", "group": "Preparation", "node": "FunPackEmptyLatent", "inputs": {
         "model": ["model", 0], "width": 512, "height": 512, "length": 1, "batch_size": 1}},

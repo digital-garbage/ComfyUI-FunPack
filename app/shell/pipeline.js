@@ -17,7 +17,7 @@ const NODES = "/funpack/api/nodes";
  * a failure. `notes` is a third thing again: the pipeline is fine and something
  * about it is worth saying, such as settings that will not be applied.
  */
-export async function check({ fetch: doFetch = globalThis.fetch, slots, values,
+export async function check({ fetch: doFetch = globalThis.fetch, slots, values, inputs,
                               action = "check", slot, node } = {}) {
   // `slots` and an action travel together on purpose: a remove is "take this
   // one out of THIS pipeline", and sending the action without the pipeline the
@@ -28,6 +28,10 @@ export async function check({ fetch: doFetch = globalThis.fetch, slots, values,
   // panels say: two stores of "what the user picked" is two answers to what a
   // run used, and the one believed would be whichever was written last.
   if (values) body.values = values;
+  // Values for named inputs, from the controls the pipeline asked the main
+  // window to show. Only sent when there are some: an empty object is a
+  // request to override nothing, and saying it every time is noise on the wire.
+  if (inputs && Object.keys(inputs).length) body.inputs = inputs;
   if (slot !== undefined) body.slot = slot;
   if (node !== undefined) body.node = node;
 

@@ -406,3 +406,36 @@ def test_empty_settings_are_not_reported_as_having_nowhere_to_go(server):
     status, body = _request(server, "POST", "/funpack/api/pipeline", {"values": {}})
     assert status == 200
     assert body["notes"] == []
+
+
+def test_a_prompt_typed_in_the_app_reaches_the_node_that_encodes_it(server):
+    status, body = _request(server, "POST", "/funpack/api/pipeline",
+                            {"inputs": {"positive": {"text": "a cat on a roof"}}})
+    assert status == 200, body
+    assert body["refused"] == []
+    positive = next(s for s in body["slots"] if s["id"] == "positive")
+    assert positive["inputs"]["text"] == "a cat on a roof"
+    assert positive["inputs"]["clip"] == ["clip", 0]
+
+
+def test_a_value_for_a_slot_that_is_gone_stops_the_run(server):
+    """Not a note: the prompt went nowhere, and a run without it is not the run
+    that was asked for."""
+    status, body = _request(server, "POST", "/funpack/api/pipeline",
+                            {"inputs": {"positive_2": {"text": "a cat"}}})
+    assert status == 200
+    assert any("no such slot" in p for p in body["refused"]), body["refused"]
+    assert body["queueable"] is False
+    assert body["prompt"] is None
+
+
+def test_the_default_pipeline_says_where_its_prompt_belongs(server):
+    """The app has no list of what a prompt is: the pipeline says which input
+    goes on the surface, and the app offers a place with that name or does not."""
+    status, body = _request(server, "GET", "/funpack/api/pipeline")
+    assert status == 200
+    roles = [(s["id"], r) for s in body["slots"] for r in (s.get("roles") or [])]
+    assert roles, "no slot offers anything to the main window"
+    places = {r["at"] for _id, r in roles}
+    assert places == {"generation.prompt"}
+    assert all(r["input"] and r["label"] for _id, r in roles)

@@ -6,6 +6,7 @@
 import { build } from "./shell/layout.js";
 import { fetchManifest } from "./shell/manifest.js";
 import { mountAll } from "./shell/panels.js";
+import { settle } from "./shell/mounts.js";
 import { all as allValues } from "./shell/values.js";
 import { composer } from "./composer/composer.js";
 import { createRun } from "./shell/run.js";
@@ -13,6 +14,7 @@ import { clientId, connect, queuedFor, finishedFor } from "./shell/client.js";
 import { wire } from "./shell/session.js";
 import { check, load, describe, search } from "./shell/pipeline.js";
 import { open as openPipeline } from "./shell/pipeline_window.js";
+import { createPrompts } from "./shell/prompt.js";
 
 const root = document.querySelector("#app");
 
@@ -28,16 +30,29 @@ async function start() {
   // defaults" -- so a fresh page generates without the window ever opening.
   let slots = null;
 
+  // The inputs the pipeline puts on the main window -- the prompt, today. Null
+  // until the pipeline has been read, because until then nobody knows which
+  // inputs those are.
+  let prompts = null;
+
   const page = build(root, {
     onGenerate: () => session.generate(),
     onCancel: () => run.cancel(),
     onPipeline: () => openPipeline({
       load, describe, check, search,
-      onApply: (next) => { slots = next; },
+      onApply: (next) => {
+        slots = next;
+        // The boxes on the main window are for inputs of THESE slots. A slot
+        // that was removed takes its box with it, and a value saved in the
+        // window is what its box now shows -- otherwise the two windows hold
+        // different text for one input and the run uses whichever was sent.
+        if (prompts) prompts.sync(next);
+      },
     }),
   });
   const session = wire({ run, page, check, id, queuedFor, finishedFor,
-                         slots: () => slots, values: allValues });
+                         slots: () => slots, values: allValues,
+                         inputs: () => (prompts ? prompts.overrides() : {}) });
 
   let manifest;
   try {
@@ -54,6 +69,21 @@ async function start() {
   }
 
   const { mounted, hidden } = await mountAll(manifest);
+
+  // After the modules, because a region has to exist before anything can be put
+  // in it, and a module may be sharing the region a role names.
+  try {
+    prompts = createPrompts((await load()).slots);
+  } catch (err) {
+    // Not fatal and not silent: the app still runs on the server's own
+    // defaults, and an empty prompt panel with no explanation is the failure
+    // this project keeps finding.
+    console.warn(`[FunPack] the pipeline could not be read, so nothing it puts on the main window is here: ${err.message}`);
+  }
+
+  // Everything that mounts has now had its turn, so a region still holding its
+  // stand-in is a region nothing wanted.
+  settle();
   const failed = manifest.failed || [];
 
   console.info(`[FunPack] ${mounted.length} module(s) mounted`,
@@ -67,6 +97,7 @@ async function start() {
 
   window.FunPack = {
     manifest, values: allValues, failed, hidden, run, bin: page.bin,
+    prompts: () => (prompts ? prompts.overrides() : {}),
     mounted: mounted.map((m) => m.id),
   };
 }

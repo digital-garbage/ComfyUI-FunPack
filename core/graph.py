@@ -151,6 +151,37 @@ def shape_problems(slots: Any) -> List[str]:
             elif not group.strip():
                 problems.append(f"{where}'s group is blank; leave it out to leave the "
                                 f"slot ungrouped")
+        problems.extend(_role_problems(slot.get("roles"), where))
+    return problems
+
+
+def _role_problems(roles: Any, where: str) -> List[str]:
+    """A role says one of this slot's inputs belongs on the app's surface.
+
+    Core knows nothing about what any of these NAMES mean -- which places exist
+    is the app's business, and an input's meaning is the node's. It knows the
+    shape: a place to put it and an input to put there, both named in text. A
+    role naming a place nothing offers is simply not shown, the same as a module
+    asking for a mount point nobody has.
+    """
+    if roles is None:
+        return []
+    if not isinstance(roles, list):
+        return [f"{where}'s roles must be a list, not {type(roles).__name__}"]
+
+    problems = []
+    for index, role in enumerate(roles):
+        at = f"{where} role {index}"
+        if not isinstance(role, dict):
+            problems.append(f"{at} is {type(role).__name__}, not an object")
+            continue
+        for key in ("at", "input"):
+            value = role.get(key)
+            if not isinstance(value, str) or not value.strip():
+                problems.append(f"{at} has no {key}")
+        label = role.get("label")
+        if label is not None and not isinstance(label, str):
+            problems.append(f"{at}'s label must be text, not {type(label).__name__}")
     return problems
 
 
@@ -298,6 +329,47 @@ def place(slots: Sequence[dict], value: Any,
                 slot["inputs"][name] = value
                 placed += 1
     return out, placed
+
+
+def override(slots: Sequence[dict], edits: Any) -> Tuple[List[dict], List[str]]:
+    """Values the app is holding for named inputs: {slot_id: {input: value}}.
+
+    Addressed rather than merged: the app sends what it is showing, not a whole
+    pipeline, so a control on the main window and the pipeline window cannot
+    disagree about the slots between them -- one of them owns the structure and
+    the other owns a value in it.
+
+    An address that is not there is REFUSED, never written and hoped for. A
+    prompt typed into a box for a slot somebody removed has gone nowhere, and a
+    run that starts anyway is a run without the prompt in it.
+    """
+    if not isinstance(edits, dict):
+        return list(slots), [f"overrides are an object keyed by slot id, "
+                             f"not a {type(edits).__name__}"]
+
+    out = [dict(slot, inputs=dict(slot.get("inputs") or {})) for slot in slots]
+    by_id = {slot.get("id"): slot for slot in out}
+    problems: List[str] = []
+
+    for slot_id, values in edits.items():
+        slot = by_id.get(slot_id)
+        if slot is None:
+            problems.append(f"{slot_id}: there is no such slot to put a value in")
+            continue
+        if not isinstance(values, dict):
+            problems.append(f"{slot_id}: its values are an object keyed by input name, "
+                            f"not a {type(values).__name__}")
+            continue
+        for name, value in values.items():
+            # A link is the graph's structure, and a value written over one
+            # silently unwires a node. Whatever meant to do that has to say so
+            # somewhere it can be seen.
+            if is_link(slot["inputs"].get(name)):
+                problems.append(f"{slot_id}.{name} is fed by another node, so a value "
+                                f"cannot be put in it")
+                continue
+            slot["inputs"][name] = value
+    return out, problems
 
 
 def cycles(prompt: Dict[str, dict]) -> List[str]:
