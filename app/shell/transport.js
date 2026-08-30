@@ -37,6 +37,13 @@ export function createTransport({ onGenerate, onCancel } = {}) {
   // run says "Ready", which wiped the reason a moment after it appeared.
   let note = null;
 
+  // Held for a reason that is not a run: the page is still working out whether
+  // it already has one. Kept as a flag rather than left to whoever disabled the
+  // button, because draw() runs on every state change and each of those would
+  // otherwise hand the button back -- which is exactly what a subscription
+  // delivering the current state did, one line after the button was disabled.
+  let held = false;
+
   // Hidden by attribute rather than removed: the row's shape then does not jump
   // as a run starts and finishes, and there is one node to find in a test.
   const hide = (handle, yes) => {
@@ -51,7 +58,7 @@ export function createTransport({ onGenerate, onCancel } = {}) {
     // says outranks a note about an attempt that never started.
     if (state.phase !== IDLE) note = null;
     const working = WORKING.has(state.phase);
-    generate.setDisabled(working);
+    generate.setDisabled(working || held);
     generate.setBusy(working);
     hide(cancel, !working);
 
@@ -72,7 +79,21 @@ export function createTransport({ onGenerate, onCancel } = {}) {
     status.setText(note || describe(state || { phase: IDLE, images: [] }));
   }
 
-  return { node: bar.node, draw, say, generate, cancel, progress, status };
+  /** Stop offering Generate for a reason of the page's own, and say why. */
+  function hold(reason) {
+    held = Boolean(reason);
+    if (reason) say(reason);
+    generate.setDisabled(true);
+  }
+
+  /** Offer it again. The run's own state decides from here. */
+  function release(state) {
+    held = false;
+    say(null, state);
+    draw(state);
+  }
+
+  return { node: bar.node, draw, say, hold, release, generate, cancel, progress, status };
 }
 
 /** One line saying where the run is. The only place these words are decided. */

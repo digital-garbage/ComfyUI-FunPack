@@ -50,11 +50,26 @@ function fakeRun(phase = "idle") {
     },
     started,
     release: () => release(),
-    state: { phase },
+    state: { phase, promptId: null, progress: null, images: [], audio: [], error: null, node: null },
     listened: 0,
     listen() { this.listened += 1; },
+    // The real run delivers the CURRENT state on subscribe, at once. Leaving
+    // that off is how a fake stays tidier than the thing it stands in for: the
+    // synchronous first delivery is exactly what handed a deliberately disabled
+    // button straight back, and a fake without it could not show that.
+    subscribers: new Set(),
+    subscribe(fn) {
+      this.subscribers.add(fn);
+      try { fn(this.state); } catch { /* as the real one does */ }
+      return () => this.subscribers.delete(fn);
+    },
+    announce() { for (const fn of this.subscribers) fn(this.state); },
     seen: () => [],
-    adopt(id) { this.state = { ...this.state, phase: "running", promptId: id }; return true; },
+    adopt(id) {
+      this.state = { ...this.state, phase: "running", promptId: id, images: [] };
+      this.announce();
+      return true;
+    },
     async start(prompt) {
       started.push(prompt);
       this.state = { ...this.state, phase: "queued" };
@@ -310,4 +325,47 @@ test("a queue that cannot be reached still gives the button back", async () => {
   await session.ready;
   assert.equal(t.disabled, false);
   assert.equal(t.text, "Ready");
+});
+
+test("a state delivered while the page is still looking does not hand Generate back", () => {
+  // subscribe() delivers the current state at once, and every later change
+  // redraws. Each of those draws decides the button from the run's phase alone,
+  // so an idle run -- which is what a page has while it is still finding out
+  // whether it has a run at all -- re-enabled a button that had just been
+  // deliberately disabled. Live-looking, and doing nothing when pressed.
+  const t = transport();
+  const run = fakeRun();
+  wire({
+    run, page: { transport: t }, check: plan(), id: "me",
+    runningFor: () => new Promise(() => {}),      // never answers
+    finishedFor: async () => null,
+  });
+
+  assert.equal(t.disabled, true);
+  run.announce();                                 // any redraw at all
+  assert.equal(t.disabled, true, "a redraw handed the button back mid-lookup");
+  t.draw(run.state);
+  assert.equal(t.disabled, true, "drawing the idle run handed the button back");
+});
+
+test("the result of a run is shown as it arrives", async () => {
+  // The subscription draws the transport AND the preview. Moving it had to
+  // carry both, and the viewer is the half with nothing else watching it.
+  const shown = [];
+  const t = transport();
+  const run = fakeRun();
+  wire({
+    run,
+    page: { transport: t, viewer: { setSource: (src, kind) => shown.push([src, kind]) } },
+    check: plan(), id: "me",
+    runningFor: async () => null, finishedFor: async () => null,
+  });
+
+  run.state = { ...run.state, phase: "done", images: [{ filename: "a.png", subfolder: "", type: "output" }] };
+  run.announce();
+  assert.deepEqual(shown, [["/view?filename=a.png&subfolder=&type=output", "image"]]);
+
+  run.state = { ...run.state, images: [{ filename: "clip.mp4", subfolder: "", type: "output" }] };
+  run.announce();
+  assert.equal(shown[1][1], "video", "a video result was handed to an <img>");
 });

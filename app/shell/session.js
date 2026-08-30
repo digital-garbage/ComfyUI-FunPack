@@ -1,5 +1,10 @@
 // The two things the page does around a run: start one, and take back over one
 // that was already going.
+
+import { viewUrl } from "./run.js";
+
+/** Video and image results arrive the same way and cannot be shown the same way. */
+const kindOf = (image) => (/\.(mp4|webm|mov|mkv)$/i.test(image.filename || "") ? "video" : "image");
 //
 // Kept out of boot.js because boot.js runs on import and needs a document, so
 // nothing in it could be driven by a test -- and both of the faults that lived
@@ -82,6 +87,16 @@ export function createGenerator({ run, transport, check, ready }) {
  * it.
  */
 export function wire({ run, page, check, id, runningFor, finishedFor }) {
+  // One subscription draws everything a run affects. It lives here rather than
+  // beside it in boot.js because subscribe() delivers the CURRENT state at
+  // once, and doing that after the button was deliberately disabled handed it
+  // straight back -- live-looking, and doing nothing when pressed.
+  run.subscribe((state) => {
+    page.transport.draw(state);
+    const last = state.images[state.images.length - 1];
+    if (last && page.viewer) page.viewer.setSource(viewUrl(last), kindOf(last));
+  });
+
   // The socket opens at load, not at Generate. A generation queued before a
   // reload keeps running on the server, and a page that only listens once it
   // starts one of its own hears nothing about it.
@@ -90,12 +105,10 @@ export function wire({ run, page, check, id, runningFor, finishedFor }) {
   // Not awaited by the caller, but the button waits on it. Until this settles
   // nobody can know whether this page already has a run, and starting another
   // one on the strength of "phase is idle" is starting one on a guess.
-  page.transport.generate.setDisabled(true);
-  page.transport.say("Looking for a run already in progress");
+  page.transport.hold("Looking for a run already in progress");
 
   const ready = reattach(run, id, { runningFor, finishedFor }).then((adopted) => {
-    page.transport.say(null, run.state);
-    page.transport.draw(run.state);
+    page.transport.release(run.state);
     return adopted;
   });
 

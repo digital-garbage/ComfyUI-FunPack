@@ -8,7 +8,7 @@ import { fetchManifest } from "./shell/manifest.js";
 import { mountAll } from "./shell/panels.js";
 import { all as allValues } from "./shell/values.js";
 import { composer } from "./composer/composer.js";
-import { createRun, viewUrl } from "./shell/run.js";
+import { createRun } from "./shell/run.js";
 import { clientId, connect, runningFor, finishedFor } from "./shell/client.js";
 import { wire } from "./shell/session.js";
 import { check } from "./shell/pipeline.js";
@@ -24,12 +24,6 @@ async function start() {
     onCancel: () => run.cancel(),
   });
   const session = wire({ run, page, check, id, runningFor, finishedFor });
-
-  run.subscribe((state) => {
-    page.transport.draw(state);
-    const last = state.images[state.images.length - 1];
-    if (last) page.viewer.setSource(viewUrl(last), kindOf(last));
-  });
 
   let manifest;
   try {
@@ -61,11 +55,6 @@ async function start() {
     manifest, values: allValues, failed, hidden, run,
     mounted: mounted.map((m) => m.id),
   };
-}
-
-/** Video and image results arrive the same way and cannot be shown the same way. */
-function kindOf(image) {
-  return /\.(mp4|webm|mov|mkv)$/i.test(image.filename || "") ? "video" : "image";
 }
 
 start();
