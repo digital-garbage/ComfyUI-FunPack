@@ -348,26 +348,33 @@ test("a state delivered while the page is still looking does not hand Generate b
   assert.equal(t.disabled, true, "drawing the idle run handed the button back");
 });
 
-test("the result of a run is shown as it arrives", async () => {
-  // The subscription draws the transport AND the preview. Moving it had to
-  // carry both, and the viewer is the half with nothing else watching it.
+test("results of a run go to the bin, and only to the bin", async () => {
+  // The subscription draws the transport AND hands results on. It hands them to
+  // the BIN, which owns what is on screen: pointing the viewer at the newest
+  // image from here as well put two things in charge of one view, and every
+  // progress message then walked a user's choice of an older result back to the
+  // newest one.
+  const taken = [];
   const shown = [];
   const t = transport();
   const run = fakeRun();
   wire({
     run,
-    page: { transport: t, viewer: { setSource: (src, kind) => shown.push([src, kind]) } },
+    page: {
+      transport: t,
+      bin: { absorb: (images) => { taken.push(images); return []; } },
+      viewer: { setSource: (src, kind) => shown.push([src, kind]) },
+    },
     check: plan(), id: "me",
     queuedFor: async () => null, finishedFor: async () => null,
   });
 
-  run.state = { ...run.state, phase: "done", images: [{ filename: "a.png", subfolder: "", type: "output" }] };
+  const images = [{ filename: "a.png", subfolder: "", type: "output" }];
+  run.state = { ...run.state, phase: "done", images };
   run.announce();
-  assert.deepEqual(shown, [["/view?filename=a.png&subfolder=&type=output", "image"]]);
 
-  run.state = { ...run.state, images: [{ filename: "clip.mp4", subfolder: "", type: "output" }] };
-  run.announce();
-  assert.equal(shown[1][1], "video", "a video result was handed to an <img>");
+  assert.deepEqual(taken[taken.length - 1], images);
+  assert.deepEqual(shown, [], "the viewer was driven from here as well as from the bin");
 });
 
 test("a run found waiting in the queue is adopted as waiting", async () => {

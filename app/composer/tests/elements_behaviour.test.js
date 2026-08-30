@@ -419,3 +419,52 @@ test("a workspace with no panels still renders its centre", () => {
   assert.match(ws.centre.textContent, /only the middle/);
   assert.ok(ws.left && ws.right, "the regions exist even when nothing was put in them");
 });
+
+test("a captionless tile still has a name", () => {
+  // The icons view drops the caption on purpose. Nothing else in the cell says
+  // what it is, so without an explicit name the whole bin reads to a screen
+  // reader as a row of unlabelled buttons.
+  const g = mount(composer.gallery.icons({ items: [{ id: "1", label: "rooftop_dusk_01.mp4" }] }));
+  const tile = g.node.querySelector(".cx-cell");
+  assert.equal(tile.getAttribute("aria-label"), "rooftop_dusk_01.mp4");
+  assert.equal(tile.getAttribute("title"), "rooftop_dusk_01.mp4");
+});
+
+test("the three views of a collection agree on what is selected", () => {
+  // Grid, list and icons are one bin in three shapes. A view that reported its
+  // selection differently would make switching views a way to lose it.
+  const items = [{ id: "a", label: "a.png" }, { id: "b", label: "b.png" }];
+  for (const view of ["adaptive", "list", "icons"]) {
+    const g = mount(composer.gallery[view]({ items, selection: ["b"] }));
+    assert.deepEqual(g.value, ["b"], `${view} reported the wrong selection`);
+    g.setValue(["a"]);
+    assert.deepEqual(g.value, ["a"], `${view} did not take a new selection`);
+    const on = [...g.node.querySelectorAll('[aria-selected="true"]')];
+    assert.equal(on.length, 1, `${view} drew ${on.length} selected entries`);
+    g.destroy();
+  }
+});
+
+test("a thumbnail that does not load falls back to the glyph", () => {
+  // The browser's broken-image icon reads as a damaged file. In a bin of fifty
+  // results one server hiccup would look like lost work.
+  const g = mount(composer.gallery.adaptive({ id: "broken", items: [{ id: "1", label: "a.png", thumb: "/gone.png" }] }));
+  const img = g.node.querySelector("img");
+  fire(img, "error");
+  assert.equal(g.node.querySelector("img"), null);
+  assert.ok(g.node.querySelector(".cx-cell-glyph"), "nothing stood in for the missing picture");
+  assert.match(g.node.textContent, /a\.png/, "the name went with it");
+});
+
+test("a bin's thumbnails are lazy", () => {
+  // A bin holds everything a session produced. Fetching all of it the moment
+  // the panel draws is the shape of v4's media-bin stall: the browser opens six
+  // connections per origin, and the API is behind the same six.
+  const items = [{ id: "1", label: "a.png", thumb: "/view?filename=a.png" }];
+  for (const view of ["adaptive", "list", "icons"]) {
+    const g = mount(composer.gallery[view]({ items }));
+    assert.equal(g.node.querySelector("img").getAttribute("loading"), "lazy",
+      `${view} fetches every thumbnail at once`);
+    g.destroy();
+  }
+});

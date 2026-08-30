@@ -60,6 +60,7 @@
 
   /* ── adaptive density (v4 had 8 different minmax floors) ────────────── */
   --cell-thumb: 72px;  --cell-card: 144px;  --cell-panel: 240px;
+  --cell-icon: 48px;   /* captionless tiles: the picture is the whole cell */
 
   /* ── layout ─────────────────────────────────────────────────────────── */
   --menubar-h: 34px;

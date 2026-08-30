@@ -9,31 +9,30 @@
 // over it, which is not a smaller app but the same app wearing a mask -- and it
 // broke: a collapsed column was marked [hidden], and nothing can slide a
 // display:none element into view, so a panel button did nothing at all and said
-// nothing. So here a region that does not exist yet is ABSENT. The timeline, the
-// media bin's view modes, the pipeline window and the wheel are not hidden
-// below; they have not been built, and adding one is adding a region rather
-// than removing a rule.
+// nothing. So here a region that does not exist yet is ABSENT. The timeline,
+// the picker wheel and the project wizard are not hidden below; they have not
+// been built, and adding one is adding a region rather than removing a rule.
+// The bin arrived exactly that way.
 
 import { composer } from "../composer/composer.js";
 import { offer } from "./mounts.js";
 import { createTransport } from "./transport.js";
+import { createBin } from "./bin.js";
 
 export function build(root, handlers = {}) {
-  // Left: what a project is made of. Empty until the media bin exists, and an
-  // empty state rather than an absent panel, because "there is nothing here
-  // yet" and "this part of the app is missing" must not look the same.
-  const assets = composer.panel.default({
-    title: "Assets",
-    body: composer.emptyState.default({
-      icon: "▤",
-      title: "Nothing in the bin",
-      hint: "Media you add to the project appears here.",
-    }),
-  });
-
   // Centre: the result, and the prompt under it. The prompt is the one control
   // that is always on screen, because it is the one always being edited.
   const viewer = composer.viewer.media({ empty: "The result of the last run appears here." });
+
+  // Left: what a project is made of, which for now is what it has produced. The
+  // bin owns the choice of what the viewer shows -- one place decides, so a
+  // click on an older result and a run finishing cannot both be right at once.
+  const bin = createBin({ onOpen: (item) => viewer.setSource(item.url, item.kind) });
+  const assets = composer.panel.default({
+    title: "Assets",
+    actions: [bin.control],
+    body: bin.host,
+  });
   const preview = composer.panel.default({ title: "Preview", body: viewer });
   const prompt = composer.panel.default({
     title: "Prompt",
@@ -107,6 +106,6 @@ export function build(root, handlers = {}) {
   offer("generation.timing", generation.body);
   offer("generation.post", generation.body);
 
-  return { workspace, assets, preview, viewer, prompt, generation, settings,
+  return { workspace, assets, bin, preview, viewer, prompt, generation, settings,
            properties, transport, bar, page };
 }

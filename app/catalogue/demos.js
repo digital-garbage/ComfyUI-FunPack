@@ -304,6 +304,17 @@ export const DEMOS = {
     { id: "5", label: "score.wav", badge: "audio", duration: "1:12" },
     { id: "6", label: "rooftop_dusk_03.mp4", badge: "video", duration: "0:04" },
   ] },
+  "gallery.icons": { selection: ["2"], items: [
+    { id: "1", label: "rooftop_dusk_01.mp4", icon: "▶" },
+    { id: "2", label: "anchor_frame.png" },
+    { id: "3", label: "rooftop_dusk_02.mp4", icon: "▶" },
+    { id: "4", label: "reference_face.png" },
+  ] },
+  "gallery.list": { selection: ["1"], items: [
+    { id: "1", label: "rooftop_dusk_01.mp4", icon: "▶", hint: "video" },
+    { id: "2", label: "anchor_frame.png", hint: "image" },
+    { id: "3", label: "a_very_long_generated_filename_00042_.png", hint: "image" },
+  ] },
   "gallery.cards": { value: "image", items: [
     { id: "blank", icon: "▦", label: "Empty project", hint: "Nothing on the timeline" },
     { id: "image", icon: "◐", label: "From an image", hint: "Adds it as the first anchor" },

@@ -66,7 +66,7 @@ async function start() {
   for (const { where, why } of failed) console.warn(`[FunPack] ${where} did not load: ${why}`);
 
   window.FunPack = {
-    manifest, values: allValues, failed, hidden, run,
+    manifest, values: allValues, failed, hidden, run, bin: page.bin,
     mounted: mounted.map((m) => m.id),
   };
 }

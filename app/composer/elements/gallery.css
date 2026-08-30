@@ -38,6 +38,38 @@
   -webkit-box-orient: vertical; overflow: hidden;
 }
 
+/* Icons: as many captionless tiles as fit. Square, because without a name
+   under it a 16:10 tile reads as a cropped picture rather than a tile. */
+.cx-gallery-icons {
+  grid-template-columns: repeat(auto-fill, minmax(var(--cell-icon), 1fr));
+  gap: var(--sp-2);
+}
+.cx-cell-icon { border-radius: var(--r-2); }
+.cx-cell-icon .cx-cell-thumb { aspect-ratio: 1 / 1; }
+
+/* List: the whole name, which is the reason to be in this view at all. */
+.cx-media-list { display: flex; flex-direction: column; gap: var(--sp-1); }
+.cx-media-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-2); text-align: left; cursor: pointer;
+  border: var(--bw) solid transparent; border-radius: var(--r-2);
+  background: none; color: var(--text);
+  transition: border-color var(--dur-1) var(--ease-standard);
+}
+.cx-media-row:hover { border-color: var(--line-hover); background: var(--elev-2); }
+.cx-media-row.cx-on { border-color: var(--accent); background: var(--accent-soft); }
+.cx-media-row-thumb {
+  position: relative; flex: none; inline-size: 40px; aspect-ratio: 16 / 10;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--void); border-radius: var(--r-1); overflow: hidden;
+}
+.cx-media-row-name {
+  font-size: var(--fs-7); line-height: var(--lh-snug);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cx-media-row-hint { font-size: var(--fs-8); color: var(--faint); }
+
 .cx-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(var(--cell-card), 1fr)); gap: var(--sp-5); }
 .cx-card {
   display: flex; flex-direction: column; gap: var(--sp-2); text-align: left;

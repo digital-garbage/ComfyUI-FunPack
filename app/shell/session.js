@@ -1,10 +1,6 @@
 // The two things the page does around a run: start one, and take back over one
 // that was already going.
 
-import { viewUrl } from "./run.js";
-
-/** Video and image results arrive the same way and cannot be shown the same way. */
-const kindOf = (image) => (/\.(mp4|webm|mov|mkv)$/i.test(image.filename || "") ? "video" : "image");
 //
 // Kept out of boot.js because boot.js runs on import and needs a document, so
 // nothing in it could be driven by a test -- and both of the faults that lived
@@ -97,8 +93,12 @@ export function wire({ run, page, check, id, queuedFor, finishedFor, slots }) {
   // straight back -- live-looking, and doing nothing when pressed.
   run.subscribe((state) => {
     page.transport.draw(state);
-    const last = state.images[state.images.length - 1];
-    if (last && page.viewer) page.viewer.setSource(viewUrl(last), kindOf(last));
+    // Results go to the BIN, and the bin decides what is on screen. Pointing
+    // the viewer at the newest image from here instead put two things in charge
+    // of it: every progress message re-showed the newest result, so clicking an
+    // older one in the bin held for as long as it took the next message to
+    // arrive.
+    if (page.bin) page.bin.absorb(state.images);
   });
 
   // The socket opens at load, not at Generate. A generation queued before a
