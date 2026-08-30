@@ -1,7 +1,13 @@
 // Overlay behaviour: stacking, dismissal order, and the promises.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
 import test from "node:test";
 import assert from "node:assert/strict";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 import { setupDom, teardownDom, key, fire } from "./_dom.js";
 import { EDGES, sectorAt, sectorInArc } from "../elements/wheel.js";
@@ -565,4 +571,36 @@ test("every overlay keeps its z-index bound, not just windows", () => {
     "the survivor did not compact into the freed slot");
   second.close();
   anchor.destroy();
+});
+
+test("a stacked modal dims what is under it with a real backdrop, once", () => {
+  // The dimming used to come from TWO places at once: the layer's own backdrop
+  // element, and a box-shadow with a 100vmax spread on the card. So the area
+  // under a stacked modal was darkened twice, and a shadow the size of the
+  // viewport diagonal -- on an element in a fixed layer, with an entry
+  // animation running -- is how a stale compositor layer gets made. One showed
+  // up as the whole app painted twice until a resize forced a repaint.
+  const under = composer.modal.generic({ title: "Under", body: composer.text.sm({ text: "a" }) });
+  const over = composer.modal.stacked({ title: "Over", body: composer.text.sm({ text: "b" }) });
+
+  const layer = over.node.closest(".cx-modal-layer");
+  assert.ok(layer, "a stacked modal has no layer of its own");
+  assert.equal(layer.querySelectorAll(".cx-backdrop").length, 1,
+    "a stacked modal must dim through its own backdrop element, exactly once");
+
+  over.close();
+  under.close();
+});
+
+test("no overlay paints a backdrop with a viewport-sized shadow spread", () => {
+  // Read from the stylesheet, because jsdom applies no CSS: asserting on
+  // node.style.boxShadow here passes against any rule at all, since the value
+  // lives in the sheet and the inline style is always empty. The first version
+  // of this check did exactly that.
+  const css = readFileSync(join(here, "..", "elements", "overlay.css"), "utf8");
+  const offenders = css.split("\n")
+    .filter((line) => /box-shadow/.test(line) && /vmax|vmin|\b\d{3,}(px|vh|vw)\b/.test(line));
+  assert.deepEqual(offenders, [],
+    "a shadow spread that large is a stale-compositor-layer bug waiting to happen; " +
+    "dim with a .cx-backdrop element instead");
 });

@@ -14,7 +14,20 @@
   box-shadow: var(--shadow-3);
   animation: cx-pop var(--dur-2) var(--ease-standard);
 }
-.cx-modal-stacked { box-shadow: var(--shadow-3), 0 0 0 100vmax var(--backdrop); }
+/* A stacked modal gets a deeper shadow and nothing else.
+ *
+ * It used to paint its own backdrop as `0 0 0 100vmax` of shadow spread, which
+ * was redundant -- every modal, stacked or not, already mounts a real
+ * .cx-backdrop element that covers the layer -- so the area under a stacked
+ * modal was dimmed twice. It was also the most expensive declaration in this
+ * sheet by a distance: a shadow spread the size of the viewport diagonal, on an
+ * element inside a fixed layer, with an entry animation running. That is a
+ * standing invitation to a stale compositor layer, and one showed up as the
+ * whole app painted twice, side by side, until a window resize forced a
+ * repaint. */
+.cx-modal-stacked {
+  box-shadow: 0 20px 48px color-mix(in srgb, var(--shadow-ink) 90%, transparent);
+}
 @keyframes cx-pop { from { opacity: 0; transform: translateY(-6px) scale(.99); } }
 
 .cx-modal-head {
