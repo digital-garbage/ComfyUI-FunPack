@@ -17,16 +17,32 @@ def _needs_comfy(comfyui):
 
 @pytest.fixture(autouse=True)
 def _registry():
-    """ComfyUI's own nodes, plus FunPack's.
+    """ComfyUI's own nodes, plus FunPack's, and PUT BACK afterwards.
 
     The same two steps the dev server takes, through the same function, because
     a pipeline made of FunPack nodes cannot be described by a registry that only
     holds ComfyUI's.
+
+    Restored because NODE_CLASS_MAPPINGS is a module-level dict shared by the
+    whole session: installing into it and walking away left every later test
+    running against a registry this file had changed, and twenty-three of them
+    failed somewhere else entirely. This project has been bitten by exactly that
+    before.
     """
     import nodes as comfy_nodes
     from core import nodes as funpack_nodes
+
+    before = dict(comfy_nodes.NODE_CLASS_MAPPINGS)
+    before_names = dict(comfy_nodes.NODE_DISPLAY_NAME_MAPPINGS)
     funpack_nodes.install_into(comfy_nodes.NODE_CLASS_MAPPINGS,
                                comfy_nodes.NODE_DISPLAY_NAME_MAPPINGS)
+    try:
+        yield
+    finally:
+        comfy_nodes.NODE_CLASS_MAPPINGS.clear()
+        comfy_nodes.NODE_CLASS_MAPPINGS.update(before)
+        comfy_nodes.NODE_DISPLAY_NAME_MAPPINGS.clear()
+        comfy_nodes.NODE_DISPLAY_NAME_MAPPINGS.update(before_names)
 
 
 @pytest.mark.parametrize("node,widget_names,socket_names", [

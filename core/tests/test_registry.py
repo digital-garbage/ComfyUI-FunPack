@@ -221,3 +221,27 @@ def test_a_relation_within_a_stage_is_still_honoured():
                        "after": ["first"]})
     ordered, _ = order([second, first])
     assert [s.id for s in ordered] == ["first", "second"]
+
+
+def test_a_scan_under_a_redirected_modules_dir_does_not_outlive_the_test(monkeypatch, tmp_path):
+    """The cache is session-wide, so a test that redirects MODULES_DIR and lets
+    a scan happen leaves every later test looking at its temp directory.
+
+    monkeypatch.setattr on the cached registry is what puts it back; this asserts
+    that it does, because the failure it prevents shows up in other files and
+    looks like anything but a scan.
+    """
+    from core import config, registry as registry_mod
+
+    real = registry_mod.current()
+    assert real.specs, "this test needs a real installation to compare against"
+
+    def redirected():
+        monkeypatch.setattr(config, "MODULES_DIR", tmp_path / "nothing-here")
+        monkeypatch.setattr(registry_mod, "_current", registry_mod._current, raising=False)
+        registry_mod.current(rescan=True)
+        return registry_mod.current().specs
+
+    assert redirected() == {}, "the redirect did not take effect"
+    monkeypatch.undo()
+    assert registry_mod.current().specs, "the empty scan outlived its test"

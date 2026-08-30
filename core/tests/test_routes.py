@@ -45,6 +45,15 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "APP_DIR", app_dir)
     monkeypatch.setattr(config, "MODULES_DIR", tmp_path / "modules")
 
+    # The registry caches its scan for the whole session, so anything that
+    # triggers one WHILE MODULES_DIR points here caches this temp directory --
+    # one fake module -- as the installed set, and every later test in the
+    # session runs against it. That happened, and cost twenty-three failures in
+    # files that have nothing to do with routes. Whoever redirects the directory
+    # owns putting the cache back.
+    from core import registry as registry_mod
+    monkeypatch.setattr(registry_mod, "_current", registry_mod._current, raising=False)
+
     # A builder, not an Application: aiohttp binds an app to the loop that first
     # ran it, and each request here gets its own asyncio.run().
     def build():
@@ -144,10 +153,13 @@ def test_the_nodes_route_describes_what_a_pipeline_points_at(app, comfyui):
     ComfyUI's own /object_info answers with every installed node, which on a
     machine with a few packs is megabytes for a question about a dozen.
     """
-    import nodes as comfy_nodes
-    from core import nodes as funpack_nodes
-    funpack_nodes.install_into(comfy_nodes.NODE_CLASS_MAPPINGS,
-                               comfy_nodes.NODE_DISPLAY_NAME_MAPPINGS)
+    # ComfyUI's own registry only. Installing FunPack's nodes here would call
+    # collect(), which scans MODULES_DIR -- and the `app` fixture has pointed
+    # that at a temp directory holding one fake module. The scan is CACHED, so
+    # every later test in the session then ran against an empty module registry:
+    # twenty-three failures in files that never mention routes. What this test
+    # needs from the registry is a node, and KSampler is one.
+    import nodes  # noqa: F401
 
     status, body = _nodes(app, P + "/api/nodes?classes=KSampler,NoSuchNodeAnywhere")
     assert status == 200
