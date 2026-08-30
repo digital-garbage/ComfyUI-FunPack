@@ -75,7 +75,7 @@ export function createRun({
     // A cancel asked for while the id was unknown was never sent, because a
     // null prompt_id is a GLOBAL interrupt at ComfyUI: it stops whatever any
     // client is running. Now that the run has a name, it can be stopped by it.
-    if (cancelWanted) sendInterrupt();
+    if (cancelWanted) sendCancel();
   }
 
   function handle(message) {
@@ -157,12 +157,47 @@ export function createRun({
   // A cancel asked for before the run had a name.
   let cancelWanted = false;
 
-  async function sendInterrupt() {
+  async function sendCancel() {
     cancelWanted = false;
+    const id = state.promptId;
+
+    // ComfyUI's own state-agnostic cancel: it interrupts a job that is running
+    // and dequeues one that is only pending, atomically, and answers
+    // {"cancelled": false} for an id that has already finished.
+    //
+    // /interrupt alone was not enough and looked like it was. It only consults
+    // the RUNNING half of the queue, so cancelling a job waiting behind another
+    // one returned 200, logged "not currently running, skipping interrupt", and
+    // let the job run in full when its turn came -- a cancel that did nothing
+    // and said nothing, which is worse than a cancel that fails.
+    let response;
+    try {
+      response = await doFetch(`${base}/api/jobs/${encodeURIComponent(id)}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch {
+      response = null;
+    }
+    if (response && response.ok) {
+      // A job that was only PENDING is dequeued and never runs, so no
+      // execution_interrupted is ever sent -- nothing would arrive to move the
+      // UI off "Queued", and the run would look stuck forever after a cancel
+      // that worked. A RUNNING job is left to the socket, which says when it
+      // actually stopped rather than when it was asked to.
+      const body = await response.json().catch(() => ({}));
+      if (body && body.cancelled && state.phase === QUEUED) {
+        emit({ phase: CANCELLED, progress: null, node: null });
+      }
+      return response;
+    }
+
+    // An older ComfyUI without that route. Interrupting is all it can do, and
+    // it is right for the case people hit most: a run that is under way.
     return doFetch(`${base}/interrupt`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt_id: state.promptId }),
+      body: JSON.stringify({ prompt_id: id }),
     });
   }
 
@@ -249,7 +284,7 @@ export function createRun({
         cancelWanted = true;
         return true;
       }
-      await sendInterrupt();
+      await sendCancel();
       // Not marked cancelled here: the server says when it actually stopped,
       // and claiming it early is how a UI ends up showing "cancelled" over a
       // run that is still burning GPU time.

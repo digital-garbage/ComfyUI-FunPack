@@ -134,8 +134,10 @@ test("cancelling asks the server and waits for it to say it stopped", async () =
   run.handle(JSON.parse(message("execution_start", { prompt_id: "p-1" }).data));
 
   await run.cancel();
-  assert.equal(sent[1].url, "/interrupt");
-  assert.equal(sent[1].body.prompt_id, "p-1");
+  // The state-agnostic route, not /interrupt: a job waiting behind another one
+  // is not in the running half of the queue, so /interrupt answers 200 and does
+  // nothing at all.
+  assert.equal(sent[1].url, "/api/jobs/p-1/cancel");
   // Claiming it early is how a UI shows "cancelled" over a run still burning
   // GPU time. The server says when it actually stopped.
   assert.equal(run.state.phase, RUNNING);
@@ -254,15 +256,15 @@ test("cancelling before the run has a name never interrupts anything else", asyn
   const started = run.start({});
 
   assert.equal(await run.cancel(), true, "the cancel was refused rather than remembered");
-  assert.deepEqual(sent.filter((s) => s.url.endsWith("/interrupt")), [],
-    "an interrupt went out with no prompt id, which is a global interrupt");
+  assert.deepEqual(sent.filter((s) => s.url.includes("cancel") || s.url.endsWith("/interrupt")), [],
+    "a cancel went out with no prompt id, which ComfyUI reads as a global interrupt");
 
   release();
   await started;
 
-  const interrupts = sent.filter((s) => s.url.endsWith("/interrupt"));
-  assert.equal(interrupts.length, 1, "the cancel the user asked for never happened");
-  assert.equal(interrupts[0].body.prompt_id, "mine");
+  const cancels = sent.filter((s) => s.url.includes("/cancel"));
+  assert.equal(cancels.length, 1, "the cancel the user asked for never happened");
+  assert.equal(cancels[0].url, "/api/jobs/mine/cancel");
 });
 
 test("a cancel is never sent with a null prompt id, whatever the phase", async () => {
@@ -318,8 +320,7 @@ test("an adopted run can be cancelled by its own id", async () => {
   const { run, sent } = runner(ok({}));
   run.adopt("was-running");
   await run.cancel();
-  assert.equal(sent[0].url, "/interrupt");
-  assert.equal(sent[0].body.prompt_id, "was-running");
+  assert.equal(sent[0].url, "/api/jobs/was-running/cancel");
 });
 
 // --- a run that finishes while the page is loading ---------------------------
@@ -364,4 +365,80 @@ test("what was seen while idle does not become somebody else's run", () => {
   run.handle(JSON.parse(message("execution_success", { prompt_id: "theirs" }).data));
   run.adopt("mine");
   assert.equal(run.state.phase, RUNNING, "a stranger's finish was replayed onto this run");
+});
+
+test("a run waiting behind another one can still be cancelled", async () => {
+  // The case /interrupt cannot serve. ComfyUI only consults the RUNNING half of
+  // its queue there, so a job that is merely pending gets a 200, a log line
+  // saying it was skipped, and a full generation when its turn arrives.
+  const { run, sent } = runner(ok({ prompt_id: "waiting" }));
+  await run.start({});
+  assert.equal(run.state.phase, QUEUED, "this test needs a run that has not started");
+
+  await run.cancel();
+  assert.equal(sent[1].url, "/api/jobs/waiting/cancel",
+    "a queued run was cancelled with a call that only stops a running one");
+});
+
+test("an older ComfyUI without the cancel route still interrupts", async () => {
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push({ url, body: init && init.body ? JSON.parse(init.body) : null });
+    if (url.includes("/api/jobs/")) return { ok: false, status: 404, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ prompt_id: "p-1" }) };
+  };
+  const run = createRun({ fetch: fetchImpl, clientId: "c1" });
+  await run.start({});
+  run.handle({ type: "execution_start", data: { prompt_id: "p-1" } });
+
+  await run.cancel();
+  const urls = sent.map((s) => s.url);
+  assert.ok(urls.includes("/api/jobs/p-1/cancel"));
+  assert.ok(urls.includes("/interrupt"), "nothing was tried after the route was absent");
+  assert.equal(sent[sent.length - 1].body.prompt_id, "p-1",
+    "the fallback interrupted globally rather than this run");
+});
+
+test("a cancelled pending run does not sit at Queued forever", async () => {
+  // Dequeuing a job that never ran sends nothing on the socket -- there is no
+  // execution to interrupt and so no execution_interrupted. Without reading the
+  // answer, a cancel that worked leaves the UI saying Queued indefinitely.
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push(url);
+    if (url.includes("/cancel")) return { ok: true, status: 200, json: async () => ({ cancelled: true }) };
+    return { ok: true, status: 200, json: async () => ({ prompt_id: "waiting" }) };
+  };
+  const run = createRun({ fetch: fetchImpl, clientId: "c1" });
+  await run.start({});
+  await run.cancel();
+  assert.equal(run.state.phase, CANCELLED);
+});
+
+test("a running run is still left to the socket to declare stopped", async () => {
+  const fetchImpl = async (url) => ({
+    ok: true, status: 200,
+    json: async () => (url.includes("/cancel") ? { cancelled: true } : { prompt_id: "p-1" }),
+  });
+  const run = createRun({ fetch: fetchImpl, clientId: "c1" });
+  await run.start({});
+  run.handle({ type: "execution_start", data: { prompt_id: "p-1" } });
+
+  await run.cancel();
+  // Claiming it early is how a UI shows "cancelled" over a run still burning
+  // GPU time: the interrupt is a request, and the model finishes its step.
+  assert.equal(run.state.phase, RUNNING);
+  run.handle({ type: "execution_interrupted", data: { prompt_id: "p-1" } });
+  assert.equal(run.state.phase, CANCELLED);
+});
+
+test("a cancel the server says did nothing does not claim it did", async () => {
+  const fetchImpl = async (url) => ({
+    ok: true, status: 200,
+    json: async () => (url.includes("/cancel") ? { cancelled: false } : { prompt_id: "gone" }),
+  });
+  const run = createRun({ fetch: fetchImpl, clientId: "c1" });
+  await run.start({});
+  await run.cancel();
+  assert.equal(run.state.phase, QUEUED, "the run was declared cancelled on the server's word that it was not");
 });
