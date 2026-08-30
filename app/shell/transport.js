@@ -11,7 +11,7 @@
 // is started, not where it was switched on.
 
 import { composer } from "../composer/composer.js";
-import { QUEUED, RUNNING, DONE, FAILED, CANCELLED } from "./run.js";
+import { IDLE, QUEUED, RUNNING, DONE, FAILED, CANCELLED } from "./run.js";
 
 const WORKING = new Set([QUEUED, RUNNING]);
 
@@ -31,6 +31,12 @@ export function createTransport({ onGenerate, onCancel } = {}) {
     actions: [status, progress, cancel, generate],
   });
 
+  // Something to say that is not about a run in progress: why the last attempt
+  // did not become one. It has to survive the next draw(), because a refused
+  // attempt leaves the run exactly where it was -- idle -- and drawing an idle
+  // run says "Ready", which wiped the reason a moment after it appeared.
+  let note = null;
+
   // Hidden by attribute rather than removed: the row's shape then does not jump
   // as a run starts and finishes, and there is one node to find in a test.
   const hide = (handle, yes) => {
@@ -41,6 +47,9 @@ export function createTransport({ onGenerate, onCancel } = {}) {
   hide(cancel, true);
 
   function draw(state) {
+    // Anything other than idle means a run answered for itself, and what it
+    // says outranks a note about an attempt that never started.
+    if (state.phase !== IDLE) note = null;
     const working = WORKING.has(state.phase);
     generate.setDisabled(working);
     generate.setBusy(working);
@@ -53,10 +62,16 @@ export function createTransport({ onGenerate, onCancel } = {}) {
       progress.setValue(state.progress.value);
     }
 
-    status.setText(describe(state));
+    status.setText(note || describe(state));
   }
 
-  return { node: bar.node, draw, generate, cancel, progress, status };
+  /** Say why nothing was started. Cleared by the next run that says otherwise. */
+  function say(text) {
+    note = text;
+    status.setText(text);
+  }
+
+  return { node: bar.node, draw, say, generate, cancel, progress, status };
 }
 
 /** One line saying where the run is. The only place these words are decided. */

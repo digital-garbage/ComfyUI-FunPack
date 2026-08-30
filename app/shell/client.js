@@ -1,23 +1,35 @@
-// This browser's identity to ComfyUI, and its socket.
+// This tab's identity to ComfyUI, and its socket.
 //
-// The id is REMEMBERED. ComfyUI addresses progress and results to the client
-// that queued the run, so a reload with a new id is a reload that hears nothing
-// about the generation already in flight -- the run continues, the GPU time is
-// spent, and the app sits there saying Ready. v4 learned this the hard way and
-// kept a fixed id for exactly this reason.
+// The id is REMEMBERED, because ComfyUI addresses progress and results to the
+// client that queued the run: a reload with a new id hears nothing about the
+// generation already in flight -- the run continues, the GPU time is spent, and
+// the app sits there saying Ready.
+//
+// Remembered per TAB, not per browser. ComfyUI keys its socket table by this
+// id and evicts the old entry when a new socket arrives with the same one
+// (`self.sockets.pop(sid, None)` on connect), so two tabs sharing an id means
+// the second tab silently takes the first tab's updates -- the first freezes
+// mid-progress while the GPU carries on. Worse, the socket's `finally` pops
+// that id again on close, so closing the dead tab disconnects the live one.
+// sessionStorage is exactly the right lifetime: it survives a reload of this
+// tab, which is what reattach needs, and does not reach another tab.
+//
+// The one gap: duplicating a tab copies its sessionStorage, so a duplicate
+// starts out sharing the id. That is the same collision, from a deliberate act,
+// and there is nothing readable on the page that would tell the two apart.
 
 const KEY = "funpack.client-id";
 
 export function clientId() {
   try {
-    const kept = window.localStorage.getItem(KEY);
+    const kept = window.sessionStorage.getItem(KEY);
     if (kept) return kept;
   } catch { /* private mode: a fresh id per load, which still works */ }
 
   const fresh = (globalThis.crypto && globalThis.crypto.randomUUID)
     ? globalThis.crypto.randomUUID()
     : `funpack-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  try { window.localStorage.setItem(KEY, fresh); } catch { /* not fatal */ }
+  try { window.sessionStorage.setItem(KEY, fresh); } catch { /* not fatal */ }
   return fresh;
 }
 

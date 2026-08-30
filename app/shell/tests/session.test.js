@@ -1,0 +1,217 @@
+// Starting a run, and taking one back over.
+//
+// This wiring used to live in boot.js, which runs on import and needs a
+// document, so none of it could be driven -- and both faults found here were
+// ordering faults in exactly that untested wiring.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
+
+let createGenerator, reattach, createTransport;
+test.before(async () => {
+  setupDom();
+  await import("../../composer/composer.js");
+  ({ createGenerator, reattach } = await import("../session.js"));
+  ({ createTransport } = await import("../transport.js"));
+});
+test.after(() => teardownDom());
+
+// The REAL transport, not a stand-in.
+//
+// A hand-rolled one recorded setText and setDisabled into arrays and had a
+// draw() that did nothing -- so it could not show the fault it was standing in
+// for: the real draw() writes the status from the run state, and a refusal set
+// just before it was overwritten with "Ready" a moment after it appeared. The
+// test passed and the button did nothing on screen.
+function transport() {
+  const t = createTransport({});
+  document.body.appendChild(t.node);
+  return {
+    ...t,
+    get text() { return t.status.node.textContent; },
+    get disabled() { return t.generate.node.disabled; },
+  };
+}
+
+/** A run whose start() can be held open, like a real POST. */
+function fakeRun(phase = "idle") {
+  const started = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  return {
+    started,
+    release,
+    state: { phase },
+    seen: () => [],
+    adopt(id) { this.state = { ...this.state, phase: "running", promptId: id }; return true; },
+    async start(prompt) {
+      started.push(prompt);
+      this.state = { ...this.state, phase: "queued" };
+      await gate;
+      return "p-1";
+    },
+  };
+}
+
+const plan = (over = {}) => async () => ({
+  slots: [], refused: [], incomplete: [], queueable: true, prompt: { "1": {} }, ...over,
+});
+
+test("two clicks during the round trip queue one run, not two", async () => {
+  // The button only goes dead when the RUN is queued, and getting there takes a
+  // round trip to ask what to queue. That round trip is the whole window.
+  const run = fakeRun();
+  const t = transport();
+  let asked = 0;
+  const check = async () => { asked += 1; return (await plan()()); };
+  const onGenerate = createGenerator({ run, transport: t, check });
+
+  const first = onGenerate();
+  const second = onGenerate();
+  run.release();
+  const [a, b] = await Promise.all([first, second]);
+
+  assert.equal(run.started.length, 1, "two /prompt posts went out");
+  assert.equal(asked, 1, "the pipeline was assembled twice for one click");
+  assert.equal(a, true);
+  assert.equal(b, false, "the second click reported that it had started a run");
+});
+
+test("the button goes dead at the click, not at the queue", async () => {
+  const run = fakeRun();
+  const t = transport();
+  const onGenerate = createGenerator({ run, transport: t, check: plan() });
+  const running = onGenerate();
+  assert.equal(t.disabled, true, "the button stayed live during the round trip");
+  run.release();
+  await running;
+});
+
+test("a run already in flight is not started again", async () => {
+  for (const phase of ["queued", "running"]) {
+    const run = fakeRun(phase);
+    const onGenerate = createGenerator({ run, transport: transport(), check: plan() });
+    assert.equal(await onGenerate(), false);
+    assert.equal(run.started.length, 0, `a ${phase} run was started a second time`);
+  }
+});
+
+test("a pipeline that is not ready says why, beside Generate", async () => {
+  const run = fakeRun();
+  const t = transport();
+  const onGenerate = createGenerator({
+    run, transport: t,
+    check: plan({ queueable: false, prompt: null, incomplete: ["model: nothing is chosen"] }),
+  });
+  assert.equal(await onGenerate(), false);
+  // Read off the element, so a later redraw wiping it is visible here.
+  assert.equal(t.text, "model: nothing is chosen");
+  assert.equal(run.started.length, 0);
+  assert.equal(t.disabled, false, "a refused attempt left Generate dead");
+});
+
+test("a refusal is shown even when nothing is incomplete", async () => {
+  const t = transport();
+  const onGenerate = createGenerator({
+    run: fakeRun(), transport: t,
+    check: plan({ queueable: false, prompt: null, refused: ["a slot cannot feed itself"] }),
+  });
+  await onGenerate();
+  assert.equal(t.text, "a slot cannot feed itself");
+});
+
+test("a pipeline that cannot be read at all is reported rather than swallowed", async () => {
+  const t = transport();
+  const onGenerate = createGenerator({
+    run: fakeRun(), transport: t,
+    check: async () => { throw new TypeError("Failed to fetch"); },
+  });
+  assert.equal(await onGenerate(), false);
+  assert.match(t.text, /could not be read/);
+});
+
+test("a failed attempt leaves Generate usable again", async () => {
+  const run = fakeRun();
+  const t = transport();
+  const onGenerate = createGenerator({
+    run, transport: t, check: plan({ queueable: false, prompt: null }),
+  });
+  await onGenerate();
+  assert.equal(t.disabled, false, "nothing gave the button back after the attempt ended");
+  // And a second click is allowed, which it would not be if the guard stuck.
+  assert.equal(await onGenerate(), false);
+  assert.equal(t.disabled, false);
+});
+
+// --- reattach ---------------------------------------------------------------
+
+test("a run still in the queue is taken back over", async () => {
+  const run = fakeRun();
+  const got = await reattach(run, "me", {
+    runningFor: async () => "still-going",
+    finishedFor: async () => { throw new Error("history should not have been asked"); },
+  });
+  assert.equal(got, "still-going");
+  assert.equal(run.state.phase, "running");
+});
+
+test("a run that finished during the load is found in history", async () => {
+  const run = fakeRun();
+  run.seen = () => ["ended-just-now"];
+  const got = await reattach(run, "me", {
+    runningFor: async () => null,
+    finishedFor: async (_id, seen) => (seen.includes("ended-just-now") ? "ended-just-now" : null),
+  });
+  assert.equal(got, "ended-just-now");
+});
+
+test("history is not asked about a run this page never saw", async () => {
+  const run = fakeRun();
+  let asked = false;
+  const got = await reattach(run, "me", {
+    runningFor: async () => null,
+    finishedFor: async () => { asked = true; return "something-old"; },
+  });
+  assert.equal(got, null);
+  assert.equal(asked, false, "a result from before this page load could be resurrected");
+});
+
+test("a page already running its own generation is not reattached to another", async () => {
+  const run = fakeRun("running");
+  const got = await reattach(run, "me", {
+    runningFor: async () => "some-other",
+    finishedFor: async () => null,
+  });
+  assert.equal(got, null);
+});
+
+test("no queue and no history is silence, not an error", async () => {
+  const run = fakeRun();
+  const got = await reattach(run, "me", {
+    runningFor: async () => { throw new TypeError("Failed to fetch"); },
+    finishedFor: async () => null,
+  });
+  assert.equal(got, null);
+  assert.equal(run.state.phase, "idle");
+});
+
+test("a reason for not starting is not wiped by the next redraw", () => {
+  // The redraw happens on the way out of every attempt, and an attempt that was
+  // refused leaves the run exactly where it was: idle. Drawing an idle run says
+  // "Ready", which is how the reason appeared and vanished in the same frame.
+  const t = transport();
+  t.say("model: nothing is chosen");
+  t.draw({ phase: "idle", progress: null, images: [], error: null, node: null });
+  assert.equal(t.text, "model: nothing is chosen");
+});
+
+test("a run that actually starts outranks the last refusal", () => {
+  const t = transport();
+  t.say("model: nothing is chosen");
+  t.draw({ phase: "queued", progress: null, images: [], error: null, node: null });
+  assert.equal(t.text, "Queued");
+  t.draw({ phase: "idle", progress: null, images: [], error: null, node: null });
+  assert.equal(t.text, "Ready", "the stale reason came back after a real run");
+});
