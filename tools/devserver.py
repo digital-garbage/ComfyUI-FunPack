@@ -1,16 +1,22 @@
 """Dev server: serves the app exactly as ComfyUI will, without ComfyUI.
 
-Routes through core.serve, so the extension allowlist and the traversal guard are
-exercised every time you look at the catalogue.
+It mounts the REAL routes -- `core.routes.register` takes a route table rather
+than reaching for ComfyUI's server -- so what the browser gets here is what
+ComfyUI would give it, refusals and all. The previous version reimplemented the
+handlers over http.server, which meant looking at the app exercised a copy: it
+answered GET /api/pipeline with a payload assembled here, and answered POST with
+501, so the whole edit-and-queue path could not be seen at all.
 
     python tools/devserver.py [port]
+
+There is no queue behind it. Generating reaches /prompt, which ComfyUI serves
+and this does not, and the app says so -- which is the honest answer and worth
+seeing, since that is exactly what a person hitting Generate with ComfyUI down
+would get.
 """
 
-import json
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -66,69 +72,23 @@ COMFYUI = _add_comfyui()
 if COMFYUI:
     _reexec_with_comfyui_python(COMFYUI)
 
-from core import config, routes, serve as static  # noqa: E402
+from aiohttp import web                          # noqa: E402
+from core import config, routes as funpack_routes  # noqa: E402
 
 P = config.UI_PREFIX
 
 
-def _pipeline_payload():
-    """The same answer the aiohttp route gives, so the preview shows what
-    ComfyUI would."""
-    from core import graph as graph_mod
-    slots = []
-    for _spec, make in routes.modules().providers("default_pipeline"):
-        slots = make()
-        break
-    prompt, incomplete = graph_mod.build(slots)
-    return {"slots": slots, "refused": [], "incomplete": incomplete,
-            "queueable": not incomplete}
+def build_app() -> web.Application:
+    app = web.Application()
+    routes = web.RouteTableDef()
+    funpack_routes.register(routes)
 
+    @routes.get("/")
+    async def _root(_req):
+        raise web.HTTPFound(P + "/")
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = unquote(parsed.path)
-
-        # The same manifest the aiohttp route serves, so what you see in the
-        # browser here is what ComfyUI would send.
-        if path == P + "/api/pipeline":
-            body = json.dumps(_pipeline_payload()).encode()
-            served = static.Served(200, body, "application/json")
-        elif path == P + "/api/log":
-            query = parse_qs(parsed.query)
-            level = (query.get("level") or [None])[0]
-            body = json.dumps({"levels": list(routes.log.LEVELS),
-                               "records": routes.log.history(level)}).encode()
-            served = static.Served(200, body, "application/json")
-        elif path == P + "/api/modules":
-            raw = parse_qs(parsed.query).get("traits")
-            traits = [t for t in raw[0].split(",") if t] if raw else None
-            body = json.dumps(routes.manifest(traits)).encode()
-            served = static.Served(200, body, "application/json")
-        elif path in (P, P + "/"):
-            served = static.serve(config.APP_DIR, "index.html", config.APP_EXTS)
-        elif path.startswith(P + "/app/"):
-            served = static.serve(config.APP_DIR, path[len(P) + 5:], config.APP_EXTS)
-        elif path.startswith(P + "/modules/"):
-            served = static.serve(config.MODULES_DIR, path[len(P) + 9:], config.MODULE_EXTS)
-        elif path == "/":
-            self.send_response(302)
-            self.send_header("Location", P + "/")
-            self.end_headers()
-            return
-        else:
-            served = static.Served(404)
-
-        self.send_response(served.status)
-        self.send_header("Content-Type", served.content_type)
-        self.send_header("Content-Length", str(len(served.body)))
-        for k, v in served.headers.items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(served.body)
-
-    def log_message(self, fmt, *args):
-        sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+    app.add_routes(routes)
+    return app
 
 
 if __name__ == "__main__":
@@ -140,4 +100,5 @@ if __name__ == "__main__":
         # Said out loud rather than left to be discovered as a half-empty page.
         print("  WITHOUT ComfyUI: every module that imports it will be absent. "
               "Set COMFYUI_ROOT to fix.")
-    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    print("  no queue behind it: Generate will report that /prompt is not here")
+    web.run_app(build_app(), host="127.0.0.1", port=port, print=None)

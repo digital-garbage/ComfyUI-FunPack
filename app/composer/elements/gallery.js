@@ -103,3 +103,43 @@ define("gallery", "strip", ({ items = [], onActivate, label } = {}) => {
   }
   return { node, destroy: () => node.remove() };
 });
+
+/**
+ * The result, big. One image or one video, or an empty state before there is
+ * either -- because "nothing has been generated" and "the picture failed to
+ * load" have to look different, and a bare <img> with a broken src looks like
+ * neither.
+ */
+define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError } = {}) => {
+  const stage = el("div", { cls: "cx-viewer-stage" });
+  let current = null;
+
+  function show(next, nextKind = kind) {
+    current = next || null;
+    stage.replaceChildren();
+    if (!current) {
+      stage.append(el("p", { cls: "cx-list-empty", text: empty }));
+      return;
+    }
+    const media = nextKind === "video"
+      ? el("video", { cls: "cx-viewer-media", attrs: { src: current, controls: "", loop: "", playsinline: "" } })
+      : el("img", { cls: "cx-viewer-media", attrs: { src: current, alt: "" } });
+    // A failed load is reported rather than left as a broken icon: the file is
+    // produced by a run, so it not arriving is a fault worth naming.
+    media.addEventListener("error", () => {
+      stage.replaceChildren(el("p", { cls: "cx-list-empty", text: "This result could not be loaded." }));
+      if (onError) onError(current);
+    });
+    stage.append(media);
+  }
+
+  show(src, kind);
+  const node = el("div", { cls: "cx-viewer", children: stage });
+  return {
+    node,
+    get value() { return current; },
+    setValue: (next) => show(next, kind),
+    setSource: (next, nextKind) => show(next, nextKind || kind),
+    destroy: () => node.remove(),
+  };
+});

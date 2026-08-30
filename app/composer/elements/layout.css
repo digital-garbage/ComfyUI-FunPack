@@ -21,6 +21,10 @@
 .cx-panel {
   border: var(--bw) solid var(--line); border-radius: var(--r-4);
   background: var(--elev-1); overflow: hidden;
+  /* A column, so a panel given a height passes it to its body. Without this a
+     viewer asking for 100% of its parent got 100% of `auto` and collapsed to
+     one line, inside a panel that was the right size around it. */
+  display: flex; flex-direction: column; min-block-size: 0;
 }
 .cx-panel-head {
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5);
@@ -29,7 +33,7 @@
 }
 .cx-panel-title { font-family: var(--font-display); font-size: var(--fs-3); font-weight: var(--fw-semibold); }
 .cx-panel-actions { display: flex; gap: var(--sp-2); }
-.cx-panel-body { padding: var(--sp-6); }
+.cx-panel-body { padding: var(--sp-6); flex: 1 1 auto; min-block-size: 0; overflow: auto; }
 
 .cx-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
 
@@ -86,7 +90,15 @@
 
 .cx-split { display: flex; width: 100%; min-height: 120px; }
 .cx-split-v { flex-direction: column; }
-.cx-split-pane { flex: 1 1 0; min-width: 0; min-height: 0; overflow: auto; }
+/* A column, so what is inside a pane inherits the pane's height instead of
+   sizing to its own content. A panel in a pane was the right size with a body
+   one line tall inside it, which looks like the panel is fine and the content
+   is empty. */
+.cx-split-pane {
+  flex: 1 1 0; min-inline-size: 0; min-block-size: 0; overflow: auto;
+  display: flex; flex-direction: column;
+}
+.cx-split-pane > * { flex: 1 1 auto; min-block-size: 0; }
 .cx-split > .cx-split-pane:first-child { flex: 0 0 auto; }
 
 /* A horizontal split stacks rather than overflowing when there is not room for

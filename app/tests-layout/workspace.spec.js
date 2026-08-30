@@ -81,3 +81,44 @@ test("the prompt sits under the preview and both have height", async ({ page }) 
   expect(prompt?.h, "the prompt has no height").toBeGreaterThan(30);
   expect(prompt.y).toBeGreaterThan(preview.y);
 });
+
+// `hidden` has to actually hide.
+//
+// The UA sheet's `[hidden] { display: none }` is an element-level rule, so any
+// class that sets a display beats it -- and nearly every element in this kit
+// sets one. The Cancel button was marked hidden and stayed on screen, with
+// nothing anywhere reporting a problem. jsdom cannot see this: it reports the
+// attribute, which was always correct.
+test("an element marked hidden is not on screen, whatever it is", async ({ page }) => {
+  const kinds = await page.evaluate(async () => {
+    const { composer } = await import("/funpack/app/composer/composer.js");
+    const made = {
+      button: composer.button.md({ label: "Go" }),
+      panel: composer.panel.default({ title: "P", body: composer.hint.default({ text: "x" }) }),
+      chip: composer.chip.neutral({ label: "c" }),
+      progress: composer.progress.bar({ value: 1, max: 2 }),
+    };
+    const out = {};
+    for (const [name, handle] of Object.entries(made)) {
+      handle.node.setAttribute("data-probe", name);
+      handle.node.setAttribute("hidden", "");
+      document.body.appendChild(handle.node);
+      out[name] = getComputedStyle(handle.node).display;
+    }
+    return out;
+  });
+
+  for (const [name, display] of Object.entries(kinds)) {
+    expect(display, `a hidden ${name} is still displayed`).toBe("none");
+  }
+});
+
+test("the transport reports a refusal beside Generate", async ({ page }) => {
+  // The dev server has no ComfyUI behind it, so the pipeline genuinely cannot
+  // run -- and that is the case worth seeing: the reason appears where the run
+  // is started, not in a console nobody has open.
+  await page.locator('.cx-action-bar button:has-text("Generate")').click();
+  const bar = page.locator(".cx-action-bar");
+  await expect(bar).not.toHaveText(/^Ready/);
+  await expect(bar).toContainText(/no node called|not ready|could not be/);
+});

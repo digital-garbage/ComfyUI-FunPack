@@ -20,3 +20,12 @@ h1, h2, h3, h4, h5, h6, p, figure { margin: 0; font-size: inherit; font-weight: 
 button, input, select, textarea { font: inherit; color: inherit; }
 
 :focus:not(:focus-visible) { outline: none; }
+
+/* `hidden` means hidden, whatever the element is.
+ *
+ * The UA sheet's `[hidden] { display: none }` is an element-level rule, so any
+ * class that sets a display beats it -- and nearly every element here sets one.
+ * `.cx-btn { display: inline-flex }` alone made the attribute inert on every
+ * button in the kit: the Cancel button was marked hidden, stayed on screen, and
+ * nothing anywhere reported a problem. */
+[hidden] { display: none !important; }

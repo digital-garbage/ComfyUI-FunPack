@@ -35,6 +35,10 @@ test.after(() => teardownDom());
 const CONTENT_KEYS = new Set([
   "text", "label", "hint", "title", "placeholder", "unit", "message",
   "subtitle", "addLabel", "confirmLabel", "cancelLabel", "name", "caption",
+  // Three elements take an `empty`, and it is shown to a person like any other
+  // string here. It was not on this list, so none of them were ever asked to
+  // prove it comes back as text.
+  "empty",
 ]);
 
 const isHandle = (v) => v && typeof v === "object" && v.node && v.node.nodeType === 1;

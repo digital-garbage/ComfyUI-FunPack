@@ -180,6 +180,7 @@ export const DEMOS = {
       c.panel.default({ title: "Preview", body: c.hint.default({ text: "Program monitor" }) }),
     ],
   }),
+  "viewer.media": { src: "", empty: "Nothing generated yet" },
   "frame.app": (c) => ({
     main: c.panel.default({ title: "Workspace", body: c.hint.default({ text: "Everything that fills the window" }) }),
     footer: c.actionBar.sticky({ note: "Ready", actions: [c.button.lg({ label: "Generate", tone: "primary" })] }),
