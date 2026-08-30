@@ -20,7 +20,7 @@ const kindOf = (image) => (/\.(mp4|webm|mov|mkv)$/i.test(image.filename || "") ?
  * was live, so two clicks each posted their own /prompt: two jobs burning GPU
  * time, with the UI following one of them.
  */
-export function createGenerator({ run, transport, check, ready }) {
+export function createGenerator({ run, transport, check, ready, slots }) {
   let starting = false;
 
   return async function onGenerate() {
@@ -38,7 +38,11 @@ export function createGenerator({ run, transport, check, ready }) {
     try {
       let plan;
       try {
-        plan = await check({});
+        // The pipeline the user is looking at, or -- before anything has been
+        // edited -- none, which asks the server for its own defaults. Sending
+        // an empty array instead would be a request to run nothing at all.
+        const edited = slots ? slots() : null;
+        plan = await check(edited ? { slots: edited } : {});
       } catch (err) {
         transport.say(`The pipeline could not be read: ${err.message}`);
         return false;
@@ -86,7 +90,7 @@ export function createGenerator({ run, transport, check, ready }) {
  * ordering is the thing under test, so the ordering lives where tests can reach
  * it.
  */
-export function wire({ run, page, check, id, queuedFor, finishedFor }) {
+export function wire({ run, page, check, id, queuedFor, finishedFor, slots }) {
   // One subscription draws everything a run affects. It lives here rather than
   // beside it in boot.js because subscribe() delivers the CURRENT state at
   // once, and doing that after the button was deliberately disabled handed it
@@ -112,7 +116,7 @@ export function wire({ run, page, check, id, queuedFor, finishedFor }) {
     return adopted;
   });
 
-  const generate = createGenerator({ run, transport: page.transport, check, ready });
+  const generate = createGenerator({ run, transport: page.transport, check, ready, slots });
   return { ready, generate };
 }
 

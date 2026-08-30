@@ -25,8 +25,13 @@ export const DEFAULT_UI = {
 };
 
 // Renderers that carry their own visible label, so wrapping them in a settings
-// row would print the label twice.
-const SELF_LABELLING = new Set(["checkboxRow", "toggle"]);
+// row would print the label twice. Exported because anything else rendering a
+// control from a setting has to know the same thing, and a second copy of this
+// list is a second chance to forget one.
+export const SELF_LABELLING = new Set(["checkboxRow", "toggle"]);
+
+/** The renderer name a setting resolves to, whether or not it named one. */
+export const rendererNameFor = (setting) => setting.ui || DEFAULT_UI[setting.type];
 
 const RENDERERS = {
   checkboxRow: (s, v, on) => composer.checkboxRow.default({ label: s.label, hint: s.hint, checked: v, onChange: on }),
@@ -130,7 +135,7 @@ export function renderPanel(spec, { values: initial, onChange } = {}) {
       });
       handles.set(key, control);
       built.appendChild(
-        SELF_LABELLING.has(setting.ui || DEFAULT_UI[setting.type])
+        SELF_LABELLING.has(rendererNameFor(setting))
           ? control.node
           : composer.settingsRow.default({ label: setting.label, hint: setting.hint, control }).node
       );

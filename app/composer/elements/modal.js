@@ -10,6 +10,7 @@
 
 import { define } from "../internals/register.js";
 import { el } from "../internals/el.js";
+import { setText } from "../internals/text.js";
 import { uid } from "../internals/ids.js";
 import { mount, unmount } from "../internals/portal.js";
 import { claimFor } from "../internals/zlayer.js";
@@ -58,10 +59,24 @@ function open({
   const content = el("div", { cls: "cx-modal-body", children: nodeOf(body, "modal") });
   card.append(content);
 
-  if (actions.length) {
-    card.append(el("footer", { cls: "cx-modal-foot",
-      children: actions.map((a) => nodeOf(a, "modal actions")) }));
+  // Always present, empty until there is something to put in it.
+  //
+  // A modal whose body changes needs its buttons to change with it, and the
+  // footer is the only row that sits OUTSIDE the scrolling body -- a bar built
+  // inside the body instead sticks to the bottom of the scroller, which is
+  // above the card's own edge by the body's padding, so the content scrolled
+  // through the gap underneath it.
+  const buttons = el("div", { cls: "cx-modal-foot-buttons" });
+  const noteText = el("p", { cls: "cx-hint" });
+  const foot = el("footer", { cls: "cx-modal-foot", children: [noteText, buttons] });
+
+  function setFooter({ actions: next = [], note = "" } = {}) {
+    buttons.replaceChildren(...next.map((a) => nodeOf(a, "modal actions")));
+    setText(noteText, note);
+    foot.toggleAttribute("hidden", !next.length && !note);
   }
+  card.append(foot);
+  setFooter({ actions });
 
   const backdrop = el("div", { cls: "cx-backdrop" });
   const root = el("div", { cls: "cx-modal-layer", children: [backdrop, card] });
@@ -82,6 +97,7 @@ function open({
   const handle = {
     node: card,
     isOverlay: true,
+    setFooter,
     close(reason = "manual") {
       if (closed) return;
       closed = true;

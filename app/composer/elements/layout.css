@@ -199,7 +199,7 @@
 .cx-frame { display: flex; flex-direction: column; block-size: 100%; min-block-size: 0; }
 .cx-frame-main { flex: 1 1 auto; min-block-size: 0; display: flex; }
 .cx-frame-main > * { flex: 1 1 auto; min-inline-size: 0; }
-.cx-frame-foot { flex: 0 0 auto; }
+.cx-frame-head, .cx-frame-foot { flex: 0 0 auto; }
 
 /* Not enough room to dock. Below this the two panels plus a usable centre do
    not fit -- three columns in 375px gave clipped headings and a preview no
@@ -235,3 +235,20 @@
   /* A collapsed overlay must not keep catching pointers over the centre. */
   .cx-workspace-side.cx-collapsed { inline-size: 0; box-shadow: none; }
 }
+
+/* region.stack -- the app's redrawable host. Spacing only: what goes in it
+   brings its own everything else. */
+.cx-stack { display: flex; flex-direction: column; min-block-size: 0; }
+.cx-stack > * { min-inline-size: 0; }
+.cx-stack-none { gap: 0; }
+.cx-stack-sm { gap: var(--sp-4); }
+.cx-stack-md { gap: var(--sp-6); }
+.cx-stack-lg { gap: var(--sp-9); }
+
+/* Filling the room it was given, rather than sizing to its content. Without a
+   definite height nothing inside can scroll: the whole page scrolls instead,
+   and a bar meant to hold the bottom scrolls away with it. */
+.cx-stack-fill { flex: 1 1 auto; min-block-size: 0; }
+/* A split inside a stack is what stretches. The rows around it -- a toolbar, a
+   banner, an action bar -- are each their own height. */
+.cx-stack > .cx-split { flex: 1 1 auto; min-block-size: 0; }

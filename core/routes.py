@@ -215,6 +215,22 @@ def register(routes, prefix=None):
                 status=400)
         return web.json_response({"nodes": widgets.describe_all(wanted)})
 
+    @routes.get(P + "/api/nodes/search")
+    async def _nodes_search(req):
+        """What could go in a slot, by name.
+
+        Separate from the route above because it answers a different question:
+        that one describes nodes the caller already named, this one finds the
+        name. Bounded the same way and for the same reason -- the query string
+        is the caller's, and the answer is built on the event loop.
+        """
+        try:
+            limit = int(req.query.get("limit", 40))
+        except ValueError:
+            limit = 40
+        return web.json_response(
+            widgets.search(req.query.get("q", ""), max(1, min(limit, 200))))
+
     @routes.get(P + "/api/log")
     async def _log(req):
         level = req.query.get("level") or None

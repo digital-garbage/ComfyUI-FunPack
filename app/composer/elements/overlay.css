@@ -23,12 +23,20 @@
 }
 .cx-modal-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .cx-modal-title { font-family: var(--font-display); font-size: var(--fs-2); font-weight: var(--fw-semibold); }
-.cx-modal-body { padding: var(--sp-6); overflow-y: auto; }
+/* A column, so a body that wants to fill the card can. Without it the body
+   sized to its content and the card scrolled as a whole -- which put the group
+   editor's Save bar below the fold instead of holding the bottom of the
+   window. */
+.cx-modal-body {
+  padding: var(--sp-6); overflow-y: auto;
+  display: flex; flex-direction: column; min-block-size: 0;
+}
 .cx-modal-foot {
-  display: flex; justify-content: flex-end; gap: var(--sp-3);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-6);
   padding: var(--sp-5) var(--sp-6); border-top: var(--bw) solid var(--line);
   background: var(--elev-2);
 }
+.cx-modal-foot-buttons { display: flex; gap: var(--sp-3); margin-left: auto; }
 
 .cx-choice-list { display: flex; flex-direction: column; gap: var(--sp-1); }
 .cx-choice-row {

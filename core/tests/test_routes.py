@@ -180,3 +180,35 @@ def test_asking_about_a_thousand_nodes_is_refused(app):
     status, body = _nodes(app, P + f"/api/nodes?classes={many}")
     assert status == 400
     assert any("200" in problem for problem in body["problems"])
+
+
+def test_the_search_route_finds_a_node_by_name(app, comfyui):
+    """Adding a node to a group needs the name before it can be described, and
+    the describe route only answers about names it is given."""
+    import nodes  # noqa: F401 -- see the note above; the scan must stay unwarmed
+
+    status, body = _nodes(app, P + "/api/nodes/search?q=KSampler")
+    assert status == 200
+    assert body["nodes"][0]["node"] == "KSampler"
+    assert body["total"] >= len(body["nodes"])
+
+
+def test_the_search_route_is_bounded_however_the_caller_asks(app, comfyui):
+    import nodes  # noqa: F401
+
+    _status, body = _nodes(app, P + "/api/nodes/search?q=&limit=100000")
+    assert len(body["nodes"]) <= 200
+
+    # The count is of everything, not of what was returned -- a picker that says
+    # "showing 5 of 5" when there are hundreds is a picker that lies about
+    # whether it is worth typing anything.
+    _status, few = _nodes(app, P + "/api/nodes/search?q=&limit=5")
+    assert len(few["nodes"]) == 5
+    assert few["total"] == body["total"] > 5
+
+
+def test_a_search_limit_that_is_not_a_number_does_not_500(app, comfyui):
+    import nodes  # noqa: F401
+
+    status, body = _nodes(app, P + "/api/nodes/search?q=KSampler&limit=lots")
+    assert status == 200 and body["nodes"]

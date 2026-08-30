@@ -144,6 +144,13 @@ export const DEMOS = {
     actions: [c.iconButton.sm({ icon: "✎", label: "Rename" }), c.iconButton.sm({ icon: "✕", label: "Remove" })],
     body: c.text.sm({ text: "A slow push in on the rooftop as the light goes." }),
   }),
+  "region.stack": (c) => ({
+    label: "Pipeline",
+    children: [
+      c.text.sm({ text: "Contents are replaced by whoever holds the handle." }),
+      c.button.md({ label: "Redraw" }),
+    ],
+  }),
   "toolbar.default": (c) => ({
     label: "Timeline",
     items: [
@@ -182,6 +189,7 @@ export const DEMOS = {
   }),
   "viewer.media": { src: "", empty: "Nothing generated yet" },
   "frame.app": (c) => ({
+    header: c.toolbar.default({ label: "App", items: [c.button.sm({ label: "Models and pipeline" })] }),
     main: c.panel.default({ title: "Workspace", body: c.hint.default({ text: "Everything that fills the window" }) }),
     footer: c.actionBar.sticky({ note: "Ready", actions: [c.button.lg({ label: "Generate", tone: "primary" })] }),
   }),

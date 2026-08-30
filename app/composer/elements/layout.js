@@ -79,6 +79,24 @@ define("panel", "default", ({ title, actions = [], body } = {}) => {
   return { node, body: content, destroy: () => node.remove() };
 });
 
+// A region whose contents are replaced.
+//
+// Every part of the app that redraws needs one host it can empty and refill.
+// Without it the shell reaches for the document to make a div of its own, and a
+// div the shell made is a div the shell has to lay out -- which is the one thing
+// that is supposed to live only here.
+define("region", "stack", ({ children = [], gap = "md", label, fill = false } = {}) => {
+  const node = el("div", { cls: ["cx-stack", `cx-stack-${gap}`, fill ? "cx-stack-fill" : null],
+    attrs: { "aria-label": label } });
+  const set = (next = []) => {
+    // Handles, not nodes, like everywhere else -- so a caller cannot slip a
+    // document node in through the one element that takes children late.
+    node.replaceChildren(...next.filter(Boolean).map((c) => nodeOf(c, "region.stack")));
+  };
+  set(children);
+  return { node, set, destroy: () => node.remove() };
+});
+
 define("toolbar", "default", ({ items = [], label } = {}) =>
   ({ node: el("div", { cls: "cx-toolbar", attrs: { role: "toolbar", "aria-label": label },
       children: items.map((i) => nodeOf(i, "toolbar.default")) }),
@@ -239,14 +257,17 @@ for (const axis of ["h", "v"]) {
 // it a vertical split resolves its basis against content, and the app renders
 // as a short strip at the top of an empty window -- which is exactly what the
 // first build of this frame did.
-define("frame", "app", ({ main, footer } = {}) => {
+define("frame", "app", ({ header, main, footer } = {}) => {
+  const head = header
+    ? el("div", { cls: "cx-frame-head", children: nodeOf(header, "frame.app") })
+    : null;
   const body = el("div", { cls: "cx-frame-main",
     children: main ? nodeOf(main, "frame.app") : null });
   const foot = footer
     ? el("div", { cls: "cx-frame-foot", children: nodeOf(footer, "frame.app") })
     : null;
-  const node = el("div", { cls: "cx-frame", children: [body, foot].filter(Boolean) });
-  return { node, main: body, footer: foot, destroy: () => node.remove() };
+  const node = el("div", { cls: "cx-frame", children: [head, body, foot].filter(Boolean) });
+  return { node, header: head, main: body, footer: foot, destroy: () => node.remove() };
 });
 
 // The app's own shape: a centre that shrinks, with panels docked either side.

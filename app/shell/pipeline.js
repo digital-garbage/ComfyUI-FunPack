@@ -6,6 +6,7 @@
 // either a prompt or the reasons there is not one.
 
 const ENDPOINT = "/funpack/api/pipeline";
+const NODES = "/funpack/api/nodes";
 
 /**
  * check(values) -> { slots, refused, incomplete, queueable, prompt }
@@ -15,9 +16,15 @@ const ENDPOINT = "/funpack/api/pipeline";
  * not ready -- an unset file picker on a fresh install is the normal case, not
  * a failure.
  */
-export async function check({ fetch: doFetch = globalThis.fetch, slots } = {}) {
-  const body = { action: "check" };
+export async function check({ fetch: doFetch = globalThis.fetch, slots,
+                              action = "check", slot, node } = {}) {
+  // `slots` and an action travel together on purpose: a remove is "take this
+  // one out of THIS pipeline", and sending the action without the pipeline the
+  // user is looking at would apply it to the server's defaults instead.
+  const body = { action };
   if (slots) body.slots = slots;
+  if (slot !== undefined) body.slot = slot;
+  if (node !== undefined) body.node = node;
 
   const response = await doFetch(ENDPOINT, {
     method: "POST",
@@ -45,4 +52,39 @@ export async function check({ fetch: doFetch = globalThis.fetch, slots } = {}) {
     queueable: Boolean(payload.queueable),
     prompt: payload.prompt || null,
   };
+}
+
+/** The pipeline as the server holds it, before anything has been edited. */
+export async function load({ fetch: doFetch = globalThis.fetch } = {}) {
+  const response = await doFetch(ENDPOINT);
+  if (!response.ok) throw new Error(`the pipeline could not be read (${response.status})`);
+  const payload = await response.json();
+  return {
+    slots: payload.slots || [],
+    incomplete: payload.incomplete || [],
+    queueable: Boolean(payload.queueable),
+  };
+}
+
+/**
+ * describe(classes) -> { [className]: description | null }
+ *
+ * A null is an answer, not a gap: the slot points at a node this install does
+ * not have. The caller asked about it, so it is in the reply saying so.
+ */
+export async function describe(classes, { fetch: doFetch = globalThis.fetch } = {}) {
+  const wanted = [...new Set(classes)].filter(Boolean);
+  if (!wanted.length) return {};
+  const response = await doFetch(`${NODES}?classes=${encodeURIComponent(wanted.join(","))}`);
+  if (!response.ok) throw new Error(`those nodes could not be described (${response.status})`);
+  return (await response.json()).nodes || {};
+}
+
+/** Installed nodes matching a query, and how many there were before the cut. */
+export async function search(query, { fetch: doFetch = globalThis.fetch, limit = 40 } = {}) {
+  const response = await doFetch(
+    `${NODES}/search?q=${encodeURIComponent(query || "")}&limit=${limit}`);
+  if (!response.ok) throw new Error(`nodes could not be searched (${response.status})`);
+  const payload = await response.json();
+  return { nodes: payload.nodes || [], total: payload.total || 0 };
 }

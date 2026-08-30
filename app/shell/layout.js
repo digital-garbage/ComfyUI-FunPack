@@ -78,7 +78,21 @@ export function build(root, handlers = {}) {
   // panel that would have enabled it.
   const transport = createTransport(handlers);
 
-  const page = composer.frame.app({ main: workspace, footer: transport });
+  // The top bar: the way into everything that is a WINDOW rather than a panel.
+  // It holds one button today and will hold the rest as they land -- a place
+  // that exists is what stops the next one being wedged into the transport row,
+  // which is the one row that has to keep saying what the run is doing.
+  const bar = composer.toolbar.default({
+    label: "FunPack",
+    items: [
+      composer.button.sm({
+        label: "Models and pipeline",
+        onClick: () => { if (handlers.onPipeline) handlers.onPipeline(); },
+      }),
+    ],
+  });
+
+  const page = composer.frame.app({ header: bar, main: workspace, footer: transport });
 
   root.replaceChildren(page.node);
 
@@ -94,5 +108,5 @@ export function build(root, handlers = {}) {
   offer("generation.post", generation.body);
 
   return { workspace, assets, preview, viewer, prompt, generation, settings,
-           properties, transport, page };
+           properties, transport, bar, page };
 }

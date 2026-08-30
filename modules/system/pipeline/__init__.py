@@ -12,6 +12,12 @@ the UI an override layer rather than a requirement.
 
 Nothing about these slots is privileged. Core does not know this list exists; it
 is handed one and builds it.
+
+`group` is the pipeline's own idea of how it reads to a person -- the cards the
+app shows are these names, in the order they first appear. It travels on the
+slot rather than living in the app, so a pipeline that replaced every slot keeps
+its own arrangement, and a group is created by a slot claiming a name nobody
+used yet rather than by registering it anywhere.
 """
 
 ID = "pipeline"
@@ -22,33 +28,33 @@ STATUS = "proven"
 # Slot ids are stable: they are how an override says which slot it means, and
 # they end up as node ids in the queued prompt.
 DEFAULT = [
-    {"id": "model", "node": "FunPackDiffusionModelLoader", "inputs": {
+    {"id": "model", "group": "Loaders", "node": "FunPackDiffusionModelLoader", "inputs": {
         "weight_dtype": "default", "compute_dtype": "default", "attention": "default"}},
-    {"id": "clip", "node": "FunPackCLIPLoader", "inputs": {"type": "stable_diffusion"}},
-    {"id": "vae", "node": "FunPackVAELoader", "inputs": {"dtype": "bfloat16"}},
+    {"id": "clip", "group": "Loaders", "node": "FunPackCLIPLoader", "inputs": {"type": "stable_diffusion"}},
+    {"id": "vae", "group": "Loaders", "node": "FunPackVAELoader", "inputs": {"dtype": "bfloat16"}},
 
-    {"id": "positive", "node": "CLIPTextEncode", "inputs": {
+    {"id": "positive", "group": "Preparation", "node": "CLIPTextEncode", "inputs": {
         "clip": ["clip", 0], "text": ""}},
-    {"id": "negative", "node": "CLIPTextEncode", "inputs": {
+    {"id": "negative", "group": "Preparation", "node": "CLIPTextEncode", "inputs": {
         "clip": ["clip", 0], "text": ""}},
 
-    {"id": "latent", "node": "FunPackEmptyLatent", "inputs": {
+    {"id": "latent", "group": "Preparation", "node": "FunPackEmptyLatent", "inputs": {
         "model": ["model", 0], "width": 512, "height": 512, "length": 1, "batch_size": 1}},
 
-    {"id": "settings", "node": "FunPackModifierSettings", "inputs": {"settings": "{}"}},
-    {"id": "modifiers", "node": "FunPackLoadModifiers", "inputs": {
+    {"id": "settings", "group": "Preparation", "node": "FunPackModifierSettings", "inputs": {"settings": "{}"}},
+    {"id": "modifiers", "group": "Preparation", "node": "FunPackLoadModifiers", "inputs": {
         "model": ["model", 0], "settings": ["settings", 0]}},
 
-    {"id": "sampler", "node": "FunPackSampler", "inputs": {
+    {"id": "sampler", "group": "Sampling", "node": "FunPackSampler", "inputs": {
         "model": ["modifiers", 0], "positive": ["positive", 0], "negative": ["negative", 0],
         "latent": ["latent", 0], "settings": ["settings", 0],
         "seed": 0, "steps": 20, "cfg": 7.0,
         "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0}},
 
-    {"id": "decode", "node": "FunPackDecode", "inputs": {
+    {"id": "decode", "group": "Render", "node": "FunPackDecode", "inputs": {
         "samples": ["sampler", 0], "vae": ["vae", 0], "model": ["model", 0]}},
 
-    {"id": "save", "node": "SaveImage", "inputs": {
+    {"id": "save", "group": "Render", "node": "SaveImage", "inputs": {
         "images": ["decode", 0], "filename_prefix": "FunPack"}},
 ]
 

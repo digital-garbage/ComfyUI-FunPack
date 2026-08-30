@@ -11,7 +11,8 @@ import { composer } from "./composer/composer.js";
 import { createRun } from "./shell/run.js";
 import { clientId, connect, queuedFor, finishedFor } from "./shell/client.js";
 import { wire } from "./shell/session.js";
-import { check } from "./shell/pipeline.js";
+import { check, load, describe, search } from "./shell/pipeline.js";
+import { open as openPipeline } from "./shell/pipeline_window.js";
 
 const root = document.querySelector("#app");
 
@@ -19,11 +20,24 @@ async function start() {
   const id = clientId();
   const run = createRun({ clientId: id, connect });
 
+  // The pipeline the user has edited, if they have. Held here and passed in
+  // rather than kept inside a module: the app has one store of live values
+  // already, and a second one hiding in a transport file is a second place to
+  // look when a run turns out to have used something other than what is on
+  // screen. Null until the window says otherwise, which means "the server's
+  // defaults" -- so a fresh page generates without the window ever opening.
+  let slots = null;
+
   const page = build(root, {
     onGenerate: () => session.generate(),
     onCancel: () => run.cancel(),
+    onPipeline: () => openPipeline({
+      load, describe, check, search,
+      onApply: (next) => { slots = next; },
+    }),
   });
-  const session = wire({ run, page, check, id, queuedFor, finishedFor });
+  const session = wire({ run, page, check, id, queuedFor, finishedFor,
+                         slots: () => slots });
 
   let manifest;
   try {

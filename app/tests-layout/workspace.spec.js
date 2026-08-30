@@ -120,7 +120,11 @@ test("the transport reports a refusal beside Generate", async ({ page }) => {
   await page.locator('.cx-action-bar button:has-text("Generate")').click();
   const bar = page.locator(".cx-action-bar");
   await expect(bar).not.toHaveText(/^Ready/);
-  await expect(bar).toContainText(/no node called|not ready|could not be/);
+  // Whatever the reason is, it names the slot it is about. This used to read
+  // "there is no node called X installed", because the dev server had no node
+  // registry at all and every slot looked like a missing node; now the registry
+  // is real and the reason is the genuine one -- nothing has been chosen yet.
+  await expect(bar).toContainText(/^[a-z_]+: /);
 });
 
 // Narrow windows: the panels stop docking and overlay instead.
