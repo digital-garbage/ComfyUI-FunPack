@@ -1064,19 +1064,22 @@
   const REF_KIND_TYPES = { image: ["IMAGE"], audio: ["AUDIO"], video: ["VIDEO", "IMAGE"] };
   const REF_KIND_LABEL = { image: "image", audio: "audio", video: "video" };
 
-  // Media marked "R" in the Media Bin / gallery, in mark order — R1, R2, R3 — offered to any
-  // socket whose type that kind of media can fill.
+  // Media marked "R" in the Media Bin / gallery, offered to any socket whose type that kind
+  // of media can fill. Numbered per kind — R1 video and R1 image are both reachable — which
+  // is the same numbering the media bin shows and the same one a "Reference video 1" slot
+  // resolves against. See references.js.
   function referenceSources(type) {
     const st = window.Store?.get() || {};
     const marks = st.project?.references || [];
     const bin = st.mediaBin || [];
     const out = [];
-    marks.forEach((id, i) => {
+    marks.forEach((id) => {
       const m = bin.find((x) => x.id === id);
       if (!m) return;
       const kinds = REF_KIND_TYPES[m.kind] || [];
       if (!kinds.some((t) => typeAccepts(type, t))) return;
-      out.push({ value: `ref:${id}`, label: `R${i + 1} · ${m.name} (${REF_KIND_LABEL[m.kind] || m.kind})` });
+      const n = window.References.referenceNumber(marks, bin, id);
+      out.push({ value: `ref:${id}`, label: `R${n} · ${m.name} (${REF_KIND_LABEL[m.kind] || m.kind})` });
     });
     return out;
   }

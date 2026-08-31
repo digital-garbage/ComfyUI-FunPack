@@ -10203,6 +10203,54 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     if trained_keys:
                         memory_status += f"\nTrained custom key(s): {', '.join(trained_keys)}"
 
+        # Trajectory probe (measurement only, off unless FUNPACK_TRAJECTORY_PROBE=1): pair
+        # this rating with the per-bucket descriptors the sampler recorded for the run it
+        # scores. Nothing steers off this log — it exists to answer whether an early-window
+        # value function would have anything to learn.
+        #
+        # Deliberately OUTSIDE the two rating branches, unlike the learning mechanisms: a
+        # rated run is a labelled data point whichever UI rated it, and a multi-scene chain
+        # rated per scene from the Movie Editor is the ordinary case here, not an edge one.
+        # skip_learning ratings count too — a run the user declined to learn from still
+        # carries a label, and the question is only whether the label is visible.
+        #
+        # Gated on the probe being ON, not merely on a pending existing: with the probe off
+        # the sampler writes no pending, so an older one would still be sitting there and
+        # this rating would consume it — logging an earlier run's descriptors under this
+        # run's rating.
+        _traj_profile = (aggregate_profile if use_me_scene_ratings and aggregate_profile
+                         else learning_profile)
+        # Per-scene rewards when the editor rated each scene: the aggregate profile carries
+        # one reward for the whole chain, and pairing that with every scene's descriptors
+        # labels a Perfect scene bad whenever some other scene in the run was.
+        _traj_scene_rewards = {}
+        if use_me_scene_ratings:
+            for _item in me_ratings:
+                try:
+                    _si = int(_item.get("index", -1))
+                except (TypeError, ValueError):
+                    continue
+                _p = normalize_refiner_v2_rating(str(_item.get("rating", "") or "").strip())
+                if _si >= 0 and isinstance(_p, dict) and not _p.get("skip_learning"):
+                    _traj_scene_rewards[_si] = float(_p.get("reward", 0.0))
+        if has_previous_run and refinement_key and isinstance(_traj_profile, dict):
+            try:
+                try:
+                    from .trajectory_probe import commit as _traj_commit, probe_enabled as _traj_on
+                except ImportError:
+                    from trajectory_probe import commit as _traj_commit, probe_enabled as _traj_on
+                n_traj = None if not _traj_on() else _traj_commit(
+                    refinement_key,
+                    float(_traj_profile.get("reward", 0.0)),
+                    rating_key=_traj_profile.get("key"),
+                    axes={k: _traj_profile.get(k) for k in
+                          ("quality_signal", "concept_signal", "detail_signal")},
+                    scene_rewards=_traj_scene_rewards or None,
+                )
+                if n_traj is not None:
+                    print(f"[FunPackRefiner] Trajectory probe — {n_traj} run(s) logged")
+            except Exception as _e:
+                print(f"[FunPackRefiner] Trajectory probe intake failed: {_e}")
         with self._v2_stage("vision memory"):
             vision_context, vision_status = self._v2_update_vision_memory(
                 global_state,

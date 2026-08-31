@@ -346,15 +346,19 @@
       }
     }
     // Reference mark. Unlike the single continuity pin, any number of items can carry one,
-    // and their ORDER is the numbering the badge shows (R1, R2, …) — that order is what
-    // distinguishes two references of the same kind when wiring them to node inputs.
+    // and their ORDER within their own KIND is the numbering the badge shows (R1, R2, …) —
+    // that order is what distinguishes two references of the same kind when wiring them to
+    // node inputs, and it is what a "Reference video 1" slot resolves against. See
+    // references.js for why the count is per kind rather than across every mark.
     if (st.project && m.kind !== "other") {
       const refs = st.project.references || [];
       const idx = refs.indexOf(m.id);
       const isRef = idx >= 0;
+      const refN = window.References.referenceNumber(refs, st.mediaBin || [], m.id);
+      const kindLabel = m.kind || "image";
       const refBtn = el("button", "media-act media-ref" + (isRef ? " active" : ""), "R");
       refBtn.title = isRef
-        ? `Reference R${idx + 1} — click to unmark`
+        ? `Reference ${kindLabel} ${refN} — click to unmark`
         : "Mark as a reference — wireable into node inputs in Models & Pipeline";
       refBtn.onclick = (e) => {
         e.stopPropagation();
@@ -362,8 +366,9 @@
       };
       actions.append(refBtn);
       if (isRef) {
-        const badge = el("span", "media-ref-badge", `R${idx + 1}`);
-        badge.title = `Reference ${idx + 1} of ${refs.length}`;
+        const badge = el("span", "media-ref-badge", `R${refN}`);
+        badge.title = `Reference ${kindLabel} ${refN} of `
+          + window.References.referenceCountOfKind(refs, st.mediaBin || [], kindLabel);
         thumb.append(badge);
       }
     }

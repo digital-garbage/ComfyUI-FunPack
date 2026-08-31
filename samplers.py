@@ -4590,6 +4590,78 @@ class FunPackLTXAVSceneChainSampler:
         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_output_wrapper, old_wrapper)
         return old_wrapper
 
+    def _build_trajectory_probe_wrapper(self, model, recorder):
+        """Observer for the trajectory probe: records the predicted x0 per step, changes
+        nothing. See trajectory_probe.py for what it is measuring and why.
+
+        Installed OUTERMOST, after every steering wrapper, so what it records is the
+        trajectory the run actually took rather than the base model's unsteered guess. The
+        measurement it feeds is only meaningful with the steering mechanisms off, which is
+        how the experiment is meant to be run — but recording the steered prediction is the
+        honest choice either way: it is what the rating scored.
+
+        Same video-slice convention as output_guidance: the descriptor is pooled from the
+        video stream alone, because that is the domain LatentValueFunction is trained on and
+        including audio would shift every adaptive-pooling bucket."""
+        old_wrapper = model.model_options.get("model_function_wrapper")
+
+        def _call(apply_fn, a):
+            if old_wrapper is not None:
+                return old_wrapper(apply_fn, a)
+            return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
+
+        def _probe_wrapper(apply_fn, args, _rec=recorder):
+            denoised = _call(apply_fn, args)
+            try:
+                ts = args.get("timestep")
+                sigma = float(ts.max().item()) if ts is not None else None
+                if sigma is None:
+                    # A step with no timestep cannot be placed on the schedule. Counted like
+                    # every other unmeasurable step, so the run reports an incomplete
+                    # measurement rather than a short but apparently clean one.
+                    _rec.note_unmeasurable()
+                elif getattr(denoised, "dim", None) and \
+                        denoised.dim() > 0 and int(denoised.shape[0]) > 1:
+                    # At CFG>1 comfy stacks the unconditional row into this call's batch,
+                    # and the descriptor pools over batch — the result would be a prediction
+                    # averaged with its own negation. Same for a batched generation, where
+                    # one descriptor cannot stand for several videos. Refuse and count it.
+                    _rec.note_unmeasurable()
+                else:
+                    span = _video_span(model, denoised)
+                    if span is not None:
+                        off, sz, _shape = span
+                        target = denoised[..., off:off + sz]
+                    else:
+                        target = denoised
+                    try:
+                        from .value_function import compress_packed_latent
+                    except ImportError:
+                        from value_function import compress_packed_latent
+                    # inference_mode(False) for the same reason _save_output_value_snapshot
+                    # uses it: the descriptor outlives the sampling call and is written to
+                    # disk, and an inference tensor is not safe to carry out of here.
+                    with torch.inference_mode(False), torch.no_grad():
+                        _rec.observe(sigma, compress_packed_latent(
+                            target.detach().float(), _rec.dim).clone())
+            except Exception as e:
+                # Counted as well as reported: a step lost to an exception is as unmeasured
+                # as one refused on purpose, and the saved run has to say so rather than
+                # read as complete.
+                try:
+                    _rec.note_unmeasurable()
+                except Exception:
+                    pass
+                try:
+                    from .funpack_log import failed
+                except ImportError:
+                    from funpack_log import failed
+                failed("trajectory probe", "step record", e, "this step is missing from the measurement")
+            return denoised
+
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_probe_wrapper, old_wrapper)
+        return old_wrapper
+
     def _build_dynashift_wrapper(self, model, negatives, strength, threshold, raw_cond=None, ramp_fn=None):
         """DynaShift: steer the predicted x0 AWAY from the key's negative latent memory.
 
@@ -6984,6 +7056,44 @@ class FunPackLTXAVSceneChainSampler:
                     print("[FunPackSceneChain] steering window: NOTHING will steer on this "
                           "schedule — every rating-driven mechanism is gated off")
 
+        # Trajectory probe (FUNPACK_TRAJECTORY_PROBE=1): record the predicted x0 per
+        # schedule bucket so a later analysis can say whether ratings separate EARLY, in the
+        # half the steering window above never reaches. Records only — see
+        # trajectory_probe.py. One recorder spans the whole run; each scene installs its own
+        # observer wrapper into it.
+        _traj_recorder = None
+        _traj_prompt_hash = None
+        _traj_meta = {}
+        try:
+            try:
+                from . import trajectory_probe as _traj
+            except ImportError:
+                import trajectory_probe as _traj
+            if _traj.probe_enabled():
+                if refinement_key_input:
+                    _traj_recorder = _traj.TrajectoryRecorder(sigmas)
+                    _cond0 = positive[0][0] if positive and isinstance(positive[0], (list, tuple)) else None
+                    _traj_prompt_hash = _traj.prompt_hash(_cond0)
+                    # H3's schedule is generated from its two flow shifts, so the shifts plus
+                    # the step count are what make one run's bucket 2 comparable to another's.
+                    _traj_meta = {"h3": bool(self._is_h3)}
+                    if self._is_h3:
+                        try:
+                            from .minimax_h3 import resolve_sigma_shifts as _rss
+                        except ImportError:
+                            from minimax_h3 import resolve_sigma_shifts as _rss
+                        _sv, _sa = _rss(model.model_options)
+                        _traj_meta["shift_video"] = _sv
+                        _traj_meta["shift_audio"] = _sa
+                    print(f"[FunPackSceneChain] trajectory probe: recording "
+                          f"{_traj_recorder.n_buckets} schedule buckets over "
+                          f"{_traj_recorder.steps} steps (measurement only, nothing is steered)")
+                else:
+                    print("[FunPackSceneChain] trajectory probe: requires refinement_key_input "
+                          "(the rating has to pair with the run) — not recording")
+        except Exception as _e:
+            print(f"[FunPackSceneChain] trajectory probe: setup failed ({_e}) — not recording")
+
         # Phase timing + quantized-path census: "the matmuls got faster" and "the video
         # arrives sooner" are different claims — the report separates sampling, decode,
         # and everything else so an optimization's real ceiling is visible. The census
@@ -7322,6 +7432,10 @@ class FunPackLTXAVSceneChainSampler:
                     run_mechanisms.append(f"output_guidance({output_guidance_strength})")
                     self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength,
                                                         ramp_fn=_steer_ramp)
+                if _traj_recorder is not None:
+                    # Outermost observer: records what this scene actually predicted per step.
+                    _traj_recorder.begin_scene(scene_index)
+                    self._build_trajectory_probe_wrapper(model, _traj_recorder)
                 # Per-scene temporal style (auto / pulse / rapid_start / rapid_end /
                 # rapid_start_end): layer a frame_rate wrapper on top of whatever is
                 # installed (e.g. embed guidance).
@@ -7442,6 +7556,8 @@ class FunPackLTXAVSceneChainSampler:
                                 if scene_count > 1 else "")
                 self._set_phase(f"{_scene_label}{' · ' if _scene_label else ''}"
                                 f"{'pass 1 of 2' if _sp_b is not None else 'sampling'}")
+                if _traj_recorder is not None:
+                    _traj_recorder.begin_pass(sigmas, index=0)
                 _full = self._sample_chunk(
                     model, sampler, sigmas, scene_seed, cfg, scene_positive,
                     scene_negative, chunk, **_sample_kwargs)
@@ -7564,6 +7680,11 @@ class FunPackLTXAVSceneChainSampler:
                           f"{' on ' + _scene_label if _scene_label else ''}: "
                           f"{int(_sp_b.numel()) - 1} steps from sigma {float(_sp_b[0].item()):g}"
                           f"{_sp_which}")
+                    if _traj_recorder is not None:
+                        # Pass 2 runs its own schedule from its own starting sigma. Bind it,
+                        # so its steps are measured as pass 2 rather than nearest-matched
+                        # into pass 1's buckets.
+                        _traj_recorder.begin_pass(_sp_b, index=1)
                     sampled = self._sample_chunk(
                         model, _sp_sampler, _sp_b, scene_seed + 4242, cfg, _sp_positive,
                         _sp_negative, _sp_state, **_sp_kw)
@@ -7939,6 +8060,26 @@ class FunPackLTXAVSceneChainSampler:
                                       _cond0 if isinstance(_cond0, torch.Tensor) else None)
                 except Exception as _e:
                     print(f"[FunPackSceneChain] dynashift pending save failed: {_e}")
+
+        # Trajectory probe: same run/rating pairing as the two above — the rating that scores
+        # THIS run appends these per-bucket descriptors to the measurement log.
+        # Written on EVERY probed run, empty or not: skipping the write would leave the
+        # previous run's pending for this rating to consume, logging one run's descriptors
+        # under another run's rating.
+        if _traj_recorder is not None:
+            try:
+                from . import trajectory_probe as _traj_save
+            except ImportError:
+                import trajectory_probe as _traj_save
+            _traj_save.save_pending(refinement_key_input, _traj_recorder,
+                                    prompt_hash=_traj_prompt_hash, seed=seed, meta=_traj_meta)
+            _traj_cells = len(_traj_recorder.cell_rows())
+            if _traj_cells:
+                print(f"[FunPackSceneChain] trajectory probe: {_traj_cells} bucket(s) "
+                      "recorded — rate this generation to log them")
+            else:
+                print("[FunPackSceneChain] trajectory probe: nothing measurable on this run "
+                      f"({_traj_recorder._foreign} step(s) refused) — nothing to log")
 
         return (output, images, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))
 
