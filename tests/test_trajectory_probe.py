@@ -628,3 +628,36 @@ def test_per_scene_rewards_reach_the_log(monkeypatch, tmp_path):
     probe.save_pending("k", _recorded(_h3_sigmas(4)))
     probe.commit("k", -0.9, rating_key="awful", scene_rewards={0: 1.0, 1: -0.85})
     assert probe.load_log("k")[0]["scene_rewards"] == {0: 1.0, 1: -0.85}
+
+
+def test_the_switch_survives_a_restart(monkeypatch, tmp_path):
+    """A rented box restarts. If the switch lived only in the environment, recording would
+    stop and the panel would be the only place that ever said so."""
+    _patch_store(monkeypatch, tmp_path)
+    monkeypatch.delenv("FUNPACK_TRAJECTORY_PROBE", raising=False)
+    assert probe.probe_enabled() is False
+
+    assert probe.set_probe_enabled(True) is True
+    assert probe.probe_enabled() is True
+    monkeypatch.delenv("FUNPACK_TRAJECTORY_PROBE")      # the restart
+    assert probe.probe_enabled() is True, "the switch did not survive"
+
+    probe.set_probe_enabled(False)
+    monkeypatch.delenv("FUNPACK_TRAJECTORY_PROBE")
+    assert probe.probe_enabled() is False, "turning it off did not survive either"
+
+
+def test_the_environment_wins_while_it_is_set(monkeypatch, tmp_path):
+    """The sampler runs in this process, so the live toggle has to beat the saved one."""
+    _patch_store(monkeypatch, tmp_path)
+    probe.set_probe_enabled(False)
+    monkeypatch.setenv("FUNPACK_TRAJECTORY_PROBE", "1")
+    assert probe.probe_enabled() is True
+
+
+def test_the_switch_file_is_not_mistaken_for_a_log(monkeypatch, tmp_path):
+    _patch_store(monkeypatch, tmp_path)
+    probe.set_probe_enabled(True)
+    probe.save_pending("k", _recorded(_h3_sigmas(4)))
+    probe.commit("k", 1.0)
+    assert sorted(k for k, _ in probe.load_all_logs()) == ["k"]

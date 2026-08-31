@@ -216,6 +216,128 @@
     return row;
   }
 
+  // ── Trajectory probe ───────────────────────────────────────────────────
+  // Every rating-driven mechanism only acts over the last half of a generation, so a
+  // rating about MOTION arrives after motion was decided. The probe records what the model
+  // was predicting at several points through each generation and then says whether your
+  // good and bad ratings actually look different EARLY on — which is what would have to be
+  // true for steering to be worth extending back there.
+  //
+  // Recording costs nothing measurable and steers nothing. It needs a refinement key, since
+  // the rating has to pair with the run that earned it.
+  let probeState = null, probeReport = null, probeBusy = false, probeError = "";
+
+  function probeToggleRow(enabled, onChange) {
+    const row = el("div", "sw-row");
+    const main = el("div", "sw-row-main");
+    main.append(el("div", "sw-row-title", "Record what each generation predicts"));
+    main.append(el("div", "sw-row-hint",
+      "Off by default. Recording only — nothing about your generations changes. "
+      + "Set a refinement key and rate as usual; each rated generation adds one run."));
+    row.append(main);
+    const lbl = el("label", "chk es-toggle");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = !!enabled;
+    cb.onchange = () => onChange(cb.checked);
+    lbl.append(cb, el("span", null, ""));
+    row.append(lbl);
+    return row;
+  }
+
+  function probeVerdict(report) {
+    const box = el("div", "sw-hint");
+    if (!report || !report.buckets || !report.buckets.length) {
+      box.textContent = "Nothing recorded yet.";
+      return box;
+    }
+    box.textContent = report.verdict === "early"
+      ? "Ratings separate EARLY — before anything currently steers. Extending steering back "
+        + "there has something to learn."
+      : "No early separation beyond what shuffling the ratings produces. Check the late rows "
+        + "first: if those are blank too, this is too few runs (or every run rated alike), "
+        + "not an answer about the model.";
+    return box;
+  }
+
+  function probeTable(report) {
+    const tbl = el("div", "sw-rows");
+    report.buckets.forEach((b) => {
+      const p = b.pooled;
+      const when = b.early ? "Early — nothing steers here yet" : "Late — already steered";
+      const verdict = !p ? "not enough runs"
+        : (p.p_value <= report.threshold ? "SEPARATES" : "no signal");
+      const detail = p
+        ? `${verdict} · p ${p.p_value.toFixed(4)} · ${b.good} good / ${b.bad} bad`
+        : `${verdict} · ${b.good} good / ${b.bad} bad`;
+      tbl.append(infoRow(`Part ${b.bucket + 1} of ${report.buckets.length} — ${when}`,
+                         detail, p ? p.p_value <= report.threshold : null));
+    });
+    return tbl;
+  }
+
+  function probeRows() {
+    const box = el("div", "sw-stack");
+    const paint = () => {
+      clear(box);
+      const rows = el("div", "sw-rows");
+      rows.append(probeToggleRow(probeState && probeState.enabled, async (on) => {
+        probeError = "";
+        try {
+          probeState = await window.MovieEditorAPI.probeSetEnabled(on);
+        } catch (e) { probeError = String(e.message || e); }
+        paint();
+      }));
+      const runs = probeState ? probeState.runs : 0;
+      rows.append(infoRow("Rated generations recorded", String(runs), runs > 0 ? true : null));
+      rows.append(actionRow("Read the result",
+        "Asks whether your good and bad ratings look different early on, and checks the "
+        + "answer against shuffled ratings so a handful of runs cannot fake one.",
+        probeBusy ? "Reading…" : "Read", async () => {
+          probeBusy = true; probeError = ""; paint();
+          try {
+            probeReport = await window.MovieEditorAPI.probeAnalyse(2000);
+          } catch (e) { probeError = String(e.message || e); }
+          probeBusy = false; paint();
+        }, { disabled: probeBusy || !runs }));
+      box.append(rows);
+      if (probeError) box.append(el("div", "sw-hint", probeError));
+      // A reading is of the runs that existed when it was taken. Once more have been rated,
+      // the table below and the count above are describing different things, and saying so
+      // beats letting the two numbers quietly disagree.
+      if (probeReport && probeState && probeReport.runs !== probeState.runs) {
+        box.append(el("div", "sw-hint",
+          `This reading covers ${probeReport.runs} run(s); ${runs} are recorded now. `
+          + "Read again to include the rest."));
+      }
+      if (probeReport && probeReport.buckets && probeReport.buckets.length) {
+        if (probeReport.multipass) {
+          box.append(el("div", "sw-hint",
+            `${probeReport.multipass} run(s) used a second pass. Only the first pass is read — `
+            + "the second runs its own schedule, so its parts cover different ground."));
+        }
+        if (probeReport.unbound_steps) {
+          box.append(el("div", "sw-hint",
+            `${probeReport.unbound_steps} step(s) could not be measured, so those runs are `
+            + "read from fewer steps than they took."));
+        }
+        box.append(probeTable(probeReport));
+        box.append(probeVerdict(probeReport));
+      }
+    };
+    paint();
+    // Re-fetched on EVERY mount, not only the first. The section is re-mounted whenever you
+    // navigate back to it, and the cached count is the one indicator of whether your recent
+    // ratings are being recorded — an indicator that answers with a stale number is worse
+    // than one that is not there.
+    if (window.MovieEditorAPI) {
+      window.MovieEditorAPI.probeStatus()
+        .then((s) => { probeState = s; paint(); })
+        .catch(() => {});
+    }
+    return box;
+  }
+
   function infoRow(title, value, ok) {
     const row = el("div", "sw-row");
     const main = el("div", "sw-row-main");
@@ -354,7 +476,8 @@
   register({
     id: "refinement", group: "Learning", title: "Refinement & Taste",
     subtitle: "Learned-taste state: refinement keys and the Absolute global-taste store.",
-    keywords: "refinement key export import delete clear absolute taste store learning ratings",
+    keywords: "refinement key export import delete clear absolute taste store learning ratings "
+            + "trajectory probe record measure early separation motion action steering",
     iconBg: "linear-gradient(180deg,#ff8bc2,#d84f92)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13"><path d="M8 1.5 9.6 6.4 14.5 8 9.6 9.6 8 14.5 6.4 9.6 1.5 8 6.4 6.4 8 1.5z" fill="#fff"/></svg>',
     mount(body) {
@@ -388,6 +511,9 @@
         rows.append(actionRow("Export refinement key", "Download a key as <key>.json.", "⬇ Export…", () => M.exportRefinementKey?.()));
         rows.append(actionRow("Import refinement key", "Load a previously exported <key>.json onto this instance.", "Import…", () => M.importRefinementKeyFile?.()));
         wrap.append(rows);
+
+        wrap.append(el("div", "sw-rows-label", "Trajectory probe"));
+        wrap.append(probeRows());
 
         wrap.append(el("div", "sw-rows-label", "Danger zone"));
         const danger = el("div", "sw-rows");

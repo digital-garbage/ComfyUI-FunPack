@@ -3,6 +3,10 @@
 
     python tools/trajectory_separation.py
 
+The Editor shows the same reading in Settings ▸ Learning ▸ Trajectory probe, which is also
+where recording is turned on. This is the terminal door onto it, for a headless box or for
+options the panel does not expose (--key, --trials, thresholds).
+
 Every rating-driven mechanism in the Scene Chain sampler is gated to the last half of the
 schedule. The proposal that motivates this tool is to bank the model's own x0_hat per
 schedule position and learn a value per position, so a "Missing action" rating can act in

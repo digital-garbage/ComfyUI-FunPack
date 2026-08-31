@@ -13,12 +13,15 @@ module answers exactly that question and nothing else:
     Do runs the user rated well and runs the user rated badly separate, in x0_hat space,
     at EARLY schedule positions — by more than label-shuffling alone would produce?
 
-It is instrumentation, not a feature. It records, it never steers, and it is off unless
-``FUNPACK_TRAJECTORY_PROBE=1`` is set in the environment — so it stays out of the sampler
-UI and out of every user's run. What it records per step is a 512-float pooled descriptor
-of the predicted output, the same `compress_packed_latent` compression the output value
-function is already trained on, so a positive result feeds straight into the existing
-`LatentValueFunction` machinery.
+It records, it never steers, and it is off by default. Turn it on in **Settings ▸ Learning
+▸ Trajectory probe**, which also reads the answer back; the switch is the environment
+variable ``FUNPACK_TRAJECTORY_PROBE``, and the editor sets it in this process, so it takes
+effect on the next generation with nothing to restart. `tools/trajectory_separation.py`
+prints the same reading for a terminal.
+
+What it records per step is a 512-float pooled descriptor of the predicted output, the same
+`compress_packed_latent` compression the output value function is already trained on, so a
+positive result feeds straight into the existing `LatentValueFunction` machinery.
 
 BUILT FOR H3, which sets three of the design choices here:
 
@@ -70,10 +73,45 @@ DESCRIPTOR_DIM = 512
 MAX_ROWS = 512
 
 
+_ENABLED_FILE = "enabled"
+
+
+def _switch_path():
+    return os.path.join(_probe_dir(), _ENABLED_FILE)
+
+
 def probe_enabled():
-    """True when the probe should record. Off by default: this is an experiment, and an
-    experiment does not belong in the sampler's UI."""
-    return os.environ.get("FUNPACK_TRAJECTORY_PROBE", "").strip().lower() in ("1", "true", "yes", "on")
+    """True when the probe should record. Off by default; Settings ▸ Learning turns it on.
+
+    The environment variable is the live switch (the sampler runs in this process, so the
+    editor's toggle reaches the next generation immediately), and it wins when set. What it
+    is set to is also written to disk, so a restarted ComfyUI — a new rental, say — comes
+    back recording instead of quietly having stopped.
+    """
+    raw = os.environ.get("FUNPACK_TRAJECTORY_PROBE", "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
+    try:
+        with open(_switch_path(), "r", encoding="utf-8") as fh:
+            return fh.read().strip() == "1"
+    except (OSError, ValueError):
+        return False
+
+
+def set_probe_enabled(on):
+    """Set the switch for this process AND for the next one. Returns the new state."""
+    on = bool(on)
+    os.environ["FUNPACK_TRAJECTORY_PROBE"] = "1" if on else "0"
+    try:
+        os.makedirs(_probe_dir(), exist_ok=True)
+        tmp = _switch_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write("1" if on else "0")
+        os.replace(tmp, _switch_path())
+    except OSError as e:
+        _failed("trajectory probe", "switch save", e,
+                "recording is on for this session only and will be off after a restart")
+    return on
 
 
 def bucket_count():

@@ -169,6 +169,11 @@
 
     // ComfyUI temp folder browser (scene previews & other transient outputs, wiped on restart).
     listTemp: () => j("GET", API("/temp")),
+
+    // trajectory probe (Settings ▸ Learning)
+    probeStatus: () => j("GET", API("/trajectory_probe")),
+    probeSetEnabled: (enabled) => j("POST", API("/trajectory_probe"), { enabled: !!enabled }),
+    probeAnalyse: (trials) => j("POST", API("/trajectory_probe/analyse"), { trials: trials || 2000 }),
     // Served by ComfyUI's own same-origin /view endpoint — no editor route needed.
     tempFileUrl: (f) => "/view?" + new URLSearchParams({
       filename: f.filename, subfolder: f.subfolder || "", type: "temp", t: String(f.mtime || Date.now()),

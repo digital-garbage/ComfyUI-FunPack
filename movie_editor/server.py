@@ -1960,6 +1960,80 @@ if web is not None and PromptServer is not None:
                 {"running": False, "prompt_id": None, "pid": None,
                  "scene_ids": [], "only_scene": None, "pending": 0, "error": str(e)})
 
+    # ── Trajectory probe ──────────────────────────────────────────────────
+    # The probe records the model's own prediction at several points through each
+    # generation, so a later reading can say whether the ratings separate EARLY — in the
+    # half of the schedule no rating-driven mechanism currently reaches. The sampler reads
+    # the switch from the environment and runs in this process, so the toggle here reaches
+    # the very next generation with nothing to restart.
+
+    def _probe_module():
+        try:
+            import trajectory_probe as tp
+        except ImportError:
+            from .. import trajectory_probe as tp  # type: ignore
+        return tp
+
+    def _probe_state():
+        tp = _probe_module()
+        logs = tp.load_all_logs()
+        rows = [r for _k, kr in logs for r in kr]
+        return tp, rows, {
+            "enabled": tp.probe_enabled(),
+            "runs": len(rows),
+            "keys": [k for k, kr in logs if kr],
+            "schedules": len(tp.schedule_mix(rows)) if rows else 0,
+        }
+
+    @routes.get(UI_PREFIX + "/api/trajectory_probe")
+    async def _probe_status(_req):
+        try:
+            _tp, _rows, state = _probe_state()
+            return web.json_response(state)
+        except Exception as e:
+            return web.json_response({"enabled": False, "runs": 0, "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/trajectory_probe")
+    async def _probe_toggle(req):
+        body = await req.json()
+        _probe_module().set_probe_enabled(bool(body.get("enabled")))
+        _tp, _rows, state = _probe_state()
+        return web.json_response(state)
+
+    @routes.post(UI_PREFIX + "/api/trajectory_probe/analyse")
+    async def _probe_analyse(req):
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        try:
+            tp, rows, state = _probe_state()
+            if not rows:
+                return web.json_response({**state, "buckets": [], "verdict": "no runs"})
+            trials = max(100, min(20000, int(body.get("trials") or 2000)))
+            results = tp.analyse(rows, trials=trials)
+            alpha = float(body.get("alpha") or 0.05)
+            threshold = alpha / max(1, len(results))
+            early = [e for e in results if e["bucket"] < len(results) / 2]
+            separates = [e for e in early
+                         if e.get("pooled") and e["pooled"]["p_value"] <= threshold]
+            return web.json_response({
+                **state,
+                "threshold": threshold,
+                "unbound_steps": sum(int(r.get("unbound_steps") or 0) for r in rows),
+                "multipass": sum(1 for r in rows if len(r.get("pass_steps") or {}) > 1),
+                "buckets": [{
+                    "bucket": e["bucket"],
+                    "early": e["bucket"] < len(results) / 2,
+                    "good": e["n_good"], "bad": e["n_bad"],
+                    "pooled": e.get("pooled"),
+                    "within_prompt": e.get("within_prompt"),
+                } for e in results],
+                "verdict": "early" if separates else "none",
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
     @routes.get(UI_PREFIX + "/api/temp")
     async def _temp_list(_req):
         return web.json_response({"files": _list_temp_media()})
