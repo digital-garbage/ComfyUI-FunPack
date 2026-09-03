@@ -6600,6 +6600,17 @@ class FunPackLTXAVSceneChainSampler:
                             args.get("mod_segments"), seq_len, out.device)
                         mask_cache[seq_len] = mask
                     if mask is not None:
+                        # Captured BEFORE injection, deliberately -- this is the ONLY block
+                        # where `inject` can be True, so it's the only one where capturing
+                        # the post-injection state would make the logged descriptor depend
+                        # on that run's own strength setting instead of reflecting the
+                        # network's natural behavior. Every other candidate block never
+                        # injects, so this line changes nothing for them; here it's what
+                        # keeps block 25's block_sweep entry comparable across different
+                        # strengths, and comparable to the other 8 blocks in the first place.
+                        desc = _rs.capture(out, mask)
+                        if desc is not None:
+                            capture_holder[0][block] = desc
                         if inject and direction is not None and _strength > 0.0:
                             rows = out[mask]
                             row_norm = rows.detach().float().norm(dim=-1).mean()
@@ -6607,9 +6618,6 @@ class FunPackLTXAVSceneChainSampler:
                                 out = out.clone()
                                 out[mask] = rows + (direction.to(out.dtype).to(out.device)
                                                     * _strength * row_norm).to(rows.dtype)
-                        desc = _rs.capture(out, mask)
-                        if desc is not None:
-                            capture_holder[0][block] = desc
                     return {"img": out}
                 return _hook
 
