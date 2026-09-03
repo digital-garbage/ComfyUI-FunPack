@@ -197,6 +197,23 @@
       if (!res.ok) throw new Error(readApiError(res, payload));
       return payload;
     },
+
+    // H3 representation steering (Settings ▸ Learning) — per-KEY, unlike the probe above.
+    reinsStatus: (key) => j("GET", API("/h3_repr_steering") + `?key=${encodeURIComponent(key || "default")}`),
+    reinsClear: (key) => j("POST", API("/h3_repr_steering/clear"), { key: key || "default" }),
+    async reinsExport(key) {
+      const k = key || "default";
+      const res = await fetch(API("/h3_repr_steering/export") + `?key=${encodeURIComponent(k)}&t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(readApiError(res, null));
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${k}.repr_steer.pt`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    },
     // Served by ComfyUI's own same-origin /view endpoint — no editor route needed.
     tempFileUrl: (f) => "/view?" + new URLSearchParams({
       filename: f.filename, subfolder: f.subfolder || "", type: "temp", t: String(f.mtime || Date.now()),

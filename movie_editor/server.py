@@ -2087,6 +2087,66 @@ if web is not None and PromptServer is not None:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    # H3 representation steering (Settings > Learning). Per-KEY, unlike the probe above —
+    # there is one sidecar per refinement key, not one aggregated across all of them, so
+    # every route here takes ?key= and reports on that key alone.
+
+    def _repr_steer_module():
+        try:
+            import h3_repr_steering as rs
+        except ImportError:
+            from .. import h3_repr_steering as rs  # type: ignore
+        return rs
+
+    def _repr_steer_state(key):
+        rs = _repr_steer_module()
+        _direction, n_liked, n_disliked = rs.direction(key)
+        sweep = rs.block_sweep(key)
+        return rs, {
+            "key": key,
+            "n_liked": n_liked,
+            "n_disliked": n_disliked,
+            "ready": _direction is not None,
+            "min_per_group": rs.MIN_PER_GROUP,
+            "default_block": rs.DEFAULT_BLOCK,
+            "sweep": {str(b): r for b, r in sweep.items()},
+        }
+
+    @routes.get(UI_PREFIX + "/api/h3_repr_steering")
+    async def _repr_steer_status(req):
+        key = str(req.rel_url.query.get("key") or "default").strip() or "default"
+        try:
+            _rs, state = _repr_steer_state(key)
+            return web.json_response(state)
+        except Exception as e:
+            return web.json_response({"key": key, "n_liked": 0, "n_disliked": 0,
+                                      "ready": False, "error": str(e)})
+
+    # Export streams the sidecar FILE directly rather than reconstructing it from rows: this
+    # module's state already IS the export format (rows keyed by block + weight + prompt_hash),
+    # unlike the probe's aggregate-across-keys log.
+    @routes.get(UI_PREFIX + "/api/h3_repr_steering/export")
+    async def _repr_steer_export(req):
+        import os
+        key = str(req.rel_url.query.get("key") or "default").strip() or "default"
+        rs = _repr_steer_module()
+        path = rs.state_path(key)
+        if not os.path.exists(path):
+            return web.json_response({"problems": [f"nothing recorded yet for '{key}'"]}, status=404)
+        with open(path, "rb") as f:
+            body = f.read()
+        return web.Response(
+            body=body, content_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{key}.repr_steer.pt"'})
+
+    @routes.post(UI_PREFIX + "/api/h3_repr_steering/clear")
+    async def _repr_steer_clear(req):
+        body = await req.json()
+        key = str(body.get("key") or "default").strip() or "default"
+        _repr_steer_module().clear_all(key)
+        _rs, state = _repr_steer_state(key)
+        return web.json_response(state)
+
     @routes.get(UI_PREFIX + "/api/temp")
     async def _temp_list(_req):
         return web.json_response({"files": _list_temp_media()})

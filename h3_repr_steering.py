@@ -35,10 +35,14 @@ import os
 
 import torch
 
-# Roughly half of H3's 50 blocks -- REINS measured this depth as the sweet spot: early
-# enough that the rest of the stack can still act on the change, late enough that the
-# concept the direction encodes has actually formed.
+# Roughly half of H3's 50 blocks -- REINS reports this FRACTION as their sweet spot (their
+# own notation: block l in {0..L-1}, effect peaking ~50% of L), on whatever model they tested
+# -- not H3, and their own paper picks the actual best layer per model by sweep rather than
+# trusting 50% universally. This is that same sweep, run on H3 with real rated data instead
+# of guessed from someone else's percentage. Only DEFAULT_BLOCK ever STEERS; the rest of
+# CANDIDATE_BLOCKS are captured read-only alongside it so block_sweep() has something to rank.
 DEFAULT_BLOCK = 25
+CANDIDATE_BLOCKS = sorted({5, 10, 15, 20, 25, 30, 35, 40, 45, DEFAULT_BLOCK})
 
 MIN_PER_GROUP = 2  # need 2+ POSITIVE-weight and 2+ NEGATIVE-weight rows. Was 3 (parity with
 # absolute/taste steering's floor, not derived from anything specific to this mechanism).
@@ -100,10 +104,13 @@ def capture(hidden_state, video_mask):
 
 # --- persistence -------------------------------------------------------------------------
 #
-# One row per generation: {"desc": tensor, "weight": float}. Kept as a log and the direction
-# recomputed from it on demand -- same reasoning trajectory_guidance's train_from_rows gives:
-# this is cheap enough that being able to re-derive it (a log carried from another box, a
-# fixed weighting formula) is worth more than the saved cycles of an online update.
+# One row per generation: {"desc": {block: tensor}, "weight": float, "prompt_hash": str|None}.
+# Kept as a log and the direction recomputed from it on demand -- same reasoning
+# trajectory_guidance's train_from_rows gives: this is cheap enough that being able to
+# re-derive it (a log carried from another box, a fixed weighting formula) is worth more than
+# the saved cycles of an online update. `desc` captures EVERY candidate block, not just the
+# one that steers, so block_sweep() can be answered from data already being collected instead
+# of needing its own separate collection pass.
 
 def _load(refinement_key):
     path = state_path(refinement_key)
@@ -128,15 +135,17 @@ def _save(refinement_key, data):
     os.replace(tmp, path)
 
 
-def save_pending(refinement_key, descriptor):
+def save_pending(refinement_key, descriptors):
     """Written on EVERY captured run, win or lose -- same fix trajectory_probe needed: a
     pending capture must not survive to be paired with the NEXT run's rating instead of its
     own, and the only way to guarantee that is to overwrite it every time, not just when a
-    rating happens to follow."""
-    if not refinement_key or descriptor is None:
+    rating happens to follow. `descriptors` is {block: tensor}, whatever candidate blocks the
+    sampler actually captured this run -- not required to cover every entry in
+    CANDIDATE_BLOCKS (a shape the hook has never seen just means that block is missing)."""
+    if not refinement_key or not descriptors:
         return
     data = _load(refinement_key)
-    data["pending"] = descriptor.detach().float().cpu()
+    data["pending"] = {int(b): d.detach().float().cpu() for b, d in descriptors.items()}
     try:
         _save(refinement_key, data)
     except OSError as e:
@@ -144,11 +153,12 @@ def save_pending(refinement_key, descriptor):
                        "this run's capture is not kept")
 
 
-def commit(refinement_key, reward):
-    """Pairs the pending capture with a rating's WEIGHT and appends it to the log. `reward`
-    is the caller's already-resolved, already-admissibility-filtered reward -- this function
-    trusts it rather than re-deriving a verdict, same as the value functions do with the same
-    number. No pending capture (nothing generated since the last rating) is silently a no-op."""
+def commit(refinement_key, reward, prompt_hash=None):
+    """Pairs the pending capture with a rating's WEIGHT (and the prompt it was rated under,
+    for block_sweep's cross-prompt guard) and appends it to the log. `reward` is the caller's
+    already-resolved, already-admissibility-filtered reward -- this function trusts it rather
+    than re-deriving a verdict, same as the value functions do with the same number. No
+    pending capture (nothing generated since the last rating) is silently a no-op."""
     if not refinement_key:
         return
     data = _load(refinement_key)
@@ -156,7 +166,8 @@ def commit(refinement_key, reward):
     data["pending"] = None
     if pending is not None:
         try:
-            data["rows"].append({"desc": pending, "weight": float(reward)})
+            data["rows"].append({"desc": pending, "weight": float(reward),
+                                 "prompt_hash": prompt_hash})
         except (TypeError, ValueError):
             pass
     try:
@@ -174,7 +185,7 @@ def clear_all(refinement_key):
         pass
 
 
-def direction(refinement_key):
+def direction(refinement_key, block=None):
     """-> (unit_vector, n_positive, n_negative), or (None, n_positive, n_negative) if either
     side is under MIN_PER_GROUP. One Awful and one Perfect is not a direction, it is two
     points -- doesn't matter how many barely-positive rows sit between them.
@@ -185,18 +196,67 @@ def direction(refinement_key):
     descriptors) before multiplying is what makes shared content cancel exactly regardless of
     how unbalanced the weights are -- see the module docstring for the identity. Raw
     descriptors, not per-vector normalised: a hidden-state row's magnitude carries real
-    content, and normalising it away is the trajectory_probe failure this deliberately avoids."""
+    content, and normalising it away is the trajectory_probe failure this deliberately avoids.
+
+    `block` defaults to DEFAULT_BLOCK -- the one that actually steers. Rows captured before
+    that block was in CANDIDATE_BLOCKS (or missing it for any other reason) are skipped, not
+    treated as zero."""
+    block = DEFAULT_BLOCK if block is None else int(block)
     data = _load(refinement_key)
-    rows = [r for r in data["rows"] if isinstance(r, dict) and "weight" in r]
+    rows = [r for r in data["rows"]
+            if isinstance(r, dict) and "weight" in r and isinstance(r.get("desc"), dict)
+            and block in r["desc"]]
     n_pos = sum(1 for r in rows if r["weight"] > 0)
     n_neg = sum(1 for r in rows if r["weight"] < 0)
     if n_pos < MIN_PER_GROUP or n_neg < MIN_PER_GROUP:
         return None, n_pos, n_neg
     weights = torch.tensor([r["weight"] for r in rows], dtype=torch.float32)
-    descs = torch.stack([r["desc"] for r in rows])
+    descs = torch.stack([r["desc"][block] for r in rows])
     centred = weights - weights.mean()
     diff = (centred.unsqueeze(1) * descs).sum(dim=0)
     norm = diff.norm()
     if not torch.isfinite(norm) or norm <= 1e-8:
         return None, n_pos, n_neg
     return diff / norm, n_pos, n_neg
+
+
+def _trajectory_probe():
+    try:
+        from . import trajectory_probe as tp
+    except ImportError:
+        import trajectory_probe as tp
+    return tp
+
+
+def block_sweep(refinement_key, trials=2000):
+    """-> {block: {"separation":..., "p_value":..., "noise_floor":..., "n":...}}, ranked by
+    which of CANDIDATE_BLOCKS actually separates liked from disliked in YOUR rated data --
+    reusing trajectory_probe's own permutation test (the one that correctly found real signal
+    in the early-schedule work this session, after the centring fix) instead of trusting
+    REINS' 50%-depth heuristic or porting a diagnostic built for a different question (LTXAV's
+    identity-block search measured cross-scene consistency, not liked-vs-disliked separation).
+
+    Grouped by prompt_hash so "these are different prompts" cannot masquerade as "these are
+    different ratings" -- the same confound that made the first cross-prompt read of this
+    project's OTHER value function come out backwards. Rows with weight == 0 (a rating that
+    landed exactly at the scale's neutral midpoint) are dropped -- neither liked nor disliked.
+    """
+    tp = _trajectory_probe()
+    data = _load(refinement_key)
+    rows = [r for r in data["rows"]
+            if isinstance(r, dict) and isinstance(r.get("desc"), dict)
+            and r.get("weight", 0) != 0]
+    out = {}
+    for block in CANDIDATE_BLOCKS:
+        have = [r for r in rows if block in r["desc"]]
+        if len(have) < 2 * MIN_PER_GROUP:
+            continue
+        descriptors = [r["desc"][block] for r in have]
+        labels = [r["weight"] > 0 for r in have]
+        groups = [r.get("prompt_hash") for r in have]
+        if any(g is None for g in groups):
+            groups = None  # can't stratify by a hash some rows never recorded
+        result = tp.permutation_test(descriptors, labels, groups=groups, trials=trials)
+        if result is not None:
+            out[block] = result
+    return out

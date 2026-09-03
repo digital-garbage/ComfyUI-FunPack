@@ -10194,13 +10194,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if _is_h3:
                     try:
                         from . import h3_repr_steering as _rs
+                        from . import trajectory_probe as _tp
                     except ImportError:
                         import h3_repr_steering as _rs
+                        import trajectory_probe as _tp
                     _rs_reward = float(learning_profile.get("reward", 0.0))
                     print(f"[FunPackRefiner] H3 representation steering: committing weight "
                           f"{_rs_reward:+.3f} for rating '{rating_label}' "
                           f"(legacy_score={learning_profile.get('legacy_score')!r})")
-                    _rs.commit(refinement_key, _rs_reward)
+                    # Same prompt_hash trajectory_probe uses -- block_sweep() groups by it so
+                    # "these are different prompts" cannot masquerade as "these are different
+                    # ratings", the confound that made the FIRST cross-prompt read of this
+                    # project's output value function come out inverted.
+                    _rs.commit(refinement_key, _rs_reward,
+                              prompt_hash=_tp.prompt_hash((previous_run or {}).get("conditioning")))
+                    _sweep = _rs.block_sweep(refinement_key)
+                    if _sweep:
+                        _ranked = sorted(_sweep.items(), key=lambda kv: kv[1]["p_value"])
+                        print("[FunPackRefiner] H3 representation steering: block sweep — "
+                              + ", ".join(f"b{b}(sep={r['separation']:+.3f} p={r['p_value']:.3f} n={r['n']})"
+                                         for b, r in _ranked))
             # DynaShift negative memory: pair the sampler's pending raw latent with this
             # rating — promote into the per-key negative bank when the rating marks the run
             # a bad outcome (intrusions: awful / wrong_appearance; or the quality-missing

@@ -3730,7 +3730,7 @@ class FunPackLTXAVSceneChainSampler:
         # key, no rating and no Studio state, so it works on a graph with the Refiner absent
         # entirely. 1.0 on all three does not even clone the model.
         model = self._install_h3_final_layer(model, positive)
-        _repr_capture = [None]
+        _repr_capture = [{}]
         if h3_repr_steering and refinement_key:
             model = self._install_h3_repr_steering(
                 model, refinement_key, h3_repr_steering_strength, _repr_capture)
@@ -3741,7 +3741,7 @@ class FunPackLTXAVSceneChainSampler:
                 noise_mask=latent.get("noise_mask"), seed=int(seed),
                 callback=_progress_cb if pbar is not None else None,
             )
-            if _repr_capture[0] is not None:
+            if _repr_capture[0]:
                 try:
                     from . import h3_repr_steering as _rs
                 except ImportError:
@@ -6560,10 +6560,14 @@ class FunPackLTXAVSceneChainSampler:
 
         Reaches inside the forward pass: hooks block DEFAULT_BLOCK, adds the learned liked-
         minus-disliked direction to that block's VIDEO rows (never audio or text — derived
-        fresh from `mod_segments` each call, cached by seq_len), and captures this run's own
-        descriptor into `capture_holder[0]` so the caller can save it as the next pending row
-        once sampling finishes. No-ops (clears nothing, costs nothing) when there are not yet
-        3+ liked and 3+ disliked runs on this key — direction() says so, this just reports it.
+        fresh from `mod_segments` each call, cached by seq_len). Every OTHER block in
+        CANDIDATE_BLOCKS is hooked read-only (captured, never modified) at the same time, so
+        `h3_repr_steering.block_sweep()` has real per-block data to rank without needing its
+        own separate collection pass. `capture_holder[0]` becomes {block: descriptor} for the
+        caller to save as the next pending row once sampling finishes. No-ops on STEERING
+        (clears nothing, costs nothing extra) when there are not yet 2+ liked and 2+ disliked
+        runs on this key at DEFAULT_BLOCK — direction() says so, this just reports it; capture
+        at every candidate block still happens regardless.
         """
         try:
             try:
@@ -6580,33 +6584,38 @@ class FunPackLTXAVSceneChainSampler:
             to = patched.model_options.get("transformer_options", {}).copy()
             patches_replace = dict(to.get("patches_replace", {}))
             dit_patches = dict(patches_replace.get("dit", {}))
-            inner = dit_patches.get(("double_block", _rs.DEFAULT_BLOCK))
-            mask_cache = {}
             _strength = float(strength)
 
-            def _hook(args, extra):
-                out = extra["original_block"](args)["img"] if inner is None else \
-                    inner(args, extra)["img"]
-                seq_len = int(out.shape[0])
-                mask = mask_cache.get(seq_len, "MISS")
-                if mask == "MISS":
-                    mask = _rs.video_mask_from_mod_segments(
-                        args.get("mod_segments"), seq_len, out.device)
-                    mask_cache[seq_len] = mask
-                if mask is not None:
-                    if direction is not None and _strength > 0.0:
-                        rows = out[mask]
-                        row_norm = rows.detach().float().norm(dim=-1).mean()
-                        if torch.isfinite(row_norm) and row_norm > 0:
-                            out = out.clone()
-                            out[mask] = rows + (direction.to(out.dtype).to(out.device)
-                                                * _strength * row_norm).to(rows.dtype)
-                    desc = _rs.capture(out, mask)
-                    if desc is not None:
-                        capture_holder[0] = desc
-                return {"img": out}
+            def _make_hook(block, inject):
+                inner = dit_patches.get(("double_block", block))
+                mask_cache = {}
 
-            dit_patches[("double_block", _rs.DEFAULT_BLOCK)] = _hook
+                def _hook(args, extra):
+                    out = extra["original_block"](args)["img"] if inner is None else \
+                        inner(args, extra)["img"]
+                    seq_len = int(out.shape[0])
+                    mask = mask_cache.get(seq_len, "MISS")
+                    if mask == "MISS":
+                        mask = _rs.video_mask_from_mod_segments(
+                            args.get("mod_segments"), seq_len, out.device)
+                        mask_cache[seq_len] = mask
+                    if mask is not None:
+                        if inject and direction is not None and _strength > 0.0:
+                            rows = out[mask]
+                            row_norm = rows.detach().float().norm(dim=-1).mean()
+                            if torch.isfinite(row_norm) and row_norm > 0:
+                                out = out.clone()
+                                out[mask] = rows + (direction.to(out.dtype).to(out.device)
+                                                    * _strength * row_norm).to(rows.dtype)
+                        desc = _rs.capture(out, mask)
+                        if desc is not None:
+                            capture_holder[0][block] = desc
+                    return {"img": out}
+                return _hook
+
+            for _block in _rs.CANDIDATE_BLOCKS:
+                dit_patches[("double_block", _block)] = _make_hook(
+                    _block, inject=(_block == _rs.DEFAULT_BLOCK))
             patches_replace["dit"] = dit_patches
             to["patches_replace"] = patches_replace
             patched.model_options["transformer_options"] = to

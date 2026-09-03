@@ -390,6 +390,80 @@
     return box;
   }
 
+  // ── H3 representation steering ──────────────────────────────────────────
+  // Per-KEY (unlike the probe above, which pools across every key): one sidecar per
+  // refinement key, so status/export/clear all act on whichever key this project is using.
+  let reinsState = null, reinsError = "";
+
+  function reinsSweepTable(sweep) {
+    const entries = Object.entries(sweep || {}).sort((a, b) => a[1].p_value - b[1].p_value);
+    if (!entries.length) return null;
+    const tbl = el("div", "sw-rows");
+    entries.forEach(([block, r]) => {
+      const sig = r.p_value <= 0.05;
+      tbl.append(infoRow(`Block ${block}`,
+        `sep ${r.separation >= 0 ? "+" : ""}${r.separation.toFixed(3)} · p ${r.p_value.toFixed(3)} · n=${r.n}`,
+        sig));
+    });
+    return tbl;
+  }
+
+  function reinsRows(key) {
+    const box = el("div", "sw-stack");
+    const paint = () => {
+      clear(box);
+      const rows = el("div", "sw-rows");
+      const nLiked = reinsState ? reinsState.n_liked : 0;
+      const nDisliked = reinsState ? reinsState.n_disliked : 0;
+      const ready = !!(reinsState && reinsState.ready);
+      rows.append(infoRow("Rated generations (this key)",
+        `${nLiked} liked / ${nDisliked} disliked`, reinsState ? ready : null));
+      if (reinsState && !ready) {
+        rows.append(el("div", "sw-hint",
+          `Needs ${reinsState.min_per_group}+ of each before it steers anything — still `
+          + "capturing every generation either way."));
+      }
+      rows.append(actionRow("Save this key's REINS data",
+        "Downloads every captured run (all candidate blocks, not just the one that steers) "
+        + "as one file — same reason the probe has this: a rental gets replaced and "
+        + "refinements/ is not in git.",
+        "Download", async () => {
+          reinsError = "";
+          try { await window.MovieEditorAPI.reinsExport(key); }
+          catch (e) { reinsError = String(e.message || e); paint(); }
+        }, { disabled: !nLiked && !nDisliked }));
+      rows.append(actionRow("Start fresh",
+        "Throws away every captured run for this key. Cannot be undone — download first if "
+        + "you want to keep it.",
+        "Clear…", async () => {
+          if (!window.confirm(`Throw away all REINS data for '${key}'?\n\nThis cannot be `
+              + "undone. Download it first if you want to keep it.")) return;
+          reinsError = "";
+          try { reinsState = await window.MovieEditorAPI.reinsClear(key); }
+          catch (e) { reinsError = String(e.message || e); }
+          paint();
+        }, { disabled: !nLiked && !nDisliked, danger: true }));
+      box.append(rows);
+      if (reinsError) box.append(el("div", "sw-hint", reinsError));
+      const sweepTbl = reinsState && reinsSweepTable(reinsState.sweep);
+      if (sweepTbl) {
+        box.append(el("div", "sw-rows-label",
+          `Block sweep — which of H3's blocks separates liked from disliked (block `
+          + `${reinsState.default_block} is the one that actually steers)`));
+        box.append(sweepTbl);
+      }
+    };
+    paint();
+    // Re-fetched on every mount, same reasoning as the probe: a stale count is worse than
+    // none, and this section is remounted every time you navigate back to it.
+    if (window.MovieEditorAPI) {
+      window.MovieEditorAPI.reinsStatus(key)
+        .then((s) => { reinsState = s; paint(); })
+        .catch(() => {});
+    }
+    return box;
+  }
+
   function infoRow(title, value, ok) {
     const row = el("div", "sw-row");
     const main = el("div", "sw-row-main");
@@ -566,6 +640,9 @@
 
         wrap.append(el("div", "sw-rows-label", "Trajectory probe"));
         wrap.append(probeRows());
+
+        wrap.append(el("div", "sw-rows-label", "H3 representation steering (REINS)"));
+        wrap.append(reinsRows(st.project?.refinement_key || "default"));
 
         wrap.append(el("div", "sw-rows-label", "Danger zone"));
         const danger = el("div", "sw-rows");
