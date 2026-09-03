@@ -2806,6 +2806,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.05, "min": 0.0, "max": 2.0, "step": 0.01,
                     "tooltip": "How much of the learned direction to add, as a fraction of that block's own hidden-state norm. Unlike the attention-bias channel, there is no architectural ceiling here -- push too far and coherence breaks with no warning. Start low; the way to tell it is doing anything at all is to push this deliberately high on a same-seed test and see if the video visibly moves, then back off.",
                 }),
+                "h3_repr_steering_block": (["20", "25", "30", "35", "40"], {
+                    "default": "25",
+                    "tooltip": "TEST-ONLY: which block actually gets steered (the rest of the sweep's candidate blocks are still captured read-only, same as always). direction() is recomputed for whichever block you pick here -- this does not change what block_sweep ranks, only which block's learned direction gets injected into this run.",
+                }),
                 "alg_guide_blur_strength": ("FLOAT", {
                     "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
                     "tooltip": "Downsample factor for the guide-frame blur (alg_blur_guides). Higher = blurrier guide/JoyAI frames during the affected steps. Independent of the sampler's anchor alg_strength.",
@@ -3668,6 +3672,7 @@ class FunPackLTXAVSceneChainSampler:
                       alg_anchor_sigma_threshold=0.975,
                       bounded_attention_enabled=False,
                       h3_repr_steering=False, h3_repr_steering_strength=0.05,
+                      h3_repr_steering_block="25",
                       refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -3733,7 +3738,8 @@ class FunPackLTXAVSceneChainSampler:
         _repr_capture = [{}]
         if h3_repr_steering and refinement_key:
             model = self._install_h3_repr_steering(
-                model, refinement_key, h3_repr_steering_strength, _repr_capture)
+                model, refinement_key, h3_repr_steering_strength, _repr_capture,
+                steer_block=int(h3_repr_steering_block))
 
         try:
             sampled = comfy.sample.sample_custom(
@@ -6555,30 +6561,37 @@ class FunPackLTXAVSceneChainSampler:
                         "the rating's per-phrase weighting is NOT being applied")
             return model
 
-    def _install_h3_repr_steering(self, model, refinement_key, strength, capture_holder):
+    def _install_h3_repr_steering(self, model, refinement_key, strength, capture_holder,
+                                   steer_block=None):
         """EXPERIMENTAL, unvalidated (H3 only). See h3_repr_steering.py.
 
-        Reaches inside the forward pass: hooks block DEFAULT_BLOCK, adds the learned liked-
-        minus-disliked direction to that block's VIDEO rows (never audio or text — derived
-        fresh from `mod_segments` each call, cached by seq_len). Every OTHER block in
-        CANDIDATE_BLOCKS is hooked read-only (captured, never modified) at the same time, so
-        `h3_repr_steering.block_sweep()` has real per-block data to rank without needing its
-        own separate collection pass. `capture_holder[0]` becomes {block: descriptor} for the
-        caller to save as the next pending row once sampling finishes. No-ops on STEERING
-        (clears nothing, costs nothing extra) when there are not yet 2+ liked and 2+ disliked
-        runs on this key at DEFAULT_BLOCK — direction() says so, this just reports it; capture
-        at every candidate block still happens regardless.
+        Reaches inside the forward pass: hooks `steer_block` (default DEFAULT_BLOCK), adds the
+        learned liked-minus-disliked direction to that block's VIDEO rows (never audio or
+        text — derived fresh from `mod_segments` each call, cached by seq_len). Every OTHER
+        block in CANDIDATE_BLOCKS is hooked read-only (captured, never modified) at the same
+        time, so `h3_repr_steering.block_sweep()` has real per-block data to rank without
+        needing its own separate collection pass. `capture_holder[0]` becomes {block:
+        descriptor} for the caller to save as the next pending row once sampling finishes.
+        No-ops on STEERING (clears nothing, costs nothing extra) when there are not yet 2+
+        liked and 2+ disliked runs on this key at `steer_block` — direction() says so, this
+        just reports it; capture at every candidate block still happens regardless.
+
+        `steer_block` lets test runs pick which candidate block actually gets injected instead
+        of always DEFAULT_BLOCK -- direction() is computed fresh for that block. Does not
+        change what block_sweep ranks (still every candidate block, read-only capture as
+        always); only changes which one this particular run steers with.
         """
         try:
             try:
                 from . import h3_repr_steering as _rs
             except ImportError:
                 import h3_repr_steering as _rs
-            direction, n_liked, n_disliked = _rs.direction(refinement_key)
+            steer_block = _rs.DEFAULT_BLOCK if steer_block is None else int(steer_block)
+            direction, n_liked, n_disliked = _rs.direction(refinement_key, block=steer_block)
             if direction is None:
                 print(f"[FunPackSceneChain] H3 representation steering: not enough data yet "
                       f"({n_liked} liked / {n_disliked} disliked, need {_rs.MIN_PER_GROUP} of "
-                      f"each) — capturing this run, not steering it.")
+                      f"each at block {steer_block}) — capturing this run, not steering it.")
 
             patched = model.clone()
             to = patched.model_options.get("transformer_options", {}).copy()
@@ -6623,14 +6636,14 @@ class FunPackLTXAVSceneChainSampler:
 
             for _block in _rs.CANDIDATE_BLOCKS:
                 dit_patches[("double_block", _block)] = _make_hook(
-                    _block, inject=(_block == _rs.DEFAULT_BLOCK))
+                    _block, inject=(_block == steer_block))
             patches_replace["dit"] = dit_patches
             to["patches_replace"] = patches_replace
             patched.model_options["transformer_options"] = to
             if direction is not None:
                 print(f"[FunPackSceneChain] H3 representation steering: applying learned "
                       f"direction ({n_liked} liked / {n_disliked} disliked) at block "
-                      f"{_rs.DEFAULT_BLOCK}, strength {_strength:g}.")
+                      f"{steer_block}, strength {_strength:g}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 representation steering", _e,
@@ -6895,6 +6908,7 @@ class FunPackLTXAVSceneChainSampler:
                trajectory_guidance=False, trajectory_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                h3_repr_steering=False, h3_repr_steering_strength=0.05,
+               h3_repr_steering_block="25",
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
@@ -7736,6 +7750,7 @@ class FunPackLTXAVSceneChainSampler:
                     bounded_attention_enabled=bounded_attention_enabled,
                     h3_repr_steering=h3_repr_steering,
                     h3_repr_steering_strength=h3_repr_steering_strength,
+                    h3_repr_steering_block=h3_repr_steering_block,
                     refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene
