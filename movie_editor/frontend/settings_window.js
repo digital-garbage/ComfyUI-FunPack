@@ -408,6 +408,26 @@
     return tbl;
   }
 
+  function reinsToggleRow(enabled, onChange) {
+    const row = el("div", "sw-row");
+    const main = el("div", "sw-row-main");
+    main.append(el("div", "sw-row-title", "Record ratings for this key"));
+    main.append(el("div", "sw-row-hint",
+      "On by default. Independent of the sampler's own toggle — that one controls whether "
+      + "the learned direction gets APPLIED; this one controls whether it keeps learning at "
+      + "all. Turn off to pause the log without losing what's captured, or while testing "
+      + "something else you don't want mixed in."));
+    row.append(main);
+    const lbl = el("label", "chk es-toggle");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = !!enabled;
+    cb.onchange = () => onChange(cb.checked);
+    lbl.append(cb, el("span", null, ""));
+    row.append(lbl);
+    return row;
+  }
+
   function reinsRows(key) {
     const box = el("div", "sw-stack");
     const paint = () => {
@@ -416,12 +436,21 @@
       const nLiked = reinsState ? reinsState.n_liked : 0;
       const nDisliked = reinsState ? reinsState.n_disliked : 0;
       const ready = !!(reinsState && reinsState.ready);
+      const enabled = !reinsState || reinsState.enabled !== false;
+      rows.append(reinsToggleRow(enabled, async (on) => {
+        reinsError = "";
+        try { reinsState = await window.MovieEditorAPI.reinsSetEnabled(key, on); }
+        catch (e) { reinsError = String(e.message || e); }
+        paint();
+      }));
       rows.append(infoRow("Rated generations (this key)",
         `${nLiked} liked / ${nDisliked} disliked`, reinsState ? ready : null));
       if (reinsState && !ready) {
         rows.append(el("div", "sw-hint",
-          `Needs ${reinsState.min_per_group}+ of each before it steers anything — still `
-          + "capturing every generation either way."));
+          enabled
+            ? `Needs ${reinsState.min_per_group}+ of each before it steers anything — still `
+              + "capturing every generation either way."
+            : "Recording is off — nothing new is being captured for this key."));
       }
       rows.append(actionRow("Save this key's REINS data",
         "Downloads every captured run (all candidate blocks, not just the one that steers) "

@@ -116,16 +116,41 @@ def capture(hidden_state, video_mask):
 def _load(refinement_key):
     path = state_path(refinement_key)
     if not os.path.exists(path):
-        return {"rows": [], "pending": None}
+        return {"rows": [], "pending": None, "enabled": True}
     try:
         data = torch.load(path, map_location="cpu", weights_only=True)
     except Exception:  # noqa: BLE001
-        return {"rows": [], "pending": None}
+        return {"rows": [], "pending": None, "enabled": True}
     if not isinstance(data, dict):
-        return {"rows": [], "pending": None}
+        return {"rows": [], "pending": None, "enabled": True}
     data.setdefault("rows", [])
     data.setdefault("pending", None)
+    data.setdefault("enabled", True)
     return data
+
+
+def capture_enabled(refinement_key):
+    """Whether this key is recording at all -- independent of the sampler's own
+    h3_repr_steering toggle, which also controls whether the learned direction gets APPLIED.
+    A user who wants to pause data collection (to test something else without polluting the
+    log, or because a sweep came back null and they want to think before adding more rows)
+    still needs the widget on for `block_sweep`/status to mean anything, so the pause lives
+    here instead of overloading that widget."""
+    if not refinement_key:
+        return True
+    return bool(_load(refinement_key).get("enabled", True))
+
+
+def set_capture_enabled(refinement_key, enabled):
+    if not refinement_key:
+        return
+    data = _load(refinement_key)
+    data["enabled"] = bool(enabled)
+    try:
+        _save(refinement_key, data)
+    except OSError as e:
+        _log().failed("H3 representation steering", "set capture enabled", e,
+                       "the pause/resume did not persist")
 
 
 def _save(refinement_key, data):
@@ -146,6 +171,8 @@ def save_pending(refinement_key, descriptors):
     if not refinement_key or not descriptors:
         return
     data = _load(refinement_key)
+    if not data.get("enabled", True):
+        return
     data["pending"] = {int(b): d.detach().float().cpu() for b, d in descriptors.items()}
     try:
         _save(refinement_key, data)

@@ -46,21 +46,23 @@
 
   // H3: the category grid above assumes axis-specific effects (phrase emphasis, dynashift,
   // ...) this project has not actually proven land differently from one another on H3 — see
-  // project_reward_model_rework.md. One 1-10 scale instead; the backend already knows how to
-  // turn a bare number into the nearest existing rating profile (normalize_refiner_v2_rating's
-  // legacy-score path), so nothing downstream needs to change, only what the picker sends.
-  const H3_SCALE = Array.from({ length: 10 }, (_, i) => {
-    const n = i + 1;
-    return {
-      label: String(n), display: String(n),
-      reward: n >= 9 ? "great" : n >= 7 ? "good" : n >= 5 ? "mixed" : n >= 3 ? "bad" : "awful",
-      hint: n === 10 ? "Exactly what you asked for." : n === 1 ? "Everything wrong." : `${n} of 10.`,
-    };
-  });
+  // project_reward_model_rework.md. A 1-10 scale was tried first (still what the backend
+  // accepts -- normalize_refiner_v2_rating's legacy-score path), but h3_repr_steering only
+  // ever reads the SIGN of the resulting reward, never its size (see the 2026-09-04 session:
+  // weighting by magnitude just let a mediocre middle rating dilute the direction at the
+  // small sample sizes this actually runs at). A scale whose granularity nothing downstream
+  // uses is a UI lying about how precise the input needs to be, so it's binary now -- "10"
+  // and "1" are just the scale's own clean-positive/clean-negative endpoints, already wired,
+  // nothing to change on the backend.
+  const H3_SCALE = [
+    { label: "10", display: "Liked", reward: "+", hint: "This generation was good." },
+    { label: "1", display: "Disliked", reward: "−", hint: "This generation was not." },
+  ];
 
   // canonical label -> display name, for rendering a stored value (scene button, chips).
   const DISPLAY_NAMES = {};
   for (const cat of CATEGORIES) for (const r of cat.ratings) if (r.display) DISPLAY_NAMES[r.label] = r.display;
+  for (const r of H3_SCALE) if (r.display) DISPLAY_NAMES[r.label] = r.display;
   const displayName = (label) => DISPLAY_NAMES[label] || label;
 
   const NO_LOVED = new Set([
@@ -88,6 +90,9 @@
     const v = String(value || "").trim();
     if (!v || v === FORGET_LABEL) return "";
     if (v.endsWith("|loved")) return formatLabel(v.slice(0, -6)) + " ♥";
+    if (DISPLAY_NAMES[v]) return DISPLAY_NAMES[v];
+    // A stray digit from before the H3 picker went binary (2..9) has no display name --
+    // still render it as a scale value rather than a bare, unlabelled number.
     if (/^\d+$/.test(v)) return `${v}/10`;
     return displayName(v);
   }

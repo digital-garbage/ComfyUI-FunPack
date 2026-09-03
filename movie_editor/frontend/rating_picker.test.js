@@ -17,6 +17,12 @@ test("a loved scale number keeps the heart", () => {
   assert.strictEqual(Picker.formatLabel("9|loved"), "9/10 ♥");
 });
 
+test("the H3 picker's binary endpoints render as Liked/Disliked, not N/10", () => {
+  assert.strictEqual(Picker.formatLabel("10"), "Liked");
+  assert.strictEqual(Picker.formatLabel("1"), "Disliked");
+  assert.strictEqual(Picker.buttonLabel("10"), "★ Liked");
+});
+
 test("an existing category label is untouched", () => {
   assert.strictEqual(Picker.formatLabel("Perfect"), "Perfect");
 });

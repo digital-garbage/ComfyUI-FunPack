@@ -2110,6 +2110,7 @@ if web is not None and PromptServer is not None:
             "min_per_group": rs.MIN_PER_GROUP,
             "default_block": rs.DEFAULT_BLOCK,
             "sweep": {str(b): r for b, r in sweep.items()},
+            "enabled": rs.capture_enabled(key),
         }
 
     @routes.get(UI_PREFIX + "/api/h3_repr_steering")
@@ -2138,6 +2139,14 @@ if web is not None and PromptServer is not None:
         return web.Response(
             body=body, content_type="application/octet-stream",
             headers={"Content-Disposition": f'attachment; filename="{key}.repr_steer.pt"'})
+
+    @routes.post(UI_PREFIX + "/api/h3_repr_steering/enabled")
+    async def _repr_steer_set_enabled(req):
+        body = await req.json()
+        key = str(body.get("key") or "default").strip() or "default"
+        _repr_steer_module().set_capture_enabled(key, bool(body.get("enabled")))
+        _rs, state = _repr_steer_state(key)
+        return web.json_response(state)
 
     @routes.post(UI_PREFIX + "/api/h3_repr_steering/clear")
     async def _repr_steer_clear(req):
