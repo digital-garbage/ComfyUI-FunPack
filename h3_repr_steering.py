@@ -105,7 +105,7 @@ def capture(hidden_state, video_mask):
 
 # --- persistence -------------------------------------------------------------------------
 #
-# One row per generation: {"desc": {block: tensor}, "weight": float, "prompt_hash": str|None}.
+# One row per generation: {"desc": {block: tensor}, "weight": float}.
 # Kept as a log and the direction recomputed from it on demand -- same reasoning
 # trajectory_guidance's train_from_rows gives: this is cheap enough that being able to
 # re-derive it (a log carried from another box, a fixed weighting formula) is worth more than
@@ -154,11 +154,11 @@ def save_pending(refinement_key, descriptors):
                        "this run's capture is not kept")
 
 
-def commit(refinement_key, reward, prompt_hash=None):
-    """Pairs the pending capture with a rating's WEIGHT (and the prompt it was rated under,
-    for block_sweep's cross-prompt guard) and appends it to the log. `reward` is the caller's
-    already-resolved, already-admissibility-filtered reward -- this function trusts it rather
-    than re-deriving a verdict, same as the value functions do with the same number.
+def commit(refinement_key, reward):
+    """Pairs the pending capture with a rating's WEIGHT and appends it to the log. `reward`
+    is the caller's already-resolved, already-admissibility-filtered reward -- this function
+    trusts it rather than re-deriving a verdict, same as the value functions do with the same
+    number.
 
     -> "recorded" | "no_pending" (nothing generated since the last rating) | "no_key". The
     caller prints this, not just the reward it computed -- a reward can be correct and still
@@ -176,8 +176,7 @@ def commit(refinement_key, reward, prompt_hash=None):
             pass
         return "no_pending"
     try:
-        data["rows"].append({"desc": pending, "weight": float(reward),
-                             "prompt_hash": prompt_hash})
+        data["rows"].append({"desc": pending, "weight": float(reward)})
     except (TypeError, ValueError):
         try:
             _save(refinement_key, data)
@@ -251,13 +250,13 @@ def block_sweep(refinement_key, trials=2000):
     reusing trajectory_probe's own permutation test (the one that correctly found real signal
     in the early-schedule work this session, after the centring fix) instead of trusting
     REINS' 50%-depth heuristic or porting a diagnostic built for a different question (LTXAV's
-    identity-block search measured cross-scene consistency, not liked-vs-disliked separation).
+    identity-block search measured cross-scene consistency, not liked-vs-disliged separation).
 
-    Grouped by prompt_hash so "these are different prompts" cannot masquerade as "these are
-    different ratings" -- the same confound that made the first cross-prompt read of this
-    project's OTHER value function come out backwards. Rows with weight == 0 (a rating that
-    landed exactly at the scale's neutral midpoint) are dropped -- neither liked nor disliked.
-    """
+    No cross-prompt grouping -- it was tried (prompt_hash on each row) and dropped: the
+    R2V-wired conditioning this runs on never produced a real hash, so the guard was
+    permanently inert, and fixing it was declined as not worth the continued attention. Rows
+    with weight == 0 (a rating exactly at the scale's neutral midpoint) are dropped -- neither
+    liked nor disliked."""
     tp = _trajectory_probe()
     data = _load(refinement_key)
     rows = [r for r in data["rows"]
@@ -270,10 +269,7 @@ def block_sweep(refinement_key, trials=2000):
             continue
         descriptors = [r["desc"][block] for r in have]
         labels = [r["weight"] > 0 for r in have]
-        groups = [r.get("prompt_hash") for r in have]
-        if any(g is None for g in groups):
-            groups = None  # can't stratify by a hash some rows never recorded
-        result = tp.permutation_test(descriptors, labels, groups=groups, trials=trials)
+        result = tp.permutation_test(descriptors, labels, trials=trials)
         if result is not None:
             out[block] = result
     return out

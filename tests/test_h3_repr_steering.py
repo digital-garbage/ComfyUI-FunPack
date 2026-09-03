@@ -200,7 +200,7 @@ def test_block_sweep_ranks_a_real_signal_over_pure_noise():
         desc10 = torch.tensor([3.0, 0.0]) if liked else torch.tensor([-3.0, 0.0])
         desc20 = torch.randn(2)  # unrelated to the rating
         rs.save_pending("k", {10: desc10, 20: desc20})
-        rs.commit("k", 1.0 if liked else -1.0, prompt_hash="same-prompt")
+        rs.commit("k", 1.0 if liked else -1.0)
     sweep = rs.block_sweep("k", trials=500)
     assert 10 in sweep and sweep[10]["p_value"] < 0.2
     assert sweep[10]["separation"] > 0

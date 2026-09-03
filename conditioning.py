@@ -10194,23 +10194,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if _is_h3:
                     try:
                         from . import h3_repr_steering as _rs
-                        from . import trajectory_probe as _tp
                     except ImportError:
                         import h3_repr_steering as _rs
-                        import trajectory_probe as _tp
                     _rs_reward = float(learning_profile.get("reward", 0.0))
-                    # Same prompt_hash trajectory_probe uses -- block_sweep() groups by it so
-                    # "these are different prompts" cannot masquerade as "these are different
-                    # ratings", the confound that made the FIRST cross-prompt read of this
-                    # project's output value function come out inverted.
                     # Block sweep is NOT printed here -- it's the same computation the
                     # Settings > Refinement & Taste panel already runs on demand and shows as
                     # a table (reinsRows in settings_window.js), and running the full
                     # permutation test on every single rating just to throw the ranked line
                     # into the console was pure noise duplicating what the panel already has.
-                    _rs_outcome = _rs.commit(
-                        refinement_key, _rs_reward,
-                        prompt_hash=_tp.prompt_hash((previous_run or {}).get("conditioning")))
+                    _rs_outcome = _rs.commit(refinement_key, _rs_reward)
                     # The reward is always correct once computed -- what actually varies run to
                     # run is whether there was a captured generation to PAIR it with, and a log
                     # line that only ever reports the reward cannot tell a real commit apart
