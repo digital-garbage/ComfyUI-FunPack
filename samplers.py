@@ -4823,6 +4823,7 @@ class FunPackLTXAVSceneChainSampler:
         #            pull_dir [D] fp32 unit vector | None)
         _prep = {}
         _warned = [False]
+        _pull_warned = [False]
         # The bank stores the RAW scene conditioning (negative_memory.save_pending is handed
         # positive[0][0]), so the prompt-similarity weight has to be computed against the raw
         # cond too. On H3 `c_crossattn` is the refined DiT hidden state instead, a different
@@ -4886,15 +4887,22 @@ class FunPackLTXAVSceneChainSampler:
             # _matching_units twice.
             pull_dir = None
             neg_entry_count = len(conds)
-            if _positives and neg_entry_count >= _MIN_PULL:
+            pos_entry_count = 0
+            if _positives:
                 pos_units, pos_entry_count = _matching_units(_positives, device, c, h, w)
-                if pos_units is not None and pos_entry_count >= _MIN_PULL:
+                if neg_entry_count >= _MIN_PULL and pos_entry_count >= _MIN_PULL:
                     neg_units_f32 = torch.cat(units, dim=0).float() if units else None
                     if neg_units_f32 is not None:
                         diff = pos_units.mean(dim=0) - neg_units_f32.mean(dim=0)
                         n = diff.norm()
                         if torch.isfinite(n) and n > 1e-8:
                             pull_dir = diff / n
+            if _positives and pull_dir is None and not _pull_warned[0]:
+                _pull_warned[0] = True
+                print(f"[FunPackSceneChain] dynashift: positive pull inactive at this run's "
+                      f"latent resolution — {pos_entry_count} of {len(_positives)} positive(s) "
+                      f"and {neg_entry_count} of {len(negatives)} negative(s) match "
+                      f"(need {_MIN_PULL}+ of each at this resolution)")
             prepared = None
             if descs or pull_dir is not None:
                 prepared = (torch.cat(descs, dim=0) if descs else None,
