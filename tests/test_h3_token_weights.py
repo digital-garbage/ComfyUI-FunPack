@@ -553,7 +553,7 @@ class _H3Clip:
             qwen3vl_32b=types.SimpleNamespace(tokenizer=_FakeTokenizer()))
 
 
-def _apply(refiner, monkeypatch, meta, memory, variables=None):
+def _apply(refiner, monkeypatch, meta, memory, variables=None, variability=0.0):
     import conditioning
     import minimax_h3
     monkeypatch.setattr(minimax_h3, "is_h3_clip", lambda c: True)
@@ -564,7 +564,7 @@ def _apply(refiner, monkeypatch, meta, memory, variables=None):
     out = refiner._v2_apply_h3_token_weights(
         [[torch.zeros(1, 40, 8), dict(meta)]], _H3Clip(), phrase_memory=memory,
         axis_feedback={"missing_axes": ["details"]}, enabled=True,
-        auto_strength=0.0435, variables=variables)
+        auto_strength=0.0435, variability=variability, variables=variables)
     return out[0][1].get("funpack_h3_token_weights")
 
 
@@ -750,3 +750,49 @@ def test_a_phrase_no_longer_in_the_prompt_is_not_weighted(refiner, monkeypatch):
 
     assert tag is not None
     assert len(tag["spans"]) == 1
+
+
+# --- variability dial -------------------------------------------------------
+
+def test_variability_zero_matches_the_old_no_dial_behaviour(refiner, monkeypatch):
+    """0 is the historical default — the dial must be able to fully disappear."""
+    memory = {"neon rain": {"kind": "phrase",
+                            "effective_category_scores": {"details": 0.9}}}
+    meta = {"funpack_encode_text": "cinematic neon rain"}
+    with_dial = _apply(refiner, monkeypatch, meta, memory, variability=0.0)
+    no_dial = _apply(refiner, monkeypatch, meta, memory)
+    assert with_dial["spans"][0][2] == pytest.approx(no_dial["spans"][0][2])
+
+
+def test_variability_one_removes_the_bias_entirely(refiner, monkeypatch):
+    """1 = the emphasis this rating earned is switched off — spans still get located (so a
+    weaker signal is visible if it ever comes back on) but the learned weight is 1.0, meaning
+    no bias reaches the attention override at all."""
+    memory = {"neon rain": {"kind": "phrase",
+                            "effective_category_scores": {"details": 0.9}}}
+    tag = _apply(refiner, monkeypatch,
+                 {"funpack_encode_text": "cinematic neon rain"}, memory, variability=1.0)
+    assert tag is None  # weight collapses to 1.0 -> weights_from_memory drops it -> nothing to locate
+
+
+def test_variability_partial_shrinks_the_weight_without_removing_it(refiner, monkeypatch):
+    memory = {"neon rain": {"kind": "phrase",
+                            "effective_category_scores": {"details": 0.9}}}
+    meta = {"funpack_encode_text": "cinematic neon rain"}
+    full = _apply(refiner, monkeypatch, meta, memory, variability=0.0)
+    half = _apply(refiner, monkeypatch, meta, memory, variability=0.5)
+    full_w = full["spans"][0][2]
+    half_w = half["spans"][0][2]
+    assert 1.0 < half_w < full_w
+
+
+def test_variability_out_of_range_is_clamped_not_inverted(refiner, monkeypatch):
+    """A value above 1 (or a stray negative) must not push the bias past full strength or
+    flip its sign — it is a dial with a floor at zero, not open-ended."""
+    memory = {"neon rain": {"kind": "phrase",
+                            "effective_category_scores": {"details": 0.9}}}
+    meta = {"funpack_encode_text": "cinematic neon rain"}
+    full = _apply(refiner, monkeypatch, meta, memory, variability=0.0)
+    over = _apply(refiner, monkeypatch, meta, memory, variability=2.0)
+    assert over is None  # 1.0 - 2.0 clamped to 0.0 by max(0.0, ...) -> same as variability=1.0
+    assert full["spans"][0][2] > 1.0

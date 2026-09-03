@@ -9903,7 +9903,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
-                  h3_phrase_emphasis=False,
+                  h3_phrase_emphasis=False, h3_phrase_variability=0.0,
                   prompt_enhance=False, prompt_enhance_system="",
                   prompt_enhance_temperature=0.7, prompt_enhance_top_p=0.92,
                   prompt_enhance_max_length=400, prompt_enhance_thinking=False,
@@ -11100,7 +11100,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, h3_phrase_variability=h3_phrase_variability, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
                         status,
                         training_info,
                         loss_graph,
@@ -11127,7 +11127,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if _stage_line:
             print(f"[FunPackStudio] {_stage_line}")
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache, phrase_memory=global_state.get("phrase_memory"), axis_feedback=repair_feedback, h3_phrase_emphasis=h3_phrase_emphasis, h3_phrase_variability=h3_phrase_variability, auto_strength=self._v2_auto_strength(global_state), variables=_prompt_variables, link_texts=_link_texts),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -11825,7 +11825,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
     def _v2_apply_h3_token_weights(self, conditioning_list, clip, phrase_memory=None,
                                    axis_feedback=None, fallback_text="", enabled=False,
-                                   auto_strength=None, variables=None, link_texts=None):
+                                   auto_strength=None, variability=0.0, variables=None,
+                                   link_texts=None):
         """Tag each scene with the token spans the RATING says deserve more attention.
 
         Studio has decomposed and scored every phrase, word and n-gram since 2.0
@@ -11868,7 +11869,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 wrong_axes=feedback.get("wrong_axes", ()),
                 # Studio's own evidence ramp decides how hard, not this module. One Awful is
                 # one data point and must not boost a phrase to the ceiling.
-                strength=_tw.strength_from_auto(auto_strength))
+                #
+                # `variability` (0..1, the Engine Settings dial) scales this down toward zero.
+                # 0 = the cemented weight applies at full strength (only what's trained fires).
+                # 1 = the bias collapses to nothing, so untrained tokens compete on equal
+                # footing with trained ones and content the phrase memory never reinforced is
+                # free to appear. Same channel, same cap — a dial on how hard it grips, not a
+                # second mechanism.
+                strength=_tw.strength_from_auto(auto_strength)
+                        * max(0.0, 1.0 - float(variability or 0.0)))
             if not weighted:
                 return conditioning_list
         except Exception as _e:  # noqa: BLE001
@@ -12005,7 +12014,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                   scene_refinement_keys=None, learning_profile=None,
                                   conditioning_plan=None, clip=None, encode_cache=None,
                                   phrase_memory=None, axis_feedback=None,
-                                  h3_phrase_emphasis=False, auto_strength=None,
+                                  h3_phrase_emphasis=False, h3_phrase_variability=0.0, auto_strength=None,
                                   variables=None, link_texts=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
@@ -12056,7 +12065,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         out = self._v2_apply_h3_token_weights(out, clip, phrase_memory=phrase_memory,
                                               axis_feedback=axis_feedback,
                                               fallback_text=temporal_fallback_text,
-                                              enabled=h3_phrase_emphasis,
+                                              enabled=h3_phrase_emphasis, variability=h3_phrase_variability,
                                               auto_strength=auto_strength,
                                               variables=variables,
                                               link_texts=link_texts)
@@ -13329,6 +13338,7 @@ class FunPackStudio:
             refinement_key_input=refinement_key_input,
             positive_conditioning=positive_conditioning,
             h3_phrase_emphasis=bool(rf.get("h3_phrase_emphasis", False)),
+            h3_phrase_variability=float(rf.get("h3_phrase_variability", 0.0) or 0.0),
             prompt_enhance=bool(rf.get("prompt_enhance", False)),
             prompt_enhance_system=str(rf.get("prompt_enhance_system", "") or ""),
             prompt_enhance_temperature=float(rf.get("prompt_enhance_temperature", 0.7)),
