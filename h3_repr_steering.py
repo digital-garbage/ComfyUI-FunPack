@@ -5,22 +5,23 @@ bias on the prompt's own tokens (h3_token_weights), or a push on the latent betw
 calls (output_guidance, trajectory_guidance). Neither changes what the model itself computes.
 
 This does. It captures the video rows of one block's hidden state per generation, keeps a
-running direction weighted by how each generation was actually rated, and adds that direction
-back into the same block's output on the next run -- reaching inside the forward pass instead
-of around it. Training-free: no gradient, no MLP, a weighted covariance of vectors is the
-whole "model". ("Pulling The REINS", arXiv:2606.17257 -- same idea, applied here via a
-weighted direction instead of their supervised-PCA.)
+running direction from how each generation was rated, and adds that direction back into the
+same block's output on the next run -- reaching inside the forward pass instead of around it.
+Training-free: no gradient, no MLP, a mean difference of vectors is the whole "model".
+("Pulling The REINS", arXiv:2606.17257 -- same idea, applied here via a two-group mean
+difference instead of their supervised-PCA.)
 
-Weighted, not a hard liked/disliked split: a 9/10 pulls harder than a 6/10, a 2/10 pulls
-moderately, a 5/10 contributes almost nothing. `direction proportional to sum((w_i - mean(w))
-* desc_i)` -- centring the WEIGHTS (not the descriptors) makes shared content cancel exactly
-regardless of how unbalanced the weights are (sum(w_i - mean(w)) is 0 by construction, so
-whatever every descriptor has in common multiplies out to zero), and reduces to the old plain
-mean(liked) - mean(disliked) in the equal-and-opposite case. The weight is the rating's own
-`reward` -- already admissibility-filtered by the caller (conditioning.py only commits inside
-the same `_v2_reward_admissible` gate the value functions use), so a Wrong-* identity-mismatch
-rating never reaches here at all, not because its number was excluded but because it was
-never a quality verdict to begin with.
+Liked vs disliked by the rating's SIGN only, not weighted by magnitude. A magnitude-weighted
+version (a 9/10 pulling harder than a 6/10) was tried first and is the statistically better
+estimator in the limit -- but it needs enough data for a weakly-rated row's noise to average
+out, and at the handful of ratings a key actually has, a mediocre "6" just gets a vote and
+dilutes the direction instead of being excluded by it. Binary spends what little data exists
+on the clearest examples only; see direction()'s docstring and the 2026-09-04 session before
+reintroducing weighting. The weight is still the rating's own `reward` -- already
+admissibility-filtered by the caller (conditioning.py only commits inside the same
+`_v2_reward_admissible` gate the value functions use), so a Wrong-* identity-mismatch rating
+never reaches here at all, not because its number was excluded but because it was never a
+quality verdict to begin with.
 
 Masked to VIDEO rows only, using the model's own `mod_segments` tags (0=video, 1=text,
 2=audio) -- never audio or text rows. The one documented failure of this class of
@@ -190,12 +191,15 @@ def direction(refinement_key, block=None):
     side is under MIN_PER_GROUP. One Awful and one Perfect is not a direction, it is two
     points -- doesn't matter how many barely-positive rows sit between them.
 
-    Weighted covariance between rating and descriptor, not a two-group mean difference: each
-    row pulls proportionally to how strongly it was rated, so a 9/10 counts for more than a
-    6/10 instead of both counting as one full "liked" vote. Centring the WEIGHTS (not the
-    descriptors) before multiplying is what makes shared content cancel exactly regardless of
-    how unbalanced the weights are -- see the module docstring for the identity. Raw
-    descriptors, not per-vector normalised: a hidden-state row's magnitude carries real
+    Plain mean(liked) - mean(disliked), liked/disliked by weight SIGN only -- not weighted by
+    magnitude. Weighting by magnitude (a 9/10 pulling harder than a 6/10) is the statistically
+    better estimator, but only once there is enough data for a weakly-rated row's noise to
+    average out; at the handful of ratings this actually runs on, a mediocre "6" still gets a
+    vote and dilutes the direction with an ambiguous case instead of being excluded by it. A
+    binary split spends what little data exists on the clearest examples only. Revisit
+    weighting once a key has real volume, not before -- see the 2026-09-04 dev session.
+
+    Raw descriptors, not per-vector normalised: a hidden-state row's magnitude carries real
     content, and normalising it away is the trajectory_probe failure this deliberately avoids.
 
     `block` defaults to DEFAULT_BLOCK -- the one that actually steers. Rows captured before
@@ -206,14 +210,12 @@ def direction(refinement_key, block=None):
     rows = [r for r in data["rows"]
             if isinstance(r, dict) and "weight" in r and isinstance(r.get("desc"), dict)
             and block in r["desc"]]
-    n_pos = sum(1 for r in rows if r["weight"] > 0)
-    n_neg = sum(1 for r in rows if r["weight"] < 0)
+    liked = [r["desc"][block] for r in rows if r["weight"] > 0]
+    disliked = [r["desc"][block] for r in rows if r["weight"] < 0]
+    n_pos, n_neg = len(liked), len(disliked)
     if n_pos < MIN_PER_GROUP or n_neg < MIN_PER_GROUP:
         return None, n_pos, n_neg
-    weights = torch.tensor([r["weight"] for r in rows], dtype=torch.float32)
-    descs = torch.stack([r["desc"][block] for r in rows])
-    centred = weights - weights.mean()
-    diff = (centred.unsqueeze(1) * descs).sum(dim=0)
+    diff = torch.stack(liked).mean(dim=0) - torch.stack(disliked).mean(dim=0)
     norm = diff.norm()
     if not torch.isfinite(norm) or norm <= 1e-8:
         return None, n_pos, n_neg

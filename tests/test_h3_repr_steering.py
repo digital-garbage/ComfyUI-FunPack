@@ -89,12 +89,13 @@ def test_direction_points_from_negative_mean_to_positive_mean_when_weights_balan
     assert torch.allclose(direction, torch.tensor([1.0, 0.0]), atol=1e-5)
 
 
-def test_shared_content_cancels_regardless_of_weight_imbalance():
-    """Both groups carry the same huge shared offset (simulating prompt content), AND the
-    weights are deliberately unbalanced (+1.0 vs -0.05) -- unlike a plain mean difference,
-    centring the WEIGHTS makes the shared term cancel exactly even when sum(weights) != 0.
-    (Loose tolerance: subtracting a 1000-magnitude shared offset in float32 costs real
-    precision, and that cost is not what this test is checking.)"""
+def test_shared_content_cancels_regardless_of_weight_magnitude():
+    """Both groups carry the same huge shared offset (simulating prompt content), with
+    deliberately unequal reward magnitudes (+1.0 vs -0.05) -- since the split is by SIGN
+    only, magnitude never enters the math, and the shared offset cancels exactly the same
+    way a plain mean-difference always has. (Loose tolerance: subtracting a 1000-magnitude
+    shared offset in float32 costs real precision, and that cost is not what this test is
+    checking.)"""
     shared = torch.tensor([1000.0, 1000.0])
     for _ in range(rs.MIN_PER_GROUP):
         rs.save_pending("k", _pend(shared + torch.tensor([1.0, 0.0])))
@@ -106,11 +107,12 @@ def test_shared_content_cancels_regardless_of_weight_imbalance():
     assert torch.allclose(direction, torch.tensor([1.0, 0.0]), atol=1e-3)
 
 
-def test_a_weak_weight_loses_to_a_strong_one_on_a_competing_axis():
-    """Two DIFFERENT positive signals competing (not the same axis at different strengths --
-    equal group counts on one axis always cancel to the plain difference regardless of
-    magnitude, so that case can't show this): x is rated strongly (weight 1.0), y only
-    weakly (weight 0.2). The direction must lean toward x, not split evenly between them."""
+def test_a_weak_positive_counts_the_same_as_a_strong_one():
+    """Binary, not weighted: a barely-positive rating (0.2) and a strongly-positive one (1.0)
+    both just mean "liked" and pull equally -- unlike the magnitude-weighted version this
+    replaced, which would have let the strong one dominate. Two DIFFERENT positive signals
+    (x from the strong rows, y from the weak ones) pooled into one "liked" mean split the
+    direction evenly between them instead of leaning toward the stronger one."""
     for _ in range(rs.MIN_PER_GROUP):
         rs.save_pending("k", _pend(torch.tensor([0.0, 0.0])))
         rs.commit("k", -0.9)
@@ -121,7 +123,7 @@ def test_a_weak_weight_loses_to_a_strong_one_on_a_competing_axis():
         rs.save_pending("k", _pend(torch.tensor([0.0, 1.0])))
         rs.commit("k", 0.2)
     direction, _, _ = rs.direction("k")
-    assert direction[0] > 0.9 and direction[1] < 0.2
+    assert abs(float(direction[0]) - float(direction[1])) < 1e-5
 
 
 def test_pending_is_discarded_on_a_neutral_rating():
