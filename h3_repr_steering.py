@@ -5,12 +5,22 @@ bias on the prompt's own tokens (h3_token_weights), or a push on the latent betw
 calls (output_guidance, trajectory_guidance). Neither changes what the model itself computes.
 
 This does. It captures the video rows of one block's hidden state per generation, keeps a
-running direction (liked runs' mean minus disliked runs' mean), and adds that direction back
-into the same block's output on the next run -- reaching inside the forward pass instead of
-around it. Training-free: no gradient, no MLP, a mean-difference of vectors is the whole
-"model". ("Pulling The REINS", arXiv:2606.17257 -- same idea, applied here via difference-of-
-means instead of their supervised-PCA, because a two-group direction is what a mean
-difference already gives you exactts.)
+running direction weighted by how each generation was actually rated, and adds that direction
+back into the same block's output on the next run -- reaching inside the forward pass instead
+of around it. Training-free: no gradient, no MLP, a weighted covariance of vectors is the
+whole "model". ("Pulling The REINS", arXiv:2606.17257 -- same idea, applied here via a
+weighted direction instead of their supervised-PCA.)
+
+Weighted, not a hard liked/disliked split: a 9/10 pulls harder than a 6/10, a 2/10 pulls
+moderately, a 5/10 contributes almost nothing. `direction proportional to sum((w_i - mean(w))
+* desc_i)` -- centring the WEIGHTS (not the descriptors) makes shared content cancel exactly
+regardless of how unbalanced the weights are (sum(w_i - mean(w)) is 0 by construction, so
+whatever every descriptor has in common multiplies out to zero), and reduces to the old plain
+mean(liked) - mean(disliked) in the equal-and-opposite case. The weight is the rating's own
+`reward` -- already admissibility-filtered by the caller (conditioning.py only commits inside
+the same `_v2_reward_admissible` gate the value functions use), so a Wrong-* identity-mismatch
+rating never reaches here at all, not because its number was excluded but because it was
+never a quality verdict to begin with.
 
 Masked to VIDEO rows only, using the model's own `mod_segments` tags (0=video, 1=text,
 2=audio) -- never audio or text rows. The one documented failure of this class of
@@ -30,18 +40,9 @@ import torch
 # concept the direction encodes has actually formed.
 DEFAULT_BLOCK = 25
 
-MIN_PER_GROUP = 3  # "need 3+ liked generations" -- same floor absolute/taste steering uses.
-
-# Rating KEYS this mechanism will learn from -- not the blended scalar reward every other
-# mechanism reads. That scalar is a quality-LANDSCAPE score (Missing action = +0.05: "the
-# frame was fine, just no motion" -- a near-miss worth a gentle push in the value functions'
-# ascent, not a failure) and reusing it here means a near-miss counts as "liked", diluting a
-# direction that needs to be a clean liked/disliked split. Everything not listed -- Wrong
-# action, Wrong appearance, Missing action, all the near-misses -- is EXCLUDED, not counted
-# toward either side: they are genuinely ambiguous for "was this a good generation", and
-# excluding beats guessing.
-LIKED_KEYS = {"like", "nailed_it", "loved_it"}
-DISLIKED_KEYS = {"awful", "missing_quality", "missing_details_quality", "missing_action_quality"}
+MIN_PER_GROUP = 3  # need 3+ POSITIVE-weight and 3+ NEGATIVE-weight rows -- same floor
+# absolute/taste steering uses. A weight near zero (Missing action's +0.05) still gets
+# logged and still contributes, just barely -- it does not count toward this floor.
 
 
 def _log():
@@ -94,11 +95,10 @@ def capture(hidden_state, video_mask):
 
 # --- persistence -------------------------------------------------------------------------
 #
-# One row per generation: {"desc": tensor, "reward": float}. Kept as a log and the direction
+# One row per generation: {"desc": tensor, "weight": float}. Kept as a log and the direction
 # recomputed from it on demand -- same reasoning trajectory_guidance's train_from_rows gives:
-# a mean-difference is cheap enough that being able to re-derive it (a log carried from
-# another box, a bad reward-sign fix) is worth more than the saved cycles of updating two
-# running sums in place.
+# this is cheap enough that being able to re-derive it (a log carried from another box, a
+# fixed weighting formula) is worth more than the saved cycles of an online update.
 
 def _load(refinement_key):
     path = state_path(refinement_key)
@@ -139,20 +139,21 @@ def save_pending(refinement_key, descriptor):
                        "this run's capture is not kept")
 
 
-def commit(refinement_key, rating_key):
-    """Pairs the pending capture with a rating's KEY (not the blended scalar reward every
-    other mechanism reads -- see LIKED_KEYS/DISLIKED_KEYS) and appends it to the log if the
-    key lands in either group. A key that lands in neither (Missing action, Wrong appearance,
-    every near-miss) discards the pending capture without logging a row -- ambiguous evidence
-    is excluded, not counted toward the side its reward sign happened to fall on."""
+def commit(refinement_key, reward):
+    """Pairs the pending capture with a rating's WEIGHT and appends it to the log. `reward`
+    is the caller's already-resolved, already-admissibility-filtered reward -- this function
+    trusts it rather than re-deriving a verdict, same as the value functions do with the same
+    number. No pending capture (nothing generated since the last rating) is silently a no-op."""
     if not refinement_key:
         return
     data = _load(refinement_key)
     pending = data.get("pending")
     data["pending"] = None
-    key = str(rating_key or "")
-    if pending is not None and (key in LIKED_KEYS or key in DISLIKED_KEYS):
-        data["rows"].append({"desc": pending, "liked": key in LIKED_KEYS})
+    if pending is not None:
+        try:
+            data["rows"].append({"desc": pending, "weight": float(reward)})
+        except (TypeError, ValueError):
+            pass
     try:
         _save(refinement_key, data)
     except OSError as e:
@@ -169,20 +170,28 @@ def clear_all(refinement_key):
 
 
 def direction(refinement_key):
-    """-> (unit_vector, n_liked, n_disliked), or (None, n_liked, n_disliked) if either group
-    is under MIN_PER_GROUP. One Awful and one Perfect is not a direction, it is two points.
+    """-> (unit_vector, n_positive, n_negative), or (None, n_positive, n_negative) if either
+    side is under MIN_PER_GROUP. One Awful and one Perfect is not a direction, it is two
+    points -- doesn't matter how many barely-positive rows sit between them.
 
-    Raw means, not per-vector normalised: a hidden-state row's magnitude carries real content
-    (this is NOT the trajectory_probe failure mode). Shared content sits in BOTH groups'
-    means equally and cancels in the subtraction by construction -- centring only matters
-    when a vector is compared to itself normalised, which nothing here does."""
+    Weighted covariance between rating and descriptor, not a two-group mean difference: each
+    row pulls proportionally to how strongly it was rated, so a 9/10 counts for more than a
+    6/10 instead of both counting as one full "liked" vote. Centring the WEIGHTS (not the
+    descriptors) before multiplying is what makes shared content cancel exactly regardless of
+    how unbalanced the weights are -- see the module docstring for the identity. Raw
+    descriptors, not per-vector normalised: a hidden-state row's magnitude carries real
+    content, and normalising it away is the trajectory_probe failure this deliberately avoids."""
     data = _load(refinement_key)
-    liked = [r["desc"] for r in data["rows"] if isinstance(r, dict) and r.get("liked") is True]
-    disliked = [r["desc"] for r in data["rows"] if isinstance(r, dict) and r.get("liked") is False]
-    if len(liked) < MIN_PER_GROUP or len(disliked) < MIN_PER_GROUP:
-        return None, len(liked), len(disliked)
-    diff = torch.stack(liked).mean(dim=0) - torch.stack(disliked).mean(dim=0)
+    rows = [r for r in data["rows"] if isinstance(r, dict) and "weight" in r]
+    n_pos = sum(1 for r in rows if r["weight"] > 0)
+    n_neg = sum(1 for r in rows if r["weight"] < 0)
+    if n_pos < MIN_PER_GROUP or n_neg < MIN_PER_GROUP:
+        return None, n_pos, n_neg
+    weights = torch.tensor([r["weight"] for r in rows], dtype=torch.float32)
+    descs = torch.stack([r["desc"] for r in rows])
+    centred = weights - weights.mean()
+    diff = (centred.unsqueeze(1) * descs).sum(dim=0)
     norm = diff.norm()
     if not torch.isfinite(norm) or norm <= 1e-8:
-        return None, len(liked), len(disliked)
-    return diff / norm, len(liked), len(disliked)
+        return None, n_pos, n_neg
+    return diff / norm, n_pos, n_neg

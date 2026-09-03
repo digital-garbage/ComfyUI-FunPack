@@ -66,6 +66,10 @@
   const NO_LOVED = new Set([
     "Perfect", "Nailed it", "Awful", FORGET_LABEL,
     "Missing quality", "Missing details + quality", "Missing action + quality", "Wrong action + quality",
+    // H3 scale (1-10): a bare number never reaches the label branch that applies the loved
+    // boost (normalize_refiner_v2_rating), so the heart would silently do nothing. 10 already
+    // means "exactly right" -- nothing left for a heart to add on top of a plain number.
+    ...Array.from({ length: 10 }, (_, i) => String(i + 1)),
   ]);
 
   let activePicker = null;

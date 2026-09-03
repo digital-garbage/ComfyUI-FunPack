@@ -10152,7 +10152,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     import minimax_h3 as _h3
                     import h3_repr_steering as _rs
                 if _h3.is_h3_clip(clip):
-                    _rs.commit(refinement_key, learning_profile.get("key", ""))
+                    _rs.commit(refinement_key, float(learning_profile.get("reward", 0.0)))
             # DynaShift negative memory: pair the sampler's pending raw latent with this
             # rating — promote into the per-key negative bank when the rating marks the run
             # a bad outcome (intrusions: awful / wrong_appearance; or the quality-missing
