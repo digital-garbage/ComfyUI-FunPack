@@ -44,6 +44,20 @@
     { label: FORGET_LABEL, reward: "none", hint: "Clears the rating — no learning signal." },
   ];
 
+  // H3: the category grid above assumes axis-specific effects (phrase emphasis, dynashift,
+  // ...) this project has not actually proven land differently from one another on H3 — see
+  // project_reward_model_rework.md. One 1-10 scale instead; the backend already knows how to
+  // turn a bare number into the nearest existing rating profile (normalize_refiner_v2_rating's
+  // legacy-score path), so nothing downstream needs to change, only what the picker sends.
+  const H3_SCALE = Array.from({ length: 10 }, (_, i) => {
+    const n = i + 1;
+    return {
+      label: String(n), display: String(n),
+      reward: n >= 9 ? "great" : n >= 7 ? "good" : n >= 5 ? "mixed" : n >= 3 ? "bad" : "awful",
+      hint: n === 10 ? "Exactly what you asked for." : n === 1 ? "Everything wrong." : `${n} of 10.`,
+    };
+  });
+
   // canonical label -> display name, for rendering a stored value (scene button, chips).
   const DISPLAY_NAMES = {};
   for (const cat of CATEGORIES) for (const r of cat.ratings) if (r.display) DISPLAY_NAMES[r.label] = r.display;
@@ -69,7 +83,8 @@
   function formatLabel(value) {
     const v = String(value || "").trim();
     if (!v || v === FORGET_LABEL) return "";
-    if (v.endsWith("|loved")) return displayName(v.slice(0, -6)) + " ♥";
+    if (v.endsWith("|loved")) return formatLabel(v.slice(0, -6)) + " ♥";
+    if (/^\d+$/.test(v)) return `${v}/10`;
     return displayName(v);
   }
 
@@ -135,7 +150,7 @@
     return wrap;
   }
 
-  function open(event, currentValue, onPick) {
+  function open(event, currentValue, onPick, { h3 = false } = {}) {
     closePicker();
 
     const picker = document.createElement("div");
@@ -172,25 +187,41 @@
       closePicker();
     };
 
-    for (const cat of CATEGORIES) {
+    if (h3) {
       const section = document.createElement("div");
       section.className = "me-rating-section";
-      section.style.setProperty("--accent", cat.accent);
+      section.style.setProperty("--accent", "150,150,160");
       const sectionLabel = document.createElement("div");
       sectionLabel.className = "me-rating-section-label";
-      sectionLabel.textContent = cat.label;
+      sectionLabel.textContent = "How close was this? (1 = everything wrong, 10 = exactly right)";
       section.append(sectionLabel);
       const grid = document.createElement("div");
-      grid.className = cat.id === "positive" ? "me-rating-grid me-rating-grid-pos" : "me-rating-grid";
-      for (const r of cat.ratings) grid.append(makeOption(r, cat.accent, handlePick, allOptions));
+      grid.className = "me-rating-grid";
+      for (const r of H3_SCALE) grid.append(makeOption(r, "150,150,160", handlePick, allOptions));
       section.append(grid);
       picker.append(section);
+    } else {
+      for (const cat of CATEGORIES) {
+        const section = document.createElement("div");
+        section.className = "me-rating-section";
+        section.style.setProperty("--accent", cat.accent);
+        const sectionLabel = document.createElement("div");
+        sectionLabel.className = "me-rating-section-label";
+        sectionLabel.textContent = cat.label;
+        section.append(sectionLabel);
+        const grid = document.createElement("div");
+        grid.className = cat.id === "positive" ? "me-rating-grid me-rating-grid-pos" : "me-rating-grid";
+        for (const r of cat.ratings) grid.append(makeOption(r, cat.accent, handlePick, allOptions));
+        section.append(grid);
+        picker.append(section);
+      }
     }
 
     const nuclear = document.createElement("div");
     nuclear.className = "me-rating-nuclear";
     nuclear.style.setProperty("--accent", "140,100,100");
-    for (const r of NUCLEAR) nuclear.append(makeOption(r, "140,100,100", handlePick, allOptions));
+    const nuclearRatings = h3 ? [{ label: FORGET_LABEL, reward: "none", hint: "Clears the rating — no learning signal." }] : NUCLEAR;
+    for (const r of nuclearRatings) nuclear.append(makeOption(r, "140,100,100", handlePick, allOptions));
     picker.append(nuclear);
 
     setActive(currentBase, currentLoved);

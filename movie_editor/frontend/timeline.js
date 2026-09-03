@@ -1807,7 +1807,7 @@
       Picker.open(e, raw, (label) => {
         const val = label === Picker.FORGET_LABEL ? "" : label;
         S.setSceneRating(sc.id, val);
-      });
+      }, { h3: !!window.PipelineCaps?.isH3(st) });
     };
     wrap.append(rlabel);
     wrap.append(btn);

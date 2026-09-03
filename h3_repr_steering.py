@@ -32,6 +32,17 @@ DEFAULT_BLOCK = 25
 
 MIN_PER_GROUP = 3  # "need 3+ liked generations" -- same floor absolute/taste steering uses.
 
+# Rating KEYS this mechanism will learn from -- not the blended scalar reward every other
+# mechanism reads. That scalar is a quality-LANDSCAPE score (Missing action = +0.05: "the
+# frame was fine, just no motion" -- a near-miss worth a gentle push in the value functions'
+# ascent, not a failure) and reusing it here means a near-miss counts as "liked", diluting a
+# direction that needs to be a clean liked/disliked split. Everything not listed -- Wrong
+# action, Wrong appearance, Missing action, all the near-misses -- is EXCLUDED, not counted
+# toward either side: they are genuinely ambiguous for "was this a good generation", and
+# excluding beats guessing.
+LIKED_KEYS = {"like", "nailed_it", "loved_it"}
+DISLIKED_KEYS = {"awful", "missing_quality", "missing_details_quality", "missing_action_quality"}
+
 
 def _log():
     try:
@@ -128,30 +139,20 @@ def save_pending(refinement_key, descriptor):
                        "this run's capture is not kept")
 
 
-def commit(refinement_key, reward):
-    """Pairs the pending capture with a rating's reward and appends it to the log. A neutral
-    / skipped rating (reward is None) discards the pending capture without logging a row --
-    same as trajectory_probe: no reward means no learning signal, not a zero one."""
+def commit(refinement_key, rating_key):
+    """Pairs the pending capture with a rating's KEY (not the blended scalar reward every
+    other mechanism reads -- see LIKED_KEYS/DISLIKED_KEYS) and appends it to the log if the
+    key lands in either group. A key that lands in neither (Missing action, Wrong appearance,
+    every near-miss) discards the pending capture without logging a row -- ambiguous evidence
+    is excluded, not counted toward the side its reward sign happened to fall on."""
     if not refinement_key:
         return
     data = _load(refinement_key)
     pending = data.get("pending")
     data["pending"] = None
-    if pending is None or reward is None:
-        try:
-            _save(refinement_key, data)
-        except OSError as e:
-            _log().failed("H3 representation steering", "commit", e, "rating not recorded")
-        return
-    try:
-        reward = float(reward)
-    except (TypeError, ValueError):
-        try:
-            _save(refinement_key, data)
-        except OSError:
-            pass
-        return
-    data["rows"].append({"desc": pending, "reward": reward})
+    key = str(rating_key or "")
+    if pending is not None and (key in LIKED_KEYS or key in DISLIKED_KEYS):
+        data["rows"].append({"desc": pending, "liked": key in LIKED_KEYS})
     try:
         _save(refinement_key, data)
     except OSError as e:
@@ -176,8 +177,8 @@ def direction(refinement_key):
     means equally and cancels in the subtraction by construction -- centring only matters
     when a vector is compared to itself normalised, which nothing here does."""
     data = _load(refinement_key)
-    liked = [r["desc"] for r in data["rows"] if isinstance(r, dict) and r.get("reward", 0) > 0]
-    disliked = [r["desc"] for r in data["rows"] if isinstance(r, dict) and r.get("reward", 0) < 0]
+    liked = [r["desc"] for r in data["rows"] if isinstance(r, dict) and r.get("liked") is True]
+    disliked = [r["desc"] for r in data["rows"] if isinstance(r, dict) and r.get("liked") is False]
     if len(liked) < MIN_PER_GROUP or len(disliked) < MIN_PER_GROUP:
         return None, len(liked), len(disliked)
     diff = torch.stack(liked).mean(dim=0) - torch.stack(disliked).mean(dim=0)
