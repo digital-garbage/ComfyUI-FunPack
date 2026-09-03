@@ -200,6 +200,7 @@
 
     // H3 representation steering (Settings ▸ Learning) — per-KEY, unlike the probe above.
     reinsStatus: (key) => j("GET", API("/h3_repr_steering") + `?key=${encodeURIComponent(key || "default")}`),
+    reinsSweep: (key, trials) => j("POST", API("/h3_repr_steering/sweep"), { key: key || "default", trials: trials || 2000 }),
     reinsClear: (key) => j("POST", API("/h3_repr_steering/clear"), { key: key || "default" }),
     async reinsExport(key) {
       const k = key || "default";

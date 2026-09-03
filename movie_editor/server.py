@@ -2099,9 +2099,14 @@ if web is not None and PromptServer is not None:
         return rs
 
     def _repr_steer_state(key):
+        # Deliberately NOT block_sweep() -- that's a 9-block x trials permutation test, heavy
+        # enough on CPU to stall the event loop this route shares with ComfyUI's own server
+        # (confirmed live: opening the panel froze a generation in progress). Same split
+        # trajectory_probe already uses -- cheap status here, the actual analysis behind its
+        # own explicitly-triggered route below, so a status fetch (which fires on every panel
+        # mount, not just on request) can never be the expensive one.
         rs = _repr_steer_module()
         _direction, n_liked, n_disliked = rs.direction(key)
-        sweep = rs.block_sweep(key)
         return rs, {
             "key": key,
             "n_liked": n_liked,
@@ -2109,7 +2114,6 @@ if web is not None and PromptServer is not None:
             "ready": _direction is not None,
             "min_per_group": rs.MIN_PER_GROUP,
             "default_block": rs.DEFAULT_BLOCK,
-            "sweep": {str(b): r for b, r in sweep.items()},
         }
 
     @routes.get(UI_PREFIX + "/api/h3_repr_steering")
@@ -2121,6 +2125,26 @@ if web is not None and PromptServer is not None:
         except Exception as e:
             return web.json_response({"key": key, "n_liked": 0, "n_disliked": 0,
                                       "ready": False, "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/h3_repr_steering/sweep")
+    async def _repr_steer_sweep(req):
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        key = str(body.get("key") or "default").strip() or "default"
+        trials = max(100, min(20000, int(body.get("trials") or 2000)))
+        rs = _repr_steer_module()
+        try:
+            # Off the event loop -- this is the actual CPU-heavy permutation test, and even
+            # triggered explicitly (not on every panel mount, unlike before) it should not be
+            # able to stall other requests, including a generation's own progress messages,
+            # while it runs.
+            import asyncio
+            sweep = await asyncio.to_thread(rs.block_sweep, key, trials)
+            return web.json_response({"key": key, "sweep": {str(b): r for b, r in sweep.items()}})
+        except Exception as e:
+            return web.json_response({"key": key, "sweep": {}, "error": str(e)}, status=500)
 
     # Export streams the sidecar FILE directly rather than reconstructing it from rows: this
     # module's state already IS the export format (rows keyed by block + weight + prompt_hash),

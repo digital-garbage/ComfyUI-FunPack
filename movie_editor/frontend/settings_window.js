@@ -393,7 +393,13 @@
   // ── H3 representation steering ──────────────────────────────────────────
   // Per-KEY (unlike the probe above, which pools across every key): one sidecar per
   // refinement key, so status/export/clear all act on whichever key this project is using.
-  let reinsState = null, reinsError = "";
+  //
+  // The block sweep is a 9-block permutation test -- heavy enough on CPU that running it on
+  // every panel mount (status was doing this) stalled the event loop ComfyUI's own server
+  // shares with this one, confirmed live as a generation freezing while the panel was open.
+  // Split the same way the probe already is: cheap status auto-fetched, the actual sweep
+  // only on explicit request (the "Read" button below).
+  let reinsState = null, reinsSweep = null, reinsSweepBusy = false, reinsError = "";
 
   function reinsSweepTable(sweep) {
     const entries = Object.entries(sweep || {}).sort((a, b) => a[1].p_value - b[1].p_value);
@@ -439,17 +445,27 @@
           if (!window.confirm(`Throw away all REINS data for '${key}'?\n\nThis cannot be `
               + "undone. Download it first if you want to keep it.")) return;
           reinsError = "";
-          try { reinsState = await window.MovieEditorAPI.reinsClear(key); }
+          try { reinsState = await window.MovieEditorAPI.reinsClear(key); reinsSweep = null; }
           catch (e) { reinsError = String(e.message || e); }
           paint();
         }, { disabled: !nLiked && !nDisliked, danger: true }));
+      rows.append(actionRow("Read the block sweep",
+        "Runs a permutation test at every candidate block to see which one actually "
+        + "separates liked from disliked. Heavy enough on CPU to notice — not run "
+        + "automatically, only when you ask for it.",
+        reinsSweepBusy ? "Reading…" : "Read", async () => {
+          reinsSweepBusy = true; reinsError = ""; paint();
+          try { reinsSweep = await window.MovieEditorAPI.reinsSweep(key, 2000); }
+          catch (e) { reinsError = String(e.message || e); }
+          reinsSweepBusy = false; paint();
+        }, { disabled: reinsSweepBusy || (!nLiked && !nDisliked) }));
       box.append(rows);
       if (reinsError) box.append(el("div", "sw-hint", reinsError));
-      const sweepTbl = reinsState && reinsSweepTable(reinsState.sweep);
+      const sweepTbl = reinsSweep && reinsSweepTable(reinsSweep.sweep);
       if (sweepTbl) {
         box.append(el("div", "sw-rows-label",
           `Block sweep — which of H3's blocks separates liked from disliked (block `
-          + `${reinsState.default_block} is the one that actually steers)`));
+          + `${reinsState ? reinsState.default_block : "?"} is the one that actually steers)`));
         box.append(sweepTbl);
       }
     };
