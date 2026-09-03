@@ -43,7 +43,7 @@ import torch
 # of guessed from someone else's percentage. Only DEFAULT_BLOCK ever STEERS; the rest of
 # CANDIDATE_BLOCKS are captured read-only alongside it so block_sweep() has something to rank.
 DEFAULT_BLOCK = 25
-CANDIDATE_BLOCKS = sorted({5, 10, 15, 20, 25, 30, 35, 40, 45, DEFAULT_BLOCK})
+CANDIDATE_BLOCKS = sorted({1, 5, 10, 15, 20, 25, 30, 35, 40, 45, DEFAULT_BLOCK})
 
 MIN_PER_GROUP = 2  # need 2+ POSITIVE-weight and 2+ NEGATIVE-weight rows. Was 3 (parity with
 # absolute/taste steering's floor, not derived from anything specific to this mechanism).

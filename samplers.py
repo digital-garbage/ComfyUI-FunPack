@@ -2806,7 +2806,7 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.05, "min": 0.0, "max": 2.0, "step": 0.01,
                     "tooltip": "How much of the learned direction to add, as a fraction of that block's own hidden-state norm. Unlike the attention-bias channel, there is no architectural ceiling here -- push too far and coherence breaks with no warning. Start low; the way to tell it is doing anything at all is to push this deliberately high on a same-seed test and see if the video visibly moves, then back off.",
                 }),
-                "h3_repr_steering_block": (["20", "25", "30", "35", "40"], {
+                "h3_repr_steering_block": (["1", "5", "10", "15", "20", "25", "30", "35", "40"], {
                     "default": "25",
                     "tooltip": "TEST-ONLY: which block actually gets steered (the rest of the sweep's candidate blocks are still captured read-only, same as always). direction() is recomputed for whichever block you pick here -- this does not change what block_sweep ranks, only which block's learned direction gets injected into this run.",
                 }),
