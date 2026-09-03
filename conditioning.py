@@ -10190,7 +10190,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         from . import h3_repr_steering as _rs
                     except ImportError:
                         import h3_repr_steering as _rs
-                    _rs.commit(refinement_key, float(learning_profile.get("reward", 0.0)))
+                    _rs_reward = float(learning_profile.get("reward", 0.0))
+                    print(f"[FunPackRefiner] H3 representation steering: committing weight "
+                          f"{_rs_reward:+.3f} for rating '{rating_label}' "
+                          f"(legacy_score={learning_profile.get('legacy_score')!r})")
+                    _rs.commit(refinement_key, _rs_reward)
             # DynaShift negative memory: pair the sampler's pending raw latent with this
             # rating — promote into the per-key negative bank when the rating marks the run
             # a bad outcome (intrusions: awful / wrong_appearance; or the quality-missing
