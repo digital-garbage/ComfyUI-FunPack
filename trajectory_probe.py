@@ -462,6 +462,23 @@ def _unit(vectors):
     return torch.nn.functional.normalize(m - m.mean(dim=0, keepdim=True), dim=-1)
 
 
+def _pairwise_eq(values, n):
+    """n hashable values -> [n,n] bool tensor, True where values[i] == values[j]. Canonical
+    integer-codes the values first so this works for str/bool/None/whatever, then does the
+    actual n^2 comparison as one tensor broadcast instead of a Python double loop -- the
+    broadcast releases the GIL for its duration, the loop never did. See permutation_test's
+    docstring for why this matters: 9 blocks x 2000 trials each doing an O(n^2) pure-Python
+    loop was measured to hold the GIL for multiple seconds, contending with anything else
+    running at the time (a generation's own host-side orchestration included) even though it
+    was moved off the event loop via asyncio.to_thread -- "not blocking" and "not slow" are
+    different guarantees, and only vectorising the actual hot loop delivers the second one."""
+    codes, idx = {}, []
+    for v in values:
+        idx.append(codes.setdefault(v, len(codes)))
+    t = torch.tensor(idx)
+    return t.unsqueeze(0) == t.unsqueeze(1)
+
+
 def separation_statistic(descriptors, labels, groups=None):
     """Mean between-label cosine distance minus mean within-label cosine distance.
 
@@ -476,15 +493,15 @@ def separation_statistic(descriptors, labels, groups=None):
         return None
     units = _unit(descriptors)
     dist = 1.0 - (units @ units.T)
-    between, within = [], []
-    for i in range(n):
-        for j in range(i + 1, n):
-            if groups is not None and groups[i] != groups[j]:
-                continue
-            (between if labels[i] != labels[j] else within).append(float(dist[i, j]))
-    if not between or not within:
+    upper = torch.triu(torch.ones(n, n, dtype=torch.bool), diagonal=1)
+    if groups is not None:
+        upper = upper & _pairwise_eq(groups, n)
+    same_label = _pairwise_eq(labels, n)
+    between = dist[upper & ~same_label]
+    within = dist[upper & same_label]
+    if between.numel() == 0 or within.numel() == 0:
         return None
-    return sum(between) / len(between) - sum(within) / len(within)
+    return float(between.mean() - within.mean())
 
 
 def permutation_test(descriptors, labels, groups=None, trials=2000, seed=0):
@@ -494,13 +511,35 @@ def permutation_test(descriptors, labels, groups=None, trials=2000, seed=0):
     Labels are shuffled WITHIN each group when groups are given, so the stratification used
     for the statistic is preserved in the null — an unstratified shuffle against a stratified
     statistic would answer a different question and flatter the result.
-    """
-    observed = separation_statistic(descriptors, labels, groups)
+
+    `dist`/`upper` (the descriptor similarity matrix and the group-restricted i<j mask) do not
+    depend on the labels, only on the descriptors and groups -- computed ONCE here rather than
+    once per trial via separation_statistic(). At 2000 trials that redundant recompute (a full
+    _unit() renormalise + matmul every trial) was measured to dominate the vectorised version's
+    own runtime; only the label-dependent mask needs to change per trial."""
+    n = len(labels)
+    if n < 3 or len(descriptors) != n:
+        return None
+    units = _unit(descriptors)
+    dist = 1.0 - (units @ units.T)
+    upper = torch.triu(torch.ones(n, n, dtype=torch.bool), diagonal=1)
+    if groups is not None:
+        upper = upper & _pairwise_eq(groups, n)
+
+    def _stat(lab):
+        same_label = _pairwise_eq(lab, n)
+        between = dist[upper & ~same_label]
+        within = dist[upper & same_label]
+        if between.numel() == 0 or within.numel() == 0:
+            return None
+        return float(between.mean() - within.mean())
+
+    observed = _stat(labels)
     if observed is None:
         return None
     rng = random.Random(seed)
     if groups is None:
-        pools = {None: list(range(len(labels)))}
+        pools = {None: list(range(n))}
     else:
         pools = {}
         for i, g in enumerate(groups):
@@ -513,18 +552,14 @@ def permutation_test(descriptors, labels, groups=None, trials=2000, seed=0):
             rng.shuffle(picked)
             for i, lab in zip(idxs, picked):
                 shuffled[i] = lab
-        stat = separation_statistic(descriptors, shuffled, groups)
+        stat = _stat(shuffled)
         if stat is not None and stat >= observed:
             hits += 1
-    units = _unit(descriptors)
-    dist = 1.0 - (units @ units.T)
-    same = [float(dist[i, j])
-            for i in range(len(labels)) for j in range(i + 1, len(labels))
-            if labels[i] == labels[j] and (groups is None or groups[i] == groups[j])]
+    same = dist[upper & _pairwise_eq(labels, n)]
     return {
         "separation": observed,
         "p_value": (1 + hits) / (1 + trials),
-        "noise_floor": (sum(same) / len(same)) if same else None,
+        "noise_floor": float(same.mean()) if same.numel() else None,
         "n": len(labels),
     }
 
