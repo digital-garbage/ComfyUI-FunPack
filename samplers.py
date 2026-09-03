@@ -8266,7 +8266,12 @@ class FunPackLTXAVSceneChainSampler:
             if self._is_nested(_snap):
                 _parts = [t for t in _snap.unbind() if isinstance(t, torch.Tensor) and t.numel() > 0]
                 _snap = max(_parts, key=lambda t: t.numel()) if _parts else None
-            if isinstance(_snap, torch.Tensor):
+            if isinstance(_snap, torch.Tensor) and not self._is_h3:
+                # NOT on H3: this snapshot only ever feeds output_guidance's value function
+                # and DynaShift's negative bank, both forced off for H3 (see self._is_h3
+                # override above) — capturing it here anyway would just be banking video
+                # latents nothing ever reads, the same waste the "disable everything unrelated
+                # to REINS" pass was for.
                 self._save_output_value_snapshot(refinement_key_input, _snap, None)
                 # DynaShift pending candidate: same run/rating pairing as the snapshot, but
                 # the RAW video latent (fp16) — the rating decides whether it becomes a

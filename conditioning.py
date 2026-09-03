@@ -10208,7 +10208,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # discard otherwise. Separate from the value-function block above because
             # wrong_appearance is deliberately NOT reward-admissible there (repair
             # semantics), yet it is the canonical intrusion signal here.
-            if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
+            # NOT on H3 -- dynashift (the only reader of this bank) is forced off there, and
+            # the sampler no longer captures a pending latent for it either.
+            if has_previous_run and refinement_key and not learning_profile.get("skip_learning") and not _is_h3:
                 try:
                     try:
                         from .negative_memory import consume_pending, is_negative_profile
