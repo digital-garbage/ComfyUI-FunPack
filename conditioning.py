@@ -10218,9 +10218,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     _rs_note = {
                         "recorded": "recorded",
                         "no_pending": "NOT recorded — no captured generation was waiting "
-                                      "(capture may have been off, or the sampler's "
-                                      "h3_repr_steering toggle was off, when that run sampled)",
-                        "disabled": "NOT recorded — capture is paused for this key",
+                                      "(the sampler's h3_repr_steering toggle was likely off "
+                                      "when that run sampled)",
                         "no_key": "NOT recorded — no refinement key",
                     }.get(_rs_outcome, _rs_outcome)
                     print(f"[FunPackRefiner] H3 representation steering: weight "

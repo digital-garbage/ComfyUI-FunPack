@@ -116,41 +116,16 @@ def capture(hidden_state, video_mask):
 def _load(refinement_key):
     path = state_path(refinement_key)
     if not os.path.exists(path):
-        return {"rows": [], "pending": None, "enabled": True}
+        return {"rows": [], "pending": None}
     try:
         data = torch.load(path, map_location="cpu", weights_only=True)
     except Exception:  # noqa: BLE001
-        return {"rows": [], "pending": None, "enabled": True}
+        return {"rows": [], "pending": None}
     if not isinstance(data, dict):
-        return {"rows": [], "pending": None, "enabled": True}
+        return {"rows": [], "pending": None}
     data.setdefault("rows", [])
     data.setdefault("pending", None)
-    data.setdefault("enabled", True)
     return data
-
-
-def capture_enabled(refinement_key):
-    """Whether this key is recording at all -- independent of the sampler's own
-    h3_repr_steering toggle, which also controls whether the learned direction gets APPLIED.
-    A user who wants to pause data collection (to test something else without polluting the
-    log, or because a sweep came back null and they want to think before adding more rows)
-    still needs the widget on for `block_sweep`/status to mean anything, so the pause lives
-    here instead of overloading that widget."""
-    if not refinement_key:
-        return True
-    return bool(_load(refinement_key).get("enabled", True))
-
-
-def set_capture_enabled(refinement_key, enabled):
-    if not refinement_key:
-        return
-    data = _load(refinement_key)
-    data["enabled"] = bool(enabled)
-    try:
-        _save(refinement_key, data)
-    except OSError as e:
-        _log().failed("H3 representation steering", "set capture enabled", e,
-                       "the pause/resume did not persist")
 
 
 def _save(refinement_key, data):
@@ -171,8 +146,6 @@ def save_pending(refinement_key, descriptors):
     if not refinement_key or not descriptors:
         return
     data = _load(refinement_key)
-    if not data.get("enabled", True):
-        return
     data["pending"] = {int(b): d.detach().float().cpu() for b, d in descriptors.items()}
     try:
         _save(refinement_key, data)
@@ -187,17 +160,13 @@ def commit(refinement_key, reward, prompt_hash=None):
     already-resolved, already-admissibility-filtered reward -- this function trusts it rather
     than re-deriving a verdict, same as the value functions do with the same number.
 
-    -> "recorded" | "no_pending" (nothing generated since the last rating -- or capture was
-    off when that generation ran, so nothing was ever saved to pair this rating with) |
-    "disabled" (capture is paused for this key right now) | "no_key". The caller prints this,
-    not just the reward it computed -- a reward can be correct and still never reach a row if
-    there was nothing to pair it with, and a log line that only ever reports the reward it
-    is ABOUT to commit cannot tell that apart from a real commit."""
+    -> "recorded" | "no_pending" (nothing generated since the last rating) | "no_key". The
+    caller prints this, not just the reward it computed -- a reward can be correct and still
+    never reach a row if there was nothing to pair it with, and a log line that only ever
+    reports the reward it is ABOUT to commit cannot tell that apart from a real commit."""
     if not refinement_key:
         return "no_key"
     data = _load(refinement_key)
-    if not data.get("enabled", True):
-        return "disabled"
     pending = data.get("pending")
     data["pending"] = None
     if pending is None:

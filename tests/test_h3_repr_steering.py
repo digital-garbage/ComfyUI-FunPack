@@ -147,12 +147,6 @@ def test_commit_reports_no_pending_with_nothing_to_pair():
     assert rs.commit("k", 1.0) == "no_pending"
 
 
-def test_commit_reports_disabled_when_capture_is_paused():
-    rs.save_pending("k", _pend(torch.tensor([1.0, 0.0])))
-    rs.set_capture_enabled("k", False)
-    assert rs.commit("k", 1.0) == "disabled"
-
-
 def test_commit_reports_no_key_for_an_empty_key():
     assert rs.commit("", 1.0) == "no_key"
 
@@ -164,36 +158,6 @@ def test_pending_overwrites_not_accumulates():
     data = rs._load("k")
     assert len(data["rows"]) == 1
     assert torch.allclose(data["rows"][0]["desc"][rs.DEFAULT_BLOCK], torch.tensor([2.0, 0.0]))
-
-
-def test_capture_enabled_defaults_true():
-    assert rs.capture_enabled("k") is True  # no file yet -- still True, not False
-
-
-def test_disabling_capture_stops_save_pending():
-    rs.set_capture_enabled("k", False)
-    rs.save_pending("k", _pend(torch.tensor([1.0, 0.0])))
-    rs.commit("k", 1.0)
-    direction, n_pos, n_neg = rs.direction("k")
-    assert n_pos == 0 and n_neg == 0  # nothing was ever captured to commit
-
-
-def test_re_enabling_capture_resumes_it():
-    rs.set_capture_enabled("k", False)
-    rs.set_capture_enabled("k", True)
-    assert rs.capture_enabled("k") is True
-    rs.save_pending("k", _pend(torch.tensor([1.0, 0.0])))
-    rs.commit("k", 1.0)
-    data = rs._load("k")
-    assert len(data["rows"]) == 1
-
-
-def test_disabling_capture_does_not_discard_existing_rows():
-    rs.save_pending("k", _pend(torch.tensor([1.0, 0.0])))
-    rs.commit("k", 1.0)
-    rs.set_capture_enabled("k", False)
-    data = rs._load("k")
-    assert len(data["rows"]) == 1
 
 
 def test_clear_all_removes_the_state_file():
