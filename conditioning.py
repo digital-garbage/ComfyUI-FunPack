@@ -4791,10 +4791,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return seed_memory_status
 
     def _v2_learn_scene_into_keys(self, scene_keys, project_key, scene_run, profile, iter_num,
-                                  axis_feedback, seed_output_connected):
+                                  axis_feedback, seed_output_connected, is_h3=False):
         """Train every non-default key that participated in a scene. Each key's own state file
         gets the full learning suite + its value-function update, then is saved. The project
-        key is skipped here (it already learns into the run's main global_state)."""
+        key is skipped here (it already learns into the run's main global_state).
+
+        `is_h3` skips the value-function update: nothing on H3 reads it (see refine_v2's
+        is_h3 override) -- the rest of the learning suite still runs, it is only this
+        mechanism-specific training that has nowhere to go on H3."""
         trained = []
         for key in scene_keys or []:
             key = str(key or "").strip()
@@ -4806,7 +4810,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 self._v2_learn_scene_into_state(
                     key_global, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
                 )
-                if not profile.get("skip_learning") and self._v2_reward_admissible(profile):
+                if not is_h3 and not profile.get("skip_learning") and self._v2_reward_admissible(profile):
                     self._v2_train_value_function(
                         refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt"),
                         scene_run.get("conditioning"),
@@ -4834,6 +4838,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         """Apply Refiner V2 learning once per rated scene (Movie Editor multi-scene chains)."""
         if not isinstance(previous_run, dict) or not scene_ratings:
             return "Movie Editor ratings: none.", None
+        try:
+            from . import minimax_h3 as _h3fam
+        except ImportError:
+            import minimax_h3 as _h3fam
+        is_h3 = _h3fam.is_h3_clip(clip)
         scene_count = int(previous_run.get("scene_count") or len(previous_run.get("scene_texts") or []) or 1)
         if scene_count <= 1:
             return "Movie Editor ratings: previous run was single-scene.", None
@@ -4873,9 +4882,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 # so a clip's key never trains the default (and vice versa).
                 trained_keys = self._v2_learn_scene_into_keys(
                     scene_keys, refinement_key, scene_run, profile, iter_num,
-                    axis_feedback, seed_output_connected,
+                    axis_feedback, seed_output_connected, is_h3=is_h3,
                 )
-                self._v2_learn_absolute(scene_run, profile)
+                if not is_h3:
+                    self._v2_learn_absolute(scene_run, profile)
                 profiles.append(profile)
                 lines.append(
                     f"Scene {scene_index + 1} ({label}): trained custom key(s) [{', '.join(trained_keys)}], default skipped"
@@ -4886,7 +4896,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             seed_memory_status = self._v2_learn_scene_into_state(
                 global_state, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
             )
-            if refinement_key and self._v2_reward_admissible(profile):
+            if not is_h3 and refinement_key and self._v2_reward_admissible(profile):
                 with self._v2_stage("value function"):
                     n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
@@ -4895,7 +4905,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 )
                 if n is not None:
                     print(f"[FunPackRefiner] Scene {scene_index + 1} value function updated — {n} samples")
-            self._v2_learn_absolute(scene_run, profile)
+            if not is_h3:
+                self._v2_learn_absolute(scene_run, profile)
             profiles.append(profile)
             lines.append(
                 f"Scene {scene_index + 1} ({label}): {seed_memory_status.split(': ', 1)[-1]}"
@@ -10207,7 +10218,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
             # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure
             # quality, so a 0.0/low repair reward on a good gen would push it into the global bad_dir.
-            if has_previous_run:
+            # NOT on H3 -- nothing reads it (steer_mode/absolute_strength are Studio-side, gated by
+            # the same value_guidance override above), so training it is pure waste.
+            if has_previous_run and not _is_h3:
                 with self._v2_stage("absolute taste"):
                     self._v2_learn_absolute(previous_run, learning_profile)
             if has_previous_run and not learning_profile.get("skip_learning"):

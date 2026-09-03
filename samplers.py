@@ -6909,6 +6909,20 @@ class FunPackLTXAVSceneChainSampler:
         # happened last run is reported again rather than deduped away forever.
         _log.begin_run()
         self._is_h3 = self._set_stream_axes(model)
+        if self._is_h3:
+            # H3's rating-driven mechanisms are h3_phrase_emphasis (Studio) and
+            # h3_repr_steering (this file) ONLY -- see project_reward_model_rework.md and the
+            # 2026-09-03 dev session. Every other rating-driven latent/conditioning steerer
+            # was built and validated for LTXAV; none of them has been shown to do anything
+            # useful on H3 (output_guidance/trajectory_guidance/dynashift/score_slider ride
+            # the same last-half gate that was calibrated there, and embed_guidance/
+            # taste_nearest_prompt read the same relative value function that phrase
+            # emphasis's own manipulation check showed produces near-invisible pushes at H3's
+            # real calibration). Forced off HERE, not just hidden in Engine Settings, so a
+            # project saved before this still behaves correctly instead of silently doing
+            # six things nobody asked for.
+            output_guidance = trajectory_guidance = dynashift = False
+            embed_guidance = score_slider = taste_nearest_prompt = False
         # Read once per run, consumed by _install_h3_final_layer at each scene's sample call.
         self._h3_video_detail = max(0.0, min(2.0, float(h3_video_detail)))
         # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's

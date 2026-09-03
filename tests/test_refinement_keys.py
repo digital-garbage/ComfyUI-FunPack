@@ -457,6 +457,40 @@ def test_me_scene_ratings_custom_key_skips_default(monkeypatch):
     assert calls["default_vf"] == 1         # default VF trained ONLY scene 2
 
 
+def test_h3_scene_ratings_skip_value_function_and_absolute(monkeypatch):
+    """H3's only rating-driven mechanisms are h3_phrase_emphasis and h3_repr_steering --
+    nothing reads the per-key value function or the Absolute taste store on H3, so training
+    them per rated scene is pure waste (see the 2026-09-03 dev session)."""
+    import minimax_h3
+    monkeypatch.setattr(minimax_h3, "is_h3_clip", lambda c: True)
+    studio = conditioning.FunPackVideoRefinerV2()
+    calls = {"vf": 0, "absolute": 0, "custom_is_h3": []}
+    monkeypatch.setattr(studio, "_v2_build_scene_learning_run",
+                        lambda run, idx, *a, **k: {"conditioning": {"x": 1}, "scene_index": idx})
+    monkeypatch.setattr(studio, "_v2_axis_feedback",
+                        lambda *a, **k: {"missing_axes": [], "satisfied_axes": []})
+    monkeypatch.setattr(studio, "_v2_learn_scene_into_state", lambda *a, **k: "seed: ok")
+    monkeypatch.setattr(studio, "_v2_train_value_function",
+                        lambda *a, **k: (calls.__setitem__("vf", calls["vf"] + 1), 1)[1])
+    monkeypatch.setattr(studio, "_v2_learn_absolute",
+                        lambda *a, **k: calls.__setitem__("absolute", calls["absolute"] + 1))
+
+    def _fake_learn_into_keys(keys, *a, is_h3=False, **k):
+        calls["custom_is_h3"].append(is_h3)
+        return list(keys)
+    monkeypatch.setattr(studio, "_v2_learn_scene_into_keys", _fake_learn_into_keys)
+
+    prev = {"scene_count": 2, "scene_texts": ["s1", "s2"],
+            "scene_refinement_keys": [["mykey"], []]}  # scene1 custom, scene2 default
+    ratings = [{"index": 0, "rating": "Perfect"}, {"index": 1, "rating": "Perfect"}]
+    studio._v2_apply_movie_editor_scene_ratings(
+        {}, prev, ratings, 1, refinement_key="default", clip=object())
+
+    assert calls["vf"] == 0            # scene 2 (default key) never trains its VF on H3
+    assert calls["absolute"] == 0      # neither scene feeds Absolute on H3
+    assert calls["custom_is_h3"] == [True]  # scene 1's custom-key path was told it's H3 too
+
+
 def test_wrong_ratings_skip_value_function():
     """Wrong-* are prompt-repair signals, not quality rewards: they must NOT train the value
     function (a 0.0/low reward on a visually-good gen poisons the learned quality landscape).
