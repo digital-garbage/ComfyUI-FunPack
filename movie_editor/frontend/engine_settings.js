@@ -21,6 +21,7 @@
     "embed_guidance", "embed_guidance_source", "embed_guidance_strength",
     "score_slider", "score_slider_strength", "taste_nearest_prompt",
     "output_guidance", "output_guidance_strength",
+    "trajectory_guidance", "trajectory_guidance_strength",
     "dynashift", "dynashift_strength", "dynashift_threshold",
   ]);
   const RATING_GATED_STUDIO = new Set(["reference_injection", "value_guidance", "steer_mode", "absolute_strength"]);
@@ -263,6 +264,11 @@
       hint: "Applies your learned taste to what the model predicts instead of to the prompt. Almost free, but it trains a separate memory and needs its own 10+ rated generations before it does anything." },
     { name: "output_guidance_strength", label: "Output guidance strength", kind: "float", default: 0.02, min: 0.005, max: 0.1, step: 0.005, dependsOn: "output_guidance",
       hint: "How hard the prediction is corrected each step. Same scale as Embed strength — start there and adjust." },
+    { name: "trajectory_guidance",   label: "Steer the whole generation", kind: "bool", default: false,
+      hint: "Applies your ratings from the very start of a generation, not just near the end. Needs 10+ rated generations per quarter before any part of it acts.",
+      detail: "Every other rating-driven setting only acts over the last half of a generation \u2014 after the motion and the layout have already been settled. This learns a separate memory for each quarter of the run and applies each one in its own window, so a rating about movement finally has somewhere to land. Measured across 51 rated runs, the early part carried about 88% of the signal the late part does. Costs the same as Output guidance (nothing you would notice). A quarter without enough ratings stays inert and says so." },
+    { name: "trajectory_guidance_strength", label: "Whole-generation strength", kind: "float", default: 0.02, min: 0.005, max: 0.1, step: 0.005, dependsOn: "trajectory_guidance",
+      hint: "How hard each step is corrected. Same scale as Output guidance strength, but not eased off near the end \u2014 so it bites harder at the same number." },
     { name: "decode_noise_scale",    label: "Decode noise scale",    kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01,
       hint: "Adds fine detail and grain back while decoding. 0 is a clean decode, ~0.025 is a gentle restore. Free, and affects the video only — not the latent." },
     { name: "decode_timestep",       label: "Decode timestep",       kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01,
@@ -492,7 +498,7 @@
   const CHAIN_VIEW_KNOBS = {
     chain_continuity: ["carry_i2v_guides", "carry_overlap_through_anchor"],
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
-    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
+    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
     chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_video_detail", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };

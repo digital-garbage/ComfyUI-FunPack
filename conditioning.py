@@ -10249,6 +10249,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 )
                 if n_traj is not None:
                     print(f"[FunPackRefiner] Trajectory probe — {n_traj} run(s) logged")
+                    # The per-bucket heads are a pure function of that log, so they are
+                    # rebuilt from it rather than nudged: a log carried onto another box
+                    # then trains the heads it would have trained there.
+                    try:
+                        from .trajectory_guidance import train_from_rows as _tg_train
+                        from .trajectory_probe import load_log as _tg_log
+                    except ImportError:
+                        from trajectory_guidance import train_from_rows as _tg_train
+                        from trajectory_probe import load_log as _tg_log
+                    counts = _tg_train(refinement_key, _tg_log(refinement_key))
+                    if counts:
+                        ready = [b for b, n in counts.items() if n >= 10]
+                        print(f"[FunPackRefiner] Trajectory guidance — samples per window "
+                              f"{counts}; {len(ready)} window(s) can steer")
             except Exception as _e:
                 print(f"[FunPackRefiner] Trajectory probe intake failed: {_e}")
         with self._v2_stage("vision memory"):

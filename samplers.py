@@ -2778,6 +2778,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.02, "min": 0.005, "max": 0.1, "step": 0.005,
                     "tooltip": "Per-step correction strength applied to the model's predicted output. Same scale/units as embed_guidance_strength — start there and adjust.",
                 }),
+                "trajectory_guidance": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: the only rating-driven steering that reaches the FIRST half of a generation. Every other one (embed_guidance, score_slider, dynashift, output_guidance) shares a gate that opens only over the last half, which is after motion and layout are already decided \u2014 so a rating about movement has never had a window to act in. This learns one value function per quarter of the schedule, each trained on that quarter's own predicted output, and each steers inside its own window. Needs 10+ rated generations per quarter and a refinement_key_input; a quarter without enough is simply inert and the run says so. Measured basis: across 51 rated runs the early window carried ~88% of the late window's signal. Same near-zero cost as output_guidance \u2014 one small-MLP backward per step, no extra model pass.",
+                }),
+                "trajectory_guidance_strength": ("FLOAT", {
+                    "default": 0.02, "min": 0.005, "max": 0.1, "step": 0.005,
+                    "tooltip": "Per-step correction strength, as a fraction of the video stream's norm. Same scale as output_guidance_strength. Unlike that one it is NOT ramped down away from the end, so the same number bites harder here \u2014 start at 0.02 and raise only if a same-seed A/B shows too little change.",
+                }),
                 "dynashift": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "EXPERIMENTAL DynaShift: a negative prompt at CFG=1, driven by YOUR bad ratings instead of text. Bad-outcome ratings ('Awful', 'Wrong appearance', and the quality-missing family: 'Missing quality' / '+details' / '+action' combos) store that run's video latent in a per-key negative bank; near-miss ratings with positive reward ('Missing details', 'Missing action') deliberately do NOT. During sampling, frames that start to look like a banked bad generation are steered away (projection removal) until the match drops below the threshold. Alignment-free in time (chain position / guide tails don't matter); negatives from a different resolution are skipped; each negative is weighted by prompt similarity so unrelated bad gens steer less. Requires refinement_key_input; silent until the bank has at least one entry. No extra model pass — near-zero overhead. Audio untouched.",
@@ -4660,6 +4668,76 @@ class FunPackLTXAVSceneChainSampler:
             return denoised
 
         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_probe_wrapper, old_wrapper)
+        return old_wrapper
+
+    def _build_trajectory_guidance_wrapper(self, model, buckets, strength, bucket_for):
+        """Steering that reaches the FIRST half of the schedule.
+
+        Sibling of _build_output_guidance_wrapper, and deliberately close to it: same
+        correction (the value function's gradient on the model's own predicted x0, calibrated
+        so `strength` means a fraction of the video stream's norm), same video-only slice.
+        Two differences, and they are the whole feature:
+
+        - The value function is chosen BY SCHEDULE POSITION. One head per bucket, each
+          trained only on that bucket's descriptors, so what steers at step 2 learned from
+          step 2.
+        - There is NO `_make_steer_ramp`. That gate is what confines every other
+          rating-driven mechanism to the last half, which is the half where motion and
+          layout have already been decided. Each bucket acts inside its own window instead.
+
+        A bucket whose head has too few samples simply does not act. That is not a failure
+        and it is not silent: the run says which buckets steer, because "on" and "doing
+        something" are different claims and this project keeps confusing them.
+        """
+        old_wrapper = model.model_options.get("model_function_wrapper")
+
+        def _call(apply_fn, a):
+            if old_wrapper is not None:
+                return old_wrapper(apply_fn, a)
+            return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
+
+        def _guided(apply_fn, args, _b=buckets, _s=strength):
+            denoised = _call(apply_fn, args)
+            ts = args.get("timestep")
+            try:
+                sigma = float(ts.max().item()) if ts is not None else None
+            except Exception:
+                sigma = None
+            if sigma is None:
+                return denoised
+            # Same refusal the probe makes: at CFG>1 comfy stacks the unconditional row into
+            # this call's batch, and a correction computed on that blend is a correction
+            # toward the average of a prediction and its negation.
+            if getattr(denoised, "dim", None) and denoised.dim() > 0 and int(denoised.shape[0]) > 1:
+                return denoised
+            bucket = bucket_for(sigma)
+            if bucket is None or not _b.ready(bucket):
+                return denoised
+            try:
+                span = _video_span(model, denoised)
+                if span is None:
+                    return denoised
+                off, sz, _shape = span
+                target = denoised[..., off:off + sz]
+                grad = _b.gradient(bucket, target)
+                if grad is None:
+                    return denoised
+                gn = float(grad.float().norm())
+                if gn <= 0.0:
+                    return denoised
+                k = _s * float(target.float().norm()) / gn
+                corrected = target + grad * k
+                return torch.cat(
+                    [denoised[..., :off], corrected, denoised[..., off + sz:]], dim=-1)
+            except Exception as e:
+                try:
+                    from .funpack_log import failed
+                except ImportError:
+                    from funpack_log import failed
+                failed("trajectory guidance", "step", e, "this step was not steered")
+                return denoised
+
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_guided, old_wrapper)
         return old_wrapper
 
     def _build_dynashift_wrapper(self, model, negatives, strength, threshold, raw_cond=None, ramp_fn=None):
@@ -6712,6 +6790,7 @@ class FunPackLTXAVSceneChainSampler:
                alg_blur_guides=False,
                bounded_attention_enabled=False,
                output_guidance=False, output_guidance_strength=0.02,
+               trajectory_guidance=False, trajectory_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
@@ -6915,6 +6994,8 @@ class FunPackLTXAVSceneChainSampler:
                 alg_anchor_sigma_threshold=alg_anchor_sigma_threshold,
                 bounded_attention_enabled=bounded_attention_enabled,
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
+                trajectory_guidance=trajectory_guidance,
+                trajectory_guidance_strength=trajectory_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
                 dynashift_threshold=dynashift_threshold,
                 context_windows=context_windows, context_window_length=context_window_length,
@@ -7042,6 +7123,41 @@ class FunPackLTXAVSceneChainSampler:
             else:
                 print(f"[FunPackSceneChain] output_guidance: active ({_output_value_fn.n_trained} samples), "
                       f"strength={output_guidance_strength}")
+
+        # Per-bucket value functions for trajectory_guidance. Separate from the one above
+        # because they answer a different question: that one asks "is this a good finish",
+        # these ask "is this a good step 2", and only the second can act before the end.
+        _traj_buckets = None
+        _traj_bucket_for = None
+        if trajectory_guidance and refinement_key_input:
+            try:
+                try:
+                    from . import trajectory_guidance as _tg
+                    from . import trajectory_probe as _tp_b
+                except ImportError:
+                    import trajectory_guidance as _tg
+                    import trajectory_probe as _tp_b
+                _traj_buckets = _tg.load(refinement_key_input, _tp_b.bucket_count())
+                if _traj_buckets is None:
+                    print("[FunPackSceneChain] trajectory_guidance: nothing learned yet "
+                          "(needs 10+ rated generations; record them with the trajectory "
+                          "probe on) — not steering")
+                else:
+                    _traj_bucket_for = _tp_b.TrajectoryRecorder(
+                        sigmas, _traj_buckets.n_buckets).bucket_for
+                    _ready = [b for b in range(_traj_buckets.n_buckets) if _traj_buckets.ready(b)]
+                    _counts = _traj_buckets.trained()
+                    print(f"[FunPackSceneChain] trajectory_guidance: steering in "
+                          f"{len(_ready)} of {_traj_buckets.n_buckets} windows "
+                          f"{_ready} — samples per window {_counts}")
+                    if not any(b < _traj_buckets.n_buckets / 2 for b in _ready):
+                        print("[FunPackSceneChain] trajectory_guidance: no EARLY window is "
+                              "ready, so this is steering only where output_guidance already "
+                              "does — rate more runs before drawing a conclusion")
+            except Exception as _e:
+                print(f"[FunPackSceneChain] trajectory_guidance: load failed ({_e}) — not steering")
+        elif trajectory_guidance:
+            print("[FunPackSceneChain] trajectory_guidance: requires refinement_key_input — disabled")
 
         # How much of the schedule the steering actually reaches. "active" alone hid the
         # fact that a shift-heavy H3 schedule left these wrappers with almost no window.
@@ -7432,6 +7548,10 @@ class FunPackLTXAVSceneChainSampler:
                     run_mechanisms.append(f"output_guidance({output_guidance_strength})")
                     self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength,
                                                         ramp_fn=_steer_ramp)
+                if _traj_buckets is not None and _traj_bucket_for is not None:
+                    run_mechanisms.append(f"trajectory_guidance({trajectory_guidance_strength})")
+                    self._build_trajectory_guidance_wrapper(
+                        model, _traj_buckets, trajectory_guidance_strength, _traj_bucket_for)
                 if _traj_recorder is not None:
                     # Outermost observer: records what this scene actually predicted per step.
                     _traj_recorder.begin_scene(scene_index)
@@ -8174,6 +8294,7 @@ class FunPackLTXAVSceneChainSampler:
                             joyai_audio_memory=False, v2a_grad_scale=1.0,
                             alg_blur_guides=False, bounded_attention_enabled=False,
                             output_guidance=False, output_guidance_strength=0.02,
+                            trajectory_guidance=False, trajectory_guidance_strength=0.02,
                             dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                             alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                             alg_anchor=False, alg_anchor_strength=2.0,
@@ -8237,6 +8358,8 @@ class FunPackLTXAVSceneChainSampler:
                 alg_anchor_sigma_threshold=alg_anchor_sigma_threshold,
                 bounded_attention_enabled=bounded_attention_enabled,
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
+                trajectory_guidance=trajectory_guidance,
+                trajectory_guidance_strength=trajectory_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
                 dynashift_threshold=dynashift_threshold,
                 context_windows=context_windows, context_window_length=context_window_length,

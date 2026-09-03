@@ -121,6 +121,7 @@ SIMPLE_MODE_SAMPLER_OFF: dict[str, Any] = {
     "score_slider": False,
     "taste_nearest_prompt": False,
     "output_guidance": False,
+    "trajectory_guidance": False,
     "dynashift": False,
 }
 
