@@ -10216,31 +10216,44 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     }.get(_rs_outcome, _rs_outcome)
                     print(f"[FunPackRefiner] H3 representation steering: weight "
                           f"{_rs_reward:+.3f} for rating '{rating_label}' — {_rs_note}")
-            # DynaShift negative memory: pair the sampler's pending raw latent with this
-            # rating — promote into the per-key negative bank when the rating marks the run
-            # a bad outcome (intrusions: awful / wrong_appearance; or the quality-missing
-            # family via reward <= threshold — see negative_memory.is_negative_profile),
-            # discard otherwise. Separate from the value-function block above because
-            # wrong_appearance is deliberately NOT reward-admissible there (repair
-            # semantics), yet it is the canonical intrusion signal here.
-            # NOT on H3 -- dynashift (the only reader of this bank) is forced off there, and
-            # the sampler no longer captures a pending latent for it either.
-            if has_previous_run and refinement_key and not learning_profile.get("skip_learning") and not _is_h3:
+            # DynaShift latent memory: pair the sampler's pending raw latent with this rating
+            # — promote into the negative bank on a bad outcome (intrusions: awful /
+            # wrong_appearance; or the quality-missing family via reward <= threshold — see
+            # negative_memory.is_negative_profile), the positive bank on any positive reward
+            # (is_positive_profile, same sign-only convention h3_repr_steering.direction()
+            # uses), or discard otherwise. Separate from the value-function block above
+            # because wrong_appearance is deliberately NOT reward-admissible there (repair
+            # semantics), yet it is the canonical intrusion signal here. is_negative_profile
+            # and is_positive_profile are mutually exclusive by construction (thresholds
+            # <= -0.25 and > 0.0), so at most one bank is ever touched per rating; the pending
+            # latent is removed by consume_pending either way, so a second call can never
+            # double-promote it.
+            if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
                 try:
                     try:
-                        from .negative_memory import consume_pending, is_negative_profile
+                        from .negative_memory import consume_pending, is_negative_profile, \
+                            is_positive_profile
                     except ImportError:
-                        from negative_memory import consume_pending, is_negative_profile
-                    n_neg = consume_pending(
-                        refinement_key,
-                        is_negative_profile(learning_profile),
-                        rating_key=learning_profile.get("key"),
-                    )
-                    if n_neg is not None:
-                        print(f"[FunPackRefiner] DynaShift negative bank updated — {n_neg} entr"
-                              f"{'y' if n_neg == 1 else 'ies'}")
+                        from negative_memory import consume_pending, is_negative_profile, \
+                            is_positive_profile
+                    if is_negative_profile(learning_profile):
+                        n = consume_pending(refinement_key, True,
+                                             rating_key=learning_profile.get("key"),
+                                             bank="negative")
+                        if n is not None:
+                            print(f"[FunPackRefiner] DynaShift negative bank updated — {n} "
+                                  f"entr{'y' if n == 1 else 'ies'}")
+                    elif is_positive_profile(learning_profile):
+                        n = consume_pending(refinement_key, True,
+                                             rating_key=learning_profile.get("key"),
+                                             bank="positive")
+                        if n is not None:
+                            print(f"[FunPackRefiner] DynaShift positive bank updated — {n} "
+                                  f"entr{'y' if n == 1 else 'ies'}")
+                    else:
+                        consume_pending(refinement_key, False)
                 except Exception as _e:
-                    print(f"[FunPackRefiner] DynaShift negative intake failed: {_e}")
+                    print(f"[FunPackRefiner] DynaShift intake failed: {_e}")
             # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
             # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
             # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure

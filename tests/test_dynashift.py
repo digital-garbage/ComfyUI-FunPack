@@ -126,9 +126,9 @@ def _negative_entry(frame_vecs, cond=None):
     return {"latent": lat.to(torch.float16), "cond": cond}
 
 
-def _wrap(model, negatives, strength=0.5, threshold=0.6):
+def _wrap(model, negatives, strength=0.5, threshold=0.6, positives=None):
     s = samplers.FunPackLTXAVSceneChainSampler()
-    s._build_dynashift_wrapper(model, negatives, strength, threshold)
+    s._build_dynashift_wrapper(model, negatives, strength, threshold, positives=positives)
     return model.model_options["model_function_wrapper"]
 
 
@@ -214,3 +214,53 @@ def test_wrapper_is_tagged_for_leak_strip():
     w = model.model_options["model_function_wrapper"]
     assert getattr(w, samplers._FUNPACK_SCENE_WRAPPER_TAG, False)
     assert samplers._strip_funpack_scene_wrappers(model) == 1
+
+
+# ---------------------------------------------------------------------------
+# Positive pull -- mean(liked) - mean(disliked), independent of the negative match
+# ---------------------------------------------------------------------------
+
+
+def test_positive_profile_rule():
+    assert negative_memory.is_positive_profile({"key": "liked", "reward": 1.0})
+    assert negative_memory.is_positive_profile({"key": "missing_action", "reward": 0.05})
+    assert not negative_memory.is_positive_profile({"key": "missing_quality", "reward": -0.25})
+    assert not negative_memory.is_positive_profile({"key": "wrong_appearance", "reward": 0.0})
+    assert not negative_memory.is_positive_profile(None)
+    # Mutually exclusive with is_negative_profile on every reward value -- nothing banks twice.
+    for reward in (-0.9, -0.25, -0.1, 0.0, 0.05, 0.35, 1.0):
+        profile = {"key": "x", "reward": reward}
+        assert not (negative_memory.is_negative_profile(profile)
+                    and negative_memory.is_positive_profile(profile))
+
+
+def test_pull_needs_min_entries_in_each_bank():
+    # Only 1 positive entry -- below MIN_BANK_FOR_PULL even though the negative bank has 2.
+    model = _packed_av_model()
+    negs = [_negative_entry([_basis_frame(0)]), _negative_entry([_basis_frame(0)])]
+    pos = [_negative_entry([_basis_frame(1)])]
+    denoised = _denoised_from_frames([3.0 * _basis_frame(2)] * T)  # orthogonal to both banks
+    out = _run(_wrap(model, negs, positives=pos), denoised)
+    assert torch.equal(out, denoised)  # no negative match, no pull -> pure passthrough
+
+
+def test_positive_pull_moves_toward_liked_minus_disliked_direction():
+    model = _packed_av_model()
+    negs = [_negative_entry([_basis_frame(0)]), _negative_entry([_basis_frame(0)])]
+    pos = [_negative_entry([_basis_frame(1)]), _negative_entry([_basis_frame(1)])]
+    # A frame orthogonal to both banks: no negative match (gate stays 0), so any movement
+    # can only come from the pull term.
+    denoised = _denoised_from_frames([3.0 * _basis_frame(2)] * T)
+    out = _run(_wrap(model, negs, strength=0.5, threshold=0.6, positives=pos), denoised)
+    frames = _frames_of(out)
+    pull_dir = torch.nn.functional.normalize(_basis_frame(1) - _basis_frame(0), dim=0)
+    expected = 3.0 * _basis_frame(2) + (0.5 * 1.0 * 3.0) * pull_dir  # strength * ramp(sigma=0) * |cur|
+    assert torch.allclose(frames[0], expected, atol=1e-4)
+
+
+def test_pull_is_inert_with_no_positive_bank():
+    model = _packed_av_model()
+    negs = [_negative_entry([_basis_frame(0)]), _negative_entry([_basis_frame(0)])]
+    denoised = _denoised_from_frames([3.0 * _basis_frame(2)] * T)
+    out = _run(_wrap(model, negs, positives=None), denoised)
+    assert torch.equal(out, denoised)

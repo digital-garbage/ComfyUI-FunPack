@@ -4772,8 +4772,10 @@ class FunPackLTXAVSceneChainSampler:
         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_guided, old_wrapper)
         return old_wrapper
 
-    def _build_dynashift_wrapper(self, model, negatives, strength, threshold, raw_cond=None, ramp_fn=None):
-        """DynaShift: steer the predicted x0 AWAY from the key's negative latent memory.
+    def _build_dynashift_wrapper(self, model, negatives, strength, threshold, raw_cond=None,
+                                  ramp_fn=None, positives=None):
+        """DynaShift: steer the predicted x0 AWAY from the key's negative latent memory, and
+        (when there's enough of both banks) TOWARD a learned good direction.
 
         A negative prompt at CFG=1: the repulsor is not a second text pass but the
         stored video latents of generations the user rated as containing something
@@ -4791,6 +4793,20 @@ class FunPackLTXAVSceneChainSampler:
              scaled by how far above threshold the match is — steering fades to a
              no-op as soon as the unwanted feature is gone ("until it's gone").
 
+        The positive pull is a DIFFERENT shape of intervention, deliberately: matching
+        toward the single nearest liked frame (mirroring the negative math exactly)
+        would push the model to partially reproduce one specific past generation --
+        there is only one way to BE a specific past clip and many ways to simply not
+        resemble a specific bad one, so the same math is safe repelling and risky
+        attracting. Instead this is h3_repr_steering's own mean(liked) - mean(disliked)
+        direction, recomputed here in DynaShift's latent space rather than borrowed
+        from REINS' hidden-state one (the two are not the same address space and
+        there's no map between them) -- a general "which way is better" axis averaged
+        over every banked frame on both sides, not a pull toward any one example.
+        Needs negative_memory.MIN_BANK_FOR_PULL+ entries in EACH bank at this run's own
+        latent resolution; below that it silently contributes nothing, same as
+        h3_repr_steering.direction() before it has 2+ of each.
+
         Cost: one pooled similarity matrix + one masked subtraction per step; no
         extra model forward pass, no uncond pass. Audio byte-identical by
         construction (video span only, cat back). Frame-level (not sub-frame) v1:
@@ -4798,7 +4814,14 @@ class FunPackLTXAVSceneChainSampler:
         old_wrapper = model.model_options.get("model_function_wrapper")
         _ramp = ramp_fn or (lambda sigma: max(0.0, 1.0 - float(sigma) * 2.0))
         _desc_dim = 512
-        _prep = {}  # device -> (desc [Tall,512] fp32, units [Tall,D] fp16, owner [Tall], conds)
+        _positives = positives or []
+        try:
+            from .negative_memory import MIN_BANK_FOR_PULL as _MIN_PULL
+        except ImportError:
+            from negative_memory import MIN_BANK_FOR_PULL as _MIN_PULL
+        # device -> (desc [Tall,512] fp32, units [Tall,D] fp16, owner [Tall], conds,
+        #            pull_dir [D] fp32 unit vector | None)
+        _prep = {}
         _warned = [False]
         # The bank stores the RAW scene conditioning (negative_memory.save_pending is handed
         # positive[0][0]), so the prompt-similarity weight has to be computed against the raw
@@ -4819,6 +4842,21 @@ class FunPackLTXAVSceneChainSampler:
         def _frame_desc(frames_f32):
             d = torch.nn.functional.adaptive_avg_pool1d(frames_f32.unsqueeze(1), _desc_dim).squeeze(1)
             return torch.nn.functional.normalize(d, dim=-1)
+
+        def _matching_units(bank, device, c, h, w):
+            """Every entry's frames, unit-normalised, for entries whose latent geometry
+            matches (c, h, w). -> (units [Nframes,D] fp32 or None, n_matching_entries)."""
+            units = []
+            n_entries = 0
+            for entry in bank:
+                lat = entry.get("latent")
+                if not isinstance(lat, torch.Tensor) or lat.dim() != 4 or \
+                        lat.shape[0] != c or lat.shape[2] != h or lat.shape[3] != w:
+                    continue
+                frames = lat.permute(1, 0, 2, 3).reshape(lat.shape[1], -1).to(device).float()
+                units.append(torch.nn.functional.normalize(frames, dim=-1))
+                n_entries += 1
+            return (torch.cat(units, dim=0) if units else None), n_entries
 
         def _prepare(device, c, h, w):
             key = (str(device), c, h, w)
@@ -4842,10 +4880,27 @@ class FunPackLTXAVSceneChainSampler:
                 _warned[0] = True
                 print(f"[FunPackSceneChain] dynashift: {skipped} negative(s) skipped "
                       "(different latent resolution than this run)")
+            # Positive pull: mean(liked frames) - mean(disliked frames) at this same
+            # resolution, unit-normalised. Reuses the negative units already gathered
+            # above (same filter, no second pass over `negatives`) rather than calling
+            # _matching_units twice.
+            pull_dir = None
+            neg_entry_count = len(conds)
+            if _positives and neg_entry_count >= _MIN_PULL:
+                pos_units, pos_entry_count = _matching_units(_positives, device, c, h, w)
+                if pos_units is not None and pos_entry_count >= _MIN_PULL:
+                    neg_units_f32 = torch.cat(units, dim=0).float() if units else None
+                    if neg_units_f32 is not None:
+                        diff = pos_units.mean(dim=0) - neg_units_f32.mean(dim=0)
+                        n = diff.norm()
+                        if torch.isfinite(n) and n > 1e-8:
+                            pull_dir = diff / n
             prepared = None
-            if descs:
-                prepared = (torch.cat(descs, dim=0), torch.cat(units, dim=0),
-                            torch.tensor(owners, device=device), conds)
+            if descs or pull_dir is not None:
+                prepared = (torch.cat(descs, dim=0) if descs else None,
+                            torch.cat(units, dim=0) if units else None,
+                            torch.tensor(owners, device=device) if owners else None,
+                            conds, pull_dir)
             _prep[key] = prepared
             return prepared
 
@@ -4885,18 +4940,31 @@ class FunPackLTXAVSceneChainSampler:
                 prepared = _prepare(denoised.device, c, h, w)
                 if prepared is None:
                     return denoised
-                desc, units, owner, conds = prepared
+                desc, units, owner, conds, pull_dir = prepared
                 cur = denoised[..., off:off + sz].reshape(c, t, h, w)
                 cur_f = cur.permute(1, 0, 2, 3).reshape(t, -1).float()
-                sims = _frame_desc(cur_f) @ desc.T                     # [T, Tall]
-                sims = sims * _cond_weights(conds, args.get("c"), denoised.device)[owner]
-                best, idx = sims.max(dim=1)                            # per current frame
-                gate = ((best - _thr) / max(1e-6, 1.0 - _thr)).clamp(0.0, 1.0) * (_s * ramp)
-                if float(gate.max()) <= 0.0:
+                new_f = cur_f
+                changed = False
+                if desc is not None:
+                    sims = _frame_desc(cur_f) @ desc.T                     # [T, Tall]
+                    sims = sims * _cond_weights(conds, args.get("c"), denoised.device)[owner]
+                    best, idx = sims.max(dim=1)                            # per current frame
+                    gate = ((best - _thr) / max(1e-6, 1.0 - _thr)).clamp(0.0, 1.0) * (_s * ramp)
+                    if float(gate.max()) > 0.0:
+                        matched = units[idx].float()                       # [T, D] unit rows
+                        coef = (cur_f * matched).sum(dim=-1).clamp(min=0.0)  # aligned only
+                        new_f = new_f - (gate * coef).unsqueeze(1) * matched
+                        changed = True
+                if pull_dir is not None:
+                    # Independent of whether any negative matched this step -- a general
+                    # "better direction" nudge, not a repulsion trigger. Scaled by each
+                    # frame's OWN norm, same relative-magnitude convention
+                    # h3_repr_steering uses for its own strength*row_norm push.
+                    push_mag = (_s * ramp) * cur_f.norm(dim=-1, keepdim=True)
+                    new_f = new_f + push_mag * pull_dir.to(new_f.dtype).unsqueeze(0)
+                    changed = True
+                if not changed:
                     return denoised
-                matched = units[idx].float()                           # [T, D] unit rows
-                coef = (cur_f * matched).sum(dim=-1).clamp(min=0.0)    # aligned component only
-                new_f = cur_f - (gate * coef).unsqueeze(1) * matched
                 new_span = new_f.reshape(t, c, h, w).permute(1, 0, 2, 3).reshape(1, 1, sz)
                 return torch.cat([denoised[..., :off],
                                   new_span.to(denoised.dtype),
@@ -6947,18 +7015,19 @@ class FunPackLTXAVSceneChainSampler:
         _log.begin_run()
         self._is_h3 = self._set_stream_axes(model)
         if self._is_h3:
-            # H3's rating-driven mechanisms are h3_phrase_emphasis (Studio) and
-            # h3_repr_steering (this file) ONLY -- see project_reward_model_rework.md and the
-            # 2026-09-03 dev session. Every other rating-driven latent/conditioning steerer
-            # was built and validated for LTXAV; none of them has been shown to do anything
-            # useful on H3 (output_guidance/trajectory_guidance/dynashift/score_slider ride
-            # the same last-half gate that was calibrated there, and embed_guidance/
+            # H3's rating-driven mechanisms are h3_phrase_emphasis (Studio), h3_repr_steering,
+            # and (2026-09-03, re-enabled) dynashift -- see project_reward_model_rework.md.
+            # Everything else here was built and calibrated for LTXAV and has never been shown
+            # to do anything useful on H3 (output_guidance/trajectory_guidance/score_slider
+            # ride the same last-half gate that was calibrated there, and embed_guidance/
             # taste_nearest_prompt read the same relative value function that phrase
             # emphasis's own manipulation check showed produces near-invisible pushes at H3's
             # real calibration). Forced off HERE, not just hidden in Engine Settings, so a
             # project saved before this still behaves correctly instead of silently doing
-            # six things nobody asked for.
-            output_guidance = trajectory_guidance = dynashift = False
+            # several things nobody asked for. DynaShift is the one exception, reopened
+            # specifically to test its own (unmodified) mechanism plus a new positive-pull
+            # channel on H3 -- unvalidated there like h3_repr_steering, not a claim it works.
+            output_guidance = trajectory_guidance = False
             embed_guidance = score_slider = taste_nearest_prompt = False
         # Read once per run, consumed by _install_h3_final_layer at each scene's sample call.
         self._h3_video_detail = max(0.0, min(2.0, float(h3_video_detail)))
@@ -7226,25 +7295,37 @@ class FunPackLTXAVSceneChainSampler:
                     pole = "contrastive (liked-vs-bad)" if _bad_dir is not None else "symmetric (+/-liked)"
                     print(f"[FunPackSceneChain] score_slider ({_eg_source}): active (score-space), eta={score_slider_strength}, pole={pole}")
 
-        # DynaShift negative latent memory — loaded once per run. Empty bank = feature
-        # stays silent (nothing rated bad yet for this key); it fills as awful /
-        # wrong-appearance ratings land.
+        # DynaShift latent memory — both banks loaded once per run. Empty negative bank =
+        # repulsion stays silent (nothing rated bad yet); the positive-pull direction only
+        # forms once BOTH banks have negative_memory.MIN_BANK_FOR_PULL+ entries (see
+        # _build_dynashift_wrapper) — reported here as a status line, computed lazily per
+        # resolution inside the wrapper itself.
         _dynashift_negatives = None
+        _dynashift_positives = None
         if dynashift and refinement_key_input:
             try:
                 try:
-                    from .negative_memory import load_negatives as _load_negs
+                    from .negative_memory import load_negatives as _load_negs, \
+                        load_positives as _load_pos, MIN_BANK_FOR_PULL as _min_pull
                 except ImportError:
-                    from negative_memory import load_negatives as _load_negs
+                    from negative_memory import load_negatives as _load_negs, \
+                        load_positives as _load_pos, MIN_BANK_FOR_PULL as _min_pull
                 _dynashift_negatives = _load_negs(refinement_key_input) or None
+                _dynashift_positives = _load_pos(refinement_key_input) or None
             except Exception as _e:
                 print(f"[FunPackSceneChain] dynashift: bank load failed ({_e})")
             if _dynashift_negatives is None:
                 print("[FunPackSceneChain] dynashift: negative bank empty — rate a bad "
                       "generation (Awful / Wrong appearance) to populate it")
             else:
+                _n_pos = len(_dynashift_positives) if _dynashift_positives else 0
+                _pull_note = (f", positive pull active ({_n_pos} liked)"
+                               if _n_pos >= _min_pull and len(_dynashift_negatives) >= _min_pull
+                               else f", positive pull not yet ({_n_pos} liked, need {_min_pull} "
+                                    f"of each)")
                 print(f"[FunPackSceneChain] dynashift: active with {len(_dynashift_negatives)} "
-                      f"negative(s), strength={dynashift_strength}, threshold={dynashift_threshold}")
+                      f"negative(s), strength={dynashift_strength}, "
+                      f"threshold={dynashift_threshold}{_pull_note}")
         elif dynashift:
             print("[FunPackSceneChain] dynashift: requires refinement_key_input — disabled")
 
@@ -7678,7 +7759,8 @@ class FunPackLTXAVSceneChainSampler:
                         f"dynashift({len(_dynashift_negatives)}neg,{dynashift_strength},thr={dynashift_threshold})")
                     self._build_dynashift_wrapper(
                         model, _dynashift_negatives, dynashift_strength, dynashift_threshold,
-                        raw_cond=_raw_scene_cond, ramp_fn=_steer_ramp)
+                        raw_cond=_raw_scene_cond, ramp_fn=_steer_ramp,
+                        positives=_dynashift_positives)
                 if output_guidance and _output_value_fn is not None:
                     # Installed outermost (after embed_guidance/score_slider/dynashift) so it
                     # corrects whatever prediction those already produced, not the raw base one.
@@ -8304,18 +8386,20 @@ class FunPackLTXAVSceneChainSampler:
             if self._is_nested(_snap):
                 _parts = [t for t in _snap.unbind() if isinstance(t, torch.Tensor) and t.numel() > 0]
                 _snap = max(_parts, key=lambda t: t.numel()) if _parts else None
-            if isinstance(_snap, torch.Tensor) and not self._is_h3:
-                # NOT on H3: this snapshot only ever feeds output_guidance's value function
-                # and DynaShift's negative bank, both forced off for H3 (see self._is_h3
-                # override above) — capturing it here anyway would just be banking video
-                # latents nothing ever reads, the same waste the "disable everything unrelated
-                # to REINS" pass was for.
-                self._save_output_value_snapshot(refinement_key_input, _snap, None)
+            if isinstance(_snap, torch.Tensor):
+                if not self._is_h3:
+                    # NOT on H3: this snapshot only feeds output_guidance's value function,
+                    # forced off for H3 (see self._is_h3 override above) — capturing it here
+                    # anyway would just be banking video latents nothing ever reads, the same
+                    # waste the "disable everything unrelated to REINS" pass was for.
+                    self._save_output_value_snapshot(refinement_key_input, _snap, None)
                 # DynaShift pending candidate: same run/rating pairing as the snapshot, but
                 # the RAW video latent (fp16) — the rating decides whether it becomes a
-                # negative-bank entry or is discarded (negative_memory.consume_pending).
-                # Saved regardless of the dynashift toggle, same rationale as the snapshot:
-                # a bad rating on an unguided run is still valid negative memory.
+                # negative-bank entry, a positive-bank entry, or is discarded
+                # (negative_memory.consume_pending). Saved regardless of the dynashift toggle
+                # and (unlike the value snapshot above) on H3 too, since dynashift is one of
+                # the two rating-driven mechanisms re-enabled there: a bad or good rating on
+                # an unguided run is still valid memory for the next one.
                 try:
                     try:
                         from .negative_memory import save_pending as _save_neg_pending
