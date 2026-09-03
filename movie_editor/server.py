@@ -2769,6 +2769,16 @@ if web is not None and PromptServer is not None:
         asyncio.get_event_loop().call_later(0.7, _restart_comfy)
         return web.json_response({"restarting": True, **result})
 
+    @routes.post(UI_PREFIX + "/api/git/rollback")
+    async def _git_rollback(_req):
+        import asyncio
+        try:
+            result = await asyncio.to_thread(git_update.rollback)
+        except git_update.GitUpdateError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        asyncio.get_event_loop().call_later(0.7, _restart_comfy)
+        return web.json_response({"restarting": True, **result})
+
     @routes.post(UI_PREFIX + "/api/git/checkout")
     async def _git_checkout(req):
         import asyncio

@@ -113,6 +113,34 @@
     });
   }
 
+  // Undoes the most recent Update or Switch branch — git's own reflog remembers where HEAD
+  // was before that move, so there is no separate "before" state to keep in sync here.
+  async function rollback() {
+    const gs = await _ensureStatus();
+    if (!gs) return;
+    const target = gs.rollback_target;
+    if (!target) { alert("Nothing to roll back to — no update or branch switch on record."); return; }
+    if (gs.dirty) {
+      alert("Local changes detected in the FunPack folder.\nCommit or stash them before rolling back.");
+      return;
+    }
+    const subject = target.subject ? `\n"${target.subject}"` : "";
+    if (!confirm(`Roll back to ${target.commit}?${subject}\n\nAny running generation will be `
+        + "lost. If the update you're undoing changed requirements.txt, dependencies are NOT "
+        + "reinstalled automatically — run pip install by hand after if things don't load.")) return;
+    await _flushPendingEdits();
+    const msg = _restartOverlay(`Rolling back to ${target.commit}…\nComfyUI will restart when ready.`);
+    try {
+      const res = await API().gitRollback();
+      msg.textContent = `Rolled back ${res.before} → ${res.after}.\nRestarting ComfyUI…`;
+    } catch (e) {
+      window.FunPackRestart?.removeOverlay?.();
+      alert("Rollback failed: " + (e.message || e));
+      return;
+    }
+    _waitForComfyReload(msg, Date.now());
+  }
+
   async function restartComfy() {
     if (!confirm(
       "Restart ComfyUI now?\n\nThe server will be down for ~10-40s and any running generation "
@@ -144,7 +172,8 @@
     const updateBtn = mk("Update", "Checking…", () => update());
     const switchBtn = mk("Switch branch", "Checking…", () => switchBranch());
     const restartBtn = mk("Restart ComfyUI", "Reload the server without updating", () => restartComfy());
-    row.append(updateBtn, switchBtn, restartBtn);
+    const rollbackBtn = mk("Rollback update", "Checking…", () => rollback());
+    row.append(updateBtn, switchBtn, restartBtn, rollbackBtn);
 
     const hint = (b) => b.querySelector(".maint-btn-hint");
     // No isConnected guard: callers build the row before appending their overlay, so
@@ -154,8 +183,10 @@
       if (!gs?.ok) {
         updateBtn.classList.add("disabled");
         switchBtn.classList.add("disabled");
+        rollbackBtn.classList.add("disabled");
         hint(updateBtn).textContent = "Git unavailable for this install";
         hint(switchBtn).textContent = "Git unavailable for this install";
+        hint(rollbackBtn).textContent = "Git unavailable for this install";
         return;
       }
       hint(updateBtn).textContent = gs.dirty
@@ -164,10 +195,18 @@
       hint(switchBtn).textContent = gs.dirty
         ? `On ${gs.branch} · local changes — commit first`
         : `On ${gs.branch} · pick another`;
+      // Only meaningful right after an Update/Switch branch -- most sessions have nothing
+      // to undo, so the button reads that plainly instead of just sitting disabled unlabelled.
+      if (gs.rollback_target) {
+        hint(rollbackBtn).textContent = `Undo last update — back to ${gs.rollback_target.commit}`;
+      } else {
+        rollbackBtn.classList.add("disabled");
+        hint(rollbackBtn).textContent = "Nothing to undo yet";
+      }
     });
 
     return row;
   }
 
-  window.FunPackGit = { refresh, get, update, switchBranch, restartComfy, maintenanceRow };
+  window.FunPackGit = { refresh, get, update, switchBranch, restartComfy, rollback, maintenanceRow };
 })();

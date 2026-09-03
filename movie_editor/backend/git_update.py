@@ -127,6 +127,40 @@ def _list_branches() -> list[str]:
     return ordered + rest
 
 
+def rollback_target() -> dict | None:
+    """The commit HEAD pointed to before its last move (an Update or Switch branch — pull()
+    and checkout() are the only things in this app that move HEAD), read from git's own
+    reflog rather than a separate state file: git already records exactly this. None if
+    there is no prior entry (a fresh clone) or HEAD hasn't moved since."""
+    proc = _run_git("rev-parse", "--verify", "HEAD@{1}")
+    if proc.returncode != 0:
+        return None
+    commit = proc.stdout.strip()
+    if not commit or commit == _current_commit():
+        return None
+    subject = _run_git("log", "-1", "--format=%s", commit)
+    return {"commit": commit, "subject": (subject.stdout or "").strip()}
+
+
+def rollback() -> dict:
+    """Hard-reset to HEAD@{1} -- undoes the most recent Update or Switch branch. Refuses on
+    a dirty tree, same as pull()/checkout(), so nothing local is silently discarded. Does
+    NOT reinstall requirements for the commit being rolled back to -- an update that changed
+    dependencies and turned out bad may need `pip install -r requirements.txt` run by hand
+    after rolling back the code; automatically reversing a pip install is its own can of
+    worms (downgrades can break OTHER already-installed packages) and out of scope here."""
+    if _is_dirty():
+        raise GitUpdateError("Working tree has local changes. Commit or stash them before rolling back.")
+    target = rollback_target()
+    if target is None:
+        raise GitUpdateError("Nothing to roll back to.")
+    before = _current_commit()
+    reset = _run_git("reset", "--hard", target["commit"])
+    if reset.returncode != 0:
+        raise GitUpdateError((reset.stderr or reset.stdout or "git reset failed").strip())
+    return {"branch": _current_branch(), "before": before, "after": _current_commit()}
+
+
 def status() -> dict:
     """Current branch, switchable branches, and update availability."""
     try:
@@ -149,6 +183,7 @@ def status() -> dict:
             "behind": behind,
             "fetch_ok": fetch_ok,
             "repo": str(REPO_ROOT),
+            "rollback_target": rollback_target(),
         }
     except GitUpdateError as e:
         return {"ok": False, "version": funpack_version(),

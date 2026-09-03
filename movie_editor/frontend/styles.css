@@ -2374,7 +2374,7 @@ body.tour-mode { overflow: hidden; }
 /* ── maintenance row (Update / Switch branch / Restart) ───────────────────
    On every splash screen, because these are the actions you need BEFORE
    opening a project. */
-.maint-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.maint-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .maint-row.welcome-maint { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .maint-btn {
   display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left;

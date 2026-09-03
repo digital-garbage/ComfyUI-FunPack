@@ -154,6 +154,7 @@
     gitStatus: () => j("GET", API("/git/status")),
     gitUpdate: (branch) => j("POST", API("/git/update"), branch ? { branch } : {}),
     gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),
+    gitRollback: () => j("POST", API("/git/rollback"), {}),
 
     // generate (a single scene, or an explicit run of scene ids = one chain request)
     // `simple` strips the enhancements for THIS run only (see pipeline_caps.apply_simple_mode).
