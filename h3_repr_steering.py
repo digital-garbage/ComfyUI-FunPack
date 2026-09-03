@@ -40,9 +40,14 @@ import torch
 # concept the direction encodes has actually formed.
 DEFAULT_BLOCK = 25
 
-MIN_PER_GROUP = 3  # need 3+ POSITIVE-weight and 3+ NEGATIVE-weight rows -- same floor
-# absolute/taste steering uses. A weight near zero (Missing action's +0.05) still gets
-# logged and still contributes, just barely -- it does not count toward this floor.
+MIN_PER_GROUP = 2  # need 2+ POSITIVE-weight and 2+ NEGATIVE-weight rows. Was 3 (parity with
+# absolute/taste steering's floor, not derived from anything specific to this mechanism).
+# 1 would mean the "direction" is literally one liked descriptor minus one disliked one --
+# no averaging, as vulnerable to a single noisy capture as anything else this project has
+# learned not to trust from one data point. 2 still averages a pair on each side while
+# halving the wait (4 rated runs instead of 6) -- lower this only if you want to see raw
+# per-pair noise, not a real direction. A weight near zero still gets logged and still
+# contributes, just barely -- it does not count toward this floor.
 
 
 def _log():
