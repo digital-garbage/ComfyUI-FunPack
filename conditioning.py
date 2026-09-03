@@ -10141,6 +10141,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
                 if n_out is not None:
                     print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
+                # H3 representation steering: pairs the sampler's pending hidden-state capture
+                # with this rating. H3-only (checked here, not left to the sampler, so a
+                # non-H3 run's pending capture from a stale key is never mistaken for one) —
+                # same reward already resolved above, no separate admissibility question.
+                try:
+                    from . import minimax_h3 as _h3
+                    from . import h3_repr_steering as _rs
+                except ImportError:
+                    import minimax_h3 as _h3
+                    import h3_repr_steering as _rs
+                if _h3.is_h3_clip(clip):
+                    _rs.commit(refinement_key, float(learning_profile.get("reward", 0.0)))
             # DynaShift negative memory: pair the sampler's pending raw latent with this
             # rating — promote into the per-key negative bank when the rating marks the run
             # a bad outcome (intrusions: awful / wrong_appearance; or the quality-missing

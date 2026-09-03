@@ -2798,6 +2798,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.6, "min": 0.3, "max": 0.95, "step": 0.05,
                     "tooltip": "Frame-similarity gate: a current frame must match a banked negative frame above this cosine similarity before any steering applies. Steering strength ramps from 0 at the threshold to full at similarity 1.0, so it self-releases once the unwanted feature is gone. Lower = more aggressive (risks steering away from legitimately similar content).",
                 }),
+                "h3_repr_steering": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Every other rating-driven mechanism acts on the prompt's attention or on the latent between denoiser calls -- this one reaches INSIDE the model's forward pass instead. Captures the video rows of one block's hidden state each generation; once you have 3+ liked and 3+ disliked runs on this refinement key, the mean difference between them is added back into that same block's output on every later run. Training-free (no MLP, no gradient -- a mean of vectors is the whole model). Masked to video rows only, never audio or text.",
+                }),
+                "h3_repr_steering_strength": ("FLOAT", {
+                    "default": 0.05, "min": 0.0, "max": 2.0, "step": 0.01,
+                    "tooltip": "How much of the learned direction to add, as a fraction of that block's own hidden-state norm. Unlike the attention-bias channel, there is no architectural ceiling here -- push too far and coherence breaks with no warning. Start low; the way to tell it is doing anything at all is to push this deliberately high on a same-seed test and see if the video visibly moves, then back off.",
+                }),
                 "alg_guide_blur_strength": ("FLOAT", {
                     "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
                     "tooltip": "Downsample factor for the guide-frame blur (alg_blur_guides). Higher = blurrier guide/JoyAI frames during the affected steps. Independent of the sampler's anchor alg_strength.",
@@ -3658,7 +3666,9 @@ class FunPackLTXAVSceneChainSampler:
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                       alg_anchor=False, alg_anchor_strength=2.0,
                       alg_anchor_sigma_threshold=0.975,
-                      bounded_attention_enabled=False,):
+                      bounded_attention_enabled=False,
+                      h3_repr_steering=False, h3_repr_steering_strength=0.05,
+                      refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
@@ -3720,6 +3730,10 @@ class FunPackLTXAVSceneChainSampler:
         # key, no rating and no Studio state, so it works on a graph with the Refiner absent
         # entirely. 1.0 on all three does not even clone the model.
         model = self._install_h3_final_layer(model, positive)
+        _repr_capture = [None]
+        if h3_repr_steering and refinement_key:
+            model = self._install_h3_repr_steering(
+                model, refinement_key, h3_repr_steering_strength, _repr_capture)
 
         try:
             sampled = comfy.sample.sample_custom(
@@ -3727,6 +3741,12 @@ class FunPackLTXAVSceneChainSampler:
                 noise_mask=latent.get("noise_mask"), seed=int(seed),
                 callback=_progress_cb if pbar is not None else None,
             )
+            if _repr_capture[0] is not None:
+                try:
+                    from . import h3_repr_steering as _rs
+                except ImportError:
+                    import h3_repr_steering as _rs
+                _rs.save_pending(refinement_key, _repr_capture[0])
         finally:
             self._remove_bounded_attention(_ba_handles)
         self._assert_finite_sample(sampled)
@@ -6535,6 +6555,71 @@ class FunPackLTXAVSceneChainSampler:
                         "the rating's per-phrase weighting is NOT being applied")
             return model
 
+    def _install_h3_repr_steering(self, model, refinement_key, strength, capture_holder):
+        """EXPERIMENTAL, unvalidated (H3 only). See h3_repr_steering.py.
+
+        Reaches inside the forward pass: hooks block DEFAULT_BLOCK, adds the learned liked-
+        minus-disliked direction to that block's VIDEO rows (never audio or text — derived
+        fresh from `mod_segments` each call, cached by seq_len), and captures this run's own
+        descriptor into `capture_holder[0]` so the caller can save it as the next pending row
+        once sampling finishes. No-ops (clears nothing, costs nothing) when there are not yet
+        3+ liked and 3+ disliked runs on this key — direction() says so, this just reports it.
+        """
+        try:
+            try:
+                from . import h3_repr_steering as _rs
+            except ImportError:
+                import h3_repr_steering as _rs
+            direction, n_liked, n_disliked = _rs.direction(refinement_key)
+            if direction is None:
+                print(f"[FunPackSceneChain] H3 representation steering: not enough data yet "
+                      f"({n_liked} liked / {n_disliked} disliked, need {_rs.MIN_PER_GROUP} of "
+                      f"each) — capturing this run, not steering it.")
+
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+            inner = dit_patches.get(("double_block", _rs.DEFAULT_BLOCK))
+            mask_cache = {}
+            _strength = float(strength)
+
+            def _hook(args, extra):
+                out = extra["original_block"](args)["img"] if inner is None else \
+                    inner(args, extra)["img"]
+                seq_len = int(out.shape[0])
+                mask = mask_cache.get(seq_len, "MISS")
+                if mask == "MISS":
+                    mask = _rs.video_mask_from_mod_segments(
+                        args.get("mod_segments"), seq_len, out.device)
+                    mask_cache[seq_len] = mask
+                if mask is not None:
+                    if direction is not None and _strength > 0.0:
+                        rows = out[mask]
+                        row_norm = rows.detach().float().norm(dim=-1).mean()
+                        if torch.isfinite(row_norm) and row_norm > 0:
+                            out = out.clone()
+                            out[mask] = rows + (direction.to(out.dtype).to(out.device)
+                                                * _strength * row_norm).to(rows.dtype)
+                    desc = _rs.capture(out, mask)
+                    if desc is not None:
+                        capture_holder[0] = desc
+                return {"img": out}
+
+            dit_patches[("double_block", _rs.DEFAULT_BLOCK)] = _hook
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+            patched.model_options["transformer_options"] = to
+            if direction is not None:
+                print(f"[FunPackSceneChain] H3 representation steering: applying learned "
+                      f"direction ({n_liked} liked / {n_disliked} disliked) at block "
+                      f"{_rs.DEFAULT_BLOCK}, strength {_strength:g}.")
+            return patched
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 representation steering", _e,
+                        "not applied and not capturing this run")
+            return model
+
     def _install_bounded_attention(self, model, latent, positive):
         """EXPERIMENTAL (arXiv:2403.16990-inspired, see [[project_bounded_attention]]): mask the
         text cross-attention (attn2 only — never audio_attn2, never self-attention) so the LEFT
@@ -6792,6 +6877,7 @@ class FunPackLTXAVSceneChainSampler:
                output_guidance=False, output_guidance_strength=0.02,
                trajectory_guidance=False, trajectory_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
+               h3_repr_steering=False, h3_repr_steering_strength=0.05,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
@@ -7617,6 +7703,9 @@ class FunPackLTXAVSceneChainSampler:
                     alg_anchor_strength=alg_anchor_strength,
                     alg_anchor_sigma_threshold=alg_anchor_sigma_threshold,
                     bounded_attention_enabled=bounded_attention_enabled,
+                    h3_repr_steering=h3_repr_steering,
+                    h3_repr_steering_strength=h3_repr_steering_strength,
+                    refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene
                 # at full strength, then cut it out of the finished clip instead of weakening
@@ -8296,6 +8385,7 @@ class FunPackLTXAVSceneChainSampler:
                             output_guidance=False, output_guidance_strength=0.02,
                             trajectory_guidance=False, trajectory_guidance_strength=0.02,
                             dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
+                            h3_repr_steering=False, h3_repr_steering_strength=0.05,
                             alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                             alg_anchor=False, alg_anchor_strength=2.0,
                             alg_anchor_sigma_threshold=0.975,
