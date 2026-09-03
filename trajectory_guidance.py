@@ -138,6 +138,25 @@ class BucketedValue:
         return out
 
 
+def _train_all(model, rows):
+    """Every rated descriptor into the head for its own bucket."""
+    for row in rows:
+        per_scene = row.get("scene_rewards") or None
+        for cell in row["rows"]:
+            # Pass 0 only: a second pass runs its own schedule from its own starting sigma,
+            # so its bucket 2 is not the window bucket 2 steers in.
+            if int(cell.get("pass", 0)) != 0:
+                continue
+            reward = (per_scene or {}).get(int(cell.get("scene", 0)))
+            if reward is None:
+                reward = row.get("reward")
+            try:
+                reward = float(reward)
+            except (TypeError, ValueError):
+                continue
+            model.train_on(cell.get("bucket", 0), cell["desc"].float(), reward)
+
+
 def train_from_rows(refinement_key, rows, n_buckets=None):
     """Rebuild the per-bucket heads from probe rows. -> {bucket: samples}, or None.
 
@@ -159,21 +178,13 @@ def train_from_rows(refinement_key, rows, n_buckets=None):
         return None
 
     model = BucketedValue(n_buckets)
-    for row in usable:
-        per_scene = row.get("scene_rewards") or None
-        for cell in row["rows"]:
-            # Pass 0 only: a second pass runs its own schedule from its own starting sigma,
-            # so its bucket 2 is not the window bucket 2 steers in.
-            if int(cell.get("pass", 0)) != 0:
-                continue
-            reward = (per_scene or {}).get(int(cell.get("scene", 0)))
-            if reward is None:
-                reward = row.get("reward")
-            try:
-                reward = float(reward)
-            except (TypeError, ValueError):
-                continue
-            model.train_on(cell.get("bucket", 0), cell["desc"].float(), reward)
+    # ComfyUI executes a node under torch.inference_mode(), so every tensor made in here is
+    # an inference tensor and autograd refuses it ("Inference tensors do not track version
+    # counter"). Same guard the output value function's trainer carries. It has to wrap the
+    # whole loop, not one call: `.float()` on a stored descriptor makes a new tensor too, and
+    # that is the one training receives.
+    with torch.inference_mode(False), torch.enable_grad():
+        _train_all(model, usable)
 
     try:
         model.save(state_path(refinement_key))

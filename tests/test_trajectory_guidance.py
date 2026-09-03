@@ -62,20 +62,36 @@ def _store(monkeypatch, tmp_path):
 
 def test_a_head_learns_from_its_own_bucket_only(monkeypatch, tmp_path):
     """The whole claim of the feature: what steers at step 2 learned from step 2. A head
-    fed every bucket's descriptors would just be output_guidance with extra files."""
+    fed every bucket's descriptors would just be output_guidance with extra files.
+
+    Measured as ranking accuracy over the descriptors each head actually saw, not as a score
+    at some constant vector: a head trained on noise will happily extrapolate to a large
+    arbitrary value far outside its data, which made an earlier version of this test pass or
+    fail on `train_on`'s unseeded bootstrap sampling rather than on anything real.
+    """
+    import random as _random
+    _random.seed(7)                      # train_on bootstraps with the global RNG
     _store(monkeypatch, tmp_path)
-    tg.train_from_rows("k", _separable())
+    rows = _separable(n=28)
+    train, held_out = rows[:20], rows[20:]
+    tg.train_from_rows("k", train)
     model = tg.load("k")
     assert model is not None
 
-    def score(bucket, value):
+    def accuracy(bucket, on):
+        pos, neg = [], []
         with torch.inference_mode(False), torch.no_grad():
-            return float(model._head(bucket)(torch.full((1, DIM), value)).mean())
+            for row in on:
+                desc = next(c["desc"] for c in row["rows"] if c["bucket"] == bucket)
+                score = float(model._head(bucket)(desc.unsqueeze(0)).mean())
+                (pos if row["reward"] > 0 else neg).append(score)
+        return sum(p > q for p in pos for q in neg) / (len(pos) * len(neg))
 
-    # Bucket 1 saw the split and must rank a good-looking descriptor above a bad one.
-    assert score(1, 1.0) > score(1, -1.0)
-    # Bucket 0 saw noise either way, so it must not have invented an opinion.
-    assert abs(score(0, 1.0) - score(0, -1.0)) < abs(score(1, 1.0) - score(1, -1.0))
+    # HELD OUT, not the training rows. A few-hundred-parameter MLP fits 20 noise vectors
+    # perfectly, so training accuracy is 1.0 for every bucket and says nothing about whether
+    # a head learned anything -- including the head that will be steering real generations.
+    assert accuracy(1, held_out) > 0.9, accuracy(1, held_out)
+    assert accuracy(0, held_out) < 0.9, accuracy(0, held_out)
 
 
 def test_an_untrained_bucket_is_not_ready(monkeypatch, tmp_path):
@@ -250,3 +266,40 @@ def test_it_chains_onto_whatever_is_already_installed():
     wrapper = _install(model, _Ready([]), lambda s: 0)
     _predict(wrapper, torch.ones(1, 1, VIDEO_N + AUDIO_N))
     assert calls == [1]
+
+
+def test_training_works_inside_inference_mode(monkeypatch, tmp_path):
+    """ComfyUI executes a node under torch.inference_mode(), so a descriptor read out of the
+    log becomes an inference tensor and autograd refuses it:
+
+        Trajectory probe intake failed: Inference tensors do not track version counter.
+
+    Seen on a real rental. Every head stayed empty and the feature reported "nothing learned
+    yet" on every run, so it was OFF while appearing merely untrained — the one failure that
+    is invisible from the outside, because "not steering" is also what correct behaviour
+    looks like before enough ratings.
+    """
+    _store(monkeypatch, tmp_path)
+    with torch.inference_mode():
+        counts = tg.train_from_rows("k", _separable())
+    assert counts, "training produced nothing under inference mode"
+    assert tg.load("k") is not None
+
+
+def test_steering_works_inside_inference_mode(monkeypatch, tmp_path):
+    """The other half: sampling also runs under inference mode, so the gradient the wrapper
+    asks for is computed there too."""
+    _store(monkeypatch, tmp_path)
+    with torch.inference_mode():
+        tg.train_from_rows("k", _separable())
+    model = tg.load("k")
+    ready = [b for b in range(model.n_buckets) if model.ready(b)]
+    assert ready, "nothing trained, so this would pass for the wrong reason"
+
+    host = _model()
+    wrapper = _install(host, model, lambda s: ready[0])
+    latent = torch.randn(1, 1, VIDEO_N + AUDIO_N)
+    with torch.inference_mode():
+        out = _predict(wrapper, latent)
+    assert not torch.equal(out, latent)
+    assert torch.isfinite(out).all()
