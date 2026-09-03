@@ -603,3 +603,42 @@ def analyse(rows, n_buckets=None, trials=2000, good_above=0.0, bad_below=0.0, pa
         entry["within_prompt"] = stratified
         results.append(entry)
     return results
+
+
+def row_identity(row):
+    """What makes two recorded runs the same run.
+
+    Import is expected to be run more than once -- the same export carried onto a
+    new box, or two boxes' exports merged. Appending blindly would double the
+    sample, and the permutation test reads n directly: duplicated runs would
+    report a separation as far more significant than the evidence supports.
+    """
+    if not isinstance(row, dict):
+        return None
+    return (row.get("stamp"), row.get("seed"), row.get("prompt_hash"),
+            row.get("reward"), len(row.get("rows") or []))
+
+
+def merge_rows(refinement_key, incoming):
+    """Add runs to a log, skipping ones already there. -> (total, added)."""
+    existing = load_log(refinement_key)
+    seen = {row_identity(r) for r in existing}
+    added = 0
+    for row in incoming:
+        # Same guard load_log applies: a row with no cells describes no run, and
+        # a reward that is not a number cannot be labelled.
+        if not isinstance(row, dict) or not row.get("rows"):
+            continue
+        try:
+            float(row.get("reward"))
+        except (TypeError, ValueError):
+            continue
+        identity = row_identity(row)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        existing.append(row)
+        added += 1
+    if added:
+        _atomic_save({"version": 1, "rows": existing[-MAX_ROWS:]}, log_path(refinement_key))
+    return len(existing[-MAX_ROWS:]), added

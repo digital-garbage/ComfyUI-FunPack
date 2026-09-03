@@ -661,3 +661,51 @@ def test_the_switch_file_is_not_mistaken_for_a_log(monkeypatch, tmp_path):
     probe.save_pending("k", _recorded(_h3_sigmas(4)))
     probe.commit("k", 1.0)
     assert sorted(k for k, _ in probe.load_all_logs()) == ["k"]
+
+
+# ---------------------------------------------------------------------------
+# Carrying the measurement between machines
+# ---------------------------------------------------------------------------
+
+
+def test_importing_the_same_export_twice_adds_nothing(monkeypatch, tmp_path):
+    """A rental is replaced whenever something breaks, so an export gets carried onto a
+    new box and may well be loaded twice. Appending blindly would double the sample, and
+    the permutation test reads n directly — duplicated runs report a separation as far
+    more significant than the evidence supports."""
+    _patch_store(monkeypatch, tmp_path)
+    sigmas = _h3_sigmas(4)
+    for i in range(3):
+        probe.save_pending("k", _recorded(sigmas, value=float(i)), prompt_hash="p", seed=i)
+        probe.commit("k", 1.0 if i else -0.9)
+    exported = [r for _key, rows in probe.load_all_logs() for r in rows]
+    assert len(exported) == 3
+
+    fresh = tmp_path / "other-box"
+    monkeypatch.setattr(probe, "_probe_dir", lambda: str(fresh))
+    assert probe.merge_rows("imported", exported) == (3, 3)
+    assert probe.merge_rows("imported", exported) == (3, 0)
+
+
+def test_two_boxes_exports_merge(monkeypatch, tmp_path):
+    """The point of carrying it: runs from separate rentals add up to one sample."""
+    _patch_store(monkeypatch, tmp_path)
+    sigmas = _h3_sigmas(4)
+
+    def runs(stamp, n):
+        out = []
+        for i in range(n):
+            rec = _recorded(sigmas, value=float(i))
+            out.append({"rows": rec.cell_rows(), "reward": 1.0, "stamp": stamp,
+                        "seed": i, "prompt_hash": "p"})
+        return out
+
+    assert probe.merge_rows("imported", runs("box-a", 3)) == (3, 3)
+    assert probe.merge_rows("imported", runs("box-b", 4)) == (7, 4)
+
+
+def test_a_row_with_nothing_in_it_is_not_a_run(monkeypatch, tmp_path):
+    _patch_store(monkeypatch, tmp_path)
+    junk = [{}, {"rows": []}, {"rows": [{"bucket": 0}], "reward": "not a number"},
+            "a string", None]
+    assert probe.merge_rows("imported", junk) == (0, 0)

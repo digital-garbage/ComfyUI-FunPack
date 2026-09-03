@@ -2000,6 +2000,49 @@ if web is not None and PromptServer is not None:
         _tp, _rows, state = _probe_state()
         return web.json_response(state)
 
+    # Export / import, because the measurement outlives the box it was taken on.
+    # A rental is replaced whenever something breaks, `refinements/` is not in git,
+    # and the reading needs ~16 rated runs — so without a way off the machine the
+    # count restarts with every instance and the answer is never reached.
+    # 16 runs is ~85 KB; the 512-row cap is under 3 MB.
+
+    @routes.get(UI_PREFIX + "/api/trajectory_probe/export")
+    async def _probe_export(_req):
+        import io
+        import torch
+        tp = _probe_module()
+        rows = [r for _k, kr in tp.load_all_logs() for r in kr]
+        buf = io.BytesIO()
+        torch.save({"version": 1, "rows": rows}, buf)
+        return web.Response(
+            body=buf.getvalue(), content_type="application/octet-stream",
+            headers={"Content-Disposition": 'attachment; filename="trajectory_probe.pt"'})
+
+    @routes.post(UI_PREFIX + "/api/trajectory_probe/import")
+    async def _probe_import(req):
+        import io
+        import torch
+        tp = _probe_module()
+        raw = await req.read()
+        try:
+            # weights_only: an uploaded .pt is a pickle, and unpickling one is
+            # running whatever it says. Everything in a probe row is a tensor or a
+            # primitive, so the safe loader reads all of it and an unexpected
+            # payload is refused instead of executed.
+            data = torch.load(io.BytesIO(raw), map_location="cpu", weights_only=True)
+        except Exception:  # noqa: BLE001 - the file is the caller's
+            # The exception itself is a page of torch's documentation about pickle
+            # safety. True, and not what belongs in a one-line hint under a button.
+            return web.json_response(
+                {"problems": ["that file is not a trajectory probe export"]}, status=400)
+        incoming = data.get("rows") if isinstance(data, dict) else None
+        if not isinstance(incoming, list):
+            return web.json_response({"problems": ["no runs in that file"]}, status=400)
+
+        merged, added = tp.merge_rows("imported", incoming)
+        _tp, _rows, state = _probe_state()
+        return web.json_response({**state, "added": added, "total": merged})
+
     @routes.post(UI_PREFIX + "/api/trajectory_probe/analyse")
     async def _probe_analyse(req):
         try:

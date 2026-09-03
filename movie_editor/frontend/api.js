@@ -174,6 +174,28 @@
     probeStatus: () => j("GET", API("/trajectory_probe")),
     probeSetEnabled: (enabled) => j("POST", API("/trajectory_probe"), { enabled: !!enabled }),
     probeAnalyse: (trials) => j("POST", API("/trajectory_probe/analyse"), { trials: trials || 2000 }),
+
+    // The measurement has to outlive the box it was taken on: a rental gets
+    // replaced, refinements/ is not in git, and the reading needs ~16 rated runs.
+    async probeExport() {
+      const res = await fetch(API("/trajectory_probe/export") + `?t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(readApiError(res, null));
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "trajectory_probe.pt";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    },
+    async probeImport(file) {
+      const res = await fetch(API("/trajectory_probe/import"), { method: "POST", body: file });
+      let payload = null;
+      try { payload = await res.json(); } catch (_) {}
+      if (!res.ok) throw new Error(readApiError(res, payload));
+      return payload;
+    },
     // Served by ComfyUI's own same-origin /view endpoint — no editor route needed.
     tempFileUrl: (f) => "/view?" + new URLSearchParams({
       filename: f.filename, subfolder: f.subfolder || "", type: "temp", t: String(f.mtime || Date.now()),

@@ -225,7 +225,7 @@
   //
   // Recording costs nothing measurable and steers nothing. It needs a refinement key, since
   // the rating has to pair with the run that earned it.
-  let probeState = null, probeReport = null, probeBusy = false, probeError = "";
+  let probeState = null, probeReport = null, probeBusy = false, probeError = "", probeNote = "";
 
   function probeToggleRow(enabled, onChange) {
     const row = el("div", "sw-row");
@@ -278,6 +278,26 @@
 
   function probeRows() {
     const box = el("div", "sw-stack");
+    // A plain file input, clicked by the row's button. The browser's own picker is
+    // the whole feature; a drop zone would be more code for the same result. Built
+    // once, outside paint(), so a redraw cannot discard a pick in progress.
+    const probeFile = el("input");
+    probeFile.type = "file";
+    probeFile.accept = ".pt";
+    probeFile.style.display = "none";
+    probeFile.onchange = async () => {
+      const file = probeFile.files && probeFile.files[0];
+      probeFile.value = "";                  // so the same file can be picked twice
+      if (!file) return;
+      probeError = "";
+      try {
+        const res = await window.MovieEditorAPI.probeImport(file);
+        probeState = res;
+        probeReport = null;                  // the old reading predates these runs
+        probeNote = `${res.added} run(s) added; ${res.runs} recorded now.`;
+      } catch (e) { probeError = String(e.message || e); }
+      paint();
+    };
     const paint = () => {
       clear(box);
       const rows = el("div", "sw-rows");
@@ -290,6 +310,19 @@
       }));
       const runs = probeState ? probeState.runs : 0;
       rows.append(infoRow("Rated generations recorded", String(runs), runs > 0 ? true : null));
+      rows.append(actionRow("Save the measurement",
+        "Downloads every recorded run as one file. A rental is replaced when something "
+        + "breaks and this data is not in git, so without this the count restarts on the "
+        + "next box and the reading is never reached.",
+        "Download", async () => {
+          probeError = ""; 
+          try { await window.MovieEditorAPI.probeExport(); }
+          catch (e) { probeError = String(e.message || e); paint(); }
+        }, { disabled: !runs }));
+      rows.append(actionRow("Load a saved measurement",
+        "Adds runs from a file onto this box. Runs already here are skipped, so importing "
+        + "the same file twice cannot inflate the count.",
+        "Load…", () => probeFile.click()));
       rows.append(actionRow("Read the result",
         "Asks whether your good and bad ratings look different early on, and checks the "
         + "answer against shuffled ratings so a handful of runs cannot fake one.",
@@ -301,6 +334,8 @@
           probeBusy = false; paint();
         }, { disabled: probeBusy || !runs }));
       box.append(rows);
+      box.append(probeFile);
+      if (probeNote) box.append(el("div", "sw-hint", probeNote));
       if (probeError) box.append(el("div", "sw-hint", probeError));
       // A reading is of the runs that existed when it was taken. Once more have been rated,
       // the table below and the count above are describing different things, and saying so
