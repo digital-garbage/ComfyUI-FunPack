@@ -3735,6 +3735,15 @@ def normalize_refiner_v2_rating(value):
 
     profile = dict(V2_RATING_PROFILES[label], label=label)
     profile["legacy_score"] = legacy_score
+    # The label buckets above were calibrated for a DIFFERENT purpose (Missing action's
+    # +0.05 means "the frame was fine, just no motion" — a near-miss, not "mediocre") and are
+    # lopsided as a plain 1-10 scale: 5 and 6 both land in that bucket, so a "5" — read by any
+    # user as below-average — gets a POSITIVE reward, exactly backwards. `reward` is
+    # overridden here with a straight linear map across the full range so the SIGN means what
+    # a 1-10 scale promises (1 = -0.9, 10 = 1.0, the actual midpoint ~5.6 is where it flips).
+    # Only reward is touched — level/missing_axes/skip flags keep coming from the nearest
+    # label, which is fine: nothing downstream needs them to be exact for a legacy score.
+    profile["reward"] = -0.9 + (legacy_score - 1) / 9.0 * 1.9
     return profile
 
 
@@ -9939,6 +9948,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         self._v2_state_io = {}
         self._v2_stage_times = {}
         _h3_references = _normalize_ref_spec(h3_references) or None
+        try:
+            from . import minimax_h3 as _h3fam
+        except ImportError:
+            import minimax_h3 as _h3fam
+        _is_h3 = _h3fam.is_h3_clip(clip)
+        if _is_h3:
+            # H3's rating-driven mechanisms are h3_phrase_emphasis and h3_repr_steering
+            # (samplers.py) ONLY -- see project_reward_model_rework.md and the 2026-09-03 dev
+            # session. value_guidance/absolute steering was built and validated for LTXAV;
+            # nothing has shown it does anything useful here, and phrase emphasis's own
+            # manipulation check (this same session) showed the relative value function it
+            # shares produces near-invisible pushes at H3's real calibration. Forced off HERE,
+            # not just hidden in Engine Settings, so a project saved before this still behaves
+            # correctly rather than silently ascending toward a direction nobody validated.
+            value_guidance = False
+            h3_phrase_emphasis = False
+            h3_phrase_variability = 0.0
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
         if linked_refinement_key:
@@ -10125,33 +10151,34 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # calls) so the reward asset accumulates regardless of whether guidance is applied.
             # value_guidance only controls APPLICATION (ascent below) - a user who runs with it
             # off still builds the VF, so enabling guidance later works immediately.
+            #
+            # NOT on H3: nothing there reads either value function (value_guidance is forced
+            # off above; output_guidance is a sampler-side toggle forced off the same way), so
+            # training them is pure waste that only helps a mechanism this session found does
+            # not help — h3_repr_steering has its own commit below, unconditional.
             if (has_previous_run and refinement_key and not learning_profile.get("skip_learning")
                     and self._v2_reward_admissible(learning_profile)):
-                n = self._v2_train_value_function(
-                    refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
-                    (previous_run or {}).get("conditioning"),
-                    float(learning_profile.get("reward", 0.0)),
-                )
-                if n is not None:
-                    print(f"[FunPackRefiner] Value function updated — {n} samples")
-                # output_guidance's value function, trained on the sampler's x0_snapshot from the
-                # run this rating scores (whole-run granularity — see _v2_train_output_value_function
-                # for why this sits at the single overall-reward call site, not the per-scene ones).
-                with self._v2_stage("output value function"):
-                    n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
-                if n_out is not None:
-                    print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
-                # H3 representation steering: pairs the sampler's pending hidden-state capture
-                # with this rating. H3-only (checked here, not left to the sampler, so a
-                # non-H3 run's pending capture from a stale key is never mistaken for one) —
-                # same reward already resolved above, no separate admissibility question.
-                try:
-                    from . import minimax_h3 as _h3
-                    from . import h3_repr_steering as _rs
-                except ImportError:
-                    import minimax_h3 as _h3
-                    import h3_repr_steering as _rs
-                if _h3.is_h3_clip(clip):
+                if not _is_h3:
+                    n = self._v2_train_value_function(
+                        refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
+                        (previous_run or {}).get("conditioning"),
+                        float(learning_profile.get("reward", 0.0)),
+                    )
+                    if n is not None:
+                        print(f"[FunPackRefiner] Value function updated — {n} samples")
+                    # output_guidance's value function, trained on the sampler's x0_snapshot from
+                    # the run this rating scores (whole-run granularity — see
+                    # _v2_train_output_value_function for why this sits at the single
+                    # overall-reward call site, not the per-scene ones).
+                    with self._v2_stage("output value function"):
+                        n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
+                    if n_out is not None:
+                        print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
+                if _is_h3:
+                    try:
+                        from . import h3_repr_steering as _rs
+                    except ImportError:
+                        import h3_repr_steering as _rs
                     _rs.commit(refinement_key, float(learning_profile.get("reward", 0.0)))
             # DynaShift negative memory: pair the sampler's pending raw latent with this
             # rating — promote into the per-key negative bank when the rating marks the run
@@ -11043,11 +11070,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # ends up being: single-scene OR multi-scene (transition split). Works WITH transitions.
         _do_batch = int(batch_variants or 1) > 1 and not learning_mode and not prompt_only_mode
         # Path planner: route the conditioning variant from per-config outcome history — lock a
-        # liked region's conditioning, widen the search to flee a disliked one. None with no data.
-        _conditioning_plan, _conditioning_plan_reason = self._v2_path_conditioning_plan(
-            global_state.get("path_outcomes", {}),
-            self._v2_seed_concepts_from_text(prompt_to_encode),
-        )
+        # liked region's conditioning, widen the search to flee a disliked one. None with no
+        # data. Only its OWN reader is `_v2_ascend_conditioning(apply=value_guidance, ...)`, so
+        # computing (and printing) it while value_guidance is off is pure waste -- and on H3
+        # it is always off (see the is_h3 override above), which is what used to make this
+        # print every run for a value that could never do anything.
+        _conditioning_plan, _conditioning_plan_reason = (None, "") if not value_guidance else \
+            self._v2_path_conditioning_plan(
+                global_state.get("path_outcomes", {}),
+                self._v2_seed_concepts_from_text(prompt_to_encode),
+            )
         if _conditioning_plan_reason:
             print(f"[FunPackVideoRefinerV2] {_conditioning_plan_reason}")
         # The split RE-ENCODES every scene from text and its entries replace

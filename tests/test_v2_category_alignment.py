@@ -2264,3 +2264,24 @@ def test_relevance_still_comes_from_the_type_and_the_prompt():
     typed = _lora_relation("v3_final_ep12.safetensors", "action", "running", "action")
     untyped = _lora_relation("v3_final_ep12.safetensors", "general", "running", "action")
     assert typed > untyped
+
+
+# --- H3 1-10 scale: the legacy digit path's reward must track the scale's own sign --------
+
+def test_a_bare_digit_below_the_midpoint_is_a_negative_reward():
+    """The label buckets (Missing action etc.) were calibrated for a different purpose and
+    are lopsided as a plain scale -- 5 used to land in "Missing action" (+0.05), a positive
+    reward, even though any user reading 5/10 means "below average"."""
+    for n in (1, 2, 3, 4, 5):
+        assert normalize_refiner_v2_rating(str(n))["reward"] < 0, f"{n}/10 must be negative"
+
+
+def test_a_bare_digit_above_the_midpoint_is_a_positive_reward():
+    for n in (6, 7, 8, 9, 10):
+        assert normalize_refiner_v2_rating(str(n))["reward"] > 0, f"{n}/10 must be positive"
+
+
+def test_the_digit_scale_reward_is_monotonic():
+    rewards = [normalize_refiner_v2_rating(str(n))["reward"] for n in range(1, 11)]
+    assert rewards == sorted(rewards)
+    assert abs(rewards[0] - -0.9) < 1e-9 and abs(rewards[-1] - 1.0) < 1e-9
