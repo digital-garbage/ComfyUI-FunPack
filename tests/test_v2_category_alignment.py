@@ -2285,3 +2285,13 @@ def test_the_digit_scale_reward_is_monotonic():
     rewards = [normalize_refiner_v2_rating(str(n))["reward"] for n in range(1, 11)]
     assert rewards == sorted(rewards)
     assert abs(rewards[0] - -0.9) < 1e-9 and abs(rewards[-1] - 1.0) < 1e-9
+
+
+def test_h3_scale_digits_are_valid_combo_choices():
+    """The 'rating' node input is a COMBO the graph builder validates against this exact
+    list (movie_editor/backend/builder.py's _live_value) -- a value that isn't listed here
+    gets silently swapped for the node's declared default before Python ever sees it. Every
+    digit the H3 scale can send has to be a member, or every H3 rating silently becomes
+    whatever the default happens to be."""
+    for n in range(1, 11):
+        assert str(n) in V2_RATING_LABELS

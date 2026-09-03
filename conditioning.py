@@ -3584,7 +3584,13 @@ _NO_LOVED_LABELS = {
 }
 V2_RATING_LABELS = _BASE_RATING_LABELS + [
     l + "|loved" for l in _BASE_RATING_LABELS if l not in _NO_LOVED_LABELS
-] + [MOVIE_EDITOR_CONTINUE_RATING, MOVIE_EDITOR_FRESH_PROMPT_RATING]
+] + [MOVIE_EDITOR_CONTINUE_RATING, MOVIE_EDITOR_FRESH_PROMPT_RATING] + [str(n) for n in range(1, 11)]
+# The "rating" node input is a COMBO the graph builder validates against this exact list
+# (movie_editor/backend/builder.py's _live_value) -- a value that isn't in it gets silently
+# swapped for the node's declared default ("Missing action") before Python ever sees it, the
+# same protection that stops a saved-but-uninstalled LoRA from queuing a broken prompt. The
+# H3 scale sends bare digit strings, so without them listed here every H3 rating was silently
+# discarded and replaced with the same "Missing action" (+0.05) regardless of what was picked.
 
 V2_RATING_PROFILES = {
     "-Just forget it-": {"key": "forget", "reward": 0.0, "level": 0, "missing_axes": [], "skip_learning": True},
