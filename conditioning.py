@@ -10206,14 +10206,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     # "these are different prompts" cannot masquerade as "these are different
                     # ratings", the confound that made the FIRST cross-prompt read of this
                     # project's output value function come out inverted.
+                    # Block sweep is NOT printed here -- it's the same computation the
+                    # Settings > Refinement & Taste panel already runs on demand and shows as
+                    # a table (reinsRows in settings_window.js), and running the full
+                    # permutation test on every single rating just to throw the ranked line
+                    # into the console was pure noise duplicating what the panel already has.
                     _rs.commit(refinement_key, _rs_reward,
                               prompt_hash=_tp.prompt_hash((previous_run or {}).get("conditioning")))
-                    _sweep = _rs.block_sweep(refinement_key)
-                    if _sweep:
-                        _ranked = sorted(_sweep.items(), key=lambda kv: kv[1]["p_value"])
-                        print("[FunPackRefiner] H3 representation steering: block sweep — "
-                              + ", ".join(f"b{b}(sep={r['separation']:+.3f} p={r['p_value']:.3f} n={r['n']})"
-                                         for b, r in _ranked))
             # DynaShift negative memory: pair the sampler's pending raw latent with this
             # rating — promote into the per-key negative bank when the rating marks the run
             # a bad outcome (intrusions: awful / wrong_appearance; or the quality-missing
