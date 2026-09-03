@@ -709,3 +709,58 @@ def test_a_row_with_nothing_in_it_is_not_a_run(monkeypatch, tmp_path):
     junk = [{}, {"rows": []}, {"rows": [{"bucket": 0}], "reward": "not a number"},
             "a string", None]
     assert probe.merge_rows("imported", junk) == (0, 0)
+
+
+# ---------------------------------------------------------------------------
+# Centring, and the hash
+# ---------------------------------------------------------------------------
+
+
+def test_signal_hidden_under_shared_content_is_found():
+    """Runs of one prompt share most of their content. Measured on a real session, 86% of
+    each descriptor was the part every run had; comparing raw vectors measured that and
+    reported no separation at any bucket, including the late control.
+
+    Here the shared part is 20x the difference — the regime the real data was in."""
+    shared = torch.ones(64) * 20.0
+    good = [shared + torch.full((64,), 1.0) + torch.randn(64) * 0.05 for _ in range(6)]
+    bad = [shared - torch.full((64,), 1.0) + torch.randn(64) * 0.05 for _ in range(6)]
+    labels = [1] * 6 + [0] * 6
+
+    result = probe.permutation_test(good + bad, labels, trials=400, seed=1)
+    assert result["separation"] > 0
+    assert result["p_value"] <= 0.05
+
+
+def test_centring_does_not_invent_a_split_in_noise():
+    """The other half: removing the shared part must not turn nothing into something."""
+    gen = torch.Generator().manual_seed(11)
+    vectors = [torch.ones(64) * 20.0 + torch.randn(64, generator=gen) for _ in range(12)]
+    result = probe.permutation_test(vectors, [1, 0] * 6, trials=400, seed=1)
+    assert result["p_value"] > 0.05
+
+
+def test_one_prompt_keeps_one_id_through_gpu_jitter():
+    """A real session produced 20 distinct ids across 21 generations of one prompt, and the
+    hash was a candidate cause: it compared raw bytes, so any value crossing a rounding
+    boundary changed the id.
+
+    Quantising fixes it for jitter of the size a GPU actually produces (~1e-6 relative).
+    It cannot be fixed for ALL jitter — with 768 values some will always sit near a
+    boundary, whatever the quantum — so this asserts the realistic range and not more.
+    """
+    gen = torch.Generator().manual_seed(3)
+    cond = torch.randn(1, 77, 768, generator=gen)
+    for scale in (1e-7, 1e-6, 1e-5):
+        jittered = cond + torch.randn(cond.shape, generator=gen) * scale
+        assert probe.prompt_hash(cond) == probe.prompt_hash(jittered), scale
+
+
+def test_a_different_prompt_still_gets_a_different_id():
+    """The rounding must not be so coarse that two prompts collide — that would hide a
+    confound instead of measuring it."""
+    gen = torch.Generator().manual_seed(4)
+    a = torch.randn(1, 77, 768, generator=gen)
+    b = torch.randn(1, 77, 768, generator=gen)
+    assert probe.prompt_hash(a) != probe.prompt_hash(b)
+    assert probe.prompt_hash(a) == probe.prompt_hash(a.clone())

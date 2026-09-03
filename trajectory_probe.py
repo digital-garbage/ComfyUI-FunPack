@@ -415,6 +415,14 @@ def load_all_logs():
     return out
 
 
+#: How coarsely a conditioning is rounded before hashing. Raw bytes answer "are these
+#: bit-identical", which is not the question: measured on a real session, ONE prompt
+#: produced 20 distinct ids across 21 generations, because GPU jitter moves values across
+#: rounding boundaries. Two decimals is far coarser than that jitter and far finer than the
+#: gap between two different prompts.
+HASH_QUANTUM = 100.0
+
+
 def prompt_hash(conditioning):
     """A stable id for "the same prompt", so the analysis can ask whether a separation is
     really about ratings rather than about which prompt was running."""
@@ -425,7 +433,8 @@ def prompt_hash(conditioning):
         c = conditioning.detach().float()
         while c.dim() > 1:
             c = c.mean(dim=0)
-        return md5(c.to(torch.float16).cpu().numpy().tobytes()).hexdigest()[:16]
+        # +0.0 so a -0.0 bin, which round() can produce, hashes as the 0.0 it equals.
+        return md5((torch.round(c * HASH_QUANTUM) + 0.0).cpu().numpy().tobytes()).hexdigest()[:16]
     except Exception:
         return None
 
@@ -439,8 +448,18 @@ def prompt_hash(conditioning):
 
 
 def _unit(vectors):
+    """Unit vectors, CENTRED on what the set has in common.
+
+    Runs of one prompt share most of their content -- measured on a real session, 86% of
+    each descriptor was the part every run had, and the run-specific remainder was ~14%.
+    Comparing the raw vectors therefore measures the shared part, and every distance comes
+    out near zero and near equal: 21 rated runs gave a mean cosine of 0.97 and no
+    separation at ANY bucket, including the late ones where steering demonstrably works.
+    Subtracting the mean leaves only what differs between runs, which is the only place a
+    rating difference could ever have been.
+    """
     m = torch.stack([v.detach().float().reshape(-1) for v in vectors])
-    return torch.nn.functional.normalize(m, dim=-1)
+    return torch.nn.functional.normalize(m - m.mean(dim=0, keepdim=True), dim=-1)
 
 
 def separation_statistic(descriptors, labels, groups=None):
