@@ -133,6 +133,30 @@ def test_pending_is_discarded_on_a_neutral_rating():
     assert n_pos == 0 and n_neg == 0
 
 
+# --- commit()'s return status -- what the console line reports ----------------
+
+def test_commit_reports_recorded_on_a_real_pairing():
+    rs.save_pending("k", _pend(torch.tensor([1.0, 0.0])))
+    assert rs.commit("k", 1.0) == "recorded"
+
+
+def test_commit_reports_no_pending_with_nothing_to_pair():
+    """The exact bug this return value exists to surface: a rating whose reward computed
+    correctly but has no captured generation to attach to -- silently a no-op before this,
+    indistinguishable from a real commit by the log alone."""
+    assert rs.commit("k", 1.0) == "no_pending"
+
+
+def test_commit_reports_disabled_when_capture_is_paused():
+    rs.save_pending("k", _pend(torch.tensor([1.0, 0.0])))
+    rs.set_capture_enabled("k", False)
+    assert rs.commit("k", 1.0) == "disabled"
+
+
+def test_commit_reports_no_key_for_an_empty_key():
+    assert rs.commit("", 1.0) == "no_key"
+
+
 def test_pending_overwrites_not_accumulates():
     rs.save_pending("k", _pend(torch.tensor([1.0, 0.0])))
     rs.save_pending("k", _pend(torch.tensor([2.0, 0.0])))  # a second capture before any rating

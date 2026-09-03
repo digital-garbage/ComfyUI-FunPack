@@ -185,23 +185,42 @@ def commit(refinement_key, reward, prompt_hash=None):
     """Pairs the pending capture with a rating's WEIGHT (and the prompt it was rated under,
     for block_sweep's cross-prompt guard) and appends it to the log. `reward` is the caller's
     already-resolved, already-admissibility-filtered reward -- this function trusts it rather
-    than re-deriving a verdict, same as the value functions do with the same number. No
-    pending capture (nothing generated since the last rating) is silently a no-op."""
+    than re-deriving a verdict, same as the value functions do with the same number.
+
+    -> "recorded" | "no_pending" (nothing generated since the last rating -- or capture was
+    off when that generation ran, so nothing was ever saved to pair this rating with) |
+    "disabled" (capture is paused for this key right now) | "no_key". The caller prints this,
+    not just the reward it computed -- a reward can be correct and still never reach a row if
+    there was nothing to pair it with, and a log line that only ever reports the reward it
+    is ABOUT to commit cannot tell that apart from a real commit."""
     if not refinement_key:
-        return
+        return "no_key"
     data = _load(refinement_key)
+    if not data.get("enabled", True):
+        return "disabled"
     pending = data.get("pending")
     data["pending"] = None
-    if pending is not None:
+    if pending is None:
         try:
-            data["rows"].append({"desc": pending, "weight": float(reward),
-                                 "prompt_hash": prompt_hash})
-        except (TypeError, ValueError):
+            _save(refinement_key, data)
+        except OSError:
             pass
+        return "no_pending"
+    try:
+        data["rows"].append({"desc": pending, "weight": float(reward),
+                             "prompt_hash": prompt_hash})
+    except (TypeError, ValueError):
+        try:
+            _save(refinement_key, data)
+        except OSError:
+            pass
+        return "no_pending"
     try:
         _save(refinement_key, data)
     except OSError as e:
         _log().failed("H3 representation steering", "commit", e, "rating not recorded")
+        return "no_pending"
+    return "recorded"
 
 
 def clear_all(refinement_key):

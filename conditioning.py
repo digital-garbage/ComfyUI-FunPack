@@ -10199,9 +10199,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         import h3_repr_steering as _rs
                         import trajectory_probe as _tp
                     _rs_reward = float(learning_profile.get("reward", 0.0))
-                    print(f"[FunPackRefiner] H3 representation steering: committing weight "
-                          f"{_rs_reward:+.3f} for rating '{rating_label}' "
-                          f"(legacy_score={learning_profile.get('legacy_score')!r})")
                     # Same prompt_hash trajectory_probe uses -- block_sweep() groups by it so
                     # "these are different prompts" cannot masquerade as "these are different
                     # ratings", the confound that made the FIRST cross-prompt read of this
@@ -10211,8 +10208,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     # a table (reinsRows in settings_window.js), and running the full
                     # permutation test on every single rating just to throw the ranked line
                     # into the console was pure noise duplicating what the panel already has.
-                    _rs.commit(refinement_key, _rs_reward,
-                              prompt_hash=_tp.prompt_hash((previous_run or {}).get("conditioning")))
+                    _rs_outcome = _rs.commit(
+                        refinement_key, _rs_reward,
+                        prompt_hash=_tp.prompt_hash((previous_run or {}).get("conditioning")))
+                    # The reward is always correct once computed -- what actually varies run to
+                    # run is whether there was a captured generation to PAIR it with, and a log
+                    # line that only ever reports the reward cannot tell a real commit apart
+                    # from one that silently found nothing to attach it to.
+                    _rs_note = {
+                        "recorded": "recorded",
+                        "no_pending": "NOT recorded — no captured generation was waiting "
+                                      "(capture may have been off, or the sampler's "
+                                      "h3_repr_steering toggle was off, when that run sampled)",
+                        "disabled": "NOT recorded — capture is paused for this key",
+                        "no_key": "NOT recorded — no refinement key",
+                    }.get(_rs_outcome, _rs_outcome)
+                    print(f"[FunPackRefiner] H3 representation steering: weight "
+                          f"{_rs_reward:+.3f} for rating '{rating_label}' — {_rs_note}")
             # DynaShift negative memory: pair the sampler's pending raw latent with this
             # rating — promote into the per-key negative bank when the rating marks the run
             # a bad outcome (intrusions: awful / wrong_appearance; or the quality-missing
