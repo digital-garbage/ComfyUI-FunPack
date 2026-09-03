@@ -661,3 +661,52 @@ def merge_rows(refinement_key, incoming):
     if added:
         _atomic_save({"version": 1, "rows": existing[-MAX_ROWS:]}, log_path(refinement_key))
     return len(existing[-MAX_ROWS:]), added
+
+
+def clear_all():
+    """Delete every recorded run, every pending candidate, and the per-bucket heads.
+
+    The heads are rebuilt from this log on each rating, so removing them alone achieves
+    nothing -- the next rating restores them from the runs still on disk. The switch is
+    deliberately left alone: "throw away what was measured" and "stop measuring" are
+    different requests, and a clear that silently stopped recording would look like the
+    probe had broken.
+
+    -> {"runs": n, "files": n} describing what went.
+    """
+    removed = {"runs": 0, "files": 0}
+    directory = _probe_dir()
+    if os.path.isdir(directory):
+        for name in sorted(os.listdir(directory)):
+            if name == _ENABLED_FILE:
+                continue
+            path = os.path.join(directory, name)
+            if name.endswith(".trajectory.pt"):
+                removed["runs"] += len(load_log(name[: -len(".trajectory.pt")]))
+            try:
+                os.remove(path)
+                removed["files"] += 1
+            except OSError:
+                pass
+
+    # The heads live on the refinement-key sidecar path, so they are found by glob rather
+    # than by asking which keys exist -- a key deleted since would otherwise leave its
+    # heads behind to be loaded by a key that reuses the name.
+    try:
+        import glob
+        try:
+            from .conditioning import refinement_state_path
+        except ImportError:
+            from conditioning import refinement_state_path
+        sidecars = os.path.dirname(refinement_state_path("x", "value_fn_buckets",
+                                                         prefix="refine_v2", extension="pt"))
+        for path in glob.glob(os.path.join(sidecars, "*value_fn_buckets*")):
+            try:
+                os.remove(path)
+                removed["files"] += 1
+            except OSError:
+                pass
+    except Exception as e:
+        _failed("trajectory probe", "clear heads", e,
+                "the learned windows are still on disk and will keep steering")
+    return removed

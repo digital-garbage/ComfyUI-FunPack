@@ -764,3 +764,43 @@ def test_a_different_prompt_still_gets_a_different_id():
     b = torch.randn(1, 77, 768, generator=gen)
     assert probe.prompt_hash(a) != probe.prompt_hash(b)
     assert probe.prompt_hash(a) == probe.prompt_hash(a.clone())
+
+
+def test_clearing_removes_the_runs_and_what_was_learned(monkeypatch, tmp_path):
+    """The heads are REBUILT from this log on every rating, so deleting them alone achieves
+    nothing — the next rating restores them from the runs still on disk. A clear that left
+    the log behind would look like it worked and then quietly resume steering."""
+    _patch_store(monkeypatch, tmp_path / "probe")
+    sidecars = tmp_path / "refinements"
+    sidecars.mkdir()
+    monkeypatch.setattr(probe, "_probe_dir", lambda: str(tmp_path / "probe"))
+
+    import trajectory_guidance as tg
+    monkeypatch.setattr(tg, "state_path", lambda key: str(sidecars / f"{key}.value_fn_buckets.pt"))
+    monkeypatch.setattr("conditioning.refinement_state_path",
+                        lambda key, mode, prefix="refine", extension="json":
+                        str(sidecars / f"{key}.{mode}.{extension}"))
+
+    for i in range(3):
+        probe.save_pending("k", _recorded(_h3_sigmas(4)), seed=i)
+        probe.commit("k", 1.0 if i else -0.9)
+    (sidecars / "k.value_fn_buckets.pt").write_bytes(b"heads")
+    assert len(probe.load_log("k")) == 3
+
+    removed = probe.clear_all()
+    assert removed["runs"] == 3
+    assert probe.load_log("k") == []
+    assert probe.load_all_logs() == []
+    assert not (sidecars / "k.value_fn_buckets.pt").exists(), "the learned windows survived"
+
+
+def test_clearing_does_not_stop_recording(monkeypatch, tmp_path):
+    """'Throw away what was measured' and 'stop measuring' are different requests, and a
+    clear that silently did both would look like the probe had broken."""
+    _patch_store(monkeypatch, tmp_path)
+    probe.set_probe_enabled(True)
+    probe.save_pending("k", _recorded(_h3_sigmas(4)))
+    probe.commit("k", 1.0)
+    probe.clear_all()
+    monkeypatch.delenv("FUNPACK_TRAJECTORY_PROBE", raising=False)
+    assert probe.probe_enabled() is True

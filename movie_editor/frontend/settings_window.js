@@ -323,6 +323,23 @@
         "Adds runs from a file onto this box. Runs already here are skipped, so importing "
         + "the same file twice cannot inflate the count.",
         "Load…", () => probeFile.click()));
+      rows.append(actionRow("Start a fresh measurement",
+        "Throws away every recorded run AND what was learned from them, so the next test "
+        + "starts from nothing. Recording stays on. Cannot be undone \u2014 download first "
+        + "if you want to keep it.",
+        "Clear\u2026", async () => {
+          if (!window.confirm(`Throw away ${runs} recorded run(s) and everything learned `
+              + "from them?\n\nThis cannot be undone. Download the measurement first if you "
+              + "want to keep it.")) return;
+          probeError = ""; probeNote = "";
+          try {
+            const res = await window.MovieEditorAPI.probeClear();
+            probeState = res; probeReport = null;
+            probeNote = `Cleared ${res.runs_removed ?? res.runs ?? 0} run(s). `
+              + "Nothing is steering from ratings until new ones are recorded.";
+          } catch (e) { probeError = String(e.message || e); }
+          paint();
+        }, { disabled: !runs, danger: true }));
       rows.append(actionRow("Read the result",
         "Asks whether your good and bad ratings look different early on, and checks the "
         + "answer against shuffled ratings so a handful of runs cannot fake one.",

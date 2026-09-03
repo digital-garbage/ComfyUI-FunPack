@@ -173,6 +173,7 @@
     // trajectory probe (Settings ▸ Learning)
     probeStatus: () => j("GET", API("/trajectory_probe")),
     probeSetEnabled: (enabled) => j("POST", API("/trajectory_probe"), { enabled: !!enabled }),
+    probeClear: () => j("POST", API("/trajectory_probe/clear"), {}),
     probeAnalyse: (trials) => j("POST", API("/trajectory_probe/analyse"), { trials: trials || 2000 }),
 
     // The measurement has to outlive the box it was taken on: a rental gets

@@ -2043,6 +2043,16 @@ if web is not None and PromptServer is not None:
         _tp, _rows, state = _probe_state()
         return web.json_response({**state, "added": added, "total": merged})
 
+    @routes.post(UI_PREFIX + "/api/trajectory_probe/clear")
+    async def _probe_clear(_req):
+        removed = _probe_module().clear_all()
+        _tp, _rows, state = _probe_state()
+        # Named apart from `state`: both carry a "runs" and merging them would report the
+        # number DELETED as the number still recorded, so a successful clear would read as
+        # having done nothing.
+        return web.json_response({**state, "runs_removed": removed["runs"],
+                                  "files_removed": removed["files"]})
+
     @routes.post(UI_PREFIX + "/api/trajectory_probe/analyse")
     async def _probe_analyse(req):
         try:
