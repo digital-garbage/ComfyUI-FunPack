@@ -17,7 +17,7 @@
 
 import { composer } from "../composer/composer.js";
 
-export function createConstructor({ title = "Constructor" } = {}) {
+export function createConstructor({ title = "Constructor", onChange } = {}) {
   const empty = composer.emptyState.default({
     icon: "✎",
     title: "Nothing to write yet",
@@ -40,8 +40,9 @@ export function createConstructor({ title = "Constructor" } = {}) {
       body: host,
       actions: [composer.button.md({ label: "Done", tone: "primary",
                                      onClick: () => window_ && window_.close("done") })],
-      onClose: () => { window_ = null; },
+      onClose: () => { window_ = null; if (onChange) onChange(); },
     });
+    if (onChange) onChange();
     return window_;
   }
 

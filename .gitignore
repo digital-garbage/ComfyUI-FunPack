@@ -28,3 +28,6 @@ node_modules/
 # Playwright: browsers live in a shared cache, results and traces are per-run
 app/test-results/
 app/playwright-report/
+
+# User projects — their content, not ours.
+projects/

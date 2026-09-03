@@ -58,7 +58,7 @@ export function createPrompts(slots = [], { onChange } = {}) {
           control,
         });
         host.appendChild(field.node);
-        fields.push({ slot: slot.id, input: role.input, control, field });
+        fields.push({ slot: slot.id, input: role.input, at: role.at, control, field });
       }
     }
   }
@@ -86,7 +86,19 @@ export function createPrompts(slots = [], { onChange } = {}) {
      */
     sync(next) { build(next); },
 
-    get fields() { return fields.map((f) => ({ slot: f.slot, input: f.input })); },
+    get fields() { return fields.map((f) => ({ slot: f.slot, input: f.input, at: f.at })); },
+
+    /**
+     * The control mounted at a place, or null.
+     *
+     * What makes a scene's text editable: the timeline owns the text and this is
+     * the box it is typed in, so the two are bound rather than each holding
+     * their own copy of a prompt.
+     */
+    at(point) {
+      const found = fields.find((f) => f.at === point);
+      return found ? found.control : null;
+    },
     destroy() { build([]); },
   };
 }

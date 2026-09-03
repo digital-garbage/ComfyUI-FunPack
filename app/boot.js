@@ -15,6 +15,8 @@ import { wire } from "./shell/session.js";
 import { check, load, describe, search } from "./shell/pipeline.js";
 import { open as openPipeline } from "./shell/pipeline_window.js";
 import { createPrompts } from "./shell/prompt.js";
+import { createProject } from "./shell/projects.js";
+import { createTimeline } from "./shell/timeline.js";
 
 const root = document.querySelector("#app");
 
@@ -34,6 +36,22 @@ async function start() {
   // until the pipeline has been read, because until then nobody knows which
   // inputs those are.
   let prompts = null;
+
+  // The project, and the strip that draws it. Both exist before the manifest is
+  // read so a failure to reach the server leaves an empty timeline rather than
+  // an undefined one.
+  let timeline = null;
+  const project = createProject({
+    onChange: () => { if (timeline) timeline.draw(); },
+    onError: (err) => page.transport.say(`The project could not be saved: ${err.message}`),
+  });
+
+  // A scene's text and the prompt box are the same value seen twice. The box is
+  // the editor; the scene is where it lives.
+  const showScene = (scene) => {
+    const box = prompts && prompts.at("generation.prompt");
+    if (box) box.setValue(scene ? scene.text : "");
+  };
 
   const page = build(root, {
     onGenerate: () => session.generate(),
@@ -55,6 +73,10 @@ async function start() {
                          slots: () => slots, values: allValues,
                          inputs: () => (prompts ? prompts.overrides() : {}) });
 
+  // Saved on the way out. A debounce that has not fired yet is work the user
+  // did and cannot see anywhere, and a reload is exactly when it is lost.
+  window.addEventListener("pagehide", () => { project.flush(); });
+
   let manifest;
   try {
     manifest = await fetchManifest();
@@ -74,7 +96,15 @@ async function start() {
   // After the modules, because a region has to exist before anything can be put
   // in it, and a module may be sharing the region a role names.
   try {
-    prompts = createPrompts((await load()).slots);
+    prompts = createPrompts((await load()).slots, {
+      // Typing in the box writes to the scene it belongs to. Without this the
+      // prompt is a value the run uses and the project never hears about, so a
+      // reload shows a timeline whose scenes are all empty.
+      onChange: () => {
+        const box = prompts && prompts.at("generation.prompt");
+        if (box && project.selectedId) project.setText(project.selectedId, box.value);
+      },
+    });
   } catch (err) {
     // Not fatal and not silent: the app still runs on the server's own
     // defaults, and an empty prompt panel with no explanation is the failure
@@ -85,6 +115,18 @@ async function start() {
   // Everything that mounts has now had its turn, so a region still holding its
   // stand-in is a region nothing wanted.
   settle();
+
+  // After the prompt exists, so the first scene's text has somewhere to go.
+  try {
+    await project.start();
+    timeline = createTimeline({ project, onSelect: showScene });
+    page.timelineBody.set([page.transport.warning, timeline]);
+    showScene(project.selected);
+  } catch (err) {
+    console.warn(`[FunPack] no project: ${err.message}`);
+    page.transport.say(`The project could not be opened: ${err.message}`);
+  }
+
   const failed = manifest.failed || [];
 
   console.info(`[FunPack] ${mounted.length} module(s) mounted`,
@@ -97,7 +139,7 @@ async function start() {
   for (const { where, why } of failed) console.warn(`[FunPack] ${where} did not load: ${why}`);
 
   window.FunPack = {
-    manifest, values: allValues, failed, hidden, run, bin: page.bin,
+    manifest, values: allValues, failed, hidden, run, bin: page.bin, project,
     prompts: () => (prompts ? prompts.overrides() : {}),
     mounted: mounted.map((m) => m.id),
   };

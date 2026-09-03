@@ -7,8 +7,8 @@ thin adapters over pure functions in `serve`.
 
 import json
 
-from . import (config, graph as graph_mod, log, registry as registry_mod,
-               serve as static, widgets)
+from . import (config, graph as graph_mod, log, projects,
+               registry as registry_mod, serve as static, widgets)
 from .contract import CONTRACT_VERSION
 from .relations import order
 from .traits import split
@@ -276,6 +276,55 @@ def register(routes, prefix=None):
             limit = 40
         return web.json_response(
             widgets.search(req.query.get("q", ""), max(1, min(limit, 200))))
+
+    # ── projects ──────────────────────────────────────────────────────────
+    # What the timeline IS. A run produces one clip; a project is the ordered
+    # list of them the user is making, and the only part of the app that has to
+    # survive a reload.
+
+    async def _body(req):
+        """The request's JSON object, or None. A body that is not an object is
+        not a project edit -- `[]` and `"x"` both reach `.get` otherwise."""
+        try:
+            data = await req.json()
+        except Exception:  # noqa: BLE001 - a malformed body is the caller's
+            return None
+        return data if isinstance(data, dict) else None
+
+    @routes.get(P + "/api/projects")
+    async def _projects_list(_req):
+        return web.json_response({"projects": projects.listing()})
+
+    @routes.post(P + "/api/projects")
+    async def _projects_create(req):
+        body = await _body(req) or {}
+        return web.json_response(projects.create(body.get("name")).to_dict())
+
+    @routes.get(P + "/api/projects/{pid}")
+    async def _projects_get(req):
+        found = projects.get(req.match_info["pid"])
+        if found is None:
+            return web.json_response({"problems": ["no such project"]}, status=404)
+        return web.json_response(found.to_dict())
+
+    @routes.put(P + "/api/projects/{pid}")
+    async def _projects_save(req):
+        pid = req.match_info["pid"]
+        body = await _body(req)
+        if body is None:
+            return web.json_response({"problems": ["expected a project object"]}, status=400)
+        if projects.get(pid) is None:
+            return web.json_response({"problems": ["no such project"]}, status=404)
+        # The id comes from the URL, never the body: a PUT that names its own
+        # target is a PUT that can write over a different project.
+        return web.json_response(
+            projects.save(projects.Project.from_dict({**body, "id": pid})).to_dict())
+
+    @routes.delete(P + "/api/projects/{pid}")
+    async def _projects_delete(req):
+        if not projects.delete(req.match_info["pid"]):
+            return web.json_response({"problems": ["no such project"]}, status=404)
+        return web.json_response({"deleted": True})
 
     @routes.get(P + "/api/log")
     async def _log(req):

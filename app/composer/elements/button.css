@@ -59,8 +59,14 @@
 .cx-btn-group .cx-btn:first-child { border-radius: var(--ctl-r) 0 0 var(--ctl-r); margin-left: 0; }
 .cx-btn-group .cx-btn:last-child { border-radius: 0 var(--ctl-r) var(--ctl-r) 0; }
 .cx-btn-group .cx-btn:only-child { border-radius: var(--ctl-r); }
-.cx-btn-group .cx-btn.cx-on {
+/* A pressed toggle, grouped or not. Scoping this to .cx-btn-group meant a
+   standalone toggle -- the region buttons in the timeline bar -- carried
+   aria-pressed and looked identical either way: a control that reports its state
+   to a screen reader and not to the eye. */
+.cx-btn.cx-on {
   background: var(--accent-soft); border-color: var(--accent); color: var(--accent-hi);
+}
+.cx-btn-group .cx-btn.cx-on {
   position: relative; z-index: 1;              /* its border wins over its neighbours' */
 }
 

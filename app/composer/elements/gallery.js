@@ -182,18 +182,33 @@ define("gallery", "cards", ({ items = [], value, onActivate } = {}) => {
   return { node, get value() { return current; }, destroy: () => node.remove() };
 });
 
-/** A single scrolling row: filmstrips, segment strips, recent items. */
-define("gallery", "strip", ({ items = [], onActivate, label } = {}) => {
-  const node = el("div", { cls: "cx-strip", attrs: { role: "list", "aria-label": label } });
-  for (const item of items) {
-    const cell = el("button", { cls: ["cx-strip-cell", "cx-focusable"],
-      attrs: { type: "button", role: "listitem", title: item.label } });
+/**
+ * A single scrolling row: filmstrips, segment strips, recent items.
+ *
+ * Selectable like its siblings, and through the same `collection` -- a strip is
+ * the one shape whose whole job is "which of these am I on", and one that could
+ * only be clicked THROUGH left the caller drawing its own current-item marker
+ * over a row that did not have the concept.
+ */
+define("gallery", "strip", (props = {}) => {
+  const node = el("div", { cls: "cx-strip", attrs: { role: "listbox", "aria-label": props.label } });
+
+  const api = collection(props, node, (item, on) => {
+    const cell = el("button", { cls: ["cx-strip-cell", on ? "cx-on" : null, "cx-focusable"],
+      attrs: option(on, { title: item.label, "aria-label": item.label }) });
     if (item.thumb) cell.append(el("img", { cls: "cx-cell-img", attrs: { src: item.thumb, alt: "", loading: "lazy" } }));
     else cell.append(el("span", { cls: "cx-cell-glyph", text: item.icon || "▦", attrs: { "aria-hidden": "true" } }));
-    cell.addEventListener("click", () => { if (onActivate) onActivate(item); });
-    node.append(cell);
-  }
-  return { node, destroy: () => node.remove() };
+    if (item.badge) cell.append(el("span", { cls: "cx-cell-badge", text: item.badge }));
+    return cell;
+  });
+
+  return {
+    node,
+    get value() { return api.value; },
+    setValue: api.setValue,
+    setItems: api.setItems,
+    destroy: () => node.remove(),
+  };
 });
 
 /**

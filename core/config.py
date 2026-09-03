@@ -14,3 +14,8 @@ UI_PREFIX = "/funpack"
 # a module cannot ship a stylesheet even if someone writes one.
 APP_EXTS = frozenset({".js", ".css", ".html", ".woff2", ".svg"})
 MODULE_EXTS = frozenset({".js"})
+
+# Where projects are kept. Inside the pack rather than ComfyUI's output tree: a
+# project is FunPack's own state, and clearing outputs must not take a user's
+# edits with it.
+PROJECTS_DIR = ROOT / "projects"

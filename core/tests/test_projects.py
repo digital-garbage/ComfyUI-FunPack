@@ -1,0 +1,231 @@
+"""The project store, and the same store over HTTP.
+
+A project is the one thing in the app that has to survive a reload, so the tests
+that matter here are about what happens to it when the input is not what the app
+would have sent: a hand-edited file, a body that is not an object, an id that is
+really a path.
+"""
+
+import json
+import socket
+import threading
+
+import pytest
+
+from core import config, projects
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    return tmp_path / "projects"
+
+
+# ── the model ────────────────────────────────────────────────────────────
+
+
+def test_a_new_project_can_be_typed_into(store):
+    """One empty scene, not none: a timeline with nothing on it has nowhere to
+    put a prompt, so an empty new project would need an Add before it was usable."""
+    made = projects.create("First")
+    assert made.name == "First"
+    assert len(made.scenes) == 1
+    assert made.scenes[0].text == ""
+
+
+def test_a_project_survives_a_round_trip(store):
+    made = projects.create("Round trip")
+    made.scenes.append(projects.Scene(text="a wolf on a ridge"))
+    projects.save(made)
+
+    read = projects.get(made.id)
+    assert [s.text for s in read.scenes] == ["", "a wolf on a ridge"]
+    assert read.name == "Round trip"
+
+
+def test_scenes_keep_their_order(store):
+    made = projects.create("Ordered")
+    made.scenes = [projects.Scene(text=str(i)) for i in range(6)]
+    projects.save(made)
+    assert [s.text for s in projects.get(made.id).scenes] == [str(i) for i in range(6)]
+
+
+def test_a_hand_edited_file_does_not_crash_the_app(store):
+    """The store reads files a person can edit. Every one of these used to be an
+    attribute error on a dict that was a list, or a str that was None."""
+    made = projects.create("Edited")
+    path = store / f"{made.id}.json"
+
+    for body in ('{"scenes": "not a list"}', '{"scenes": [null, 3, "x"]}',
+                 '{"name": 42}', '[]', '"just a string"', '{}'):
+        path.write_text(body, encoding="utf-8")
+        read = projects.get(made.id)
+        assert read is not None, body
+        assert isinstance(read.scenes, list)
+        assert isinstance(read.name, str)
+
+
+def test_unreadable_json_is_not_a_project(store):
+    made = projects.create("Broken")
+    (store / f"{made.id}.json").write_text("{oh no", encoding="utf-8")
+    assert projects.get(made.id) is None
+    assert projects.listing() == []      # and it does not take the list down with it
+
+
+def test_a_scene_without_an_id_gets_one(store):
+    """Ids address a scene from the client. Two scenes sharing one, or a scene
+    with none, is a selection that lands on the wrong row."""
+    p = projects.Project.from_dict({"scenes": [{"text": "a"}, {"text": "b"}]})
+    ids = [s.id for s in p.scenes]
+    assert all(projects.is_id(i) for i in ids)
+    assert len(set(ids)) == 2
+
+
+def test_an_id_from_a_request_cannot_be_a_path(store):
+    """The filename is a generated id or the call fails. A sanitiser that
+    repairs "../../x" writes somewhere nobody asked for and says it saved."""
+    for bad in ("../escape", "a/b", "", "..", "x" * 64, None, 5, "ABCDEF123456"):
+        assert projects.is_id(bad) is False
+        assert projects.get(bad) is None
+        assert projects.delete(bad) is False
+
+
+def test_the_listing_is_newest_first(store):
+    a = projects.create("A")
+    b = projects.create("B")
+    a.name = "A again"
+    projects.save(a)                     # touches updated_at
+    assert [p["id"] for p in projects.listing()] == [a.id, b.id]
+    assert [p["name"] for p in projects.listing()][0] == "A again"
+
+
+def test_a_long_name_is_cut_not_refused(store):
+    made = projects.create("x" * 500)
+    assert len(made.name) == projects.MAX_NAME
+
+
+def test_delete_removes_it(store):
+    made = projects.create("Doomed")
+    assert projects.delete(made.id) is True
+    assert projects.get(made.id) is None
+    assert projects.delete(made.id) is False
+
+
+def test_a_save_is_atomic(store):
+    """A reader must never see half a project. The temp file is what makes that
+    true, and a leftover .tmp in the directory would be read as one."""
+    made = projects.create("Atomic")
+    projects.save(made)
+    assert list(store.glob("*.tmp")) == []
+    assert len(projects.listing()) == 1
+
+
+# ── over HTTP ────────────────────────────────────────────────────────────
+
+pytest.importorskip("aiohttp")
+
+
+@pytest.fixture
+def server(store):
+    from aiohttp import web as aioweb
+    from core import routes
+
+    app = aioweb.Application()
+    table = aioweb.RouteTableDef()
+    routes.register(table, prefix="/funpack")
+    app.add_routes(table)
+
+    holder = {"ready": threading.Event()}
+
+    def run():
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        runner = aioweb.AppRunner(app)
+        loop.run_until_complete(runner.setup())
+        site = aioweb.TCPSite(runner, "127.0.0.1", 0)
+        loop.run_until_complete(site.start())
+        holder["port"] = site._server.sockets[0].getsockname()[1]
+        holder["loop"] = loop
+        holder["ready"].set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert holder["ready"].wait(20), "the test server did not start"
+    yield holder["port"]
+    holder["loop"].call_soon_threadsafe(holder["loop"].stop)
+
+
+def _request(port, method, path, body=None):
+    payload = b"" if body is None else json.dumps(body).encode()
+    head = (f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n").encode()
+    with socket.create_connection(("127.0.0.1", port), timeout=30) as sock:
+        sock.sendall(head + payload)
+        chunks = []
+        while True:
+            got = sock.recv(65536)
+            if not got:
+                break
+            chunks.append(got)
+    header, _, rest = b"".join(chunks).partition(b"\r\n\r\n")
+    status = int(header.split()[1])
+    try:
+        return status, json.loads(rest.decode() or "{}")
+    except ValueError:
+        return status, {"raw": rest.decode(errors="replace")}
+
+
+def test_create_list_read_save_delete(server):
+    status, made = _request(server, "POST", "/funpack/api/projects", {"name": "HTTP"})
+    assert status == 200 and made["name"] == "HTTP"
+    pid = made["id"]
+
+    status, listed = _request(server, "GET", "/funpack/api/projects")
+    assert status == 200 and [p["id"] for p in listed["projects"]] == [pid]
+    assert listed["projects"][0]["scenes"] == 1
+
+    made["scenes"].append({"text": "a second scene"})
+    status, saved = _request(server, "PUT", f"/funpack/api/projects/{pid}", made)
+    assert status == 200 and len(saved["scenes"]) == 2
+
+    status, read = _request(server, "GET", f"/funpack/api/projects/{pid}")
+    assert status == 200 and read["scenes"][1]["text"] == "a second scene"
+
+    assert _request(server, "DELETE", f"/funpack/api/projects/{pid}")[0] == 200
+    assert _request(server, "GET", f"/funpack/api/projects/{pid}")[0] == 404
+
+
+def test_a_put_cannot_rename_its_own_target(server):
+    """The id comes from the URL. A body that could name a different project is
+    a write over someone else's work, reported as a success."""
+    _, first = _request(server, "POST", "/funpack/api/projects", {"name": "First"})
+    _, second = _request(server, "POST", "/funpack/api/projects", {"name": "Second"})
+
+    _request(server, "PUT", f"/funpack/api/projects/{first['id']}",
+             {**first, "id": second["id"], "name": "Overwritten"})
+
+    _, untouched = _request(server, "GET", f"/funpack/api/projects/{second['id']}")
+    assert untouched["name"] == "Second"
+    _, target = _request(server, "GET", f"/funpack/api/projects/{first['id']}")
+    assert target["name"] == "Overwritten"
+
+
+def test_a_body_that_is_not_an_object_is_refused(server):
+    _, made = _request(server, "POST", "/funpack/api/projects", {"name": "Shape"})
+    for body in ([], "text", 7):
+        status, _ = _request(server, "PUT", f"/funpack/api/projects/{made['id']}", body)
+        assert status == 400, body
+
+
+def test_saving_something_that_is_not_there_is_a_404(server):
+    status, _ = _request(server, "PUT", "/funpack/api/projects/0123456789ab", {"name": "Ghost"})
+    assert status == 404
+
+
+def test_a_path_shaped_id_is_refused_not_served(server):
+    for pid in ("..", "%2e%2e", "a/b"):
+        status, _ = _request(server, "GET", f"/funpack/api/projects/{pid}")
+        assert status in (404, 400), pid

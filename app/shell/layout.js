@@ -28,7 +28,9 @@ export function build(root, handlers = {}) {
 
   // Built here rather than on first open: a mount point has to exist when
   // modules mount, which is long before anyone opens a window.
-  const constructor = createConstructor();
+  // onChange, so the Constructor toggle is right when the window closes ITSELF --
+  // its own Done button, Escape, or a click on the backdrop.
+  const constructor = createConstructor({ onChange: () => syncRegions() });
 
   // Centre: the result, and the timeline under it.
   const viewer = composer.viewer.media({ empty: "The result of the last run appears here." });
@@ -57,23 +59,49 @@ export function build(root, handlers = {}) {
   // is a sentence, not a chip, and it has to sit under the button it is about
   // -- an inert setting is said where the run is started, not where it was
   // switched on.
+  // The zone's body is held rather than built inline: boot replaces the stand-in
+  // with the real timeline once there is a project, and layout stays ignorant of
+  // what a scene is. The warning stays put -- it is about the run, not the list.
   const timelineEmpty = composer.emptyState.default({
     icon: "▭",
     title: "Nothing on the timeline",
     hint: "What you generate lands here, in the order it plays.",
   });
+  // The region toggles, v4's arrangement: named buttons, grouped, in the bar
+  // above the timeline. The kit's own fallback is a glyph on a rail at each
+  // outer edge of the window -- fine for a kit that cannot know what its panels
+  // are called, wrong here, where they have names and a bar to put them in. A
+  // control whose meaning has to be discovered is not a control.
+  //
+  // They are toggles and say so (aria-pressed), and the workspace stays the one
+  // source of truth for what is open: these ask it to toggle and are told back
+  // through onToggle, so a panel closed by a narrow window updates its button.
+  let ws = null;
+  const regionButtons = [];
+  const syncRegions = () => { for (const r of regionButtons) r.button.setPressed(r.isOn()); };
+  const regionToggle = (label, isOn, act) => {
+    const button = composer.button.sm({ label, pressed: isOn(), onClick: () => { act(); syncRegions(); } });
+    regionButtons.push({ button, isOn });
+    return button;
+  };
+
+  const timelineBody = composer.region.stack({ gap: "sm", fill: true,
+                                              children: [transport.warning, timelineEmpty] });
   const timeline = composer.panel.zone({
     title: "Timeline",
     actions: [
       ...transport.actions,
-      composer.button.sm({
-        label: "Constructor",
-        onClick: () => { if (handlers.onConstructor) handlers.onConstructor(); },
+      regionToggle("Assets", () => Boolean(ws && ws.isOpen("left")),
+                   () => ws && ws.toggle("left")),
+      regionToggle("Properties", () => Boolean(ws && ws.isOpen("right")),
+                   () => ws && ws.toggle("right")),
+      regionToggle("Constructor", () => constructor.isOpen, () => {
+        if (constructor.isOpen) constructor.close();
+        else if (handlers.onConstructor) handlers.onConstructor();
       }),
     ],
     status: transport.status,
-    body: composer.region.stack({ gap: "sm", fill: true,
-                                  children: [transport.warning, timelineEmpty] }),
+    body: timelineBody,
   });
 
   // The stand-ins below are EMPTY STATES, not labels: they say a region is
@@ -127,7 +155,12 @@ export function build(root, handlers = {}) {
     left: assets,
     centre,
     right: properties,
+    // Named toggles live in the timeline bar instead -- see regionToggle above.
+    rails: false,
+    onToggle: () => syncRegions(),
   });
+  ws = workspace;
+  syncRegions();
 
 
   // The menu bar: who this is, what is not a zone, and whether ComfyUI is
@@ -154,7 +187,8 @@ export function build(root, handlers = {}) {
     offer(`generation.${point}`, generation.node, generationEmpty.node);
   }
 
-  return { workspace, assets, bin, preview, viewer, timeline, generation, settings,
+  return { workspace, assets, bin, preview, viewer, timeline, timelineBody,
+           timelineEmpty, generation, settings, syncRegions,
            properties, transport, constructor, menubar,
            connection: menubar.connection, bar, page };
 }

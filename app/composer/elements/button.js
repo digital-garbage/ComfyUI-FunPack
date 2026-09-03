@@ -11,13 +11,18 @@ import { roving } from "../internals/focus.js";
 
 const TONES = new Set(["neutral", "primary", "danger", "ghost"]);
 
-function base(size, { label, onClick, tone = "neutral", icon, disabled = false, busy = false, type = "button", title } = {}) {
+function base(size, { label, onClick, tone = "neutral", icon, disabled = false, busy = false, type = "button", title, pressed } = {}) {
   if (!TONES.has(tone)) throw new RangeError(`Unknown button tone "${tone}". Known: ${[...TONES].join(", ")}.`);
 
   const node = el("button", {
     cls: ["cx-btn", `cx-btn-${size}`, `cx-btn-${tone}`, "cx-focusable"],
-    attrs: { type, disabled: disabled || busy, title, "aria-busy": busy || undefined },
+    attrs: { type, disabled: disabled || busy, title, "aria-busy": busy || undefined,
+             // A toggle says so, or a screen reader reads "Assets" the same
+             // whether the panel is open or shut. Absent unless the caller
+             // passes one: most buttons are not toggles and must not claim to be.
+             "aria-pressed": pressed === undefined ? undefined : String(Boolean(pressed)) },
   });
+  if (pressed) node.classList.add("cx-on");
 
   const spinner = el("span", { cls: "cx-btn-spin", attrs: { "aria-hidden": "true" } });
   const glyph = icon ? el("span", { cls: "cx-btn-icon", text: icon, attrs: { "aria-hidden": "true" } }) : null;
@@ -47,6 +52,10 @@ function base(size, { label, onClick, tone = "neutral", icon, disabled = false, 
       else { node.removeAttribute("aria-busy"); spinner.remove(); }
     },
     setDisabled(value) { isDisabled = Boolean(value); sync(); },
+    setPressed(value) {
+      node.setAttribute("aria-pressed", String(Boolean(value)));
+      node.classList.toggle("cx-on", Boolean(value));
+    },
     get disabled() { return isDisabled; },
     get busy() { return isBusy; },
     destroy: () => node.remove(),

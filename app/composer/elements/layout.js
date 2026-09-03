@@ -324,7 +324,7 @@ define("frame", "app", ({ header, main, footer } = {}) => {
 define("workspace", "docked", ({
   id = "workspace", centre, left, right,
   leftLabel = "Assets", rightLabel = "Properties",
-  leftOpen = true, rightOpen = true, onToggle,
+  leftOpen = true, rightOpen = true, onToggle, rails = true,
 } = {}) => {
   const node = el("div", { cls: "cx-workspace" });
 
@@ -375,8 +375,13 @@ define("workspace", "docked", ({
                "aria-expanded": String(state[which]) },
       on: { click: () => set(which, !state[which]) } });
 
-    const rail = el("div", { cls: ["cx-workspace-rail", `cx-workspace-rail-${which}`],
-      children: button });
+    // The rail is one glyph on the outer edge of the window. It is the fallback,
+    // not the design: where the app has somewhere to put a NAMED toggle, it
+    // passes rails:false and drives open/close through this handle instead --
+    // "▎" on an edge is a control whose meaning has to be discovered.
+    const rail = rails
+      ? el("div", { cls: ["cx-workspace-rail", `cx-workspace-rail-${which}`], children: button })
+      : null;
 
     panels[which] = panel;
     toggles[which] = button;
@@ -423,7 +428,7 @@ define("workspace", "docked", ({
 
   const l = side("left", leftLabel, left);
   const r = side("right", rightLabel, right);
-  node.append(l.rail, l.panel, main, r.panel, r.rail);
+  node.append(...[l.rail, l.panel, main, r.panel, r.rail].filter(Boolean));
   set("left", state.left, { remember: false });
   set("right", state.right, { remember: false });
   fit();
