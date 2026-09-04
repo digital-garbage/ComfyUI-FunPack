@@ -412,6 +412,9 @@
     // so the seed decides. Different seeds = two different generations and the comparison
     // never was an A/B (a reference pins the subject, not the sample). Same seed = the
     // change moved the shot rather than its detail, which is a RESULT, not a bad setup.
+    if (r.changed && r.changed.conditioning) {
+      return "the prompt or scenes changed — a different generation, not an A/B";
+    }
     const onlySeed = r.changed && !Object.keys(r.changed).filter((k) => k !== "seed").length;
     if (onlySeed && r.same_seed) {
       // Nothing differed at all: this is the instrument's noise floor for this setup.
@@ -450,10 +453,14 @@
       return r.same_seed ? "nothing changed — repeatability check"
                          : "only the seed changed — a different sample";
     }
-    return keys.slice(0, 3).map((k) => {
+    const rest = keys.filter((k) => k !== "conditioning");
+    const promptMoved = keys.includes("conditioning") ? "prompt/scenes changed" : null;
+    const parts = rest.slice(0, 3).map((k) => {
       const show = (v) => (v === "" || v == null ? "—" : String(v));
       return `${k}: ${show(ch[k][0])} → ${show(ch[k][1])}`;
-    }).join(" · ") + (keys.length > 3 ? ` · +${keys.length - 3} more` : "");
+    });
+    if (promptMoved) parts.unshift(promptMoved);
+    return parts.join(" · ") + (rest.length > 3 ? ` · +${rest.length - 3} more` : "");
   }
 
   function detailProbeRows(key) {

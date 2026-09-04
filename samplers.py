@@ -7274,6 +7274,21 @@ class FunPackLTXAVSceneChainSampler:
         # name list would go stale the first time a widget is added.
         _run_settings = {k: v for k, v in locals().items()
                          if isinstance(v, (bool, int, float, str)) and k != "self"}
+        # The prompt is NOT a scalar -- it arrives as conditioning tensors -- so scalars
+        # alone report "nothing changed" across two runs of completely different text, and a
+        # repeatability check that is really a prompt change reads as "generation is not
+        # reproducible". Cheap stand-in: per-entry shape + mean + std, which differs between
+        # any two real prompts and costs two reductions on an already-resident tensor.
+        try:
+            _fp = []
+            for _e in (positive or [])[:8]:
+                _t = _e[0] if isinstance(_e, (list, tuple)) and _e else _e
+                if isinstance(_t, torch.Tensor) and _t.numel():
+                    _f = _t.detach().float()
+                    _fp.append(f"{tuple(_t.shape)}:{float(_f.mean()):.5g}:{float(_f.std()):.5g}")
+            _run_settings["conditioning"] = "|".join(_fp)
+        except Exception:  # noqa: BLE001
+            pass  # a fingerprint is a label, never a reason to fail a generation
         self._is_h3 = self._set_stream_axes(model)
         if self._is_h3:
             # H3's rating-driven mechanisms are h3_phrase_emphasis (Studio), h3_repr_steering,

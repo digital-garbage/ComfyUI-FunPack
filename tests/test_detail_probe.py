@@ -338,3 +338,15 @@ def test_no_settings_at_all_is_an_empty_diff_not_a_crash():
     dp.record("k", _edged())
     row = dp.record("k", _edged())
     assert row["changed"] == {}
+
+
+def test_a_prompt_change_is_reported_and_not_treated_as_a_repeatability_check():
+    """The prompt is not a scalar -- it arrives as conditioning -- so scalars alone called two
+    runs of different text "nothing changed", and the resulting structure drop read as
+    "generation is not reproducible" rather than "you changed the prompt"."""
+    base = {"seed": 1, "cfg": 1.0, "conditioning": "(1,9,4096):0.01:0.5"}
+    dp.record("k", _edged(seed=0), seed=1, settings=base)
+    row = dp.record("k", _edged(seed=1), seed=1,
+                    settings={**base, "conditioning": "(1,12,4096):0.03:0.7"})
+    assert "conditioning" in row["changed"]
+    assert row["same_seed"] is True          # same seed, but NOT the same generation
