@@ -443,20 +443,29 @@
       return `noise floor: two identical runs differ by ${(moved * 100).toFixed(0)}% `
         + `(detail x${r.detail.toFixed(2)}). Anything smaller than this is not a result.`;
     }
-    if (r.structure < 0.85) {
-      return r.same_seed
-        ? `the shot moved ${(moved * 100).toFixed(0)}%${vsFloor} — this changed the picture, `
-          + "not just its detail"
-        : "different seed — two separate generations, so detail cannot be compared. Rerun "
-          + "the same seed with the change off, then on.";
+    if (r.same_seed === false) {
+      return "different seed — two separate generations, so detail cannot be compared. Rerun "
+        + "the same seed with the change off, then on.";
+    }
+    // Below this the two runs share almost nothing and the detail ratio compares unrelated
+    // pictures. Everything above it still gets a detail verdict, because "the shot moved AND
+    // the detail did not" is strictly more informative than either half alone — and the old
+    // 0.85 cliff swallowed the whole block-repeat sweep, whose best row was 0.831, so the
+    // sharpness question was never actually asked. The user's own eyes put the threshold of
+    // VISIBLE change near 30% moved, well past where the cliff sat.
+    if (r.structure < 0.35) {
+      return `the shot moved ${(moved * 100).toFixed(0)}%${vsFloor} — barely the same `
+        + "generation, so detail cannot be compared";
     }
     const gain = (r.detail - 1) * 100;
-    const caveat = r.same_seed === false ? " (different seed — treat as indicative only)" : "";
-    if (Math.abs(gain) < 2) return "no real change in detail" + caveat;
-    if (gain < 0) return `detail DOWN ${Math.abs(gain).toFixed(0)}% — softer, not sharper` + caveat;
-    return (r.edge_aligned > 0.35
-      ? `sharper — +${gain.toFixed(0)}% detail, landing on existing edges`
-      : `+${gain.toFixed(0)}% detail but spread evenly — reads as grain, not sharpening`) + caveat;
+    // How much the shot moved is a PREFIX, not a verdict: it says how much of the change is
+    // "a different shot" so the detail half can be read for what it is.
+    const shot = moved > 0.05 ? `shot moved ${(moved * 100).toFixed(0)}%${vsFloor} · ` : "";
+    if (Math.abs(gain) < 2) return shot + "detail unchanged";
+    if (gain < 0) return shot + `detail DOWN ${Math.abs(gain).toFixed(0)}% — softer`;
+    return shot + (r.edge_aligned > 0.35
+      ? `SHARPER — +${gain.toFixed(0)}% detail, landing on existing edges`
+      : `+${gain.toFixed(0)}% detail but spread evenly — grain, not sharpening`);
   }
 
   // What this pair actually was. The probe cannot know which knob you consider the

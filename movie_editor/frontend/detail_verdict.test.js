@@ -28,6 +28,34 @@ test("every branch runs without throwing", () => {
   cases.forEach((r) => [null, 0.1].forEach((f) => assert.equal(typeof dpVerdict(r, f), "string")));
 });
 
+test("a moved shot still gets a detail verdict — the old 0.85 cliff hid it", () => {
+  // The block-repeat sweep's best row was structure 0.831, so a >=0.85 gate returned "the
+  // shot moved" for all 19 comparisons and never once evaluated sharpness. Both halves get
+  // reported now: how much the shot moved AND what happened to the detail.
+  const v = dpVerdict(row({ structure: 0.831, detail: 0.99,
+                            changed: { h3_block_repeat: ["", "40"] } }), 0);
+  assert.match(v, /shot moved 17%/);
+  assert.match(v, /detail unchanged/);
+});
+
+test("sharper is reachable when all three numbers agree", () => {
+  const v = dpVerdict(row({ structure: 0.95, detail: 1.3, edge_aligned: 0.7,
+                            changed: { h3_block_repeat: ["", "40"] } }), 0);
+  assert.match(v, /SHARPER/);
+});
+
+test("more detail spread evenly is grain, not sharpening", () => {
+  const v = dpVerdict(row({ structure: 0.95, detail: 1.3, edge_aligned: 0.05,
+                            changed: { h3_block_repeat: ["", "40"] } }), 0);
+  assert.match(v, /grain, not sharpening/);
+});
+
+test("two nearly unrelated pictures refuse a detail verdict", () => {
+  const v = dpVerdict(row({ structure: 0.09, detail: 1.25,
+                            changed: { h3_block_repeat: ["", "40"] } }), 0);
+  assert.match(v, /detail cannot be compared/);
+});
+
 test("a pair with nothing changed reports the noise floor", () => {
   const v = dpVerdict(row({ structure: 0.9 }), 0.1);
   assert.match(v, /noise floor: two identical runs differ by 10%/);
@@ -36,6 +64,7 @@ test("a pair with nothing changed reports the noise floor", () => {
 test("movement is expressed against the measured floor", () => {
   const v = dpVerdict(row({ structure: 0.42, changed: { h3_repr_steering: [true, false] } }), 0.1);
   assert.match(v, /5\.8x your noise floor/);
+  assert.match(v, /detail unchanged/);   // and the detail half survives the prefix
 });
 
 test("a real prompt change voids the comparison, a small drift does not", () => {
@@ -43,7 +72,7 @@ test("a real prompt change voids the comparison, a small drift does not", () => 
     /prompt or scenes changed/);
   const drift = dpVerdict(row({ changed: { conditioning: [null, 0.02] }, cond_shift: 0.02,
                                 structure: 0.95, detail: 1.3, edge_aligned: 0.7 }), 0.1);
-  assert.match(drift, /sharper/);
+  assert.match(drift, /SHARPER/i);
 });
 
 test("the floor is the median of the quiet pairs, so one outlier cannot set it", () => {
