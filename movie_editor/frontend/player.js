@@ -1238,6 +1238,25 @@
         };
 
         _transportEl.append(anchorSel, anchorBtn);
+
+        if (S.clipSaveableToMediaBin(_currentClip.sceneId)) {
+          const saveVidBtn = el("button", "btn ghost tiny", "🎬 Save video");
+          saveVidBtn.title = "Save this clip's render to the Media bin — server-side, no download/re-upload.";
+          saveVidBtn.onclick = async () => {
+            saveVidBtn.disabled = true; saveVidBtn.textContent = "Saving…";
+            try {
+              const entry = await S.saveClipToMediaBin(_currentClip.sceneId);
+              saveVidBtn.textContent = entry ? "✓ Saved" : "🎬 Save video";
+            } catch (e) {
+              alert("Save failed: " + e.message);
+              saveVidBtn.textContent = "🎬 Save video";
+            } finally {
+              saveVidBtn.disabled = false;
+              setTimeout(() => _renderTransport(), 1600);
+            }
+          };
+          _transportEl.append(saveVidBtn);
+        }
       }
     }
   }

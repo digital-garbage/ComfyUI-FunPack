@@ -3628,12 +3628,12 @@
     return [{ node: cfg.node, input: cfg.input, value: cfg.value }];
   }
 
-  async function _generateRun(sceneIds, onlyScene, prefix, resetSession) {
+  async function _generateRun(sceneIds, onlyScene, prefix, resetSession, extraOverrides) {
     _interrupted = false;
     _markGenInFlight(sceneIds);
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
-      const overrides = _anchorGuideNodeOverrides(sceneIds);
+      const overrides = [...(_anchorGuideNodeOverrides(sceneIds) || []), ...(extraOverrides || [])];
       const r = await _retryOnTunnel(
         () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession, overrides),
         10,
@@ -3679,6 +3679,55 @@
     } finally {
       _clearGenInFlight(sceneIds);
     }
+  }
+
+  // H3 block-repeat sweep: one scene, one fixed seed, several repeat configs run back to
+  // back, each captured into a gallery labelled with the config that produced it. Every run
+  // is a one-off node_overrides on the BUILT graph (same mechanism as the anchor-guide i2v
+  // bypass above) — the project's own Engine Settings are never touched, so nothing needs
+  // restoring after and a crash mid-sweep leaves no residue.
+  // Line format: "blocks;seam|noseam;times", e.g. "10,11,13;seam;5" / "40-41;noseam;1".
+  function parseBlockSweepConfig(text) {
+    return String(text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
+      const [blocks, seam, times] = line.split(";").map((s) => (s || "").trim());
+      if (!blocks) return null;
+      return {
+        label: line, blocks,
+        spanLoop: seam.toLowerCase() === "seam",
+        times: Math.min(4, Math.max(1, parseInt(times, 10) || 1)),
+      };
+    }).filter(Boolean);
+  }
+
+  async function runBlockRepeatSweep(sceneId, configText) {
+    if (!state.project || !sceneId) return;
+    const configs = parseBlockSweepConfig(configText);
+    if (!configs.length) {
+      set({ blockSweep: { running: false, results: [], error: "No valid config lines — one per line, blocks;seam|noseam;times." } });
+      return;
+    }
+    // No seed variability: one seed for the whole sweep, chosen once, never persisted.
+    const seed = state.project.sampler_inputs?.seed ?? Math.floor(Math.random() * 0x7fffffff);
+    const results = [];
+    set({ blockSweep: { running: true, results, error: null, total: configs.length, current: 0, seed } });
+    for (let i = 0; i < configs.length; i++) {
+      const c = configs[i];
+      set({ blockSweep: { running: true, results: [...results], error: null, total: configs.length, current: i + 1, label: c.label, seed } });
+      const overrides = [
+        { node: "sampler", input: "seed", value: seed },
+        { node: "sampler", input: "h3_block_repeat", value: c.blocks },
+        { node: "sampler", input: "h3_block_repeat_span_loop", value: c.spanLoop },
+        { node: "sampler", input: "h3_block_repeat_times", value: c.times },
+      ];
+      const ok = await _generateRun([sceneId], sceneId, `Sweep ${i + 1}/${configs.length}: ${c.label}`, false, overrides);
+      if (!ok) {
+        set({ blockSweep: { running: false, results, error: `Stopped at "${c.label}": ${state.gen.msg}`, total: configs.length, seed } });
+        return;
+      }
+      const media = state.sceneRenders[sceneId]?.media;
+      results.push({ label: c.label, media });
+    }
+    set({ blockSweep: { running: false, results, error: null, total: configs.length, seed } });
   }
 
   async function generate(onlyScene) {
@@ -4004,6 +4053,22 @@
       set({ gen: { state: "idle", promptId: null, media: [], msg: "" }, notice });
     } catch (e) {
       set({ gen: { state: "error", promptId: null, media: [], msg: "Export failed: " + _friendlyGenError(e.message) } });
+    }
+  }
+
+  // Save one clip (by scene id) straight to the Media bin — server-side copy via the same
+  // import-clip route saveSelectedToMediaBin uses, no browser download/re-upload round trip.
+  // Used by the transport bar's "Save video" button for whatever clip is under the playhead.
+  async function saveClipToMediaBin(sceneId) {
+    if (!state.project) return null;
+    const spec = _clipExportSpecForScene(sceneId);
+    if (!spec) throw new Error("Nothing to save — generate this clip first.");
+    try {
+      const res = await API.importClipToMediaBin(spec.clip, spec.name);
+      await loadMedia();
+      return res?.media || res;
+    } catch (e) {
+      throw new Error(_friendlyGenError(e.message));
     }
   }
 
@@ -4499,7 +4564,8 @@
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, scenesOverridingProjectFrames, useProjectFramesEverywhere, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate: _clockedGenerate, generateMontage: _clockedMontage, generateSelected: _clockedSelected, genElapsed, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate: _clockedGenerate, generateMontage: _clockedMontage, generateSelected: _clockedSelected, genElapsed, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, saveClipToMediaBin, clipSaveableToMediaBin,
+    runBlockRepeatSweep, parseBlockSweepConfig, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
     renamePromptTemplate, clearGlobalPrompt,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,

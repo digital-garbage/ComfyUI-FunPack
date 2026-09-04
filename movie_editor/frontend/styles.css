@@ -2175,8 +2175,13 @@ body.tour-mode { overflow: hidden; }
 .sw-body { flex: 1; overflow: auto; padding: 16px 18px 24px; }
 
 /* grouped macOS-style rows (Refinement & Taste, Updates & ComfyUI) */
-.sw-stack { display: flex; flex-direction: column; }
+.sw-stack { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .sw-hint { font-size: 11px; line-height: 1.5; color: var(--muted); margin-bottom: 12px; }
+.sw-label { font-size: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--faint); }
+.sw-textarea { width: 100%; box-sizing: border-box; font-family: var(--font-mono, monospace);
+  font-size: 12px; padding: 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--ink-2); color: var(--text); resize: vertical; }
 .sw-rows-label { margin: 16px 4px 5px; font-size: 10px; font-weight: 700; letter-spacing: .6px;
   text-transform: uppercase; color: var(--faint); }
 .sw-rows { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px;
