@@ -52,8 +52,8 @@
     sceneRow.append(el("label", "sw-label", "Scene to sweep"), sceneSel);
     container.append(sceneRow);
 
-    const expCb = el("input"); expCb.type = "checkbox";
-    const expLabel = el("label", "sw-hint");
+    const expCb = el("input"); expCb.type = "checkbox"; expCb.style.width = "auto";
+    const expLabel = el("label", "sw-hint sw-check-label");
     expLabel.append(expCb, document.createTextNode(
       " Show experimental config — unvalidated, results will not match any prior sweep 1:1 "
       + "(different checkpoint/steps/sampler port nothing over, see the block-repeat research notes)"));

@@ -2182,6 +2182,8 @@ body.tour-mode { overflow: hidden; }
 .sw-textarea { width: 100%; box-sizing: border-box; font-family: var(--font-mono, monospace);
   font-size: 12px; padding: 8px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--ink-2); color: var(--text); resize: vertical; }
+.sw-check-label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.sw-check-label > input[type="checkbox"] { flex: 0 0 auto; min-height: 0; margin-top: 2px; }
 .sw-rows-label { margin: 16px 4px 5px; font-size: 10px; font-weight: 700; letter-spacing: .6px;
   text-transform: uppercase; color: var(--faint); }
 .sw-rows { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px;
