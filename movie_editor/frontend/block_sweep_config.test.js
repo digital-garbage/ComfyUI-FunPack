@@ -8,6 +8,19 @@ const src = fs.readFileSync(__dirname + "/store.js", "utf8");
 const grab = (name) => src.match(new RegExp(`function ${name}[\\s\\S]*?\\n  \\}\\n`))[0];
 const { parseBlockSweepConfig } = new Function(
   grab("parseBlockSweepConfig") + "; return { parseBlockSweepConfig };")();
+const { _sweepFilenamePrefix } = new Function(
+  grab("_sweepFilenamePrefix") + "; return { _sweepFilenamePrefix };")();
+
+test("the render's own filename_prefix carries the sweep config, not a generic uuid", () => {
+  const prefix = _sweepFilenamePrefix("10,11,13;seam;5");
+  assert.match(prefix, /^funpack_sweep_10-11-13-seam-5_[a-z0-9]{6}$/);
+});
+
+test("filename_prefix is unique per call even for the same label", () => {
+  const a = _sweepFilenamePrefix("35;seam;1");
+  const b = _sweepFilenamePrefix("35;seam;1");
+  assert.notEqual(a, b);
+});
 
 const bsSrc = fs.readFileSync(__dirname + "/block_sweep.js", "utf8");
 const grabBs = (name) => bsSrc.match(new RegExp(`function ${name}[\\s\\S]*?\\n  \\}\\n`))[0];

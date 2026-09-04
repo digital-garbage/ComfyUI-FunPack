@@ -3688,6 +3688,16 @@
   // restoring after and a crash mid-sweep leaves no residue.
   // Line format: "blocks;seam|noseam;times[;laststeps]", e.g. "10,11,13;seam;5" /
   // "40-41;noseam;1;2". laststeps is optional (blank/omitted = every step, the old default).
+  // "10,11,13;seam;5" -> "funpack_sweep_10-11-13-seam-5_<short>" — VHS_VideoCombine's
+  // filename_prefix widget, overridden per run so the temp file itself is self-labelled
+  // instead of the generic funpack_preview_<uuid> every other run gets. Short unique suffix
+  // (not the raw uuid) because a shared prefix across runs made an earlier run's file stop
+  // resolving once a later run reused it — see builder.py's own comment on this prefix.
+  function _sweepFilenamePrefix(label) {
+    const safe = String(label).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return `funpack_sweep_${safe}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
   function parseBlockSweepConfig(text) {
     return String(text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
       const [blocks, seam, times, lastSteps] = line.split(";").map((s) => (s || "").trim());
@@ -3721,6 +3731,7 @@
         { node: "sampler", input: "h3_block_repeat_span_loop", value: c.spanLoop },
         { node: "sampler", input: "h3_block_repeat_times", value: c.times },
         { node: "sampler", input: "h3_block_repeat_last_steps", value: c.lastSteps },
+        { node: "vhs", input: "filename_prefix", value: _sweepFilenamePrefix(c.label) },
       ];
       const ok = await _generateRun([sceneId], sceneId, `Sweep ${i + 1}/${configs.length}: ${c.label}`, false, overrides);
       if (!ok) {
