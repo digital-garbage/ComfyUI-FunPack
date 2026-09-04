@@ -2808,7 +2808,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "h3_av_decouple": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Damps how much video and audio attend to EACH OTHER inside H3's joint self-attention, without touching any hidden state -- for the failure pattern where one comes out clean and the other doesn't. 0 = off (installs nothing, zero cost). Higher = weaker cross-modal influence; 1.0 fully cuts it, which likely also kills legitimate AV sync, so this is a knob to search down from, not up to.",
+                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Damps how much video and audio attend to EACH OTHER inside H3's joint self-attention, without touching any hidden state -- for the failure pattern where one comes out clean and the other doesn't. 0 = off (installs nothing, zero cost). Higher = weaker cross-modal influence via a negative bias on the other modality's attention logits (v2: the first version scaled key magnitude instead and measured flat 0-1 live -- fixed). 1.0 fully cuts it, which likely also kills legitimate AV sync, so this is a knob to search down from, not up to.",
                 }),
                 "alg_guide_blur_strength": ("FLOAT", {
                     "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
@@ -6831,12 +6831,20 @@ class FunPackLTXAVSceneChainSampler:
         sequence). This does not build that S×S mask at all. It uses comfy's own
         `optimized_attention_override` extension point (comfy/ldm/modules/attention.py's
         `wrap_attn` -- already wired into every backend, nothing to monkeypatch) to run the
-        SAME joint attention as separate video-query and audio-query passes against a K
-        where the OTHER modality's rows are scaled down by `strength`; text/ref/cond rows
+        SAME joint attention as separate video-query and audio-query passes, each carrying
+        an additive negative bias on the OTHER modality's logits (a per-key vector, not a
+        [seq,seq] matrix -- broadcasts over every query in the group); text/ref/cond rows
         stay on one ordinary pass, untouched. Splitting the query dimension like this costs
-        nothing extra -- same total Q*K*V work as the single joint call, just partitioned --
-        and the only new memory is two full-length clones of K (audio and video zeroed out
-        by contrast, at most `strength`), not a dense attention matrix.
+        nothing extra -- same total Q*K*V work as the single joint call, just partitioned.
+
+        First cut of this scaled K's magnitude toward zero instead of biasing the logit --
+        measured flat live across the whole 0-1 strength range. After H3's own per-head
+        RMSNorm on Q/K, attention logits already sit close to 0, so shrinking a key's
+        magnitude pushes its logit toward "average", not toward "excluded" -- softmax barely
+        notices. An additive penalty actually pushes the targeted logit negative, which is
+        what exclusion requires. Still unvalidated whether the *hypothesis* (cross-modal
+        attention causes the clean-video/corrupted-audio split) is even correct -- this only
+        fixes the mechanism not doing what the strength dial implied.
 
         `strength` in [0, 1]; 0 or blank installs nothing (exact pass-through, not just a
         no-op override) so an unset knob costs literally zero.
@@ -6876,6 +6884,14 @@ class FunPackLTXAVSceneChainSampler:
             to["patches_replace"] = patches_replace
 
             _mask_cache = {}  # seq_len -> (video_mask, audio_mask); one live resolution per gen
+            # Logit bias scale, not a key-magnitude scale (see the method docstring for why
+            # the first cut of this used K-scaling and measured flat across the whole 0-1
+            # range live). After H3's own per-head RMSNorm on Q/K, attention logits already
+            # sit close to 0 -- an additive penalty pushes a targeted key toward genuinely
+            # excluded, where a multiplicative one only pushes it toward "average".
+            # ponytail: fixed heuristic scale, unvalidated against H3's real logit spread --
+            # revisit if the live strength sweep is still flat, or saturates immediately.
+            _BIAS_SCALE = 12.0
 
             def _override(func, q, k, v, heads, mask=None, skip_reshape=True,
                           transformer_options=None, **kwargs):
@@ -6892,18 +6908,21 @@ class FunPackLTXAVSceneChainSampler:
                 if vmask is None or amask is None or k.shape[-2] != seq_len:
                     return func(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, **kwargs)
                 other = ~(vmask | amask)
+                bias_val = -_strength * _BIAS_SCALE
                 out = torch.empty(q.shape[0], seq_len, heads * q.shape[-1],
                                   dtype=q.dtype, device=q.device)
                 if amask.any():
-                    k_damped = k.clone()
-                    k_damped[:, :, vmask, :] *= (1.0 - _strength)
-                    out[:, amask, :] = func(q[:, :, amask, :], k_damped, v, heads,
-                                            mask=None, skip_reshape=skip_reshape, **kwargs)
+                    bias = torch.zeros(seq_len, dtype=q.dtype, device=q.device)
+                    bias[vmask] = bias_val
+                    out[:, amask, :] = func(q[:, :, amask, :], k, v, heads,
+                                            mask=bias.view(1, 1, 1, seq_len),
+                                            skip_reshape=skip_reshape, **kwargs)
                 if vmask.any():
-                    k_damped = k.clone()
-                    k_damped[:, :, amask, :] *= (1.0 - _strength)
-                    out[:, vmask, :] = func(q[:, :, vmask, :], k_damped, v, heads,
-                                            mask=None, skip_reshape=skip_reshape, **kwargs)
+                    bias = torch.zeros(seq_len, dtype=q.dtype, device=q.device)
+                    bias[amask] = bias_val
+                    out[:, vmask, :] = func(q[:, :, vmask, :], k, v, heads,
+                                            mask=bias.view(1, 1, 1, seq_len),
+                                            skip_reshape=skip_reshape, **kwargs)
                 if other.any():
                     out[:, other, :] = func(q[:, :, other, :], k, v, heads,
                                             mask=None, skip_reshape=skip_reshape, **kwargs)

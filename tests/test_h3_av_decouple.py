@@ -51,8 +51,11 @@ def _qkv(seq_len=6, heads=1, head_dim=2):
 
 def _fake_func_factory(calls):
     def fake_func(q, k, v, heads, mask=None, skip_reshape=True, **kw):
-        calls.append({"q_len": q.shape[-2], "k_sum": float(k.sum()), "mask": mask})
-        return torch.full((q.shape[0], q.shape[-2], heads * q.shape[-1]), float(k.sum()))
+        # value encodes the bias so assertions can tell which group produced which output
+        # without needing a real attention computation.
+        marker = float(mask.sum()) if mask is not None else 0.0
+        calls.append({"q_len": q.shape[-2], "mask": mask, "marker": marker})
+        return torch.full((q.shape[0], q.shape[-2], heads * q.shape[-1]), marker)
     return fake_func
 
 
@@ -80,8 +83,8 @@ def test_before_mod_segments_captured_override_is_a_passthrough():
     q, k, v = _qkv()
     out = override(_fake_func_factory(calls), q, k, v, heads=1, mask=None, skip_reshape=True)
     assert len(calls) == 1, "no mod_segments yet -> single unmodified call, not split"
-    assert calls[0]["k_sum"] == float(k.sum())
-    assert torch.allclose(out, torch.full_like(out, float(k.sum())))
+    assert calls[0]["mask"] is None
+    assert torch.allclose(out, torch.zeros_like(out))
 
 
 def test_an_explicit_mask_is_never_overridden():
@@ -96,7 +99,7 @@ def test_an_explicit_mask_is_never_overridden():
     assert len(calls) == 1 and calls[0]["mask"] is real_mask
 
 
-def test_splits_into_three_groups_with_correctly_damped_keys():
+def test_splits_into_three_groups_with_a_bias_penalizing_the_other_modality():
     node = S()
     patched = node._install_h3_av_decouple(_FakeModel(), 0.5)
     _fire_capture_hook(patched)
@@ -109,20 +112,27 @@ def test_splits_into_three_groups_with_correctly_damped_keys():
     by_len = {c["q_len"]: c for c in calls}
     assert set(by_len) == {len(_VIDEO_IDX), len(_AUDIO_IDX), len(_OTHER_IDX)}
 
-    full_k_sum = float(k.sum())  # 6 rows * 2 dims * 2.0 = 24
-    # audio-query pass: video rows (3 of them) halved in K -> k_sum drops by half of their share
-    per_row = 2 * 2.0  # head_dim * key value
-    audio_call = by_len[len(_AUDIO_IDX)]
-    assert audio_call["k_sum"] == full_k_sum - len(_VIDEO_IDX) * per_row * 0.5
-    video_call = by_len[len(_VIDEO_IDX)]
-    assert video_call["k_sum"] == full_k_sum - len(_AUDIO_IDX) * per_row * 0.5
-    other_call = by_len[len(_OTHER_IDX)]
-    assert other_call["k_sum"] == full_k_sum, "text/other rows ride the ordinary, undamped K"
+    bias_val = -0.5 * 12.0  # strength * _BIAS_SCALE
 
-    # scatter landed each group's output back at its own rows
-    assert torch.allclose(out[0, _AUDIO_IDX], torch.full((len(_AUDIO_IDX), 2), audio_call["k_sum"]))
-    assert torch.allclose(out[0, _VIDEO_IDX], torch.full((len(_VIDEO_IDX), 2), video_call["k_sum"]))
-    assert torch.allclose(out[0, _OTHER_IDX], torch.full((len(_OTHER_IDX), 2), other_call["k_sum"]))
+    audio_call = by_len[len(_AUDIO_IDX)]
+    audio_bias = audio_call["mask"].view(-1)
+    assert torch.allclose(audio_bias[_VIDEO_IDX], torch.full((len(_VIDEO_IDX),), bias_val))
+    assert torch.allclose(audio_bias[_AUDIO_IDX + _OTHER_IDX],
+                          torch.zeros(len(_AUDIO_IDX) + len(_OTHER_IDX)))
+
+    video_call = by_len[len(_VIDEO_IDX)]
+    video_bias = video_call["mask"].view(-1)
+    assert torch.allclose(video_bias[_AUDIO_IDX], torch.full((len(_AUDIO_IDX),), bias_val))
+    assert torch.allclose(video_bias[_VIDEO_IDX + _OTHER_IDX],
+                          torch.zeros(len(_VIDEO_IDX) + len(_OTHER_IDX)))
+
+    other_call = by_len[len(_OTHER_IDX)]
+    assert other_call["mask"] is None, "text/other rows ride the ordinary, unbiased pass"
+
+    # scatter landed each group's output back at its own rows (marker = mask.sum())
+    assert torch.allclose(out[0, _AUDIO_IDX], torch.full((len(_AUDIO_IDX), 2), audio_call["marker"]))
+    assert torch.allclose(out[0, _VIDEO_IDX], torch.full((len(_VIDEO_IDX), 2), video_call["marker"]))
+    assert torch.allclose(out[0, _OTHER_IDX], torch.zeros(len(_OTHER_IDX), 2))
 
 
 def test_chains_through_an_already_installed_block0_hook():
