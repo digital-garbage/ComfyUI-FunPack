@@ -3792,10 +3792,12 @@ class FunPackLTXAVSceneChainSampler:
                 except ImportError:
                     import block_influence as _bi
                 # One host sync for the whole run, here, instead of per block per step.
+                _bi_means = {b: torch.stack(v).mean(dim=0)
+                             for b, v in _influence_capture[0].items() if v}
                 _bi.save_pending(
                     refinement_key,
-                    {b: float(torch.stack(v).mean().item())
-                     for b, v in _influence_capture[0].items() if v},
+                    {b: float((m[0] / m[1]).item()) for b, m in _bi_means.items()},
+                    raw={b: float(m[0].item()) for b, m in _bi_means.items()},
                     novelty={b: float(torch.stack(v).mean().item())
                              for b, v in _influence_capture[1].items() if v})
             elif _influence_on:
@@ -6942,8 +6944,14 @@ class FunPackLTXAVSceneChainSampler:
                             base = before.norm()
                             # Kept as a 0-dim tensor: averaged and read once, after
                             # sampling, instead of syncing the device 50x per step.
+                            # BOTH norms, not their ratio. The residual stream grows with
+                            # depth, so ||f_i||/||x_i|| shrinks with depth by construction --
+                            # early blocks score huge because the denominator is barely
+                            # formed, not because they do more work. Storing the pair lets
+                            # the readout normalise by something comparable across depth
+                            # instead of baking the confound in here.
                             capture_holder[0].setdefault(block, []).append(
-                                delta.norm() / base.clamp(min=1e-8))
+                                torch.stack([delta.norm(), base.clamp(min=1e-8)]))
                             if len(capture_holder) > 1:
                                 last, last_block = prev_delta
                                 if (last is not None and block > last_block

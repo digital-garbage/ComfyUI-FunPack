@@ -120,6 +120,7 @@ def _load(refinement_key):
     data.setdefault("rows", [])
     data.setdefault("pending", None)
     data.setdefault("pending_novelty", None)
+    data.setdefault("pending_raw", None)
     return data
 
 
@@ -131,7 +132,7 @@ def _save(refinement_key, data):
     os.replace(tmp, path)
 
 
-def save_pending(refinement_key, profile, novelty=None):
+def save_pending(refinement_key, profile, novelty=None, raw=None):
     """Store this run's per-block profile as the pending candidate the next rating scores.
     `profile` is {block_index: mean relative delta}; `novelty` is the optional companion
     {block_index: mean cosine with the PREVIOUS block's delta}. Overwritten every run, same
@@ -143,6 +144,9 @@ def save_pending(refinement_key, profile, novelty=None):
     data["pending"] = {int(b): float(v) for b, v in profile.items()}
     data["pending_novelty"] = ({int(b): float(v) for b, v in novelty.items()}
                                if novelty else None)
+    # Raw ||f_i|| alongside the ratio: see `share` in profile() for why the ratio alone is
+    # not comparable across depth.
+    data["pending_raw"] = ({int(b): float(v) for b, v in raw.items()} if raw else None)
     try:
         _save(refinement_key, data)
     except OSError as e:
@@ -158,8 +162,10 @@ def commit(refinement_key, reward):
     data = _load(refinement_key)
     pending = data.get("pending")
     pending_novelty = data.get("pending_novelty")
+    pending_raw = data.get("pending_raw")
     data["pending"] = None
     data["pending_novelty"] = None
+    data["pending_raw"] = None
     if pending is None:
         try:
             _save(refinement_key, data)
@@ -168,7 +174,7 @@ def commit(refinement_key, reward):
         return "no_pending"
     try:
         data["rows"].append({"profile": pending, "novelty": pending_novelty or {},
-                             "weight": float(reward)})
+                             "raw": pending_raw or {}, "weight": float(reward)})
     except (TypeError, ValueError):
         try:
             _save(refinement_key, data)
@@ -211,7 +217,12 @@ def profile(refinement_key):
     `mean_novelty` its average: ~1 means blocks mostly amplify their predecessor (little new
     per block), ~0 means each adds an orthogonal component nothing before it added, negative
     means blocks partly UNDO each other. Magnitude cannot tell those apart, which is why it
-    is recorded alongside rather than instead. `difference` is the rating-driven signal: blocks whose activity runs higher on
+    is recorded alongside rather than instead.
+
+    `share` is each block's RAW movement ||f_i|| as a fraction of every block's, which is the
+    number to rank by. `overall` (the ratio ||f_i||/||x_i||) is not comparable across depth:
+    the residual stream grows as it goes, so early blocks score high because the denominator
+    is barely formed rather than because they move the picture more. `difference` is the rating-driven signal: blocks whose activity runs higher on
     runs you liked. `flatness` is the spread of `overall` as a fraction of its own mean
     (coefficient of variation): near 0 means every block moves the stream by the same amount
     and there is nothing to aim at; a large value means the depth profile is structured.
@@ -225,7 +236,7 @@ def profile(refinement_key):
     if not rows or not blocks:
         return {"overall": {}, "liked": None, "disliked": None, "difference": None,
                 "n_liked": 0, "n_disliked": 0, "flatness": None,
-                "novelty": {}, "mean_novelty": None}
+                "novelty": {}, "mean_novelty": None, "share": {}, "raw": {}}
 
     def _mean(subset):
         out = {}
@@ -244,10 +255,22 @@ def profile(refinement_key):
                 out[b] = sum(vals) / len(vals)
         return out
 
+    def _mean_raw(subset):
+        out = {}
+        for b in blocks:
+            vals = [float(r["raw"][b]) for r in subset
+                    if isinstance(r.get("raw"), dict) and b in r["raw"]]
+            if vals:
+                out[b] = sum(vals) / len(vals)
+        return out
+
     liked_rows = [r for r in rows if r["weight"] > 0]
     disliked_rows = [r for r in rows if r["weight"] < 0]
     overall = _mean(rows)
     novelty = _mean_novelty(rows)
+    raw = _mean_raw(rows)
+    total = sum(raw.values())
+    share = {b: v / total for b, v in raw.items()} if total > 1e-12 else {}
     flatness = None
     if overall:
         vals = torch.tensor(list(overall.values()), dtype=torch.float32)
@@ -261,5 +284,6 @@ def profile(refinement_key):
     return {"overall": overall, "liked": liked, "disliked": disliked,
             "difference": difference, "n_liked": len(liked_rows),
             "n_disliked": len(disliked_rows), "flatness": flatness,
+            "share": share, "raw": raw,
             "novelty": novelty, "mean_novelty": (
                 sum(novelty.values()) / len(novelty) if novelty else None)}

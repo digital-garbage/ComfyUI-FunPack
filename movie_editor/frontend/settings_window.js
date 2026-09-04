@@ -540,15 +540,21 @@
     const diff = (state && state.difference) || null;
     // Ranked by how much the block moves the picture, not by block number: the question is
     // which blocks do the work, and a 50-row list in index order buries that.
-    const entries = Object.entries(overall)
-      .map(([b, v]) => [Number(b), v])
-      .sort((a, b) => b[1] - a[1])
+    // Rank by SHARE, not by the ratio: ||f_i||/||x_i|| shrinks with depth by construction
+    // (the residual stream grows as it goes), so ranking on it just sorts the earliest
+    // blocks to the top regardless of how much they actually move the picture.
+    const share = (state && state.share) || {};
+    const rankOn = Object.keys(share).length ? share : overall;
+    const entries = Object.keys(rankOn)
+      .map((b) => [Number(b), overall[b], share[b]])
+      .sort((a, b) => (b[2] ?? b[1]) - (a[2] ?? a[1]))
       .slice(0, 12);
     const tbl = el("div", "sw-rows");
-    entries.forEach(([block, v]) => {
+    entries.forEach(([block, v, sh]) => {
       const d = diff ? diff[String(block)] : null;
       const nov = state.novelty ? state.novelty[String(block)] : null;
-      let value = v.toPrecision(3);
+      let value = sh != null ? `${(sh * 100).toFixed(1)}% of the movement`
+                             : (v == null ? "—" : v.toPrecision(3));
       if (nov != null) value += ` · new ${nov >= 0 ? "+" : ""}${nov.toFixed(2)}`;
       if (d != null) value += ` · liked ${d >= 0 ? "+" : ""}${d.toFixed(4)}`;
       tbl.append(infoRow(`Block ${block}`, value, d == null ? null : d > 0));
@@ -620,7 +626,7 @@
       const tbl = biProfileTable(biState);
       if (tbl) {
         box.append(el("div", "sw-rows-label",
-          "Busiest blocks — how much each moves the picture as it forms"));
+          "Busiest blocks — each block's share of all the movement in the stack"));
         box.append(tbl);
       }
     };

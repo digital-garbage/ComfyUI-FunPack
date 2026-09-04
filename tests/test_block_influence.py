@@ -182,6 +182,13 @@ def _install(capture, n_blocks=2, max_rows=512):
     return patched.model_options["transformer_options"]["patches_replace"]["dit"]
 
 
+def _ratio(entries):
+    """capture[0][block] holds [||delta||, ||before||] pairs -- the ratio is derived, not
+    stored, so the readout can normalise by something comparable across depth."""
+    m = torch.stack(entries).mean(dim=0)
+    return float(m[0] / m[1])
+
+
 def _call(hook, src, out, mod_segments):
     """Drive the hook the way minimax/model.py does."""
     return hook({"img": src, "mod_segments": mod_segments},
@@ -197,7 +204,7 @@ def test_hook_records_the_relative_delta_on_video_rows():
     out[:, 1] = 3.0                       # delta has the same norm as the input
     res = _call(dit[("double_block", 0)], src, out, [(0, 4, 6)])  # tag 6 % 3 == 0 -> video
     assert torch.equal(res["img"], out)   # measurement must not modify the stream
-    recorded = torch.stack(capture[0][0]).mean().item()
+    recorded = _ratio(capture[0][0])
     assert recorded == pytest.approx(1.0, rel=1e-4)
 
 
@@ -210,7 +217,7 @@ def test_hook_averages_across_steps():
         out = src.clone()
         out[:, 1] = scale
         _call(dit[("double_block", 0)], src, out, [(0, 4, 6)])
-    assert torch.stack(capture[0][0]).mean().item() == pytest.approx(2.0, rel=1e-4)
+    assert _ratio(capture[0][0]) == pytest.approx(2.0, rel=1e-4)
 
 
 def test_text_and_audio_rows_are_not_measured():
@@ -222,7 +229,7 @@ def test_text_and_audio_rows_are_not_measured():
     out = src.clone()
     out[2:, 1] = 50.0                     # rows 2-3 are text below
     _call(dit[("double_block", 0)], src, out, [(0, 2, 6), (2, 4, 7)])
-    recorded = torch.stack(capture[0][0]).mean().item()
+    recorded = _ratio(capture[0][0])
     assert recorded == pytest.approx(0.0, abs=1e-6)
 
 
@@ -244,8 +251,8 @@ def test_each_block_accumulates_separately():
         out[:, 1] = scale
         _call(dit[("double_block", block)], src, out, [(0, 4, 6)])
     assert set(capture[0]) == {0, 2}      # block 1 was never called
-    assert torch.stack(capture[0][0]).mean().item() == pytest.approx(1.0, rel=1e-4)
-    assert torch.stack(capture[0][2]).mean().item() == pytest.approx(4.0, rel=1e-4)
+    assert _ratio(capture[0][0]) == pytest.approx(1.0, rel=1e-4)
+    assert _ratio(capture[0][2]) == pytest.approx(4.0, rel=1e-4)
 
 
 def test_row_subsampling_bounds_the_reduction():
@@ -258,7 +265,7 @@ def test_row_subsampling_bounds_the_reduction():
     out = src.clone()
     out[:, 1] = 2.0
     _call(dit[("double_block", 0)], src, out, [(0, n, 6)])
-    assert torch.stack(capture[0][0]).mean().item() == pytest.approx(2.0, rel=1e-3)
+    assert _ratio(capture[0][0]) == pytest.approx(2.0, rel=1e-3)
 
 
 def test_an_existing_patch_at_the_same_block_is_chained_not_replaced():
@@ -488,7 +495,7 @@ def test_a_block_that_writes_in_place_is_still_measured():
 
     res = dit[("double_block", 0)]({"img": src, "mod_segments": [(0, 4, 6)]},
                                    {"original_block": in_place})
-    recorded = torch.stack(capture[0][0]).mean().item()
+    recorded = _ratio(capture[0][0])
     assert recorded == pytest.approx(2.0, rel=1e-4)   # |delta| = 2*|before|
     assert torch.equal(res["img"], src)
 
@@ -501,4 +508,37 @@ def test_a_block_returning_a_new_tensor_is_unaffected_by_the_fix():
     out = src.clone()
     out[:, 1] = 3.0
     _call(dit[("double_block", 0)], src, out, [(0, 4, 6)])
-    assert torch.stack(capture[0][0]).mean().item() == pytest.approx(3.0, rel=1e-4)
+    assert _ratio(capture[0][0]) == pytest.approx(3.0, rel=1e-4)
+
+
+# --- share vs ratio: the depth confound -------------------------------------------
+#
+# ||f_i||/||x_i|| is not comparable across depth. The residual stream GROWS as it goes, so
+# an early block scores high because its denominator is barely formed, not because it moves
+# the picture more. Live data made this concrete: block 1 read 6.01 and block 36 read 0.368,
+# a 16x gap that is mostly the stream norm. `share` divides every block by the same total
+# instead, so the ranking answers "who moved the picture" rather than "who ran early".
+
+def test_share_is_each_blocks_fraction_of_all_movement():
+    bi.save_pending("k", {0: 9.0, 1: 1.0}, raw={0: 1.0, 1: 3.0})
+    bi.commit("k", 1.0)
+    p = bi.profile("k")
+    assert p["share"][0] == pytest.approx(0.25)
+    assert p["share"][1] == pytest.approx(0.75)
+    # ...and the ratio still says the opposite, which is exactly the confound.
+    assert p["overall"][0] > p["overall"][1]
+
+
+def test_share_is_absent_rather_than_wrong_without_raw_norms():
+    bi.save_pending("k", {0: 0.5})
+    bi.commit("k", 1.0)
+    assert bi.profile("k")["share"] == {}
+
+
+def test_share_averages_across_runs_before_normalising():
+    for raw in ({0: 1.0, 1: 1.0}, {0: 3.0, 1: 1.0}):
+        bi.save_pending("k", {0: 0.1, 1: 0.1}, raw=raw)
+        bi.commit("k", 1.0)
+    p = bi.profile("k")
+    assert p["raw"][0] == pytest.approx(2.0)      # mean of 1 and 3
+    assert p["share"][0] == pytest.approx(2.0 / 3.0)

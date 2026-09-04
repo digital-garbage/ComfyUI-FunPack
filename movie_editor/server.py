@@ -2200,6 +2200,7 @@ if web is not None and PromptServer is not None:
             "overall": {str(b): v for b, v in (prof["overall"] or {}).items()},
             "difference": ({str(b): v for b, v in prof["difference"].items()}
                            if prof["difference"] else None),
+            "share": {str(b): v for b, v in (prof["share"] or {}).items()},
             "novelty": {str(b): v for b, v in (prof["novelty"] or {}).items()},
             "mean_novelty": prof["mean_novelty"],
         }
@@ -2213,7 +2214,7 @@ if web is not None and PromptServer is not None:
         except Exception as e:
             return web.json_response({"key": key, "enabled": False, "runs": 0,
                                       "n_liked": 0, "n_disliked": 0, "flatness": None,
-                                      "overall": {}, "difference": None, "novelty": {},
+                                      "overall": {}, "difference": None, "novelty": {}, "share": {},
                                       "mean_novelty": None, "error": str(e)})
 
     @routes.post(UI_PREFIX + "/api/block_influence")
