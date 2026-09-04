@@ -32,6 +32,11 @@ test("sweep filenames are filesystem-safe and carry the config", () => {
   assert.match(name, /^sweep_10-11-13-seam-5_\d+\.mp4$/);
 });
 
+test("a negative laststeps in the label doesn't produce a double dash or leading dash", () => {
+  const name = _sweepFilenamePrefix("40-41;noseam;1;-2");
+  assert.match(name, /^funpack_sweep_40-41-noseam-1-2_[a-z0-9]{6}$/);
+});
+
 test("sweep filenames never start or end with a separator dash", () => {
   const name = _sweepFilename(";noseam;1");
   assert.ok(!name.startsWith("sweep_-"));
@@ -58,8 +63,13 @@ test("optional laststeps field is parsed and clamped to the widget's range", () 
   assert.equal(c.lastSteps, 2);
   const [c2] = parseBlockSweepConfig("40-41;noseam;1;999");
   assert.equal(c2.lastSteps, 50);
-  const [c3] = parseBlockSweepConfig("40-41;noseam;1;-5");
-  assert.equal(c3.lastSteps, 0);
+});
+
+test("negative laststeps (apply early, then stop) is parsed and clamped", () => {
+  const [c] = parseBlockSweepConfig("40-41;noseam;1;-2");
+  assert.equal(c.lastSteps, -2);
+  const [c2] = parseBlockSweepConfig("40-41;noseam;1;-999");
+  assert.equal(c2.lastSteps, -50);
 });
 
 test("multiple lines, blank lines and stray whitespace are skipped/trimmed", () => {

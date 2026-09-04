@@ -3686,8 +3686,6 @@
   // is a one-off node_overrides on the BUILT graph (same mechanism as the anchor-guide i2v
   // bypass above) — the project's own Engine Settings are never touched, so nothing needs
   // restoring after and a crash mid-sweep leaves no residue.
-  // Line format: "blocks;seam|noseam;times[;laststeps]", e.g. "10,11,13;seam;5" /
-  // "40-41;noseam;1;2". laststeps is optional (blank/omitted = every step, the old default).
   // "10,11,13;seam;5" -> "funpack_sweep_10-11-13-seam-5_<short>" — VHS_VideoCombine's
   // filename_prefix widget, overridden per run so the temp file itself is self-labelled
   // instead of the generic funpack_preview_<uuid> every other run gets. Short unique suffix
@@ -3698,6 +3696,10 @@
     return `funpack_sweep_${safe}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
+  // Line format: "blocks;seam|noseam;times[;laststeps]", e.g. "10,11,13;seam;5" /
+  // "40-41;noseam;1;2" / "40-41;noseam;1;-2". laststeps is optional (blank/omitted = every
+  // step). Positive = the final N steps (refine only, structure already settled). Negative =
+  // the first |N| steps instead (apply while structure is still forming, then stop).
   function parseBlockSweepConfig(text) {
     return String(text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
       const [blocks, seam, times, lastSteps] = line.split(";").map((s) => (s || "").trim());
@@ -3706,7 +3708,7 @@
         label: line, blocks,
         spanLoop: seam.toLowerCase() === "seam",
         times: Math.min(4, Math.max(1, parseInt(times, 10) || 1)),
-        lastSteps: Math.min(50, Math.max(0, parseInt(lastSteps, 10) || 0)),
+        lastSteps: Math.min(50, Math.max(-50, parseInt(lastSteps, 10) || 0)),
       };
     }).filter(Boolean);
   }

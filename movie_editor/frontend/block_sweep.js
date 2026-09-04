@@ -88,15 +88,18 @@
     const cfgHint = el("div", "es-hint",
       "One config per line: blocks;seam|noseam;times[;laststeps] — e.g. 10,11,13;seam;5  or  "
       + "40-41;noseam;1;2. Blocks accept a single number, a range (31-40), or a comma list; "
-      + "times is clamped to 1-4. laststeps confines the repeat to the final N denoise steps "
-      + "(0 or omitted = every step); mixing bare and laststeps-tagged lines in one sweep is "
-      + "fine but they are not comparable to each other. Unvalidated — results will not match "
-      + "any prior sweep 1:1 (different checkpoint/steps/sampler port nothing over, see the "
-      + "block-repeat research notes).");
+      + "times is clamped to 1-4. laststeps confines the repeat to part of the schedule (0 or "
+      + "omitted = every step). Positive = the final N steps, structure already settled, "
+      + "refine only. Negative = the first |N| steps instead — apply while structure is still "
+      + "forming, then stop and let the untouched rest of the schedule resolve it. Mixing "
+      + "different laststeps values (or signs) in one sweep is fine but the results are not "
+      + "comparable to each other. Unvalidated — results will not match any prior sweep 1:1 "
+      + "(different checkpoint/steps/sampler port nothing over, see the block-repeat research "
+      + "notes).");
     const cfgArea = document.createElement("textarea");
     cfgArea.className = "sw-textarea";
     cfgArea.rows = 6;
-    cfgArea.placeholder = "10,11,13;seam;5\n40-41;noseam;1;2";
+    cfgArea.placeholder = "10,11,13;seam;5\n40-41;noseam;1;2\n40-41;noseam;1;-2";
     cfgArea.value = _configText;
     cfgArea.oninput = () => { _configText = cfgArea.value; };
     const runBtn = el("button", "btn primary tiny", "▶ Run sweep");

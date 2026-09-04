@@ -2987,8 +2987,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "How many EXTRA passes each named block gets. 1 = the block runs twice in total. Higher pushes further from what the following blocks were trained to receive.",
                 }),
                 "h3_block_repeat_last_steps": ("INT", {
-                    "default": 0, "min": 0, "max": 50,
-                    "tooltip": "Only repeat during the FINAL N denoise steps of the schedule (0 = every step, the original behaviour). Early steps set layout/motion/reference from near-pure noise -- doubling a block there is what re-rolls the shot instead of refining it. Confining the repeat to the tail, after that structure is already decided, is the untested alternative. Counted in STEPS, not sigma, so it lands on the same point of the schedule regardless of step count or sampler.",
+                    "default": 0, "min": -50, "max": 50,
+                    "tooltip": "Only repeat during part of the schedule. 0 = every step (the original behaviour). Positive N = the FINAL N steps -- structure is already settled, so this only refines. Negative N = the FIRST |N| steps instead -- apply while structure is still forming, then get out of the way and let the untouched rest of the schedule resolve it, the same way the model ordinarily turns a rough early layout into a finished image. Counted in STEPS, not sigma, so it lands on the same point of the schedule regardless of step count or sampler.",
                 }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
@@ -6825,9 +6825,17 @@ class FunPackLTXAVSceneChainSampler:
 
     @staticmethod
     def _in_last_steps(args, last_steps):
-        """True when the current denoise call is inside the FINAL `last_steps` steps.
+        """True when the current denoise call is inside the window `last_steps` selects.
 
         0 = no window, every step (how block repeat behaved before this existed).
+        Positive N = the FINAL N steps (structure already settled -- refine only).
+        Negative N = the FIRST |N| steps instead -- apply while structure is still forming,
+        then get out of the way. Unlike a tail window, whose perturbed step is close to the
+        last word on the output (nothing runs after it to reconcile a bad one), an early
+        window hands its result to steps that were never touched -- the same way the model
+        ordinarily turns a rough early layout into a resolved image over the back half of any
+        schedule. Untested which direction actually behaves better; this is what makes it
+        possible to compare them under the same knob.
 
         Core puts the whole schedule in transformer_options["sample_sigmas"] and the current
         step's sigma in ["sigmas"], so the step index is exact -- no sigma threshold to guess
@@ -6837,7 +6845,8 @@ class FunPackLTXAVSceneChainSampler:
 
         Fails OPEN -- repeats on every step, the pre-window behaviour -- when the schedule is
         not exposed, and says so once, rather than silently declining to repeat at all."""
-        if int(last_steps) <= 0:
+        n = int(last_steps)
+        if n == 0:
             return True
         try:
             to = args.get("transformer_options") or {}
@@ -6850,11 +6859,13 @@ class FunPackLTXAVSceneChainSampler:
                 raise ValueError("current sigma is not on the schedule")
             # sigmas holds N+1 values for N steps (the trailing 0 is never a denoise call).
             total = int(sched.shape[0]) - 1
-            return int(hit[0]) >= total - int(last_steps)
+            step_index = int(hit[0])
+            return step_index >= total - n if n > 0 else step_index < -n
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 block repeat step window", _e,
-                        "the repeat runs on EVERY step instead of only the last "
-                        f"{int(last_steps)}", key="h3_block_repeat_last_steps")
+                        "the repeat runs on EVERY step instead of only the "
+                        f"{'last' if n > 0 else 'first'} {abs(n)}",
+                        key="h3_block_repeat_last_steps")
             return True
 
     def _install_span_loop(self, model, blocks, times=1, video_only=False, last_steps=0):
@@ -6963,7 +6974,7 @@ class FunPackLTXAVSceneChainSampler:
             print(f"[FunPackSceneChain] H3 span loop: blocks {lo}-{hi} run {_times + 1}x as a "
                   f"span (wrap {hi}->{lo}, one seam)"
                   f"{', video rows only' if _video_only else ''}"
-                  f"{f', on the last {_last_steps} step(s) only' if _last_steps > 0 else ''}.")
+                  f"{f', on the last {_last_steps} step(s) only' if _last_steps > 0 else (f', on the first {-_last_steps} step(s) only' if _last_steps < 0 else '')}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 span loop", _e, "blocks run once as usual")
@@ -7054,7 +7065,7 @@ class FunPackLTXAVSceneChainSampler:
                   f"{', '.join(str(b) for b in sorted(blocks))} run {_times + 1}x "
                   f"(+{_times} extra pass each)"
                   f"{', video rows only' if _video_only else ''}"
-                  f"{f', on the last {_last_steps} step(s) only' if _last_steps > 0 else ''}.")
+                  f"{f', on the last {_last_steps} step(s) only' if _last_steps > 0 else (f', on the first {-_last_steps} step(s) only' if _last_steps < 0 else '')}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 block repeat", _e, "blocks run once as usual")
