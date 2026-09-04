@@ -427,3 +427,49 @@ def test_the_detail_switch_persists_and_env_wins(monkeypatch, tmp_path):
     assert dp.collection_enabled() is True        # from disk, after a restart
     monkeypatch.setenv(dp._ENV_SWITCH, "0")
     assert dp.collection_enabled() is False       # env overrides
+
+
+# --- video-only repeat ------------------------------------------------------------
+#
+# H3 packs video, text and audio into ONE sequence, so a plain repeat doubles the block for
+# audio too — the leading suspect for band 31-40 inventing dialogue on every run.
+
+def _repeat_hook_vo(blocks, times, video_only):
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    patched = s._install_block_repeat(_Model(), blocks, times, video_only=video_only)
+    return patched.model_options["transformer_options"]["patches_replace"]["dit"]
+
+
+def _run_rows(video_only, segs):
+    """4 rows, block adds +1 per pass. -> the returned rows."""
+    dit = _repeat_hook_vo({0}, 1, video_only)
+    return dit[("double_block", 0)](
+        {"img": torch.zeros(4, 3), "mod_segments": segs},
+        {"original_block": lambda a: {"img": a["img"] + 1.0}})["img"]
+
+
+def test_video_only_keeps_the_repeat_for_video_and_reverts_the_rest():
+    # rows 0-1 video (tag 6 % 3 == 0), rows 2-3 audio (tag 8 % 3 == 2)
+    out = _run_rows(True, [(0, 2, 6), (2, 4, 8)])
+    assert torch.equal(out[:2], torch.full((2, 3), 2.0))   # two passes
+    assert torch.equal(out[2:], torch.full((2, 3), 1.0))   # one pass, restored
+
+
+def test_without_video_only_every_row_gets_the_repeat():
+    out = _run_rows(False, [(0, 2, 6), (2, 4, 8)])
+    assert torch.equal(out, torch.full((4, 3), 2.0))
+
+
+def test_video_only_falls_back_to_repeating_everything_when_no_mask():
+    """A shape the mask code has never seen must not silently drop the feature."""
+    out = _run_rows(True, [(0, 4, 7)])                     # text only, no video rows
+    assert torch.equal(out, torch.full((4, 3), 2.0))
+
+
+def test_video_only_survives_several_extra_passes():
+    dit = _repeat_hook_vo({0}, 3, True)
+    out = dit[("double_block", 0)](
+        {"img": torch.zeros(4, 3), "mod_segments": [(0, 2, 6), (2, 4, 8)]},
+        {"original_block": lambda a: {"img": a["img"] + 1.0}})["img"]
+    assert torch.equal(out[:2], torch.full((2, 3), 4.0))   # 1 + 3 extra
+    assert torch.equal(out[2:], torch.full((2, 3), 1.0))   # still single-pass

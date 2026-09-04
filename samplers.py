@@ -2974,6 +2974,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "",
                     "tooltip": "EXPERIMENTAL, unvalidated (H3). Runs the named block(s) on their OWN output before passing the result on -- a second pass that never leaves latent space (no VAE round trip, no re-noising, no extra sampler step). Because a block's contribution is small, running it twice roughly DOUBLES what that block does, with the nonlinear part being a genuine second refinement of its own result. Blank = off. Accepts a block, a range, or a list: 40 | 38-42 | 10,40,44. Costs one extra block forward per repeat (~2% of a step each). The blocks AFTER a repeated one were trained on its normal output, so a twice-processed stream is mildly out of distribution for them -- expect this to be visible, and not always as an improvement.",
                 }),
+                "h3_block_repeat_video_only": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Keep the extra pass for VIDEO rows only, restoring text and audio rows to their single-pass value. H3 packs all three into one sequence, so a plain repeat doubles the block for audio too -- the leading suspect for the unprompted dialogue band 31-40 produces on every run. This does not undo audio's influence on the second pass (attention already mixed it into the video rows before they were restored); it fixes the audio that comes OUT, which is the part you hear. Off by default so the measured sweep results stay reproducible.",
+                }),
                 "h3_block_repeat_times": ("INT", {
                     "default": 1, "min": 1, "max": 4,
                     "tooltip": "How many EXTRA passes each named block gets. 1 = the block runs twice in total. Higher pushes further from what the following blocks were trained to receive.",
@@ -3688,6 +3692,7 @@ class FunPackLTXAVSceneChainSampler:
                       h3_repr_steering=False, h3_repr_steering_strength=0.05,
                       h3_repr_steering_block="25",
                       h3_block_repeat="", h3_block_repeat_times=1,
+                      h3_block_repeat_video_only=False,
                       refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -3754,7 +3759,8 @@ class FunPackLTXAVSceneChainSampler:
         # reports the block's total contribution including the repeat.
         _repeat_blocks = self._parse_block_spec(h3_block_repeat)
         if _repeat_blocks:
-            model = self._install_block_repeat(model, _repeat_blocks, h3_block_repeat_times)
+            model = self._install_block_repeat(model, _repeat_blocks, h3_block_repeat_times,
+                                                video_only=h3_block_repeat_video_only)
         # Measurement next, steering last: whatever is installed later chains this probe
         # as its inner call, so the delta it records is the block's OWN, not one that already
         # contains another mechanism's injection.
@@ -6805,7 +6811,7 @@ class FunPackLTXAVSceneChainSampler:
                 continue
         return out
 
-    def _install_block_repeat(self, model, blocks, times=1):
+    def _install_block_repeat(self, model, blocks, times=1, video_only=False):
         """EXPERIMENTAL (H3): run a block on its OWN output before passing it on.
 
         `x' = x + f(x)` then `x'' = x' + f(x')`. Because the delta is small, f(x') is close to
@@ -6817,6 +6823,14 @@ class FunPackLTXAVSceneChainSampler:
         A second pass that never leaves latent space: no VAE round trip, no re-noising, no
         extra sampler step. Cost is one extra block forward per repeat -- ~2% of a step per
         repeated block on a 50-block stack.
+
+        `video_only` keeps the extra pass for VIDEO rows and restores every other row to its
+        first-pass value. H3 packs video, text and audio into ONE sequence, so a plain repeat
+        doubles the block for the audio rows too -- the leading suspect for the unprompted
+        dialogue that band 31-40 produces on every run (see the sweep). This does NOT undo
+        audio's influence on the second pass: attention already mixed the twice-processed
+        audio rows into the video rows before they were restored. What it fixes is the audio
+        that comes OUT, which is the part you hear.
 
         UNVALIDATED, and there is a known reason to expect trouble: the blocks AFTER this one
         were trained on this block's output as it normally is, and a twice-processed stream is
@@ -6834,18 +6848,39 @@ class FunPackLTXAVSceneChainSampler:
             dit_patches = dict(patches_replace.get("dit", {}))
             _times = int(times)
 
+            _video_only = bool(video_only)
+            if _video_only:
+                try:
+                    from . import h3_repr_steering as _rs_mask
+                except ImportError:
+                    import h3_repr_steering as _rs_mask
+
             def _make_repeat(block):
                 inner = dit_patches.get(("double_block", block))
+                mask_cache = {}
 
                 def _repeat(args, extra):
                     run = (lambda a: extra["original_block"](a)["img"]) if inner is None else \
                         (lambda a: inner(a, extra)["img"])
                     out = run(args)
+                    first = out if _video_only else None
                     for _ in range(_times):
                         # A fresh args dict each pass: the block reads "img" from it, and
                         # mutating the caller's dict would leak the intermediate state back
                         # to whatever else reads args after this hook returns.
                         out = run({**args, "img": out})
+                    if _video_only and first is not None and first.shape == out.shape:
+                        seq_len = int(out.shape[0])
+                        mask = mask_cache.get(seq_len, "MISS")
+                        if mask == "MISS":
+                            mask = _rs_mask.video_mask_from_mod_segments(
+                                args.get("mod_segments"), seq_len, out.device)
+                            mask_cache[seq_len] = mask
+                        if mask is not None:
+                            # Video rows keep the repeat; text and audio go back to the single
+                            # pass. torch.where on the row axis, so nothing is indexed twice.
+                            out = torch.where(mask.view(-1, *([1] * (out.dim() - 1))),
+                                              out, first)
                     return {"img": out}
                 return _repeat
 
@@ -6856,7 +6891,8 @@ class FunPackLTXAVSceneChainSampler:
             patched.model_options["transformer_options"] = to
             print(f"[FunPackSceneChain] H3 block repeat: block(s) "
                   f"{', '.join(str(b) for b in sorted(blocks))} run {_times + 1}x "
-                  f"(+{_times} extra pass each).")
+                  f"(+{_times} extra pass each)"
+                  f"{', video rows only' if _video_only else ''}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 block repeat", _e, "blocks run once as usual")
@@ -7236,6 +7272,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_repr_steering=False, h3_repr_steering_strength=0.05,
                h3_repr_steering_block="25",
                h3_block_repeat="", h3_block_repeat_times=1,
+               h3_block_repeat_video_only=False,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
@@ -8132,6 +8169,7 @@ class FunPackLTXAVSceneChainSampler:
                     h3_repr_steering_block=h3_repr_steering_block,
                     h3_block_repeat=h3_block_repeat,
                     h3_block_repeat_times=h3_block_repeat_times,
+                    h3_block_repeat_video_only=h3_block_repeat_video_only,
                     refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene
