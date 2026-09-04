@@ -3681,7 +3681,7 @@
     }
   }
 
-  // H3 block-repeat sweep: one scene, one fixed seed, several repeat configs run back to
+  // H3 combo sweep: one scene, several REINS-steering / block-repeat configs run back to
   // back, each captured into a gallery labelled with the config that produced it. Every run
   // is a one-off node_overrides on the BUILT graph (same mechanism as the anchor-guide i2v
   // bypass above) — the project's own Engine Settings are never touched, so nothing needs
@@ -3696,54 +3696,103 @@
     return `funpack_sweep_${safe}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
-  // Line format: "blocks;seam|noseam;times[;laststeps]", e.g. "10,11,13;seam;5" /
-  // "40-41;noseam;1;2" / "40-41;noseam;1;-2". laststeps is optional (blank/omitted = every
-  // step). Positive = the final N steps (refine only, structure already settled). Negative =
-  // the first |N| steps instead (apply while structure is still forming, then stop).
-  function parseBlockSweepConfig(text) {
+  // Line format: one or both of "reins:strength;block" and "sweep:blocks;seam|noseam;
+  // times[;laststeps]", joined with "|". e.g. "reins:0.15;49|sweep:40-41;noseam;1;0" or just
+  // "reins:0.1;49" alone. Whichever half is OMITTED is explicitly turned OFF for that line
+  // (not "whatever Engine Settings has") — every line fully states what it tests, nothing
+  // carries over from the project's own settings or the previous line.
+  // sweep's laststeps: positive = the final N steps (refine only, structure already
+  // settled); negative = the first |N| steps instead (apply while structure is still
+  // forming, then stop); omitted/0 = every step.
+  function parseComboSweepConfig(text) {
     return String(text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
-      const [blocks, seam, times, lastSteps] = line.split(";").map((s) => (s || "").trim());
-      if (!blocks) return null;
-      return {
-        label: line, blocks,
-        spanLoop: seam.toLowerCase() === "seam",
-        times: Math.min(4, Math.max(1, parseInt(times, 10) || 1)),
-        lastSteps: Math.min(50, Math.max(-50, parseInt(lastSteps, 10) || 0)),
-      };
+      let reins = null, sweep = null;
+      for (const seg of line.split("|").map((s) => s.trim()).filter(Boolean)) {
+        const m = seg.match(/^(reins|sweep):(.*)$/i);
+        if (!m) continue;
+        if (m[1].toLowerCase() === "reins") {
+          const [strength, block] = m[2].split(";").map((s) => (s || "").trim());
+          const st = parseFloat(strength);
+          if (Number.isFinite(st) && block) reins = { strength: st, block };
+        } else {
+          const [blocks, seam, times, lastSteps] = m[2].split(";").map((s) => (s || "").trim());
+          if (blocks) {
+            sweep = {
+              blocks, spanLoop: seam.toLowerCase() === "seam",
+              times: Math.min(4, Math.max(1, parseInt(times, 10) || 1)),
+              lastSteps: Math.min(50, Math.max(-50, parseInt(lastSteps, 10) || 0)),
+            };
+          }
+        }
+      }
+      return reins || sweep ? { label: line, reins, sweep } : null;
     }).filter(Boolean);
   }
 
-  async function runBlockRepeatSweep(sceneId, configText) {
+  // Overrides for one combo config. `seedValue` is the seed to force for this run (the
+  // caller picks a fresh one per line unless "same seed" is checked).
+  function _comboOverrides(c, seedValue) {
+    const ov = [
+      { node: "sampler", input: "seed", value: seedValue },
+      { node: "sampler", input: "h3_repr_steering", value: !!c.reins },
+      { node: "sampler", input: "h3_block_repeat", value: c.sweep ? c.sweep.blocks : "" },
+      { node: "vhs", input: "filename_prefix", value: _sweepFilenamePrefix(c.label) },
+    ];
+    if (c.reins) {
+      ov.push({ node: "sampler", input: "h3_repr_steering_strength", value: c.reins.strength });
+      ov.push({ node: "sampler", input: "h3_repr_steering_block", value: c.reins.block });
+    }
+    if (c.sweep) {
+      ov.push({ node: "sampler", input: "h3_block_repeat_span_loop", value: c.sweep.spanLoop });
+      ov.push({ node: "sampler", input: "h3_block_repeat_times", value: c.sweep.times });
+      ov.push({ node: "sampler", input: "h3_block_repeat_last_steps", value: c.sweep.lastSteps });
+    }
+    return ov;
+  }
+
+  // `sameSeed`: off (default) picks a FRESH random seed for every line, regardless of what
+  // the project's own Engine Settings seed is set to — a hard guarantee, not "depends on
+  // your settings". On, one seed is chosen once (the project's fixed seed if set, else one
+  // random pick) and reused for the whole sweep.
+  async function runComboSweep(sceneId, configText, sameSeed) {
     if (!state.project || !sceneId) return;
-    const configs = parseBlockSweepConfig(configText);
+    const configs = parseComboSweepConfig(configText);
     if (!configs.length) {
-      set({ blockSweep: { running: false, results: [], error: "No valid config lines — one per line, blocks;seam|noseam;times[;laststeps]." } });
+      set({ comboSweep: { running: false, results: [], error: "No valid config lines — one per line, reins:strength;block and/or sweep:blocks;seam|noseam;times[;laststeps]." } });
       return;
     }
-    // No seed variability: one seed for the whole sweep, chosen once, never persisted.
-    const seed = state.project.sampler_inputs?.seed ?? Math.floor(Math.random() * 0x7fffffff);
+    const fixedSeed = sameSeed
+      ? (state.project.sampler_inputs?.seed ?? Math.floor(Math.random() * 0x7fffffff))
+      : null;
     const results = [];
-    set({ blockSweep: { running: true, results, error: null, total: configs.length, current: 0, seed } });
+    set({ comboSweep: { running: true, results, error: null, total: configs.length, current: 0, sameSeed: !!sameSeed, seed: fixedSeed } });
     for (let i = 0; i < configs.length; i++) {
       const c = configs[i];
-      set({ blockSweep: { running: true, results: [...results], error: null, total: configs.length, current: i + 1, label: c.label, seed } });
-      const overrides = [
-        { node: "sampler", input: "seed", value: seed },
-        { node: "sampler", input: "h3_block_repeat", value: c.blocks },
-        { node: "sampler", input: "h3_block_repeat_span_loop", value: c.spanLoop },
-        { node: "sampler", input: "h3_block_repeat_times", value: c.times },
-        { node: "sampler", input: "h3_block_repeat_last_steps", value: c.lastSteps },
-        { node: "vhs", input: "filename_prefix", value: _sweepFilenamePrefix(c.label) },
-      ];
+      const seed = sameSeed ? fixedSeed : Math.floor(Math.random() * 0x7fffffff);
+      set({ comboSweep: { running: true, results: [...results], error: null, total: configs.length, current: i + 1, label: c.label, sameSeed: !!sameSeed, seed } });
+      const overrides = _comboOverrides(c, seed);
       const ok = await _generateRun([sceneId], sceneId, `Sweep ${i + 1}/${configs.length}: ${c.label}`, false, overrides);
       if (!ok) {
-        set({ blockSweep: { running: false, results, error: `Stopped at "${c.label}": ${state.gen.msg}`, total: configs.length, seed } });
+        set({ comboSweep: { running: false, results, error: `Stopped at "${c.label}": ${state.gen.msg}`, total: configs.length, sameSeed: !!sameSeed, seed } });
         return;
       }
       const media = state.sceneRenders[sceneId]?.media;
-      results.push({ label: c.label, media });
+      results.push({ label: c.label, media, sceneId, overrides, seed });
     }
-    set({ blockSweep: { running: false, results, error: null, total: configs.length, seed } });
+    set({ comboSweep: { running: false, results, error: null, total: configs.length, sameSeed: !!sameSeed, seed: fixedSeed } });
+  }
+
+  // Rate the MOST RECENT combo-sweep result. Ratings only pair with whatever generation's
+  // capture is still "pending" on the refinement key — that slot holds exactly one entry,
+  // overwritten by the next run that samples, so only the LAST result in the gallery can
+  // ever be validly rated; anything earlier has already been evicted by a later run. This
+  // fires one MORE generation, reusing that same result's exact config, with the rating
+  // attached — rating is not a free/standalone action, it costs another full render, the
+  // same way it does everywhere else in this codebase (rating rides the NEXT generation).
+  async function rateComboResult(item, ratingLabel) {
+    if (!state.project || !item || !ratingLabel) return false;
+    const overrides = [...item.overrides, { node: "studio", input: "rating", value: ratingLabel }];
+    return _generateRun([item.sceneId], item.sceneId, `Rating "${item.label}"`, false, overrides);
   }
 
   async function generate(onlyScene) {
@@ -4581,7 +4630,7 @@
     resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, scenesOverridingProjectFrames, useProjectFramesEverywhere, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate: _clockedGenerate, generateMontage: _clockedMontage, generateSelected: _clockedSelected, genElapsed, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, saveClipToMediaBin, clipSaveableToMediaBin,
-    runBlockRepeatSweep, parseBlockSweepConfig, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
+    runComboSweep, parseComboSweepConfig, rateComboResult, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
     renamePromptTemplate, clearGlobalPrompt,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,

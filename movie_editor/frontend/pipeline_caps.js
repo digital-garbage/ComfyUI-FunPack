@@ -170,15 +170,9 @@
   // The mirror image of H3_DEAD_SAMPLER_INPUTS: settings that only mean something ON H3.
   // Left on against an LTX pipeline they are just as silently inert, so they get a chip
   // by the same rule — the user should not have to spend a generation to find out.
-  // key -> why it cannot run off H3.
-  const H3_ONLY_REASON =
-    "The render gains scale H3's per-modality AdaLN gates and its token refiner. LTX has "
-    + "neither: one modulation path for all streams, and the prompt reaches it through "
-    + "cross-attention instead of a packed text span.";
-
-  const H3_ONLY_SAMPLER_INPUTS = {
-    h3_video_detail: H3_ONLY_REASON,
-  };
+  // key -> why it cannot run off H3. Empty for now (Picture detail, the only H3-only
+  // sampler input, was removed) — add an entry here if another H3-only knob needs one.
+  const H3_ONLY_SAMPLER_INPUTS = {};
 
   // Sub-settings of identity transfer: meaningless wherever the feature itself cannot run,
   // so they travel with it rather than each needing its own entry above.

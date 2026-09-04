@@ -1,6 +1,6 @@
-// H3 block-repeat sweep: one scene, one fixed seed, several repeat configs run back to back
+// H3 combo sweep: one scene, several REINS-steering / block-repeat configs run back to back
 // and captured into a labelled gallery — "what option produced what output" at a glance.
-// Each run is a one-off node_overrides on the built graph (store.runBlockRepeatSweep); the
+// Each run is a one-off node_overrides on the built graph (store.runComboSweep); the
 // project's own Engine Settings are never touched. A section of the unified Settings window,
 // sibling to Refinement & Taste — this IS the research tooling that rule asks for.
 (function () {
@@ -23,7 +23,9 @@
     return `sweep_${safe}_${Date.now()}.mp4`;
   }
 
-  function _card(item) {
+  let _ratingLabels = null; // fetched once, cached module-level
+
+  function _card(item, isLast, onRated) {
     // A real viewing size, not the media-bin's thumbnail height — the whole point of this
     // gallery is comparing results without popping each one into a separate tab.
     const card = el("div", "sw-sweep-card");
@@ -38,6 +40,8 @@
     const nameEl = el("div", "media-name", item.label);
     nameEl.title = item.label;
     card.append(nameEl);
+    const metaEl = el("div", "pj-meta sw-sweep-seed", `seed ${item.seed}`);
+    card.append(metaEl);
     if (item.media) {
       const saveBtn = el("button", "btn ghost tiny sw-sweep-save", "💾 Save to Media bin");
       saveBtn.onclick = async () => {
@@ -58,23 +62,60 @@
         }
       };
       card.append(saveBtn);
+
+      // Rating only ever pairs with the run whose capture is still "pending" on the
+      // refinement key — that slot holds ONE entry, overwritten the instant the next run
+      // samples. Only the LAST card in the gallery is ever validly rateable; anything
+      // earlier has already been evicted by a later run's own capture. Rating here fires
+      // ANOTHER generation (same config, rating attached) — it is not free.
+      if (isLast) {
+        const rateRow = el("div", "sw-sweep-rate");
+        const rateSel = el("select");
+        rateSel.append(new Option("Rate this result…", ""));
+        (_ratingLabels || []).forEach((l) => rateSel.append(new Option(l, l)));
+        const rateBtn = el("button", "btn ghost tiny", "Rate");
+        rateBtn.title = "Fires one more generation with this rating attached — the only way "
+          + "to commit a rating against this result's still-pending capture.";
+        rateBtn.onclick = async () => {
+          const label = rateSel.value;
+          if (!label) { alert("Pick a rating first."); return; }
+          rateBtn.disabled = true; rateSel.disabled = true; rateBtn.textContent = "Rating…";
+          try {
+            const ok = await window.Store.rateComboResult(item, label);
+            if (ok) { rateBtn.textContent = "✓ Rated"; onRated && onRated(); }
+            else { rateBtn.textContent = "Rate"; alert("Rating run failed — see the status line."); }
+          } finally {
+            rateBtn.disabled = false; rateSel.disabled = false;
+          }
+        };
+        rateRow.append(rateSel, rateBtn);
+        card.append(rateRow);
+      } else {
+        card.append(el("div", "es-hint sw-sweep-rate-note",
+          "Superseded by a later run — no longer the pending capture, so it can't be rated."));
+      }
     }
     return card;
   }
 
-  // Module-level, not per-mount: this section is its own settings entry (not something an
-  // "experimental" checkbox needs to gate), so the config you typed should survive closing
-  // and reopening the panel, not just live inside one mount() closure.
+  // Module-level, not per-mount: this section is its own settings entry, so the config you
+  // typed should survive closing and reopening the panel, not just live inside one mount()
+  // closure.
   let _configText = "";
+  let _sameSeed = false;
 
   function mount(container, ctx) {
     const S = window.Store;
     let sceneId = (_activeScenes()[0] || {}).id || null;
 
+    if (_ratingLabels === null) {
+      API.ratingLabels().then((r) => { _ratingLabels = r.labels || []; render(); }).catch(() => { _ratingLabels = []; });
+    }
+
     container.append(el("div", "es-hint",
-      "Runs ONE scene through several H3 block-repeat configs back to back, same frame and "
-      + "seed throughout, so results are directly comparable. Nothing here touches your Engine "
-      + "Settings — every run is a one-off override on that run only."));
+      "Runs ONE scene through several REINS / block-repeat configs back to back, so results "
+      + "are directly comparable. Nothing here touches your Engine Settings — every run is a "
+      + "one-off override on that run only."));
 
     const sceneRow = el("div", "sw-stack");
     const sceneSel = el("select");
@@ -84,22 +125,29 @@
     sceneRow.append(el("label", "sw-label", "Scene to sweep"), sceneSel);
     container.append(sceneRow);
 
+    const seedCb = el("input"); seedCb.type = "checkbox"; seedCb.style.width = "auto";
+    seedCb.checked = _sameSeed;
+    seedCb.onchange = () => { _sameSeed = seedCb.checked; };
+    const seedLabel = el("label", "sw-hint sw-check-label");
+    seedLabel.append(seedCb, document.createTextNode(
+      " Same seed for every line (off = each line gets its own fresh random seed, regardless "
+      + "of your Engine Settings seed)"));
+    container.append(seedLabel);
+
     const cfgWrap = el("div", "sw-stack");
     const cfgHint = el("div", "es-hint",
-      "One config per line: blocks;seam|noseam;times[;laststeps] — e.g. 10,11,13;seam;5  or  "
-      + "40-41;noseam;1;2. Blocks accept a single number, a range (31-40), or a comma list; "
-      + "times is clamped to 1-4. laststeps confines the repeat to part of the schedule (0 or "
-      + "omitted = every step). Positive = the final N steps, structure already settled, "
-      + "refine only. Negative = the first |N| steps instead — apply while structure is still "
-      + "forming, then stop and let the untouched rest of the schedule resolve it. Mixing "
-      + "different laststeps values (or signs) in one sweep is fine but the results are not "
-      + "comparable to each other. Unvalidated — results will not match any prior sweep 1:1 "
-      + "(different checkpoint/steps/sampler port nothing over, see the block-repeat research "
-      + "notes).");
+      "One config per line, combining either or both with \"|\": reins:strength;block and/or "
+      + "sweep:blocks;seam|noseam;times[;laststeps] — e.g. reins:0.15;49|sweep:40-41;noseam;1;0 "
+      + "or just reins:0.1;49 alone. Whichever half you omit is explicitly OFF for that line, "
+      + "not \"whatever Engine Settings has\". sweep's blocks accept a single number, a range "
+      + "(31-40), or a comma list; times is clamped to 1-4; laststeps confines the repeat to "
+      + "part of the schedule (0/omitted = every step, positive = final N steps, negative = "
+      + "first |N| steps then stop). Unvalidated — results will not match any prior sweep 1:1, "
+      + "see the block-repeat research notes.");
     const cfgArea = document.createElement("textarea");
     cfgArea.className = "sw-textarea";
     cfgArea.rows = 6;
-    cfgArea.placeholder = "10,11,13;seam;5\n40-41;noseam;1;2\n40-41;noseam;1;-2";
+    cfgArea.placeholder = "reins:0.15;49|sweep:40-41;noseam;1;0\nreins:0.1;49\nsweep:31-40;noseam;1;-3";
     cfgArea.value = _configText;
     cfgArea.oninput = () => { _configText = cfgArea.value; };
     const runBtn = el("button", "btn primary tiny", "▶ Run sweep");
@@ -112,21 +160,23 @@
     container.append(grid);
 
     function render() {
-      const bs = S.get().blockSweep || {};
-      runBtn.disabled = !!bs.running;
-      runBtn.textContent = bs.running ? `Running ${bs.current || 0}/${bs.total || 0}…` : "▶ Run sweep";
-      statusEl.textContent = bs.running
-        ? `Sweeping (seed ${bs.seed}): ${bs.label || ""}`
-        : bs.error
-          ? "Stopped: " + bs.error
-          : (bs.results && bs.results.length ? `${bs.results.length} result(s), seed ${bs.seed}` : "");
+      const cs = S.get().comboSweep || {};
+      runBtn.disabled = !!cs.running;
+      runBtn.textContent = cs.running ? `Running ${cs.current || 0}/${cs.total || 0}…` : "▶ Run sweep";
+      const seedNote = cs.sameSeed ? `seed ${cs.seed} (fixed)` : "each line its own seed";
+      statusEl.textContent = cs.running
+        ? `Sweeping (${seedNote}): ${cs.label || ""}`
+        : cs.error
+          ? "Stopped: " + cs.error
+          : (cs.results && cs.results.length ? `${cs.results.length} result(s), ${seedNote}` : "");
       clear(grid);
-      (bs.results || []).forEach((item) => grid.append(_card(item)));
+      const results = cs.results || [];
+      results.forEach((item, i) => grid.append(_card(item, i === results.length - 1 && !cs.running, render)));
     }
 
     runBtn.onclick = () => {
       if (!sceneId) { alert("No scene to sweep."); return; }
-      S.runBlockRepeatSweep(sceneId, _configText);
+      S.runComboSweep(sceneId, _configText, _sameSeed);
     };
 
     const unsub = S.subscribe(render);
@@ -135,9 +185,9 @@
   }
 
   window.SettingsWindow.register({
-    id: "block_sweep", group: "Learning", order: 1, title: "H3 Block Repeat Sweep",
-    subtitle: "Run one scene through several block-repeat configs, compare results side by side.",
-    keywords: "h3 block repeat sweep span loop seam experimental research gallery batch",
+    id: "combo_sweep", group: "Learning", order: 1, title: "H3 Combo Sweep",
+    subtitle: "Run one scene through several REINS / block-repeat configs, compare results side by side.",
+    keywords: "h3 reins representation steering block repeat sweep span loop seam experimental research gallery batch rate",
     iconBg: "linear-gradient(180deg,#b48bff,#6d3fd8)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13"><path d="M2 3h4v4H2zM10 3h4v4h-4zM2 9h4v4H2zM10 9h4v4h-4z" fill="#fff"/></svg>',
     mount,
