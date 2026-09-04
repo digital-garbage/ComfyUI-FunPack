@@ -14,6 +14,7 @@ test("parses blocks, seam and times off a semicolon line", () => {
   assert.equal(c.blocks, "10,11,13");
   assert.equal(c.spanLoop, true);
   assert.equal(c.times, 4); // clamped to the widget's max
+  assert.equal(c.lastSteps, 0); // omitted = every step
 });
 
 test("noseam and in-range times pass through untouched", () => {
@@ -21,6 +22,15 @@ test("noseam and in-range times pass through untouched", () => {
   assert.equal(c.blocks, "40-41");
   assert.equal(c.spanLoop, false);
   assert.equal(c.times, 1);
+});
+
+test("optional laststeps field is parsed and clamped to the widget's range", () => {
+  const [c] = parseBlockSweepConfig("40-41;noseam;1;2");
+  assert.equal(c.lastSteps, 2);
+  const [c2] = parseBlockSweepConfig("40-41;noseam;1;999");
+  assert.equal(c2.lastSteps, 50);
+  const [c3] = parseBlockSweepConfig("40-41;noseam;1;-5");
+  assert.equal(c3.lastSteps, 0);
 });
 
 test("multiple lines, blank lines and stray whitespace are skipped/trimmed", () => {

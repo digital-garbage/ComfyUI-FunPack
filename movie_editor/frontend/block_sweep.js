@@ -62,12 +62,15 @@
     const cfgWrap = el("div", "sw-stack");
     cfgWrap.hidden = true;
     const cfgHint = el("div", "es-hint",
-      "One config per line: blocks;seam|noseam;times — e.g. 10,11,13;seam;5  or  40-41;noseam;1. "
-      + "Blocks accept a single number, a range (31-40), or a comma list; times is clamped to 1-4.");
+      "One config per line: blocks;seam|noseam;times[;laststeps] — e.g. 10,11,13;seam;5  or  "
+      + "40-41;noseam;1;2. Blocks accept a single number, a range (31-40), or a comma list; "
+      + "times is clamped to 1-4. laststeps confines the repeat to the final N denoise steps "
+      + "(0 or omitted = every step); mixing bare and laststeps-tagged lines in one sweep is "
+      + "fine but they are not comparable to each other.");
     const cfgArea = document.createElement("textarea");
     cfgArea.className = "sw-textarea";
     cfgArea.rows = 6;
-    cfgArea.placeholder = "10,11,13;seam;5\n40-41;noseam;1";
+    cfgArea.placeholder = "10,11,13;seam;5\n40-41;noseam;1;2";
     cfgArea.oninput = () => { configText = cfgArea.value; };
     const runBtn = el("button", "btn primary tiny", "▶ Run sweep");
     cfgWrap.append(cfgHint, cfgArea, runBtn);

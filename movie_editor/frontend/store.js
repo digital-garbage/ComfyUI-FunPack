@@ -3686,15 +3686,17 @@
   // is a one-off node_overrides on the BUILT graph (same mechanism as the anchor-guide i2v
   // bypass above) — the project's own Engine Settings are never touched, so nothing needs
   // restoring after and a crash mid-sweep leaves no residue.
-  // Line format: "blocks;seam|noseam;times", e.g. "10,11,13;seam;5" / "40-41;noseam;1".
+  // Line format: "blocks;seam|noseam;times[;laststeps]", e.g. "10,11,13;seam;5" /
+  // "40-41;noseam;1;2". laststeps is optional (blank/omitted = every step, the old default).
   function parseBlockSweepConfig(text) {
     return String(text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
-      const [blocks, seam, times] = line.split(";").map((s) => (s || "").trim());
+      const [blocks, seam, times, lastSteps] = line.split(";").map((s) => (s || "").trim());
       if (!blocks) return null;
       return {
         label: line, blocks,
         spanLoop: seam.toLowerCase() === "seam",
         times: Math.min(4, Math.max(1, parseInt(times, 10) || 1)),
+        lastSteps: Math.min(50, Math.max(0, parseInt(lastSteps, 10) || 0)),
       };
     }).filter(Boolean);
   }
@@ -3703,7 +3705,7 @@
     if (!state.project || !sceneId) return;
     const configs = parseBlockSweepConfig(configText);
     if (!configs.length) {
-      set({ blockSweep: { running: false, results: [], error: "No valid config lines — one per line, blocks;seam|noseam;times." } });
+      set({ blockSweep: { running: false, results: [], error: "No valid config lines — one per line, blocks;seam|noseam;times[;laststeps]." } });
       return;
     }
     // No seed variability: one seed for the whole sweep, chosen once, never persisted.
@@ -3718,6 +3720,7 @@
         { node: "sampler", input: "h3_block_repeat", value: c.blocks },
         { node: "sampler", input: "h3_block_repeat_span_loop", value: c.spanLoop },
         { node: "sampler", input: "h3_block_repeat_times", value: c.times },
+        { node: "sampler", input: "h3_block_repeat_last_steps", value: c.lastSteps },
       ];
       const ok = await _generateRun([sceneId], sceneId, `Sweep ${i + 1}/${configs.length}: ${c.label}`, false, overrides);
       if (!ok) {
