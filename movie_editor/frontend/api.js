@@ -235,6 +235,9 @@
       link.remove();
       URL.revokeObjectURL(url);
     },
+    detailProbeStatus: (key) => j("GET", API("/detail_probe") + `?key=${encodeURIComponent(key || "default")}`),
+    detailProbeClear: (key) => j("POST", API("/detail_probe/clear"), { key: key || "default" }),
+
     // Served by ComfyUI's own same-origin /view endpoint — no editor route needed.
     tempFileUrl: (f) => "/view?" + new URLSearchParams({
       filename: f.filename, subfolder: f.subfolder || "", type: "temp", t: String(f.mtime || Date.now()),

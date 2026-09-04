@@ -305,6 +305,11 @@
       hint: "How blurry those frames get while they're blurred. Higher = looser guidance and more freedom to move." },
     { name: "alg_guide_blur_sigma_threshold", label: "Guide blur sigma threshold", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "alg_blur_guides",
       hint: "How long they stay blurred before switching to sharp. Higher = a shorter blurred window." },
+    { name: "h3_block_repeat", label: "Repeat block(s) (H3, experimental)", kind: "text", default: "",
+      hint: "Runs the named block(s) on their own output before passing it on — a second pass that never leaves latent space. Blank = off. A block, a range, or a list: 40 | 38-42 | 10,40,44.",
+      detail: "Because a block's contribution is small, running it twice roughly doubles what that block does, with the nonlinear part being a genuine second refinement of its own result. Costs one extra block forward per repeat (~2% of a step each) — no VAE round trip, no re-noising, no extra sampler step. Unvalidated: the blocks AFTER a repeated one were trained on its normal output, so a twice-processed stream is mildly out of distribution for them. Turn on measurement recording in Refinement & Taste and generate the same seed with this off, then on, to see whether it sharpens or just adds grain." },
+    { name: "h3_block_repeat_times", label: "Extra passes per repeated block", kind: "int", default: 1, min: 1, max: 4,
+      hint: "1 = the block runs twice in total. Higher pushes further from what the following blocks were trained to receive." },
     { name: "bounded_attention_enabled", label: "Bounded attention (experimental, untested)", kind: "bool", default: false,
       hint: "Stops two people in one frame swapping each other's features, by letting each half of the frame see only its own sentence. Nearly free, and does nothing unless the scene prompt has two sentences describing two subjects. Built but never run — the left/right split is fixed, so it suits two subjects side by side and nothing else." },
     { name: "dynashift",             label: "DynaShift (steer off bad gens)", kind: "bool", default: false,
@@ -510,7 +515,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold", "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_video_detail", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_video_detail", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "h3_block_repeat", "h3_block_repeat_times", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id, st) {

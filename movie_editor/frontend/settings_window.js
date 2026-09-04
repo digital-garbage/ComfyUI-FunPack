@@ -401,6 +401,65 @@
   // only on explicit request (the "Read" button below).
   let reinsState = null, reinsSweep = null, reinsSweepBusy = false, reinsError = "";
   let biState = null, biError = "";
+  let dpRows = null, dpError = "";
+
+  // Reads a comparison the way the user would judge it by eye, but from three numbers that
+  // can disagree with each other -- that disagreement is the whole point. Detail up on
+  // existing edges with the picture intact is sharpening; detail up spread evenly is grain;
+  // structure down means it is simply a different generation.
+  function dpVerdict(r) {
+    if (r.structure < 0.85) return "different picture — not an A/B of the same shot";
+    const gain = (r.detail - 1) * 100;
+    if (Math.abs(gain) < 2) return "no real change in detail";
+    if (gain < 0) return `detail DOWN ${Math.abs(gain).toFixed(0)}% — softer, not sharper`;
+    return r.edge_aligned > 0.35
+      ? `sharper — +${gain.toFixed(0)}% detail, landing on existing edges`
+      : `+${gain.toFixed(0)}% detail but spread evenly — reads as grain, not sharpening`;
+  }
+
+  function detailProbeRows(key) {
+    const box = el("div", "sw-stack");
+    const paint = () => {
+      clear(box);
+      const rows = el("div", "sw-rows");
+      const n = dpRows ? dpRows.length : 0;
+      rows.append(actionRow("Start fresh",
+        "Throws away every recorded comparison for this key.",
+        "Clear…", async () => {
+          dpError = "";
+          try { const r = await window.MovieEditorAPI.detailProbeClear(key); dpRows = r.rows; }
+          catch (e) { dpError = String(e.message || e); }
+          paint();
+        }, { disabled: !n, danger: true }));
+      box.append(rows);
+      if (dpError) box.append(el("div", "sw-hint", dpError));
+      if (!n) {
+        box.append(el("div", "sw-hint",
+          "Nothing compared yet. With recording on, generate the same seed twice — once "
+          + "with the change off, once with it on — and each pair is scored here."));
+        return;
+      }
+      const tbl = el("div", "sw-rows");
+      // Newest first: the run you just made is the one you are asking about.
+      dpRows.slice().reverse().forEach((r) => {
+        tbl.append(infoRow(
+          `${r.label_before || "?"} → ${r.label_after || "?"}`,
+          dpVerdict(r),
+          r.structure >= 0.85 && r.detail > 1.02 && r.edge_aligned > 0.35));
+        tbl.append(el("div", "sw-hint",
+          `detail ×${r.detail.toFixed(3)} · structure kept ${r.structure.toFixed(3)} · `
+          + `edge-aligned ${r.edge_aligned >= 0 ? "+" : ""}${r.edge_aligned.toFixed(3)}`));
+      });
+      box.append(tbl);
+    };
+    paint();
+    if (window.MovieEditorAPI) {
+      window.MovieEditorAPI.detailProbeStatus(key)
+        .then((r) => { dpRows = r.rows || []; paint(); })
+        .catch(() => {});
+    }
+    return box;
+  }
 
   // The whole point of the probe in one number. Flatness is the spread of the per-block
   // profile as a fraction of its own mean, so it is comparable across models and runs: near
@@ -791,6 +850,10 @@
 
         wrap.append(el("div", "sw-rows-label", "Block influence (measurement only)"));
         wrap.append(blockInfluenceRows(st.project?.refinement_key || "default"));
+
+        wrap.append(el("div", "sw-rows-label",
+          "Detail check — did a change sharpen the picture, or just alter it?"));
+        wrap.append(detailProbeRows(st.project?.refinement_key || "default"));
 
         wrap.append(el("div", "sw-rows-label", "Danger zone"));
         const danger = el("div", "sw-rows");

@@ -2970,6 +2970,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "25",
                     "tooltip": "TEST-ONLY: which block actually gets steered (the rest of the sweep's candidate blocks are still captured read-only, same as always). direction() is recomputed for whichever block you pick here -- this does not change what block_sweep ranks, only which block's learned direction gets injected into this run.",
                 }),
+                "h3_block_repeat": ("STRING", {
+                    "default": "",
+                    "tooltip": "EXPERIMENTAL, unvalidated (H3). Runs the named block(s) on their OWN output before passing the result on -- a second pass that never leaves latent space (no VAE round trip, no re-noising, no extra sampler step). Because a block's contribution is small, running it twice roughly DOUBLES what that block does, with the nonlinear part being a genuine second refinement of its own result. Blank = off. Accepts a block, a range, or a list: 40 | 38-42 | 10,40,44. Costs one extra block forward per repeat (~2% of a step each). The blocks AFTER a repeated one were trained on its normal output, so a twice-processed stream is mildly out of distribution for them -- expect this to be visible, and not always as an improvement.",
+                }),
+                "h3_block_repeat_times": ("INT", {
+                    "default": 1, "min": 1, "max": 4,
+                    "tooltip": "How many EXTRA passes each named block gets. 1 = the block runs twice in total. Higher pushes further from what the following blocks were trained to receive.",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -3679,6 +3687,7 @@ class FunPackLTXAVSceneChainSampler:
                       bounded_attention_enabled=False,
                       h3_repr_steering=False, h3_repr_steering_strength=0.05,
                       h3_repr_steering_block="25",
+                      h3_block_repeat="", h3_block_repeat_times=1,
                       refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -3741,7 +3750,12 @@ class FunPackLTXAVSceneChainSampler:
         # key, no rating and no Studio state, so it works on a graph with the Refiner absent
         # entirely. 1.0 on all three does not even clone the model.
         model = self._install_h3_final_layer(model, positive)
-        # Measurement first, steering second: whatever is installed later chains this probe
+        # Block repeat is innermost: it changes what the block DOES, so the probe outside it
+        # reports the block's total contribution including the repeat.
+        _repeat_blocks = self._parse_block_spec(h3_block_repeat)
+        if _repeat_blocks:
+            model = self._install_block_repeat(model, _repeat_blocks, h3_block_repeat_times)
+        # Measurement next, steering last: whatever is installed later chains this probe
         # as its inner call, so the delta it records is the block's OWN, not one that already
         # contains another mechanism's injection.
         _influence_capture = [{}, {}]   # [0] relative magnitudes, [1] novelty cosines
@@ -6765,6 +6779,87 @@ class FunPackLTXAVSceneChainSampler:
                         "not applied and not capturing this run")
             return model
 
+    @staticmethod
+    def _parse_block_spec(spec, n_blocks=50):
+        """"40" | "38-42" | "10,40,44" | "" -> a set of block indices. Anything unparseable
+        in a comma group is skipped rather than failing the run: this is a text field on an
+        experimental knob, and a typo should cost you that entry, not the generation."""
+        out = set()
+        for part in str(spec or "").replace(" ", "").split(","):
+            if not part:
+                continue
+            try:
+                if "-" in part[1:]:
+                    a, b = part.split("-", 1)
+                    lo, hi = int(a), int(b)
+                    if lo > hi:
+                        lo, hi = hi, lo
+                    out.update(range(max(0, lo), min(int(n_blocks) - 1, hi) + 1))
+                else:
+                    i = int(part)
+                    if 0 <= i < int(n_blocks):
+                        out.add(i)
+            except ValueError:
+                continue
+        return out
+
+    def _install_block_repeat(self, model, blocks, times=1):
+        """EXPERIMENTAL (H3): run a block on its OWN output before passing it on.
+
+        `x' = x + f(x)` then `x'' = x' + f(x')`. Because the delta is small, f(x') is close to
+        f(x), so to first order this doubles that block's contribution -- it sits between a
+        2x per-block gain and a genuine second refinement pass, and the difference between
+        those two IS the nonlinear part, which is the point of doing it this way rather than
+        just scaling the output.
+
+        A second pass that never leaves latent space: no VAE round trip, no re-noising, no
+        extra sampler step. Cost is one extra block forward per repeat -- ~2% of a step per
+        repeated block on a 50-block stack.
+
+        UNVALIDATED, and there is a known reason to expect trouble: the blocks AFTER this one
+        were trained on this block's output as it normally is, and a twice-processed stream is
+        mildly out of distribution for them. Depth-upscaled models that duplicate layers this
+        way (SOLAR-style) need continued pretraining to recover quality; nothing is retrained
+        here. Whether that reads as finer detail or as artifacts is exactly what the toggle is
+        for. Installed INNERMOST (before the influence probe) so the probe reports the block's
+        total contribution including the repeat, not just its first pass."""
+        try:
+            if not blocks or int(times) < 1:
+                return model
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+            _times = int(times)
+
+            def _make_repeat(block):
+                inner = dit_patches.get(("double_block", block))
+
+                def _repeat(args, extra):
+                    run = (lambda a: extra["original_block"](a)["img"]) if inner is None else \
+                        (lambda a: inner(a, extra)["img"])
+                    out = run(args)
+                    for _ in range(_times):
+                        # A fresh args dict each pass: the block reads "img" from it, and
+                        # mutating the caller's dict would leak the intermediate state back
+                        # to whatever else reads args after this hook returns.
+                        out = run({**args, "img": out})
+                    return {"img": out}
+                return _repeat
+
+            for _b in sorted(blocks):
+                dit_patches[("double_block", _b)] = _make_repeat(_b)
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+            patched.model_options["transformer_options"] = to
+            print(f"[FunPackSceneChain] H3 block repeat: block(s) "
+                  f"{', '.join(str(b) for b in sorted(blocks))} run {_times + 1}x "
+                  f"(+{_times} extra pass each).")
+            return patched
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 block repeat", _e, "blocks run once as usual")
+            return model
+
     def _install_block_influence(self, model, capture_holder, n_blocks=50, max_rows=512):
         """MEASUREMENT ONLY (H3). See block_influence.py.
 
@@ -7118,6 +7213,7 @@ class FunPackLTXAVSceneChainSampler:
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                h3_repr_steering=False, h3_repr_steering_strength=0.05,
                h3_repr_steering_block="25",
+               h3_block_repeat="", h3_block_repeat_times=1,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
@@ -7974,6 +8070,8 @@ class FunPackLTXAVSceneChainSampler:
                     h3_repr_steering=h3_repr_steering,
                     h3_repr_steering_strength=h3_repr_steering_strength,
                     h3_repr_steering_block=h3_repr_steering_block,
+                    h3_block_repeat=h3_block_repeat,
+                    h3_block_repeat_times=h3_block_repeat_times,
                     refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene
@@ -8545,6 +8643,17 @@ class FunPackLTXAVSceneChainSampler:
                                       _cond0 if isinstance(_cond0, torch.Tensor) else None)
                 except Exception as _e:
                     print(f"[FunPackSceneChain] dynashift pending save failed: {_e}")
+                # Detail probe: scores THIS run's fine structure against the previous run on
+                # the same key. Same latent, no decode. Labelled with what actually differs
+                # between A and B runs, so the comparison row says which way round it was.
+                try:
+                    from . import detail_probe as _dp
+                except ImportError:
+                    import detail_probe as _dp
+                if _dp.collection_enabled():
+                    _dp.record(refinement_key_input, _snap,
+                               label=(f"repeat {h3_block_repeat}x{int(h3_block_repeat_times) + 1}"
+                                      if self._parse_block_spec(h3_block_repeat) else "no repeat"))
 
         # Trajectory probe: same run/rating pairing as the two above — the rating that scores
         # THIS run appends these per-bucket descriptors to the measurement log.

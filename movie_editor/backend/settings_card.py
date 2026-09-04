@@ -265,6 +265,8 @@ _EDITOR_DEFAULTS = {
     "embed_guidance_source": "relative",
     "embed_guidance_strength": 0.02,
     "frame_overlap": 16,
+    "h3_block_repeat": "",
+    "h3_block_repeat_times": 1,
     "h3_phrase_emphasis": False,
     "h3_phrase_variability": 0.0,
     "h3_repr_steering": False,

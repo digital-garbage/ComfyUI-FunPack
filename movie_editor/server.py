@@ -2254,6 +2254,33 @@ if web is not None and PromptServer is not None:
         _bi, state = _block_influence_state(key)
         return web.json_response(state)
 
+    # Detail probe: rides block_influence's collection switch (same research opt-in), so it
+    # only needs a readout and a clear.
+    def _detail_module():
+        try:
+            import detail_probe as dp
+        except ImportError:
+            from .. import detail_probe as dp  # type: ignore
+        return dp
+
+    @routes.get(UI_PREFIX + "/api/detail_probe")
+    async def _detail_status(req):
+        key = str(req.rel_url.query.get("key") or "default").strip() or "default"
+        try:
+            return web.json_response({"key": key, "rows": _detail_module().rows(key)})
+        except Exception as e:
+            return web.json_response({"key": key, "rows": [], "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/detail_probe/clear")
+    async def _detail_clear(req):
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        key = str(body.get("key") or "default").strip() or "default"
+        _detail_module().clear_all(key)
+        return web.json_response({"key": key, "rows": []})
+
     @routes.get(UI_PREFIX + "/api/temp")
     async def _temp_list(_req):
         return web.json_response({"files": _list_temp_media()})
