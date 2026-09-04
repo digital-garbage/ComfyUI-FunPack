@@ -7279,6 +7279,17 @@ class FunPackLTXAVSceneChainSampler:
         # repeatability check that is really a prompt change reads as "generation is not
         # reproducible". Cheap stand-in: per-entry shape + mean + std, which differs between
         # any two real prompts and costs two reductions on an already-resident tensor.
+        # The attention backend is not an argument of this node, but it decides whether two
+        # runs can even be identical, so it belongs in the fingerprint next to the ones that
+        # are. Unknown when nothing overrode it (whatever ComfyUI was launched with).
+        try:
+            _att = (model.model_options.get("transformer_options", {})
+                    .get("optimized_attention_override"))
+            _run_settings["attention"] = str(getattr(_att, "funpack_attention_name",
+                                                     "default (as launched)" if _att is None
+                                                     else "override"))
+        except Exception:  # noqa: BLE001
+            pass
         # NUMBERS, not a formatted string: a string is only ever equal or not, so float wobble
         # in the encoder reads identically to the conditioning genuinely moving, and every row
         # says "prompt changed" with no way to tell which. The reader compares these with a

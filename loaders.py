@@ -128,6 +128,11 @@ def attention_override(name):
     def override(_func, *args, **kwargs):
         return inner(*args, **kwargs)
 
+    # Named, so anything downstream can report WHICH backend is live. The attention backend
+    # decides whether generation is even reproducible (int8 quantisation flips buckets and
+    # costs ~10% of the picture between identical runs; pytorch is bit-exact), so an A/B that
+    # unknowingly spans a backend switch is comparing two different machines.
+    override.funpack_attention_name = str(name)
     return override
 
 
