@@ -37,6 +37,34 @@ import torch.nn.functional as F
 
 MAX_ROWS = 20  # comparisons kept per key; oldest roll off
 
+# The conditioning fingerprint is floats, so it needs a tolerance rather than equality.
+# Below this it is encoder wobble; above it the conditioning actually moved -- which happens
+# for reasons other than typing a new prompt (h3_phrase_emphasis is rating-driven and lives
+# on the conditioning), so the readout reports the SIZE of the move, not just that there was
+# one.
+COND_KEY = "conditioning"
+COND_TOL = 1e-3
+
+
+def _cond_shift(a, b):
+    """-> relative shift between two conditioning fingerprints. 1.0 means structurally
+    different (a different number of entries, or a different token count), which is a real
+    prompt/scene change rather than drift."""
+    if not isinstance(a, list) or not isinstance(b, list) or not a or not b:
+        return 0.0 if a == b else 1.0
+    if len(a) != len(b):
+        return 1.0
+    worst = 0.0
+    for ea, eb in zip(a, b):
+        if not isinstance(ea, list) or not isinstance(eb, list) or len(ea) != len(eb):
+            return 1.0
+        if ea[0] != eb[0]:          # token count -- a different prompt, not drift
+            return 1.0
+        for va, vb in zip(ea[1:], eb[1:]):
+            scale = max(abs(va), abs(vb), 1e-6)
+            worst = max(worst, abs(va - vb) / scale)
+    return worst
+
 _LAPLACIAN = torch.tensor([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]])
 _BLUR = torch.ones(1, 1, 5, 5) / 25.0
 
@@ -180,9 +208,13 @@ def record(refinement_key, video_latent, label="", seed=None, settings=None):
                 row["label_after"] = str(label or "")
                 prev_set = prev.get("settings") or {}
                 cur_set = settings or {}
-                keys = set(prev_set) | set(cur_set)
+                keys = (set(prev_set) | set(cur_set)) - {COND_KEY}
                 row["changed"] = {k: [prev_set.get(k), cur_set.get(k)] for k in sorted(keys)
                                   if prev_set.get(k) != cur_set.get(k)}
+                shift = _cond_shift(prev_set.get(COND_KEY), cur_set.get(COND_KEY))
+                row["cond_shift"] = shift
+                if shift > COND_TOL:
+                    row["changed"][COND_KEY] = [None, round(shift, 6)]
                 row["seed_before"] = prev.get("seed")
                 row["seed_after"] = seed
                 row["same_seed"] = (seed is not None and prev.get("seed") is not None

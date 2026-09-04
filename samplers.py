@@ -7279,14 +7279,18 @@ class FunPackLTXAVSceneChainSampler:
         # repeatability check that is really a prompt change reads as "generation is not
         # reproducible". Cheap stand-in: per-entry shape + mean + std, which differs between
         # any two real prompts and costs two reductions on an already-resident tensor.
+        # NUMBERS, not a formatted string: a string is only ever equal or not, so float wobble
+        # in the encoder reads identically to the conditioning genuinely moving, and every row
+        # says "prompt changed" with no way to tell which. The reader compares these with a
+        # tolerance and reports how far they moved.
         try:
             _fp = []
             for _e in (positive or [])[:8]:
                 _t = _e[0] if isinstance(_e, (list, tuple)) and _e else _e
                 if isinstance(_t, torch.Tensor) and _t.numel():
                     _f = _t.detach().float()
-                    _fp.append(f"{tuple(_t.shape)}:{float(_f.mean()):.5g}:{float(_f.std()):.5g}")
-            _run_settings["conditioning"] = "|".join(_fp)
+                    _fp.append([float(_t.numel()), float(_f.mean()), float(_f.std())])
+            _run_settings["conditioning"] = _fp
         except Exception:  # noqa: BLE001
             pass  # a fingerprint is a label, never a reason to fail a generation
         self._is_h3 = self._set_stream_axes(model)

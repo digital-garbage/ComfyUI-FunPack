@@ -350,3 +350,51 @@ def test_a_prompt_change_is_reported_and_not_treated_as_a_repeatability_check():
                     settings={**base, "conditioning": "(1,12,4096):0.03:0.7"})
     assert "conditioning" in row["changed"]
     assert row["same_seed"] is True          # same seed, but NOT the same generation
+
+
+# --- conditioning: drift vs a genuinely different prompt --------------------------
+
+def test_float_wobble_in_the_encoder_is_not_a_prompt_change():
+    """The first version compared a formatted string, so any float noise read as "prompt
+    changed" — on runs where the prompt was demonstrably identical."""
+    a = {"conditioning": [[4096.0, 0.010000, 0.500000]]}
+    b = {"conditioning": [[4096.0, 0.010000001, 0.500000002]]}
+    dp.record("k", _edged(seed=0), settings=a)
+    row = dp.record("k", _edged(seed=0), settings=b)
+    assert "conditioning" not in row["changed"]
+    assert row["cond_shift"] < dp.COND_TOL
+
+
+def test_a_real_drift_is_reported_with_its_size():
+    a = {"conditioning": [[4096.0, 0.100, 0.500]]}
+    b = {"conditioning": [[4096.0, 0.102, 0.500]]}
+    dp.record("k", _edged(seed=0), settings=a)
+    row = dp.record("k", _edged(seed=0), settings=b)
+    assert "conditioning" in row["changed"]
+    # Relative to the LARGER magnitude: |0.102-0.100| / 0.102. The point is that the row
+    # carries a size at all, so drift can be told from a prompt swap.
+    assert row["cond_shift"] == pytest.approx(0.002 / 0.102, rel=1e-6)
+
+
+def test_a_different_token_count_is_a_different_prompt_not_drift():
+    a = {"conditioning": [[4096.0, 0.1, 0.5]]}
+    b = {"conditioning": [[8192.0, 0.1, 0.5]]}
+    dp.record("k", _edged(seed=0), settings=a)
+    row = dp.record("k", _edged(seed=0), settings=b)
+    assert row["cond_shift"] == 1.0
+
+
+def test_a_different_number_of_scenes_is_structural():
+    a = {"conditioning": [[4096.0, 0.1, 0.5]]}
+    b = {"conditioning": [[4096.0, 0.1, 0.5], [4096.0, 0.2, 0.6]]}
+    dp.record("k", _edged(seed=0), settings=a)
+    row = dp.record("k", _edged(seed=0), settings=b)
+    assert row["cond_shift"] == 1.0
+
+
+def test_identical_conditioning_shifts_nothing():
+    cond = {"conditioning": [[4096.0, 0.1, 0.5], [2048.0, -0.3, 0.9]]}
+    dp.record("k", _edged(seed=0), settings=cond)
+    row = dp.record("k", _edged(seed=0), settings=dict(cond))
+    assert row["cond_shift"] == 0.0
+    assert row["changed"] == {}
