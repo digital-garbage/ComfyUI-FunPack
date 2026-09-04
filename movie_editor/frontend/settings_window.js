@@ -421,6 +421,12 @@
   }
 
   function dpVerdict(r, floor) {
+    // Declared FIRST: every branch below can reach for these, and a `const` used above its
+    // own declaration is a temporal-dead-zone throw at runtime that a syntax check happily
+    // passes ("can't access lexical declaration 'moved' before initialization").
+    const moved = 1 - r.structure;
+    const vsFloor = floor && floor > 1e-6 ? ` — ${(moved / floor).toFixed(1)}x your noise floor`
+                                          : "";
     // A low `structure` has two very different causes and the numbers cannot separate them,
     // so the seed decides. Different seeds = two different generations and the comparison
     // never was an A/B (a reference pins the subject, not the sample). Same seed = the
@@ -437,9 +443,6 @@
       return `noise floor: two identical runs differ by ${(moved * 100).toFixed(0)}% `
         + `(detail x${r.detail.toFixed(2)}). Anything smaller than this is not a result.`;
     }
-    const moved = 1 - r.structure;
-    const vsFloor = floor && floor > 1e-6 ? ` — ${(moved / floor).toFixed(1)}x your noise floor`
-                                          : "";
     if (r.structure < 0.85) {
       return r.same_seed
         ? `the shot moved ${(moved * 100).toFixed(0)}%${vsFloor} — this changed the picture, `
@@ -642,9 +645,14 @@
       row.append(lbl);
       rows.append(row);
 
-      rows.append(infoRow("Rated generations recorded (this key)",
+      // The count is HISTORY. Turning recording off does not clear it, and a bare number
+      // beside a green dot reads as "still recording" — say which it is.
+      const recording = !!(biState && biState.enabled);
+      rows.append(infoRow(
+        recording ? "Rated generations recorded (this key)"
+                  : "Recorded earlier (not recording now)",
         biState ? `${runs} (${biState.n_liked} liked / ${biState.n_disliked} disliked)`
-                : "0", runs > 0 ? true : null));
+                : "0", recording && runs > 0 ? true : null));
       rows.append(actionRow("Save this key's measurement",
         "Downloads every recorded profile as one file. A rental gets replaced and "
         + "refinements/ is not in git, so without this the count restarts on the next box.",
