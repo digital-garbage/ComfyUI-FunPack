@@ -6741,9 +6741,13 @@ class FunPackLTXAVSceneChainSampler:
             steer_blocks = (self._parse_block_spec(steer_block)
                             if steer_block else {_rs.DEFAULT_BLOCK})
             directions = {}
+            _counts = {}  # block -> (n_liked, n_disliked), reported for STEERED blocks too —
+            # "applying a direction" reads the same in the log whether it came from the bare
+            # 2/2 minimum or from twenty rated runs, and those are not equally trustworthy.
             for _sb in sorted(steer_blocks):
                 direction, n_liked, n_disliked = _rs.direction(refinement_key, block=_sb)
                 directions[_sb] = direction
+                _counts[_sb] = (n_liked, n_disliked)
                 if direction is None:
                     print(f"[FunPackSceneChain] H3 representation steering: not enough data "
                           f"yet ({n_liked} liked / {n_disliked} disliked, need "
@@ -6796,8 +6800,9 @@ class FunPackLTXAVSceneChainSampler:
             patched.model_options["transformer_options"] = to
             _steered = sorted(b for b, d in directions.items() if d is not None)
             if _steered:
+                _per_block = ", ".join(f"{b} ({_counts[b][0]}/{_counts[b][1]})" for b in _steered)
                 print(f"[FunPackSceneChain] H3 representation steering: applying learned "
-                      f"direction(s) at block(s) {', '.join(str(b) for b in _steered)}, "
+                      f"direction(s) at block (liked/disliked): {_per_block}, "
                       f"strength {_strength:g}.")
             return patched
         except Exception as _e:  # noqa: BLE001
