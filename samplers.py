@@ -2966,7 +2966,7 @@ class FunPackLTXAVSceneChainSampler:
                 # workflow (builder.py), silently corrupting anything the user hadn't
                 # explicitly overridden in sampler_inputs. Fixed 2026-09-03; do not move this
                 # back up next to its sibling widgets.
-                "h3_repr_steering_block": (["1", "5", "10", "15", "20", "25", "30", "35", "40"], {
+                "h3_repr_steering_block": (["1", "5", "10", "15", "20", "25", "30", "35", "40", "41", "42", "43", "44", "45", "46", "47", "48", "49"], {
                     "default": "25",
                     "tooltip": "TEST-ONLY: which block actually gets steered (the rest of the sweep's candidate blocks are still captured read-only, same as always). direction() is recomputed for whichever block you pick here -- this does not change what block_sweep ranks, only which block's learned direction gets injected into this run.",
                 }),

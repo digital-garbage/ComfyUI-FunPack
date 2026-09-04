@@ -223,3 +223,21 @@ def test_block_sweep_drops_neutral_weight_rows():
     rs.commit("k", 0.0)  # exactly neutral -- must not count toward either side
     sweep = rs.block_sweep("k", trials=200)
     assert sweep[rs.DEFAULT_BLOCK]["n"] == 2 * rs.MIN_PER_GROUP
+
+
+def test_every_steerable_block_is_also_captured():
+    """A block can only be STEERED if it is also in CANDIDATE_BLOCKS -- direction() reads
+    descriptors captured at that exact block, so a picker entry outside the capture set would
+    report "not enough data yet" forever no matter how many runs were rated."""
+    import re
+    src = open("samplers.py").read()
+    choices = re.search(r'"h3_repr_steering_block": \(\[([^]]*)\]', src).group(1)
+    offered = {int(c.strip().strip('"')) for c in choices.split(",")}
+    assert offered <= set(rs.CANDIDATE_BLOCKS), offered - set(rs.CANDIDATE_BLOCKS)
+
+
+def test_the_back_loaded_tail_is_resolved_one_block_at_a_time():
+    """The influence probe measured blocks 48-49 carrying ~a third of all residual movement,
+    so the tail is where a push has the most to act on -- it is covered individually rather
+    than on the coarse grid the quiet early half uses."""
+    assert set(range(40, 50)) <= set(rs.CANDIDATE_BLOCKS)
