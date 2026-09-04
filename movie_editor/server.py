@@ -2200,6 +2200,8 @@ if web is not None and PromptServer is not None:
             "overall": {str(b): v for b, v in (prof["overall"] or {}).items()},
             "difference": ({str(b): v for b, v in prof["difference"].items()}
                            if prof["difference"] else None),
+            "novelty": {str(b): v for b, v in (prof["novelty"] or {}).items()},
+            "mean_novelty": prof["mean_novelty"],
         }
 
     @routes.get(UI_PREFIX + "/api/block_influence")
@@ -2211,7 +2213,8 @@ if web is not None and PromptServer is not None:
         except Exception as e:
             return web.json_response({"key": key, "enabled": False, "runs": 0,
                                       "n_liked": 0, "n_disliked": 0, "flatness": None,
-                                      "overall": {}, "difference": None, "error": str(e)})
+                                      "overall": {}, "difference": None, "novelty": {},
+                                      "mean_novelty": None, "error": str(e)})
 
     @routes.post(UI_PREFIX + "/api/block_influence")
     async def _block_influence_toggle(req):

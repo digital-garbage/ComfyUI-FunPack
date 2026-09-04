@@ -350,3 +350,123 @@ def test_the_switch_does_not_gate_recording(_switch, monkeypatch, tmp_path):
     bi.save_pending("k", {0: 0.5})
     assert bi.commit("k", 1.0) == "recorded"
     assert bi.profile("k")["overall"][0] == pytest.approx(0.5)
+
+
+# --- novelty: what each block ADDS that the one before it didn't ------------------
+#
+# Magnitude alone cannot tell "this block added something new" from "this block pushed
+# harder in the direction the last one already went". The cosine with the previous block's
+# delta is what separates those, and it is the only number here that speaks to whether the
+# 50 blocks are doing 50 different things or one thing 50 times.
+
+def test_novelty_is_recorded_and_averaged():
+    bi.save_pending("k", {1: 0.1, 2: 0.2}, novelty={2: 0.0})
+    bi.commit("k", 1.0)
+    bi.save_pending("k", {1: 0.1, 2: 0.2}, novelty={2: 1.0})
+    bi.commit("k", 1.0)
+    p = bi.profile("k")
+    assert p["novelty"][2] == pytest.approx(0.5)
+    assert p["mean_novelty"] == pytest.approx(0.5)
+
+
+def test_novelty_is_optional_and_old_rows_stay_readable():
+    """A row recorded before novelty existed carries none; it must not break the readout or
+    be counted as a 0.0 cosine (which would read as 'perfectly orthogonal')."""
+    bi.save_pending("k", {1: 0.5})               # no novelty
+    bi.commit("k", 1.0)
+    bi.save_pending("k", {1: 0.5}, novelty={1: 0.8})
+    bi.commit("k", 1.0)
+    p = bi.profile("k")
+    assert p["novelty"][1] == pytest.approx(0.8)  # averaged over the row that HAS it only
+
+
+def test_no_novelty_anywhere_reports_none_not_zero():
+    bi.save_pending("k", {1: 0.5})
+    bi.commit("k", 1.0)
+    p = bi.profile("k")
+    assert p["novelty"] == {}
+    assert p["mean_novelty"] is None
+
+
+def test_negative_novelty_survives_the_round_trip():
+    """Blocks partly undoing each other is a real outcome and the most interesting one --
+    it must not be clamped or dropped on the way through."""
+    bi.save_pending("k", {3: 0.4}, novelty={3: -0.6})
+    bi.commit("k", 1.0)
+    assert bi.profile("k")["novelty"][3] == pytest.approx(-0.6)
+
+
+# --- the hook's novelty half ------------------------------------------------------
+
+def _install2(capture, n_blocks=4, max_rows=512):
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    patched = s._install_block_influence(_Model(), capture, n_blocks=n_blocks,
+                                          max_rows=max_rows)
+    return patched.model_options["transformer_options"]["patches_replace"]["dit"]
+
+
+def _push(dit, block, src, delta_vec, segs=None):
+    out = src + delta_vec
+    return _call(dit[("double_block", block)], src, out, segs or [(0, 4, 6)])
+
+
+def test_hook_records_orthogonal_deltas_as_zero_novelty():
+    capture = [{}, {}]
+    dit = _install2(capture)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 1.0
+    d0 = torch.zeros(4, 8); d0[:, 1] = 1.0
+    d1 = torch.zeros(4, 8); d1[:, 2] = 1.0     # orthogonal to d0
+    _push(dit, 0, src, d0)
+    _push(dit, 1, src, d1)
+    assert torch.stack(capture[1][1]).mean().item() == pytest.approx(0.0, abs=1e-5)
+
+
+def test_hook_records_a_repeated_direction_as_novelty_one():
+    capture = [{}, {}]
+    dit = _install2(capture)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 1.0
+    d = torch.zeros(4, 8); d[:, 1] = 1.0
+    _push(dit, 0, src, d)
+    _push(dit, 1, src, d * 3.0)                # same direction, bigger
+    assert torch.stack(capture[1][1]).mean().item() == pytest.approx(1.0, rel=1e-4)
+
+
+def test_hook_records_an_undoing_block_as_negative_novelty():
+    capture = [{}, {}]
+    dit = _install2(capture)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 1.0
+    d = torch.zeros(4, 8); d[:, 1] = 1.0
+    _push(dit, 0, src, d)
+    _push(dit, 1, src, -d)
+    assert torch.stack(capture[1][1]).mean().item() == pytest.approx(-1.0, rel=1e-4)
+
+
+def test_the_first_block_of_a_step_has_no_predecessor():
+    """Block 0 of step 2 must not be compared against block 49 of step 1 -- that pairs the
+    end of one denoise step with the start of the next, which is not a depth relationship."""
+    capture = [{}, {}]
+    dit = _install2(capture)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 1.0
+    d = torch.zeros(4, 8); d[:, 1] = 1.0
+    for _step in range(2):                     # two steps, blocks 0..2 each
+        for b in range(3):
+            _push(dit, b, src, d)
+    assert 0 not in capture[1]                 # never a novelty entry for the first block
+    assert len(capture[1][1]) == 2             # one per step, not three
+
+
+def test_novelty_is_skipped_when_the_holder_has_no_slot_for_it():
+    """Back-compat: a caller passing a 1-slot holder still gets magnitudes and no crash."""
+    capture = [{}]
+    dit = _install2(capture)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 1.0
+    d = torch.zeros(4, 8); d[:, 1] = 1.0
+    _push(dit, 0, src, d)
+    _push(dit, 1, src, d)
+    assert set(capture[0]) == {0, 1}
+    assert len(capture) == 1

@@ -416,6 +416,21 @@
     return `Flatness ${f.toFixed(3)} · ${shape}`;
   }
 
+  // How much of each block's push is NEW, rather than more of what the previous block was
+  // already doing. Magnitude cannot tell those apart; this is the number that speaks to
+  // whether 50 blocks are doing 50 things or one thing 50 times.
+  function biNoveltyVerdict(state) {
+    const n = state && state.mean_novelty;
+    if (n == null) return null;
+    const shape = n > 0.6 ? "each block mostly amplifies the one before it — little new per "
+                            + "block"
+      : n > 0.2 ? "partly new, partly a continuation of the previous block"
+      : n > -0.2 ? "each block adds something the one before it did not — near-independent "
+                   + "contributions"
+      : "blocks partly undo each other, so the useful work is smaller than the sizes suggest";
+    return `Novelty ${n >= 0 ? "+" : ""}${n.toFixed(3)} · ${shape}`;
+  }
+
   function biProfileTable(state) {
     const overall = state && state.overall;
     if (!overall || !Object.keys(overall).length) return null;
@@ -429,8 +444,10 @@
     const tbl = el("div", "sw-rows");
     entries.forEach(([block, v]) => {
       const d = diff ? diff[String(block)] : null;
-      const value = d == null ? v.toFixed(4)
-        : `${v.toFixed(4)} · liked ${d >= 0 ? "+" : ""}${d.toFixed(4)}`;
+      const nov = state.novelty ? state.novelty[String(block)] : null;
+      let value = v.toFixed(4);
+      if (nov != null) value += ` · new ${nov >= 0 ? "+" : ""}${nov.toFixed(2)}`;
+      if (d != null) value += ` · liked ${d >= 0 ? "+" : ""}${d.toFixed(4)}`;
       tbl.append(infoRow(`Block ${block}`, value, d == null ? null : d > 0));
     });
     return tbl;
@@ -489,6 +506,8 @@
       box.append(rows);
 
       box.append(el("div", "sw-hint", biVerdict(biState)));
+      const nv = biNoveltyVerdict(biState);
+      if (nv) box.append(el("div", "sw-hint", nv));
       if (biState && biState.difference == null && runs > 0) {
         box.append(el("div", "sw-hint",
           `Needs ${biState.min_per_group}+ liked and ${biState.min_per_group}+ disliked `

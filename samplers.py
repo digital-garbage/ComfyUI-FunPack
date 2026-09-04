@@ -3744,7 +3744,7 @@ class FunPackLTXAVSceneChainSampler:
         # Measurement first, steering second: whatever is installed later chains this probe
         # as its inner call, so the delta it records is the block's OWN, not one that already
         # contains another mechanism's injection.
-        _influence_capture = [{}]
+        _influence_capture = [{}, {}]   # [0] relative magnitudes, [1] novelty cosines
         _influence_on = False
         if refinement_key:
             try:
@@ -3778,9 +3778,12 @@ class FunPackLTXAVSceneChainSampler:
                 except ImportError:
                     import block_influence as _bi
                 # One host sync for the whole run, here, instead of per block per step.
-                _bi.save_pending(refinement_key, {
-                    b: float(torch.stack(v).mean().item())
-                    for b, v in _influence_capture[0].items() if v})
+                _bi.save_pending(
+                    refinement_key,
+                    {b: float(torch.stack(v).mean().item())
+                     for b, v in _influence_capture[0].items() if v},
+                    novelty={b: float(torch.stack(v).mean().item())
+                             for b, v in _influence_capture[1].items() if v})
             elif _influence_on:
                 # An empty capture and a genuinely flat profile look identical downstream,
                 # and this probe exists to tell those apart -- so it says which one happened
@@ -6779,6 +6782,15 @@ class FunPackLTXAVSceneChainSampler:
         the number the block's OWN delta instead of one that includes another mechanism's
         injection (the same capture-before-injection ordering h3_repr_steering needed).
 
+        Also records NOVELTY: the cosine between this block's delta and the previous block's.
+        Magnitude alone cannot distinguish a block adding something nothing before it added
+        from a block pushing harder in the direction the last one already went. ~1 means it
+        is amplifying its predecessor (little new), ~0 means orthogonal (a genuinely new
+        component), negative means it is partly UNDOING the previous block -- which real
+        stacks do, and which would mean the effective work is far smaller than the sum of the
+        magnitudes suggests. `capture_holder[0]` collects the relative magnitudes,
+        `capture_holder[1]` the novelty cosines.
+
         `n_blocks` over-covers deliberately: registering a patch for an index the model does
         not have is never called, so a shorter stack simply reports fewer blocks."""
         try:
@@ -6790,6 +6802,11 @@ class FunPackLTXAVSceneChainSampler:
             to = patched.model_options.get("transformer_options", {}).copy()
             patches_replace = dict(to.get("patches_replace", {}))
             dit_patches = dict(patches_replace.get("dit", {}))
+            # The previous block's delta, for the novelty cosine. Blocks fire in index order
+            # within a step, so a block index that does NOT exceed the last one seen means a
+            # new step began and there is no predecessor to compare against -- pairing across
+            # that boundary would compare the end of one step to the start of the next.
+            prev_delta = [None, -1]
 
             def _make_probe(block):
                 inner = dit_patches.get(("double_block", block))
@@ -6818,6 +6835,14 @@ class FunPackLTXAVSceneChainSampler:
                                 # sampling, instead of syncing the device 50x per step.
                                 capture_holder[0].setdefault(block, []).append(
                                     delta.norm() / base.clamp(min=1e-8))
+                                if len(capture_holder) > 1:
+                                    last, last_block = prev_delta
+                                    if (last is not None and block > last_block
+                                            and last.shape == delta.shape):
+                                        capture_holder[1].setdefault(block, []).append(
+                                            torch.nn.functional.cosine_similarity(
+                                                delta.flatten(), last.flatten(), dim=0))
+                                    prev_delta[0], prev_delta[1] = delta, block
                     except Exception:  # noqa: BLE001
                         pass  # a probe never breaks a generation
                     return {"img": out}
