@@ -43,12 +43,14 @@ import torch
 # of guessed from someone else's percentage. Only DEFAULT_BLOCK ever STEERS; the rest of
 # CANDIDATE_BLOCKS are captured read-only alongside it so block_sweep() has something to rank.
 DEFAULT_BLOCK = 25
-# 41-49 individually, not on the coarse grid: the block-influence probe measured the stack as
-# heavily BACK-LOADED (blocks 48+49 alone carrying ~a third of all residual movement), so the
-# tail is where a steering push has the most to act on and is worth resolving one block at a
-# time. Everything below 40 stays coarse -- it is the quiet end.
-CANDIDATE_BLOCKS = sorted({1, 5, 10, 15, 20, 25, 30, 35, DEFAULT_BLOCK,
-                           *range(40, 50)})
+# Every block, 0-49: the coarse grid + 41-49 individually was a compromise when only the
+# tail's back-loaded weight was known to be worth resolving finely (48+49 alone carrying ~a
+# third of all residual movement). 2026-09-04: block 0/1 turned out to be structurally
+# distinct too (raw input projection / patch-mixing), not just quiet early blocks -- so
+# "coarse in the middle" was an assumption, not a finding. Capturing every block read-only
+# costs one extra mean-pool per block per run; steering still only ever touches one block at
+# a time (whichever `steer_block` names).
+CANDIDATE_BLOCKS = list(range(50))
 
 MIN_PER_GROUP = 2  # need 2+ POSITIVE-weight and 2+ NEGATIVE-weight rows. Was 3 (parity with
 # absolute/taste steering's floor, not derived from anything specific to this mechanism).

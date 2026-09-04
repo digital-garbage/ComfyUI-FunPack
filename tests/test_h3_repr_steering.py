@@ -227,17 +227,15 @@ def test_block_sweep_drops_neutral_weight_rows():
 
 def test_every_steerable_block_is_also_captured():
     """A block can only be STEERED if it is also in CANDIDATE_BLOCKS -- direction() reads
-    descriptors captured at that exact block, so a picker entry outside the capture set would
-    report "not enough data yet" forever no matter how many runs were rated."""
-    import re
-    src = open("samplers.py").read()
-    choices = re.search(r'"h3_repr_steering_block": \(\[([^]]*)\]', src).group(1)
-    offered = {int(c.strip().strip('"')) for c in choices.split(",")}
-    assert offered <= set(rs.CANDIDATE_BLOCKS), offered - set(rs.CANDIDATE_BLOCKS)
+    descriptors captured at that exact block, so a text-field entry outside the capture set
+    would report "not enough data yet" forever no matter how many runs were rated. The steer
+    field is free text now (any block 0-49, or a range/comma list of them via
+    _parse_block_spec), so this only holds if CANDIDATE_BLOCKS covers the WHOLE valid range."""
+    assert set(range(50)) <= set(rs.CANDIDATE_BLOCKS)
 
 
 def test_the_back_loaded_tail_is_resolved_one_block_at_a_time():
     """The influence probe measured blocks 48-49 carrying ~a third of all residual movement,
     so the tail is where a push has the most to act on -- it is covered individually rather
-    than on the coarse grid the quiet early half uses."""
+    than on the coarse grid the quiet early half used to use."""
     assert set(range(40, 50)) <= set(rs.CANDIDATE_BLOCKS)

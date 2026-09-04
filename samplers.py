@@ -2966,9 +2966,9 @@ class FunPackLTXAVSceneChainSampler:
                 # workflow (builder.py), silently corrupting anything the user hadn't
                 # explicitly overridden in sampler_inputs. Fixed 2026-09-03; do not move this
                 # back up next to its sibling widgets.
-                "h3_repr_steering_block": (["1", "5", "10", "15", "20", "25", "30", "35", "40", "41", "42", "43", "44", "45", "46", "47", "48", "49"], {
+                "h3_repr_steering_block": ("STRING", {
                     "default": "25",
-                    "tooltip": "TEST-ONLY: which block actually gets steered (the rest of the sweep's candidate blocks are still captured read-only, same as always). direction() is recomputed for whichever block you pick here -- this does not change what block_sweep ranks, only which block's learned direction gets injected into this run.",
+                    "tooltip": "TEST-ONLY: which block(s) actually get steered (the rest of the sweep's candidate blocks are still captured read-only, same as always). A single block, a range, or a comma list -- 25 | 31-40 | 4,5,6 -- same syntax as h3_block_repeat. Each named block steers with its OWN learned direction, computed independently from its OWN liked/disliked history at that block; this does not change what block_sweep ranks, only which block(s) get injected into this run.",
                 }),
                 "h3_block_repeat": ("STRING", {
                     "default": "",
@@ -3790,7 +3790,7 @@ class FunPackLTXAVSceneChainSampler:
         if h3_repr_steering and refinement_key:
             model = self._install_h3_repr_steering(
                 model, refinement_key, h3_repr_steering_strength, _repr_capture,
-                steer_block=int(h3_repr_steering_block))
+                steer_block=h3_repr_steering_block)
 
         try:
             sampled = comfy.sample.sample_custom(
@@ -6714,33 +6714,41 @@ class FunPackLTXAVSceneChainSampler:
                                    steer_block=None):
         """EXPERIMENTAL, unvalidated (H3 only). See h3_repr_steering.py.
 
-        Reaches inside the forward pass: hooks `steer_block` (default DEFAULT_BLOCK), adds the
-        learned liked-minus-disliked direction to that block's VIDEO rows (never audio or
-        text — derived fresh from `mod_segments` each call, cached by seq_len). Every OTHER
-        block in CANDIDATE_BLOCKS is hooked read-only (captured, never modified) at the same
-        time, so `h3_repr_steering.block_sweep()` has real per-block data to rank without
-        needing its own separate collection pass. `capture_holder[0]` becomes {block:
-        descriptor} for the caller to save as the next pending row once sampling finishes.
-        No-ops on STEERING (clears nothing, costs nothing extra) when there are not yet 2+
-        liked and 2+ disliked runs on this key at `steer_block` — direction() says so, this
-        just reports it; capture at every candidate block still happens regardless.
+        Reaches inside the forward pass: hooks every block named in `steer_block` (default
+        DEFAULT_BLOCK), adds EACH block's OWN learned liked-minus-disliked direction to that
+        block's VIDEO rows (never audio or text — derived fresh from `mod_segments` each call,
+        cached by seq_len). Every OTHER block in CANDIDATE_BLOCKS is hooked read-only
+        (captured, never modified) at the same time, so `h3_repr_steering.block_sweep()` has
+        real per-block data to rank without needing its own separate collection pass.
+        `capture_holder[0]` becomes {block: descriptor} for the caller to save as the next
+        pending row once sampling finishes. A block with fewer than 2+ liked and 2+ disliked
+        runs of its OWN just captures, same as any other candidate block — no-ops on
+        STEERING there (clears nothing, costs nothing extra), reported once per block.
 
-        `steer_block` lets test runs pick which candidate block actually gets injected instead
-        of always DEFAULT_BLOCK -- direction() is computed fresh for that block. Does not
+        `steer_block` accepts a single block ("25"), a range ("31-40"), or a comma list
+        ("4,5,6") — same syntax as h3_block_repeat, parsed by `_parse_block_spec`. Each named
+        block steers with its OWN direction(), computed independently: two blocks' liked/
+        disliked history are unrelated, so there is no shared "the direction" here, only N
+        separate ones applied at their own positions in the same forward pass. Does not
         change what block_sweep ranks (still every candidate block, read-only capture as
-        always); only changes which one this particular run steers with.
+        always); only changes which ones this particular run steers with.
         """
         try:
             try:
                 from . import h3_repr_steering as _rs
             except ImportError:
                 import h3_repr_steering as _rs
-            steer_block = _rs.DEFAULT_BLOCK if steer_block is None else int(steer_block)
-            direction, n_liked, n_disliked = _rs.direction(refinement_key, block=steer_block)
-            if direction is None:
-                print(f"[FunPackSceneChain] H3 representation steering: not enough data yet "
-                      f"({n_liked} liked / {n_disliked} disliked, need {_rs.MIN_PER_GROUP} of "
-                      f"each at block {steer_block}) — capturing this run, not steering it.")
+            steer_blocks = (self._parse_block_spec(steer_block)
+                            if steer_block else {_rs.DEFAULT_BLOCK})
+            directions = {}
+            for _sb in sorted(steer_blocks):
+                direction, n_liked, n_disliked = _rs.direction(refinement_key, block=_sb)
+                directions[_sb] = direction
+                if direction is None:
+                    print(f"[FunPackSceneChain] H3 representation steering: not enough data "
+                          f"yet ({n_liked} liked / {n_disliked} disliked, need "
+                          f"{_rs.MIN_PER_GROUP} of each at block {_sb}) — capturing this run, "
+                          "not steering it.")
 
             patched = model.clone()
             to = patched.model_options.get("transformer_options", {}).copy()
@@ -6748,7 +6756,7 @@ class FunPackLTXAVSceneChainSampler:
             dit_patches = dict(patches_replace.get("dit", {}))
             _strength = float(strength)
 
-            def _make_hook(block, inject):
+            def _make_hook(block, direction):
                 inner = dit_patches.get(("double_block", block))
                 mask_cache = {}
 
@@ -6762,18 +6770,15 @@ class FunPackLTXAVSceneChainSampler:
                             args.get("mod_segments"), seq_len, out.device)
                         mask_cache[seq_len] = mask
                     if mask is not None:
-                        # Captured BEFORE injection, deliberately -- this is the ONLY block
-                        # where `inject` can be True, so it's the only one where capturing
-                        # the post-injection state would make the logged descriptor depend
-                        # on that run's own strength setting instead of reflecting the
-                        # network's natural behavior. Every other candidate block never
-                        # injects, so this line changes nothing for them; here it's what
-                        # keeps block 25's block_sweep entry comparable across different
-                        # strengths, and comparable to the other 8 blocks in the first place.
+                        # Captured BEFORE injection, deliberately -- a steered block is the
+                        # only kind where capturing the post-injection state would make the
+                        # logged descriptor depend on that run's own strength setting instead
+                        # of reflecting the network's natural behavior. A block that never
+                        # injects (direction is None here) is unaffected by this ordering.
                         desc = _rs.capture(out, mask)
                         if desc is not None:
                             capture_holder[0][block] = desc
-                        if inject and direction is not None and _strength > 0.0:
+                        if direction is not None and _strength > 0.0:
                             rows = out[mask]
                             row_norm = rows.detach().float().norm(dim=-1).mean()
                             if torch.isfinite(row_norm) and row_norm > 0:
@@ -6785,14 +6790,15 @@ class FunPackLTXAVSceneChainSampler:
 
             for _block in _rs.CANDIDATE_BLOCKS:
                 dit_patches[("double_block", _block)] = _make_hook(
-                    _block, inject=(_block == steer_block))
+                    _block, directions.get(_block))
             patches_replace["dit"] = dit_patches
             to["patches_replace"] = patches_replace
             patched.model_options["transformer_options"] = to
-            if direction is not None:
+            _steered = sorted(b for b, d in directions.items() if d is not None)
+            if _steered:
                 print(f"[FunPackSceneChain] H3 representation steering: applying learned "
-                      f"direction ({n_liked} liked / {n_disliked} disliked) at block "
-                      f"{steer_block}, strength {_strength:g}.")
+                      f"direction(s) at block(s) {', '.join(str(b) for b in _steered)}, "
+                      f"strength {_strength:g}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 representation steering", _e,
