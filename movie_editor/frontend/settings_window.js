@@ -412,6 +412,16 @@
     // so the seed decides. Different seeds = two different generations and the comparison
     // never was an A/B (a reference pins the subject, not the sample). Same seed = the
     // change moved the shot rather than its detail, which is a RESULT, not a bad setup.
+    const onlySeed = r.changed && !Object.keys(r.changed).filter((k) => k !== "seed").length;
+    if (onlySeed && r.same_seed) {
+      // Nothing differed at all: this is the instrument's noise floor for this setup.
+      return r.structure > 0.98 && Math.abs(r.detail - 1) < 0.02
+        ? `stable — two identical runs match (structure ${r.structure.toFixed(3)}), so a real `
+          + "A/B can be trusted"
+        : `two identical runs already differ this much (structure ${r.structure.toFixed(2)}, `
+          + `detail x${r.detail.toFixed(2)}) — generation is not reproducible here, so no A/B `
+          + "on this setup means anything";
+    }
     if (r.structure < 0.85) {
       return r.same_seed
         ? `the shot itself moved (structure ${r.structure.toFixed(2)}) — this changed the `
@@ -426,6 +436,24 @@
     return (r.edge_aligned > 0.35
       ? `sharper — +${gain.toFixed(0)}% detail, landing on existing edges`
       : `+${gain.toFixed(0)}% detail but spread evenly — reads as grain, not sharpening`) + caveat;
+  }
+
+  // What this pair actually was. The probe cannot know which knob you consider the
+  // variable, so it diffs every scalar setting between the two runs and names the result.
+  // No difference is not a wasted row: two identical runs measure how much the generation
+  // varies on its own, and without that number none of the others mean anything.
+  function dpChangeSummary(r) {
+    const ch = r.changed;
+    if (!ch) return `${r.label_before || "?"} → ${r.label_after || "?"}`;  // pre-diff rows
+    const keys = Object.keys(ch).filter((k) => k !== "seed");
+    if (!keys.length) {
+      return r.same_seed ? "nothing changed — repeatability check"
+                         : "only the seed changed — a different sample";
+    }
+    return keys.slice(0, 3).map((k) => {
+      const show = (v) => (v === "" || v == null ? "—" : String(v));
+      return `${k}: ${show(ch[k][0])} → ${show(ch[k][1])}`;
+    }).join(" · ") + (keys.length > 3 ? ` · +${keys.length - 3} more` : "");
   }
 
   function detailProbeRows(key) {
@@ -456,7 +484,7 @@
       // Newest first: the run you just made is the one you are asking about.
       dpRows.slice().reverse().forEach((r) => {
         tbl.append(infoRow(
-          `${r.label_before || "?"} → ${r.label_after || "?"}`,
+          dpChangeSummary(r),
           dpVerdict(r),
           r.same_seed !== false && r.structure >= 0.85 && r.detail > 1.02
             && r.edge_aligned > 0.35));

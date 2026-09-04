@@ -7258,6 +7258,14 @@ class FunPackLTXAVSceneChainSampler:
         # New generation: per-run log suppression starts over, so a failure that also
         # happened last run is reported again rather than deduped away forever.
         _log.begin_run()
+        # Every scalar widget value this run was called with, captured here because at this
+        # point locals() IS the argument list -- nothing else has been assigned yet. The
+        # detail probe diffs two runs' copies of this to say what actually CHANGED between
+        # them, instead of relying on a hand-picked label that only ever tracked one knob.
+        # Scalars only: models, tensors and conditioning are not settings, and a curated
+        # name list would go stale the first time a widget is added.
+        _run_settings = {k: v for k, v in locals().items()
+                         if isinstance(v, (bool, int, float, str)) and k != "self"}
         self._is_h3 = self._set_stream_axes(model)
         if self._is_h3:
             # H3's rating-driven mechanisms are h3_phrase_emphasis (Studio), h3_repr_steering,
@@ -8668,7 +8676,7 @@ class FunPackLTXAVSceneChainSampler:
                     _dp.record(refinement_key_input, _snap,
                                label=(f"repeat {h3_block_repeat}x{int(h3_block_repeat_times) + 1}"
                                       if self._parse_block_spec(h3_block_repeat) else "no repeat"),
-                               seed=seed)
+                               seed=seed, settings=_run_settings)
 
         # Trajectory probe: same run/rating pairing as the two above — the rating that scores
         # THIS run appends these per-bucket descriptors to the measurement log.

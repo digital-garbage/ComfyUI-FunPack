@@ -145,7 +145,7 @@ def compare(before, after):
     }
 
 
-def record(refinement_key, video_latent, label="", seed=None):
+def record(refinement_key, video_latent, label="", seed=None, settings=None):
     """Score this run against the previous one on the same key, then become the new previous.
     -> the comparison dict (with "label_before"/"label_after"), or None when there was nothing
     to compare against yet.
@@ -155,7 +155,14 @@ def record(refinement_key, video_latent, label="", seed=None):
     two different generations, so this is not an A/B at all" (different seed -- R2V pins the
     subject, not the sample) or "same seed, and the change moved the shot rather than its
     detail", which is a real result. Nothing in the three numbers can separate those; the
-    seed can, so it is stored rather than guessed at."""
+    seed can, so it is stored rather than guessed at.
+
+    `settings` is this run's scalar widget values. The row keeps the DIFF against the
+    previous run's, so it can say what the A/B actually was rather than trusting a label to
+    have named the right variable. An empty diff is not a failure: two identical runs measure
+    the instrument's own noise floor, which is what makes every other row interpretable.
+    (`seed` stays an explicit argument as well -- it is the one field the readout branches on,
+    so it should not depend on the settings capture having worked.)"""
     if not refinement_key or not isinstance(video_latent, torch.Tensor):
         return None
     try:
@@ -171,6 +178,11 @@ def record(refinement_key, video_latent, label="", seed=None):
             if row is not None:
                 row["label_before"] = str(prev.get("label") or "")
                 row["label_after"] = str(label or "")
+                prev_set = prev.get("settings") or {}
+                cur_set = settings or {}
+                keys = set(prev_set) | set(cur_set)
+                row["changed"] = {k: [prev_set.get(k), cur_set.get(k)] for k in sorted(keys)
+                                  if prev_set.get(k) != cur_set.get(k)}
                 row["seed_before"] = prev.get("seed")
                 row["seed_after"] = seed
                 row["same_seed"] = (seed is not None and prev.get("seed") is not None
@@ -178,7 +190,8 @@ def record(refinement_key, video_latent, label="", seed=None):
                 row["stamp"] = time.strftime("%Y-%m-%d_%H-%M-%S")
                 data["rows"] = (data["rows"] + [row])[-MAX_ROWS:]
         data["previous"] = {"latent": lat, "label": str(label or ""),
-                            "seed": None if seed is None else int(seed)}
+                            "seed": None if seed is None else int(seed),
+                            "settings": dict(settings or {})}
         _save(refinement_key, data)
         return row
     except Exception as e:  # noqa: BLE001

@@ -297,3 +297,44 @@ def test_the_seed_rides_along_to_the_next_pairing():
     dp.record("k", _edged(), label="b", seed=7)
     row = dp.record("k", _edged(), label="c", seed=9)
     assert row["seed_before"] == 7 and row["seed_after"] == 9 and row["same_seed"] is False
+
+
+# --- what the A/B actually WAS ----------------------------------------------------
+#
+# The probe cannot know which knob the user considers the variable, and a hand-picked label
+# only ever tracked one of them (every row read "no repeat -> no repeat" while the real
+# difference was elsewhere, or nowhere). So it diffs the run's scalar settings instead and
+# the row names the difference itself.
+
+def test_the_row_names_what_changed_between_the_two_runs():
+    dp.record("k", _edged(), seed=1, settings={"seed": 1, "h3_block_repeat": "", "cfg": 1.0})
+    row = dp.record("k", _edged(), seed=1, settings={"seed": 1, "h3_block_repeat": "40", "cfg": 1.0})
+    assert row["changed"] == {"h3_block_repeat": ["", "40"]}
+
+
+def test_identical_settings_report_no_change_which_is_the_noise_floor():
+    """Two identical runs are not a wasted comparison -- they measure how much the generation
+    varies on its own, and every other row is uninterpretable without that number."""
+    cfg = {"seed": 5, "h3_block_repeat": ""}
+    dp.record("k", _edged(), seed=5, settings=cfg)
+    row = dp.record("k", _edged(), seed=5, settings=dict(cfg))
+    assert row["changed"] == {}
+    assert row["same_seed"] is True
+
+
+def test_a_new_or_removed_setting_counts_as_changed():
+    dp.record("k", _edged(), settings={"a": 1})
+    row = dp.record("k", _edged(), settings={"a": 1, "b": 2})
+    assert row["changed"] == {"b": [None, 2]}
+
+
+def test_several_changes_are_all_reported():
+    dp.record("k", _edged(), settings={"a": 1, "b": 1, "c": 1})
+    row = dp.record("k", _edged(), settings={"a": 2, "b": 1, "c": 3})
+    assert row["changed"] == {"a": [1, 2], "c": [1, 3]}
+
+
+def test_no_settings_at_all_is_an_empty_diff_not_a_crash():
+    dp.record("k", _edged())
+    row = dp.record("k", _edged())
+    assert row["changed"] == {}
