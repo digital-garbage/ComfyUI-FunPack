@@ -2970,6 +2970,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "25",
                     "tooltip": "TEST-ONLY: which block actually gets steered (the rest of the sweep's candidate blocks are still captured read-only, same as always). direction() is recomputed for whichever block you pick here -- this does not change what block_sweep ranks, only which block's learned direction gets injected into this run.",
                 }),
+                "h3_block_influence": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "MEASUREMENT ONLY -- steers nothing. Records how much each of H3's 50 blocks moves the video rows of the hidden stream (its residual delta relative to the stream itself), averaged over every step, and pairs that profile with the rating you give the run. Answers the question that gates rating-driven block weighting: is the depth profile flat (every block contributes the same, nothing to aim at) or structured? A large residual delta means the block moved the stream a lot THERE -- not that it survived to the final video; the causal version of that needs per-block ablation. Near-free: two norms per block per step on ~512 strided rows, no extra forward pass.",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -3678,7 +3682,7 @@ class FunPackLTXAVSceneChainSampler:
                       alg_anchor_sigma_threshold=0.975,
                       bounded_attention_enabled=False,
                       h3_repr_steering=False, h3_repr_steering_strength=0.05,
-                      h3_repr_steering_block="25",
+                      h3_repr_steering_block="25", h3_block_influence=False,
                       refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -3741,6 +3745,12 @@ class FunPackLTXAVSceneChainSampler:
         # key, no rating and no Studio state, so it works on a graph with the Refiner absent
         # entirely. 1.0 on all three does not even clone the model.
         model = self._install_h3_final_layer(model, positive)
+        # Measurement first, steering second: whatever is installed later chains this probe
+        # as its inner call, so the delta it records is the block's OWN, not one that already
+        # contains another mechanism's injection.
+        _influence_capture = [{}]
+        if h3_block_influence and refinement_key:
+            model = self._install_block_influence(model, _influence_capture)
         _repr_capture = [{}]
         if h3_repr_steering and refinement_key:
             model = self._install_h3_repr_steering(
@@ -3759,6 +3769,23 @@ class FunPackLTXAVSceneChainSampler:
                 except ImportError:
                     import h3_repr_steering as _rs
                 _rs.save_pending(refinement_key, _repr_capture[0])
+            if _influence_capture[0]:
+                try:
+                    from . import block_influence as _bi
+                except ImportError:
+                    import block_influence as _bi
+                # One host sync for the whole run, here, instead of per block per step.
+                _bi.save_pending(refinement_key, {
+                    b: float(torch.stack(v).mean().item())
+                    for b, v in _influence_capture[0].items() if v})
+            elif h3_block_influence and refinement_key:
+                # An empty capture and a genuinely flat profile look identical downstream,
+                # and this probe exists to tell those apart -- so it says which one happened
+                # rather than letting a dead hook read as a finding.
+                _log.failed("FunPackSceneChain", "H3 block influence probe",
+                            "no block recorded a video-row delta",
+                            "this run contributes no profile (the hooks never saw video rows "
+                            "— not a flat depth profile)")
         finally:
             self._remove_bounded_attention(_ba_handles)
         self._assert_finite_sample(sampled)
@@ -6732,6 +6759,78 @@ class FunPackLTXAVSceneChainSampler:
                         "not applied and not capturing this run")
             return model
 
+    def _install_block_influence(self, model, capture_holder, n_blocks=50, max_rows=512):
+        """MEASUREMENT ONLY (H3). See block_influence.py.
+
+        Records, per block, ||f_i(x_i)|| / ||x_i|| on the VIDEO rows -- how much that block
+        moved the stream, relative to what the stream already was. Nothing is modified: the
+        hook returns the block's own output untouched, and a failure inside it is swallowed
+        rather than allowed to break sampling, because a probe must never be able to cost you
+        a generation.
+
+        Cost control: video rows are STRIDED down to ~`max_rows` before the two norms, so the
+        reduction is bounded regardless of H3's 17k+ sequence length, and the per-block
+        results accumulate as 0-dim CUDA tensors (never .item()) so there is no host sync per
+        block per step. Install this BEFORE any steering hook -- whichever wrapper is
+        installed later chains this one as its inner call, so measuring first is what keeps
+        the number the block's OWN delta instead of one that includes another mechanism's
+        injection (the same capture-before-injection ordering h3_repr_steering needed).
+
+        `n_blocks` over-covers deliberately: registering a patch for an index the model does
+        not have is never called, so a shorter stack simply reports fewer blocks."""
+        try:
+            try:
+                from . import h3_repr_steering as _rs
+            except ImportError:
+                import h3_repr_steering as _rs
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+
+            def _make_probe(block):
+                inner = dit_patches.get(("double_block", block))
+                mask_cache = {}
+
+                def _probe(args, extra):
+                    src = args.get("img")
+                    out = extra["original_block"](args)["img"] if inner is None else \
+                        inner(args, extra)["img"]
+                    try:
+                        seq_len = int(out.shape[0])
+                        mask = mask_cache.get(seq_len, "MISS")
+                        if mask == "MISS":
+                            mask = _rs.video_mask_from_mod_segments(
+                                args.get("mod_segments"), seq_len, out.device)
+                            mask_cache[seq_len] = mask
+                        if mask is not None and torch.is_tensor(src) and src.shape == out.shape:
+                            idx = mask.nonzero(as_tuple=True)[0]
+                            if idx.numel():
+                                stride = max(1, int(idx.numel()) // int(max_rows))
+                                sel = idx[::stride]
+                                before = src[sel].detach().float()
+                                delta = out[sel].detach().float() - before
+                                base = before.norm()
+                                # Kept as a 0-dim tensor: averaged and read once, after
+                                # sampling, instead of syncing the device 50x per step.
+                                capture_holder[0].setdefault(block, []).append(
+                                    delta.norm() / base.clamp(min=1e-8))
+                    except Exception:  # noqa: BLE001
+                        pass  # a probe never breaks a generation
+                    return {"img": out}
+                return _probe
+
+            for _b in range(int(n_blocks)):
+                dit_patches[("double_block", _b)] = _make_probe(_b)
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+            patched.model_options["transformer_options"] = to
+            return patched
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 block influence probe", _e,
+                        "not measuring this run")
+            return model
+
     def _install_bounded_attention(self, model, latent, positive):
         """EXPERIMENTAL (arXiv:2403.16990-inspired, see [[project_bounded_attention]]): mask the
         text cross-attention (attn2 only — never audio_attn2, never self-attention) so the LEFT
@@ -6990,7 +7089,7 @@ class FunPackLTXAVSceneChainSampler:
                trajectory_guidance=False, trajectory_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                h3_repr_steering=False, h3_repr_steering_strength=0.05,
-               h3_repr_steering_block="25",
+               h3_repr_steering_block="25", h3_block_influence=False,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
@@ -7847,6 +7946,7 @@ class FunPackLTXAVSceneChainSampler:
                     h3_repr_steering=h3_repr_steering,
                     h3_repr_steering_strength=h3_repr_steering_strength,
                     h3_repr_steering_block=h3_repr_steering_block,
+                    h3_block_influence=h3_block_influence,
                     refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene

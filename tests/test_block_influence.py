@@ -1,0 +1,297 @@
+"""Per-block influence probe: the pending->rating pairing, the profile maths, and the
+flatness readout that decides whether rating-driven block weighting is worth pursuing."""
+import sys
+
+import pytest
+import torch
+
+sys.path.insert(0, ".")
+import block_influence as bi  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(bi, "state_path", lambda key: str(tmp_path / f"{key}.pt"))
+
+
+def _run(key, profile, reward):
+    bi.save_pending(key, profile)
+    return bi.commit(key, reward)
+
+
+# --- pending / commit contract -------------------------------------------------
+
+def test_commit_reports_recorded_on_a_real_pairing():
+    assert _run("k", {0: 0.1, 1: 0.2}, 1.0) == "recorded"
+
+
+def test_commit_reports_no_pending_with_nothing_to_pair():
+    assert bi.commit("k", 1.0) == "no_pending"
+
+
+def test_commit_reports_no_key():
+    assert bi.commit("", 1.0) == "no_key"
+
+
+def test_pending_overwrites_rather_than_accumulating():
+    bi.save_pending("k", {0: 0.1})
+    bi.save_pending("k", {0: 0.9})  # a second run before any rating
+    bi.commit("k", 1.0)
+    rows = bi._load("k")["rows"]
+    assert len(rows) == 1 and rows[0]["profile"][0] == 0.9
+
+
+def test_clear_all_removes_the_state():
+    _run("k", {0: 0.1}, 1.0)
+    bi.clear_all("k")
+    assert bi.profile("k")["overall"] == {}
+
+
+def test_no_key_is_a_safe_no_op():
+    bi.save_pending("", {0: 0.1})
+    bi.commit("", 1.0)
+    bi.clear_all("")
+
+
+# --- profile maths -------------------------------------------------------------
+
+def test_overall_is_the_mean_across_runs_regardless_of_rating():
+    _run("k", {0: 0.2, 1: 0.4}, 1.0)
+    _run("k", {0: 0.4, 1: 0.6}, -1.0)
+    got = bi.profile("k")["overall"]
+    assert got[0] == pytest.approx(0.3)
+    assert got[1] == pytest.approx(0.5)
+
+
+def test_difference_needs_min_per_group_on_each_side():
+    for _ in range(bi.MIN_PER_GROUP):
+        _run("k", {0: 0.5}, 1.0)
+    _run("k", {0: 0.1}, -1.0)  # only one disliked
+    p = bi.profile("k")
+    assert p["difference"] is None
+    assert p["n_liked"] == bi.MIN_PER_GROUP and p["n_disliked"] == 1
+
+
+def test_difference_is_liked_mean_minus_disliked_mean():
+    for _ in range(bi.MIN_PER_GROUP):
+        _run("k", {0: 0.8, 1: 0.2}, 1.0)
+        _run("k", {0: 0.4, 1: 0.2}, -1.0)
+    diff = bi.profile("k")["difference"]
+    assert diff[0] == pytest.approx(0.4)   # block 0 runs hotter on liked runs
+    assert diff[1] == pytest.approx(0.0)   # block 1 is indifferent to the rating
+
+
+def test_a_block_missing_from_a_row_is_skipped_not_counted_as_zero():
+    """A run that hooked fewer blocks must not drag the absent block's mean toward 0 --
+    the same rule h3_repr_steering.direction() follows for a missing descriptor."""
+    _run("k", {0: 0.4, 1: 0.4}, 1.0)
+    _run("k", {0: 0.6}, 1.0)  # no block 1 this run
+    got = bi.profile("k")["overall"]
+    assert got[0] == pytest.approx(0.5)
+    assert got[1] == pytest.approx(0.4)
+
+
+def test_neutral_weight_rows_count_toward_overall_but_neither_group():
+    _run("k", {0: 1.0}, 0.0)
+    p = bi.profile("k")
+    assert p["n_liked"] == 0 and p["n_disliked"] == 0
+    assert p["overall"][0] == pytest.approx(1.0)
+
+
+# --- flatness: the number the whole probe exists to produce ---------------------
+
+def test_a_perfectly_flat_profile_reports_zero_flatness():
+    """Every block moving the stream by the same amount is the null result that says
+    rating-driven block weighting has nothing to grip."""
+    _run("k", {b: 0.5 for b in range(10)}, 1.0)
+    assert bi.profile("k")["flatness"] == pytest.approx(0.0)
+
+
+def test_a_structured_profile_reports_nonzero_flatness():
+    _run("k", {0: 0.1, 1: 0.5, 2: 1.5}, 1.0)
+    assert bi.profile("k")["flatness"] > 0.5
+
+
+def test_flatness_is_scale_invariant():
+    """Coefficient of variation, not raw spread: doubling every block's delta describes the
+    same shape and must not read as twice as structured."""
+    _run("a", {0: 0.1, 1: 0.2, 2: 0.4}, 1.0)
+    _run("b", {0: 0.2, 1: 0.4, 2: 0.8}, 1.0)
+    assert bi.profile("a")["flatness"] == pytest.approx(bi.profile("b")["flatness"])
+
+
+def test_flatness_is_none_with_no_data():
+    assert bi.profile("k")["flatness"] is None
+
+
+def test_corrupt_state_file_degrades_to_empty(tmp_path, monkeypatch):
+    path = tmp_path / "junk.pt"
+    path.write_bytes(b"not a torch file")
+    monkeypatch.setattr(bi, "state_path", lambda key: str(path))
+    assert bi.profile("k")["overall"] == {}
+    assert bi.commit("k", 1.0) == "no_pending"
+
+
+def test_rows_survive_a_reload_as_plain_floats():
+    """weights_only=True load: the state must never depend on unpickling a custom class."""
+    _run("k", {0: 0.25}, 1.0)
+    rows = bi._load("k")["rows"]
+    assert isinstance(rows[0]["profile"][0], float)
+    assert isinstance(rows[0]["weight"], float)
+    assert not isinstance(rows[0]["profile"][0], torch.Tensor)
+
+
+# --- the sampler hook itself ---------------------------------------------------
+#
+# The module above is only half the probe. The half that can silently record nothing is the
+# hook: if the video mask misses, the input tensor is not where it is expected, or the
+# swallow-everything guard eats a real error, the profile comes back empty and looks like
+# "this model has no block structure" rather than "the probe never ran". These exercise the
+# registered hook directly, the way the model calls it.
+
+import types  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+for _name in (
+    "comfy", "comfy.k_diffusion", "comfy.k_diffusion.sampling",
+    "comfy.model_sampling", "comfy.nested_tensor", "comfy.sample",
+    "comfy.samplers", "comfy.utils",
+):
+    sys.modules.setdefault(_name, types.ModuleType(_name))
+sys.modules["comfy.nested_tensor"].NestedTensor = object
+
+import samplers  # noqa: E402
+
+
+class _Model:
+    def __init__(self):
+        self.model_options = {}
+
+    def clone(self):
+        m = _Model()
+        m.model_options = {k: dict(v) if isinstance(v, dict) else v
+                           for k, v in self.model_options.items()}
+        return m
+
+
+def _install(capture, n_blocks=2, max_rows=512):
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    patched = s._install_block_influence(_Model(), capture, n_blocks=n_blocks,
+                                          max_rows=max_rows)
+    return patched.model_options["transformer_options"]["patches_replace"]["dit"]
+
+
+def _call(hook, src, out, mod_segments):
+    """Drive the hook the way minimax/model.py does."""
+    return hook({"img": src, "mod_segments": mod_segments},
+                {"original_block": lambda a: {"img": out}})
+
+
+def test_hook_records_the_relative_delta_on_video_rows():
+    capture = [{}]
+    dit = _install(capture)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 3.0                       # ||video rows|| = 6.0 over 4 rows
+    out = src.clone()
+    out[:, 1] = 3.0                       # delta has the same norm as the input
+    res = _call(dit[("double_block", 0)], src, out, [(0, 4, 6)])  # tag 6 % 3 == 0 -> video
+    assert torch.equal(res["img"], out)   # measurement must not modify the stream
+    recorded = torch.stack(capture[0][0]).mean().item()
+    assert recorded == pytest.approx(1.0, rel=1e-4)
+
+
+def test_hook_averages_across_steps():
+    capture = [{}]
+    dit = _install(capture)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 1.0
+    for scale in (1.0, 3.0):              # two "steps" with different deltas
+        out = src.clone()
+        out[:, 1] = scale
+        _call(dit[("double_block", 0)], src, out, [(0, 4, 6)])
+    assert torch.stack(capture[0][0]).mean().item() == pytest.approx(2.0, rel=1e-4)
+
+
+def test_text_and_audio_rows_are_not_measured():
+    """Only video rows count -- a huge delta on text rows must not register."""
+    capture = [{}]
+    dit = _install(capture)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 1.0
+    out = src.clone()
+    out[2:, 1] = 50.0                     # rows 2-3 are text below
+    _call(dit[("double_block", 0)], src, out, [(0, 2, 6), (2, 4, 7)])
+    recorded = torch.stack(capture[0][0]).mean().item()
+    assert recorded == pytest.approx(0.0, abs=1e-6)
+
+
+def test_no_video_segment_records_nothing_rather_than_zero():
+    capture = [{}]
+    dit = _install(capture)
+    src = torch.ones(4, 8)
+    _call(dit[("double_block", 0)], src, src * 2, [(0, 4, 7)])  # text only
+    assert capture[0] == {}
+
+
+def test_each_block_accumulates_separately():
+    capture = [{}]
+    dit = _install(capture, n_blocks=3)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 1.0
+    for block, scale in ((0, 1.0), (2, 4.0)):
+        out = src.clone()
+        out[:, 1] = scale
+        _call(dit[("double_block", block)], src, out, [(0, 4, 6)])
+    assert set(capture[0]) == {0, 2}      # block 1 was never called
+    assert torch.stack(capture[0][0]).mean().item() == pytest.approx(1.0, rel=1e-4)
+    assert torch.stack(capture[0][2]).mean().item() == pytest.approx(4.0, rel=1e-4)
+
+
+def test_row_subsampling_bounds_the_reduction():
+    """The stride keeps the cost flat as the sequence grows; the estimate must stay close."""
+    capture = [{}]
+    dit = _install(capture, max_rows=16)
+    n = 4096
+    src = torch.zeros(n, 8)
+    src[:, 0] = 1.0
+    out = src.clone()
+    out[:, 1] = 2.0
+    _call(dit[("double_block", 0)], src, out, [(0, n, 6)])
+    assert torch.stack(capture[0][0]).mean().item() == pytest.approx(2.0, rel=1e-3)
+
+
+def test_an_existing_patch_at_the_same_block_is_chained_not_replaced():
+    """Installing over another mechanism's hook must call it, not drop it."""
+    calls = []
+
+    class _M(_Model):
+        pass
+
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    base = _M()
+
+    def _inner(args, extra):
+        calls.append(True)
+        return {"img": args["img"] * 2}
+
+    base.model_options["transformer_options"] = {
+        "patches_replace": {"dit": {("double_block", 0): _inner}}}
+    capture = [{}]
+    patched = s._install_block_influence(base, capture, n_blocks=1)
+    hook = patched.model_options["transformer_options"]["patches_replace"]["dit"][
+        ("double_block", 0)]
+    src = torch.ones(4, 8)
+    res = _call(hook, src, src, [(0, 4, 6)])
+    assert calls == [True]                     # inner ran
+    assert torch.equal(res["img"], src * 2)    # and its output is what propagates
+
+
+def test_a_broken_hook_never_breaks_sampling():
+    capture = [{}]
+    dit = _install(capture)
+    src = torch.ones(4, 8)
+    # mod_segments of the wrong shape entirely: must pass the block output through anyway.
+    res = _call(dit[("double_block", 0)], src, src * 3, "not-segments")
+    assert torch.equal(res["img"], src * 3)
+    assert capture[0] == {}
