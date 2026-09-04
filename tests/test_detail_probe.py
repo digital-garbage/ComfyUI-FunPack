@@ -473,3 +473,88 @@ def test_video_only_survives_several_extra_passes():
         {"original_block": lambda a: {"img": a["img"] + 1.0}})["img"]
     assert torch.equal(out[:2], torch.full((2, 3), 4.0))   # 1 + 3 extra
     assert torch.equal(out[2:], torch.full((2, 3), 1.0))   # still single-pass
+
+
+# --- span loop: 31,32..40,31,32..40 rather than 31,31,32,32..40,40 -----------------
+
+class _SpanModel(_Model):
+    """A model whose DiT exposes a real block list, which is what the span loop walks —
+    `original_block` closes over ONE block, so a loop cannot be built from the hook alone."""
+    def __init__(self, n=6):
+        super().__init__()
+        self.calls = []
+        blocks = [self._mk(i) for i in range(n)]
+        self.model = types.SimpleNamespace(
+            diffusion_model=types.SimpleNamespace(blocks=blocks))
+
+    def _mk(self, i):
+        def block(img, t_emb, mod_segments, rope_freqs, transformer_options=None):
+            self.calls.append(i)
+            return img + (10 ** i)          # each block leaves its own fingerprint
+        return block
+
+    def clone(self):
+        m = _SpanModel.__new__(_SpanModel)
+        m.model_options = {k: dict(v) if isinstance(v, dict) else v
+                           for k, v in self.model_options.items()}
+        m.model, m.calls, m._mk = self.model, self.calls, self._mk
+        return m
+
+
+def _drive_span(mdl, lo, hi, segs=None):
+    """Run the model's own block loop the way minimax/model.py does."""
+    dit = mdl.model_options["transformer_options"]["patches_replace"]["dit"]
+    h = torch.zeros(4, 2)
+    for i in range(len(mdl.model.diffusion_model.blocks)):
+        args = {"img": h, "t_emb": None, "mod_segments": segs or [(0, 4, 6)],
+                "rope_freqs": None, "transformer_options": {}}
+        if ("double_block", i) in dit:
+            h = dit[("double_block", i)](args, {"original_block": None})["img"]
+        else:
+            h = mdl.model.diffusion_model.blocks[i](h, None, segs, None)
+    return h
+
+
+def test_the_span_runs_in_order_and_wraps_once():
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    src = _SpanModel(n=6)
+    patched = s._install_span_loop(src, {2, 3, 4}, times=1)
+    _drive_span(patched, 2, 4)
+    # blocks 0,1,5 once each; the span 2,3,4 twice IN ORDER — not 2,2,3,3,4,4.
+    assert src.calls == [0, 1, 2, 3, 4, 2, 3, 4, 5]
+
+
+def test_more_passes_loop_the_span_again():
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    src = _SpanModel(n=5)
+    patched = s._install_span_loop(src, {1, 2}, times=2)
+    _drive_span(patched, 1, 2)
+    assert src.calls == [0, 1, 2, 1, 2, 1, 2, 3, 4]
+
+
+def test_a_scattered_selection_is_refused_not_silently_widened():
+    """Looping min..max of 31,34,37,40 would run 32,33,35,36,... which the user deliberately
+    left out. Refuse and say so rather than quietly doing something else."""
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    src = _SpanModel(n=8)
+    assert s._install_span_loop(src, {1, 3, 5}, times=1) is src   # untouched model
+
+
+def test_a_model_with_no_block_list_degrades_cleanly():
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    plain = _Model()
+    assert s._install_span_loop(plain, {1, 2}, times=1) is plain
+
+
+def test_video_only_gives_text_and_audio_the_span_ONCE_not_zero_times():
+    """The non-video rows must still get the span's normal single pass — reverting them to
+    their pre-span value would skip those blocks entirely for audio, which is a different
+    and worse intervention than 'do not repeat them'."""
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    src = _SpanModel(n=4)
+    patched = s._install_span_loop(src, {1, 2}, times=1, video_only=True)
+    out = _drive_span(patched, 1, 2, segs=[(0, 2, 6), (2, 4, 8)])
+    span_once = 10 ** 1 + 10 ** 2          # the looped blocks
+    outside = 10 ** 0 + 10 ** 3            # blocks 0 and 3 run once for every row
+    assert torch.allclose(out[:2], torch.full((2, 2), float(outside + 2 * span_once)))
+    assert torch.allclose(out[2:], torch.full((2, 2), float(outside + span_once)))

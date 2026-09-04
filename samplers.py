@@ -2974,6 +2974,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "",
                     "tooltip": "EXPERIMENTAL, unvalidated (H3). Runs the named block(s) on their OWN output before passing the result on -- a second pass that never leaves latent space (no VAE round trip, no re-noising, no extra sampler step). Because a block's contribution is small, running it twice roughly DOUBLES what that block does, with the nonlinear part being a genuine second refinement of its own result. Blank = off. Accepts a block, a range, or a list: 40 | 38-42 | 10,40,44. Costs one extra block forward per repeat (~2% of a step each). The blocks AFTER a repeated one were trained on its normal output, so a twice-processed stream is mildly out of distribution for them -- expect this to be visible, and not always as an improvement.",
                 }),
+                "h3_block_repeat_span_loop": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Loop the whole SPAN instead of repeating each block on itself. Off: 31,31,32,32...40,40 -- every block gets its own doubled output, which is a distribution the NEXT block has never seen, so a wide span makes many seams and collapses. On: 31,32...40,31,32...40 -- every block still receives input from its normal predecessor and there is exactly ONE seam, at the wrap. Same cost either way. Needs a contiguous range (31-40); a scattered list is refused rather than silently looping the gaps.",
+                }),
                 "h3_block_repeat_video_only": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Keep the extra pass for VIDEO rows only, restoring text and audio rows to their single-pass value. H3 packs all three into one sequence, so a plain repeat doubles the block for audio too -- the leading suspect for the unprompted dialogue band 31-40 produces on every run. This does not undo audio's influence on the second pass (attention already mixed it into the video rows before they were restored); it fixes the audio that comes OUT, which is the part you hear. Off by default so the measured sweep results stay reproducible.",
@@ -3692,7 +3696,7 @@ class FunPackLTXAVSceneChainSampler:
                       h3_repr_steering=False, h3_repr_steering_strength=0.05,
                       h3_repr_steering_block="25",
                       h3_block_repeat="", h3_block_repeat_times=1,
-                      h3_block_repeat_video_only=False,
+                      h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                       refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -3759,8 +3763,10 @@ class FunPackLTXAVSceneChainSampler:
         # reports the block's total contribution including the repeat.
         _repeat_blocks = self._parse_block_spec(h3_block_repeat)
         if _repeat_blocks:
-            model = self._install_block_repeat(model, _repeat_blocks, h3_block_repeat_times,
-                                                video_only=h3_block_repeat_video_only)
+            _install = (self._install_span_loop if h3_block_repeat_span_loop
+                        else self._install_block_repeat)
+            model = _install(model, _repeat_blocks, h3_block_repeat_times,
+                             video_only=h3_block_repeat_video_only)
         # Measurement next, steering last: whatever is installed later chains this probe
         # as its inner call, so the delta it records is the block's OWN, not one that already
         # contains another mechanism's injection.
@@ -6811,6 +6817,105 @@ class FunPackLTXAVSceneChainSampler:
                 continue
         return out
 
+    def _install_span_loop(self, model, blocks, times=1, video_only=False):
+        """EXPERIMENTAL (H3): run a CONTIGUOUS SPAN of blocks, then send the result back to the
+        start of the span and run it again -- 31,32..40,31,32..40 -- instead of repeating each
+        block on itself -- 31,31,32,32..40,40.
+
+        Why this is a different operation, not a re-spelling of block repeat: per-block repeat
+        hands every block its OWN doubled output, a distribution the NEXT block has never
+        seen, so a ten-block span creates ten seams. A span loop leaves every block receiving
+        input from its normal predecessor and creates exactly ONE seam, at the wrap (last ->
+        first). That is the looped/Universal-Transformer pattern, and it is the obvious
+        explanation to test for why per-block repeat collapses as the span widens while two
+        scattered blocks survive the same repeat count.
+
+        Implementation: the span's FIRST block does all the work -- it walks the real block
+        modules itself (`model.model.diffusion_model.blocks`, which the hook cannot reach via
+        `original_block`, since that closes over one block only) and loops them -- and every
+        other block in the span is replaced with a pass-through, because the model's own loop
+        will still call them. Same total cost as block repeat at the same count: span_len x
+        times extra block evaluations.
+
+        `video_only` restores text and audio rows to their pre-loop value, same reasoning as
+        block repeat's: H3 packs all three in one sequence and doubling the block for audio is
+        the leading suspect for band 31-40 inventing dialogue.
+
+        Refuses (returns the model untouched, and says so) on a non-contiguous selection: a
+        loop is only defined over a span, and silently looping the min..max of a scattered
+        list would run blocks the user deliberately left out."""
+        try:
+            if not blocks or int(times) < 1:
+                return model
+            lo, hi = min(blocks), max(blocks)
+            if set(blocks) != set(range(lo, hi + 1)):
+                _log.failed("FunPackSceneChain", "H3 span loop",
+                            f"selection {sorted(blocks)} is not contiguous",
+                            "span loop needs a range like 31-40; blocks run once as usual")
+                return model
+            dit = getattr(getattr(getattr(model, "model", None), "diffusion_model", None),
+                          "blocks", None)
+            if dit is None or len(dit) <= hi:
+                _log.failed("FunPackSceneChain", "H3 span loop",
+                            "this model exposes no block list to loop over",
+                            "blocks run once as usual")
+                return model
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+            _times, _video_only = int(times), bool(video_only)
+            if _video_only:
+                try:
+                    from . import h3_repr_steering as _rs_mask
+                except ImportError:
+                    import h3_repr_steering as _rs_mask
+            mask_cache = {}
+
+            def _head(args, extra):
+                h = args["img"]
+                before = h if _video_only else None
+                for _pass in range(_times + 1):
+                    for _i in range(lo, hi + 1):
+                        h = dit[_i](h, args["t_emb"], args["mod_segments"], args["rope_freqs"],
+                                    transformer_options=args.get("transformer_options"))
+                if _video_only and before is not None and before.shape == h.shape:
+                    seq_len = int(h.shape[0])
+                    mask = mask_cache.get(seq_len, "MISS")
+                    if mask == "MISS":
+                        mask = _rs_mask.video_mask_from_mod_segments(
+                            args.get("mod_segments"), seq_len, h.device)
+                        mask_cache[seq_len] = mask
+                    if mask is not None:
+                        # Text/audio rows get the span run ONCE, which is what they would have
+                        # had with the feature off -- so re-run the span on the original for
+                        # those rows rather than reverting to pre-span values, which would
+                        # skip these blocks entirely for audio.
+                        single = before
+                        for _i in range(lo, hi + 1):
+                            single = dit[_i](single, args["t_emb"], args["mod_segments"],
+                                             args["rope_freqs"],
+                                             transformer_options=args.get("transformer_options"))
+                        h = torch.where(mask.view(-1, *([1] * (h.dim() - 1))), h, single)
+                return {"img": h}
+
+            def _passthrough(args, _extra):
+                return {"img": args["img"]}   # the head already ran this block
+
+            dit_patches[("double_block", lo)] = _head
+            for _b in range(lo + 1, hi + 1):
+                dit_patches[("double_block", _b)] = _passthrough
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+            patched.model_options["transformer_options"] = to
+            print(f"[FunPackSceneChain] H3 span loop: blocks {lo}-{hi} run {_times + 1}x as a "
+                  f"span (wrap {hi}->{lo}, one seam)"
+                  f"{', video rows only' if _video_only else ''}.")
+            return patched
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 span loop", _e, "blocks run once as usual")
+            return model
+
     def _install_block_repeat(self, model, blocks, times=1, video_only=False):
         """EXPERIMENTAL (H3): run a block on its OWN output before passing it on.
 
@@ -7272,7 +7377,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_repr_steering=False, h3_repr_steering_strength=0.05,
                h3_repr_steering_block="25",
                h3_block_repeat="", h3_block_repeat_times=1,
-               h3_block_repeat_video_only=False,
+               h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
@@ -8170,6 +8275,7 @@ class FunPackLTXAVSceneChainSampler:
                     h3_block_repeat=h3_block_repeat,
                     h3_block_repeat_times=h3_block_repeat_times,
                     h3_block_repeat_video_only=h3_block_repeat_video_only,
+                    h3_block_repeat_span_loop=h3_block_repeat_span_loop,
                     refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene
