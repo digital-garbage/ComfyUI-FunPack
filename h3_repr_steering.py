@@ -78,6 +78,24 @@ def state_path(refinement_key):
     return refinement_state_path(refinement_key, "repr_steer", prefix="refine_v2", extension="pt")
 
 
+def _mask_from_mod_segments(mod_segments, seq_len, device, tag):
+    """Shared by video_mask_from_mod_segments/audio_mask_from_mod_segments -- see those for
+    what `tag` means. Returns None (not an all-False mask) when nothing matched, so callers
+    no-op on a shape this has never seen rather than silently mask everything out."""
+    mask = torch.zeros(seq_len, dtype=torch.bool, device=device)
+    found = False
+    for a, b, row in mod_segments or ():
+        if torch.is_tensor(row):
+            tags = (row % 3) == tag
+            if tags.any():
+                mask[a:b][tags] = True
+                found = True
+        elif int(row) % 3 == tag:
+            mask[a:b] = True
+            found = True
+    return mask if found else None
+
+
 def video_mask_from_mod_segments(mod_segments, seq_len, device):
     """mod_segments (from the H3 block hook's own args) -> a [seq_len] bool mask, True on
     VIDEO rows. Each entry is (a, b, row) where row is either a scalar `t_row*3 + tag` or,
@@ -85,18 +103,13 @@ def video_mask_from_mod_segments(mod_segments, seq_len, device):
     construction (`seg_tag` in model.py: video/cond/ref_img all tag 0). Returns None if
     nothing matches, which happens on a shape this has never seen -- callers no-op rather
     than guess."""
-    mask = torch.zeros(seq_len, dtype=torch.bool, device=device)
-    found = False
-    for a, b, row in mod_segments or ():
-        if torch.is_tensor(row):
-            tags = (row % 3) == 0
-            if tags.any():
-                mask[a:b][tags] = True
-                found = True
-        elif int(row) % 3 == 0:
-            mask[a:b] = True
-            found = True
-    return mask if found else None
+    return _mask_from_mod_segments(mod_segments, seq_len, device, 0)
+
+
+def audio_mask_from_mod_segments(mod_segments, seq_len, device):
+    """Same as video_mask_from_mod_segments but for AUDIO rows (tag 2 -- audio/cond_audio/
+    ref_audio in model.py's `seg_tag`)."""
+    return _mask_from_mod_segments(mod_segments, seq_len, device, 2)
 
 
 def capture(hidden_state, video_mask):

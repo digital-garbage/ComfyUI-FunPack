@@ -2806,6 +2806,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.05, "min": 0.0, "max": 2.0, "step": 0.01,
                     "tooltip": "How much of the learned direction to add, as a fraction of that block's own hidden-state norm. Unlike the attention-bias channel, there is no architectural ceiling here -- push too far and coherence breaks with no warning. Start low; the way to tell it is doing anything at all is to push this deliberately high on a same-seed test and see if the video visibly moves, then back off.",
                 }),
+                "h3_av_decouple": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Damps how much video and audio attend to EACH OTHER inside H3's joint self-attention, without touching any hidden state -- for the failure pattern where one comes out clean and the other doesn't. 0 = off (installs nothing, zero cost). Higher = weaker cross-modal influence; 1.0 fully cuts it, which likely also kills legitimate AV sync, so this is a knob to search down from, not up to.",
+                }),
                 "alg_guide_blur_strength": ("FLOAT", {
                     "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
                     "tooltip": "Downsample factor for the guide-frame blur (alg_blur_guides). Higher = blurrier guide/JoyAI frames during the affected steps. Independent of the sampler's anchor alg_strength.",
@@ -3703,6 +3707,7 @@ class FunPackLTXAVSceneChainSampler:
                       bounded_attention_enabled=False,
                       h3_repr_steering=False, h3_repr_steering_strength=0.05,
                       h3_repr_steering_block="25", h3_repr_capture_slot="",
+                      h3_av_decouple=0.0,
                       h3_block_repeat="", h3_block_repeat_times=1,
                       h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                       h3_block_repeat_last_steps=0,
@@ -3795,6 +3800,7 @@ class FunPackLTXAVSceneChainSampler:
             model = self._install_h3_repr_steering(
                 model, refinement_key, h3_repr_steering_strength, _repr_capture,
                 steer_block=h3_repr_steering_block)
+        model = self._install_h3_av_decouple(model, h3_av_decouple)
 
         try:
             sampled = comfy.sample.sample_custom(
@@ -6817,6 +6823,102 @@ class FunPackLTXAVSceneChainSampler:
                         "not applied and not capturing this run")
             return model
 
+    def _install_h3_av_decouple(self, model, strength):
+        """EXPERIMENTAL, unvalidated (H3 only). Damps cross-modal attention instead of
+        touching any hidden state: H3 packs video/text/audio into ONE joint self-attention
+        (no separate cross-attn to mask, unlike LTXAV -- see project_minimax_h3 memory,
+        which is why Bounded Attention was ruled out there as GB-scale on a ~37k-token
+        sequence). This does not build that S×S mask at all. It uses comfy's own
+        `optimized_attention_override` extension point (comfy/ldm/modules/attention.py's
+        `wrap_attn` -- already wired into every backend, nothing to monkeypatch) to run the
+        SAME joint attention as separate video-query and audio-query passes against a K
+        where the OTHER modality's rows are scaled down by `strength`; text/ref/cond rows
+        stay on one ordinary pass, untouched. Splitting the query dimension like this costs
+        nothing extra -- same total Q*K*V work as the single joint call, just partitioned --
+        and the only new memory is two full-length clones of K (audio and video zeroed out
+        by contrast, at most `strength`), not a dense attention matrix.
+
+        `strength` in [0, 1]; 0 or blank installs nothing (exact pass-through, not just a
+        no-op override) so an unset knob costs literally zero.
+        """
+        try:
+            _strength = float(strength or 0.0)
+        except (TypeError, ValueError):
+            _strength = 0.0
+        if _strength <= 0.0:
+            return model
+        _strength = min(_strength, 1.0)
+        try:
+            try:
+                from . import h3_repr_steering as _rs
+            except ImportError:
+                import h3_repr_steering as _rs
+
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+
+            # mod_segments is only ever handed to blocks directly (never threaded onto
+            # transformer_options by core), so the only way to see it here is to catch it
+            # off a block hook -- block 0 always runs first and mod_segments doesn't change
+            # block to block, so one hook is enough. Chains through whatever's already
+            # hooked there (h3_repr_steering hooks all 50 blocks) so this never disables it.
+            _seg_holder = {"mod_segments": None}
+            _inner0 = dit_patches.get(("double_block", 0))
+
+            def _capture_hook(args, extra):
+                _seg_holder["mod_segments"] = args.get("mod_segments")
+                return extra["original_block"](args) if _inner0 is None else _inner0(args, extra)
+
+            dit_patches[("double_block", 0)] = _capture_hook
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+
+            _mask_cache = {}  # seq_len -> (video_mask, audio_mask); one live resolution per gen
+
+            def _override(func, q, k, v, heads, mask=None, skip_reshape=True,
+                          transformer_options=None, **kwargs):
+                seg = _seg_holder["mod_segments"]
+                if seg is None or mask is not None or not skip_reshape:
+                    return func(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, **kwargs)
+                seq_len = q.shape[-2]
+                cached = _mask_cache.get(seq_len)
+                if cached is None:
+                    cached = (_rs.video_mask_from_mod_segments(seg, seq_len, q.device),
+                              _rs.audio_mask_from_mod_segments(seg, seq_len, q.device))
+                    _mask_cache[seq_len] = cached
+                vmask, amask = cached
+                if vmask is None or amask is None or k.shape[-2] != seq_len:
+                    return func(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, **kwargs)
+                other = ~(vmask | amask)
+                out = torch.empty(q.shape[0], seq_len, heads * q.shape[-1],
+                                  dtype=q.dtype, device=q.device)
+                if amask.any():
+                    k_damped = k.clone()
+                    k_damped[:, :, vmask, :] *= (1.0 - _strength)
+                    out[:, amask, :] = func(q[:, :, amask, :], k_damped, v, heads,
+                                            mask=None, skip_reshape=skip_reshape, **kwargs)
+                if vmask.any():
+                    k_damped = k.clone()
+                    k_damped[:, :, amask, :] *= (1.0 - _strength)
+                    out[:, vmask, :] = func(q[:, :, vmask, :], k_damped, v, heads,
+                                            mask=None, skip_reshape=skip_reshape, **kwargs)
+                if other.any():
+                    out[:, other, :] = func(q[:, :, other, :], k, v, heads,
+                                            mask=None, skip_reshape=skip_reshape, **kwargs)
+                return out
+
+            to["optimized_attention_override"] = _override
+            patched.model_options["transformer_options"] = to
+            print(f"[FunPackSceneChain] H3 attention decoupling: damping cross-modal "
+                  f"video<->audio attention by {_strength:g}.")
+            return patched
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 attention decoupling", _e,
+                        "not applied this run")
+            return model
+
     @staticmethod
     def _parse_block_spec(spec, n_blocks=50):
         """"40" | "38-42" | "10,40,44" | "" -> a set of block indices. Anything unparseable
@@ -7462,6 +7564,7 @@ class FunPackLTXAVSceneChainSampler:
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                h3_repr_steering=False, h3_repr_steering_strength=0.05,
                h3_repr_steering_block="25", h3_repr_capture_slot="",
+               h3_av_decouple=0.0,
                h3_block_repeat="", h3_block_repeat_times=1,
                h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                h3_block_repeat_last_steps=0,
@@ -8360,6 +8463,7 @@ class FunPackLTXAVSceneChainSampler:
                     h3_repr_steering_strength=h3_repr_steering_strength,
                     h3_repr_steering_block=h3_repr_steering_block,
                     h3_repr_capture_slot=h3_repr_capture_slot,
+                    h3_av_decouple=h3_av_decouple,
                     h3_block_repeat=h3_block_repeat,
                     h3_block_repeat_times=h3_block_repeat_times,
                     h3_block_repeat_video_only=h3_block_repeat_video_only,
