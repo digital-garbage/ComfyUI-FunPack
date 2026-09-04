@@ -236,6 +236,7 @@
       URL.revokeObjectURL(url);
     },
     detailProbeStatus: (key) => j("GET", API("/detail_probe") + `?key=${encodeURIComponent(key || "default")}`),
+    detailProbeSetEnabled: (key, enabled) => j("POST", API("/detail_probe"), { key: key || "default", enabled: !!enabled }),
     detailProbeClear: (key) => j("POST", API("/detail_probe/clear"), { key: key || "default" }),
 
     // Served by ComfyUI's own same-origin /view endpoint — no editor route needed.

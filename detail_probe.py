@@ -77,14 +77,46 @@ def _log():
     return fl
 
 
+_ENV_SWITCH = "FUNPACK_DETAIL_PROBE"
+
+
+def _switch_path():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, "refinements", "detail_probe", "enabled")
+
+
 def collection_enabled():
-    """Rides the block-influence switch -- both are research measurement, opted into from
-    the same place, and a second toggle for the same decision is a worse UI, not a safer one."""
+    """Its own switch, NOT the block probe's, despite both being research measurement.
+
+    They cost wildly different amounts and that difference is the point: the block probe
+    gathers ~17k x 5120 rows per block per step, while this copies ONE latent once per run.
+    Allocator churn on that scale can change which GPU kernels get selected, so a probe can
+    move the numbers it is measuring -- and answering "is the measurement causing the
+    variation?" requires running this one WITHOUT that one. A single shared toggle made that
+    experiment impossible to perform."""
+    raw = os.environ.get(_ENV_SWITCH, "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
     try:
-        from . import block_influence as bi
-    except ImportError:
-        import block_influence as bi
-    return bi.collection_enabled()
+        with open(_switch_path(), "r", encoding="utf-8") as fh:
+            return fh.read().strip() == "1"
+    except (OSError, ValueError):
+        return False
+
+
+def set_collection_enabled(on):
+    on = bool(on)
+    os.environ[_ENV_SWITCH] = "1" if on else "0"
+    try:
+        os.makedirs(os.path.dirname(_switch_path()), exist_ok=True)
+        tmp = _switch_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write("1" if on else "0")
+        os.replace(tmp, _switch_path())
+    except OSError as e:
+        _log().failed("H3 detail probe", "switch save", e,
+                      "recording is set for this session only and reverts after a restart")
+    return on
 
 
 def state_path(refinement_key):

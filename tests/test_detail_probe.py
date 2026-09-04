@@ -398,3 +398,32 @@ def test_identical_conditioning_shifts_nothing():
     row = dp.record("k", _edged(seed=0), settings=dict(cond))
     assert row["cond_shift"] == 0.0
     assert row["changed"] == {}
+
+
+def test_the_detail_probe_switch_is_its_own(monkeypatch, tmp_path):
+    """Deliberately NOT shared with the block probe. They cost wildly different amounts —
+    this copies one latent per run, that gathers every block on every step — and answering
+    "is the measurement moving the picture?" requires running this one while that one is off.
+    A shared toggle made that experiment impossible."""
+    import block_influence as bi
+    monkeypatch.delenv(dp._ENV_SWITCH, raising=False)
+    monkeypatch.delenv(bi._ENV_SWITCH, raising=False)
+    monkeypatch.setattr(dp, "_switch_path", lambda: str(tmp_path / "dp" / "enabled"))
+    monkeypatch.setattr(bi, "_switch_dir", lambda: str(tmp_path / "bi"))
+
+    bi.set_collection_enabled(True)
+    assert dp.collection_enabled() is False       # not dragged along by the other one
+    dp.set_collection_enabled(True)
+    bi.set_collection_enabled(False)
+    assert dp.collection_enabled() is True        # and not switched off by it either
+
+
+def test_the_detail_switch_persists_and_env_wins(monkeypatch, tmp_path):
+    monkeypatch.delenv(dp._ENV_SWITCH, raising=False)
+    monkeypatch.setattr(dp, "_switch_path", lambda: str(tmp_path / "dp" / "enabled"))
+    assert dp.collection_enabled() is False
+    dp.set_collection_enabled(True)
+    monkeypatch.delenv(dp._ENV_SWITCH, raising=False)
+    assert dp.collection_enabled() is True        # from disk, after a restart
+    monkeypatch.setenv(dp._ENV_SWITCH, "0")
+    assert dp.collection_enabled() is False       # env overrides

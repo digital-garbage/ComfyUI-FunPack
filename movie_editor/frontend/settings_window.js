@@ -401,13 +401,26 @@
   // only on explicit request (the "Read" button below).
   let reinsState = null, reinsSweep = null, reinsSweepBusy = false, reinsError = "";
   let biState = null, biError = "";
-  let dpRows = null, dpError = "";
+  let dpRows = null, dpError = "", dpState = null;
 
   // Reads a comparison the way the user would judge it by eye, but from three numbers that
   // can disagree with each other -- that disagreement is the whole point. Detail up on
   // existing edges with the picture intact is sharpening; detail up spread evenly is grain;
   // structure down means it is simply a different generation.
-  function dpVerdict(r) {
+  // How much the picture moves between two runs that changed NOTHING. Measured from your own
+  // rows rather than assumed: on a deterministic rig it is ~0, and on this one it is ~0.10
+  // (visible as eyes/mouth differing while the motion stays put). Without it a structure of
+  // 0.58 is a number; with it, it is "6x the noise", which is the part that means something.
+  function dpNoiseFloor(rows) {
+    const quiet = (rows || []).filter((r) => r.changed
+      && !Object.keys(r.changed).length && r.same_seed !== false)
+      .map((r) => 1 - r.structure)
+      .sort((a, b) => a - b);
+    if (!quiet.length) return null;
+    return quiet[Math.floor(quiet.length / 2)];      // median, so one outlier cannot set it
+  }
+
+  function dpVerdict(r, floor) {
     // A low `structure` has two very different causes and the numbers cannot separate them,
     // so the seed decides. Different seeds = two different generations and the comparison
     // never was an A/B (a reference pins the subject, not the sample). Same seed = the
@@ -421,17 +434,16 @@
     const onlySeed = r.changed && !Object.keys(r.changed).filter((k) => k !== "seed").length;
     if (onlySeed && r.same_seed) {
       // Nothing differed at all: this is the instrument's noise floor for this setup.
-      return r.structure > 0.98 && Math.abs(r.detail - 1) < 0.02
-        ? `stable — two identical runs match (structure ${r.structure.toFixed(3)}), so a real `
-          + "A/B can be trusted"
-        : `two identical runs already differ this much (structure ${r.structure.toFixed(2)}, `
-          + `detail x${r.detail.toFixed(2)}) — generation is not reproducible here, so no A/B `
-          + "on this setup means anything";
+      return `noise floor: two identical runs differ by ${(moved * 100).toFixed(0)}% `
+        + `(detail x${r.detail.toFixed(2)}). Anything smaller than this is not a result.`;
     }
+    const moved = 1 - r.structure;
+    const vsFloor = floor && floor > 1e-6 ? ` — ${(moved / floor).toFixed(1)}x your noise floor`
+                                          : "";
     if (r.structure < 0.85) {
       return r.same_seed
-        ? `the shot itself moved (structure ${r.structure.toFixed(2)}) — this changed the `
-          + "picture, not just its detail"
+        ? `the shot moved ${(moved * 100).toFixed(0)}%${vsFloor} — this changed the picture, `
+          + "not just its detail"
         : "different seed — two separate generations, so detail cannot be compared. Rerun "
           + "the same seed with the change off, then on.";
     }
@@ -475,11 +487,37 @@
       clear(box);
       const rows = el("div", "sw-rows");
       const n = dpRows ? dpRows.length : 0;
+
+      const row = el("div", "sw-row");
+      const main = el("div", "sw-row-main");
+      main.append(el("div", "sw-row-title", "Score each run against the one before it"));
+      main.append(el("div", "sw-row-hint",
+        "Off by default. Recording only. Separate from the block probe on purpose — this "
+        + "copies one latent per run, that one reads every block on every step, so leaving "
+        + "this on with that one off is how you check whether the heavy probe is itself "
+        + "moving the picture."));
+      row.append(main);
+      const lbl = el("label", "chk es-toggle");
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = !!(dpState && dpState.enabled);
+      cb.onchange = async () => {
+        dpError = "";
+        try {
+          const r = await window.MovieEditorAPI.detailProbeSetEnabled(key, cb.checked);
+          dpState = r; dpRows = r.rows || dpRows;
+        } catch (e) { dpError = String(e.message || e); }
+        paint();
+      };
+      lbl.append(cb, el("span", null, ""));
+      row.append(lbl);
+      rows.append(row);
+
       rows.append(actionRow("Start fresh",
         "Throws away every recorded comparison for this key.",
         "Clear…", async () => {
           dpError = "";
-          try { const r = await window.MovieEditorAPI.detailProbeClear(key); dpRows = r.rows; }
+          try { const r = await window.MovieEditorAPI.detailProbeClear(key); dpState = r; dpRows = r.rows; }
           catch (e) { dpError = String(e.message || e); }
           paint();
         }, { disabled: !n, danger: true }));
@@ -494,11 +532,12 @@
         return;
       }
       const tbl = el("div", "sw-rows");
+      const floor = dpNoiseFloor(dpRows);
       // Newest first: the run you just made is the one you are asking about.
       dpRows.slice().reverse().forEach((r) => {
         tbl.append(infoRow(
           dpChangeSummary(r),
-          dpVerdict(r),
+          dpVerdict(r, floor),
           r.same_seed !== false && r.structure >= 0.85 && r.detail > 1.02
             && r.edge_aligned > 0.35));
         const seeds = r.seed_before == null && r.seed_after == null ? ""
@@ -512,7 +551,7 @@
     paint();
     if (window.MovieEditorAPI) {
       window.MovieEditorAPI.detailProbeStatus(key)
-        .then((r) => { dpRows = r.rows || []; paint(); })
+        .then((r) => { dpState = r; dpRows = r.rows || []; paint(); })
         .catch(() => {});
     }
     return box;
