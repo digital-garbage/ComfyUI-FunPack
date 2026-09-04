@@ -2807,8 +2807,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "How much of the learned direction to add, as a fraction of that block's own hidden-state norm. Unlike the attention-bias channel, there is no architectural ceiling here -- push too far and coherence breaks with no warning. Start low; the way to tell it is doing anything at all is to push this deliberately high on a same-seed test and see if the video visibly moves, then back off.",
                 }),
                 "h3_av_decouple": ("FLOAT", {
-                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Damps how much video and audio attend to EACH OTHER inside H3's joint self-attention, without touching any hidden state -- for the failure pattern where one comes out clean and the other doesn't. 0 = off (installs nothing, zero cost). Higher = weaker cross-modal influence via a negative bias on the other modality's attention logits (v2: the first version scaled key magnitude instead and measured flat 0-1 live -- fixed). 1.0 fully cuts it, which likely also kills legitimate AV sync, so this is a knob to search down from, not up to.",
+                    "default": 0.0, "min": 0.0, "max": 50.0, "step": 0.5,
+                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Damps how much video and audio attend to EACH OTHER inside H3's joint self-attention, without touching any hidden state -- for the failure pattern where one comes out clean and the other doesn't. 0 = off (installs nothing, zero cost). This is a RAW softmax logit penalty, not a 0-1 fraction -- there's no way to read H3's actual trained attention-logit scale from here (the checkpoint isn't on this machine), so this can't be pre-calibrated. Try single digits (1-5) first, then 10-20; v1 normalized this to 0-1 against a guessed constant and measured completely flat live, which is why it's raw now. Large enough to fully exclude the other modality likely also kills legitimate AV sync, so search up from a small value.",
                 }),
                 "alg_guide_blur_strength": ("FLOAT", {
                     "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
@@ -6846,8 +6846,15 @@ class FunPackLTXAVSceneChainSampler:
         attention causes the clean-video/corrupted-audio split) is even correct -- this only
         fixes the mechanism not doing what the strength dial implied.
 
-        `strength` in [0, 1]; 0 or blank installs nothing (exact pass-through, not just a
-        no-op override) so an unset knob costs literally zero.
+        `strength` is the RAW softmax logit penalty subtracted from the targeted modality's
+        attention score, not a normalized 0-1 fraction. attention_head_dim=128 and no `scale`
+        kwarg is ever passed into optimized_attention here, so SDPA's default 1/sqrt(128)
+        applies -- with an untrained (gain=1) RMSNorm that puts a "typical" logit std around
+        1, so single digits should already be a meaningful penalty and double digits close to
+        exclusion. But RMSNorm's per-channel gain is LEARNED, and the checkpoint that would
+        say what it actually trained to isn't on this machine -- so that estimate is an
+        analytic starting point, not a calibrated constant. Search it empirically instead of
+        trusting the estimate: 0 installs nothing (exact pass-through, zero cost).
         """
         try:
             _strength = float(strength or 0.0)
@@ -6855,7 +6862,6 @@ class FunPackLTXAVSceneChainSampler:
             _strength = 0.0
         if _strength <= 0.0:
             return model
-        _strength = min(_strength, 1.0)
         try:
             try:
                 from . import h3_repr_steering as _rs
@@ -6884,14 +6890,6 @@ class FunPackLTXAVSceneChainSampler:
             to["patches_replace"] = patches_replace
 
             _mask_cache = {}  # seq_len -> (video_mask, audio_mask); one live resolution per gen
-            # Logit bias scale, not a key-magnitude scale (see the method docstring for why
-            # the first cut of this used K-scaling and measured flat across the whole 0-1
-            # range live). After H3's own per-head RMSNorm on Q/K, attention logits already
-            # sit close to 0 -- an additive penalty pushes a targeted key toward genuinely
-            # excluded, where a multiplicative one only pushes it toward "average".
-            # ponytail: fixed heuristic scale, unvalidated against H3's real logit spread --
-            # revisit if the live strength sweep is still flat, or saturates immediately.
-            _BIAS_SCALE = 12.0
 
             def _override(func, q, k, v, heads, mask=None, skip_reshape=True,
                           transformer_options=None, **kwargs):
@@ -6908,7 +6906,12 @@ class FunPackLTXAVSceneChainSampler:
                 if vmask is None or amask is None or k.shape[-2] != seq_len:
                     return func(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, **kwargs)
                 other = ~(vmask | amask)
-                bias_val = -_strength * _BIAS_SCALE
+                # `strength` IS the raw softmax logit penalty, not a normalized 0-1 fraction --
+                # there's no local way to know H3's actual trained attention-logit scale (the
+                # checkpoint isn't on this machine, see the method docstring), so a 0-1 dial
+                # over a guessed conversion constant would just be a second guess wearing a
+                # calibrated-looking costume. This way the live sweep searches the real unit.
+                bias_val = -_strength
                 out = torch.empty(q.shape[0], seq_len, heads * q.shape[-1],
                                   dtype=q.dtype, device=q.device)
                 if amask.any():
@@ -6930,8 +6933,8 @@ class FunPackLTXAVSceneChainSampler:
 
             to["optimized_attention_override"] = _override
             patched.model_options["transformer_options"] = to
-            print(f"[FunPackSceneChain] H3 attention decoupling: damping cross-modal "
-                  f"video<->audio attention by {_strength:g}.")
+            print(f"[FunPackSceneChain] H3 attention decoupling: cross-modal "
+                  f"video<->audio attention logit penalty {_strength:g}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 attention decoupling", _e,

@@ -112,7 +112,7 @@ def test_splits_into_three_groups_with_a_bias_penalizing_the_other_modality():
     by_len = {c["q_len"]: c for c in calls}
     assert set(by_len) == {len(_VIDEO_IDX), len(_AUDIO_IDX), len(_OTHER_IDX)}
 
-    bias_val = -0.5 * 12.0  # strength * _BIAS_SCALE
+    bias_val = -0.5  # strength IS the raw logit penalty now, no hidden conversion constant
 
     audio_call = by_len[len(_AUDIO_IDX)]
     audio_bias = audio_call["mask"].view(-1)
