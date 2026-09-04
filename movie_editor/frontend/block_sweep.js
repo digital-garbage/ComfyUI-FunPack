@@ -17,17 +17,17 @@
   }
 
   function _card(item) {
-    const card = el("div", "media-card tmp-card");
-    const thumb = el("div", "media-thumb");
+    // A real viewing size, not the media-bin's thumbnail height — the whole point of this
+    // gallery is comparing results without popping each one into a separate tab.
+    const card = el("div", "sw-sweep-card");
     if (item.media) {
       const vid = document.createElement("video");
       vid.src = API.resultUrl(window.Store.get().project.id, item.media);
       vid.controls = true; vid.muted = true; vid.playsInline = true; vid.preload = "metadata";
-      thumb.append(vid);
+      card.append(vid);
     } else {
-      thumb.append(el("span", "media-icon", "✕"));
+      card.append(el("div", "sw-sweep-fail", "✕ run failed"));
     }
-    card.append(thumb);
     const nameEl = el("div", "media-name", item.label);
     nameEl.title = item.label;
     card.append(nameEl);
@@ -79,7 +79,7 @@
 
     const statusEl = el("div", "pj-meta");
     container.append(statusEl);
-    const grid = el("div", "media-grid tmp-grid");
+    const grid = el("div", "sw-sweep-grid");
     container.append(grid);
 
     function render() {
