@@ -6839,7 +6839,11 @@ class FunPackLTXAVSceneChainSampler:
 
         `video_only` restores text and audio rows to their pre-loop value, same reasoning as
         block repeat's: H3 packs all three in one sequence and doubling the block for audio is
-        the leading suspect for band 31-40 inventing dialogue.
+        the leading suspect for band 31-40 inventing dialogue. TWO limits: attention already
+        mixed the twice-processed audio into the video rows before the restore, and the blocks
+        AFTER the span still process audio rows while attending to twice-processed video rows.
+        So it protects audio at the exit of the repeated blocks, not to the output -- which is
+        why it did not save audio under a span loop (2026-09-04).
 
         Refuses (returns the model untouched, and says so) on a non-contiguous selection: a
         loop is only defined over a span, and silently looping the min..max of a scattered
