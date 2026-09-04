@@ -24,7 +24,6 @@
     "trajectory_guidance", "trajectory_guidance_strength",
     "dynashift", "dynashift_strength", "dynashift_threshold",
     "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block",
-    "h3_block_influence",
   ]);
   const RATING_GATED_STUDIO = new Set(["reference_injection", "value_guidance", "steer_mode", "absolute_strength"]);
 
@@ -320,9 +319,6 @@
       hint: "Fraction of the block's own hidden-state norm added along the learned direction. Start low and push it deliberately high on a same-seed test to confirm it moves the video at all before trusting a small value." },
     { name: "h3_repr_steering_block", label: "Steer at block", kind: "combo", choices: ["1", "5", "10", "15", "20", "25", "30", "35", "40"], default: "25", dependsOn: "h3_repr_steering",
       hint: "TEST-ONLY: which of the block-sweep's candidate blocks actually gets steered, instead of always block 25. Blocks 1-15 are deep-end territory (the anchor/reference rows haven't been read by the network yet at that depth) -- expect this to behave differently, not just 'weaker', than 20-40. The other candidate blocks are still captured read-only either way." },
-    { name: "h3_block_influence", label: "Measure block influence (H3)", kind: "bool", default: false,
-      hint: "Measures only — steers nothing. Records how much each of H3's 50 blocks moves the picture as it forms, and pairs that with the rating you give the run.",
-      detail: "Answers whether the depth profile is flat (every block contributes about the same, so weighting blocks by rating has nothing to grip) or structured. Reports a flatness number and, once you have 2+ liked and 2+ disliked runs on the key, which blocks run hotter on the ones you liked. A block moving the stream a lot at that depth is not proof it survived to the final video — that needs per-block ablation, an offline pass. Near-free: two norms per block per step, no extra model pass." },
     { name: "identity_transfer_enabled", label: "Best-FaceID compatibility", kind: "bool", default: false,
       hint: "Feeds the identity pin image the way Best-FaceID identity LoRAs expect it. Needs an Identity pin set.",
       detail: "Replaces Continuity's identity-pin guide with separate, non-rendered reference tokens plus an optional ArcFace projector below. Load the LoRA itself in Models. No effect without an identity pin." },
@@ -512,7 +508,7 @@
   const CHAIN_VIEW_KNOBS = {
     chain_continuity: ["carry_i2v_guides", "carry_overlap_through_anchor"],
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
-    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold", "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block", "h3_block_influence"],
+    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold", "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
     chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "h3_video_detail", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };

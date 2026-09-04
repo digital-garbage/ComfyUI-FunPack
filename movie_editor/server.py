@@ -2171,6 +2171,86 @@ if web is not None and PromptServer is not None:
         _rs, state = _repr_steer_state(key)
         return web.json_response(state)
 
+    # ── block-influence probe ────────────────────────────────────────────────
+    # Research data, so it lives here rather than in the console: readable, downloadable and
+    # clearable from Settings > Refinement & Taste, with its own collection switch. Same
+    # shape as the trajectory probe above, for the same reason.
+
+    def _block_influence_module():
+        try:
+            import block_influence as bi
+        except ImportError:
+            from .. import block_influence as bi  # type: ignore
+        return bi
+
+    def _block_influence_state(key):
+        bi = _block_influence_module()
+        prof = bi.profile(key)
+        return bi, {
+            "key": key,
+            "enabled": bi.collection_enabled(),
+            "runs": len(bi._load(key).get("rows") or []),
+            "n_liked": prof["n_liked"],
+            "n_disliked": prof["n_disliked"],
+            "min_per_group": bi.MIN_PER_GROUP,
+            "flatness": prof["flatness"],
+            # Stringified block ids: JSON object keys are strings anyway, and leaving ints
+            # here would come back as strings on the client regardless -- being explicit
+            # keeps the frontend from sorting "10" before "2" by accident.
+            "overall": {str(b): v for b, v in (prof["overall"] or {}).items()},
+            "difference": ({str(b): v for b, v in prof["difference"].items()}
+                           if prof["difference"] else None),
+        }
+
+    @routes.get(UI_PREFIX + "/api/block_influence")
+    async def _block_influence_status(req):
+        key = str(req.rel_url.query.get("key") or "default").strip() or "default"
+        try:
+            _bi, state = _block_influence_state(key)
+            return web.json_response(state)
+        except Exception as e:
+            return web.json_response({"key": key, "enabled": False, "runs": 0,
+                                      "n_liked": 0, "n_disliked": 0, "flatness": None,
+                                      "overall": {}, "difference": None, "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/block_influence")
+    async def _block_influence_toggle(req):
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        key = str(body.get("key") or "default").strip() or "default"
+        _block_influence_module().set_collection_enabled(bool(body.get("enabled")))
+        _bi, state = _block_influence_state(key)
+        return web.json_response(state)
+
+    @routes.get(UI_PREFIX + "/api/block_influence/export")
+    async def _block_influence_export(req):
+        import os
+        key = str(req.rel_url.query.get("key") or "default").strip() or "default"
+        bi = _block_influence_module()
+        path = bi.state_path(key)
+        if not os.path.exists(path):
+            return web.json_response({"problems": [f"nothing recorded yet for '{key}'"]},
+                                     status=404)
+        with open(path, "rb") as f:
+            body = f.read()
+        return web.Response(
+            body=body, content_type="application/octet-stream",
+            headers={"Content-Disposition":
+                     f'attachment; filename="{key}.block_influence.pt"'})
+
+    @routes.post(UI_PREFIX + "/api/block_influence/clear")
+    async def _block_influence_clear(req):
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        key = str(body.get("key") or "default").strip() or "default"
+        _block_influence_module().clear_all(key)
+        _bi, state = _block_influence_state(key)
+        return web.json_response(state)
+
     @routes.get(UI_PREFIX + "/api/temp")
     async def _temp_list(_req):
         return web.json_response({"files": _list_temp_media()})

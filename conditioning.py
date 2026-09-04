@@ -10218,28 +10218,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                           f"{_rs_reward:+.3f} for rating '{rating_label}' — {_rs_note}")
                     # Block-influence probe rides the same rating. Measurement only -- it
                     # steers nothing, so it is committed unconditionally alongside REINS
-                    # rather than behind its own admissibility gate, and stays silent unless
-                    # the sampler actually captured a profile this run.
+                    # rather than behind its own admissibility gate. DELIBERATELY SILENT:
+                    # research data belongs in Settings > Refinement & Taste, where it can be
+                    # read, downloaded and cleared, not in a console the actual run report has
+                    # to share. Failures still speak (funpack_log), findings do not.
                     try:
                         from . import block_influence as _bi
                     except ImportError:
                         import block_influence as _bi
-                    if _bi.commit(refinement_key, _rs_reward) == "recorded":
-                        _bi_prof = _bi.profile(refinement_key)
-                        _bi_flat = _bi_prof.get("flatness")
-                        _bi_msg = (f"flatness {_bi_flat:.3f}" if _bi_flat is not None
-                                   else "flatness n/a")
-                        _bi_diff = _bi_prof.get("difference")
-                        if _bi_diff:
-                            _bi_top = sorted(_bi_diff.items(), key=lambda kv: -abs(kv[1]))[:3]
-                            _bi_msg += " | liked-vs-disliked top: " + ", ".join(
-                                f"block {b} {v:+.4f}" for b, v in _bi_top)
-                        else:
-                            _bi_msg += (f" | no liked/disliked split yet "
-                                        f"({_bi_prof.get('n_liked', 0)} liked / "
-                                        f"{_bi_prof.get('n_disliked', 0)} disliked, need "
-                                        f"{_bi.MIN_PER_GROUP} of each)")
-                        print(f"[FunPackRefiner] H3 block influence: recorded — {_bi_msg}")
+                    _bi.commit(refinement_key, _rs_reward)
             # DynaShift latent memory: pair the sampler's pending raw latent with this rating
             # — promote into the negative bank on a bad outcome (intrusions: awful /
             # wrong_appearance; or the quality-missing family via reward <= threshold — see

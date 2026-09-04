@@ -400,6 +400,116 @@
   // Split the same way the probe already is: cheap status auto-fetched, the actual sweep
   // only on explicit request (the "Read" button below).
   let reinsState = null, reinsSweep = null, reinsSweepBusy = false, reinsError = "";
+  let biState = null, biError = "";
+
+  // The whole point of the probe in one number. Flatness is the spread of the per-block
+  // profile as a fraction of its own mean, so it is comparable across models and runs: near
+  // zero means every block moves the picture by the same amount and there is nothing for
+  // rating-driven block weighting to aim at.
+  function biVerdict(state) {
+    if (!state || state.flatness == null) return "Nothing recorded yet.";
+    const f = state.flatness;
+    const shape = f < 0.05 ? "flat — every block contributes about the same, so weighting "
+                             + "blocks by rating has nothing to grip"
+      : f < 0.20 ? "slightly uneven — some structure, not much"
+      : "structured — blocks differ enough to be worth aiming at";
+    return `Flatness ${f.toFixed(3)} · ${shape}`;
+  }
+
+  function biProfileTable(state) {
+    const overall = state && state.overall;
+    if (!overall || !Object.keys(overall).length) return null;
+    const diff = (state && state.difference) || null;
+    // Ranked by how much the block moves the picture, not by block number: the question is
+    // which blocks do the work, and a 50-row list in index order buries that.
+    const entries = Object.entries(overall)
+      .map(([b, v]) => [Number(b), v])
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12);
+    const tbl = el("div", "sw-rows");
+    entries.forEach(([block, v]) => {
+      const d = diff ? diff[String(block)] : null;
+      const value = d == null ? v.toFixed(4)
+        : `${v.toFixed(4)} · liked ${d >= 0 ? "+" : ""}${d.toFixed(4)}`;
+      tbl.append(infoRow(`Block ${block}`, value, d == null ? null : d > 0));
+    });
+    return tbl;
+  }
+
+  function blockInfluenceRows(key) {
+    const box = el("div", "sw-stack");
+    const paint = () => {
+      clear(box);
+      const rows = el("div", "sw-rows");
+      const runs = biState ? biState.runs : 0;
+
+      const row = el("div", "sw-row");
+      const main = el("div", "sw-row-main");
+      main.append(el("div", "sw-row-title", "Record which blocks move the picture"));
+      main.append(el("div", "sw-row-hint",
+        "Off by default. Recording only — nothing about your generations changes. Each "
+        + "rated generation adds one profile."));
+      row.append(main);
+      const lbl = el("label", "chk es-toggle");
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = !!(biState && biState.enabled);
+      cb.onchange = async () => {
+        biError = "";
+        try { biState = await window.MovieEditorAPI.blockInfluenceSetEnabled(key, cb.checked); }
+        catch (e) { biError = String(e.message || e); }
+        paint();
+      };
+      lbl.append(cb, el("span", null, ""));
+      row.append(lbl);
+      rows.append(row);
+
+      rows.append(infoRow("Rated generations recorded (this key)",
+        biState ? `${runs} (${biState.n_liked} liked / ${biState.n_disliked} disliked)`
+                : "0", runs > 0 ? true : null));
+      rows.append(actionRow("Save this key's measurement",
+        "Downloads every recorded profile as one file. A rental gets replaced and "
+        + "refinements/ is not in git, so without this the count restarts on the next box.",
+        "Download", async () => {
+          biError = "";
+          try { await window.MovieEditorAPI.blockInfluenceExport(key); }
+          catch (e) { biError = String(e.message || e); paint(); }
+        }, { disabled: !runs }));
+      rows.append(actionRow("Start fresh",
+        "Throws away every recorded profile for this key. Recording stays on. Cannot be "
+        + "undone — download first if you want to keep it.",
+        "Clear…", async () => {
+          if (!window.confirm(`Throw away ${runs} recorded profile(s) for '${key}'?\n\nThis `
+              + "cannot be undone. Download it first if you want to keep it.")) return;
+          biError = "";
+          try { biState = await window.MovieEditorAPI.blockInfluenceClear(key); }
+          catch (e) { biError = String(e.message || e); }
+          paint();
+        }, { disabled: !runs, danger: true }));
+      box.append(rows);
+
+      box.append(el("div", "sw-hint", biVerdict(biState)));
+      if (biState && biState.difference == null && runs > 0) {
+        box.append(el("div", "sw-hint",
+          `Needs ${biState.min_per_group}+ liked and ${biState.min_per_group}+ disliked `
+          + "before it can say which blocks run hotter on the ones you liked."));
+      }
+      if (biError) box.append(el("div", "sw-hint", biError));
+      const tbl = biProfileTable(biState);
+      if (tbl) {
+        box.append(el("div", "sw-rows-label",
+          "Busiest blocks — how much each moves the picture as it forms"));
+        box.append(tbl);
+      }
+    };
+    paint();
+    if (window.MovieEditorAPI) {
+      window.MovieEditorAPI.blockInfluenceStatus(key)
+        .then((s) => { biState = s; paint(); })
+        .catch(() => {});
+    }
+    return box;
+  }
 
   function reinsSweepTable(sweep) {
     const entries = Object.entries(sweep || {}).sort((a, b) => a[1].p_value - b[1].p_value);
@@ -659,6 +769,9 @@
 
         wrap.append(el("div", "sw-rows-label", "H3 representation steering (REINS)"));
         wrap.append(reinsRows(st.project?.refinement_key || "default"));
+
+        wrap.append(el("div", "sw-rows-label", "Block influence (measurement only)"));
+        wrap.append(blockInfluenceRows(st.project?.refinement_key || "default"));
 
         wrap.append(el("div", "sw-rows-label", "Danger zone"));
         const danger = el("div", "sw-rows");

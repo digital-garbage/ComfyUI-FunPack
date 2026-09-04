@@ -216,6 +216,25 @@
       link.remove();
       URL.revokeObjectURL(url);
     },
+
+    // Block-influence probe (Settings ▸ Learning) — per-KEY data, but the collection
+    // switch itself is global, like the trajectory probe's.
+    blockInfluenceStatus: (key) => j("GET", API("/block_influence") + `?key=${encodeURIComponent(key || "default")}`),
+    blockInfluenceSetEnabled: (key, enabled) => j("POST", API("/block_influence"), { key: key || "default", enabled: !!enabled }),
+    blockInfluenceClear: (key) => j("POST", API("/block_influence/clear"), { key: key || "default" }),
+    async blockInfluenceExport(key) {
+      const k = key || "default";
+      const res = await fetch(API("/block_influence/export") + `?key=${encodeURIComponent(k)}&t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(readApiError(res, null));
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${k}.block_influence.pt`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    },
     // Served by ComfyUI's own same-origin /view endpoint — no editor route needed.
     tempFileUrl: (f) => "/view?" + new URLSearchParams({
       filename: f.filename, subfolder: f.subfolder || "", type: "temp", t: String(f.mtime || Date.now()),

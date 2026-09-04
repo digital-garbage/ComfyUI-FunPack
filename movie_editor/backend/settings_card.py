@@ -267,7 +267,6 @@ _EDITOR_DEFAULTS = {
     "frame_overlap": 16,
     "h3_phrase_emphasis": False,
     "h3_phrase_variability": 0.0,
-    "h3_block_influence": False,
     "h3_repr_steering": False,
     "h3_repr_steering_block": "25",
     "h3_repr_steering_strength": 0.05,

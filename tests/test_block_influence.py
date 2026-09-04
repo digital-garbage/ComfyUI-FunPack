@@ -295,3 +295,58 @@ def test_a_broken_hook_never_breaks_sampling():
     res = _call(dit[("double_block", 0)], src, src * 3, "not-segments")
     assert torch.equal(res["img"], src * 3)
     assert capture[0] == {}
+
+
+# --- the collection switch ------------------------------------------------------
+#
+# Research data is opt-in from Settings > Refinement & Taste. This switch gates COLLECTION
+# only -- it must never be wired to anything that records a rating (see the 2026-09-03
+# session: a "pause capture" toggle that silently stopped writing ratings).
+
+@pytest.fixture
+def _switch(monkeypatch, tmp_path):
+    monkeypatch.delenv(bi._ENV_SWITCH, raising=False)
+    monkeypatch.setattr(bi, "_switch_dir", lambda: str(tmp_path / "sw"))
+    return tmp_path
+
+
+def test_collection_is_off_by_default(_switch):
+    assert bi.collection_enabled() is False
+
+
+def test_setting_it_on_persists_to_disk_and_to_this_process(_switch, monkeypatch):
+    assert bi.set_collection_enabled(True) is True
+    assert bi.collection_enabled() is True
+    # A restarted process has no env var; the on-disk copy must still say on.
+    monkeypatch.delenv(bi._ENV_SWITCH, raising=False)
+    assert bi.collection_enabled() is True
+
+
+def test_turning_it_off_persists_too(_switch, monkeypatch):
+    bi.set_collection_enabled(True)
+    bi.set_collection_enabled(False)
+    monkeypatch.delenv(bi._ENV_SWITCH, raising=False)
+    assert bi.collection_enabled() is False
+
+
+def test_env_var_wins_over_disk(_switch, monkeypatch):
+    bi.set_collection_enabled(False)
+    monkeypatch.setenv(bi._ENV_SWITCH, "1")
+    assert bi.collection_enabled() is True
+
+
+def test_unwritable_switch_dir_still_sets_this_session(_switch, monkeypatch):
+    monkeypatch.setattr(bi, "_switch_dir", lambda: "/nonexistent-root/nope")
+    assert bi.set_collection_enabled(True) is True
+    assert bi.collection_enabled() is True   # env var carries it for this process
+
+
+def test_the_switch_does_not_gate_recording(_switch, monkeypatch, tmp_path):
+    """HARD RULE: this toggle controls whether the PROBE is installed, nothing else. It must
+    never stand between a rating and the data it belongs to -- save_pending/commit are
+    unconditional, exactly as h3_repr_steering's are."""
+    monkeypatch.setattr(bi, "state_path", lambda key: str(tmp_path / f"{key}.pt"))
+    bi.set_collection_enabled(False)
+    bi.save_pending("k", {0: 0.5})
+    assert bi.commit("k", 1.0) == "recorded"
+    assert bi.profile("k")["overall"][0] == pytest.approx(0.5)

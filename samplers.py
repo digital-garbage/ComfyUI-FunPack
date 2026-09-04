@@ -2970,10 +2970,6 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "25",
                     "tooltip": "TEST-ONLY: which block actually gets steered (the rest of the sweep's candidate blocks are still captured read-only, same as always). direction() is recomputed for whichever block you pick here -- this does not change what block_sweep ranks, only which block's learned direction gets injected into this run.",
                 }),
-                "h3_block_influence": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "MEASUREMENT ONLY -- steers nothing. Records how much each of H3's 50 blocks moves the video rows of the hidden stream (its residual delta relative to the stream itself), averaged over every step, and pairs that profile with the rating you give the run. Answers the question that gates rating-driven block weighting: is the depth profile flat (every block contributes the same, nothing to aim at) or structured? A large residual delta means the block moved the stream a lot THERE -- not that it survived to the final video; the causal version of that needs per-block ablation. Near-free: two norms per block per step on ~512 strided rows, no extra forward pass.",
-                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -3682,7 +3678,7 @@ class FunPackLTXAVSceneChainSampler:
                       alg_anchor_sigma_threshold=0.975,
                       bounded_attention_enabled=False,
                       h3_repr_steering=False, h3_repr_steering_strength=0.05,
-                      h3_repr_steering_block="25", h3_block_influence=False,
+                      h3_repr_steering_block="25",
                       refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -3749,8 +3745,15 @@ class FunPackLTXAVSceneChainSampler:
         # as its inner call, so the delta it records is the block's OWN, not one that already
         # contains another mechanism's injection.
         _influence_capture = [{}]
-        if h3_block_influence and refinement_key:
-            model = self._install_block_influence(model, _influence_capture)
+        _influence_on = False
+        if refinement_key:
+            try:
+                from . import block_influence as _bi_sw
+            except ImportError:
+                import block_influence as _bi_sw
+            _influence_on = _bi_sw.collection_enabled()
+            if _influence_on:
+                model = self._install_block_influence(model, _influence_capture)
         _repr_capture = [{}]
         if h3_repr_steering and refinement_key:
             model = self._install_h3_repr_steering(
@@ -3778,7 +3781,7 @@ class FunPackLTXAVSceneChainSampler:
                 _bi.save_pending(refinement_key, {
                     b: float(torch.stack(v).mean().item())
                     for b, v in _influence_capture[0].items() if v})
-            elif h3_block_influence and refinement_key:
+            elif _influence_on:
                 # An empty capture and a genuinely flat profile look identical downstream,
                 # and this probe exists to tell those apart -- so it says which one happened
                 # rather than letting a dead hook read as a finding.
@@ -7089,7 +7092,7 @@ class FunPackLTXAVSceneChainSampler:
                trajectory_guidance=False, trajectory_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                h3_repr_steering=False, h3_repr_steering_strength=0.05,
-               h3_repr_steering_block="25", h3_block_influence=False,
+               h3_repr_steering_block="25",
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
@@ -7946,7 +7949,6 @@ class FunPackLTXAVSceneChainSampler:
                     h3_repr_steering=h3_repr_steering,
                     h3_repr_steering_strength=h3_repr_steering_strength,
                     h3_repr_steering_block=h3_repr_steering_block,
-                    h3_block_influence=h3_block_influence,
                     refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene

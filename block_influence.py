@@ -42,6 +42,53 @@ import torch
 # on each side before it is a difference rather than a pair of points.
 MIN_PER_GROUP = 2
 
+_ENV_SWITCH = "FUNPACK_BLOCK_INFLUENCE"
+_ENABLED_FILE = "enabled"
+
+
+def _switch_dir():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, "refinements", "block_influence")
+
+
+def _switch_path():
+    return os.path.join(_switch_dir(), _ENABLED_FILE)
+
+
+def collection_enabled():
+    """True when the probe should record. OFF by default -- this is research data, opted
+    into from Settings > Refinement & Taste, not something every generation pays for.
+
+    Same two-layer switch trajectory_probe uses, for the same reason: the environment
+    variable is live (the sampler runs in this process, so the toggle reaches the very next
+    generation with nothing to restart) and wins when set, while the on-disk copy means a
+    restarted ComfyUI -- a fresh rental -- comes back recording instead of having quietly
+    stopped mid-measurement."""
+    raw = os.environ.get(_ENV_SWITCH, "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
+    try:
+        with open(_switch_path(), "r", encoding="utf-8") as fh:
+            return fh.read().strip() == "1"
+    except (OSError, ValueError):
+        return False
+
+
+def set_collection_enabled(on):
+    """Set the switch for this process AND the next one. -> the new state."""
+    on = bool(on)
+    os.environ[_ENV_SWITCH] = "1" if on else "0"
+    try:
+        os.makedirs(_switch_dir(), exist_ok=True)
+        tmp = _switch_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write("1" if on else "0")
+        os.replace(tmp, _switch_path())
+    except OSError as e:
+        _log().failed("H3 block influence", "switch save", e,
+                      "recording is set for this session only and reverts after a restart")
+    return on
+
 
 def _log():
     try:
