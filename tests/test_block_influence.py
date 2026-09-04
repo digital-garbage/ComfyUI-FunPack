@@ -470,3 +470,35 @@ def test_novelty_is_skipped_when_the_holder_has_no_slot_for_it():
     _push(dit, 1, src, d)
     assert set(capture[0]) == {0, 1}
     assert len(capture) == 1
+
+
+def test_a_block_that_writes_in_place_is_still_measured():
+    """THE regression that shipped: `before` was read AFTER the block ran, so a block writing
+    its residual in place left src already mutated and every delta came out exactly zero --
+    which then made every novelty cosine zero too. The whole readout was 0.0000 / +0.00 and
+    read as "this model has no block structure" rather than "the probe measured nothing"."""
+    capture = [{}, {}]
+    dit = _install(capture)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 1.0
+
+    def in_place(args):
+        args["img"][:, 1] += 2.0        # writes into the caller's tensor, returns it
+        return {"img": args["img"]}
+
+    res = dit[("double_block", 0)]({"img": src, "mod_segments": [(0, 4, 6)]},
+                                   {"original_block": in_place})
+    recorded = torch.stack(capture[0][0]).mean().item()
+    assert recorded == pytest.approx(2.0, rel=1e-4)   # |delta| = 2*|before|
+    assert torch.equal(res["img"], src)
+
+
+def test_a_block_returning_a_new_tensor_is_unaffected_by_the_fix():
+    capture = [{}, {}]
+    dit = _install(capture)
+    src = torch.zeros(4, 8)
+    src[:, 0] = 1.0
+    out = src.clone()
+    out[:, 1] = 3.0
+    _call(dit[("double_block", 0)], src, out, [(0, 4, 6)])
+    assert torch.stack(capture[0][0]).mean().item() == pytest.approx(3.0, rel=1e-4)

@@ -408,13 +408,24 @@
   // existing edges with the picture intact is sharpening; detail up spread evenly is grain;
   // structure down means it is simply a different generation.
   function dpVerdict(r) {
-    if (r.structure < 0.85) return "different picture — not an A/B of the same shot";
+    // A low `structure` has two very different causes and the numbers cannot separate them,
+    // so the seed decides. Different seeds = two different generations and the comparison
+    // never was an A/B (a reference pins the subject, not the sample). Same seed = the
+    // change moved the shot rather than its detail, which is a RESULT, not a bad setup.
+    if (r.structure < 0.85) {
+      return r.same_seed
+        ? `the shot itself moved (structure ${r.structure.toFixed(2)}) — this changed the `
+          + "picture, not just its detail"
+        : "different seed — two separate generations, so detail cannot be compared. Rerun "
+          + "the same seed with the change off, then on.";
+    }
     const gain = (r.detail - 1) * 100;
-    if (Math.abs(gain) < 2) return "no real change in detail";
-    if (gain < 0) return `detail DOWN ${Math.abs(gain).toFixed(0)}% — softer, not sharper`;
-    return r.edge_aligned > 0.35
+    const caveat = r.same_seed === false ? " (different seed — treat as indicative only)" : "";
+    if (Math.abs(gain) < 2) return "no real change in detail" + caveat;
+    if (gain < 0) return `detail DOWN ${Math.abs(gain).toFixed(0)}% — softer, not sharper` + caveat;
+    return (r.edge_aligned > 0.35
       ? `sharper — +${gain.toFixed(0)}% detail, landing on existing edges`
-      : `+${gain.toFixed(0)}% detail but spread evenly — reads as grain, not sharpening`;
+      : `+${gain.toFixed(0)}% detail but spread evenly — reads as grain, not sharpening`) + caveat;
   }
 
   function detailProbeRows(key) {
@@ -435,8 +446,10 @@
       if (dpError) box.append(el("div", "sw-hint", dpError));
       if (!n) {
         box.append(el("div", "sw-hint",
-          "Nothing compared yet. With recording on, generate the same seed twice — once "
-          + "with the change off, once with it on — and each pair is scored here."));
+          "Nothing compared yet. With recording on, generate the SAME SEED twice — once "
+          + "with the change off, once with it on — and each pair is scored here. Two runs "
+          + "on different seeds are different generations, not an A/B, and are flagged as "
+          + "such."));
         return;
       }
       const tbl = el("div", "sw-rows");
@@ -445,10 +458,13 @@
         tbl.append(infoRow(
           `${r.label_before || "?"} → ${r.label_after || "?"}`,
           dpVerdict(r),
-          r.structure >= 0.85 && r.detail > 1.02 && r.edge_aligned > 0.35));
+          r.same_seed !== false && r.structure >= 0.85 && r.detail > 1.02
+            && r.edge_aligned > 0.35));
+        const seeds = r.seed_before == null && r.seed_after == null ? ""
+          : ` · seed ${r.seed_before ?? "?"}${r.same_seed ? "" : " → " + (r.seed_after ?? "?")}`;
         tbl.append(el("div", "sw-hint",
           `detail ×${r.detail.toFixed(3)} · structure kept ${r.structure.toFixed(3)} · `
-          + `edge-aligned ${r.edge_aligned >= 0 ? "+" : ""}${r.edge_aligned.toFixed(3)}`));
+          + `edge-aligned ${r.edge_aligned >= 0 ? "+" : ""}${r.edge_aligned.toFixed(3)}${seeds}`));
       });
       box.append(tbl);
     };
@@ -504,7 +520,7 @@
     entries.forEach(([block, v]) => {
       const d = diff ? diff[String(block)] : null;
       const nov = state.novelty ? state.novelty[String(block)] : null;
-      let value = v.toFixed(4);
+      let value = v.toPrecision(3);
       if (nov != null) value += ` · new ${nov >= 0 ? "+" : ""}${nov.toFixed(2)}`;
       if (d != null) value += ` · liked ${d >= 0 ? "+" : ""}${d.toFixed(4)}`;
       tbl.append(infoRow(`Block ${block}`, value, d == null ? null : d > 0));

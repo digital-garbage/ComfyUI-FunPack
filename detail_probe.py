@@ -145,10 +145,17 @@ def compare(before, after):
     }
 
 
-def record(refinement_key, video_latent, label=""):
+def record(refinement_key, video_latent, label="", seed=None):
     """Score this run against the previous one on the same key, then become the new previous.
     -> the comparison dict (with "label_before"/"label_after"), or None when there was nothing
-    to compare against yet."""
+    to compare against yet.
+
+    `seed` is recorded so the readout can tell the two reasons `structure` drops apart. A
+    LOW structure score means the low-frequency picture moved, and that is either "these are
+    two different generations, so this is not an A/B at all" (different seed -- R2V pins the
+    subject, not the sample) or "same seed, and the change moved the shot rather than its
+    detail", which is a real result. Nothing in the three numbers can separate those; the
+    seed can, so it is stored rather than guessed at."""
     if not refinement_key or not isinstance(video_latent, torch.Tensor):
         return None
     try:
@@ -164,9 +171,14 @@ def record(refinement_key, video_latent, label=""):
             if row is not None:
                 row["label_before"] = str(prev.get("label") or "")
                 row["label_after"] = str(label or "")
+                row["seed_before"] = prev.get("seed")
+                row["seed_after"] = seed
+                row["same_seed"] = (seed is not None and prev.get("seed") is not None
+                                    and int(seed) == int(prev["seed"]))
                 row["stamp"] = time.strftime("%Y-%m-%d_%H-%M-%S")
                 data["rows"] = (data["rows"] + [row])[-MAX_ROWS:]
-        data["previous"] = {"latent": lat, "label": str(label or "")}
+        data["previous"] = {"latent": lat, "label": str(label or ""),
+                            "seed": None if seed is None else int(seed)}
         _save(refinement_key, data)
         return row
     except Exception as e:  # noqa: BLE001

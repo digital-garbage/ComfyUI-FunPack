@@ -6909,35 +6909,49 @@ class FunPackLTXAVSceneChainSampler:
 
                 def _probe(args, extra):
                     src = args.get("img")
+                    # The "before" rows MUST be read before the block runs. A block that
+                    # writes its residual in place leaves `src` already holding the post-block
+                    # values, so reading it afterwards makes every delta exactly zero -- and a
+                    # zero delta gives a zero cosine, so the whole readout comes back 0.0000 /
+                    # +0.00 and looks like "this model has no block structure" instead of
+                    # "the probe measured nothing". Advanced indexing copies, so `before` is
+                    # a real snapshot and not a view onto src.
+                    before, sel = None, None
+                    try:
+                        if torch.is_tensor(src):
+                            seq_len = int(src.shape[0])
+                            mask = mask_cache.get(seq_len, "MISS")
+                            if mask == "MISS":
+                                mask = _rs.video_mask_from_mod_segments(
+                                    args.get("mod_segments"), seq_len, src.device)
+                                mask_cache[seq_len] = mask
+                            if mask is not None:
+                                idx = mask.nonzero(as_tuple=True)[0]
+                                if idx.numel():
+                                    stride = max(1, int(idx.numel()) // int(max_rows))
+                                    sel = idx[::stride]
+                                    before = src[sel].detach().float()
+                    except Exception:  # noqa: BLE001
+                        before, sel = None, None
                     out = extra["original_block"](args)["img"] if inner is None else \
                         inner(args, extra)["img"]
                     try:
-                        seq_len = int(out.shape[0])
-                        mask = mask_cache.get(seq_len, "MISS")
-                        if mask == "MISS":
-                            mask = _rs.video_mask_from_mod_segments(
-                                args.get("mod_segments"), seq_len, out.device)
-                            mask_cache[seq_len] = mask
-                        if mask is not None and torch.is_tensor(src) and src.shape == out.shape:
-                            idx = mask.nonzero(as_tuple=True)[0]
-                            if idx.numel():
-                                stride = max(1, int(idx.numel()) // int(max_rows))
-                                sel = idx[::stride]
-                                before = src[sel].detach().float()
-                                delta = out[sel].detach().float() - before
-                                base = before.norm()
-                                # Kept as a 0-dim tensor: averaged and read once, after
-                                # sampling, instead of syncing the device 50x per step.
-                                capture_holder[0].setdefault(block, []).append(
-                                    delta.norm() / base.clamp(min=1e-8))
-                                if len(capture_holder) > 1:
-                                    last, last_block = prev_delta
-                                    if (last is not None and block > last_block
-                                            and last.shape == delta.shape):
-                                        capture_holder[1].setdefault(block, []).append(
-                                            torch.nn.functional.cosine_similarity(
-                                                delta.flatten(), last.flatten(), dim=0))
-                                    prev_delta[0], prev_delta[1] = delta, block
+                        if before is not None and torch.is_tensor(out) \
+                                and out.shape[0] == int(src.shape[0]):
+                            delta = out[sel].detach().float() - before
+                            base = before.norm()
+                            # Kept as a 0-dim tensor: averaged and read once, after
+                            # sampling, instead of syncing the device 50x per step.
+                            capture_holder[0].setdefault(block, []).append(
+                                delta.norm() / base.clamp(min=1e-8))
+                            if len(capture_holder) > 1:
+                                last, last_block = prev_delta
+                                if (last is not None and block > last_block
+                                        and last.shape == delta.shape):
+                                    capture_holder[1].setdefault(block, []).append(
+                                        torch.nn.functional.cosine_similarity(
+                                            delta.flatten(), last.flatten(), dim=0))
+                                prev_delta[0], prev_delta[1] = delta, block
                     except Exception:  # noqa: BLE001
                         pass  # a probe never breaks a generation
                     return {"img": out}
@@ -8653,7 +8667,8 @@ class FunPackLTXAVSceneChainSampler:
                 if _dp.collection_enabled():
                     _dp.record(refinement_key_input, _snap,
                                label=(f"repeat {h3_block_repeat}x{int(h3_block_repeat_times) + 1}"
-                                      if self._parse_block_spec(h3_block_repeat) else "no repeat"))
+                                      if self._parse_block_spec(h3_block_repeat) else "no repeat"),
+                               seed=seed)
 
         # Trajectory probe: same run/rating pairing as the two above — the rating that scores
         # THIS run appends these per-bucket descriptors to the measurement log.

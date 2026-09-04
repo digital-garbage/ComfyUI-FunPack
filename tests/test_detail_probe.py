@@ -261,3 +261,39 @@ def test_an_existing_patch_at_the_same_block_is_repeated_not_dropped():
     out = hook({"img": torch.zeros(1, 1)}, {"original_block": lambda a: {"img": a["img"]}})
     assert len(calls) == 2                       # the existing patch is what gets repeated
     assert float(out["img"]) == 2.0
+
+
+# --- the seed is what separates "invalid comparison" from "real result" -----------
+#
+# A low `structure` means the low-frequency picture moved. That is EITHER two different
+# generations (different seed -- a reference pins the subject, not the sample, so R2V on a
+# new seed is a new shot) OR the same seed whose shot was moved by the change itself. The
+# three numbers cannot tell those apart, so the seed is recorded rather than guessed at.
+
+def test_same_seed_is_flagged_on_the_row():
+    dp.record("k", _edged(), label="off", seed=1234)
+    row = dp.record("k", _edged(), label="on", seed=1234)
+    assert row["same_seed"] is True
+    assert row["seed_before"] == 1234 and row["seed_after"] == 1234
+
+
+def test_a_changed_seed_is_flagged_as_not_an_ab():
+    dp.record("k", _edged(seed=0), label="off", seed=1)
+    row = dp.record("k", _edged(seed=1), label="on", seed=2)
+    assert row["same_seed"] is False
+
+
+def test_a_missing_seed_is_unknown_not_a_match():
+    """Old rows and callers that pass no seed must not be reported as same-seed -- that would
+    silently upgrade an uncheckable comparison into a claimed A/B."""
+    dp.record("k", _edged(), label="off")
+    row = dp.record("k", _edged(), label="on")
+    assert row["same_seed"] is False
+    assert row["seed_before"] is None and row["seed_after"] is None
+
+
+def test_the_seed_rides_along_to_the_next_pairing():
+    dp.record("k", _edged(), label="a", seed=7)
+    dp.record("k", _edged(), label="b", seed=7)
+    row = dp.record("k", _edged(), label="c", seed=9)
+    assert row["seed_before"] == 7 and row["seed_after"] == 9 and row["same_seed"] is False
