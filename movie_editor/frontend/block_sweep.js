@@ -16,6 +16,13 @@
     return `Scene ${i + 1}` + (s.text ? ": " + s.text.substring(0, 30) : "");
   }
 
+  // "10,11,13;seam;5" -> "sweep_10-11-13_seam_5_<ts>.mp4" — the raw config line, filesystem-safe,
+  // timestamped so re-running the same line twice doesn't collide in the Media bin.
+  function _sweepFilename(label) {
+    const safe = String(label).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return `sweep_${safe}_${Date.now()}.mp4`;
+  }
+
   function _card(item) {
     // A real viewing size, not the media-bin's thumbnail height — the whole point of this
     // gallery is comparing results without popping each one into a separate tab.
@@ -31,13 +38,38 @@
     const nameEl = el("div", "media-name", item.label);
     nameEl.title = item.label;
     card.append(nameEl);
+    if (item.media) {
+      const saveBtn = el("button", "btn ghost tiny sw-sweep-save", "💾 Save to Media bin");
+      saveBtn.onclick = async () => {
+        saveBtn.disabled = true; saveBtn.textContent = "Saving…";
+        try {
+          await API.importClipToMediaBin({
+            filename: item.media.filename,
+            subfolder: item.media.subfolder || "",
+            type: item.media.type || "output",
+          }, _sweepFilename(item.label));
+          await window.Store.loadMedia();
+          saveBtn.textContent = "✓ Saved";
+        } catch (e) {
+          alert("Save failed: " + (e.message || e));
+          saveBtn.textContent = "💾 Save to Media bin";
+        } finally {
+          saveBtn.disabled = false;
+        }
+      };
+      card.append(saveBtn);
+    }
     return card;
   }
+
+  // Module-level, not per-mount: this section is its own settings entry (not something an
+  // "experimental" checkbox needs to gate), so the config you typed should survive closing
+  // and reopening the panel, not just live inside one mount() closure.
+  let _configText = "";
 
   function mount(container, ctx) {
     const S = window.Store;
     let sceneId = (_activeScenes()[0] || {}).id || null;
-    let configText = "";
 
     container.append(el("div", "es-hint",
       "Runs ONE scene through several H3 block-repeat configs back to back, same frame and "
@@ -52,30 +84,24 @@
     sceneRow.append(el("label", "sw-label", "Scene to sweep"), sceneSel);
     container.append(sceneRow);
 
-    const expCb = el("input"); expCb.type = "checkbox"; expCb.style.width = "auto";
-    const expLabel = el("label", "sw-hint sw-check-label");
-    expLabel.append(expCb, document.createTextNode(
-      " Show experimental config — unvalidated, results will not match any prior sweep 1:1 "
-      + "(different checkpoint/steps/sampler port nothing over, see the block-repeat research notes)"));
-    container.append(expLabel);
-
     const cfgWrap = el("div", "sw-stack");
-    cfgWrap.hidden = true;
     const cfgHint = el("div", "es-hint",
       "One config per line: blocks;seam|noseam;times[;laststeps] — e.g. 10,11,13;seam;5  or  "
       + "40-41;noseam;1;2. Blocks accept a single number, a range (31-40), or a comma list; "
       + "times is clamped to 1-4. laststeps confines the repeat to the final N denoise steps "
       + "(0 or omitted = every step); mixing bare and laststeps-tagged lines in one sweep is "
-      + "fine but they are not comparable to each other.");
+      + "fine but they are not comparable to each other. Unvalidated — results will not match "
+      + "any prior sweep 1:1 (different checkpoint/steps/sampler port nothing over, see the "
+      + "block-repeat research notes).");
     const cfgArea = document.createElement("textarea");
     cfgArea.className = "sw-textarea";
     cfgArea.rows = 6;
     cfgArea.placeholder = "10,11,13;seam;5\n40-41;noseam;1;2";
-    cfgArea.oninput = () => { configText = cfgArea.value; };
+    cfgArea.value = _configText;
+    cfgArea.oninput = () => { _configText = cfgArea.value; };
     const runBtn = el("button", "btn primary tiny", "▶ Run sweep");
     cfgWrap.append(cfgHint, cfgArea, runBtn);
     container.append(cfgWrap);
-    expCb.onchange = () => { cfgWrap.hidden = !expCb.checked; };
 
     const statusEl = el("div", "pj-meta");
     container.append(statusEl);
@@ -97,7 +123,7 @@
 
     runBtn.onclick = () => {
       if (!sceneId) { alert("No scene to sweep."); return; }
-      S.runBlockRepeatSweep(sceneId, configText);
+      S.runBlockRepeatSweep(sceneId, _configText);
     };
 
     const unsub = S.subscribe(render);

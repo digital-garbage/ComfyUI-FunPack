@@ -9,6 +9,22 @@ const grab = (name) => src.match(new RegExp(`function ${name}[\\s\\S]*?\\n  \\}\
 const { parseBlockSweepConfig } = new Function(
   grab("parseBlockSweepConfig") + "; return { parseBlockSweepConfig };")();
 
+const bsSrc = fs.readFileSync(__dirname + "/block_sweep.js", "utf8");
+const grabBs = (name) => bsSrc.match(new RegExp(`function ${name}[\\s\\S]*?\\n  \\}\\n`))[0];
+const { _sweepFilename } = new Function(
+  grabBs("_sweepFilename") + "; return { _sweepFilename };")();
+
+test("sweep filenames are filesystem-safe and carry the config", () => {
+  const name = _sweepFilename("10,11,13;seam;5");
+  assert.match(name, /^sweep_10-11-13-seam-5_\d+\.mp4$/);
+});
+
+test("sweep filenames never start or end with a separator dash", () => {
+  const name = _sweepFilename(";noseam;1");
+  assert.ok(!name.startsWith("sweep_-"));
+  assert.match(name, /^sweep_noseam-1_\d+\.mp4$/);
+});
+
 test("parses blocks, seam and times off a semicolon line", () => {
   const [c] = parseBlockSweepConfig("10,11,13;seam;5");
   assert.equal(c.blocks, "10,11,13");

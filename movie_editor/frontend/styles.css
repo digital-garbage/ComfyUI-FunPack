@@ -2194,7 +2194,8 @@ body.tour-mode { overflow: hidden; }
   display: block; }
 .sw-sweep-fail { aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center;
   color: var(--faint); font-size: 12px; }
-.sw-sweep-card .media-name { padding: 6px 8px; font-size: 11px; word-break: break-all; }
+.sw-sweep-card .media-name { padding: 6px 8px 0; font-size: 11px; word-break: break-all; }
+.sw-sweep-save { margin: 6px 8px 8px; width: calc(100% - 16px); }
 .sw-rows-label { margin: 16px 4px 5px; font-size: 10px; font-weight: 700; letter-spacing: .6px;
   text-transform: uppercase; color: var(--faint); }
 .sw-rows { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px;
