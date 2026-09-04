@@ -23,7 +23,21 @@
     return `sweep_${safe}_${Date.now()}.mp4`;
   }
 
-  let _ratingLabels = null; // fetched once, cached module-level
+  // REINS reads a rating by SIGN only (direction() splits liked/disliked purely on
+  // weight > 0 vs < 0, not magnitude) — the full nuanced label taxonomy is overkill for
+  // this panel's purpose. These are the plain "H3 scale" digit strings the rating pipeline
+  // already accepts (see conditioning.py's normalize_refiner_v2_rating: bare "1".."10" maps
+  // through a linear reward, sign flips around ~5.6), picked well clear of that midpoint so
+  // there is no ambiguity about which side of liked/disliked either button lands on.
+  const _LIKE_RATING = "9";
+  const _DISLIKE_RATING = "2";
+
+  // Cards the user has already rated in THIS mount, so the row shows the outcome instead of
+  // resetting to the buttons on the next re-render (S.subscribe re-renders the whole grid).
+  const _rated = new WeakMap(); // item -> "liked" | "disliked"
+  // Cards explicitly skipped, so the row doesn't keep asking. Local/cosmetic only — skipping
+  // costs nothing and commits nothing, it just stops offering to rate that card.
+  const _skipped = new WeakSet();
 
   function _card(item, isLast, onRated) {
     // A real viewing size, not the media-bin's thumbnail height — the whole point of this
@@ -66,29 +80,42 @@
       // Rating only ever pairs with the run whose capture is still "pending" on the
       // refinement key — that slot holds ONE entry, overwritten the instant the next run
       // samples. Only the LAST card in the gallery is ever validly rateable; anything
-      // earlier has already been evicted by a later run's own capture. Rating here fires
-      // ANOTHER generation (same config, rating attached) — it is not free.
-      if (isLast) {
+      // earlier has already been evicted by a later run's own capture. Liking/disliking
+      // fires ANOTHER generation (same config, rating attached) — it is not free; Skip
+      // fires nothing, it just stops the row from asking.
+      const outcome = _rated.get(item);
+      if (outcome) {
+        card.append(el("div", "es-hint sw-sweep-rate-note",
+          outcome === "liked" ? "✓ Liked" : "✓ Disliked"));
+      } else if (_skipped.has(item)) {
+        card.append(el("div", "es-hint sw-sweep-rate-note", "Skipped"));
+      } else if (isLast) {
         const rateRow = el("div", "sw-sweep-rate");
-        const rateSel = el("select");
-        rateSel.append(new Option("Rate this result…", ""));
-        (_ratingLabels || []).forEach((l) => rateSel.append(new Option(l, l)));
-        const rateBtn = el("button", "btn ghost tiny", "Rate");
-        rateBtn.title = "Fires one more generation with this rating attached — the only way "
-          + "to commit a rating against this result's still-pending capture.";
-        rateBtn.onclick = async () => {
-          const label = rateSel.value;
-          if (!label) { alert("Pick a rating first."); return; }
-          rateBtn.disabled = true; rateSel.disabled = true; rateBtn.textContent = "Rating…";
+        const mkBtn = (cls, txt, title) => {
+          const b = el("button", cls, txt); b.title = title; return b;
+        };
+        const likeBtn = mkBtn("btn ghost tiny", "👍 Like",
+          "Fires one more generation with a liked rating attached — the only way to commit "
+          + "a rating against this result's still-pending capture.");
+        const dislikeBtn = mkBtn("btn ghost tiny", "👎 Dislike",
+          "Fires one more generation with a disliked rating attached.");
+        const skipBtn = mkBtn("btn ghost tiny", "Skip", "Don't rate this one — costs nothing.");
+        const rate = async (label, outcomeLabel, btn) => {
+          [likeBtn, dislikeBtn, skipBtn].forEach((b) => { b.disabled = true; });
+          btn.textContent = "…";
           try {
             const ok = await window.Store.rateComboResult(item, label);
-            if (ok) { rateBtn.textContent = "✓ Rated"; onRated && onRated(); }
-            else { rateBtn.textContent = "Rate"; alert("Rating run failed — see the status line."); }
+            if (ok) { _rated.set(item, outcomeLabel); onRated && onRated(); }
+            else { alert("Rating run failed — see the status line."); }
           } finally {
-            rateBtn.disabled = false; rateSel.disabled = false;
+            [likeBtn, dislikeBtn, skipBtn].forEach((b) => { b.disabled = false; });
+            btn.textContent = btn === likeBtn ? "👍 Like" : "👎 Dislike";
           }
         };
-        rateRow.append(rateSel, rateBtn);
+        likeBtn.onclick = () => rate(_LIKE_RATING, "liked", likeBtn);
+        dislikeBtn.onclick = () => rate(_DISLIKE_RATING, "disliked", dislikeBtn);
+        skipBtn.onclick = () => { _skipped.add(item); onRated && onRated(); };
+        rateRow.append(likeBtn, dislikeBtn, skipBtn);
         card.append(rateRow);
       } else {
         card.append(el("div", "es-hint sw-sweep-rate-note",
@@ -107,10 +134,6 @@
   function mount(container, ctx) {
     const S = window.Store;
     let sceneId = (_activeScenes()[0] || {}).id || null;
-
-    if (_ratingLabels === null) {
-      API.ratingLabels().then((r) => { _ratingLabels = r.labels || []; render(); }).catch(() => { _ratingLabels = []; });
-    }
 
     container.append(el("div", "es-hint",
       "Runs ONE scene through several REINS / block-repeat configs back to back, so results "

@@ -2198,8 +2198,7 @@ body.tour-mode { overflow: hidden; }
 .sw-sweep-seed { padding: 0 8px; font-size: 10px; }
 .sw-sweep-save { margin: 6px 8px 4px; width: calc(100% - 16px); }
 .sw-sweep-rate { display: flex; gap: 6px; margin: 0 8px 8px; }
-.sw-sweep-rate > select { flex: 1; min-height: 0; padding: 4px 6px; }
-.sw-sweep-rate > button { flex: 0 0 auto; }
+.sw-sweep-rate > button { flex: 1; min-width: 0; }
 .sw-sweep-rate-note { margin: 0 8px 8px; }
 .sw-rows-label { margin: 16px 4px 5px; font-size: 10px; font-weight: 700; letter-spacing: .6px;
   text-transform: uppercase; color: var(--faint); }
