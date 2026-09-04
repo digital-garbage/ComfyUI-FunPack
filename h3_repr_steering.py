@@ -123,15 +123,16 @@ def capture(hidden_state, video_mask):
 def _load(refinement_key):
     path = state_path(refinement_key)
     if not os.path.exists(path):
-        return {"rows": [], "pending": None}
+        return {"rows": [], "pending": None, "slots": {}}
     try:
         data = torch.load(path, map_location="cpu", weights_only=True)
     except Exception:  # noqa: BLE001
-        return {"rows": [], "pending": None}
+        return {"rows": [], "pending": None, "slots": {}}
     if not isinstance(data, dict):
-        return {"rows": [], "pending": None}
+        return {"rows": [], "pending": None, "slots": {}}
     data.setdefault("rows", [])
     data.setdefault("pending", None)
+    data.setdefault("slots", {})
     return data
 
 
@@ -196,6 +197,68 @@ def commit(refinement_key, reward):
         _log().failed("H3 representation steering", "commit", e, "rating not recorded")
         return "no_pending"
     return "recorded"
+
+
+def save_capture_slot(refinement_key, slot_id, descriptors):
+    """Like save_pending, but keyed by an explicit slot instead of the single overwritable
+    `pending` -- for a batch of generations that each need to stay independently rateable, in
+    any order, any subset, instead of each new run silently evicting the last one waiting to
+    be rated. `pending` is untouched by this (a slotted run does not also become "the"
+    pending capture), so the ordinary one-at-a-time rating flow keeps working exactly as
+    before for anything that doesn't pass a slot id."""
+    if not refinement_key or not slot_id or not descriptors:
+        return
+    data = _load(refinement_key)
+    data["slots"][str(slot_id)] = {int(b): d.detach().float().cpu() for b, d in descriptors.items()}
+    try:
+        _save(refinement_key, data)
+    except OSError as e:
+        _log().failed("H3 representation steering", "save capture slot", e,
+                       f"slot {slot_id}'s capture is not kept")
+
+
+def commit_slot(refinement_key, slot_id, reward):
+    """Slot equivalent of commit(): pairs ONE named slot's capture with a rating and appends
+    it to the same rows log direction() reads, then frees that slot. Slots are independent of
+    each other and of `pending` -- rating one does not consume or disturb any other slot, so
+    a whole batch can be rated in any order, any subset, whenever -- the actual point of
+    a batch. Same return contract as commit(): "recorded" | "no_pending" | "no_key"."""
+    if not refinement_key:
+        return "no_key"
+    data = _load(refinement_key)
+    captured = data["slots"].pop(str(slot_id), None)
+    if captured is None:
+        try:
+            _save(refinement_key, data)
+        except OSError:
+            pass
+        return "no_pending"
+    try:
+        data["rows"].append({"desc": captured, "weight": float(reward)})
+    except (TypeError, ValueError):
+        try:
+            _save(refinement_key, data)
+        except OSError:
+            pass
+        return "no_pending"
+    try:
+        _save(refinement_key, data)
+    except OSError as e:
+        _log().failed("H3 representation steering", "commit slot", e, "rating not recorded")
+        return "no_pending"
+    return "recorded"
+
+
+def discard_slot(refinement_key, slot_id):
+    """Drop a slot's capture without rating it (Skip) -- costs nothing, frees the state."""
+    if not refinement_key:
+        return
+    data = _load(refinement_key)
+    if data["slots"].pop(str(slot_id), None) is not None:
+        try:
+            _save(refinement_key, data)
+        except OSError:
+            pass
 
 
 def clear_all(refinement_key):

@@ -2171,6 +2171,36 @@ if web is not None and PromptServer is not None:
         _rs, state = _repr_steer_state(key)
         return web.json_response(state)
 
+    # Batch/sweep results each save their capture under their OWN slot (h3_repr_capture_slot
+    # on the sampler) instead of the single overwritable "pending" -- so, unlike the ordinary
+    # one-at-a-time rating flow, rating one here does NOT require another generation. It's a
+    # pure commit against a capture that's already on disk, same as batch_training.py's
+    # existing per-item ratings, just for REINS's own sidecar instead of a value function.
+    @routes.post(UI_PREFIX + "/api/h3_repr_steering/rate-slot")
+    async def _repr_steer_rate_slot(req):
+        body = await req.json()
+        key = str(body.get("key") or "").strip()
+        slot_id = str(body.get("slot") or "").strip()
+        if not key or not slot_id:
+            return web.json_response({"error": "key and slot are required"}, status=400)
+        try:
+            from conditioning import normalize_refiner_v2_rating
+        except ImportError:
+            from .. import conditioning  # type: ignore
+            normalize_refiner_v2_rating = conditioning.normalize_refiner_v2_rating
+        profile = normalize_refiner_v2_rating(str(body.get("rating") or ""))
+        outcome = _repr_steer_module().commit_slot(key, slot_id, float(profile.get("reward", 0.0)))
+        return web.json_response({"outcome": outcome})
+
+    @routes.post(UI_PREFIX + "/api/h3_repr_steering/discard-slot")
+    async def _repr_steer_discard_slot(req):
+        body = await req.json()
+        key = str(body.get("key") or "").strip()
+        slot_id = str(body.get("slot") or "").strip()
+        if key and slot_id:
+            _repr_steer_module().discard_slot(key, slot_id)
+        return web.json_response({"ok": True})
+
     # ── block-influence probe ────────────────────────────────────────────────
     # Research data, so it lives here rather than in the console: readable, downloadable and
     # clearable from Settings > Refinement & Taste, with its own collection switch. Same

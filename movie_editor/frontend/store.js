@@ -3729,9 +3729,19 @@
     }).filter(Boolean);
   }
 
+  // The refinement key REINS reads/writes for — same default the rest of the app uses
+  // (project.refinement_key), so a sweep's slots land in the same sidecar file everything
+  // else on this project reads from.
+  function _reinsKey() {
+    return (state.project?.refinement_key || "default").trim() || "default";
+  }
+
   // Overrides for one combo config. `seedValue` is the seed to force for this run (the
-  // caller picks a fresh one per line unless "same seed" is checked).
-  function _comboOverrides(c, seedValue) {
+  // caller picks a fresh one per line unless "same seed" is checked). `slotId`, when the
+  // config has a `reins` half, saves THIS run's capture under its own slot instead of the
+  // single overwritable "pending" — so every result in the gallery stays independently
+  // rateable later, not just whichever one happened to run last.
+  function _comboOverrides(c, seedValue, slotId) {
     const ov = [
       { node: "sampler", input: "seed", value: seedValue },
       { node: "sampler", input: "h3_repr_steering", value: !!c.reins },
@@ -3741,6 +3751,7 @@
     if (c.reins) {
       ov.push({ node: "sampler", input: "h3_repr_steering_strength", value: c.reins.strength });
       ov.push({ node: "sampler", input: "h3_repr_steering_block", value: c.reins.block });
+      ov.push({ node: "sampler", input: "h3_repr_capture_slot", value: slotId });
     }
     if (c.sweep) {
       ov.push({ node: "sampler", input: "h3_block_repeat_span_loop", value: c.sweep.spanLoop });
@@ -3764,35 +3775,47 @@
     const fixedSeed = sameSeed
       ? (state.project.sampler_inputs?.seed ?? Math.floor(Math.random() * 0x7fffffff))
       : null;
+    const reinsKey = _reinsKey();
     const results = [];
     set({ comboSweep: { running: true, results, error: null, total: configs.length, current: 0, sameSeed: !!sameSeed, seed: fixedSeed } });
     for (let i = 0; i < configs.length; i++) {
       const c = configs[i];
       const seed = sameSeed ? fixedSeed : Math.floor(Math.random() * 0x7fffffff);
+      // Unique per run, not just per config — rerunning the same line must not reuse (and
+      // silently clobber) an earlier, still-unrated slot.
+      const slotId = c.reins ? `sweep_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}` : null;
       set({ comboSweep: { running: true, results: [...results], error: null, total: configs.length, current: i + 1, label: c.label, sameSeed: !!sameSeed, seed } });
-      const overrides = _comboOverrides(c, seed);
+      const overrides = _comboOverrides(c, seed, slotId);
       const ok = await _generateRun([sceneId], sceneId, `Sweep ${i + 1}/${configs.length}: ${c.label}`, false, overrides);
       if (!ok) {
         set({ comboSweep: { running: false, results, error: `Stopped at "${c.label}": ${state.gen.msg}`, total: configs.length, sameSeed: !!sameSeed, seed } });
         return;
       }
       const media = state.sceneRenders[sceneId]?.media;
-      results.push({ label: c.label, media, sceneId, overrides, seed });
+      results.push({ label: c.label, media, sceneId, seed, reinsKey, slotId });
     }
     set({ comboSweep: { running: false, results, error: null, total: configs.length, sameSeed: !!sameSeed, seed: fixedSeed } });
   }
 
-  // Rate the MOST RECENT combo-sweep result. Ratings only pair with whatever generation's
-  // capture is still "pending" on the refinement key — that slot holds exactly one entry,
-  // overwritten by the next run that samples, so only the LAST result in the gallery can
-  // ever be validly rated; anything earlier has already been evicted by a later run. This
-  // fires one MORE generation, reusing that same result's exact config, with the rating
-  // attached — rating is not a free/standalone action, it costs another full render, the
-  // same way it does everywhere else in this codebase (rating rides the NEXT generation).
+  // Rate (or discard) ANY combo-sweep result, in any order, any subset — each one's REINS
+  // capture lives in its own slot (see runComboSweep), independent of every other result's,
+  // so this is a direct commit against data already on disk. No extra generation, unlike the
+  // ordinary one-at-a-time Studio rating flow this deliberately does NOT reuse.
   async function rateComboResult(item, ratingLabel) {
-    if (!state.project || !item || !ratingLabel) return false;
-    const overrides = [...item.overrides, { node: "studio", input: "rating", value: ratingLabel }];
-    return _generateRun([item.sceneId], item.sceneId, `Rating "${item.label}"`, false, overrides);
+    if (!item || !item.slotId) return false;
+    try {
+      const r = await API.reinsRateSlot(item.reinsKey, item.slotId, ratingLabel);
+      return r.outcome === "recorded";
+    } catch (e) {
+      console.error("rate-slot failed", e);
+      return false;
+    }
+  }
+
+  async function discardComboResult(item) {
+    if (!item || !item.slotId) return;
+    try { await API.reinsDiscardSlot(item.reinsKey, item.slotId); }
+    catch (e) { console.error("discard-slot failed", e); }
   }
 
   async function generate(onlyScene) {
@@ -4630,7 +4653,7 @@
     resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, scenesOverridingProjectFrames, useProjectFramesEverywhere, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate: _clockedGenerate, generateMontage: _clockedMontage, generateSelected: _clockedSelected, genElapsed, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, saveClipToMediaBin, clipSaveableToMediaBin,
-    runComboSweep, parseComboSweepConfig, rateComboResult, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
+    runComboSweep, parseComboSweepConfig, rateComboResult, discardComboResult, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
     renamePromptTemplate, clearGlobalPrompt,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,

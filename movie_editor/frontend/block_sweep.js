@@ -39,7 +39,7 @@
   // costs nothing and commits nothing, it just stops offering to rate that card.
   const _skipped = new WeakSet();
 
-  function _card(item, isLast, onRated) {
+  function _card(item, onRated) {
     // A real viewing size, not the media-bin's thumbnail height — the whole point of this
     // gallery is comparing results without popping each one into a separate tab.
     const card = el("div", "sw-sweep-card");
@@ -77,49 +77,46 @@
       };
       card.append(saveBtn);
 
-      // Rating only ever pairs with the run whose capture is still "pending" on the
-      // refinement key — that slot holds ONE entry, overwritten the instant the next run
-      // samples. Only the LAST card in the gallery is ever validly rateable; anything
-      // earlier has already been evicted by a later run's own capture. Liking/disliking
-      // fires ANOTHER generation (same config, rating attached) — it is not free; Skip
-      // fires nothing, it just stops the row from asking.
+      // Each result with a REINS half saves its capture under its OWN slot (server-side,
+      // h3_repr_capture_slot) — independent of every other result's, so EVERY card here is
+      // rateable, in any order, any subset, same as the real batch training this panel
+      // replaced. Liking/disliking/skipping is a direct commit against data already on
+      // disk — no extra generation, unlike the old single-"pending" design this used to have.
       const outcome = _rated.get(item);
       if (outcome) {
         card.append(el("div", "es-hint sw-sweep-rate-note",
           outcome === "liked" ? "✓ Liked" : "✓ Disliked"));
       } else if (_skipped.has(item)) {
         card.append(el("div", "es-hint sw-sweep-rate-note", "Skipped"));
-      } else if (isLast) {
+      } else if (item.slotId) {
         const rateRow = el("div", "sw-sweep-rate");
         const mkBtn = (cls, txt, title) => {
           const b = el("button", cls, txt); b.title = title; return b;
         };
-        const likeBtn = mkBtn("btn ghost tiny", "👍 Like",
-          "Fires one more generation with a liked rating attached — the only way to commit "
-          + "a rating against this result's still-pending capture.");
-        const dislikeBtn = mkBtn("btn ghost tiny", "👎 Dislike",
-          "Fires one more generation with a disliked rating attached.");
-        const skipBtn = mkBtn("btn ghost tiny", "Skip", "Don't rate this one — costs nothing.");
+        const likeBtn = mkBtn("btn ghost tiny", "👍 Like", "Commit a liked rating for this result.");
+        const dislikeBtn = mkBtn("btn ghost tiny", "👎 Dislike", "Commit a disliked rating for this result.");
+        const skipBtn = mkBtn("btn ghost tiny", "Skip", "Don't rate this one — discards its capture.");
+        const setBusy = (busy) => { [likeBtn, dislikeBtn, skipBtn].forEach((b) => { b.disabled = busy; }); };
         const rate = async (label, outcomeLabel, btn) => {
-          [likeBtn, dislikeBtn, skipBtn].forEach((b) => { b.disabled = true; });
-          btn.textContent = "…";
+          setBusy(true); btn.textContent = "…";
           try {
             const ok = await window.Store.rateComboResult(item, label);
             if (ok) { _rated.set(item, outcomeLabel); onRated && onRated(); }
-            else { alert("Rating run failed — see the status line."); }
+            else { alert("Rating failed — the capture may have already been rated or discarded."); }
           } finally {
-            [likeBtn, dislikeBtn, skipBtn].forEach((b) => { b.disabled = false; });
+            setBusy(false);
             btn.textContent = btn === likeBtn ? "👍 Like" : "👎 Dislike";
           }
         };
         likeBtn.onclick = () => rate(_LIKE_RATING, "liked", likeBtn);
         dislikeBtn.onclick = () => rate(_DISLIKE_RATING, "disliked", dislikeBtn);
-        skipBtn.onclick = () => { _skipped.add(item); onRated && onRated(); };
+        skipBtn.onclick = async () => {
+          setBusy(true);
+          await window.Store.discardComboResult(item);
+          _skipped.add(item); onRated && onRated();
+        };
         rateRow.append(likeBtn, dislikeBtn, skipBtn);
         card.append(rateRow);
-      } else {
-        card.append(el("div", "es-hint sw-sweep-rate-note",
-          "Superseded by a later run — no longer the pending capture, so it can't be rated."));
       }
     }
     return card;
@@ -194,7 +191,7 @@
           : (cs.results && cs.results.length ? `${cs.results.length} result(s), ${seedNote}` : "");
       clear(grid);
       const results = cs.results || [];
-      results.forEach((item, i) => grid.append(_card(item, i === results.length - 1 && !cs.running, render)));
+      results.forEach((item) => grid.append(_card(item, render)));
     }
 
     runBtn.onclick = () => {

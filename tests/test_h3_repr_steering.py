@@ -160,6 +160,49 @@ def test_pending_overwrites_not_accumulates():
     assert torch.allclose(data["rows"][0]["desc"][rs.DEFAULT_BLOCK], torch.tensor([2.0, 0.0]))
 
 
+# --- capture slots -- independent, out-of-order rating for a batch/sweep --------
+
+def test_slots_are_independent_of_pending():
+    """A slotted capture must not become 'the' pending capture, and vice versa -- the
+    ordinary one-at-a-time Studio rating flow keeps working exactly as before regardless of
+    what a sweep is doing with slots."""
+    rs.save_pending("k", _pend(torch.tensor([1.0, 0.0])))
+    rs.save_capture_slot("k", "s1", _pend(torch.tensor([9.0, 0.0])))
+    assert rs.commit("k", 1.0) == "recorded"  # still pairs with the ORIGINAL pending
+    data = rs._load("k")
+    assert torch.allclose(data["rows"][0]["desc"][rs.DEFAULT_BLOCK], torch.tensor([1.0, 0.0]))
+    assert "s1" in data["slots"]  # untouched by the pending commit
+
+
+def test_two_slots_are_rateable_independently_in_any_order():
+    """The actual point of a batch: every result stays rateable, not just the most recent."""
+    rs.save_capture_slot("k", "a", _pend(torch.tensor([1.0, 0.0])))
+    rs.save_capture_slot("k", "b", _pend(torch.tensor([2.0, 0.0])))
+    rs.save_capture_slot("k", "c", _pend(torch.tensor([3.0, 0.0])))
+    # Rate them out of generation order -- c, then a. b is left alone.
+    assert rs.commit_slot("k", "c", 1.0) == "recorded"
+    assert rs.commit_slot("k", "a", -1.0) == "recorded"
+    data = rs._load("k")
+    assert len(data["rows"]) == 2
+    assert "b" in data["slots"]  # never rated, still sitting there
+    assert "a" not in data["slots"] and "c" not in data["slots"]  # consumed on commit
+
+
+def test_committing_an_unknown_or_already_rated_slot_reports_no_pending():
+    rs.save_capture_slot("k", "a", _pend(torch.tensor([1.0, 0.0])))
+    assert rs.commit_slot("k", "a", 1.0) == "recorded"
+    assert rs.commit_slot("k", "a", 1.0) == "no_pending"  # already consumed
+    assert rs.commit_slot("k", "does-not-exist", 1.0) == "no_pending"
+
+
+def test_discard_slot_drops_it_without_recording_a_row():
+    rs.save_capture_slot("k", "a", _pend(torch.tensor([1.0, 0.0])))
+    rs.discard_slot("k", "a")
+    data = rs._load("k")
+    assert "a" not in data["slots"]
+    assert len(data["rows"]) == 0
+
+
 def test_clear_all_removes_the_state_file():
     rs.save_pending("k", _pend(torch.tensor([1.0, 0.0])))
     rs.commit("k", 1.0)

@@ -2970,6 +2970,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "25",
                     "tooltip": "TEST-ONLY: which block(s) actually get steered (the rest of the sweep's candidate blocks are still captured read-only, same as always). A single block, a range, or a comma list -- 25 | 31-40 | 4,5,6 -- same syntax as h3_block_repeat. Each named block steers with its OWN learned direction, computed independently from its OWN liked/disliked history at that block; this does not change what block_sweep ranks, only which block(s) get injected into this run.",
                 }),
+                "h3_repr_capture_slot": ("STRING", {
+                    "default": "",
+                    "tooltip": "TEST-ONLY, node_overrides use. Blank (default) = the normal single 'pending' capture, overwritten by whatever generates next -- the ordinary one-at-a-time rating flow. A non-blank id saves this run's REINS capture under that SLOT instead, independent of pending and of every other slot, so a whole batch of runs can each be rated later, in any order, any subset -- not just the most recent one.",
+                }),
                 "h3_block_repeat": ("STRING", {
                     "default": "",
                     "tooltip": "EXPERIMENTAL, unvalidated (H3). Runs the named block(s) on their OWN output before passing the result on -- a second pass that never leaves latent space (no VAE round trip, no re-noising, no extra sampler step). Because a block's contribution is small, running it twice roughly DOUBLES what that block does, with the nonlinear part being a genuine second refinement of its own result. Blank = off. Accepts a block, a range, or a list: 40 | 38-42 | 10,40,44. Costs one extra block forward per repeat (~2% of a step each). The blocks AFTER a repeated one were trained on its normal output, so a twice-processed stream is mildly out of distribution for them -- expect this to be visible, and not always as an improvement.",
@@ -3698,7 +3702,7 @@ class FunPackLTXAVSceneChainSampler:
                       alg_anchor_sigma_threshold=0.975,
                       bounded_attention_enabled=False,
                       h3_repr_steering=False, h3_repr_steering_strength=0.05,
-                      h3_repr_steering_block="25",
+                      h3_repr_steering_block="25", h3_repr_capture_slot="",
                       h3_block_repeat="", h3_block_repeat_times=1,
                       h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                       h3_block_repeat_last_steps=0,
@@ -3803,7 +3807,10 @@ class FunPackLTXAVSceneChainSampler:
                     from . import h3_repr_steering as _rs
                 except ImportError:
                     import h3_repr_steering as _rs
-                _rs.save_pending(refinement_key, _repr_capture[0])
+                if h3_repr_capture_slot:
+                    _rs.save_capture_slot(refinement_key, h3_repr_capture_slot, _repr_capture[0])
+                else:
+                    _rs.save_pending(refinement_key, _repr_capture[0])
             if _influence_capture[0]:
                 try:
                     from . import block_influence as _bi
@@ -7454,7 +7461,7 @@ class FunPackLTXAVSceneChainSampler:
                trajectory_guidance=False, trajectory_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                h3_repr_steering=False, h3_repr_steering_strength=0.05,
-               h3_repr_steering_block="25",
+               h3_repr_steering_block="25", h3_repr_capture_slot="",
                h3_block_repeat="", h3_block_repeat_times=1,
                h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                h3_block_repeat_last_steps=0,
@@ -8352,6 +8359,7 @@ class FunPackLTXAVSceneChainSampler:
                     h3_repr_steering=h3_repr_steering,
                     h3_repr_steering_strength=h3_repr_steering_strength,
                     h3_repr_steering_block=h3_repr_steering_block,
+                    h3_repr_capture_slot=h3_repr_capture_slot,
                     h3_block_repeat=h3_block_repeat,
                     h3_block_repeat_times=h3_block_repeat_times,
                     h3_block_repeat_video_only=h3_block_repeat_video_only,

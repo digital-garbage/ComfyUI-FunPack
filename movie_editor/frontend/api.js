@@ -203,6 +203,10 @@
     reinsStatus: (key) => j("GET", API("/h3_repr_steering") + `?key=${encodeURIComponent(key || "default")}`),
     reinsSweep: (key, trials) => j("POST", API("/h3_repr_steering/sweep"), { key: key || "default", trials: trials || 2000 }),
     reinsClear: (key) => j("POST", API("/h3_repr_steering/clear"), { key: key || "default" }),
+    // Batch/sweep results save under their OWN slot (h3_repr_capture_slot), not the single
+    // overwritable "pending" — so rating one is a direct commit, no extra generation needed.
+    reinsRateSlot: (key, slot, rating) => j("POST", API("/h3_repr_steering/rate-slot"), { key: key || "default", slot, rating }),
+    reinsDiscardSlot: (key, slot) => j("POST", API("/h3_repr_steering/discard-slot"), { key: key || "default", slot }),
     async reinsExport(key) {
       const k = key || "default";
       const res = await fetch(API("/h3_repr_steering/export") + `?key=${encodeURIComponent(k)}&t=${Date.now()}`, { cache: "no-store" });
