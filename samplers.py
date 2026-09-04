@@ -2986,6 +2986,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 1, "min": 1, "max": 4,
                     "tooltip": "How many EXTRA passes each named block gets. 1 = the block runs twice in total. Higher pushes further from what the following blocks were trained to receive.",
                 }),
+                "h3_block_repeat_last_steps": ("INT", {
+                    "default": 0, "min": 0, "max": 50,
+                    "tooltip": "Only repeat during the FINAL N denoise steps of the schedule (0 = every step, the original behaviour). Early steps set layout/motion/reference from near-pure noise -- doubling a block there is what re-rolls the shot instead of refining it. Confining the repeat to the tail, after that structure is already decided, is the untested alternative. Counted in STEPS, not sigma, so it lands on the same point of the schedule regardless of step count or sampler.",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -3697,6 +3701,7 @@ class FunPackLTXAVSceneChainSampler:
                       h3_repr_steering_block="25",
                       h3_block_repeat="", h3_block_repeat_times=1,
                       h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
+                      h3_block_repeat_last_steps=0,
                       refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -3766,7 +3771,8 @@ class FunPackLTXAVSceneChainSampler:
             _install = (self._install_span_loop if h3_block_repeat_span_loop
                         else self._install_block_repeat)
             model = _install(model, _repeat_blocks, h3_block_repeat_times,
-                             video_only=h3_block_repeat_video_only)
+                             video_only=h3_block_repeat_video_only,
+                             last_steps=h3_block_repeat_last_steps)
         # Measurement next, steering last: whatever is installed later chains this probe
         # as its inner call, so the delta it records is the block's OWN, not one that already
         # contains another mechanism's injection.
@@ -6817,7 +6823,41 @@ class FunPackLTXAVSceneChainSampler:
                 continue
         return out
 
-    def _install_span_loop(self, model, blocks, times=1, video_only=False):
+    @staticmethod
+    def _in_last_steps(args, last_steps):
+        """True when the current denoise call is inside the FINAL `last_steps` steps.
+
+        0 = no window, every step (how block repeat behaved before this existed).
+
+        Core puts the whole schedule in transformer_options["sample_sigmas"] and the current
+        step's sigma in ["sigmas"], so the step index is exact -- no sigma threshold to guess
+        per schedule, which matters because the same threshold lands on a different step for
+        beta57@6 than for beta57@8. Index by matching the current sigma against the schedule
+        (comfy/context_windows.py uses the same isclose trick).
+
+        Fails OPEN -- repeats on every step, the pre-window behaviour -- when the schedule is
+        not exposed, and says so once, rather than silently declining to repeat at all."""
+        if int(last_steps) <= 0:
+            return True
+        try:
+            to = args.get("transformer_options") or {}
+            sched, cur = to.get("sample_sigmas"), to.get("sigmas")
+            if sched is None or cur is None:
+                raise KeyError("sample_sigmas/sigmas")
+            cur = cur.reshape(-1)[0].to(sched.dtype)
+            hit = torch.nonzero(torch.isclose(sched, cur, rtol=1e-4))
+            if not len(hit):
+                raise ValueError("current sigma is not on the schedule")
+            # sigmas holds N+1 values for N steps (the trailing 0 is never a denoise call).
+            total = int(sched.shape[0]) - 1
+            return int(hit[0]) >= total - int(last_steps)
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 block repeat step window", _e,
+                        "the repeat runs on EVERY step instead of only the last "
+                        f"{int(last_steps)}", key="h3_block_repeat_last_steps")
+            return True
+
+    def _install_span_loop(self, model, blocks, times=1, video_only=False, last_steps=0):
         """EXPERIMENTAL (H3): run a CONTIGUOUS SPAN of blocks, then send the result back to the
         start of the span and run it again -- 31,32..40,31,32..40 -- instead of repeating each
         block on itself -- 31,31,32,32..40,40.
@@ -6869,6 +6909,7 @@ class FunPackLTXAVSceneChainSampler:
             patches_replace = dict(to.get("patches_replace", {}))
             dit_patches = dict(patches_replace.get("dit", {}))
             _times, _video_only = int(times), bool(video_only)
+            _last_steps = int(last_steps)
             if _video_only:
                 try:
                     from . import h3_repr_steering as _rs_mask
@@ -6878,6 +6919,13 @@ class FunPackLTXAVSceneChainSampler:
 
             def _head(args, extra):
                 h = args["img"]
+                if not self._in_last_steps(args, _last_steps):
+                    # Outside the window the span still has to RUN -- every other block in it
+                    # is a pass-through now -- it just runs once, as it would with this off.
+                    for _i in range(lo, hi + 1):
+                        h = dit[_i](h, args["t_emb"], args["mod_segments"], args["rope_freqs"],
+                                    transformer_options=args.get("transformer_options"))
+                    return {"img": h}
                 before = h if _video_only else None
                 for _pass in range(_times + 1):
                     for _i in range(lo, hi + 1):
@@ -6914,13 +6962,14 @@ class FunPackLTXAVSceneChainSampler:
             patched.model_options["transformer_options"] = to
             print(f"[FunPackSceneChain] H3 span loop: blocks {lo}-{hi} run {_times + 1}x as a "
                   f"span (wrap {hi}->{lo}, one seam)"
-                  f"{', video rows only' if _video_only else ''}.")
+                  f"{', video rows only' if _video_only else ''}"
+                  f"{f', on the last {_last_steps} step(s) only' if _last_steps > 0 else ''}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 span loop", _e, "blocks run once as usual")
             return model
 
-    def _install_block_repeat(self, model, blocks, times=1, video_only=False):
+    def _install_block_repeat(self, model, blocks, times=1, video_only=False, last_steps=0):
         """EXPERIMENTAL (H3): run a block on its OWN output before passing it on.
 
         `x' = x + f(x)` then `x'' = x' + f(x')`. Because the delta is small, f(x') is close to
@@ -6956,6 +7005,7 @@ class FunPackLTXAVSceneChainSampler:
             patches_replace = dict(to.get("patches_replace", {}))
             dit_patches = dict(patches_replace.get("dit", {}))
             _times = int(times)
+            _last_steps = int(last_steps)
 
             _video_only = bool(video_only)
             if _video_only:
@@ -6972,6 +7022,8 @@ class FunPackLTXAVSceneChainSampler:
                     run = (lambda a: extra["original_block"](a)["img"]) if inner is None else \
                         (lambda a: inner(a, extra)["img"])
                     out = run(args)
+                    if not self._in_last_steps(args, _last_steps):
+                        return {"img": out}
                     first = out if _video_only else None
                     for _ in range(_times):
                         # A fresh args dict each pass: the block reads "img" from it, and
@@ -7001,7 +7053,8 @@ class FunPackLTXAVSceneChainSampler:
             print(f"[FunPackSceneChain] H3 block repeat: block(s) "
                   f"{', '.join(str(b) for b in sorted(blocks))} run {_times + 1}x "
                   f"(+{_times} extra pass each)"
-                  f"{', video rows only' if _video_only else ''}.")
+                  f"{', video rows only' if _video_only else ''}"
+                  f"{f', on the last {_last_steps} step(s) only' if _last_steps > 0 else ''}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 block repeat", _e, "blocks run once as usual")
@@ -7382,6 +7435,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_repr_steering_block="25",
                h3_block_repeat="", h3_block_repeat_times=1,
                h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
+               h3_block_repeat_last_steps=0,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
@@ -8280,6 +8334,7 @@ class FunPackLTXAVSceneChainSampler:
                     h3_block_repeat_times=h3_block_repeat_times,
                     h3_block_repeat_video_only=h3_block_repeat_video_only,
                     h3_block_repeat_span_loop=h3_block_repeat_span_loop,
+                    h3_block_repeat_last_steps=h3_block_repeat_last_steps,
                     refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene
