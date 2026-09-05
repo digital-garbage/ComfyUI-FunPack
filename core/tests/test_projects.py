@@ -229,3 +229,39 @@ def test_a_path_shaped_id_is_refused_not_served(server):
     for pid in ("..", "%2e%2e", "a/b"):
         status, _ = _request(server, "GET", f"/funpack/api/projects/{pid}")
         assert status in (404, 400), pid
+
+
+# --- what the project is generated at ----------------------------------------
+
+def test_video_settings_survive_a_round_trip(store):
+    made = projects.create("With settings")
+    made.video = {"width": 832, "height": 480, "length": 97}
+    projects.save(made)
+
+    back = projects.get(made.id)
+    assert back.video == {"width": 832, "height": 480, "length": 97}
+
+
+def test_a_project_file_is_never_trusted_for_a_setting():
+    """The one thing in this app that outlives the code that wrote it."""
+    project = projects.Project.from_dict({"video": {
+        "width": "832",          # a number that arrived as text
+        "height": 480,
+        "length": 0,             # out of range
+        "batch": -4,             # out of range
+        "huge": 999_999,         # out of range
+        "flag": True,            # bool is an int in Python
+        "name": "wide",          # not a number at all
+        7: 512,                  # not a name
+    }})
+    assert project.video == {"width": 832, "height": 480}
+
+
+def test_video_is_an_object_or_it_is_nothing():
+    for junk in ([512, 512], "832x480", 7, None):
+        assert projects.Project.from_dict({"video": junk}).video == {}
+
+
+def test_a_project_with_no_settings_has_an_empty_one(store):
+    assert projects.Project.from_dict({}).video == {}
+    assert projects.create("Fresh").video == {}

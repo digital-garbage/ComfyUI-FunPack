@@ -7,7 +7,7 @@
 // controls in one list at four different widths.
 
 import { test, expect } from "@playwright/test";
-import { openPipelineWindow } from "./_menu.js";
+import { openPipelineWindow, regionToggle } from "./_menu.js";
 
 const WIDE = { width: 1440, height: 900 };
 
@@ -110,16 +110,16 @@ test("a run is started from the head of the zone it fills, and reported there", 
     .toBeGreaterThan(generate.r);
 });
 
-test("a closed panel leaves the rail and nothing else", async ({ page }) => {
+test("a closed panel leaves no hole where it was", async ({ page }) => {
   await app(page);
   const before = (await boxes(page, ".cx-workspace-main"))[0];
 
-  await page.locator(".cx-workspace-rail-left button").click();
+  await regionToggle(page, "Assets").click();
   await expect(page.locator(".cx-workspace-left")).toHaveAttribute("aria-hidden", "true");
 
-  const [rail] = await boxes(page, ".cx-workspace-rail-left");
+  const [workspace] = await boxes(page, ".cx-workspace");
   const [centre] = await boxes(page, ".cx-workspace-main");
-  expect(centre.x - rail.r, "a closed panel left a hole behind it").toBe(0);
+  expect(centre.x - workspace.x, "a closed panel left a hole behind it").toBe(0);
   expect(centre.w, "the centre did not take the room back").toBeGreaterThan(before.w);
 });
 

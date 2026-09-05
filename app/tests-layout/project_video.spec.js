@@ -1,0 +1,54 @@
+// What the project generates at, end to end against the real server.
+//
+// jsdom covers the store and the controls. What only a browser and a real
+// pipeline can answer is whether the values a person types reach the graph --
+// and whether they are still there on the next visit.
+
+import { test, expect } from "@playwright/test";
+
+const openConstructor = (page) =>
+  page.locator(".cx-panel-head").getByRole("button", { name: "Constructor" }).click();
+
+const widthBox = (page) => page.locator('.cx-modal input[type="number"]').first();
+
+test("the size the project generates at is typed once and used by the run", async ({ page }) => {
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await openConstructor(page);
+
+  // The pipeline says which of its inputs belong here; the app offers the place.
+  await expect(page.locator(".cx-modal").getByText("Width")).toBeVisible();
+  await expect(page.locator('.cx-modal input[type="number"]')).toHaveCount(3);
+
+  await widthBox(page).fill("832");
+  await widthBox(page).blur();
+
+  const sent = await page.evaluate(async () => {
+    const body = JSON.stringify({ inputs: window.FunPack.prompts() });
+    const res = await fetch("/funpack/api/pipeline",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    return res.json();
+  });
+  const latent = sent.slots.find((s) => s.id === "latent");
+  expect(sent.refused).toEqual([]);
+  expect(latent.inputs.width).toBe(832);
+  expect(latent.inputs.model, "the wiring was replaced by a value").toEqual(["model", 0]);
+});
+
+test("it is still what the project generates at on the next visit", async ({ page }) => {
+  // The whole point of it being the PROJECT's: a scene regenerated tomorrow
+  // comes back at the same size, not at whatever the pipeline defaults to.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await openConstructor(page);
+  await widthBox(page).fill("640");
+  await widthBox(page).blur();
+  await page.evaluate(() => window.FunPack.project.flush());
+
+  await page.reload();
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await expect.poll(() => page.evaluate(() => window.FunPack.project.video.width)).toBe(640);
+
+  await openConstructor(page);
+  await expect(widthBox(page)).toHaveValue("640");
+});

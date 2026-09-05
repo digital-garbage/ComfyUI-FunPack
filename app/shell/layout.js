@@ -78,10 +78,20 @@ export function build(root, handlers = {}) {
   // through onToggle, so a panel closed by a narrow window updates its button.
   let ws = null;
   const regionButtons = [];
-  const syncRegions = () => { for (const r of regionButtons) r.button.setPressed(r.isOn()); };
-  const regionToggle = (label, isOn, act) => {
+  const syncRegions = () => {
+    // Too narrow to dock means the panel OVERLAYS the centre -- and this button
+    // is in the centre, so the panel it opens covers it. A control that can be
+    // hidden by the thing it operates is not a control: it goes away, and the
+    // View menu in the bar, which nothing can cover, is the way in and out.
+    const covered = Boolean(ws && ws.narrow());
+    for (const r of regionButtons) {
+      r.button.setPressed(r.isOn());
+      if (r.overlaid) r.button.node.toggleAttribute("hidden", covered);
+    }
+  };
+  const regionToggle = (label, isOn, act, { overlaid = false } = {}) => {
     const button = composer.button.sm({ label, pressed: isOn(), onClick: () => { act(); syncRegions(); } });
-    regionButtons.push({ button, isOn });
+    regionButtons.push({ button, isOn, overlaid });
     return button;
   };
 
@@ -92,9 +102,9 @@ export function build(root, handlers = {}) {
     actions: [
       ...transport.actions,
       regionToggle("Assets", () => Boolean(ws && ws.isOpen("left")),
-                   () => ws && ws.toggle("left")),
+                   () => ws && ws.toggle("left"), { overlaid: true }),
       regionToggle("Properties", () => Boolean(ws && ws.isOpen("right")),
-                   () => ws && ws.toggle("right")),
+                   () => ws && ws.toggle("right"), { overlaid: true }),
       regionToggle("Constructor", () => constructor.isOpen, () => {
         if (constructor.isOpen) constructor.close();
         else if (handlers.onConstructor) handlers.onConstructor();
@@ -179,7 +189,10 @@ export function build(root, handlers = {}) {
   // The prompt is written in a WINDOW, not in a zone: it is the longest thing a
   // person writes and the least often read, and a permanent third of the centre
   // column is the room the timeline needs.
-  offer("generation.prompt", constructor.host.node, constructor.empty.node);
+  offer("generation.prompt", constructor.written.node, constructor.empty.node);
+  // What the project generates at. A pipeline with no such inputs offers no
+  // roles, nothing mounts, and the group is simply not there.
+  offer("project.video", constructor.video.node);
   offer("settings.general", settings.node, settingsEmpty.node);
   // One host, five names. Each carries the same stand-in, and settle() takes it
   // down once anything at all has mounted into the panel they share.

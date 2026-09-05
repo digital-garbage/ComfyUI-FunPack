@@ -42,23 +42,35 @@ export function createPrompts(slots = [], { onChange } = {}) {
         // cannot be typed into has no control, which is the same answer the
         // pipeline window gives for a socket.
         if (isLink(current)) continue;
-        if (current !== undefined && typeof current !== "string") continue;
+        const kind = current === undefined ? "string" : typeof current;
+        if (kind !== "string" && kind !== "number") continue;
 
-        const control = composer.textarea.md({
-          // No label here: the field around it draws one and points at it, and
-          // an aria-label as well would win over the visible words.
-          value: current || "",
-          rows: 2,
-          autoGrow: true,
-          placeholder: role.label || role.input,
-          onInput: () => { if (onChange) onChange(); },
-        });
-        const field = composer.field.default({
+        // The field exists before its control so the control can report which
+        // field changed. Two places send values now -- a scene's text and the
+        // project's own settings -- and "something changed, go and read it all"
+        // does not say which one.
+        const entry = { slot: slot.id, input: role.input, at: role.at };
+        const told = () => { if (onChange) onChange(entry); };
+
+        entry.control = kind === "number"
+          // No min or max: what they are is the NODE's business, and it already
+          // refuses a value outside them with a reason, beside Generate.
+          ? composer.number.md({ value: current, onChange: told })
+          : composer.textarea.md({
+              // No label here: the field around it draws one and points at it,
+              // and an aria-label as well would win over the visible words.
+              value: current || "",
+              rows: 2,
+              autoGrow: true,
+              placeholder: role.label || role.input,
+              onInput: told,
+            });
+        entry.field = composer.field.default({
           label: role.label || role.input,
-          control,
+          control: entry.control,
         });
-        host.appendChild(field.node);
-        fields.push({ slot: slot.id, input: role.input, at: role.at, control, field });
+        host.appendChild(entry.field.node);
+        fields.push(entry);
       }
     }
   }
@@ -98,6 +110,12 @@ export function createPrompts(slots = [], { onChange } = {}) {
     at(point) {
       const found = fields.find((f) => f.at === point);
       return found ? found.control : null;
+    },
+
+    /** Every control at a place, by the input it writes. */
+    controlsAt(point) {
+      return fields.filter((f) => f.at === point)
+        .map(({ input, control }) => ({ input, control }));
     },
     destroy() { build([]); },
   };

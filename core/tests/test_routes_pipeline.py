@@ -437,5 +437,5 @@ def test_the_default_pipeline_says_where_its_prompt_belongs(server):
     roles = [(s["id"], r) for s in body["slots"] for r in (s.get("roles") or [])]
     assert roles, "no slot offers anything to the main window"
     places = {r["at"] for _id, r in roles}
-    assert places == {"generation.prompt"}
+    assert places == {"generation.prompt", "project.video"}
     assert all(r["input"] and r["label"] for _id, r in roles)

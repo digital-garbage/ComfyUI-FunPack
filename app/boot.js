@@ -46,6 +46,15 @@ async function start() {
     onError: (err) => page.transport.say(`The project could not be saved: ${err.message}`),
   });
 
+  // A group with nothing in it is a heading over nothing. The pipeline decides
+  // which inputs belong on the app's surface, so whether this group exists at
+  // all is only known once its controls have been built -- and again whenever
+  // the pipeline changes underneath.
+  const showGroups = () => {
+    const empty = !prompts || !prompts.controlsAt("project.video").length;
+    page.constructor.video.node.toggleAttribute("hidden", empty);
+  };
+
   // A scene's text and the prompt box are the same value seen twice. The box is
   // the editor; the scene is where it lives.
   const showScene = (scene) => {
@@ -65,7 +74,7 @@ async function start() {
         // that was removed takes its box with it, and a value saved in the
         // window is what its box now shows -- otherwise the two windows hold
         // different text for one input and the run uses whichever was sent.
-        if (prompts) prompts.sync(next);
+        if (prompts) { prompts.sync(next); showGroups(); }
       },
     }),
   });
@@ -100,7 +109,13 @@ async function start() {
       // Typing in the box writes to the scene it belongs to. Without this the
       // prompt is a value the run uses and the project never hears about, so a
       // reload shows a timeline whose scenes are all empty.
-      onChange: () => {
+      onChange: (field) => {
+        // Two places take a value now, and which one is decided by where the
+        // pipeline asked for the control -- not by what it is called.
+        if (field && field.at === "project.video") {
+          project.setVideo(field.input, field.control.value);
+          return;
+        }
         const box = prompts && prompts.at("generation.prompt");
         if (box && project.selectedId) project.setText(project.selectedId, box.value);
       },
@@ -115,10 +130,17 @@ async function start() {
   // Everything that mounts has now had its turn, so a region still holding its
   // stand-in is a region nothing wanted.
   settle();
+  showGroups();
 
   // After the prompt exists, so the first scene's text has somewhere to go.
   try {
     await project.start();
+    // The project's own settings win over the pipeline's defaults: they are what
+    // it was generated at, and a regenerate is a new scene at the same size --
+    // never at whatever the last one happened to be cropped to.
+    for (const { input, control } of (prompts ? prompts.controlsAt("project.video") : [])) {
+      if (project.video[input] !== undefined) control.setValue(project.video[input]);
+    }
     timeline = createTimeline({ project, onSelect: showScene });
     page.timelineBody.set([page.transport.warning, timeline]);
     showScene(project.selected);

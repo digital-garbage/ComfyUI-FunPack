@@ -101,7 +101,11 @@
   content: ""; flex: none; inline-size: 5px; block-size: 5px;
   border-radius: var(--r-pill); background: var(--accent);
 }
-.cx-panel-actions { display: flex; align-items: center; gap: var(--sp-2); }
+/* Wraps, like the head around it. The head was made to wrap when a zone got
+   narrow, but the group of controls inside it was still one unbreakable row --
+   so the head's min-content was the whole row, and a 768px window laid out
+   860px wide and scrolled sideways. */
+.cx-panel-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; min-inline-size: 0; }
 /* Whatever the zone has to say, at the far end of its own head: a count, a
    duration, where a run has got to. Quiet by default -- it is read at a glance
    and never pressed. */
@@ -115,6 +119,10 @@
    next. The body decides the rhythm; what goes in it brings nothing. */
 .cx-panel-body {
   padding: var(--sp-6); flex: 1 1 auto; min-block-size: 0; overflow: auto;
+  /* Both axes. A body is a scroller, and a scroller that cannot shrink below
+     its content is not one -- it hands the width up to the zone, the column and
+     the window, which then scrolls sideways as a page. */
+  min-inline-size: 0;
   display: flex; flex-direction: column; gap: var(--sp-5);
 }
 /* One child fills the body -- a viewer, a bin. Several are each their own
@@ -183,7 +191,7 @@
 .cx-tabs-dock .cx-tab.cx-on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .cx-tab:hover { color: var(--text); }
 
-.cx-split { display: flex; width: 100%; min-height: 120px; }
+.cx-split { display: flex; width: 100%; min-height: 120px; min-inline-size: 0; }
 .cx-split-v { flex-direction: column; }
 /* A column, so what is inside a pane inherits the pane's height instead of
    sizing to its own content. A panel in a pane was the right size with a body
@@ -326,7 +334,7 @@
   opacity: var(--grain-opacity); mix-blend-mode: var(--grain-blend);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-.cx-frame-main { flex: 1 1 auto; min-block-size: 0; display: flex; }
+.cx-frame-main { flex: 1 1 auto; min-block-size: 0; min-inline-size: 0; display: flex; }
 .cx-frame-main > * { flex: 1 1 auto; min-inline-size: 0; }
 .cx-frame-head, .cx-frame-foot { flex: 0 0 auto; }
 /* Bands: edge to edge, the same height as a panel head, with the gutter inside
@@ -376,7 +384,12 @@
 
 /* region.stack -- the app's redrawable host. Spacing only: what goes in it
    brings its own everything else. */
-.cx-stack { display: flex; flex-direction: column; min-block-size: 0; }
+/* min-inline-size on the stack ITSELF, not only on what is in it. A flex item's
+   automatic minimum is its content, so a stack holding anything that scrolls --
+   a strip of scenes, a wide table -- handed its content's full width up to
+   whatever contains it, and the page scrolled sideways instead of the scroller
+   scrolling. The rule below covers a stack's children; this covers the stack. */
+.cx-stack { display: flex; flex-direction: column; min-block-size: 0; min-inline-size: 0; }
 .cx-stack > * { min-inline-size: 0; }
 .cx-stack-none { gap: 0; }
 .cx-stack-sm { gap: var(--sp-4); }

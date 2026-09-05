@@ -127,6 +127,17 @@ export function createProject({ onChange, onError } = {}) {
       changed();                          // selection is not saved: it is a view
     },
 
+    /** What the whole project generates at, whichever scene is current. */
+    get video() { return (project && project.video) || {}; },
+
+    setVideo(key, value) {
+      if (!project) return;
+      project.video = project.video || {};
+      if (project.video[key] === value) return;
+      project.video[key] = value;
+      scheduleSave();                     // nothing on screen draws from this
+    },
+
     /** The text of one scene. The prompt box on the main window edits this. */
     setText(id, text) {
       const scene = sceneAt(id);

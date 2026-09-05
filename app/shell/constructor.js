@@ -24,10 +24,21 @@ export function createConstructor({ title = "Constructor", onChange } = {}) {
     hint: "The pipeline decides which of its inputs are written here.",
   });
 
+  // Two groups, by purpose: what this run SAYS, and what it is generated AT.
+  // Grouping them is the whole reason they share a window -- the prompt and the
+  // size of what it produces are settled in one sitting.
+  const written = composer.region.stack({ gap: "sm", label: "Prompt", children: [empty] });
+  // Labelled, because with five fields in a column the two purposes are not
+  // legible from the field names alone. Hidden by whoever fills it when the
+  // pipeline offers nothing to put here -- a heading over nothing is a lie.
+  const videoLabel = composer.label.section({ text: "Video settings" });
+  const video = composer.region.stack({ gap: "sm", label: "Video settings",
+                                        children: [videoLabel] });
+
   // The host is a plain region: it is handed to the modal as a body and handed
   // back when the modal closes, which is why the modal never owns it.
-  const host = composer.region.stack({ gap: "sm", label: "Constructor", fill: true,
-                                       children: [empty] });
+  const host = composer.region.stack({ gap: "md", label: "Constructor", fill: true,
+                                       children: [written, video] });
 
   let window_ = null;
 
@@ -48,6 +59,8 @@ export function createConstructor({ title = "Constructor", onChange } = {}) {
 
   return {
     host, empty, open,
+    /** The two mount points, offered by the shell under these names. */
+    written, video,
     /** Open, and mounted. Tests and the shell both ask. */
     get isOpen() { return Boolean(window_); },
     close() { if (window_) window_.close("close"); },

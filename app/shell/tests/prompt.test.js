@@ -58,6 +58,58 @@ test("what is typed comes back addressed by slot and input", () => {
   });
 });
 
+test("a numeric input gets a number control, not a prompt box", () => {
+  // The same mechanism carries the prompt and the size the project generates
+  // at. What kind of control appears is decided by what is IN the input, so a
+  // pipeline that puts a number on the surface does not get a textarea for it.
+  const node = host("project.video");
+  const p = createPrompts([{ id: "latent", node: "EmptyLatent",
+    roles: [{ at: "project.video", input: "width", label: "Width" },
+            { at: "project.video", input: "length", label: "Length" }],
+    inputs: { width: 832, length: 97 } }]);
+
+  assert.equal(node.querySelectorAll("textarea").length, 0);
+  const numbers = [...node.querySelectorAll('input[type="number"]')];
+  assert.equal(numbers.length, 2);
+  assert.equal(numbers[0].value, "832");
+  assert.deepEqual(p.overrides(), { latent: { width: 832, length: 97 } });
+});
+
+test("a changed control says which input it was", () => {
+  // Two places take a value now -- a scene's text and the project's settings --
+  // and "something changed, go and read it all" does not say which one.
+  const node = host("project.video");
+  const told = [];
+  createPrompts([{ id: "latent", node: "EmptyLatent",
+    roles: [{ at: "project.video", input: "width", label: "Width" }],
+    inputs: { width: 512 } }], { onChange: (field) => told.push(field) });
+
+  const box = node.querySelector('input[type="number"]');
+  box.value = "832";
+  fire(box, "blur");
+
+  assert.equal(told.length, 1);
+  assert.equal(told[0].at, "project.video");
+  assert.equal(told[0].input, "width");
+  assert.equal(told[0].slot, "latent");
+  assert.equal(told[0].control.value, 832);
+});
+
+test("the controls at a place come back with the input each one writes", () => {
+  const node = host("project.video");
+  const p = createPrompts([{ id: "latent", node: "EmptyLatent",
+    roles: [{ at: "project.video", input: "width", label: "Width" },
+            { at: "project.video", input: "height", label: "Height" }],
+    inputs: { width: 512, height: 512 } }]);
+  void node;
+
+  const found = p.controlsAt("project.video");
+  assert.deepEqual(found.map((f) => f.input), ["width", "height"]);
+  found[1].control.setValue(480);
+  assert.deepEqual(p.overrides(), { latent: { width: 512, height: 480 } });
+  assert.deepEqual(p.controlsAt("nowhere.at.all"), []);
+});
+
 test("a role naming a place nobody offers is not shown", () => {
   // The same rule a module's panel lives by: absent, not broken, and not a
   // warning either -- this shell may simply not have that region yet.

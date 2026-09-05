@@ -46,7 +46,11 @@ DEFAULT = [
      "roles": [{"at": "generation.prompt", "input": "text", "label": "Negative"}],
      "inputs": {"clip": ["clip", 0], "text": ""}},
 
-    {"id": "latent", "group": "Preparation", "node": "FunPackEmptyLatent", "inputs": {
+    {"id": "latent", "group": "Preparation", "node": "FunPackEmptyLatent",
+     "roles": [{"at": "project.video", "input": "width", "label": "Width"},
+               {"at": "project.video", "input": "height", "label": "Height"},
+               {"at": "project.video", "input": "length", "label": "Length"}],
+     "inputs": {
         "model": ["model", 0], "width": 512, "height": 512, "length": 1, "batch_size": 1}},
 
     {"id": "settings", "group": "Preparation", "node": "FunPackModifierSettings", "inputs": {"settings": "{}"}},

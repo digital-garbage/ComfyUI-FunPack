@@ -6,6 +6,7 @@
 // the state was right and the pixels were not.
 
 import { test, expect } from "@playwright/test";
+import { regionToggle, menuToggle } from "./_menu.js";
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/funpack/");
@@ -32,7 +33,7 @@ test("both panels are docked beside the preview, not over it", async ({ page }) 
 
 test("collapsing a panel gives its width to the preview", async ({ page }) => {
   const before = await widths(page);
-  await page.locator('.cx-workspace-rail-left button').click();
+  await regionToggle(page, "Assets").click();
   const after = await widths(page);
 
   expect(after.left).toBe(0);
@@ -41,10 +42,10 @@ test("collapsing a panel gives its width to the preview", async ({ page }) => {
 });
 
 test("the toggle stays reachable once its panel is collapsed", async ({ page }) => {
-  // The whole reason the rail is a sibling of the panel. In v4 the control was
-  // inside the region it hid, the region became display:none, and the only way
+  // The whole reason the toggle is outside the region it opens. In v4 the
+  // control was inside it, the region became display:none, and the only way
   // back was clearing storage by hand.
-  const toggle = page.locator('.cx-workspace-rail-left button');
+  const toggle = regionToggle(page, "Assets");
   await toggle.click();
   await expect(toggle).toBeInViewport();
   await toggle.click();
@@ -52,7 +53,7 @@ test("the toggle stays reachable once its panel is collapsed", async ({ page }) 
 });
 
 test("a collapsed panel is still remembered after a reload", async ({ page }) => {
-  await page.locator('.cx-workspace-rail-right button').click();
+  await regionToggle(page, "Properties").click();
   expect((await widths(page)).right).toBe(0);
 
   await page.reload();
@@ -60,7 +61,7 @@ test("a collapsed panel is still remembered after a reload", async ({ page }) =>
   expect((await widths(page)).right).toBe(0);
 
   // And it can still be brought back, which is what makes remembering safe.
-  await page.locator('.cx-workspace-rail-right button').click();
+  await regionToggle(page, "Properties").click();
   expect((await widths(page)).right).toBeGreaterThan(100);
 });
 
@@ -146,16 +147,21 @@ test("a narrow window opens with the panels out of the way", async ({ page }) =>
 
 test("an overlaid panel does not cover the control that closes it", async ({ page }) => {
   // The v4 fault, arriving by a different route: the panel stopped taking its
-  // own space and the rail ended up underneath it.
+  // own space and ended up over the control that closes it. The named toggles
+  // live in the timeline head, which is exactly what an overlaid panel covers,
+  // so at this width they are not offered at all -- the menu bar is, and
+  // nothing can cover that.
   await page.setViewportSize({ width: 420, height: 780 });
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);
 
-  const toggle = page.locator(".cx-workspace-rail-right button");
-  await toggle.click();
+  await expect(regionToggle(page, "Properties"),
+    "a toggle the panel will cover is still offered").toBeHidden();
+
+  const toggle = menuToggle(page, "Properties");
+  await toggle();
   expect((await widths(page)).right).toBeGreaterThan(200);
-  await expect(toggle).toBeInViewport();
-  await toggle.click();                       // and it still works
+  await toggle();                             // and the way back is not covered
   expect((await widths(page)).right).toBe(0);
 });
 
@@ -164,8 +170,8 @@ test("only one panel overlays at a time", async ({ page }) => {
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);
 
-  await page.locator(".cx-workspace-rail-left button").click();
-  await page.locator(".cx-workspace-rail-right button").click();
+  await menuToggle(page, "Assets")();
+  await menuToggle(page, "Properties")();
   const w = await widths(page);
   expect(w.left, "two overlays over one narrow centre").toBe(0);
   expect(w.right).toBeGreaterThan(200);

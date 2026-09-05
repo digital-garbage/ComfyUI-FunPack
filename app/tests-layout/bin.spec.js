@@ -53,9 +53,12 @@ test("a result whose file cannot be fetched shows the glyph, not a broken pictur
   await app(page);
   await seed(page, ["gone.png"]);
 
-  await expect(page.locator(".cx-cell-glyph")).toHaveCount(1);
-  await expect(page.locator(".cx-gallery img")).toHaveCount(0);
-  await expect(page.locator(".cx-cell-name")).toHaveText(["gone.png"]);
+  // Scoped to the bin: the timeline draws cells with the same glyph in them, so
+  // an unscoped count here stopped being about the bin the day it arrived.
+  const bin = page.locator('[aria-label="Media bin"]');
+  await expect(bin.locator(".cx-cell-glyph")).toHaveCount(1);
+  await expect(bin.locator("img")).toHaveCount(0);
+  await expect(bin.locator(".cx-cell-name")).toHaveText(["gone.png"]);
 });
 
 test("every view of the bin fits the panel", async ({ page }) => {

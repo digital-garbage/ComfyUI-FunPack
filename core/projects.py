@@ -64,11 +64,44 @@ class Scene:
         )
 
 
+MAX_SETTING = 16384
+
+
+def _clean_video(raw) -> dict:
+    """What the app is holding for the pipeline's `project.video` inputs.
+
+    Core does not know what a video setting IS. Which of them exist is the
+    pipeline's business -- it says so with a role -- and naming width and height
+    here would be core naming an implementation. What it knows is that a project
+    file is the one thing in this app that outlives the code that wrote it, so
+    everything read back out of one is checked: a whole positive number, or gone.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    clean = {}
+    for key, value in raw.items():
+        # `True` is an int in Python and would land in a width.
+        if not isinstance(key, str) or isinstance(value, bool):
+            continue
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= number <= MAX_SETTING:
+            clean[key] = number
+    return clean
+
+
 @dataclass
 class Project:
     id: str = field(default_factory=_new_id)
     name: str = "Untitled"
     scenes: list[Scene] = field(default_factory=list)
+    #: Settings the whole project is generated at -- size, length -- rather than
+    #: any one scene. A scene cropped on the timeline and regenerated comes back
+    #: at the project's length: the crop was a timeline decision and a regenerate
+    #: is a new scene.
+    video: dict = field(default_factory=dict)
     updated_at: float = 0.0
 
     @staticmethod
@@ -80,6 +113,7 @@ class Project:
             id=pid if is_id(pid) else _new_id(),
             name=_clean_name(d.get("name")),
             scenes=[Scene.from_dict(s) for s in (raw if isinstance(raw, list) else [])],
+            video=_clean_video(d.get("video")),
             updated_at=float(d.get("updated_at") or 0.0),
         )
 

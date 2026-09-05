@@ -82,7 +82,14 @@
 .cx-card-icon { font-size: var(--fs-d3); line-height: 1; color: var(--accent); }
 .cx-card-title { font-size: var(--fs-3); font-weight: var(--fw-semibold); }
 
-.cx-strip { display: flex; gap: var(--sp-2); overflow-x: auto; padding-bottom: var(--sp-2); }
+/* A scroller that can actually shrink. Without an explicit floor a flex item's
+   automatic minimum is its CONTENT, so a strip of a dozen scenes made the
+   window as wide as the strip -- it scrolled sideways as a page instead of
+   scrolling inside itself, which is the one thing it exists to do. */
+.cx-strip {
+  display: flex; gap: var(--sp-2); overflow-x: auto; padding-bottom: var(--sp-2);
+  min-inline-size: 0;
+}
 .cx-strip-cell {
   flex: none; width: 72px; aspect-ratio: 16 / 10; padding: 0;
   border: var(--bw) solid var(--line); border-radius: var(--r-2);
