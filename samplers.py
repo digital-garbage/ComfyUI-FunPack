@@ -2810,6 +2810,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.0, "min": 0.0, "max": 50.0, "step": 0.5,
                     "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Damps how much video and audio attend to EACH OTHER inside H3's joint self-attention, without touching any hidden state -- for the failure pattern where one comes out clean and the other doesn't. 0 = off (installs nothing, zero cost). This is a RAW softmax logit penalty, not a 0-1 fraction -- there's no way to read H3's actual trained attention-logit scale from here (the checkpoint isn't on this machine), so this can't be pre-calibrated. Try single digits (1-5) first, then 10-20; v1 normalized this to 0-1 against a guessed constant and measured completely flat live, which is why it's raw now. Large enough to fully exclude the other modality likely also kills legitimate AV sync, so search up from a small value.",
                 }),
+                "h3_explore_temperature": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 3.0, "step": 0.1,
+                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). A randomizer: flattens attention's own softmax at the block(s) below, so the model is less certain how to weigh the tokens it's already conditioned on -- bounded by the prompt (it can't attend to anything not already in context), unlike latent-level noise. 0 = off. NOT rating-driven -- a plain manual dial, same as Repeat block(s); this is deliberately not coupled to REINS or any other learned steering.",
+                }),
+                "h3_explore_temperature_block": ("STRING", {
+                    "default": "40-49",
+                    "tooltip": "Which block(s) get flattened -- single block, a range, or a comma list, same syntax as Repeat block(s). No effect while the strength above is 0.",
+                }),
                 "alg_guide_blur_strength": ("FLOAT", {
                     "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
                     "tooltip": "Downsample factor for the guide-frame blur (alg_blur_guides). Higher = blurrier guide/JoyAI frames during the affected steps. Independent of the sampler's anchor alg_strength.",
@@ -3708,6 +3716,7 @@ class FunPackLTXAVSceneChainSampler:
                       h3_repr_steering=False, h3_repr_steering_strength=0.05,
                       h3_repr_steering_block="25", h3_repr_capture_slot="",
                       h3_av_decouple=0.0,
+                      h3_explore_temperature=0.0, h3_explore_temperature_block="40-49",
                       h3_block_repeat="", h3_block_repeat_times=1,
                       h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                       h3_block_repeat_last_steps=0,
@@ -3801,6 +3810,8 @@ class FunPackLTXAVSceneChainSampler:
                 model, refinement_key, h3_repr_steering_strength, _repr_capture,
                 steer_block=h3_repr_steering_block)
         model = self._install_h3_av_decouple(model, h3_av_decouple)
+        model = self._install_h3_attn_temperature(
+            model, h3_explore_temperature, h3_explore_temperature_block)
 
         try:
             sampled = comfy.sample.sample_custom(
@@ -6890,12 +6901,24 @@ class FunPackLTXAVSceneChainSampler:
             to["patches_replace"] = patches_replace
 
             _mask_cache = {}  # seq_len -> (video_mask, audio_mask); one live resolution per gen
+            _diag = {"applied_logged": False, "mismatch_logged": False}
+            # Chain through whatever's already on this slot instead of claiming it outright --
+            # same reason dit_patches chains through an existing block hook. `optimized_
+            # attention_override` is a single dict key, not a list: a second mechanism (the
+            # exploration/temperature knob, for example) needs its own install to see and
+            # call through THIS one, or its effect silently vanishes with no error.
+            _inner_attn_override = to.get("optimized_attention_override")
+
+            def _next(func, q_, k_, v_, heads_, **kw):
+                return (_inner_attn_override(func, q_, k_, v_, heads_, **kw)
+                        if _inner_attn_override is not None
+                        else func(q_, k_, v_, heads_, **kw))
 
             def _override(func, q, k, v, heads, mask=None, skip_reshape=True,
                           transformer_options=None, **kwargs):
                 seg = _seg_holder["mod_segments"]
                 if seg is None or mask is not None or not skip_reshape:
-                    return func(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, **kwargs)
+                    return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape, **kwargs)
                 seq_len = q.shape[-2]
                 cached = _mask_cache.get(seq_len)
                 if cached is None:
@@ -6904,7 +6927,18 @@ class FunPackLTXAVSceneChainSampler:
                     _mask_cache[seq_len] = cached
                 vmask, amask = cached
                 if vmask is None or amask is None or k.shape[-2] != seq_len:
-                    return func(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, **kwargs)
+                    # Captured mod_segments but couldn't turn it into rows to bias -- the
+                    # penalty is silently NOT applying this generation. Loud once, not once
+                    # per block/step: this would otherwise look identical to "it's working
+                    # but saturated" from the outside, which is exactly what got questioned.
+                    if not _diag["mismatch_logged"]:
+                        _diag["mismatch_logged"] = True
+                        print(f"[FunPackSceneChain] H3 attention decoupling: mod_segments was "
+                              f"captured but video/audio rows could not be derived at "
+                              f"seq_len={seq_len} (k seq_len {k.shape[-2]}) -- every call this "
+                              f"generation is running the ORDINARY joint attention. The "
+                              f"penalty is not being applied; this is not saturation.")
+                    return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape, **kwargs)
                 other = ~(vmask | amask)
                 # `strength` IS the raw softmax logit penalty, not a normalized 0-1 fraction --
                 # there's no local way to know H3's actual trained attention-logit scale (the
@@ -6912,23 +6946,29 @@ class FunPackLTXAVSceneChainSampler:
                 # over a guessed conversion constant would just be a second guess wearing a
                 # calibrated-looking costume. This way the live sweep searches the real unit.
                 bias_val = -_strength
+                if not _diag["applied_logged"]:
+                    _diag["applied_logged"] = True
+                    print(f"[FunPackSceneChain] H3 attention decoupling: applying penalty "
+                          f"{bias_val:g} -- {int(vmask.sum())} video rows, "
+                          f"{int(amask.sum())} audio rows, {int(other.sum())} other, "
+                          f"seq_len={seq_len}. (Printed once per generation, not per block.)")
                 out = torch.empty(q.shape[0], seq_len, heads * q.shape[-1],
                                   dtype=q.dtype, device=q.device)
                 if amask.any():
                     bias = torch.zeros(seq_len, dtype=q.dtype, device=q.device)
                     bias[vmask] = bias_val
-                    out[:, amask, :] = func(q[:, :, amask, :], k, v, heads,
-                                            mask=bias.view(1, 1, 1, seq_len),
-                                            skip_reshape=skip_reshape, **kwargs)
+                    out[:, amask, :] = _next(func, q[:, :, amask, :], k, v, heads,
+                                             mask=bias.view(1, 1, 1, seq_len),
+                                             skip_reshape=skip_reshape, **kwargs)
                 if vmask.any():
                     bias = torch.zeros(seq_len, dtype=q.dtype, device=q.device)
                     bias[amask] = bias_val
-                    out[:, vmask, :] = func(q[:, :, vmask, :], k, v, heads,
-                                            mask=bias.view(1, 1, 1, seq_len),
-                                            skip_reshape=skip_reshape, **kwargs)
+                    out[:, vmask, :] = _next(func, q[:, :, vmask, :], k, v, heads,
+                                             mask=bias.view(1, 1, 1, seq_len),
+                                             skip_reshape=skip_reshape, **kwargs)
                 if other.any():
-                    out[:, other, :] = func(q[:, :, other, :], k, v, heads,
-                                            mask=None, skip_reshape=skip_reshape, **kwargs)
+                    out[:, other, :] = _next(func, q[:, :, other, :], k, v, heads,
+                                             mask=None, skip_reshape=skip_reshape, **kwargs)
                 return out
 
             to["optimized_attention_override"] = _override
@@ -6938,6 +6978,89 @@ class FunPackLTXAVSceneChainSampler:
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 attention decoupling", _e,
+                        "not applied this run")
+            return model
+
+    def _install_h3_attn_temperature(self, model, strength, block_spec):
+        """EXPERIMENTAL, unvalidated (H3 only). A randomizer -- deliberately NOT wired to
+        REINS or any rating data. Flattens attention's own softmax at the named blocks
+        (`strength` > 0 raises the temperature; `1 + strength` is the multiplier) instead of
+        adding noise that isn't gated by the prompt at all (creativity mask, ancestral
+        noise): scaling Q before the dot product only changes how confidently the model
+        weighs the tokens it's already conditioned on, it can't attend to something that was
+        never in context, so variety stays bounded by whatever the prompt put there. Using
+        the same `optimized_attention_override` extension point as h3_av_decouple, chained
+        through it (see that method) rather than claiming the slot -- both can run together.
+
+        Not rating-driven on purpose: we don't yet know what values of THIS knob even do,
+        and REINS is already its own hard-to-reason-about mechanism -- coupling one
+        unvalidated thing to another's data would make neither debuggable. A plain manual
+        dial, same as h3_block_repeat.
+
+        `strength` 0 or blank installs nothing. `block_spec` -- same syntax as
+        h3_block_repeat/h3_repr_steering_block -- which block(s) get flattened; empty spec
+        also installs nothing (a temperature with nowhere to apply is not a lesser version
+        of this, it's a no-op).
+        """
+        try:
+            _strength = float(strength or 0.0)
+        except (TypeError, ValueError):
+            _strength = 0.0
+        _blocks = self._parse_block_spec(block_spec) if _strength > 0.0 else set()
+        if not _blocks:
+            return model
+        _temperature = 1.0 + _strength
+        try:
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+
+            # Block hooks wrap the block's WHOLE forward (attn + mlp), which is the only
+            # place "which block is currently running" is knowable -- flip a flag around the
+            # real call so the shared attention override knows whether THIS attention call
+            # belongs to a named block. Blocks not in `_blocks` never touch this flag, so
+            # it can't leak scope onto attention calls outside the named set.
+            _active = {"on": False}
+
+            def _make_hook(block):
+                inner = dit_patches.get(("double_block", block))
+
+                def _hook(args, extra):
+                    _active["on"] = True
+                    try:
+                        return (extra["original_block"](args) if inner is None
+                                else inner(args, extra))
+                    finally:
+                        _active["on"] = False
+                return _hook
+
+            for _b in _blocks:
+                dit_patches[("double_block", _b)] = _make_hook(_b)
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+
+            _inner_attn_override = to.get("optimized_attention_override")
+
+            def _override(func, q, k, v, heads, mask=None, skip_reshape=True,
+                          transformer_options=None, **kwargs):
+                call = (_inner_attn_override if _inner_attn_override is not None
+                       else lambda f, *a, **kw: f(*a, **kw))
+                if not _active["on"]:
+                    return call(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape, **kwargs)
+                # Q/temperature before the dot product == (Q.K)/temperature on the logit --
+                # the standard softmax-temperature identity, without ever materializing a
+                # [seq,seq] score matrix ourselves (some backends don't expose one at all).
+                return call(func, q / _temperature, k, v, heads,
+                           mask=mask, skip_reshape=skip_reshape, **kwargs)
+
+            to["optimized_attention_override"] = _override
+            patched.model_options["transformer_options"] = to
+            print(f"[FunPackSceneChain] H3 attention temperature: {_temperature:g}x at "
+                  f"block(s) {sorted(_blocks)}.")
+            return patched
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 attention temperature", _e,
                         "not applied this run")
             return model
 
@@ -7587,6 +7710,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_repr_steering=False, h3_repr_steering_strength=0.05,
                h3_repr_steering_block="25", h3_repr_capture_slot="",
                h3_av_decouple=0.0,
+               h3_explore_temperature=0.0, h3_explore_temperature_block="40-49",
                h3_block_repeat="", h3_block_repeat_times=1,
                h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                h3_block_repeat_last_steps=0,
@@ -8486,6 +8610,8 @@ class FunPackLTXAVSceneChainSampler:
                     h3_repr_steering_block=h3_repr_steering_block,
                     h3_repr_capture_slot=h3_repr_capture_slot,
                     h3_av_decouple=h3_av_decouple,
+                    h3_explore_temperature=h3_explore_temperature,
+                    h3_explore_temperature_block=h3_explore_temperature_block,
                     h3_block_repeat=h3_block_repeat,
                     h3_block_repeat_times=h3_block_repeat_times,
                     h3_block_repeat_video_only=h3_block_repeat_video_only,
