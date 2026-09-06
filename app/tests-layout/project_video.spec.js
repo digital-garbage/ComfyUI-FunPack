@@ -156,3 +156,59 @@ test("switching projects switches what the run will use, not just what is stored
   await openConstructor(page);
   await expect(widthBox(page)).toHaveValue("640");
 });
+
+test("an edit can be taken back from the menu and from the keyboard", async ({ page }) => {
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  const scenes = () => page.evaluate(() => window.FunPack.project.scenes.length);
+  const before = await scenes();
+
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByRole("menuitem", { name: "Add scene" }).click();
+  expect(await scenes()).toBe(before + 1);
+
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByRole("menuitem", { name: "Undo" }).click();
+  expect(await scenes(), "the menu did not undo").toBe(before);
+
+  // And the shortcut anyone reaches for first.
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByRole("menuitem", { name: "Add scene" }).click();
+  expect(await scenes()).toBe(before + 1);
+  await page.keyboard.press("ControlOrMeta+z");
+  expect(await scenes(), "the keyboard did not undo").toBe(before);
+  await page.keyboard.press("ControlOrMeta+Shift+z");
+  expect(await scenes(), "redo did not put it back").toBe(before + 1);
+});
+
+test("Undo is not offered when there is nothing behind it", async ({ page }) => {
+  // A menu that always offers it teaches people it does nothing.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  await page.getByRole("button", { name: "Edit" }).click();
+  await expect(page.getByRole("menuitem", { name: "Undo" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByRole("menuitem", { name: "Add scene" }).click();
+  await page.getByRole("button", { name: "Edit" }).click();
+  await expect(page.getByRole("menuitem", { name: "Undo" })).toBeEnabled();
+});
+
+test("typing in a box keeps its own undo", async ({ page }) => {
+  // Taking the shortcut over inside a field means one keystroke un-typing a
+  // paragraph instead of a word.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  const scenes = await page.evaluate(() => window.FunPack.project.scenes.length);
+
+  await page.locator(".cx-panel-head").getByRole("button", { name: "Constructor" }).click();
+  const box = page.locator(".cx-modal textarea").first();
+  await box.click();
+  await page.keyboard.press("ControlOrMeta+z");
+
+  expect(await page.evaluate(() => window.FunPack.project.scenes.length),
+    "the project was undone from inside a text box").toBe(scenes);
+});

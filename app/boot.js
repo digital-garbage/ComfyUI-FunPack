@@ -106,6 +106,22 @@ async function start() {
     onGenerate: () => { ranFor = project.selectedId; session.generate(); },
     onCancel: () => run.cancel(),
     onConstructor: () => page.constructor.open(),
+    // What the Edit menu offers, and what the keyboard reaches. One list, so a
+    // menu item and its shortcut cannot drift apart.
+    edits: {
+      canUndo: () => project.canUndo,
+      canRedo: () => project.canRedo,
+      run: (id) => {
+        if (id === "undo") project.undo();
+        else if (id === "redo") project.redo();
+        else if (id === "scene") { project.addScene(); showScene(project.selected); }
+        else if (id === "remove" && project.scenes.length > 1) {
+          project.removeScene(project.selectedId);
+          showScene(project.selected);
+        } else if (id === "earlier") project.move(project.selectedId, -1);
+        else if (id === "later") project.move(project.selectedId, 1);
+      },
+    },
     projects: () => project.recent,
     currentProject: () => (project.project ? project.project.id : null),
     onProject: async (id) => {
@@ -151,6 +167,20 @@ async function start() {
     if (state.phase !== DONE || !ranFor || !state.images.length) return;
     project.setResult(ranFor, viewUrl(state.images[state.images.length - 1]));
     ranFor = null;
+  });
+
+  // Undo from the keyboard, which is where anyone will reach for it first.
+  //
+  // Not inside a field: a text box has its own undo stack and taking that over
+  // would mean one keystroke un-typing a whole paragraph instead of a word.
+  window.addEventListener("keydown", (event) => {
+    if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
+    const on = event.target;
+    const typing = on && (on.tagName === "INPUT" || on.tagName === "TEXTAREA" || on.isContentEditable);
+    if (typing) return;
+    event.preventDefault();
+    if (event.shiftKey) project.redo();
+    else project.undo();
   });
 
   // Saved on the way out. A debounce that has not fired yet is work the user

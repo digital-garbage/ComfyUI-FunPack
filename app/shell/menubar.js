@@ -70,7 +70,8 @@ function menu(label, itemsOf, onPick) {
 }
 
 export function createMenubar({ workspace, onPipeline, onProject, projects = () => [],
-                                current = () => null, theme = services.theme } = {}) {
+                                current = () => null, edits = null,
+                                theme = services.theme } = {}) {
   const connection = createConnection();
 
   const file = menu("File", () => [
@@ -81,9 +82,24 @@ export function createMenubar({ workspace, onPipeline, onProject, projects = () 
     ...projects().map((p) => ({ id: p.id, label: p.name, icon: p.id === current() ? "✓" : " " })),
   ], (id) => { if (onProject) onProject(id); });
 
+  // Built on each press, so "Undo" is offered only when there is something to
+  // undo -- a menu that always offers it teaches people it does nothing.
+  const edit = edits && menu("Edit", () => [
+    { id: "undo", label: "Undo", hint: "⌘Z", disabled: !edits.canUndo() },
+    { id: "redo", label: "Redo", hint: "⇧⌘Z", disabled: !edits.canRedo() },
+    { separator: true },
+    { id: "scene", label: "Add scene" },
+    { id: "remove", label: "Delete scene" },
+    { separator: true },
+    { id: "earlier", label: "Move clip left" },
+    { id: "later", label: "Move clip right" },
+  ], (id) => edits.run(id));
+
   const view = menu("View", () => [
     { id: "left", label: `${workspace && workspace.isOpen("left") ? "Hide" : "Show"} Assets` },
     { id: "right", label: `${workspace && workspace.isOpen("right") ? "Hide" : "Show"} Properties` },
+    { separator: true },
+    { id: "reset", label: "Reset layout" },
     { separator: true },
     ...THEMES.map((t) => ({
       ...t,
@@ -93,6 +109,9 @@ export function createMenubar({ workspace, onPipeline, onProject, projects = () 
     })),
   ], (id) => {
     if (id === "left" || id === "right") workspace.toggle(id);
+    // Cheap insurance: a person who has closed both panels and forgotten which
+    // control brings them back has no way home otherwise.
+    else if (id === "reset") { workspace.open("left"); workspace.open("right"); }
     else theme.set(id);
   });
 
@@ -102,9 +121,10 @@ export function createMenubar({ workspace, onPipeline, onProject, projects = () 
 
   const bar = composer.toolbar.default({
     label: "FunPack",
-    items: [composer.brand.default({ name: "FunPack" }), file, view, settings],
+    items: [composer.brand.default({ name: "FunPack" }),
+            ...[file, edit, view, settings].filter(Boolean)],
     trailing: connection.items,
   });
 
-  return { node: bar.node, bar, connection, file, view, settings };
+  return { node: bar.node, bar, connection, file, edit, view, settings };
 }

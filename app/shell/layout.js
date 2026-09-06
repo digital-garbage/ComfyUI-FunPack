@@ -188,6 +188,7 @@ export function build(root, handlers = {}) {
     workspace,
     onPipeline: handlers.onPipeline,
     onProject: handlers.onProject,
+    edits: handlers.edits,
     projects: handlers.projects,
     current: handlers.currentProject,
   });
