@@ -24,6 +24,10 @@ def server(comfyui, monkeypatch):
     restarts = []
     from core import restart as restart_mod
     monkeypatch.setattr(restart_mod, "restart", lambda: restarts.append(1))
+    # `_pending_restart` is module state, not per-request -- a test that blocks a
+    # restart and never finishes it would otherwise leak "an update is waiting"
+    # into every test that runs after it in the same process.
+    monkeypatch.setattr(routes, "_pending_restart", False)
 
     app = aioweb.Application()
     table = aioweb.RouteTableDef()
@@ -252,6 +256,211 @@ def test_a_branch_switch_restarts_even_when_the_commit_is_the_same(server, monke
     assert server["restarts"] == [1]
 
 
+def test_a_generation_started_during_the_07s_delay_still_stops_the_restart(server, monkeypatch):
+    """`_generation_running()` was only ever checked once, at schedule time --
+    the 0.7s gap before the process actually goes (so the response reaches the
+    client first) was a window nothing re-checked. A run queued in that window
+    used to be killed anyway, which is exactly what this whole mechanism
+    exists to prevent."""
+    monkeypatch.setattr(update_mod, "pull",
+                        lambda **_k: {"updated": True, "before": "a1", "after": "b2"})
+    running = False
+    monkeypatch.setattr(routes, "_generation_running", lambda: running)
+
+    status, body = _request(server["port"], "POST", "/funpack/api/git/update", {})
+    assert status == 200, body
+    assert body["restarting"] is True, "scheduled optimistically, before the delay"
+
+    # A generation starts in the gap between the response and the actual
+    # restart -- the moment the real bug happened.
+    running = True
+    time.sleep(1.0)
+
+    assert server["restarts"] == [], "restarted anyway despite the generation"
+
+    status, body = _request(server["port"], "GET", "/funpack/api/git/status")
+    assert body["restart_pending"] is True, "the deferred restart is not visible anywhere"
+
+
+def test_a_moved_checkout_does_not_restart_while_a_generation_is_running(server, monkeypatch):
+    """The client disables the buttons while a run is in flight, but that check
+    goes stale if the dialog was left open across one starting -- this is the
+    guard that actually stops the restart, not just the appearance of one."""
+    monkeypatch.setattr(update_mod, "pull",
+                        lambda **_k: {"updated": True, "before": "a1", "after": "b2"})
+    monkeypatch.setattr(routes, "_generation_running", lambda: True)
+
+    status, body = _request(server["port"], "POST", "/funpack/api/git/update",
+                            {"branch": "dev"})
+    assert status == 200, body
+    assert body["restarting"] is False
+    assert body["blocked"], "did not say why it refused to restart"
+    assert body["after"] == "b2", "the git operation itself should still have run"
+    time.sleep(1.0)
+    assert server["restarts"] == [], "restarted ComfyUI while a generation was running"
+
+
+def test_a_blocked_restart_is_actually_finishable_once_the_run_ends(server, monkeypatch):
+    """A blocked update used to be a dead end: HEAD had already moved, so the
+    same button's next press saw nothing to update and never restarted --
+    ComfyUI kept running stale code with no way back short of the terminal."""
+    monkeypatch.setattr(update_mod, "pull",
+                        lambda **_k: {"updated": True, "before": "a1", "after": "b2"})
+    monkeypatch.setattr(routes, "_generation_running", lambda: True)
+
+    status, body = _request(server["port"], "POST", "/funpack/api/git/update", {})
+    assert status == 200, body
+    assert body["restarting"] is False
+
+    status, body = _request(server["port"], "GET", "/funpack/api/git/status")
+    assert status == 200, body
+    assert body["restart_pending"] is True, "the owed restart is not visible anywhere"
+
+    # Nothing else here works while a restart is owed -- running another git
+    # action on top of an unrestarted change is not a retry, it is a second
+    # change stacked on the first.
+    status, body = _request(server["port"], "POST", "/funpack/api/git/update", {})
+    assert status == 409, body
+
+    # Still running: the dedicated restart route refuses too, same as the guard.
+    status, body = _request(server["port"], "POST", "/funpack/api/git/restart")
+    assert status == 200, body
+    assert body["restarting"] is False
+    assert server["restarts"] == []
+
+    # The run ends. The SAME deferred restart finishes -- `pull` is not called
+    # again, so if it were, this would fail on Mock's default None return.
+    monkeypatch.setattr(routes, "_generation_running", lambda: False)
+    status, body = _request(server["port"], "POST", "/funpack/api/git/restart")
+    assert status == 200, body
+    assert body["restarting"] is True
+    time.sleep(1.0)
+    assert server["restarts"] == [1]
+
+    status, body = _request(server["port"], "GET", "/funpack/api/git/status")
+    assert body["restart_pending"] is False, "stayed pending after actually restarting"
+
+
+def test_restarting_with_nothing_pending_is_refused(server):
+    status, body = _request(server["port"], "POST", "/funpack/api/git/restart")
+    assert status == 400
+    assert "detail" in body
+
+
+def test_a_rollback_pressed_twice_while_blocked_does_not_roll_back_twice(server, monkeypatch):
+    """The dangerous version of the dead end: HEAD already moved once, so
+    re-running `rollback` on a second press would target the commit BEFORE the
+    blocked rollback and silently undo it instead of finishing the restart."""
+    calls = []
+
+    def rollback():
+        calls.append(1)
+        return {"branch": "v5", "before": "b2", "after": "a1"}
+    monkeypatch.setattr(update_mod, "rollback", rollback)
+    monkeypatch.setattr(routes, "_generation_running", lambda: True)
+
+    status, body = _request(server["port"], "POST", "/funpack/api/git/rollback")
+    assert status == 200, body
+    assert body["restarting"] is False
+    assert calls == [1]
+
+    # Pressed again while still blocked: refused outright, `rollback` not called
+    # a second time.
+    status, body = _request(server["port"], "POST", "/funpack/api/git/rollback")
+    assert status == 409, body
+    assert calls == [1], "ran rollback a second time instead of refusing"
+
+
+def test_two_git_actions_at_once_do_not_touch_the_checkout_at_the_same_time(server, monkeypatch):
+    """Two tabs, or a double-click before the button disables -- both requests
+    used to be able to pass the pending-restart check and then run two real git
+    subprocesses against the same working tree at once."""
+    events = []
+
+    def slow_pull(**_k):
+        events.append(("pull", "enter"))
+        time.sleep(0.3)
+        events.append(("pull", "exit"))
+        return {"updated": False, "before": "a1", "after": "a1"}
+
+    def slow_checkout(**_k):
+        events.append(("checkout", "enter"))
+        time.sleep(0.3)
+        events.append(("checkout", "exit"))
+        return {"updated": False, "before": "a1", "after": "a1",
+                "before_branch": "v5", "branch": "v5"}
+
+    monkeypatch.setattr(update_mod, "pull", slow_pull)
+    monkeypatch.setattr(update_mod, "checkout", slow_checkout)
+
+    results = {}
+
+    def fire(name, path, body):
+        results[name] = _request(server["port"], "POST", path, body)
+
+    t1 = threading.Thread(target=fire, args=("update", "/funpack/api/git/update", {}))
+    t2 = threading.Thread(target=fire, args=("checkout", "/funpack/api/git/checkout", {"branch": "v5"}))
+    t1.start()
+    time.sleep(0.05)  # let the first one actually reach the lock first
+    t2.start()
+    t1.join(5)
+    t2.join(5)
+
+    assert results["update"][0] == 200, results["update"]
+    assert results["checkout"][0] == 200, results["checkout"]
+    # Whichever ran first, it must have fully exited before the other entered --
+    # never interleaved (enter, enter, exit, exit) and never reordered so an
+    # exit is missing before the next enter.
+    assert events in (
+        [("pull", "enter"), ("pull", "exit"), ("checkout", "enter"), ("checkout", "exit")],
+        [("checkout", "enter"), ("checkout", "exit"), ("pull", "enter"), ("pull", "exit")],
+    ), events
+
+
+def test_status_with_a_remote_fetch_does_not_race_a_git_action_either(server, monkeypatch):
+    """`GET /api/git/status?remote=1` runs its own `git fetch` -- a real
+    mutation of the checkout's refs, same as pull/checkout/rollback -- and the
+    Updates window fires it on every open. Without sharing the lock, opening
+    that window mid-update raced two fetches against the same repo."""
+    events = []
+
+    def slow_status(*, remote=True):
+        events.append(("status", "enter"))
+        time.sleep(0.3)
+        events.append(("status", "exit"))
+        return {"ok": True, "branch": "v5", "branches": ["v5"], "dirty": False,
+                "ahead": 0, "behind": 0, "fetch_ok": True, "repo": "/x"}
+
+    def slow_pull(**_k):
+        events.append(("pull", "enter"))
+        time.sleep(0.3)
+        events.append(("pull", "exit"))
+        return {"updated": False, "before": "a1", "after": "a1"}
+
+    monkeypatch.setattr(update_mod, "status", slow_status)
+    monkeypatch.setattr(update_mod, "pull", slow_pull)
+
+    results = {}
+
+    def fire(name, method, path, body=None):
+        results[name] = _request(server["port"], method, path, body)
+
+    t1 = threading.Thread(target=fire, args=("update", "POST", "/funpack/api/git/update", {}))
+    t2 = threading.Thread(target=fire, args=("status", "GET", "/funpack/api/git/status"))
+    t1.start()
+    time.sleep(0.05)
+    t2.start()
+    t1.join(5)
+    t2.join(5)
+
+    assert results["update"][0] == 200, results["update"]
+    assert results["status"][0] == 200, results["status"]
+    assert events in (
+        [("pull", "enter"), ("pull", "exit"), ("status", "enter"), ("status", "exit")],
+        [("status", "enter"), ("status", "exit"), ("pull", "enter"), ("pull", "exit")],
+    ), events
+
+
 def test_a_rollback_restarts_because_the_commit_moved(server, monkeypatch):
     monkeypatch.setattr(update_mod, "rollback",
                         lambda: {"branch": "v5", "before": "b2", "after": "a1"})
@@ -320,6 +529,16 @@ def test_a_silly_limit_does_not_read_a_whole_session_into_memory(server):
         status, body = _request(server["port"], "GET", f"/funpack/api/log?limit={limit}")
         assert status == 200, (limit, body)
         assert len(body["lines"]) <= 2000, limit
+
+
+def test_funpacks_own_log_answers_at_its_own_path_not_the_backend_ones(server):
+    """Both logs were once registered on the same path, one shadowing the
+    other -- FunPack's severity/source log never answered, and its consumer
+    crashed on `data.levels`. They live at different paths now."""
+    status, body = _request(server["port"], "GET", "/funpack/api/log/funpack")
+    assert status == 200, body
+    assert "levels" in body and "records" in body
+    assert isinstance(body["levels"], list)
 
 
 # --- temp files --------------------------------------------------------------

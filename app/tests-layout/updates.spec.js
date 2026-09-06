@@ -123,6 +123,38 @@ test("an update that changed nothing does not wait for a restart", async ({ page
   await expect(page.locator(".cx-modal")).toContainText("Up to date");
 });
 
+test("a restart blocked mid-run is not lost -- the window offers a way to finish it", async ({ page }) => {
+  // The client's own "a run is in flight" check is a courtesy, not the guard --
+  // it goes stale if the dialog was already open when a run started. The
+  // server refuses the restart itself and remembers it owes one; the window
+  // has to surface that or the update is permanently applied-but-not-live.
+  let pending = false;
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await page.route("**/api/git/status**", (route) => route.fulfill({
+    json: { ok: true, version: "5.0", branch: "v5", branches: ["v5", "dev"], dirty: false,
+            ahead: 0, behind: pending ? 0 : 2, fetch_ok: true, checked_remote: true, repo: "/x",
+            restart_pending: pending },
+  }));
+  await page.route("**/api/git/update", (route) => {
+    pending = true;
+    return route.fulfill({ json: { restarting: false, blocked: "A generation is running.",
+                                   updated: true } });
+  });
+  await page.route("**/api/git/restart", (route) => route.fulfill({ json: { restarting: true } }));
+  await page.route("**/api/health", (route) => route.abort());
+
+  await openUpdates(page);
+  await page.getByRole("button", { name: /Update \(2\)/ }).click();
+
+  await expect(page.locator(".cx-modal")).toContainText(/waiting to restart/i);
+  const restartBtn = page.getByRole("button", { name: "Restart now" });
+  await expect(restartBtn).toBeVisible();
+
+  await restartBtn.click();
+  await expect(page.locator(".cx-blocking")).toBeVisible();
+});
+
 test("a generation in flight is said, and the buttons that would kill it are off", async ({ page }) => {
   // The restart takes the run with it, with the GPU time already spent.
   await page.goto("/funpack/");

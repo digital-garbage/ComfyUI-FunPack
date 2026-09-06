@@ -182,10 +182,10 @@ test("a failed attempt leaves Generate usable again", async () => {
 test("a run still in the queue is taken back over", async () => {
   const run = fakeRun();
   const got = await reattach(run, "me", {
-    queuedFor: async () => ({ promptId: "still-going", running: true }),
+    queuedFor: async () => ({ promptId: "still-going", running: true, sceneId: null, projectId: null }),
     finishedFor: async () => { throw new Error("history should not have been asked"); },
   });
-  assert.equal(got, "still-going");
+  assert.equal(got.promptId, "still-going");
   assert.equal(run.state.phase, "running");
 });
 
@@ -196,7 +196,48 @@ test("a run that finished during the load is found in history", async () => {
     queuedFor: async () => null,
     finishedFor: async (_id, seen) => (seen.includes("ended-just-now") ? "ended-just-now" : null),
   });
-  assert.equal(got, "ended-just-now");
+  assert.equal(got.promptId, "ended-just-now");
+});
+
+test("which scene/project a run belongs to travels with it, for both halves", async () => {
+  const run = fakeRun();
+  const queued = await reattach(run, "me", {
+    queuedFor: async () => ({ promptId: "q1", running: true, sceneId: "s1", projectId: "p1" }),
+    finishedFor: async () => { throw new Error("should not be asked"); },
+  });
+  assert.deepEqual(queued, { promptId: "q1", sceneId: "s1", projectId: "p1" });
+
+  const run2 = fakeRun();
+  run2.seen = () => ["f1"];
+  const finished = await reattach(run2, "me", {
+    queuedFor: async () => null,
+    finishedFor: async (_id, _seen, { onFound } = {}) => {
+      if (onFound) onFound({ client_id: "me", funpack_scene_id: "s2", funpack_project_id: "p2" });
+      return "f1";
+    },
+  });
+  assert.deepEqual(finished, { promptId: "f1", sceneId: "s2", projectId: "p2" });
+});
+
+test("onAdopt fires BEFORE the run is adopted, not after reattach resolves", async () => {
+  // An already-finished run can go straight to DONE inside adopt() itself
+  // (whatever the socket buffered gets replayed there) -- a listener that
+  // learns which scene this is for only once reattach's own promise settles
+  // would learn it one tick after that DONE already reached run.subscribe with
+  // no scene to attach it to. This is the ordering the fix actually depends on.
+  const order = [];
+  const run = fakeRun();
+  const realAdopt = run.adopt.bind(run);
+  run.adopt = (id, opts) => { order.push("adopt"); return realAdopt(id, opts); };
+  run.subscribe((state) => { if (state.phase === "running") order.push("subscriber-saw-it"); });
+
+  await reattach(run, "me", {
+    queuedFor: async () => ({ promptId: "q1", running: true, sceneId: "s1", projectId: "p1" }),
+    finishedFor: async () => { throw new Error("should not be asked"); },
+    onAdopt: (sceneId, projectId) => { order.push(`onAdopt:${sceneId}:${projectId}`); },
+  });
+
+  assert.deepEqual(order, ["onAdopt:s1:p1", "adopt", "subscriber-saw-it"]);
 });
 
 test("history is not asked about a run this page never saw", async () => {

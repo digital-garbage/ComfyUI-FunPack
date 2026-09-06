@@ -272,6 +272,29 @@ export function createProject({ onChange, onError, onOpen } = {}) {
     /** Attach what a run produced to the scene it was started from. */
     setResult(id, result) { this.setScene(id, "result", result); },
 
+    /**
+     * The same, but for a run that may have finished after the user switched
+     * to a DIFFERENT project. A run takes minutes and nothing stops someone
+     * from opening another project while one is in flight -- `setResult`
+     * alone would look the scene id up in whatever is open NOW, find nothing,
+     * and drop the result with no trace: the GPU time spent, the image gone.
+     */
+    async setResultFor(projectId, sceneId, result) {
+      if (project && project.id === projectId) {
+        this.setResult(sceneId, result);
+        return;
+      }
+      try {
+        const doc = await read(projectId);
+        const scene = (doc.scenes || []).find((s) => s.id === sceneId);
+        if (!scene) return; // the scene itself is gone -- nothing to attach this to
+        scene.result = result;
+        await put(doc);
+      } catch (err) {
+        if (onError) onError(err);
+      }
+    },
+
     /** Step back, or forward. True when something moved. */
     undo() { return step(past, future); },
     redo() { return step(future, past); },

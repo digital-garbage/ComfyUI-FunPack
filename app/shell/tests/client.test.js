@@ -19,7 +19,7 @@ test("the run this browser queued is found by its client id", async () => {
       queue_pending: [],
     }),
   });
-  assert.deepEqual(found, { promptId: "mine", running: true });
+  assert.deepEqual(found, { promptId: "mine", running: true, sceneId: null, projectId: null });
 });
 
 test("another browser's run is not adopted", async () => {
@@ -54,7 +54,29 @@ test("a malformed queue entry is skipped rather than crashing the load", async (
       queue_pending: [undefined, {}, [3, null, {}, { client_id: "me" }, []]],
     }),
   });
-  assert.deepEqual(found, { promptId: "mine", running: true });
+  assert.deepEqual(found, { promptId: "mine", running: true, sceneId: null, projectId: null });
+});
+
+test("where a run belongs travels with it, when it said so at queue time", async () => {
+  const found = await queuedFor("me", {
+    fetch: answering({
+      queue_running: [[1, "mine", {}, { client_id: "me", funpack_scene_id: "s1",
+                                        funpack_project_id: "p1" }, []]],
+      queue_pending: [],
+    }),
+  });
+  assert.deepEqual(found, { promptId: "mine", running: true, sceneId: "s1", projectId: "p1" });
+});
+
+test("a run queued before this existed has nowhere it said it belongs, and says so with null", async () => {
+  const found = await queuedFor("me", {
+    fetch: answering({
+      queue_running: [[1, "mine", {}, { client_id: "me" }, []]],
+      queue_pending: [],
+    }),
+  });
+  assert.equal(found.sceneId, null);
+  assert.equal(found.projectId, null);
 });
 
 test("a finished run is recognised as this browser's from its history entry", async () => {
@@ -72,6 +94,30 @@ test("a finished run is recognised as this browser's from its history entry", as
   assert.equal(promptId, "mine");
   // Newest first: the run that just ended is the one being looked for.
   assert.equal(asked[0], "/history/mine");
+});
+
+test("onFound hands back the extra_data of a match, without changing what this returns", async () => {
+  const found = [];
+  const promptId = await finishedFor("me", ["mine"], {
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({
+      mine: { prompt: [1, "mine", {}, { client_id: "me", funpack_scene_id: "s1",
+                                        funpack_project_id: "p1" }, []] },
+    }) }),
+    onFound: (extra) => found.push(extra),
+  });
+  assert.equal(promptId, "mine");
+  assert.deepEqual(found, [{ client_id: "me", funpack_scene_id: "s1", funpack_project_id: "p1" }]);
+});
+
+test("onFound is never called when nothing matches", async () => {
+  let called = false;
+  await finishedFor("me", ["theirs"], {
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({
+      theirs: { prompt: [1, "theirs", {}, { client_id: "them" }, []] },
+    }) }),
+    onFound: () => { called = true; },
+  });
+  assert.equal(called, false);
 });
 
 test("a finished run belonging to someone else is not adopted", async () => {
@@ -110,7 +156,7 @@ test("a run still waiting its turn is found too", async () => {
       queue_pending: [[2, "mine", {}, { client_id: "me" }, []]],
     }),
   });
-  assert.deepEqual(promptId, { promptId: "mine", running: false },
+  assert.deepEqual(promptId, { promptId: "mine", running: false, sceneId: null, projectId: null },
     "a job waiting its turn was reported as one already under way");
 });
 
@@ -121,7 +167,7 @@ test("a run under way is preferred over one still waiting", async () => {
       queue_pending: [[2, "waiting", {}, { client_id: "me" }, []]],
     }),
   });
-  assert.deepEqual(promptId, { promptId: "under-way", running: true });
+  assert.deepEqual(promptId, { promptId: "under-way", running: true, sceneId: null, projectId: null });
 });
 
 test("somebody else's pending run is not adopted either", async () => {

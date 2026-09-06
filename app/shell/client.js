@@ -77,7 +77,13 @@ export async function queuedFor(id, { fetch: doFetch = globalThis.fetch, base = 
     for (const item of half || []) {
       if (!Array.isArray(item) || item.length < 4) continue;
       const [, promptId, , extra] = item;
-      if (extra && extra.client_id === id && promptId) return { promptId, running };
+      if (extra && extra.client_id === id && promptId) {
+        // Where the run belongs, if it said so when queued -- carried through
+        // so a reload mid-generation can still land the result on its scene
+        // instead of just knowing a run is going.
+        return { promptId, running, sceneId: extra.funpack_scene_id || null,
+                 projectId: extra.funpack_project_id || null };
+      }
     }
   }
   return null;
@@ -93,7 +99,8 @@ export async function queuedFor(id, { fetch: doFetch = globalThis.fetch, base = 
  * result without it. A history entry's `prompt` is
  * [number, prompt_id, prompt, extra_data, outputs].
  */
-export async function finishedFor(id, candidates, { fetch: doFetch = globalThis.fetch, base = "" } = {}) {
+export async function finishedFor(id, candidates,
+    { fetch: doFetch = globalThis.fetch, base = "", onFound } = {}) {
   for (const promptId of [...(candidates || [])].reverse()) {
     let response;
     try {
@@ -108,6 +115,10 @@ export async function finishedFor(id, candidates, { fetch: doFetch = globalThis.
     const prompt = entry && entry.prompt;
     if (Array.isArray(prompt) && prompt.length > 3 && prompt[3]
         && prompt[3].client_id === id) {
+      // `onFound` hands back the extra_data this run was queued with, without
+      // changing what this function returns everywhere else it is called --
+      // where the run belongs is the reattach path's business, not this one's.
+      if (onFound) onFound(prompt[3]);
       return promptId;
     }
   }

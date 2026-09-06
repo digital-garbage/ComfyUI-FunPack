@@ -95,6 +95,66 @@ test("a run's result lands on the scene it was started for, not the current one"
   assert.equal(sent.at(-1).scenes[0].result, "/view?filename=a.png");
 });
 
+test("a run's result still lands on its scene after the user opened a DIFFERENT project", async () => {
+  // A run takes minutes; nothing stops the user opening another project while
+  // one is in flight. `setResult` alone looks the scene id up in whatever is
+  // open NOW -- finds nothing in the other project, and drops the result with
+  // no trace. `setResultFor` is what boot.js calls instead once it knows which
+  // project the run belongs to.
+  const store = {
+    a: { id: "aaaaaaaaaaaa", name: "A", scenes: [{ id: "scene-a", text: "", result: null }], updated_at: 1 },
+    b: { id: "bbbbbbbbbbbb", name: "B", scenes: [{ id: "scene-b", text: "", result: null }], updated_at: 1 },
+  };
+  const puts = [];
+  globalThis.fetch = async (path, opts = {}) => {
+    if (path === "/funpack/api/projects") {
+      return { ok: true, status: 200, json: async () => ({ projects: [{ id: store.a.id }, { id: store.b.id }] }) };
+    }
+    const id = decodeURIComponent(String(path).split("/").pop());
+    const key = id === store.a.id ? "a" : "b";
+    if (opts.method === "PUT") {
+      const body = JSON.parse(opts.body);
+      store[key] = body;
+      puts.push({ key, body });
+      return { ok: true, status: 200, json: async () => ({ ...body, updated_at: (store[key].updated_at || 1) + 1 }) };
+    }
+    return { ok: true, status: 200, json: async () => store[key] };
+  };
+
+  const p = createProject({});
+  await p.start();               // opens whatever `list()` names first -- project A
+  const startedInProject = p.project.id;
+  const startedForScene = p.selected.id;
+  assert.equal(startedInProject, store.a.id);
+
+  await p.open(store.b.id);      // the user wanders off to a different project
+  assert.equal(p.project.id, store.b.id);
+
+  await p.setResultFor(startedInProject, startedForScene, "/view?filename=a.png");
+
+  // The project on screen (B) must be untouched.
+  assert.equal(p.scenes[0].result, null);
+  // Project A, not open, got the result written straight to its saved copy.
+  const saved = puts.find((x) => x.key === "a");
+  assert.ok(saved, "project A was never saved");
+  assert.equal(saved.body.scenes[0].result, "/view?filename=a.png");
+});
+
+test("a result for a project that is open again goes through the normal live path", async () => {
+  // The user switched away and back before the run finished -- the project is
+  // open again by the time the result lands, so it should update on screen
+  // immediately rather than only reaching the server.
+  server();
+  const p = createProject({});
+  await p.start();
+  p.addScene();
+  const id = p.project.id;
+  const sceneId = p.selectedId;
+
+  await p.setResultFor(id, sceneId, "/view?filename=b.png");
+  assert.equal(p.scenes[0].result, "/view?filename=b.png");
+});
+
 test("renaming a project moves the name in the File menu too", async () => {
   // The listing and the open project are the same name seen twice; a menu that
   // kept the old one until a reload is a menu that lies about what is open.

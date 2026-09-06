@@ -82,8 +82,13 @@ async function start() {
    * window nobody had a reason to reopen.
    */
   const syncVideo = () => {
+    // A project that never touched an input is not "leave it alone" -- it is
+    // "this input has no opinion here", which means the pipeline's own
+    // default. Without the fallback, switching FROM a project that set width
+    // TO one that never did left the box (and so overrides(), and so the run)
+    // still showing the first project's number.
     for (const { input, control } of (prompts ? prompts.controlsAt("project.video") : [])) {
-      if (project.video[input] !== undefined) control.setValue(project.video[input]);
+      control.setValue(project.video[input] !== undefined ? project.video[input] : control.default);
     }
   };
 
@@ -99,15 +104,22 @@ async function start() {
 
   // Which scene a run was started for, read at the moment it starts. A run
   // takes minutes and the user goes on clicking, so "the selected scene" at the
-  // end is not the one that was generated.
+  // end is not the one that was generated. The project id travels with it --
+  // nothing stops the user opening a DIFFERENT project while this one is in
+  // flight, and the result still belongs to the project it was started in.
   let ranFor = null;
+  let ranForProject = null;
 
   // Before the page, because the properties column is composed with it in.
   inspector = createInspector({ project, onRename: (name) => project.rename(name) });
 
   const page = build(root, {
     inspector,
-    onGenerate: () => { ranFor = project.selectedId; session.generate(); },
+    onGenerate: () => {
+      ranFor = project.selectedId;
+      ranForProject = project.project ? project.project.id : null;
+      session.generate();
+    },
     onCancel: () => run.cancel(),
     onConstructor: () => page.constructor.open(),
     // The window asks whether a run is in flight, because the restart that
@@ -171,14 +183,30 @@ async function start() {
   });
   const session = wire({ run, page, check, id, queuedFor, finishedFor,
                          slots: () => slots, values: allValues,
-                         inputs: () => (prompts ? prompts.overrides() : {}) });
+                         inputs: () => (prompts ? prompts.overrides() : {}),
+                         // Read by run.start() at the moment IT queues -- not
+                         // at Generate-click time, which is what onGenerate
+                         // sets ranFor/ranForProject from.
+                         extra: () => (ranForProject && ranFor
+                           ? { funpack_scene_id: ranFor, funpack_project_id: ranForProject } : null),
+                         // The other way a run reaches this page: reattaching
+                         // to one after a reload, where the click that started
+                         // it happened on a page that is gone. Called BEFORE
+                         // the run is adopted -- an already-finished run can go
+                         // straight to DONE inside adopt() itself, and setting
+                         // these from session.ready instead would run one tick
+                         // too late, after that DONE already found nothing to
+                         // attach the result to.
+                         onAdopt: (sceneId, projectId) => { ranFor = sceneId; ranForProject = projectId; } });
 
   // What a run produced, on the scene it was started from -- which is what puts
   // it on the timeline and what makes it still there after a reload.
   run.subscribe((state) => {
     if (state.phase !== DONE || !ranFor || !state.images.length) return;
-    project.setResult(ranFor, viewUrl(state.images[state.images.length - 1]));
+    if (ranForProject) project.setResultFor(ranForProject, ranFor, viewUrl(state.images[state.images.length - 1]));
+    else project.setResult(ranFor, viewUrl(state.images[state.images.length - 1]));
     ranFor = null;
+    ranForProject = null;
   });
 
   // Undo from the keyboard, which is where anyone will reach for it first.

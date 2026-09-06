@@ -289,8 +289,14 @@ export function createRun({
       socket = null;
     },
 
-    /** Queue a prompt. Resolves with the prompt id, or throws with the reason. */
-    async start(prompt) {
+    /**
+     * Queue a prompt. Resolves with the prompt id, or throws with the reason.
+     *
+     * `extra`, when given, rides in `extra_data` alongside `client_id` --
+     * ComfyUI stores and echoes it back on `/queue` and `/history`, which is
+     * the only way a reload can learn what a run in flight belongs to.
+     */
+    async start(prompt, { extra } = {}) {
       listen();
       pending = [];
       cancelWanted = false;
@@ -302,7 +308,8 @@ export function createRun({
         response = await doFetch(`${base}/prompt`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, client_id: clientId }),
+          body: JSON.stringify(extra ? { prompt, client_id: clientId, extra_data: extra }
+                                     : { prompt, client_id: clientId }),
         });
       } catch (err) {
         // The queue could not be reached at all -- no ComfyUI, or the dev

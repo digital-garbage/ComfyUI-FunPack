@@ -125,6 +125,37 @@ test("checking for updates shows which packs are behind", async ({ page }) => {
     .toContainText("up to date");
 });
 
+test("updating a pack clears its stale 'updates available' badge", async ({ page }) => {
+  // run() reloaded the listing after a successful update but never touched the
+  // `checked` news from the earlier "Check for updates" -- the badge kept
+  // claiming updates were available for a pack that had just been brought
+  // current, until the button was pressed again.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  let updated = false;
+  await page.route("**/api/packs", (route) => route.fulfill({
+    json: { root: "/x/custom_nodes", nodes: [
+      { name: "ComfyUI-Behind", is_funpack: false, git: true, branch: "main",
+        commit: updated ? "ccc" : "aaa" }] },
+  }));
+  await page.route("**/api/packs/check", (route) => route.fulfill({
+    json: { checked: { "ComfyUI-Behind": { checked: true, branch: "main", ahead: 0, behind: 3 } } },
+  }));
+  await page.route("**/api/packs/update", (route) => {
+    updated = true;
+    route.fulfill({ json: { ok: true } });
+  });
+
+  await openPacks(page);
+  await page.getByRole("button", { name: "Check for updates" }).click();
+  const row = page.locator(".cx-settings-row", { hasText: "ComfyUI-Behind" });
+  await expect(row).toContainText("3 updates available");
+
+  await row.getByRole("button", { name: "Update" }).click();
+  await expect(row).not.toContainText("3 updates available");
+  await expect(row).toContainText("main");
+});
+
 test("a pack that could not be checked says why, not 'up to date'", async ({ page }) => {
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);

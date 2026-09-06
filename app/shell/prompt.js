@@ -62,8 +62,14 @@ export async function createPrompts(slots = [], { describe, onChange } = {}) {
       const setting = widget && settingFor(widget);
       if (!setting) continue;
 
+      // What this input is when nothing has an opinion on it. The PIPELINE's
+      // own value, not the raw node's widget-schema default -- a module can
+      // and does bake its own sensible number in (this app's latent slot
+      // declares 512, the underlying node's own schema default is 768) and
+      // the pipeline's is the one Generate would actually use.
+      const atRest = current === undefined ? setting.default : current;
       const entry = { slot: slot.id, input: role.input, at: role.at,
-                      value: current === undefined ? setting.default : current };
+                      value: atRest, default: atRest };
       const told = (next) => {
         entry.value = next;
         if (onChange) onChange(entry);
@@ -84,6 +90,12 @@ export async function createPrompts(slots = [], { describe, onChange } = {}) {
   /** What a caller holds: the value, and a way to set it that both halves see. */
   const handleFor = (entry) => ({
     get value() { return entry.value; },
+    // What this control shows when nothing has an opinion -- the pipeline's own
+    // declared default, not whatever a PREVIOUS project last set it to. Needed
+    // by anyone syncing this control from per-project state (project.video):
+    // without it, a project that never touched this input has no way to say
+    // "go back to normal" and the last project's value is left standing.
+    get default() { return entry.default; },
     setValue(next) {
       entry.value = next;
       if (entry.control.setValue) entry.control.setValue(next);

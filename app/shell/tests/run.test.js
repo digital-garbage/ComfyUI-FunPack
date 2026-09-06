@@ -36,6 +36,23 @@ test("queueing a prompt reports it and keeps the id the server gave", async () =
   assert.equal(sent[0].body.client_id, "c1", "the socket would never hear about this run");
 });
 
+test("extra rides in extra_data, which ComfyUI echoes back on /queue and /history", async () => {
+  // The only way a reload can learn which scene/project a run in flight
+  // belongs to -- nothing else carries it through the queue.
+  const { run, sent } = runner(ok({ prompt_id: "p-2", number: 4 }));
+  await run.start({ "1": {} }, { extra: { funpack_scene_id: "s1", funpack_project_id: "pr1" } });
+
+  assert.deepEqual(sent[0].body.extra_data, { funpack_scene_id: "s1", funpack_project_id: "pr1" });
+  assert.equal(sent[0].body.client_id, "c1", "client_id must still be sent alongside extra_data");
+});
+
+test("no extra given is no extra_data sent, not an empty one", async () => {
+  const { run, sent } = runner(ok({ prompt_id: "p-3", number: 5 }));
+  await run.start({ "1": {} });
+
+  assert.equal("extra_data" in sent[0].body, false);
+});
+
 test("a graph the queue refuses fails with ComfyUI's own reason", async () => {
   const { run } = runner(refuse(400, {
     error: { type: "prompt_outputs_failed_validation", message: "Prompt outputs failed validation" },

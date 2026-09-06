@@ -157,6 +157,41 @@ test("switching projects switches what the run will use, not just what is stored
   await expect(widthBox(page)).toHaveValue("640");
 });
 
+test("a project that never touched width is not left showing the last project's", async ({ page }) => {
+  // syncVideo() only pushed a project's OWN values into the controls -- a
+  // project whose video dict is still {} took neither branch, so the control
+  // (and so overrides(), and so the run) kept whatever the PREVIOUS project had
+  // set. A brand-new project is exactly that state.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  await page.evaluate(async (n) => { await window.FunPack.project.newProject(n); }, `A ${Date.now()}`);
+  await openConstructor(page);
+  await widthBox(page).fill("900");
+  await widthBox(page).blur();
+  await page.locator(".cx-modal").getByRole("button", { name: "Done" }).click();
+  await page.evaluate(() => window.FunPack.project.flush());
+  await expect.poll(() => page.evaluate(() => window.FunPack.prompts().latent.width)).toBe(900);
+
+  // A second project that never touches width at all.
+  await page.evaluate(async (n) => { await window.FunPack.project.newProject(n); }, `B ${Date.now()}`);
+  await expect.poll(() => page.evaluate(() => window.FunPack.project.video.width)).toBe(undefined);
+
+  // The pipeline's OWN declared default (modules/system/pipeline: width 512),
+  // not the raw node's widget-schema default (FunPackEmptyLatent's own is
+  // 768) -- entry.default silently used the node's schema default once, which
+  // is a different, wrong number. Not just "not 900": the actual right value.
+  const fallback = await page.evaluate(async () => {
+    const r = await fetch("/funpack/api/pipeline");
+    const slots = (await r.json()).slots || [];
+    return (slots.find((s) => s.id === "latent") || {}).inputs?.width;
+  });
+  await expect.poll(() => page.evaluate(() => window.FunPack.prompts().latent.width),
+    { message: "the run would still use the other project's width, or the wrong default" }).toBe(fallback);
+  await openConstructor(page);
+  await expect(widthBox(page)).toHaveValue(String(fallback));
+});
+
 test("an edit can be taken back from the menu and from the keyboard", async ({ page }) => {
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);

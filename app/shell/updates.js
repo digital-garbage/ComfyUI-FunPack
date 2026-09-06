@@ -79,6 +79,11 @@ export function open({ onRestart = waitForRestart, running = () => false } = {})
                                          + "requirements changed." })]);
     try {
       const result = await run();
+      // The button is already disabled while a run is in flight, but that check
+      // goes stale if the dialog was left open across one starting -- the server
+      // re-checks and refuses the restart itself; this is what tells the user why
+      // nothing happened instead of it looking like the click did nothing.
+      if (result && result.blocked) { load(); return; }
       // The server only restarts when the checkout actually moved. Pressing
       // Update while already up to date is a normal thing to do, and waiting for
       // a restart that is not coming would hang on an overlay for three minutes.
@@ -115,6 +120,26 @@ export function open({ onRestart = waitForRestart, running = () => false } = {})
         text: "A generation is running. Updating or switching branch restarts ComfyUI "
             + "and stops it. Wait for it to finish, or cancel it first.",
       }));
+    }
+
+    // The change already landed last time this was tried; only the restart is
+    // still owed. Nothing else in this window works until it happens -- the
+    // server refuses any further git action while one is pending.
+    if (s.restart_pending) {
+      rows.push(composer.banner.warn({
+        text: "An update already landed and is waiting to restart ComfyUI.",
+      }));
+      rows.push(composer.settingsRow.default({
+        label: "Restart",
+        hint: busy ? "Waiting for the generation to finish." : "Ready.",
+        control: composer.button.md({ label: "Restart now", tone: "primary", disabled: busy,
+                                      onClick: () => act(() => ask("POST", "/restart")) }),
+      }));
+      body.set([composer.group.default({ rows })]);
+      if (window_) window_.setFooter({ actions: [
+        composer.button.md({ label: "Close", tone: "ghost", onClick: () => window_.close("done") }),
+      ] });
+      return;
     }
 
     if (s.dirty) {

@@ -148,6 +148,39 @@ test("setting a control's value is what the run then sends", async () => {
   assert.deepEqual(p.controlsAt("nowhere.at.all"), []);
 });
 
+test("a control's declared default travels with it, separate from its current value", async () => {
+  // What syncVideo() falls back to when a NEW project has no opinion on this
+  // input -- so it has to be the PIPELINE's own value, since that is what
+  // Generate actually uses with no override. Without this, a control that had
+  // been changed had no way back to "nothing here has an opinion" once
+  // switched away and back.
+  host("project.video");
+  const p = await make([{ id: "latent", node: "EmptyLatent",
+    roles: [{ at: "project.video", input: "width", label: "Width" }],
+    inputs: {} }]);                        // the pipeline slot has no width of its own
+
+  const [found] = p.controlsAt("project.video");
+  assert.equal(found.control.value, 512, "starts at the fallback, since nothing overrides it");
+  assert.equal(found.control.default, 512);
+
+  found.control.setValue(900);            // a project's own value, applied later
+  assert.equal(found.control.value, 900);
+  assert.equal(found.control.default, 512, "changing the value must not move the default with it");
+});
+
+test("the default is the PIPELINE's own value, not the raw node's widget default", async () => {
+  // A module can and does bake its own number in, distinct from whatever the
+  // underlying node's schema declares -- entry.default silently used the
+  // node's schema default once, which was a different, WRONG number here.
+  host("project.video");
+  const p = await make([{ id: "latent", node: "EmptyLatent",
+    roles: [{ at: "project.video", input: "width", label: "Width" }],
+    inputs: { width: 768 } }]);            // the pipeline's own default disagrees with NODES.EmptyLatent's (512)
+
+  const [found] = p.controlsAt("project.video");
+  assert.equal(found.control.default, 768, "the pipeline's own value must win over the node's schema default");
+});
+
 test("a role naming a place nobody offers is not shown", async () => {
   // The same rule a module's panel lives by: absent, not broken, and not a
   // warning either -- this shell may simply not have that region yet.

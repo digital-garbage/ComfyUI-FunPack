@@ -51,6 +51,10 @@ export function open() {
     draw();
     try {
       await work();
+      // Stale news, not just a stale listing: an update that just succeeded must
+      // not go on claiming there is one available until "Check for updates" is
+      // pressed again.
+      if (checked) delete checked[name];
       await load();
     } catch (err) {
       problem = err.message;

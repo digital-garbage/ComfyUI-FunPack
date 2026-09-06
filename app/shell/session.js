@@ -16,7 +16,7 @@
  * was live, so two clicks each posted their own /prompt: two jobs burning GPU
  * time, with the UI following one of them.
  */
-export function createGenerator({ run, transport, check, ready, slots, values, inputs }) {
+export function createGenerator({ run, transport, check, ready, slots, values, inputs, extra }) {
   let starting = false;
 
   return async function onGenerate() {
@@ -68,7 +68,11 @@ export function createGenerator({ run, transport, check, ready, slots, values, i
       }
 
       try {
-        await run.start(plan.prompt);
+        // Where this run belongs, so a reload mid-generation can still find it
+        // -- omitted rather than sent empty, since ComfyUI stores whatever
+        // extra_data it is given verbatim.
+        const meta = extra ? extra() : null;
+        await run.start(plan.prompt, meta ? { extra: meta } : {});
         return true;
       } catch {
         return false;                            // run.state carries the reason
@@ -101,7 +105,7 @@ export function createGenerator({ run, transport, check, ready, slots, values, i
  * ordering is the thing under test, so the ordering lives where tests can reach
  * it.
  */
-export function wire({ run, page, check, id, queuedFor, finishedFor, slots, values, inputs }) {
+export function wire({ run, page, check, id, queuedFor, finishedFor, slots, values, inputs, extra, onAdopt }) {
   // One subscription draws everything a run affects. It lives here rather than
   // beside it in boot.js because subscribe() delivers the CURRENT state at
   // once, and doing that after the button was deliberately disabled handed it
@@ -130,30 +134,54 @@ export function wire({ run, page, check, id, queuedFor, finishedFor, slots, valu
   // one on the strength of "phase is idle" is starting one on a guess.
   page.transport.hold("Looking for a run already in progress");
 
-  const ready = reattach(run, id, { queuedFor, finishedFor }).then((adopted) => {
+  const ready = reattach(run, id, { queuedFor, finishedFor, onAdopt }).then((adopted) => {
     page.transport.release(run.state);
     return adopted;
   });
 
-  const generate = createGenerator({ run, transport: page.transport, check, ready, slots, values, inputs });
+  const generate = createGenerator({ run, transport: page.transport, check, ready, slots, values, inputs, extra });
   return { ready, generate };
 }
 
-export async function reattach(run, id, { queuedFor, finishedFor } = {}) {
+/**
+ * Resolves to `{promptId, sceneId, projectId}` for a run this page adopted, or
+ * null. `sceneId`/`projectId` are whatever the run was queued with (see
+ * `run.start`'s `extra`) -- null if it predates that, or was queued some other
+ * way.
+ *
+ * `onAdopt(sceneId, projectId)`, when given, fires SYNCHRONOUSLY, before
+ * `run.adopt()` -- not after this function returns. A run that already
+ * finished while the page was reloading can go straight to DONE the moment it
+ * is adopted (whatever the socket buffered gets replayed inside `adopt()`
+ * itself), and a listener reading "which scene is this for" only after
+ * `reattach` resolves would read it one tick too late, after that DONE
+ * already passed the caller's own run.subscribe with nothing to attach it to.
+ */
+export async function reattach(run, id, { queuedFor, finishedFor, onAdopt } = {}) {
   try {
     const queued = await queuedFor(id);
     if (queued) {
       if (run.state.phase === "idle") {
+        const sceneId = queued.sceneId || null;
+        const projectId = queued.projectId || null;
+        if (onAdopt) onAdopt(sceneId, projectId);
         run.adopt(queued.promptId, { running: queued.running });
-        return queued.promptId;
+        return { promptId: queued.promptId, sceneId, projectId };
       }
       return null;
     }
 
     const seen = run.seen();
     if (!seen.length || run.state.phase !== "idle") return null;
-    const finished = await finishedFor(id, seen);
-    if (finished && run.state.phase === "idle") { run.adopt(finished); return finished; }
+    let meta = null;
+    const finished = await finishedFor(id, seen, { onFound: (extra) => { meta = extra; } });
+    if (finished && run.state.phase === "idle") {
+      const sceneId = (meta && meta.funpack_scene_id) || null;
+      const projectId = (meta && meta.funpack_project_id) || null;
+      if (onAdopt) onAdopt(sceneId, projectId);
+      run.adopt(finished);
+      return { promptId: finished, sceneId, projectId };
+    }
     return null;
   } catch {
     return null;                                 // nothing to reattach to

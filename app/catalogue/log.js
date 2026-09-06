@@ -15,7 +15,7 @@ const TONE = { Info: "neutral", Alert: "info", Warning: "warn", Critical: "dange
 let filter = null;
 
 async function load() {
-  const url = "/funpack/api/log" + (filter ? `?level=${encodeURIComponent(filter)}` : "");
+  const url = "/funpack/api/log/funpack" + (filter ? `?level=${encodeURIComponent(filter)}` : "");
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${url} answered ${response.status}`);
   return response.json();

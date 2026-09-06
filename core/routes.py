@@ -5,6 +5,7 @@ so the real routes can be mounted on a throwaway app in a test. The handlers are
 thin adapters over pure functions in `serve`.
 """
 
+import asyncio
 import json
 
 from . import (backend_log, config, graph as graph_mod, log, nodes_manager, projects,
@@ -27,6 +28,59 @@ try:
     from server import PromptServer
 except Exception:  # not running inside ComfyUI
     PromptServer = None
+
+
+_pending_restart = False
+"""Set when a git change landed but a generation blocked the restart it needs.
+
+Deliberately module state, not per-request: the change is already on disk and
+ComfyUI is already running stale code for it. The one way out is `/api/git/
+restart`, gated on the same running-check -- nothing re-runs `pull`/`checkout`/
+`rollback` to "retry", because by the time this fires HEAD has already moved and
+running that action again would no longer mean what it did the first time
+(rollback especially: run twice, it undoes itself).
+"""
+
+def _generation_running():
+    """Whether ComfyUI is mid-generation right now, if this can even be asked.
+
+    The client already disables the update/checkout/rollback buttons while a run
+    is in flight, but that check goes stale the moment the dialog is left open
+    across a run starting -- this is the one that actually stops the restart.
+    Module-level (rather than nested in `register`) so a test can replace it
+    without a real PromptServer.
+    """
+    instance = getattr(PromptServer, "instance", None)
+    if instance is None:
+        return False
+    try:
+        return instance.prompt_queue.get_tasks_remaining() > 0
+    except Exception:
+        return False
+
+
+def _schedule_restart():
+    """Restart ComfyUI shortly, unless a generation started in the meantime.
+
+    The 0.7s delay (so the response reaches the client before the process
+    goes) is itself a check-then-act window: `_generation_running()` was
+    false when this was scheduled, but nothing stops a generation being
+    queued in the gap. Checked again right here, at the moment that matters,
+    instead of trusting the answer from 0.7s ago -- a restart scheduled while
+    idle and fired while running is exactly the thing this whole mechanism
+    exists to prevent.
+    """
+    global _pending_restart
+
+    def _fire():
+        global _pending_restart
+        if _generation_running():
+            _pending_restart = True
+            return
+        from . import restart as restart_mod
+        restart_mod.restart()
+
+    asyncio.get_event_loop().call_later(0.7, _fire)
 
 
 def _respond(served):
@@ -86,6 +140,21 @@ def manifest(traits=None):
 def register(routes, prefix=None):
     """Attach FunPack's routes to an aiohttp route table."""
     P = config.UI_PREFIX if prefix is None else prefix
+
+    # Serializes every git-mutating route (including the remote fetch inside
+    # status). Created fresh here, not at module import: an `asyncio.Lock`
+    # binds to whichever event loop first acquires it, and register() runs
+    # once per real server process but once per TEST too, each on its own
+    # loop -- a module-level lock reused across those raised "bound to a
+    # different event loop" the moment a second test tried it.
+    #
+    # Without it, two requests -- two tabs, or a double-click before the
+    # client's own disable takes effect -- could both pass the
+    # `_pending_restart` check before either had set it, and then run two real
+    # `git` subprocesses against the same working tree at once: index.lock
+    # contention at best, a checkout's branch switch interleaved with a
+    # pull's fetch/merge at worst.
+    _git_lock = asyncio.Lock()
 
     @routes.get(P + "/api/health")
     async def _health(_req):
@@ -252,45 +321,94 @@ def register(routes, prefix=None):
 
     async def _git(action, **kwargs):
         """Run one git operation off the event loop, or say why it did not."""
-        import asyncio
-        try:
-            result = await asyncio.to_thread(action, **kwargs)
-        except update_mod.GitUpdateError as exc:
-            # A refusal, not a crash: no git, not a checkout, a dirty tree, a
-            # branch that exists on neither side. Each names what to do.
-            return web.json_response({"detail": str(exc)}, status=400)
-        except Exception as exc:  # noqa: BLE001
-            log.broke("git", exc, doing=getattr(action, "__name__", "git"))
-            return web.json_response({"detail": f"{type(exc).__name__}: {exc}"}, status=500)
+        global _pending_restart
+        async with _git_lock:
+            if _pending_restart:
+                # A change already landed and is only waiting on the restart --
+                # running another git action on top of it before that restart
+                # happens is not "retrying", it is a second change stacked on an
+                # unapplied one. Send them to finish the first restart instead.
+                return web.json_response({
+                    "detail": "An earlier update is applied and waiting on a restart "
+                              "(Settings ▸ Updates). Restart before doing anything else here.",
+                }, status=409)
+            try:
+                result = await asyncio.to_thread(action, **kwargs)
+            except update_mod.GitUpdateError as exc:
+                # A refusal, not a crash: no git, not a checkout, a dirty tree, a
+                # branch that exists on neither side. Each names what to do.
+                return web.json_response({"detail": str(exc)}, status=400)
+            except Exception as exc:  # noqa: BLE001
+                log.broke("git", exc, doing=getattr(action, "__name__", "git"))
+                return web.json_response({"detail": f"{type(exc).__name__}: {exc}"}, status=500)
 
-        result = result or {}
-        # ONLY when the checkout actually moved. Pressing Update while already up
-        # to date is a normal thing to do -- there is no way to know until it has
-        # been asked -- and restarting for it costs a boot and, if a generation
-        # is running, the generation.
-        moved = bool(result.get("updated")) or (
-            result.get("before") is not None and result.get("before") != result.get("after")
-        ) or (
-            result.get("before_branch") is not None
-            and result.get("before_branch") != result.get("branch")
-        )
-        if not moved:
-            return web.json_response({"restarting": False, **result})
+            result = result or {}
+            # ONLY when the checkout actually moved. Pressing Update while already
+            # up to date is a normal thing to do -- there is no way to know until
+            # it has been asked -- and restarting for it costs a boot and, if a
+            # generation is running, the generation.
+            moved = bool(result.get("updated")) or (
+                result.get("before") is not None and result.get("before") != result.get("after")
+            ) or (
+                result.get("before_branch") is not None
+                and result.get("before_branch") != result.get("branch")
+            )
+            if not moved:
+                return web.json_response({"restarting": False, **result})
 
-        import asyncio as _asyncio
-        from . import restart as restart_mod
-        # After the response is written, not before.
-        _asyncio.get_event_loop().call_later(0.7, restart_mod.restart)
-        return web.json_response({"restarting": True, **result})
+            if _generation_running():
+                _pending_restart = True
+                return web.json_response({
+                    "restarting": False,
+                    "blocked": "A generation is running. The update is applied -- "
+                               "restart it from this window once the generation finishes.",
+                    **result,
+                })
+
+            _pending_restart = False
+            # After the response is written, not before.
+            _schedule_restart()
+            return web.json_response({"restarting": True, **result})
+
+    @routes.post(P + "/api/git/restart")
+    async def _git_restart(_req):
+        """Finish a restart a running generation deferred.
+
+        Never re-runs the git action: HEAD already moved when the change first
+        landed, and there is nothing left to do here but the restart itself.
+        """
+        global _pending_restart
+        async with _git_lock:
+            if not _pending_restart:
+                return web.json_response(
+                    {"detail": "Nothing is waiting on a restart."}, status=400)
+            if _generation_running():
+                return web.json_response({
+                    "restarting": False,
+                    "blocked": "A generation is still running.",
+                })
+            _pending_restart = False
+            _schedule_restart()
+            return web.json_response({"restarting": True})
 
     @routes.get(P + "/api/git/status")
     async def _git_status(req):
         # `?remote=0` answers from the checkout alone. The fetch is the only part
         # that touches the network and so the only part that can hang; the app
         # asks without it first so it has something to draw.
-        import asyncio
+        #
+        # `remote=1` runs its own `git fetch` -- a real mutation of this
+        # checkout's refs, same as pull/checkout/rollback -- so it shares their
+        # lock. Without it, opening this window mid-update raced two `git fetch`
+        # invocations against the same repo, which can interleave writes to
+        # FETCH_HEAD and produce a "cannot fast-forward to multiple branches"
+        # failure, or a false "you have local commits at risk" refusal, that had
+        # nothing to do with either fetch's own branch.
         remote = req.query.get("remote", "1") not in ("0", "false", "no")
-        return web.json_response(await asyncio.to_thread(update_mod.status, remote=remote))
+        async with _git_lock:
+            payload = await asyncio.to_thread(update_mod.status, remote=remote)
+        payload["restart_pending"] = _pending_restart
+        return web.json_response(payload)
 
     @routes.post(P + "/api/git/update")
     async def _git_pull(req):
@@ -466,7 +584,7 @@ def register(routes, prefix=None):
             return web.json_response({"problems": ["no such project"]}, status=404)
         return web.json_response({"deleted": True})
 
-    @routes.get(P + "/api/log")
+    @routes.get(P + "/api/log/funpack")
     async def _log(req):
         level = req.query.get("level") or None
         try:
