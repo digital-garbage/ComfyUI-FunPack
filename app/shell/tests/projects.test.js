@@ -120,3 +120,17 @@ test("a rename that says nothing changes nothing", async () => {
   await p.flush();
   assert.equal(sent.length, 0);
 });
+
+test("changing a project setting tells whoever draws from it", async () => {
+  // The timeline's clip widths and its ruler are computed from the project's
+  // length. A setting that changes without saying so leaves them showing the
+  // proportions of the value before it.
+  server();
+  const drew = [];
+  const p = createProject({ onChange: () => drew.push(1) });
+  await p.start();
+  const before = drew.length;
+
+  p.setVideo("length", 97);
+  assert.ok(drew.length > before, "nothing was told the project changed");
+});

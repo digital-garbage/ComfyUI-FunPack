@@ -53,7 +53,7 @@ const put = (project) => json("PUT", `${BASE}/${encodeURIComponent(project.id)}`
  * `onChange` fires for anything that alters what is on screen, including the
  * selection. Nothing here draws; the timeline subscribes.
  */
-export function createProject({ onChange, onError } = {}) {
+export function createProject({ onChange, onError, onOpen } = {}) {
   let project = null;
   let selected = null;
   // Every project this browser knows about, for the File menu. Read once at
@@ -65,6 +65,10 @@ export function createProject({ onChange, onError } = {}) {
   let dirty = false;
 
   const changed = () => { if (onChange) onChange(); };
+  // A DIFFERENT project is open now -- which is not the same event as a field
+  // changing, and the things that follow a project are not the things that
+  // follow an edit. Fired by every route in: start, open, new.
+  const opened = () => { changed(); if (onOpen) onOpen(project); };
 
   function scheduleSave() {
     dirty = true;
@@ -109,7 +113,7 @@ export function createProject({ onChange, onError } = {}) {
       project = found.length ? await read(found[0].id) : await create("Untitled");
       if (!found.length) recent = [{ id: project.id, name: project.name }];
       selected = (project.scenes || [])[0]?.id ?? null;
-      changed();
+      opened();
       return project;
     },
 
@@ -117,7 +121,7 @@ export function createProject({ onChange, onError } = {}) {
       await flush();
       project = await read(id);
       selected = (project.scenes || [])[0]?.id ?? null;
-      changed();
+      opened();
       return project;
     },
 
@@ -126,7 +130,7 @@ export function createProject({ onChange, onError } = {}) {
       project = await create(name);
       recent = [{ id: project.id, name: project.name }, ...recent];
       selected = (project.scenes || [])[0]?.id ?? null;
-      changed();
+      opened();
       return project;
     },
 
@@ -156,7 +160,12 @@ export function createProject({ onChange, onError } = {}) {
       project.video = project.video || {};
       if (project.video[key] === value) return;
       project.video[key] = value;
-      scheduleSave();                     // nothing on screen draws from this
+      scheduleSave();
+      // The timeline's clip widths and its ruler are computed from the project's
+      // length. This said "nothing on screen draws from this" and was true when
+      // it was written -- the timeline started reading it an hour later, and a
+      // comment is not a thing the next change has to keep true.
+      changed();
     },
 
     /** The text of one scene. The prompt box on the main window edits this. */

@@ -6,6 +6,11 @@
 
 import { test, expect } from "@playwright/test";
 
+// Serial: these share one real project store on the dev server, and the config
+// runs tests in a file in parallel. Two of them making and switching projects at
+// once is a race over the same JSON directory, not a bug in the app.
+test.describe.configure({ mode: "serial" });
+
 const openConstructor = (page) =>
   page.locator(".cx-panel-head").getByRole("button", { name: "Constructor" }).click();
 
@@ -112,4 +117,42 @@ test("a project can be made and switched to from the File menu", async ({ page }
   await items.nth(2).click();
 
   await expect.poll(() => page.evaluate(() => window.FunPack.project.project.id)).not.toBe(made);
+});
+
+test("switching projects switches what the run will use, not just what is stored", async ({ page }) => {
+  // The store's own getter reported the new project's numbers while the controls
+  // that actually produce them still held the old ones -- so a Generate right
+  // after a switch ran at the previous project's size, and the only place that
+  // was visible was a window nobody had a reason to reopen.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  // Two projects, each with a size of its own.
+  const make = async (name, width) => {
+    await page.evaluate(async (n) => { await window.FunPack.project.newProject(n); }, name);
+    await openConstructor(page);
+    await widthBox(page).fill(String(width));
+    await widthBox(page).blur();
+    await page.locator(".cx-modal").getByRole("button", { name: "Done" }).click();
+    return page.evaluate(async () => {
+      await window.FunPack.project.flush();
+      return window.FunPack.project.project.id;
+    });
+  };
+  const a = await make(`A ${Date.now()}`, 900);
+  const b = await make(`B ${Date.now()}`, 640);
+
+  await page.evaluate((id) => window.FunPack.project.open(id), a);
+  await expect.poll(() => page.evaluate(() => window.FunPack.project.video.width)).toBe(900);
+  await expect.poll(() => page.evaluate(() => window.FunPack.prompts().latent.width),
+    { message: "the run would use the other project's width" }).toBe(900);
+
+  await page.evaluate((id) => window.FunPack.project.open(id), b);
+  await expect.poll(() => page.evaluate(() => window.FunPack.project.video.width)).toBe(640);
+  await expect.poll(() => page.evaluate(() => window.FunPack.prompts().latent.width),
+    { message: "the run would use the other project's width" }).toBe(640);
+
+  // And the control a person looks at agrees with what the run would send.
+  await openConstructor(page);
+  await expect(widthBox(page)).toHaveValue("640");
 });

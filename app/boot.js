@@ -51,6 +51,10 @@ async function start() {
       if (timeline) timeline.draw();
       if (inspector) inspector.draw();
     },
+    // A different project is open. Everything that follows the project rather
+    // than one of its fields is put back here -- by every route in, including
+    // the ones that are not the File menu.
+    onOpen: () => { showScene(project.selected); syncVideo(); },
     onError: (err) => page.transport.say(`The project could not be saved: ${err.message}`),
   });
 
@@ -61,6 +65,22 @@ async function start() {
   const showGroups = () => {
     const empty = !prompts || !prompts.controlsAt("project.video").length;
     page.constructor.video.node.toggleAttribute("hidden", empty);
+  };
+
+  /**
+   * Put the open project's settings into the controls that produce them.
+   *
+   * Every time EITHER side moves: a different project is opened, or the pipeline
+   * changed and the controls were rebuilt from its defaults. Seeding once at
+   * startup left the boxes -- and so `overrides()`, and so the run -- holding the
+   * numbers of whatever project was open first. The store's own getter reported
+   * the new project correctly, so the only place the stale value showed was a
+   * window nobody had a reason to reopen.
+   */
+  const syncVideo = () => {
+    for (const { input, control } of (prompts ? prompts.controlsAt("project.video") : [])) {
+      if (project.video[input] !== undefined) control.setValue(project.video[input]);
+    }
   };
 
   // A scene's text and the prompt box are the same value seen twice. The box is
@@ -101,8 +121,8 @@ async function start() {
       } else {
         return;                                 // already open
       }
-      // The prompt box follows the project, the same way it follows a scene.
-      showScene(project.selected);
+      // Nothing to put back here: the store says when a project was opened, and
+      // whatever follows it is wired to that.
     },
     onPipeline: () => openPipeline({
       load, describe, check, search,
@@ -112,7 +132,12 @@ async function start() {
         // that was removed takes its box with it, and a value saved in the
         // window is what its box now shows -- otherwise the two windows hold
         // different text for one input and the run uses whichever was sent.
-        if (prompts) { prompts.sync(next); showGroups(); }
+        if (prompts) {
+          // sync() rebuilds every control from the PIPELINE's values, which is
+          // right for the prompt and wrong for the project's own settings: they
+          // outrank the pipeline's defaults and have to be put back.
+          Promise.resolve(prompts.sync(next)).then(() => { showGroups(); syncVideo(); });
+        }
       },
     }),
   });
@@ -213,12 +238,7 @@ async function start() {
       } });
       if (!project.scenes.length) project.addScene();
     }
-    // The project's own settings win over the pipeline's defaults: they are what
-    // it was generated at, and a regenerate is a new scene at the same size --
-    // never at whatever the last one happened to be cropped to.
-    for (const { input, control } of (prompts ? prompts.controlsAt("project.video") : [])) {
-      if (project.video[input] !== undefined) control.setValue(project.video[input]);
-    }
+
     timeline = createTimeline({ project, onSelect: showScene });
     page.timelineBody.set([page.transport.warning, timeline]);
 
