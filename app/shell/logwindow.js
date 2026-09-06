@@ -13,8 +13,10 @@ import { composer } from "../composer/composer.js";
 
 const EVERY = 2000;
 
-export function open({ poll = EVERY } = {}) {
-  let window_ = null;
+/** mount({ poll, setFooter, close }) -> { node, destroy }. See tempfiles.js's
+ *  mount() for why setFooter/close are the only things asked for -- `destroy`
+ *  additionally stops the poll, since this one runs a timer nothing else does. */
+export function mount({ poll = EVERY, setFooter = () => {}, close = () => {} } = {}) {
   let timer = null;
   let follow = true;                 // stick to the end until the user scrolls off it
   let last = "";
@@ -47,14 +49,12 @@ export function open({ poll = EVERY } = {}) {
         view.setText(text);
         if (follow) view.node.scrollTop = view.node.scrollHeight;
       }
-      if (window_) window_.setFooter({ note: payload.path || "", actions: footer() });
+      setFooter({ note: payload.path || "", actions: footer() });
     } catch (err) {
       // The server being gone is the most interesting thing a log can say, so it
       // is said -- and the lines already on screen are kept, because they are
       // the ones from just before it went.
-      if (window_) {
-        window_.setFooter({ note: `Cannot reach ComfyUI: ${err.message}`, actions: footer() });
-      }
+      setFooter({ note: `Cannot reach ComfyUI: ${err.message}`, actions: footer() });
     }
   }
 
@@ -66,19 +66,28 @@ export function open({ poll = EVERY } = {}) {
         if (navigator.clipboard) navigator.clipboard.writeText(last).catch(() => {});
       },
     }),
-    composer.button.md({ label: "Close", tone: "primary",
-                         onClick: () => window_ && window_.close("done") }),
+    composer.button.md({ label: "Close", tone: "primary", onClick: () => close() }),
   ];
 
+  setFooter({ actions: footer() });
+  refresh();
+  timer = setInterval(refresh, poll);
+  return { node: body.node, destroy: () => { clearInterval(timer); timer = null; body.destroy(); } };
+}
+
+export function open({ poll = EVERY } = {}) {
+  let window_ = null;
+  const content = mount({
+    poll,
+    setFooter: (f) => window_ && window_.setFooter(f),
+    close: () => window_ && window_.close("done"),
+  });
   window_ = composer.modal.generic({
     title: "ComfyUI log",
     subtitle: "What the server printed. Newest at the bottom.",
     size: "xl",
-    body,
-    onClose: () => { clearInterval(timer); timer = null; window_ = null; },
+    body: content,
+    onClose: () => { content.destroy(); window_ = null; },
   });
-  window_.setFooter({ actions: footer() });
-  refresh();
-  timer = setInterval(refresh, poll);
   return window_;
 }

@@ -33,8 +33,9 @@ function saySince(pack, checked) {
   return `${pack.branch || "?"} · up to date`;
 }
 
-export function open() {
-  let window_ = null;
+/** mount({ setFooter, close }) -> a composer handle, no modal chrome. See
+ *  tempfiles.js's mount() for why these two are the only things asked for. */
+export function mount({ setFooter = () => {}, close = () => {} } = {}) {
   let listing = null;
   let checked = null;
   let busy = null;              // the pack currently being worked on, by name
@@ -121,17 +122,14 @@ export function open() {
 
   function draw() {
     body.set(rows());
-    if (window_) {
-      window_.setFooter({
-        note: listing ? listing.root : "",
-        actions: [
-          composer.button.md({ label: "Check for updates", disabled: Boolean(busy),
-                               onClick: () => check() }),
-          composer.button.md({ label: "Close", tone: "primary",
-                               onClick: () => window_.close("done") }),
-        ],
-      });
-    }
+    setFooter({
+      note: listing ? listing.root : "",
+      actions: [
+        composer.button.md({ label: "Check for updates", disabled: Boolean(busy),
+                             onClick: () => check() }),
+        composer.button.md({ label: "Close", tone: "primary", onClick: () => close() }),
+      ],
+    });
   }
 
   async function load() {
@@ -154,6 +152,16 @@ export function open() {
     finally { busy = null; draw(); }
   }
 
+  load();
+  return body;
+}
+
+export function open() {
+  let window_ = null;
+  const body = mount({
+    setFooter: (f) => window_ && window_.setFooter(f),
+    close: () => window_ && window_.close("done"),
+  });
   window_ = composer.modal.generic({
     title: "Node packs",
     subtitle: "Install, update and remove ComfyUI custom nodes.",
@@ -161,6 +169,5 @@ export function open() {
     body,
     onClose: () => { window_ = null; },
   });
-  load();
   return window_;
 }

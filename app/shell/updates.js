@@ -65,13 +65,14 @@ export function waitForRestart({ poll = 1500, give_up = 180000 } = {}) {
 }
 
 /**
- * open() -> the window. One at a time.
- *
- * Built from a live status every time it opens: what branch you are on and how
- * far behind are exactly the facts that go stale while a window is closed.
+ * mount({ onRestart, running, setFooter, close }) -> a composer handle, no
+ * modal chrome. See tempfiles.js's mount() for why setFooter/close are the
+ * only things asked for. Built from a live status the moment it is mounted:
+ * what branch you are on and how far behind are exactly the facts that go
+ * stale while this was not on screen.
  */
-export function open({ onRestart = waitForRestart, running = () => false } = {}) {
-  let window_ = null;
+export function mount({ onRestart = waitForRestart, running = () => false,
+                        setFooter = () => {}, close = () => {} } = {}) {
   const body = composer.region.stack({ gap: "sm", label: "Updates" });
 
   const act = async (run) => {
@@ -88,7 +89,7 @@ export function open({ onRestart = waitForRestart, running = () => false } = {})
       // Update while already up to date is a normal thing to do, and waiting for
       // a restart that is not coming would hang on an overlay for three minutes.
       if (!result || result.restarting === false) { load(); return; }
-      if (window_) window_.close("restarting");
+      close();
       onRestart();
     } catch (err) {
       // Said in the window, where the button was pressed. Every refusal this can
@@ -136,8 +137,8 @@ export function open({ onRestart = waitForRestart, running = () => false } = {})
                                       onClick: () => act(() => ask("POST", "/restart")) }),
       }));
       body.set([composer.group.default({ rows })]);
-      if (window_) window_.setFooter({ actions: [
-        composer.button.md({ label: "Close", tone: "ghost", onClick: () => window_.close("done") }),
+      setFooter({ actions: [
+        composer.button.md({ label: "Close", tone: "ghost", onClick: () => close() }),
       ] });
       return;
     }
@@ -173,20 +174,17 @@ export function open({ onRestart = waitForRestart, running = () => false } = {})
     }
 
     body.set([composer.group.default({ rows })]);
-    if (window_) {
-      window_.setFooter({
-        note: s.ok ? "" : "FunPack is not a git checkout, so it cannot update itself.",
-        actions: [
-          composer.button.md({ label: "Close", tone: "ghost",
-                               onClick: () => window_.close("done") }),
-          composer.button.md({
-            label: s.behind ? `Update (${s.behind})` : "Update", tone: "primary",
-            disabled: !s.ok || Boolean(s.dirty) || busy,
-            onClick: () => act(() => ask("POST", "/update", {})),
-          }),
-        ],
-      });
-    }
+    setFooter({
+      note: s.ok ? "" : "FunPack is not a git checkout, so it cannot update itself.",
+      actions: [
+        composer.button.md({ label: "Close", tone: "ghost", onClick: () => close() }),
+        composer.button.md({
+          label: s.behind ? `Update (${s.behind})` : "Update", tone: "primary",
+          disabled: !s.ok || Boolean(s.dirty) || busy,
+          onClick: () => act(() => ask("POST", "/update", {})),
+        }),
+      ],
+    });
   }
 
   async function load() {
@@ -207,6 +205,20 @@ export function open({ onRestart = waitForRestart, running = () => false } = {})
     catch { /* the local answer stands, and says it has not checked */ }
   }
 
+  load();
+  return body;
+}
+
+/**
+ * open() -> the window. One at a time.
+ */
+export function open({ onRestart, running } = {}) {
+  let window_ = null;
+  const body = mount({
+    onRestart, running,
+    setFooter: (f) => window_ && window_.setFooter(f),
+    close: () => window_ && window_.close("done"),
+  });
   window_ = composer.modal.generic({
     title: "Updates",
     subtitle: "FunPack updates itself from git, then restarts ComfyUI.",
@@ -214,6 +226,5 @@ export function open({ onRestart = waitForRestart, running = () => false } = {})
     body,
     onClose: () => { window_ = null; },
   });
-  load();
   return window_;
 }

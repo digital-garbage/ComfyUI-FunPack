@@ -23,8 +23,18 @@ function size(bytes) {
 
 const when = (mtime) => new Date((Number(mtime) || 0) * 1000).toLocaleTimeString();
 
-export function open({ onOpen } = {}) {
-  let window_ = null;
+/**
+ * mount({ onOpen, setFooter, close }) -> a composer handle, no modal chrome.
+ *
+ * `setFooter`/`close` are the two things a modal gives this window that a
+ * container does not have for free: somewhere for Refresh/Close to live
+ * outside the scrolling body, and a way to leave when a file is picked.
+ * `open()` below is this plus a modal wired to itself; the unified Settings
+ * window mounts this directly, wired to ITS OWN footer and close instead --
+ * so picking a file from Settings closes Settings, and standalone Temp
+ * files behaves exactly as it always did.
+ */
+export function mount({ onOpen, setFooter = () => {}, close = () => {} } = {}) {
   const body = composer.region.stack({ gap: "sm", fill: true, label: "Temp files" });
 
   const cells = (files) => files.map((f) => ({
@@ -60,7 +70,7 @@ export function open({ onOpen } = {}) {
             const file = files.find((f) => `${f.subfolder}/${f.filename}` === cell.id);
             if (!file || !onOpen) return;
             onOpen({ url: viewUrl({ ...file, type: "temp" }), kind: file.kind, file });
-            if (window_) window_.close("opened");
+            close();
           },
         })
       // The reason there is nothing, which is not the same as "nothing was made".
@@ -69,18 +79,26 @@ export function open({ onOpen } = {}) {
           hint: payload.detail || "",
         })]);
 
-    if (window_) {
-      window_.setFooter({
-        note: payload.path || "",
-        actions: [
-          composer.button.md({ label: "Refresh", onClick: () => load() }),
-          composer.button.md({ label: "Close", tone: "primary",
-                               onClick: () => window_.close("done") }),
-        ],
-      });
-    }
+    setFooter({
+      note: payload.path || "",
+      actions: [
+        composer.button.md({ label: "Refresh", onClick: () => load() }),
+        composer.button.md({ label: "Close", tone: "primary", onClick: () => close() }),
+      ],
+    });
   }
 
+  load();
+  return body;
+}
+
+export function open({ onOpen } = {}) {
+  let window_ = null;
+  const body = mount({
+    onOpen,
+    setFooter: (f) => window_ && window_.setFooter(f),
+    close: () => window_ && window_.close("done"),
+  });
   window_ = composer.modal.generic({
     title: "Temp files",
     subtitle: "Transient ComfyUI outputs. Wiped when the server restarts.",
@@ -88,6 +106,5 @@ export function open({ onOpen } = {}) {
     body,
     onClose: () => { window_ = null; },
   });
-  load();
   return window_;
 }

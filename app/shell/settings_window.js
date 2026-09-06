@@ -3,34 +3,40 @@
 // menu items (Models and pipeline, Updates, Node packs, Log, Temp files) that
 // nothing tied together and nothing let you search.
 //
-// A section is either MOUNTED here (About, today) or a DEEP LINK: picking it
-// closes this window and opens the real one. Every deep-linked window here
-// (pipeline_window, updates, packs, log, tempfiles) already owns real,
-// tested modal chrome of its own -- rebuilding each into a mountable pane is
-// real surgery on working code for a visual nicety, not a fix for anything
-// broken. This gets the one thing that mattered (one findable, searchable
-// place to start) without touching any of that.
+// Every section is MOUNTED here, in place, beside the same always-visible
+// nav list -- picking "Node packs" does not leave this window any more than
+// clicking a different System Settings pane leaves System Settings. Each of
+// pipeline_window.js/updates.js/packs.js/logwindow.js/tempfiles.js already
+// had its content built separately from its own modal chrome (a `body`
+// region.stack, footer buttons set on the modal handle); their `mount()`
+// exports are that same content, taking `setFooter`/`close` from whoever is
+// hosting them instead of owning a modal directly. Their `open()` exports
+// are unchanged for anyone opening one standalone.
 
 import { composer } from "../composer/composer.js";
-
-let current = null;
 
 /**
  * createSettingsWindow({ sections, gitStatus }) -> { open, close }
  *
  * `sections`: [{ id, title, subtitle, keywords, icon,
- *                mount() -> handle }  -- OR --  { action() }].
- * A section with `action` is a deep link: picking it closes this window and
- * calls `action`. A section with `mount` is drawn in place; `mount()` returns
- * a composer element handle (its own `destroy()` is the cleanup, called when
- * another section is picked or the window closes).
+ *                mount({ setFooter, close }) -> handle }].
+ * `mount()` returns a composer element handle (its own `destroy()` is the
+ * cleanup, called when another section is picked or the window closes).
+ * `setFooter`/`close` act on this window's own modal chrome -- a section
+ * does not know or care whether it is standing alone or hosted here.
  *
  * `gitStatus` is injected, not imported, for the same reason every other
  * shell window takes its network calls as props: testable without a server,
  * and unable to reach for one that was not handed to it.
+ *
+ * `current` lives HERE, per call, not at module scope: a module-level
+ * singleton would let a second independent settings window (there is only
+ * ever one in this app today, but nothing enforced that) silently redraw
+ * the FIRST one's modal instead of opening its own.
  */
 export function createSettingsWindow({ sections = [], gitStatus } = {}) {
   const all = [aboutSection(gitStatus), ...sections];
+  let current = null;
 
   function open(id) {
     if (current) { current.show(id); return current; }
@@ -42,15 +48,13 @@ export function createSettingsWindow({ sections = [], gitStatus } = {}) {
       const spec = all.find((s) => s.id === pick) || all[0];
       if (!spec) return;
       if (activeCleanup) { activeCleanup.destroy?.(); activeCleanup = null; }
-      if (spec.action) {
-        // Deep link: this window is not what is being asked for, only how
-        // it was found. Close first -- two full-size modals stacked is not
-        // "unified", it is one more window in front of the one just opened.
-        close();
-        spec.action();
-        return;
-      }
-      const content = spec.mount();
+      // Cleared before mounting: a section that sets no footer of its own
+      // (About) must not go on showing the PREVIOUS section's buttons.
+      modal.setFooter({});
+      const content = spec.mount({
+        setFooter: (f) => modal.setFooter(f),
+        close: () => modal.close("done"),
+      });
       activeCleanup = content;
       contentStack.set([
         composer.header.md({ text: spec.title }),
@@ -61,7 +65,7 @@ export function createSettingsWindow({ sections = [], gitStatus } = {}) {
     }
 
     const nav = composer.filterList.md({
-      items: all.map((s) => ({ id: s.id, label: s.title, hint: s.subtitle, icon: s.icon })),
+      items: all.map((s) => ({ id: s.id, label: s.title, hint: s.subtitle, icon: s.icon, keywords: s.keywords })),
       value: id,
       onChange: showSection,
       placeholder: "Search settings",
@@ -69,7 +73,7 @@ export function createSettingsWindow({ sections = [], gitStatus } = {}) {
 
     const body = composer.splitPane.h({ panes: [nav, contentStack], size: 25, min: 15, label: "Settings" });
     const modal = composer.modal.generic({
-      title: "Settings", size: "lg", body,
+      title: "Settings", size: "xl", body,
       onClose: () => {
         if (activeCleanup) { activeCleanup.destroy?.(); activeCleanup = null; }
         if (current === handle) current = null;

@@ -160,8 +160,11 @@ define("filterList", "md", ({ items = [], value, onChange, placeholder = "Search
 
   function draw() {
     const q = search.value.trim().toLowerCase();
+    // `keywords` is searched but never drawn -- a way in that does not name
+    // itself in the visible label/hint (a section called "About FunPack"
+    // found by typing "commit", say).
     const shown = items.filter((i) =>
-      !q || `${i.label} ${i.hint || ""}`.toLowerCase().includes(q));
+      !q || `${i.label} ${i.hint || ""} ${i.keywords || ""}`.toLowerCase().includes(q));
     list.replaceChildren();
     if (!shown.length) { list.append(el("div", { cls: "cx-filter-empty", text: empty })); return; }
     for (const item of shown) {

@@ -53,19 +53,20 @@ const countOf = (n) => (n === 0 ? "empty" : `${n} node${n === 1 ? "" : "s"}`);
 let current = null;
 
 /**
- * open({ load, describe, check, search, onApply }) -> handle
+ * mount({ load, describe, check, search, onApply, setFooter, close }) -> handle
  *
  * Every server call is injected. The window is then testable without a server
  * and -- more to the point -- cannot reach for one that is not there.
  *
- * Opening while one is already open returns THAT one and focuses it, rather
- * than stacking a second over it.
+ * `setFooter`/`close` are the two things a modal gives this that a container
+ * does not have for free -- see tempfiles.js's mount() for the general shape.
+ * This one additionally exposes its live state (slots/editing/selected/
+ * pending) and a few structural actions, because `open()` below and the
+ * jsdom suite both drive it without reading the DOM back; `open()` forwards
+ * every one of these rather than wrapping a second copy of this state.
  */
-export function open({ load, describe, check, search, onApply } = {}) {
-  if (current) {
-    current.focus();
-    return current;
-  }
+export function mount({ load, describe, check, search, onApply,
+                        setFooter = () => {}, close = () => {} } = {}) {
   let slots = [];
   const nodes = new Map();          // class name -> description | null
   const extraGroups = [];           // made in this window, no slot in them yet
@@ -75,18 +76,6 @@ export function open({ load, describe, check, search, onApply } = {}) {
   let notes = { refused: [], incomplete: [] };
 
   const body = composer.region.stack({ gap: "md", label: "Pipeline", fill: true });
-  const modal = composer.modal.generic({
-    title: "Models and pipeline",
-    subtitle: "What the run is made of.",
-    size: "xl",
-    body,
-    // A half-finished group edit must not vanish because a click landed on the
-    // backdrop: the draft is the only copy of it.
-    closeOnOutside: false,
-    // However it was closed -- the button, Escape, destroy -- the next press
-    // opens a fresh one rather than finding this one and refusing.
-    onClose: () => { if (current === handle) current = null; },
-  });
 
   // ---------------------------------------------------------------- server
 
@@ -177,11 +166,11 @@ export function open({ load, describe, check, search, onApply } = {}) {
     if (editing === null) {
       body.set(index());
       // Nothing to save from the index: the cards are a way in, not an edit.
-      modal.setFooter({});
+      setFooter({});
       return;
     }
     body.set(group(editing));
-    modal.setFooter(footer());
+    setFooter(footer());
   }
 
   /**
@@ -442,7 +431,7 @@ export function open({ load, describe, check, search, onApply } = {}) {
     // that fired this and take the cursor out of it mid-edit; leaving the
     // footer alone left it reading "No changes to save" over an edit that had
     // just been made.
-    modal.setFooter(footer());
+    setFooter(footer());
   }
 
   async function saveDraft() {
@@ -556,10 +545,9 @@ export function open({ load, describe, check, search, onApply } = {}) {
     })]);
   });
 
-  const handle = {
-    node: modal.node,
-    close: (reason) => modal.close(reason),
-    focus: () => modal.node.focus ? modal.node.focus() : undefined,
+  return {
+    node: body.node,
+    destroy: () => body.destroy(),
     ready,
     // The window's own view of things, so a test does not have to infer state
     // by reading the DOM back.
@@ -573,6 +561,53 @@ export function open({ load, describe, check, search, onApply } = {}) {
       commit(slots, { action: "replace", slot: slotId, node: className }),
     _moveTo: moveTo,
     _remove: remove,
+  };
+}
+
+/**
+ * open({ load, describe, check, search, onApply }) -> handle
+ *
+ * Opening while one is already open returns THAT one and focuses it, rather
+ * than stacking a second over it.
+ */
+export function open({ load, describe, check, search, onApply } = {}) {
+  if (current) {
+    current.focus();
+    return current;
+  }
+  let window_ = null;
+  const content = mount({
+    load, describe, check, search, onApply,
+    setFooter: (f) => window_ && window_.setFooter(f),
+    close: () => window_ && window_.close("done"),
+  });
+  window_ = composer.modal.generic({
+    title: "Models and pipeline",
+    subtitle: "What the run is made of.",
+    size: "xl",
+    body: content,
+    // A half-finished group edit must not vanish because a click landed on the
+    // backdrop: the draft is the only copy of it.
+    closeOnOutside: false,
+    // However it was closed -- the button, Escape, destroy -- the next press
+    // opens a fresh one rather than finding this one and refusing.
+    onClose: () => { if (current === handle) current = null; },
+  });
+
+  const handle = {
+    node: window_.node,
+    close: (reason) => window_.close(reason),
+    focus: () => window_.node.focus ? window_.node.focus() : undefined,
+    ready: content.ready,
+    get slots() { return content.slots; },
+    get editing() { return content.editing; },
+    get selected() { return content.selected; },
+    get pending() { return content.pending; },
+    enter: content.enter,
+    leave: content.leave,
+    _replace: content._replace,
+    _moveTo: content._moveTo,
+    _remove: content._remove,
   };
   current = handle;
   return handle;

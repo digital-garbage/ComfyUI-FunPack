@@ -13,7 +13,7 @@ import { createRun, viewUrl, DONE, FAILED, CANCELLED } from "./shell/run.js";
 import { clientId, connect, queuedFor, finishedFor } from "./shell/client.js";
 import { wire, waitForTerminal } from "./shell/session.js";
 import { check, load, describe, search } from "./shell/pipeline.js";
-import { open as openPipeline } from "./shell/pipeline_window.js";
+import { mount as mountPipeline } from "./shell/pipeline_window.js";
 import { createPrompts } from "./shell/prompt.js";
 import { createProject } from "./shell/projects.js";
 import { createTimeline } from "./shell/timeline.js";
@@ -21,10 +21,10 @@ import { createInspector } from "./shell/inspector.js";
 import { createWheel } from "./shell/wheel.js";
 import { offerAction } from "./shell/actions.js";
 import { open as openWizard } from "./shell/wizard.js";
-import { open as openUpdates, status as gitStatus } from "./shell/updates.js";
-import { open as openPacks } from "./shell/packs.js";
-import { open as openLog } from "./shell/logwindow.js";
-import { open as openTemp } from "./shell/tempfiles.js";
+import { mount as mountUpdates, status as gitStatus } from "./shell/updates.js";
+import { mount as mountPacks } from "./shell/packs.js";
+import { mount as mountLog } from "./shell/logwindow.js";
+import { mount as mountTemp } from "./shell/tempfiles.js";
 import { createSettingsWindow } from "./shell/settings_window.js";
 
 const root = document.querySelector("#app");
@@ -194,16 +194,16 @@ async function start() {
   });
 
   // One window for everything that is a PREFERENCE rather than an edit to the
-  // project on screen. Each of these already has its own real, tested modal --
-  // a settings section here is a deep link to it, not a rebuild of it.
+  // project on screen. Each section mounts the same content its standalone
+  // window would build -- pipeline_window.js etc. -- inside this one instead.
   const settings = createSettingsWindow({
     gitStatus,
     sections: [
       {
         id: "pipeline", title: "Models and pipeline", subtitle: "What the run is made of.",
         keywords: "pipeline models nodes slots loaders", icon: "▦",
-        action: () => openPipeline({
-          load, describe, check, search,
+        mount: (ctx) => mountPipeline({
+          load, describe, check, search, ...ctx,
           onApply: (next) => {
             slots = next;
             // The boxes on the main window are for inputs of THESE slots. A slot
@@ -224,25 +224,29 @@ async function start() {
         keywords: "update git branch restart pull checkout", icon: "⟳",
         // The window asks whether a run is in flight, because the restart that
         // follows an update would take it with it.
-        action: () => openUpdates({ running: () => ["queued", "running"].includes(run.state.phase) }),
+        mount: (ctx) => mountUpdates({
+          ...ctx, running: () => ["queued", "running"].includes(run.state.phase),
+        }),
       },
       {
         id: "packs", title: "Node packs", subtitle: "Install, update, or remove a custom_nodes pack.",
         keywords: "node packs custom_nodes install", icon: "▣",
-        action: () => openPacks(),
+        mount: (ctx) => mountPacks(ctx),
       },
       {
         id: "log", title: "ComfyUI log", subtitle: "The server's own log, without opening devtools.",
         keywords: "log console errors output", icon: "▤",
-        action: () => openLog(),
+        mount: (ctx) => mountLog(ctx),
       },
       {
         id: "temp", title: "Temp files", subtitle: "Where a file went when it did not land in the bin.",
         keywords: "temp files output directory", icon: "▥",
         // Opening one puts it in the Preview, which is where somebody hunting
         // for a file wants it -- the same place a result from the bin goes.
-        action: () => openTemp({ onOpen: (item) => page.viewer.setSource(
-          item.url, item.kind, item.file ? { ...item.file, type: "temp" } : null) }),
+        mount: (ctx) => mountTemp({
+          ...ctx, onOpen: (item) => page.viewer.setSource(
+            item.url, item.kind, item.file ? { ...item.file, type: "temp" } : null),
+        }),
       },
     ],
   });
