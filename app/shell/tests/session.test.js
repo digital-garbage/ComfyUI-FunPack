@@ -9,11 +9,11 @@ import assert from "node:assert/strict";
 
 import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
 
-let createGenerator, reattach, wire, createTransport;
+let createGenerator, reattach, wire, waitForTerminal, createTransport;
 test.before(async () => {
   setupDom();
   await import("../../composer/composer.js");
-  ({ createGenerator, reattach, wire } = await import("../session.js"));
+  ({ createGenerator, reattach, wire, waitForTerminal } = await import("../session.js"));
   ({ createTransport } = await import("../transport.js"));
 });
 test.after(() => teardownDom());
@@ -514,4 +514,53 @@ test("what is typed on the main window is sent with the run", async () => {
   })();
 
   assert.deepEqual(asked[0].inputs, { positive: { text: "a cat on a roof" } });
+});
+
+// --- waitForTerminal ---------------------------------------------------------
+
+test("waitForTerminal resolves with the phase a run actually ends at", async () => {
+  const run = fakeRun();
+  const waiting = waitForTerminal(run);
+  run.state = { ...run.state, phase: "running" };
+  run.announce();
+  run.state = { ...run.state, phase: "done" };
+  run.announce();
+  assert.equal(await waiting, "done");
+});
+
+test("the snapshot delivered at subscribe time is not mistaken for a transition", async () => {
+  // A page reload adopting a run that already finished delivers ITS finished
+  // state the moment subscribe() is called -- if that counted, this would
+  // resolve before the caller's own "start" step had even run.
+  const run = fakeRun("done");
+  let resolved = false;
+  waitForTerminal(run).then(() => { resolved = true; });
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(resolved, false, "resolved from the snapshot, not a real transition");
+
+  run.announce();                     // the same "done" state, delivered again -- now a real one
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(resolved, true);
+});
+
+test("cancel() unsubscribes a waiter whose run never actually started", () => {
+  // A generation refused before it ever reaches run.start() (an incomplete
+  // pipeline, a queue that says no) never transitions the run -- nothing
+  // would ever resolve this promise, and the subscription would sit on the
+  // run forever without a way out.
+  const run = fakeRun();
+  assert.equal(run.subscribers.size, 0);
+  const waiting = waitForTerminal(run);
+  assert.equal(run.subscribers.size, 1);
+  waiting.cancel();
+  assert.equal(run.subscribers.size, 0, "cancel() did not unsubscribe");
+});
+
+test("cancel() after the promise already resolved is harmless", async () => {
+  const run = fakeRun();
+  const waiting = waitForTerminal(run);
+  run.state = { ...run.state, phase: "done" };
+  run.announce();
+  assert.equal(await waiting, "done");
+  assert.doesNotThrow(() => waiting.cancel());
 });

@@ -110,11 +110,12 @@ test("a project can be made and switched to from the File menu", async ({ page }
   const made = await page.evaluate(() => window.FunPack.project.project.id);
 
   // And away again. By position, not by name: every other project in the store
-  // may well be called Untitled.
+  // may well be called Untitled. Three fixed items ahead of the project list --
+  // New project, Save Project File, Load Project File -- then the newest first.
   await page.getByRole("button", { name: "File" }).click();
   const items = page.getByRole("menuitem");
-  await expect(items.nth(1)).toHaveText(new RegExp(name));   // the one just made, ticked
-  await items.nth(2).click();
+  await expect(items.nth(3)).toHaveText(new RegExp(name));   // the one just made, ticked
+  await items.nth(4).click();
 
   await expect.poll(() => page.evaluate(() => window.FunPack.project.project.id)).not.toBe(made);
 });

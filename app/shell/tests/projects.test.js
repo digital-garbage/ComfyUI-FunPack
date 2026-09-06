@@ -153,6 +153,243 @@ test("a result for a project that is open again goes through the normal live pat
 
   await p.setResultFor(id, sceneId, "/view?filename=b.png");
   assert.equal(p.scenes[0].result, "/view?filename=b.png");
+  await p.flush();   // setResultFor's same-project branch schedules a save like
+                      // any other edit -- left pending, its real debounce timer
+                      // outlives this test and can fire mid a LATER one.
+});
+
+test("downloadUrl names the current project, and nothing when there is none", async () => {
+  const p = createProject({});
+  assert.equal(p.downloadUrl(), null, "a download link before anything is open");
+
+  server();                             // default project id abcdef012345
+  await p.start();
+  assert.equal(p.downloadUrl(), "/funpack/api/projects/abcdef012345/download");
+});
+
+test("importing a project file opens whatever the server hands back, as its own project", async () => {
+  // The server strips the id (a file imported twice, or on the machine it
+  // came from, must not overwrite anything already here) -- this only has to
+  // send what the file held and open what comes back.
+  const posted = [];
+  globalThis.fetch = async (path, opts = {}) => {
+    if (String(path).endsWith("/projects/import")) {
+      posted.push(JSON.parse(opts.body));
+      return { ok: true, status: 200, json: async () => ({
+        id: "newid000001", name: "Imported", scenes: [{ id: "s1", text: "", result: null }],
+        video: {}, updated_at: 5,
+      }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+  };
+
+  const p = createProject({});
+  const result = await p.importProject({ id: "someoldid0001", name: "Imported", scenes: [] });
+
+  assert.equal(p.project.id, "newid000001");
+  assert.equal(p.project.name, "Imported");
+  assert.equal(p.selectedId, "s1", "an imported project with scenes has nothing selected");
+  assert.deepEqual(p.recent.map((r) => r.id), ["newid000001"]);
+  assert.equal(posted[0].id, "someoldid0001", "the client's job is to send the file, not clean it");
+  assert.equal(result.id, "newid000001");
+  assert.equal(p.canUndo, false, "an import just opened has no past to step into");
+});
+
+test("a project open when an import happens is not what flush() saves afterward", async () => {
+  // flush() is called before the import switches `project` -- if it ran
+  // AFTER, whatever debounced edit was pending on the OLD project would be
+  // saved against the NEW one's id instead.
+  const { sent } = server();
+  const p = createProject({});
+  await p.start();
+  p.rename("About to leave");           // scheduled, not yet sent
+
+  globalThis.fetch = async (path, opts = {}) => {
+    if (String(path).endsWith("/projects/import")) {
+      return { ok: true, status: 200, json: async () => ({
+        id: "newid000002", name: "Imported", scenes: [], video: {}, updated_at: 5 }) };
+    }
+    const body = opts.body ? JSON.parse(opts.body) : null;
+    if (opts.method === "PUT") sent.push(body);
+    return { ok: true, status: 200, json: async () => (body ? { ...body, updated_at: 2 } : {}) };
+  };
+
+  await p.importProject({ name: "Imported", scenes: [] });
+
+  assert.equal(sent.length, 1, "the pending rename was never saved, or was saved against the wrong project");
+  assert.equal(sent[0].id, "abcdef012345", "flushed against the OLD project, which is what flush() is for");
+  assert.equal(p.project.id, "newid000002");
+});
+
+test("an edit made WHILE an import is in flight is still saved, against the old project", async () => {
+  // The gap this closes: importProject()'s OWN initial flush() finds nothing
+  // dirty (the edit hasn't happened yet), then the edit lands DURING the
+  // import's network round trip, on the project still open at that moment.
+  // scheduleSave() has to remember which object that was -- the debounce
+  // timer fires only after the import has already switched `project` out
+  // from under it.
+  const { sent } = server();
+  const p = createProject({});
+  await p.start();                    // project abcdef012345
+
+  let resolveImport;
+  globalThis.fetch = async (path, opts = {}) => {
+    if (String(path).endsWith("/projects/import")) {
+      return new Promise((resolve) => {
+        resolveImport = () => resolve({ ok: true, status: 200, json: async () => (
+          { id: "newid000003", name: "Imported", scenes: [], video: {}, updated_at: 5 }) });
+      });
+    }
+    const body = opts.body ? JSON.parse(opts.body) : null;
+    if (opts.method === "PUT") sent.push(body);
+    return { ok: true, status: 200, json: async () => (body ? { ...body, updated_at: 2 } : {}) };
+  };
+
+  const importing = p.importProject({ name: "Imported", scenes: [] });
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.equal(p.project.id, "abcdef012345", "the import switched before the edit -- this test proves nothing");
+
+  p.rename("Typed while importing");  // scheduled against the still-current OLD project
+
+  resolveImport();
+  await importing;
+  assert.equal(p.project.id, "newid000003", "the import did not complete");
+
+  await new Promise((r) => setTimeout(r, 700));    // past the real debounce window
+
+  assert.equal(sent.length, 1, "the edit made during the import never reached the server");
+  assert.equal(sent[0].id, "abcdef012345", "saved against the OLD project, not the one now open");
+  assert.equal(sent[0].name, "Typed while importing");
+});
+
+test("two imports racing land on whichever was clicked last, not whichever answered last", async () => {
+  const p = createProject({});
+  await p.start();
+
+  const pending = {};
+  globalThis.fetch = async (path, opts = {}) => {
+    if (String(path).endsWith("/projects/import")) {
+      const body = JSON.parse(opts.body);
+      return new Promise((resolve) => {
+        pending[body.name] = () => resolve({ ok: true, status: 200, json: async () => (
+          { id: `id-${body.name}`, name: body.name, scenes: [], video: {}, updated_at: 5 }) });
+      });
+    }
+    return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+  };
+
+  const first = p.importProject({ name: "A", scenes: [] });    // clicked first
+  await Promise.resolve();
+  const second = p.importProject({ name: "B", scenes: [] });   // clicked second, while A is still in flight
+  await Promise.resolve();
+
+  // A answers LAST, after B -- a real, ordinary network race, not a
+  // contrived one.
+  pending.B();
+  await second;
+  assert.equal(p.project.name, "B");
+
+  pending.A();
+  await first;
+
+  assert.equal(p.project.name, "B", "the earlier, superseded import overwrote the one clicked last");
+  assert.equal(p.project.id, "id-B");
+});
+
+test("a superseded import deletes its own orphaned project instead of leaving it behind", async () => {
+  const deleted = [];
+  const pending = {};
+  globalThis.fetch = async (path, opts = {}) => {
+    if (String(path).endsWith("/projects/import")) {
+      const body = JSON.parse(opts.body);
+      return new Promise((resolve) => {
+        pending[body.name] = () => resolve({ ok: true, status: 200, json: async () => (
+          { id: `id-${body.name}`, name: body.name, scenes: [], video: {}, updated_at: 5 }) });
+      });
+    }
+    if (opts.method === "DELETE") { deleted.push(path); return { ok: true, status: 200, json: async () => ({}) }; }
+    return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+  };
+
+  const p = createProject({});
+  await p.start();
+  const first = p.importProject({ name: "A", scenes: [] });
+  await Promise.resolve();
+  const second = p.importProject({ name: "B", scenes: [] });
+  await Promise.resolve();
+
+  pending.B(); await second;
+  pending.A(); await first;
+
+  assert.deepEqual(deleted, ["/funpack/api/projects/id-A"], "the superseded project was never cleaned up");
+});
+
+test("start() losing a race to a switch the user already made does not revert it", async () => {
+  // build() wires the File menu (and so onProject -> newProject/open/import)
+  // before start() is ever awaited -- start()'s own network calls are real
+  // gaps a user's click can finish inside of.
+  let resolveList;
+  globalThis.fetch = async (path, opts = {}) => {
+    if (path === "/funpack/api/projects" && opts.method === "GET") {
+      return new Promise((resolve) => { resolveList = () => resolve(
+        { ok: true, status: 200, json: async () => ({ projects: [] }) }); });
+    }
+    if (opts.method === "POST" && path.endsWith("/projects")) {
+      const body = JSON.parse(opts.body);
+      return { ok: true, status: 200, json: async () => (
+        { id: "usercreated0", name: body.name, scenes: [{ id: "s1" }], video: {}, updated_at: 2 }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  const p = createProject({});
+  const starting = p.start();          // in flight -- list() has not answered yet
+  await Promise.resolve();
+
+  await p.newProject("MyNewThing");    // the user's own action completes first
+  assert.equal(p.project.name, "MyNewThing");
+
+  resolveList();                       // start()'s list() finally answers
+  await starting;
+
+  assert.equal(p.project.name, "MyNewThing", "start() caught up and silently reverted the switch");
+});
+
+test("an undo during an in-flight open supersedes it too, not just another switch", async () => {
+  const store = {
+    a: { id: "aaaaaaaaaaaa", name: "A", scenes: [{ id: "s1", text: "", result: null }], updated_at: 1 },
+    b: { id: "bbbbbbbbbbbb", name: "B", scenes: [{ id: "s1", text: "", result: null }], updated_at: 1 },
+  };
+  let resolveOpenB;
+  globalThis.fetch = async (path, opts = {}) => {
+    if (path === "/funpack/api/projects" && opts.method === "GET") {
+      return { ok: true, status: 200, json: async () => ({ projects: [{ id: store.a.id }] }) };
+    }
+    if (String(path).endsWith(store.b.id) && opts.method === "GET") {
+      return new Promise((resolve) => { resolveOpenB = () => resolve(
+        { ok: true, status: 200, json: async () => store.b }); });
+    }
+    if (opts.method === "PUT") return { ok: true, status: 200, json: async () => JSON.parse(opts.body) };
+    return { ok: true, status: 200, json: async () => store.a };
+  };
+
+  const p = createProject({});
+  await p.start();                    // project A
+  p.setText(p.selectedId, "edited");  // undo history now has the original
+
+  const opening = p.open(store.b.id); // in flight
+  await new Promise((r) => setTimeout(r, 0));   // past open()'s own flush() first
+
+  p.undo();                           // restores A's original text, DURING the open
+  assert.equal(p.project.id, store.a.id);
+  assert.equal(p.scenes[0].text, "");
+
+  resolveOpenB();
+  await opening;
+
+  // The open lost the race it was already in when the undo happened -- it
+  // must not land on top of the undo a moment later.
+  assert.equal(p.project.id, store.a.id, "the in-flight open overwrote the undo");
 });
 
 test("renaming a project moves the name in the File menu too", async () => {

@@ -584,6 +584,41 @@ def register(routes, prefix=None):
             return web.json_response({"problems": ["no such project"]}, status=404)
         return web.json_response({"deleted": True})
 
+    @routes.post(P + "/api/projects/import")
+    async def _projects_import(req):
+        body = await _body(req)
+        if body is None or "scenes" not in body:
+            return web.json_response(
+                {"problems": ["that does not look like a project file"]}, status=400)
+        # Never the id in the file: a project imported twice, or imported on
+        # the machine it came from, must land as its OWN project -- an id that
+        # happens to match one already here would overwrite it on save.
+        body = {**body, "id": None}
+        # from_dict() itself is lenient by design -- everything it cannot make
+        # sense of degrades to a safe default rather than raising, matching
+        # every other project load. Only save()'s own disk I/O can actually
+        # fail here, and that is not the file's fault: calling it "invalid"
+        # sends someone to inspect their JSON when the real problem is on this
+        # end (disk full, permissions).
+        try:
+            saved = projects.save(projects.Project.from_dict(body))
+        except Exception as exc:  # noqa: BLE001
+            log.broke("project import", exc, doing="saving the imported project")
+            return web.json_response(
+                {"problems": [f"could not save the imported project: {exc}"]}, status=500)
+        return web.json_response(saved.to_dict())
+
+    @routes.get(P + "/api/projects/{pid}/download")
+    async def _projects_download(req):
+        found = projects.get(req.match_info["pid"])
+        if found is None:
+            return web.json_response({"problems": ["no such project"]}, status=404)
+        safe = "".join(c if c.isalnum() or c in "._- " else "_" for c in found.name).strip()[:64]
+        return web.json_response(
+            found.to_dict(),
+            headers={"Content-Disposition":
+                     f'attachment; filename="{safe or found.id}.funpack_project.json"'})
+
     @routes.get(P + "/api/log/funpack")
     async def _log(req):
         level = req.query.get("level") or None

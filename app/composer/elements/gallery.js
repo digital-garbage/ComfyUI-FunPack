@@ -304,9 +304,15 @@ define("ruler", "default", ({ marks = [], total = 1, label } = {}) => {
 define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError } = {}) => {
   const stage = el("div", { cls: "cx-viewer-stage" });
   let current = null;
+  let currentKind = kind;
+  let currentFile = null;
+  let mediaEl = null;
 
-  function show(next, nextKind = kind) {
+  function show(next, nextKind = kind, file = null) {
     current = next || null;
+    currentKind = nextKind;
+    currentFile = current ? file : null;
+    mediaEl = null;
     stage.replaceChildren();
     if (!current) {
       stage.append(el("p", { cls: "cx-list-empty", text: empty }));
@@ -315,10 +321,16 @@ define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError
     const media = nextKind === "video"
       ? el("video", { cls: "cx-viewer-media", attrs: { src: current, controls: "", loop: "", playsinline: "" } })
       : el("img", { cls: "cx-viewer-media", attrs: { src: current, alt: "" } });
+    mediaEl = media;
     // A failed load is reported rather than left as a broken icon: the file is
     // produced by a run, so it not arriving is a fault worth naming.
     media.addEventListener("error", () => {
       stage.replaceChildren(el("p", { cls: "cx-list-empty", text: "This result could not be loaded." }));
+      mediaEl = null;
+      // Nothing is actually showing any more -- `file` saying otherwise is
+      // what let "Save to bin" silently bin a dead reference from this exact
+      // state, the one place the panel itself says there is nothing here.
+      currentFile = null;
       if (onError) onError(current);
     });
     stage.append(media);
@@ -329,8 +341,26 @@ define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError
   return {
     node,
     get value() { return current; },
+    get kind() { return currentKind; },
+    // The file this came from -- {filename, subfolder, type} -- when the
+    // caller had one to give. Null for anything shown by URL alone, which is
+    // not enough to name a file back to the server with.
+    get file() { return currentFile; },
     setValue: (next) => show(next, kind),
-    setSource: (next, nextKind) => show(next, nextKind || kind),
+    setSource: (next, nextKind, file) => show(next, nextKind || kind, file),
+    /**
+     * The video frame on screen right now, as a PNG blob -- null if nothing is
+     * playing or there is no frame yet to draw (a video that has not loaded
+     * its first frame has no dimensions to capture at).
+     */
+    captureFrame() {
+      if (currentKind !== "video" || !mediaEl || !mediaEl.videoWidth) return Promise.resolve(null);
+      const canvas = document.createElement("canvas");
+      canvas.width = mediaEl.videoWidth;
+      canvas.height = mediaEl.videoHeight;
+      canvas.getContext("2d").drawImage(mediaEl, 0, 0);
+      return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    },
     destroy: () => node.remove(),
   };
 });

@@ -132,8 +132,13 @@ export function createBin({ onOpen, view = recallView(), persist = true,
    * anything new arrives -- so it must be silent when there is nothing new. It
    * was not, once: redrawing on each message walked the selection back to the
    * newest result the moment the user clicked an older one.
+   *
+   * `open: false` is for a save action, not a run: something ADDED to the bin
+   * a while after it was asked for (an upload's own round trip) must not then
+   * yank the viewer back to it -- the user may have moved on to something else
+   * in the meantime, and a save was never a request to look at what got saved.
    */
-  function absorb(files = []) {
+  function absorb(files = [], { open: shouldOpen = true } = {}) {
     const added = [];
     for (const file of files || []) {
       const id = keyOf(file);
@@ -151,7 +156,7 @@ export function createBin({ onOpen, view = recallView(), persist = true,
     // its own result is the whole point; an older selection is not preserved
     // through it, because nobody generates in order to keep looking at the last
     // one.
-    open(added[added.length - 1].id);
+    if (shouldOpen) open(added[added.length - 1].id);
     return added;
   }
 

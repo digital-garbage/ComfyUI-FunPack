@@ -9,9 +9,9 @@ import { mountAll } from "./shell/panels.js";
 import { settle } from "./shell/mounts.js";
 import { all as allValues } from "./shell/values.js";
 import { composer } from "./composer/composer.js";
-import { createRun, viewUrl, DONE } from "./shell/run.js";
+import { createRun, viewUrl, DONE, FAILED, CANCELLED } from "./shell/run.js";
 import { clientId, connect, queuedFor, finishedFor } from "./shell/client.js";
-import { wire } from "./shell/session.js";
+import { wire, waitForTerminal } from "./shell/session.js";
 import { check, load, describe, search } from "./shell/pipeline.js";
 import { open as openPipeline } from "./shell/pipeline_window.js";
 import { createPrompts } from "./shell/prompt.js";
@@ -113,13 +113,85 @@ async function start() {
   // Before the page, because the properties column is composed with it in.
   inspector = createInspector({ project, onRename: (name) => project.rename(name) });
 
+  // "Load Project File..." trigger. One input, kept and reused rather than
+  // built fresh per click -- a fresh one would need its `change` listener
+  // rewired every time, which is a listener leaked on every click but the last.
+  const loadProjectFile = document.createElement("input");
+  loadProjectFile.type = "file";
+  loadProjectFile.accept = "application/json,.json";
+  loadProjectFile.hidden = true;
+  document.body.appendChild(loadProjectFile);
+  loadProjectFile.addEventListener("change", async () => {
+    const file = loadProjectFile.files[0];
+    loadProjectFile.value = "";                   // the same file picked twice must still change
+    if (!file) return;
+    try {
+      await project.importProject(JSON.parse(await file.text()));
+    } catch (err) {
+      page.transport.say(`Could not load that project file: ${err.message}`);
+    }
+  });
+
+  // What Generate does for whichever scene is selected right now -- shared
+  // with "Generate All" below, so the two never disagree about how a run gets
+  // attributed to its scene.
+  const generateCurrentScene = () => {
+    ranFor = project.selectedId;
+    ranForProject = project.project ? project.project.id : null;
+    return session.generate();
+  };
+
+  // Every scene, one at a time, waiting for each to actually finish before
+  // starting the next. Not a montage -- v5 has no render/stitch stage -- this
+  // is N separate generations, each landing on its own scene, the same as
+  // pressing Generate N times without having to sit at the keyboard for each.
+  let batchCancelled = false;
+  async function generateAll() {
+    const scenes = [...project.scenes];
+    if (!scenes.length) return;
+    generateAllBtn.setDisabled(true);
+    batchCancelled = false;
+    page.transport.hold(`Generating scene 1 of ${scenes.length}…`);
+    const failed = [];
+    try {
+      for (let i = 0; i < scenes.length; i++) {
+        if (batchCancelled) break;
+        const scene = scenes[i];
+        // A scene removed mid-batch by whoever is not at the keyboard right
+        // now is not a scene left to generate.
+        if (!project.scenes.some((s) => s.id === scene.id)) continue;
+        project.select(scene.id);
+        showScene(project.selected);
+        page.transport.say(`Generating scene ${i + 1} of ${scenes.length}…`);
+        const waiting = waitForTerminal(run);
+        const queued = await generateCurrentScene();
+        if (!queued) {
+          // Refused before it ever reached run.start() -- nothing will ever
+          // transition the run, so nothing will ever resolve `waiting` either.
+          waiting.cancel();
+          failed.push(scene);
+          continue;
+        }
+        const phase = await waiting;
+        if (phase === CANCELLED) { batchCancelled = true; break; }
+        if (phase === FAILED) failed.push(scene);
+      }
+    } finally {
+      generateAllBtn.setDisabled(false);
+      page.transport.release(run.state);
+    }
+    if (batchCancelled) page.transport.say("Generate All was cancelled.");
+    else if (failed.length) page.transport.say(`${failed.length} of ${scenes.length} scenes did not generate.`);
+  }
+  const generateAllBtn = composer.button.sm({
+    label: "Generate All", tone: "ghost",
+    onClick: () => generateAll(),
+  });
+
   const page = build(root, {
     inspector,
-    onGenerate: () => {
-      ranFor = project.selectedId;
-      ranForProject = project.project ? project.project.id : null;
-      session.generate();
-    },
+    onGenerate: generateCurrentScene,
+    generateAll: generateAllBtn,
     onCancel: () => run.cancel(),
     onConstructor: () => page.constructor.open(),
     // The window asks whether a run is in flight, because the restart that
@@ -129,7 +201,8 @@ async function start() {
     onLog: () => openLog(),
     // Opening one puts it in the Preview, which is where somebody hunting for a
     // file wants it -- the same place a result from the bin goes.
-    onTemp: () => openTemp({ onOpen: (item) => page.viewer.setSource(item.url, item.kind) }),
+    onTemp: () => openTemp({ onOpen: (item) => page.viewer.setSource(
+      item.url, item.kind, item.file ? { ...item.file, type: "temp" } : null) }),
     // What the Edit menu offers, and what the keyboard reaches. One list, so a
     // menu item and its shortcut cannot drift apart.
     edits: {
@@ -156,6 +229,19 @@ async function start() {
         const name = await asked.result;
         if (name === null) return;              // cancelled
         await project.newProject(name);
+      } else if (id === "save-file") {
+        const url = project.downloadUrl();
+        if (!url) return;
+        // Navigation, not a fetch: the server's own Content-Disposition is
+        // what makes this a save-as instead of a page full of JSON.
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } else if (id === "load-file") {
+        loadProjectFile.click();
       } else if (id !== (project.project || {}).id) {
         await project.open(id);
       } else {
@@ -331,6 +417,7 @@ async function start() {
 
   window.FunPack = {
     manifest, values: allValues, failed, hidden, run, bin: page.bin, project, wheel,
+    viewer: page.viewer,
     prompts: () => (prompts ? prompts.overrides() : {}),
     mounted: mounted.map((m) => m.id),
   };

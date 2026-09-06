@@ -99,6 +99,30 @@ test("the newest of a batch is the one shown", () => {
   assert.deepEqual(b.items.map((i) => i.label), ["three.png", "two.png", "one.png"]);
 });
 
+test("open: false adds a file to the bin without moving what the viewer shows", () => {
+  // A save action's own round trip (an upload) can finish well after the user
+  // has moved on to looking at something else -- absorb()'s normal auto-open
+  // exists for a RUN's own result appearing, not for that. `open: false` is
+  // what a save uses instead.
+  const b = bin();
+  b.absorb([file("already-open.png")]);       // the normal path: this IS opened
+  assert.equal(b.opened.length, 1);
+
+  b.absorb([file("saved-later.png")], { open: false });
+
+  assert.equal(b.items.length, 2, "the file was not added to the bin at all");
+  assert.equal(b.opened.length, 1, "opened a second time despite open: false");
+});
+
+test("open: false still dedupes -- a file already in the bin is not added twice", () => {
+  const b = bin();
+  b.absorb([file("a.png")]);
+  const added = b.absorb([file("a.png")], { open: false });
+
+  assert.equal(added.length, 0);
+  assert.equal(b.items.length, 1);
+});
+
 test("a video is known as one, and never becomes a <video> in the bin", () => {
   // v4 put live <video> elements in the bin and Chrome's six-per-origin
   // connection pool wedged the whole API behind them: the app stopped answering

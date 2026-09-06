@@ -118,8 +118,14 @@ test("the transport reports a refusal beside Generate", async ({ page }) => {
   // The dev server has no ComfyUI behind it, so the pipeline genuinely cannot
   // run -- and that is the case worth seeing: the reason appears where the run
   // is started, not in a console nobody has open.
-  await page.locator('.cx-panel-head button:has-text("Generate")').click();
-  const bar = page.locator(".cx-panel-status").first();
+  // The real Generate button specifically: "Generate All" also matches a
+  // plain text search for "Generate", and .cx-btn-primary is what actually
+  // distinguishes the one this test means.
+  await page.locator(".cx-panel-head button.cx-btn-primary").click();
+  // Scoped to the Timeline zone specifically: the Preview zone has its own
+  // .cx-panel-status now too (a save confirmation), and .first() stopped
+  // being safe to assume once there was more than one on the page.
+  const bar = page.locator(".cx-zone:has(button.cx-btn-primary) .cx-panel-status");
   await expect(bar).not.toHaveText(/^Ready/);
   // Whatever the reason is, it names the slot it is about. This used to read
   // "there is no node called X installed", because the dev server had no node

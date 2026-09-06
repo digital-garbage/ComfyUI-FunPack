@@ -38,15 +38,81 @@ export function build(root, handlers = {}) {
   // Left: what a project is made of, which for now is what it has produced. The
   // bin owns the choice of what the viewer shows -- one place decides, so a
   // click on an older result and a run finishing cannot both be right at once.
-  const bin = createBin({ onOpen: (item) => viewer.setSource(item.url, item.kind) });
+  const bin = createBin({
+    onOpen: (item) => viewer.setSource(item.url, item.kind, item.file),
+  });
   const assets = composer.panel.zone({
     title: "Assets",
     actions: [bin.control],
     body: bin.host,
   });
+
+  // ComfyUI's own route, not FunPack's -- ordinary image upload already exists
+  // and there is nothing about a captured frame that needs its own.
+  async function uploadFrame(blob) {
+    const form = new FormData();
+    form.append("image", blob, `frame-${Date.now()}.png`);
+    form.append("type", "input");
+    const res = await fetch("/upload/image", { method: "POST", body: form });
+    if (!res.ok) throw new Error(`the upload was refused (${res.status})`);
+    const body = await res.json();
+    return { filename: body.name, subfolder: body.subfolder || "", type: body.type || "input" };
+  }
+
+  // `transport.say` is the Timeline's own line, overwritten by the next
+  // progress message a run in flight sends -- often inside a second, which
+  // silently erased a save's own confirmation or error whenever anything was
+  // generating. This one is the Preview zone's, and nothing else writes to it.
+  const previewStatus = composer.text.sm({ text: "" });
+  let previewStatusTimer = null;
+  function sayPreview(text, ms = 3000) {
+    previewStatus.setText(text);
+    if (previewStatusTimer) clearTimeout(previewStatusTimer);
+    previewStatusTimer = setTimeout(() => previewStatus.setText(""), ms);
+    // Not a reason to keep a process alive: under a test runner, a page built
+    // and abandoned mid-test (a new one built for the next test, this one's
+    // DOM never explicitly torn down) left a timer that fired minutes later,
+    // reaching for a `document` the test harness had already removed.
+    if (previewStatusTimer && typeof previewStatusTimer.unref === "function") previewStatusTimer.unref();
+  }
+
+  // What's shown here came from somewhere already server-side (a run's own
+  // result, or an already-open bin/temp item) OR is a video the viewer can
+  // still draw a frame from -- either way, "keep this" should not mean a
+  // download and a re-upload by hand.
+  const saveToBin = composer.iconButton.sm({
+    icon: "➕", label: "Save to bin",
+    onClick: () => {
+      if (!viewer.file) { sayPreview("Nothing here has a file to save."); return; }
+      // Already showing, so nothing needs to move -- but a save is a save,
+      // never a navigation, even when it happens to name what's on screen.
+      const added = bin.absorb([viewer.file], { open: false });
+      sayPreview(added.length ? "Saved to the bin." : "Already in the bin.");
+    },
+  });
+  const saveFrame = composer.iconButton.sm({
+    icon: "⛶", label: "Save this frame",
+    onClick: async () => {
+      const blob = await viewer.captureFrame();
+      if (!blob) { sayPreview("Play a video first -- there is no frame to save."); return; }
+      try {
+        // Not `open: true`: the upload is a real round trip, and by the time
+        // it lands the viewer may be showing something else entirely -- a
+        // save must not yank it back to what it saved.
+        const added = bin.absorb([await uploadFrame(blob)], { open: false });
+        sayPreview(added.length ? "Frame saved to the bin." : "Already in the bin.");
+      } catch (err) {
+        sayPreview(`Could not save the frame: ${err.message}`);
+      }
+    },
+  });
   // v4's preview head carries nothing but the name of the zone: what is being
-  // looked at is not something you act on.
-  const preview = composer.panel.zone({ title: "Preview", body: viewer, flush: true });
+  // looked at is not something you act on -- except now it is, the two
+  // actions above, which only ever touch what is ALREADY on screen.
+  const preview = composer.panel.zone({
+    title: "Preview", body: viewer, flush: true,
+    actions: [saveToBin, saveFrame], status: [previewStatus],
+  });
 
   // The timeline: what the project IS, and where a run is started from.
   //
@@ -101,6 +167,11 @@ export function build(root, handlers = {}) {
     title: "Timeline",
     actions: [
       ...transport.actions,
+      // A ready-made widget, not a callback: the loop it runs needs the run,
+      // the session and the project all at once, and none of those exist yet
+      // at the point build() is called -- boot.js is the one place all three
+      // do, so boot.js builds the button too.
+      ...(handlers.generateAll ? [handlers.generateAll] : []),
       regionToggle("Assets", () => Boolean(ws && ws.isOpen("left")),
                    () => ws && ws.toggle("left"), { overlaid: true }),
       regionToggle("Properties", () => Boolean(ws && ws.isOpen("right")),

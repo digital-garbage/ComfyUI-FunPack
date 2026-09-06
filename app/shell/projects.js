@@ -76,6 +76,12 @@ export function createProject({ onChange, onError, onOpen } = {}) {
   let timer = null;
   let saving = null;      // the PUT in flight, so a queued one waits for it
   let dirty = false;
+  // Bumped by every open/newProject/importProject, BEFORE their own await --
+  // so a switch that starts and then loses a race (two imports, or an import
+  // overlapping an open()) can tell, once its fetch finally answers, that a
+  // NEWER switch already won and abandon its own result instead of clobbering
+  // whatever the user is actually looking at now.
+  let generation = 0;
 
   const changed = () => { if (onChange) onChange(); };
 
@@ -94,6 +100,12 @@ export function createProject({ onChange, onError, onOpen } = {}) {
     if (!project || !from.length) return false;
     to.push(copy());
     const was = from.pop();
+    // Same reason open/newProject/importProject/start bump it: an undo/redo
+    // is also "a different project is open now" (the comment on opened() two
+    // lines below already says so), and an in-flight switch that started
+    // before this must not still be allowed to land on top of it once its
+    // own fetch catches up.
+    generation += 1;
     project = was.project;
     selected = was.selected;
     // The scene that was selected may be gone -- stepping FORWARD into a state
@@ -113,24 +125,39 @@ export function createProject({ onChange, onError, onOpen } = {}) {
   const forget = () => { past = []; future = []; };
 
   function scheduleSave() {
+    // The object THIS edit actually touched, captured now -- not read back
+    // later from `project`, which can point somewhere else entirely by the
+    // time this timer fires (a project switch started and finished in
+    // between). Without this, an edit made in the gap between a switch
+    // starting and completing was silently lost: mutated on the right object,
+    // then saved -- once the timer finally fired -- against whatever project
+    // had since replaced it.
+    //
+    // ponytail: `dirty`/`timer`/`saving` stay single, shared flags rather than
+    // one per target. A second edit landing on a DIFFERENT project before this
+    // one's timer fires still cancels it (real, narrower race: an edit during
+    // a switch's gap, then another edit to the new project, both inside one
+    // debounce window). Upgrade to a per-target queue if that ever shows up
+    // outside a deliberately adversarial test.
+    const target = project;
     dirty = true;
     if (timer) clearTimeout(timer);
-    timer = setTimeout(flush, SAVE_AFTER);
+    timer = setTimeout(() => flush(target), SAVE_AFTER);
   }
 
-  async function flush() {
+  async function flush(target = project) {
     if (timer) { clearTimeout(timer); timer = null; }
-    if (!project || !dirty) return;
+    if (!target || !dirty) return;
     // One PUT at a time. Two overlapping writes of a whole project can land in
     // either order, and the loser is a version of the project the user has
     // already moved past.
     if (saving) { await saving.catch(() => {}); if (!dirty) return; }
     dirty = false;
-    const body = { ...project };
+    const body = { ...target };
     saving = put(body).then((saved) => {
       // Only the fields the server owns are taken back: replacing the whole
       // project would overwrite whatever was typed while the PUT was in flight.
-      if (project && saved && project.id === saved.id) project.updated_at = saved.updated_at;
+      if (target && saved && target.id === saved.id) target.updated_at = saved.updated_at;
     }).catch((err) => {
       dirty = true;                       // it is still unsaved, so say so
       if (onError) onError(err);
@@ -150,9 +177,19 @@ export function createProject({ onChange, onError, onOpen } = {}) {
     get recent() { return recent; },
 
     async start() {
+      // Guarded like open/newProject/importProject, and for the same reason:
+      // the page's own handlers (the File menu, the hidden file input) are
+      // wired up by build() well before this is awaited, and both of start()'s
+      // own network calls are real gaps a user's own click can finish inside
+      // of. Losing this race used to mean start() caught up later and
+      // silently reverted a switch the user had already made, with no error.
+      const mine = ++generation;
       const found = await list();
+      if (mine !== generation) return project;
       recent = found;
-      project = found.length ? await read(found[0].id) : await create("Untitled");
+      const opened_ = found.length ? await read(found[0].id) : await create("Untitled");
+      if (mine !== generation) return project;
+      project = opened_;
       if (!found.length) recent = [{ id: project.id, name: project.name }];
       selected = (project.scenes || [])[0]?.id ?? null;
       forget();                           // a project just opened has no past
@@ -161,8 +198,14 @@ export function createProject({ onChange, onError, onOpen } = {}) {
     },
 
     async open(id) {
+      const mine = ++generation;
       await flush();
-      project = await read(id);
+      const found = await read(id);
+      // A newer switch already won this race (another open/new/import started
+      // after this one and has already landed) -- applying this one now would
+      // silently pull the user back to a project they already left.
+      if (mine !== generation) return project;
+      project = found;
       selected = (project.scenes || [])[0]?.id ?? null;
       forget();                           // a project just opened has no past
       opened();
@@ -170,11 +213,48 @@ export function createProject({ onChange, onError, onOpen } = {}) {
     },
 
     async newProject(name) {
+      const mine = ++generation;
       await flush();
-      project = await create(name);
+      const made = await create(name);
+      if (mine !== generation) {
+        // Superseded by a newer switch -- this one already created a real
+        // project on the server that nothing will ever show. Best-effort:
+        // a failed cleanup leaves an orphan, which is the pre-existing
+        // (worse) behaviour, not a new one.
+        remove(made.id).catch(() => {});
+        return project;
+      }
+      project = made;
       recent = [{ id: project.id, name: project.name }, ...recent];
       selected = (project.scenes || [])[0]?.id ?? null;
       forget();                           // a project just opened has no past
+      opened();
+      return project;
+    },
+
+    /** Where "Save Project File" downloads FROM, for the current project. */
+    downloadUrl() { return project ? `${BASE}/${encodeURIComponent(project.id)}/download` : null; },
+
+    /**
+     * A project file from disk, as its own new project -- moving a project
+     * between machines, not restoring one in place. The file's own id is
+     * never kept (the server strips it too, but a project already open in
+     * THIS browser with that id must not be what a stale double-check relies
+     * on): imported always means "another one", even from the very checkout
+     * it came from.
+     */
+    async importProject(data) {
+      const mine = ++generation;
+      await flush();
+      const imported = await json("POST", `${BASE}/import`, data);
+      if (mine !== generation) {
+        remove(imported.id).catch(() => {});   // superseded -- see newProject()
+        return project;
+      }
+      project = imported;
+      recent = [{ id: project.id, name: project.name }, ...recent];
+      selected = (project.scenes || [])[0]?.id ?? null;
+      forget();
       opened();
       return project;
     },

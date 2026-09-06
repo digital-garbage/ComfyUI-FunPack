@@ -8,6 +8,41 @@
 // live during a round trip, and a socket listening before anyone knew which run
 // was ours.
 
+import { DONE, FAILED, CANCELLED } from "./run.js";
+
+const TERMINAL = new Set([DONE, FAILED, CANCELLED]);
+
+/**
+ * Resolves with the phase a run ends at -- done, failed, or cancelled.
+ *
+ * Subscribe FIRST, before whatever starts the run: subscribing after risks
+ * missing the very transition being waited for. subscribe() delivers the
+ * CURRENT state immediately, which is not a new transition and is not what
+ * this is waiting for -- if a page reload adopts a run that already finished,
+ * that first delivery would resolve this before the caller's own "start"
+ * step has even run. Only a state delivered AFTER this call counts.
+ *
+ * The returned promise carries its own `.cancel()`: subscribing before the
+ * caller knows whether a run will actually start is the whole point (see
+ * above), but a start attempt that gets refused before it ever reaches
+ * run.start() -- an incomplete pipeline, a queue that says no -- never
+ * transitions the run at all, so nothing would ever resolve this and the
+ * subscription would sit on `run` forever. Call `.cancel()` when the attempt
+ * this was waiting on turns out never to have started.
+ */
+export function waitForTerminal(run) {
+  let unsubscribe = () => {};
+  const promise = new Promise((resolve) => {
+    let first = true;
+    unsubscribe = run.subscribe((state) => {
+      if (first) { first = false; return; }
+      if (TERMINAL.has(state.phase)) { unsubscribe(); resolve(state.phase); }
+    });
+  });
+  promise.cancel = () => unsubscribe();
+  return promise;
+}
+
 /**
  * onGenerate: ask what to queue, then queue it, once at a time.
  *

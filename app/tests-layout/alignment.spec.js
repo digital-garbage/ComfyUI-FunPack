@@ -102,9 +102,13 @@ test("a run is started from the head of the zone it fills, and reported there", 
   await expect(page.locator(".cx-action-bar")).toHaveCount(0);
 
   const head = page.locator(".cx-panel", { hasText: "Timeline" }).first().locator(".cx-panel-head");
-  await expect(head.getByRole("button", { name: "Generate" })).toBeVisible();
+  // Exact: "Generate All" also matches an inexact "Generate" search now.
+  await expect(head.getByRole("button", { name: "Generate", exact: true })).toBeVisible();
 
-  const [bar] = await boxes(page, ".cx-panel-status");
+  // Scoped to the zone with the Generate button: the Preview zone has its own
+  // .cx-panel-status now too (a save confirmation), and an unscoped selector
+  // stopped naming a unique element the day that arrived.
+  const [bar] = await boxes(page, ".cx-panel:has(.cx-btn-primary) .cx-panel-status");
   const [generate] = await boxes(page, ".cx-panel-head .cx-btn-primary");
   expect(bar.x, "what the run is doing is not at the far end of its own head")
     .toBeGreaterThan(generate.r);

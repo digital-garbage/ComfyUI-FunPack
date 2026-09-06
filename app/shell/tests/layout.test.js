@@ -56,6 +56,126 @@ test("picking an older result in the bin changes what the viewer shows", () => {
   assert.match(p.viewer.node.querySelector("img").getAttribute("src"), /first\.png/);
 });
 
+test("what a run produced can be saved to the bin from wherever it is shown", () => {
+  // Opened from the temp browser, or anywhere else that hands the viewer a
+  // real file identity -- "keep this" should not mean a download and a
+  // re-upload by hand.
+  const p = page();
+  p.viewer.setSource("/view?filename=stray.png&subfolder=&type=temp", "image",
+    { filename: "stray.png", subfolder: "", type: "temp" });
+
+  const saveToBin = p.preview.node.querySelector('button[aria-label="Save to bin"]');
+  assert.ok(saveToBin, "no Save to bin action in the Preview head");
+  saveToBin.click();
+
+  assert.equal(p.bin.items.length, 1);
+  assert.equal(p.bin.items[0].file.filename, "stray.png");
+});
+
+test("saving something already in the bin says so instead of duplicating it", () => {
+  const p = page();
+  p.bin.absorb([file("a.png")]);           // also becomes what the viewer shows
+
+  const saveToBin = p.preview.node.querySelector('button[aria-label="Save to bin"]');
+  saveToBin.click();
+
+  assert.equal(p.bin.items.length, 1, "the same file was saved twice");
+});
+
+test("saving with nothing shown does not throw, and says why", () => {
+  const p = page();
+  const saveToBin = p.preview.node.querySelector('button[aria-label="Save to bin"]');
+  assert.doesNotThrow(() => saveToBin.click());
+  assert.equal(p.bin.items.length, 0);
+});
+
+test("saving a frame with no video playing says so rather than uploading nothing", async () => {
+  // jsdom has no real video decoder, so a genuine capture can only be proven
+  // in a real browser (see the Playwright spec) -- this is the guard that
+  // keeps a silent no-op from reaching the upload at all.
+  const p = page();
+  const saveFrame = p.preview.node.querySelector('button[aria-label="Save this frame"]');
+  assert.ok(saveFrame, "no Save frame action in the Preview head");
+
+  let asked = false;
+  globalThis.fetch = async () => { asked = true; return { ok: true, json: async () => ({}) }; };
+  saveFrame.click();
+  await new Promise((r) => setTimeout(r, 0));   // let the click's own async handler settle
+
+  assert.equal(asked, false, "uploaded with no frame to upload");
+  assert.equal(p.bin.items.length, 0);
+});
+
+test("a frame that dedupes to something already in the bin says so, not that it saved", async () => {
+  // saveToBin already checked bin.absorb()'s own dedup result; saveFrame did
+  // not, so a second capture that happened to upload to the same identity
+  // (two rapid clicks, a server that overwrites rather than renames on
+  // collision) claimed success while adding nothing.
+  const p = page();
+  p.viewer.captureFrame = async () => new Blob(["x"], { type: "image/png" });
+  globalThis.fetch = async () => ({
+    ok: true, json: async () => ({ name: "captured.png", subfolder: "", type: "input" }),
+  });
+
+  const saveFrame = p.preview.node.querySelector('button[aria-label="Save this frame"]');
+  saveFrame.click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(p.bin.items.length, 1);
+  assert.match(p.preview.node.querySelector(".cx-panel-status").textContent, /Frame saved/);
+
+  saveFrame.click();          // resolves to the exact same identity again
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(p.bin.items.length, 1, "the same capture was added twice");
+  assert.match(p.preview.node.querySelector(".cx-panel-status").textContent, /Already in the bin/);
+});
+
+test("a frame upload that resolves after the user moved on does not yank the viewer back", async () => {
+  // The upload is a real round trip -- by the time it lands the user may
+  // already be looking at something else. A save must add to the bin without
+  // moving what is on screen, whenever it finishes.
+  const p = page();
+  p.bin.absorb([file("first.png")]);   // the viewer shows this
+
+  // jsdom cannot decode video; stand in for a real captured frame (the real
+  // capture itself is proven in the Playwright spec, against a real video).
+  p.viewer.captureFrame = async () => new Blob(["x"], { type: "image/png" });
+
+  let resolveUpload;
+  globalThis.fetch = () => new Promise((resolve) => { resolveUpload = resolve; });
+
+  p.preview.node.querySelector('button[aria-label="Save this frame"]').click();
+  // Let captureFrame()'s own await, then the call into fetch(), actually
+  // happen -- the upload is now in flight, waiting on resolveUpload.
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(typeof resolveUpload, "function", "the upload was never started");
+
+  // The user moves on before the upload resolves.
+  p.bin.absorb([file("second.png")]);
+  assert.match(p.viewer.node.querySelector("img").getAttribute("src"), /second\.png/);
+
+  resolveUpload({ ok: true, json: async () => ({ name: "captured.png", subfolder: "", type: "input" }) });
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+
+  assert.equal(p.bin.items.length, 3, "the captured frame was never saved");
+  assert.match(p.viewer.node.querySelector("img").getAttribute("src"), /second\.png/,
+    "a save that finished late pulled the viewer back to what it saved");
+});
+
+test("a result that failed to load is not something Save to bin can still save", () => {
+  // The viewer's own error state says "nothing is showing here" -- `file`
+  // disagreeing with that let a dead reference be saved as if it were real.
+  const p = page();
+  p.bin.absorb([file("gone.png")]);
+  p.viewer.node.querySelector("img").dispatchEvent(new window.Event("error"));
+  assert.match(p.viewer.node.textContent, /could not be loaded/);
+  assert.equal(p.viewer.file, null, "the viewer still claims a file is showing after it failed to load");
+
+  const saveToBin = p.preview.node.querySelector('button[aria-label="Save to bin"]');
+  saveToBin.click();
+
+  assert.equal(p.bin.items.length, 1, "the failed file was saved again, over the guard");
+});
+
 test("a control sits in the head of the zone it acts on", () => {
   // The arrangement that makes this an editor rather than a dashboard: the bin's
   // view control is in the Assets head, and Generate is in the head of the zone

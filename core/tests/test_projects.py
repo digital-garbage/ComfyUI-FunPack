@@ -231,6 +231,97 @@ def test_a_path_shaped_id_is_refused_not_served(server):
         assert status in (404, 400), pid
 
 
+# --- moving a project between machines ----------------------------------------
+
+def test_a_downloaded_project_imports_back_as_a_new_one(server):
+    """The round trip the feature exists for: save it, move the file
+    somewhere else, load it there."""
+    _, made = _request(server, "POST", "/funpack/api/projects", {"name": "Portable"})
+    made["scenes"].append({"text": "a second scene"})
+    _request(server, "PUT", f"/funpack/api/projects/{made['id']}", made)
+
+    status, downloaded = _request(server, "GET", f"/funpack/api/projects/{made['id']}/download")
+    assert status == 200
+    assert downloaded["name"] == "Portable"
+    assert len(downloaded["scenes"]) == 2
+
+    status, imported = _request(server, "POST", "/funpack/api/projects/import", downloaded)
+    assert status == 200
+    assert imported["name"] == "Portable"
+    assert [s["text"] for s in imported["scenes"]] == ["", "a second scene"]
+
+    status, listed = _request(server, "GET", "/funpack/api/projects")
+    assert sorted(p["id"] for p in listed["projects"]) == sorted([made["id"], imported["id"]]), \
+        "the import did not land as a project of its own"
+
+
+def test_importing_a_project_never_reuses_its_old_id(server):
+    """Importing the SAME file twice -- or importing it back on the machine it
+    came from -- must not silently overwrite whatever already has that id."""
+    _, made = _request(server, "POST", "/funpack/api/projects", {"name": "Original"})
+    status, downloaded = _request(server, "GET", f"/funpack/api/projects/{made['id']}/download")
+    assert downloaded["id"] == made["id"]
+
+    status, imported = _request(server, "POST", "/funpack/api/projects/import", downloaded)
+    assert status == 200
+    assert imported["id"] != made["id"]
+
+    # The original is untouched -- an id collision would have overwritten it.
+    _, original = _request(server, "GET", f"/funpack/api/projects/{made['id']}")
+    assert original["name"] == "Original"
+
+
+def test_an_id_offered_in_the_body_does_not_win_either(server):
+    """Not just the downloaded shape -- ANY id in an imported body is a
+    liability, including a made-up one that could collide with something
+    imported later."""
+    status, imported = _request(server, "POST", "/funpack/api/projects/import",
+                                {"id": "aaaaaaaaaaaa", "name": "Sneaky", "scenes": [{"text": ""}]})
+    assert status == 200
+    assert imported["id"] != "aaaaaaaaaaaa"
+
+
+def test_something_that_does_not_look_like_a_project_is_refused(server):
+    for body in ({"name": "not a project"}, {}):
+        status, resp = _request(server, "POST", "/funpack/api/projects/import", body)
+        assert status == 400, body
+        assert "problems" in resp
+
+
+def test_a_scenes_field_of_the_wrong_shape_degrades_to_empty_rather_than_erroring(server):
+    """`scenes` present but not a list is the same "never trust a field" rule
+    every other project load already follows (Project.from_dict), not a
+    special case this route invents -- an import is not the one place a
+    malformed file gets to crash instead of degrading."""
+    status, imported = _request(server, "POST", "/funpack/api/projects/import",
+                                {"name": "Odd", "scenes": "not a list"})
+    assert status == 200, imported
+    assert imported["scenes"] == []
+
+
+def test_downloading_a_project_that_does_not_exist_is_a_404(server):
+    status, _ = _request(server, "GET", "/funpack/api/projects/0123456789ab/download")
+    assert status == 404
+
+
+def test_a_disk_failure_during_import_is_not_blamed_on_the_file(server, monkeypatch):
+    """from_dict() is lenient by design -- it cannot actually raise on a
+    well-formed body. The only thing that can fail here is save()'s own I/O,
+    which is not the file's fault and should not be reported as though it
+    were."""
+    from core import projects
+
+    def broken_save(_project):
+        raise OSError("No space left on device")
+    monkeypatch.setattr(projects, "save", broken_save)
+
+    status, resp = _request(server, "POST", "/funpack/api/projects/import",
+                            {"name": "Fine", "scenes": [{"text": ""}]})
+    assert status == 500, resp
+    assert "No space left on device" in resp["problems"][0]
+    assert "invalid" not in resp["problems"][0].lower()
+
+
 # --- what the project is generated at ----------------------------------------
 
 def test_video_settings_survive_a_round_trip(store):

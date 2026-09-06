@@ -76,6 +76,11 @@ export function createMenubar({ workspace, onPipeline, onProject, projects = () 
 
   const file = menu("File", () => [
     { id: "new", label: "New project…" },
+    { separator: true },
+    // Moving a project between machines -- a git checkout does not carry
+    // ~/Documents/ComfyUI/user/default/funpack_projects with it.
+    { id: "save-file", label: "Save Project File…", hint: "⬇" },
+    { id: "load-file", label: "Load Project File…" },
     ...(projects().length ? [{ separator: true }] : []),
     // A tick rather than leaving the current one out: which project is open is
     // a fact about the app, and a menu that hides it makes you press one to find out.
