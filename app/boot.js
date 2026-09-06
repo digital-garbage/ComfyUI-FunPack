@@ -23,6 +23,7 @@ import { offerAction } from "./shell/actions.js";
 import { open as openWizard } from "./shell/wizard.js";
 import { open as openUpdates } from "./shell/updates.js";
 import { open as openPacks } from "./shell/packs.js";
+import { open as openLog } from "./shell/logwindow.js";
 
 const root = document.querySelector("#app");
 
@@ -112,6 +113,7 @@ async function start() {
     // follows an update would take it with it.
     onUpdates: () => openUpdates({ running: () => ["queued", "running"].includes(run.state.phase) }),
     onPacks: () => openPacks(),
+    onLog: () => openLog(),
     // What the Edit menu offers, and what the keyboard reaches. One list, so a
     // menu item and its shortcut cannot drift apart.
     edits: {

@@ -7,7 +7,7 @@ thin adapters over pure functions in `serve`.
 
 import json
 
-from . import (config, graph as graph_mod, log, nodes_manager, projects,
+from . import (backend_log, config, graph as graph_mod, log, nodes_manager, projects,
                update as update_mod,
                registry as registry_mod, serve as static, widgets)
 from .contract import CONTRACT_VERSION
@@ -309,6 +309,17 @@ def register(routes, prefix=None):
     @routes.post(P + "/api/git/rollback")
     async def _git_rollback(_req):
         return await _git(update_mod.rollback)
+
+    @routes.get(P + "/api/log")
+    async def _backend_log(req):
+        """What ComfyUI printed. Read on every poll rather than cached: the
+        reason anyone is looking is that something is happening right now."""
+        import asyncio
+        try:
+            limit = int(req.query.get("limit", 600))
+        except (TypeError, ValueError):
+            limit = 600
+        return web.json_response(await asyncio.to_thread(backend_log.recent, limit))
 
     # --- node packs -----------------------------------------------------------
     #

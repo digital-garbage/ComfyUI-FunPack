@@ -275,3 +275,48 @@ def test_the_pack_check_answers_under_the_key_the_app_reads(server):
     assert status == 200, body
     assert "checked" in body, f"the key the app reads is not in {sorted(body)}"
     assert isinstance(body["checked"], dict)
+
+
+# --- the backend log ---------------------------------------------------------
+
+def test_the_log_comes_back_with_where_it_was_read_from(server):
+    """A log panel showing lines from an unknown file is a panel nobody can
+    check against the terminal they also have open."""
+    status, body = _request(server["port"], "GET", "/funpack/api/log?limit=5")
+    assert status == 200, body
+    assert isinstance(body["lines"], list)
+    assert len(body["lines"]) <= 5
+    # This machine's ComfyUI does write one; either way the answer names itself.
+    assert body["path"] or body["detail"]
+
+
+def test_no_log_file_is_an_answer_with_a_reason(server, monkeypatch):
+    """An empty list looks exactly like a quiet log. The difference matters when
+    the reason somebody opened the panel is that something already broke."""
+    from core import backend_log
+    monkeypatch.setattr(backend_log, "log_file", lambda: None)
+
+    status, body = _request(server["port"], "GET", "/funpack/api/log")
+    assert status == 200
+    assert body["lines"] == []
+    assert "terminal" in body["detail"], body["detail"]
+
+
+def test_a_log_that_cannot_be_read_says_so_rather_than_raising(server, monkeypatch, tmp_path):
+    from core import backend_log
+    missing = tmp_path / "gone.log"
+    missing.write_text("x\n")
+    monkeypatch.setattr(backend_log, "log_file", lambda: missing)
+    missing.unlink()
+
+    status, body = _request(server["port"], "GET", "/funpack/api/log")
+    assert status == 200, body
+    assert body["lines"] == []
+    assert "gone.log" in body["detail"]
+
+
+def test_a_silly_limit_does_not_read_a_whole_session_into_memory(server):
+    for limit in ("999999", "-4", "0", "not-a-number"):
+        status, body = _request(server["port"], "GET", f"/funpack/api/log?limit={limit}")
+        assert status == 200, (limit, body)
+        assert len(body["lines"]) <= 2000, limit

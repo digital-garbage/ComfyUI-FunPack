@@ -189,6 +189,7 @@ export function build(root, handlers = {}) {
     onPipeline: handlers.onPipeline,
     onUpdates: handlers.onUpdates,
     onPacks: handlers.onPacks,
+    onLog: handlers.onLog,
     onProject: handlers.onProject,
     edits: handlers.edits,
     projects: handlers.projects,

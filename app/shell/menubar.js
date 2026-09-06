@@ -70,7 +70,7 @@ function menu(label, itemsOf, onPick) {
 }
 
 export function createMenubar({ workspace, onPipeline, onProject, projects = () => [],
-                                current = () => null, edits = null, onUpdates, onPacks,
+                                current = () => null, edits = null, onUpdates, onPacks, onLog,
                                 theme = services.theme } = {}) {
   const connection = createConnection();
 
@@ -120,10 +120,13 @@ export function createMenubar({ workspace, onPipeline, onProject, projects = () 
     { separator: true },
     { id: "updates", label: "Updates…" },
     { id: "packs", label: "Node packs…" },
+    { separator: true },
+    { id: "log", label: "ComfyUI log…" },
   ], (id) => {
     if (id === "pipeline" && onPipeline) onPipeline();
     else if (id === "updates" && onUpdates) onUpdates();
     else if (id === "packs" && onPacks) onPacks();
+    else if (id === "log" && onLog) onLog();
   });
 
   const bar = composer.toolbar.default({
