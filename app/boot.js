@@ -151,7 +151,7 @@ async function start() {
     // 5" while two of the five were never going to run reads as a wrong
     // number, not as a batch that respected the exclude.
     const scenes = project.scenes.filter((s) => !s.excluded);
-    if (!scenes.length) return;
+    if (!scenes.length) { page.transport.say("Every scene is excluded -- nothing to generate."); return; }
     generateAllBtn.setDisabled(true);
     batchCancelled = false;
     page.transport.hold(`Generating scene 1 of ${scenes.length}…`);

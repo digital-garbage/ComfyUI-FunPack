@@ -87,6 +87,24 @@ test("an excluded scene is skipped, and does not count toward the total", async 
     .toBeVisible({ timeout: 15000 });
 });
 
+test("excluding every scene says so instead of doing nothing silently", async ({ page }) => {
+  await app(page);
+  await page.evaluate(() => {
+    const { project } = window.FunPack;
+    while (project.scenes.length < 2) project.addScene();
+    for (const s of project.scenes) project.setScene(s.id, "excluded", true);
+  });
+
+  const btn = page.getByRole("button", { name: "Generate All" });
+  await btn.click();
+
+  await expect(page.locator(".cx-panel-status", { hasText: /every scene is excluded/i }))
+    .toBeVisible();
+  // Nothing was ever started -- the button was never disabled by a batch
+  // that had nothing to run.
+  await expect(btn).toBeEnabled();
+});
+
 test("a second click while a batch is already running does not start an overlapping one", async ({ page }) => {
   await app(page);
   await page.evaluate(() => {
