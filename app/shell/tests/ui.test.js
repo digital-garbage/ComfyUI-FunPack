@@ -149,14 +149,23 @@ test("the scene tab edits the scene, and says the crop is not what regenerates",
   assert.deepEqual(project.written.at(-1), [project.selected.id, "length", 48]);
 });
 
-test("a rating is kept with the scene", () => {
+test("a rating is kept with the scene, and can be taken back", () => {
+  // Binary, because the sign is all anything downstream reads. And reversible:
+  // without a way back a mis-click is a permanent opinion, and "no opinion" is
+  // a real answer nothing should have to guess at.
   const project = fakeProject();
   const inspector = createInspector({ project });
   document.body.replaceChildren(inspector.node);
 
-  const good = [...inspector.node.querySelectorAll("button")].find((b) => b.textContent === "Good");
-  fire(good, "click");
-  assert.deepEqual(project.written.at(-1), [project.selected.id, "rating", "good"]);
+  const press = (label) => fire([...inspector.node.querySelectorAll("button")]
+    .find((b) => b.textContent === label), "click");
+
+  press("Liked");
+  assert.deepEqual(project.written.at(-1), [project.selected.id, "rating", "liked"]);
+  press("Disliked");
+  assert.deepEqual(project.written.at(-1), [project.selected.id, "rating", "disliked"]);
+  press("Disliked");
+  assert.deepEqual(project.written.at(-1), [project.selected.id, "rating", null]);
 });
 
 test("the project tab renames the project", () => {

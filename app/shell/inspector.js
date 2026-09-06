@@ -8,11 +8,12 @@
 
 import { composer } from "../composer/composer.js";
 
+// Two, because two is all anything downstream reads: what learns from these
+// takes the sign of a rating and never its size. A finer scale would be the UI
+// claiming a precision nothing uses.
 const RATINGS = [
-  { value: "perfect", label: "Perfect" },
-  { value: "good", label: "Good" },
-  { value: "wrong", label: "Wrong" },
-  { value: "awful", label: "Awful" },
+  { value: "liked", label: "Liked" },
+  { value: "disliked", label: "Disliked" },
 ];
 
 export function createInspector({ project, onRename } = {}) {
@@ -49,10 +50,17 @@ export function createInspector({ project, onRename } = {}) {
       }),
       composer.settingsRow.default({
         label: "Rating",
-        hint: "What you thought of it. Kept with the scene.",
+        hint: "Liked or not. Press it again to take it back.",
         control: composer.buttonGroup.md({
           label: "Rating", value: scene.rating || undefined, items: RATINGS,
-          onChange: (v) => project.setScene(scene.id, "rating", v),
+          // Pressing the one that is on clears it. Without a way back, a
+          // mis-click is a permanent opinion -- and "no opinion" is a real
+          // answer that nothing downstream should be given a guess about.
+          onChange: (v) => {
+            const next = v === scene.rating ? null : v;
+            project.setScene(scene.id, "rating", next);
+            draw();
+          },
         }),
       }),
       composer.settingsRow.default({

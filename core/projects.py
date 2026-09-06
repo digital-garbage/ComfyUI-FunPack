@@ -59,9 +59,16 @@ def _whole(value) -> int | None:
     return number if 1 <= number <= MAX_SETTING else None
 
 
-#: What a person can say about a result. Core keeps the word and nothing else:
-#: what any of them MEAN belongs to whatever learns from them, which is not here.
-RATINGS = ("perfect", "good", "wrong", "awful")
+#: What a person can say about a result: it was good, or it was not.
+#:
+#: Binary because that is all anything downstream reads. dev proved it on H3 --
+#: the steering only ever takes the SIGN of a rating, never its size, so a
+#: ten-point scale was a UI claiming a precision nothing used, and at the sample
+#: sizes this runs at a mediocre middle rating only diluted the direction.
+#:
+#: Core keeps the word and nothing else. What either of them MEANS belongs to
+#: whatever learns from them, which is not here.
+RATINGS = ("liked", "disliked")
 
 
 @dataclass

@@ -122,10 +122,8 @@
 /* A clip carries its rating as a colour on its edge -- the one thing about a
    result you want to see without selecting it. */
 .cx-strip-cell.cx-rated { border-color: var(--muted); }
-.cx-strip-cell[data-rating="perfect"] { border-color: var(--good); }
-.cx-strip-cell[data-rating="good"]    { border-color: var(--teal); }
-.cx-strip-cell[data-rating="wrong"]   { border-color: var(--warn); }
-.cx-strip-cell[data-rating="awful"]   { border-color: var(--danger); }
+.cx-strip-cell[data-rating="liked"]    { border-color: var(--good); }
+.cx-strip-cell[data-rating="disliked"] { border-color: var(--danger); }
 
 /* Where one scene becomes the next. Positioned in percent so it tracks the row
    above it at any width, and never taller than the numbers it draws. */
