@@ -190,14 +190,26 @@ define("gallery", "cards", ({ items = [], value, onActivate } = {}) => {
  * only be clicked THROUGH left the caller drawing its own current-item marker
  * over a row that did not have the concept.
  */
-define("gallery", "strip", (props = {}) => {
+define("gallery", "strip", ({ onReorder, ...props } = {}) => {
   const node = el("div", { cls: "cx-strip", attrs: { role: "listbox", "aria-label": props.label } });
 
   const api = collection(props, node, (item, on) => {
     const cell = el("button", {
       cls: ["cx-strip-cell", on ? "cx-on" : null, item.rating ? "cx-rated" : null, "cx-focusable"],
       attrs: option(on, { title: item.label, "aria-label": item.label,
-                          "data-rating": item.rating || undefined }) });
+                          "data-rating": item.rating || undefined,
+                          // The item's OWN id, not just its position -- a
+                          // reorder tracked by index goes stale the moment
+                          // anything redraws the strip mid-drag (a scene
+                          // removed by keyboard while the mouse is still
+                          // held down, for one), since a redraw can happen on
+                          // its own input channel independent of the drag.
+                          "data-id": item.id,
+                          // Draggable whether or not `onReorder` is given: a
+                          // drag with nowhere to report to is inert, not wired
+                          // -- the delegated listeners below are the only thing
+                          // that acts on it, and they no-op without a handler.
+                          draggable: "true" }) });
     // As wide as what it stands for is long, which is what turns a row of equal
     // boxes into something that reads as time. Bounded at both ends: one very
     // long clip beside short ones must not squeeze the rest to a sliver.
@@ -207,6 +219,46 @@ define("gallery", "strip", (props = {}) => {
     cell.append(thumbOf(item, "cx-strip-face", false));
     if (item.badge) cell.append(el("span", { cls: "cx-cell-badge", text: item.badge }));
     return cell;
+  });
+
+  // Delegated on the container rather than per-cell: cells are torn down and
+  // rebuilt on every setItems/setValue, and listeners bound to them would have
+  // to be reattached every time. One set here survives all of that.
+  //
+  // The dragged item's id lives on `dataTransfer`, not in a closure variable.
+  // A closure var tracks by NOTHING the browser understands, so nothing keeps
+  // it in step with the actual drag session: `dragend` fires on the ORIGINAL
+  // source element, and a redraw mid-drag (an unrelated remove/undo firing on
+  // its own input channel while the mouse is still held down) can detach that
+  // element from the tree -- its `dragend` then never bubbles here, and a
+  // closure var set at dragstart is never cleared, ready to be picked up by
+  // the next unrelated drop that lands on this strip from somewhere else
+  // entirely. `dataTransfer` has no such gap: it belongs to the actual OS-level
+  // drag session, unaffected by which DOM node currently receives the events,
+  // and a drop from any OTHER session simply never had this MIME type set.
+  const MIME = "text/x-funpack-reorder";
+  const cellOf = (e) => e.target.closest(".cx-strip-cell");
+  node.addEventListener("dragstart", (e) => {
+    const cell = cellOf(e);
+    if (!cell || !e.dataTransfer) return;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData(MIME, cell.dataset.id || "");
+    cell.classList.add("cx-dragging");
+  });
+  node.addEventListener("dragend", (e) => { cellOf(e)?.classList.remove("cx-dragging"); });
+  node.addEventListener("dragover", (e) => {
+    // `getData` only returns the real value on "drop" (a browser security
+    // restriction during drag) -- `types` is what dragover can actually read.
+    if (e.dataTransfer && e.dataTransfer.types.includes(MIME)) e.preventDefault();
+  });
+  node.addEventListener("drop", (e) => {
+    if (!e.dataTransfer) return;
+    const draggedId = e.dataTransfer.getData(MIME);
+    if (!draggedId) return;
+    e.preventDefault();
+    const cell = cellOf(e);
+    const targetId = cell ? cell.dataset.id : null;
+    if (onReorder && targetId && targetId !== draggedId) onReorder(draggedId, targetId);
   });
 
   return {

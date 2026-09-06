@@ -92,14 +92,17 @@
 }
 .cx-strip-cell {
   /* A floor and a ceiling. A clip grows with its length (flex-grow, set by the
-     element), and one clip in a project must not become the whole strip. */
-  flex: none; width: 72px; min-inline-size: 72px; max-inline-size: var(--cell-panel);
+     element), and one clip in a project must not become the whole strip.
+     --strip-w is the zoom level, set on .cx-strip itself and inherited. */
+  flex: none; width: var(--strip-w, 72px); min-inline-size: var(--strip-w, 72px);
+  max-inline-size: var(--cell-panel);
   aspect-ratio: 16 / 10; padding: 0;
   border: var(--bw) solid var(--line); border-radius: var(--r-2);
-  background: var(--void); overflow: hidden; cursor: pointer;
+  background: var(--void); overflow: hidden; cursor: grab;
   display: flex; align-items: center; justify-content: center;
 }
 .cx-strip-cell:hover { border-color: var(--accent); }
+.cx-strip-cell.cx-dragging { opacity: 0.4; cursor: grabbing; }
 .cx-strip-face { inline-size: 100%; block-size: 100%; display: flex; align-items: center; justify-content: center; }
 
 /* The result, shown whole. `contain` rather than `cover`: a generated frame
