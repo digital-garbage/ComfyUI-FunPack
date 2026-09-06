@@ -2,6 +2,7 @@
 
 import { define } from "../internals/register.js";
 import { el } from "../internals/el.js";
+import { setText } from "../internals/text.js";
 import { uid } from "../internals/ids.js";
 import { mount, unmount } from "../internals/portal.js";
 import { claimFor } from "../internals/zlayer.js";
@@ -203,9 +204,10 @@ define("floating", "window", ({
 
 /** A full-screen "please wait" that genuinely blocks. */
 define("overlay", "blocking", ({ message, progress, cancel } = {}) => {
+  const words = el("p", { cls: "cx-t cx-t-sm", text: message });
   const card = el("div", { cls: "cx-blocking-card", children: [
     el("span", { cls: ["cx-spinner", "cx-spinner-md"], attrs: { "aria-hidden": "true" } }),
-    el("p", { cls: "cx-t cx-t-sm", text: message }),
+    words,
     progress && progress.node ? progress.node : null,
     cancel && cancel.node ? cancel.node : null,
   ].filter(Boolean) });
@@ -220,6 +222,13 @@ define("overlay", "blocking", ({ message, progress, cancel } = {}) => {
   let closed = false;
   const handle = {
     node, isOverlay: true,
+    // What it is waiting for can change while it waits -- "restarting" becomes
+    // "it has not come back", and a spinner that cannot say so is a spinner
+    // somebody watches for ten minutes.
+    setMessage(next) {
+      setText(words, next);
+      node.setAttribute("aria-label", next);
+    },
     close() { if (closed) return; closed = true; release(); layer.release(); unmount(node); },
     destroy() { handle.close(); },
   };

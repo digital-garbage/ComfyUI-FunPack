@@ -7,7 +7,7 @@ thin adapters over pure functions in `serve`.
 
 import json
 
-from . import (config, graph as graph_mod, log, projects,
+from . import (config, graph as graph_mod, log, projects, update as update_mod,
                registry as registry_mod, serve as static, widgets)
 from .contract import CONTRACT_VERSION
 from .relations import order
@@ -235,6 +235,65 @@ def register(routes, prefix=None):
             "queueable": not (problems or incomplete),
             "prompt": prompt if not (problems or incomplete) else None,
         })
+
+    # --- keeping the install alive -------------------------------------------
+    #
+    # Updating is the most-used feature in a pack whose value is experimental
+    # work shipped continuously, so it is in the app rather than in a terminal.
+    #
+    # Every one of these ends by relaunching ComfyUI, which means the answer has
+    # to be written BEFORE the process goes. They schedule the restart and return
+    # `restarting: true`; the app then polls /api/health until the server is back.
+    #
+    # `restart` is looked up on the module rather than captured, so a test can
+    # replace it -- otherwise running the suite would relaunch the test runner.
+
+    async def _git(action, **kwargs):
+        """Run one git operation off the event loop, or say why it did not."""
+        import asyncio
+        try:
+            result = await asyncio.to_thread(action, **kwargs)
+        except update_mod.GitUpdateError as exc:
+            # A refusal, not a crash: no git, not a checkout, a dirty tree, a
+            # branch that exists on neither side. Each names what to do.
+            return web.json_response({"detail": str(exc)}, status=400)
+        except Exception as exc:  # noqa: BLE001
+            log.broke("git", exc, doing=getattr(action, "__name__", "git"))
+            return web.json_response({"detail": f"{type(exc).__name__}: {exc}"}, status=500)
+
+        import asyncio as _asyncio
+        from . import restart as restart_mod
+        # After the response is written, not before.
+        _asyncio.get_event_loop().call_later(0.7, restart_mod.restart)
+        return web.json_response({"restarting": True, **(result or {})})
+
+    @routes.get(P + "/api/git/status")
+    async def _git_status(req):
+        # `?remote=0` answers from the checkout alone. The fetch is the only part
+        # that touches the network and so the only part that can hang; the app
+        # asks without it first so it has something to draw.
+        import asyncio
+        remote = req.query.get("remote", "1") not in ("0", "false", "no")
+        return web.json_response(await asyncio.to_thread(update_mod.status, remote=remote))
+
+    @routes.post(P + "/api/git/update")
+    async def _git_pull(req):
+        body = await req.json() if req.can_read_body else {}
+        branch = str((body or {}).get("branch") or "").strip() or None
+        return await _git(update_mod.pull, branch=branch, install_deps=True)
+
+    @routes.post(P + "/api/git/checkout")
+    async def _git_checkout(req):
+        body = await req.json() if req.can_read_body else {}
+        branch = str((body or {}).get("branch") or "").strip()
+        if not branch:
+            return web.json_response({"detail": "Which branch? Name one."}, status=400)
+        return await _git(update_mod.checkout, branch=branch,
+                          pull_after=True, install_deps=True)
+
+    @routes.post(P + "/api/git/rollback")
+    async def _git_rollback(_req):
+        return await _git(update_mod.rollback)
 
     @routes.get(P + "/api/nodes")
     async def _nodes(req):

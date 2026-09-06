@@ -21,6 +21,7 @@ import { createInspector } from "./shell/inspector.js";
 import { createWheel } from "./shell/wheel.js";
 import { offerAction } from "./shell/actions.js";
 import { open as openWizard } from "./shell/wizard.js";
+import { open as openUpdates } from "./shell/updates.js";
 
 const root = document.querySelector("#app");
 
@@ -106,6 +107,7 @@ async function start() {
     onGenerate: () => { ranFor = project.selectedId; session.generate(); },
     onCancel: () => run.cancel(),
     onConstructor: () => page.constructor.open(),
+    onUpdates: () => openUpdates(),
     // What the Edit menu offers, and what the keyboard reaches. One list, so a
     // menu item and its shortcut cannot drift apart.
     edits: {

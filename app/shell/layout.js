@@ -187,6 +187,7 @@ export function build(root, handlers = {}) {
   const menubar = createMenubar({
     workspace,
     onPipeline: handlers.onPipeline,
+    onUpdates: handlers.onUpdates,
     onProject: handlers.onProject,
     edits: handlers.edits,
     projects: handlers.projects,
