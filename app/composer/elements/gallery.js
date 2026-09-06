@@ -195,7 +195,8 @@ define("gallery", "strip", ({ onReorder, ...props } = {}) => {
 
   const api = collection(props, node, (item, on) => {
     const cell = el("button", {
-      cls: ["cx-strip-cell", on ? "cx-on" : null, item.rating ? "cx-rated" : null, "cx-focusable"],
+      cls: ["cx-strip-cell", on ? "cx-on" : null, item.rating ? "cx-rated" : null,
+            item.excluded ? "cx-excluded" : null, "cx-focusable"],
       attrs: option(on, { title: item.label, "aria-label": item.label,
                           "data-rating": item.rating || undefined,
                           // The item's OWN id, not just its position -- a

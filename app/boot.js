@@ -147,7 +147,10 @@ async function start() {
   // pressing Generate N times without having to sit at the keyboard for each.
   let batchCancelled = false;
   async function generateAll() {
-    const scenes = [...project.scenes];
+    // Excluded scenes are dropped from the count as well as the loop -- "3 of
+    // 5" while two of the five were never going to run reads as a wrong
+    // number, not as a batch that respected the exclude.
+    const scenes = project.scenes.filter((s) => !s.excluded);
     if (!scenes.length) return;
     generateAllBtn.setDisabled(true);
     batchCancelled = false;
@@ -157,9 +160,10 @@ async function start() {
       for (let i = 0; i < scenes.length; i++) {
         if (batchCancelled) break;
         const scene = scenes[i];
-        // A scene removed mid-batch by whoever is not at the keyboard right
-        // now is not a scene left to generate.
-        if (!project.scenes.some((s) => s.id === scene.id)) continue;
+        // A scene removed -- or excluded -- mid-batch by whoever is not at
+        // the keyboard right now is not a scene left to generate.
+        const live = project.scenes.find((s) => s.id === scene.id);
+        if (!live || live.excluded) continue;
         project.select(scene.id);
         showScene(project.selected);
         page.transport.say(`Generating scene ${i + 1} of ${scenes.length}…`);
@@ -208,6 +212,7 @@ async function start() {
     edits: {
       canUndo: () => project.canUndo,
       canRedo: () => project.canRedo,
+      excluded: () => Boolean(project.selected && project.selected.excluded),
       run: (id) => {
         if (id === "undo") project.undo();
         else if (id === "redo") project.redo();
@@ -215,6 +220,8 @@ async function start() {
         else if (id === "remove" && project.scenes.length > 1) {
           project.removeScene(project.selectedId);
           showScene(project.selected);
+        } else if (id === "exclude" && project.selected) {
+          project.setScene(project.selectedId, "excluded", !project.selected.excluded);
         } else if (id === "earlier") project.move(project.selectedId, -1);
         else if (id === "later") project.move(project.selectedId, 1);
       },

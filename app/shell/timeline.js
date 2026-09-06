@@ -107,6 +107,7 @@ export function createTimeline({ project, onSelect } = {}) {
       // ones must not squeeze the rest to nothing.
       weight: lengthOf(scene),
       rating: scene.rating || null,
+      excluded: Boolean(scene.excluded),
     }));
   }
 

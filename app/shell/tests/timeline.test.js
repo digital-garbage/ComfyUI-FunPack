@@ -184,3 +184,15 @@ test("zoom picked earlier is applied when the timeline is rebuilt", () => {
   t.destroy();
   window.localStorage.clear();
 });
+
+test("an excluded scene is dimmed in the strip, an included one is not", () => {
+  const project = fakeProject(scenes(2));
+  project.scenes[1].excluded = true;
+  const t = createTimeline({ project });
+  document.body.append(t.node);
+
+  const cells = t.node.querySelectorAll(".cx-strip-cell");
+  assert.equal(cells[0].classList.contains("cx-excluded"), false);
+  assert.equal(cells[1].classList.contains("cx-excluded"), true);
+  t.destroy();
+});

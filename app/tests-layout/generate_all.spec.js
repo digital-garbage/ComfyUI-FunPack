@@ -49,6 +49,44 @@ test("Generate All says how many scenes did not generate, and re-enables both bu
   await expect(page.getByRole("button", { name: "Generate", exact: true })).toBeEnabled();
 });
 
+test("Toggle Exclude, pressed from the Edit menu, dims the selected clip in the strip", async ({ page }) => {
+  await app(page);
+  const id = await page.evaluate(() => {
+    const { project } = window.FunPack;
+    while (project.scenes.length < 2) project.addScene();
+    project.select(project.scenes[0].id);
+    return project.scenes[0].id;
+  });
+  const cell = page.locator(`.cx-strip-cell[data-id="${id}"]`);
+  await expect(cell).not.toHaveClass(/cx-excluded/);
+
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByRole("menuitem", { name: "Exclude Scene" }).click();
+  await expect(cell).toHaveClass(/cx-excluded/);
+
+  // Toggling back reads "Include Scene" now -- the label follows the scene
+  // that is actually selected, not a fixed word.
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByRole("menuitem", { name: "Include Scene" }).click();
+  await expect(cell).not.toHaveClass(/cx-excluded/);
+});
+
+test("an excluded scene is skipped, and does not count toward the total", async ({ page }) => {
+  await app(page);
+  await page.evaluate(() => {
+    const { project } = window.FunPack;
+    while (project.scenes.length < 3) project.addScene();
+    project.setScene(project.scenes[1].id, "excluded", true);
+  });
+
+  await page.getByRole("button", { name: "Generate All" }).click();
+
+  // 2 of the 3 scenes are live; the dev server refuses both, so the count
+  // names the live total, not the scene count on the timeline.
+  await expect(page.locator(".cx-panel-status", { hasText: /2 of 2 scenes did not generate/i }))
+    .toBeVisible({ timeout: 15000 });
+});
+
 test("a second click while a batch is already running does not start an overlapping one", async ({ page }) => {
   await app(page);
   await page.evaluate(() => {

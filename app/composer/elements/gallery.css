@@ -103,6 +103,9 @@
 }
 .cx-strip-cell:hover { border-color: var(--accent); }
 .cx-strip-cell.cx-dragging { opacity: 0.4; cursor: grabbing; }
+/* Still in the timeline, still there to bring back -- excluded from a batch
+   run reads as dimmed, not gone, the way a deleted scene would be. */
+.cx-strip-cell.cx-excluded { opacity: 0.45; }
 .cx-strip-face { inline-size: 100%; block-size: 100%; display: flex; align-items: center; justify-content: center; }
 
 /* The result, shown whole. `contain` rather than `cover`: a generated frame

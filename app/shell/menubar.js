@@ -95,6 +95,9 @@ export function createMenubar({ workspace, onPipeline, onProject, projects = () 
     { separator: true },
     { id: "scene", label: "Add scene" },
     { id: "remove", label: "Delete scene" },
+    // Dropped from a batch run without leaving the timeline -- a scene kept
+    // for later, not one thrown away.
+    { id: "exclude", label: edits.excluded() ? "Include Scene" : "Exclude Scene" },
     { separator: true },
     { id: "earlier", label: "Move clip left" },
     { id: "later", label: "Move clip right" },
