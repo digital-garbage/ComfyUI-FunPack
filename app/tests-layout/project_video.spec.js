@@ -52,3 +52,32 @@ test("it is still what the project generates at on the next visit", async ({ pag
   await openConstructor(page);
   await expect(widthBox(page)).toHaveValue("640");
 });
+
+test("what a run produces lands on the scene it was started for", async ({ page }) => {
+  // The loop that makes this an app rather than a generate button: the scene is
+  // what was generated, so the picture belongs to it and is still there after a
+  // reload. The dev server has no /prompt, so the run is driven directly.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  const scene = await page.evaluate(async () => {
+    const { project, run } = window.FunPack;
+    const id = project.selectedId || project.addScene().id;
+    // What the Generate button does, then what the socket says when it ends.
+    document.querySelector('.cx-panel-head button.cx-btn-primary').click();
+    // The dev server serves no /prompt, so the run never gets an id of its own.
+    // Adopting one is what a reload does, and it is the same path from here on.
+    await new Promise((r) => setTimeout(r, 50));
+    run.adopt("pretend-prompt-id");
+    run.handle({ type: "executed", data: { prompt_id: run.state.promptId,
+      output: { images: [{ filename: "scene.png", subfolder: "", type: "output" }] } } });
+    run.handle({ type: "execution_success", data: { prompt_id: run.state.promptId } });
+    await new Promise((r) => setTimeout(r, 50));
+    return { id, result: (project.scenes.find((s) => s.id === id) || {}).result };
+  });
+
+  expect(scene.result, "the run went nowhere").toMatch(/scene\.png/);
+  // Nothing about the picture ARRIVING is asserted here: the dev server answers
+  // 404 for every /view, so the strip shows its glyph -- which is the fallback
+  // doing its job, not a missing result.
+});

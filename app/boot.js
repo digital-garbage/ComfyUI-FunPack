@@ -9,7 +9,7 @@ import { mountAll } from "./shell/panels.js";
 import { settle } from "./shell/mounts.js";
 import { all as allValues } from "./shell/values.js";
 import { composer } from "./composer/composer.js";
-import { createRun } from "./shell/run.js";
+import { createRun, viewUrl, DONE } from "./shell/run.js";
 import { clientId, connect, queuedFor, finishedFor } from "./shell/client.js";
 import { wire } from "./shell/session.js";
 import { check, load, describe, search } from "./shell/pipeline.js";
@@ -62,8 +62,13 @@ async function start() {
     if (box) box.setValue(scene ? scene.text : "");
   };
 
+  // Which scene a run was started for, read at the moment it starts. A run
+  // takes minutes and the user goes on clicking, so "the selected scene" at the
+  // end is not the one that was generated.
+  let ranFor = null;
+
   const page = build(root, {
-    onGenerate: () => session.generate(),
+    onGenerate: () => { ranFor = project.selectedId; session.generate(); },
     onCancel: () => run.cancel(),
     onConstructor: () => page.constructor.open(),
     onPipeline: () => openPipeline({
@@ -81,6 +86,14 @@ async function start() {
   const session = wire({ run, page, check, id, queuedFor, finishedFor,
                          slots: () => slots, values: allValues,
                          inputs: () => (prompts ? prompts.overrides() : {}) });
+
+  // What a run produced, on the scene it was started from -- which is what puts
+  // it on the timeline and what makes it still there after a reload.
+  run.subscribe((state) => {
+    if (state.phase !== DONE || !ranFor || !state.images.length) return;
+    project.setResult(ranFor, viewUrl(state.images[state.images.length - 1]));
+    ranFor = null;
+  });
 
   // Saved on the way out. A debounce that has not fired yet is work the user
   // did and cannot see anywhere, and a reload is exactly when it is lost.

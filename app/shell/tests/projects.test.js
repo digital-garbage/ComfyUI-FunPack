@@ -74,3 +74,23 @@ test("with no project open there is nothing to set and nothing breaks", () => {
   p.setVideo("width", 832);
   assert.deepEqual(p.video, {});
 });
+
+test("a run's result lands on the scene it was started for, not the current one", async () => {
+  // A run takes minutes and the user goes on clicking. Reading "the selected
+  // scene" when it finishes attaches the picture to whatever they wandered to.
+  const { sent } = server();
+  const p = createProject({});
+  await p.start();
+  p.addScene();
+  p.addScene();
+  const [first, second] = p.scenes.map((s) => s.id);
+
+  const startedFor = first;                    // what boot captures at Generate
+  p.select(second);                            // the user moves on
+  p.setResult(startedFor, "/view?filename=a.png");
+
+  assert.equal(p.scenes[0].result, "/view?filename=a.png");
+  assert.equal(p.scenes[1].result, null);
+  await p.flush();
+  assert.equal(sent.at(-1).scenes[0].result, "/view?filename=a.png");
+});

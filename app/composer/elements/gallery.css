@@ -97,6 +97,7 @@
   display: flex; align-items: center; justify-content: center;
 }
 .cx-strip-cell:hover { border-color: var(--accent); }
+.cx-strip-face { inline-size: 100%; block-size: 100%; display: flex; align-items: center; justify-content: center; }
 
 /* The result, shown whole. `contain` rather than `cover`: a generated frame
    cropped to fit its box is a different picture from the one that was made. */
