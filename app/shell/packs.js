@@ -68,7 +68,8 @@ export function open() {
                                     placeholder: "https://github.com/owner/pack" });
     out.push(composer.settingsRow.default({
       label: "Install a pack",
-      hint: "Anything git can clone. ComfyUI restarts itself afterwards if it must.",
+      hint: "Anything git can clone. ComfyUI has to be restarted before a new pack "
+          + "loads — Settings ▸ Updates can do that.",
       control: composer.button.md({
         label: busy === "*" ? "Installing…" : "Install",
         disabled: Boolean(busy),
@@ -141,7 +142,10 @@ export function open() {
     busy = "*check*";
     draw();
     problem = null;
-    try { checked = (await ask("POST", "/check")).nodes || null; }
+    // `checked`, which is the key the server sends. It said `nodes` here for a
+    // while: the request succeeded, the JSON was valid, and every pack reported
+    // nothing to update no matter how far behind it was.
+    try { checked = (await ask("POST", "/check")).checked || null; }
     catch (err) { problem = err.message; }
     finally { busy = null; draw(); }
   }

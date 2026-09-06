@@ -96,3 +96,48 @@ test("a refusal from the server is shown in the window", async ({ page }) => {
     .getByRole("button", { name: "Remove" }).click();
   await expect(page.locator(".cx-modal")).toContainText("That is FunPack itself.");
 });
+
+test("checking for updates shows which packs are behind", async ({ page }) => {
+  // The client read `nodes` off a response whose key is `checked`: the request
+  // succeeded, the JSON was valid, and every pack reported nothing to update
+  // however far behind it was. The stub below is the server's real shape.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await page.route("**/api/packs", (route) => route.fulfill({
+    json: { root: "/x/custom_nodes", nodes: [
+      { name: "ComfyUI-Behind", is_funpack: false, git: true, branch: "main", commit: "aaa" },
+      { name: "ComfyUI-Current", is_funpack: false, git: true, branch: "main", commit: "bbb" },
+    ] },
+  }));
+  await page.route("**/api/packs/check", (route) => route.fulfill({
+    json: { checked: {
+      "ComfyUI-Behind": { checked: true, branch: "main", ahead: 0, behind: 3 },
+      "ComfyUI-Current": { checked: true, branch: "main", ahead: 0, behind: 0 },
+    } },
+  }));
+
+  await openPacks(page);
+  await page.getByRole("button", { name: "Check for updates" }).click();
+
+  await expect(page.locator(".cx-settings-row", { hasText: "ComfyUI-Behind" }))
+    .toContainText("3 updates available");
+  await expect(page.locator(".cx-settings-row", { hasText: "ComfyUI-Current" }))
+    .toContainText("up to date");
+});
+
+test("a pack that could not be checked says why, not 'up to date'", async ({ page }) => {
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await page.route("**/api/packs", (route) => route.fulfill({
+    json: { root: "/x/custom_nodes", nodes: [
+      { name: "ComfyUI-Offline", is_funpack: false, git: true, branch: "main" }] },
+  }));
+  await page.route("**/api/packs/check", (route) => route.fulfill({
+    json: { checked: { "ComfyUI-Offline": { checked: false, reason: "could not reach origin" } } },
+  }));
+
+  await openPacks(page);
+  await page.getByRole("button", { name: "Check for updates" }).click();
+  await expect(page.locator(".cx-settings-row", { hasText: "ComfyUI-Offline" }))
+    .toContainText("could not reach origin");
+});

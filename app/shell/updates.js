@@ -70,7 +70,7 @@ export function waitForRestart({ poll = 1500, give_up = 180000 } = {}) {
  * Built from a live status every time it opens: what branch you are on and how
  * far behind are exactly the facts that go stale while a window is closed.
  */
-export function open({ onRestart = waitForRestart } = {}) {
+export function open({ onRestart = waitForRestart, running = () => false } = {}) {
   let window_ = null;
   const body = composer.region.stack({ gap: "sm", label: "Updates" });
 
@@ -78,7 +78,11 @@ export function open({ onRestart = waitForRestart } = {}) {
     body.set([composer.hint.default({ text: "Working. This can take a few minutes if "
                                          + "requirements changed." })]);
     try {
-      await run();
+      const result = await run();
+      // The server only restarts when the checkout actually moved. Pressing
+      // Update while already up to date is a normal thing to do, and waiting for
+      // a restart that is not coming would hang on an overlay for three minutes.
+      if (!result || result.restarting === false) { load(); return; }
       if (window_) window_.close("restarting");
       onRestart();
     } catch (err) {
@@ -103,6 +107,16 @@ export function open({ onRestart = waitForRestart } = {}) {
                                      control: composer.text.sm({ text: s.branch || "?" }) }),
     ];
 
+    // A run in flight is killed by the restart, without warning and with the GPU
+    // time already spent. The window will not do that behind someone's back.
+    const busy = running();
+    if (busy) {
+      rows.push(composer.banner.warn({
+        text: "A generation is running. Updating or switching branch restarts ComfyUI "
+            + "and stops it. Wait for it to finish, or cancel it first.",
+      }));
+    }
+
     if (s.dirty) {
       // The one state that blocks both actions, said before either is pressed
       // rather than as a refusal afterwards.
@@ -120,7 +134,7 @@ export function open({ onRestart = waitForRestart } = {}) {
         value: s.branch,
         options: (s.branches || []).map((b) => ({ value: b, label: b })),
         onChange: (branch) => { if (branch !== s.branch) act(() => ask("POST", "/checkout", { branch })); },
-        disabled: Boolean(s.dirty),
+        disabled: Boolean(s.dirty) || busy,
       }),
     }));
 
@@ -128,7 +142,7 @@ export function open({ onRestart = waitForRestart } = {}) {
       rows.push(composer.settingsRow.default({
         label: "Roll back",
         hint: `Back to ${String(s.rollback_target.commit || "").slice(0, 8)} — the version before the last update.`,
-        control: composer.button.md({ label: "Roll back", tone: "danger",
+        control: composer.button.md({ label: "Roll back", tone: "danger", disabled: busy,
                                       onClick: () => act(() => ask("POST", "/rollback")) }),
       }));
     }
@@ -142,7 +156,7 @@ export function open({ onRestart = waitForRestart } = {}) {
                                onClick: () => window_.close("done") }),
           composer.button.md({
             label: s.behind ? `Update (${s.behind})` : "Update", tone: "primary",
-            disabled: !s.ok || Boolean(s.dirty),
+            disabled: !s.ok || Boolean(s.dirty) || busy,
             onClick: () => act(() => ask("POST", "/update", {})),
           }),
         ],

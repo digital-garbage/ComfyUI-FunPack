@@ -8,6 +8,7 @@ they replace it, and a suite that did not would relaunch the test runner.
 import json
 import socket
 import threading
+import time
 
 import pytest
 
@@ -219,3 +220,58 @@ def test_an_install_outside_comfyui_says_it_cannot_tell_where_packs_live(server,
     assert status == 400, body
     assert "custom_nodes" in body["detail"]
     assert "/tmp/somewhere" in body["detail"], "it did not say where it thinks it is"
+
+
+def test_an_update_that_changed_nothing_does_not_restart(server, monkeypatch):
+    """Pressing Update while already up to date is a normal thing to do -- there
+    is no way to know until it has been asked. Restarting for it costs a boot,
+    and a generation if one is running."""
+    monkeypatch.setattr(update_mod, "pull",
+                        lambda **_k: {"updated": False, "before": "a1", "after": "a1"})
+
+    status, body = _request(server["port"], "POST", "/funpack/api/git/update", {})
+    assert status == 200, body
+    assert body["restarting"] is False
+    assert server["restarts"] == [], "restarted for a checkout that had not moved"
+
+
+def test_a_branch_switch_restarts_even_when_the_commit_is_the_same(server, monkeypatch):
+    """Two branches can point at the same commit and still be different code
+    once anything is committed to either."""
+    monkeypatch.setattr(update_mod, "checkout",
+                        lambda **_k: {"updated": False, "before": "a1", "after": "a1",
+                                      "before_branch": "v5", "branch": "dev"})
+
+    status, body = _request(server["port"], "POST", "/funpack/api/git/checkout",
+                            {"branch": "dev"})
+    assert status == 200, body
+    assert body["restarting"] is True
+    # Scheduled 0.7s AFTER the answer is written, which is the whole point: the
+    # process is about to go and the client needs the reply first.
+    time.sleep(1.0)
+    assert server["restarts"] == [1]
+
+
+def test_a_rollback_restarts_because_the_commit_moved(server, monkeypatch):
+    monkeypatch.setattr(update_mod, "rollback",
+                        lambda: {"branch": "v5", "before": "b2", "after": "a1"})
+
+    status, body = _request(server["port"], "POST", "/funpack/api/git/rollback")
+    assert status == 200, body
+    assert body["restarting"] is True
+    time.sleep(1.0)
+    assert server["restarts"] == [1]
+
+
+def test_the_pack_check_answers_under_the_key_the_app_reads(server):
+    """The app reads `checked`. It read `nodes` for a while: the request
+    succeeded, the JSON was valid, and every pack reported nothing to update
+    however far behind it was. Neither side's tests could see it alone."""
+    from core import nodes_manager
+    shape = nodes_manager.check_updates.__doc__
+    assert shape, "check_updates lost its docstring"
+
+    status, body = _request(server["port"], "POST", "/funpack/api/packs/check")
+    assert status == 200, body
+    assert "checked" in body, f"the key the app reads is not in {sorted(body)}"
+    assert isinstance(body["checked"], dict)

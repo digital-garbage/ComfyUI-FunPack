@@ -101,3 +101,40 @@ test("an install that is not a git checkout says so instead of offering to updat
   await expect(page.locator(".cx-modal")).toContainText(/not a git checkout/i);
   await expect(page.locator(".cx-modal").getByRole("button", { name: /Update/ })).toBeDisabled();
 });
+
+test("an update that changed nothing does not wait for a restart", async ({ page }) => {
+  // The server only restarts when the checkout moved. Waiting for one that is
+  // not coming is three minutes of an overlay.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await page.route("**/api/git/status**", (route) => route.fulfill({
+    json: { ok: true, version: "5.0", branch: "v5", branches: ["v5"], dirty: false,
+            ahead: 0, behind: 0, fetch_ok: true, checked_remote: true, repo: "/x" },
+  }));
+  await page.route("**/api/git/update", (route) => route.fulfill({
+    json: { restarting: false, updated: false },
+  }));
+
+  await openUpdates(page);
+  await page.getByRole("button", { name: /Update/ }).click();
+
+  await expect(page.locator(".cx-blocking"), "it waited for a restart that never comes")
+    .toHaveCount(0);
+  await expect(page.locator(".cx-modal")).toContainText("Up to date");
+});
+
+test("a generation in flight is said, and the buttons that would kill it are off", async ({ page }) => {
+  // The restart takes the run with it, with the GPU time already spent.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await page.route("**/api/git/status**", (route) => route.fulfill({
+    json: { ok: true, version: "5.0", branch: "v5", branches: ["v5", "dev"], dirty: false,
+            ahead: 0, behind: 4, fetch_ok: true, checked_remote: true, repo: "/x" },
+  }));
+  // A run this page believes is its own and in flight.
+  await page.evaluate(() => window.FunPack.run.adopt("pretend-prompt-id"));
+
+  await openUpdates(page);
+  await expect(page.locator(".cx-modal")).toContainText(/generation is running/i);
+  await expect(page.getByRole("button", { name: /Update \(4\)/ })).toBeDisabled();
+});

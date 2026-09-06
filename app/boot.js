@@ -108,7 +108,9 @@ async function start() {
     onGenerate: () => { ranFor = project.selectedId; session.generate(); },
     onCancel: () => run.cancel(),
     onConstructor: () => page.constructor.open(),
-    onUpdates: () => openUpdates(),
+    // The window asks whether a run is in flight, because the restart that
+    // follows an update would take it with it.
+    onUpdates: () => openUpdates({ running: () => ["queued", "running"].includes(run.state.phase) }),
     onPacks: () => openPacks(),
     // What the Edit menu offers, and what the keyboard reaches. One list, so a
     // menu item and its shortcut cannot drift apart.

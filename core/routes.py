@@ -262,11 +262,25 @@ def register(routes, prefix=None):
             log.broke("git", exc, doing=getattr(action, "__name__", "git"))
             return web.json_response({"detail": f"{type(exc).__name__}: {exc}"}, status=500)
 
+        result = result or {}
+        # ONLY when the checkout actually moved. Pressing Update while already up
+        # to date is a normal thing to do -- there is no way to know until it has
+        # been asked -- and restarting for it costs a boot and, if a generation
+        # is running, the generation.
+        moved = bool(result.get("updated")) or (
+            result.get("before") is not None and result.get("before") != result.get("after")
+        ) or (
+            result.get("before_branch") is not None
+            and result.get("before_branch") != result.get("branch")
+        )
+        if not moved:
+            return web.json_response({"restarting": False, **result})
+
         import asyncio as _asyncio
         from . import restart as restart_mod
         # After the response is written, not before.
         _asyncio.get_event_loop().call_later(0.7, restart_mod.restart)
-        return web.json_response({"restarting": True, **(result or {})})
+        return web.json_response({"restarting": True, **result})
 
     @routes.get(P + "/api/git/status")
     async def _git_status(req):
