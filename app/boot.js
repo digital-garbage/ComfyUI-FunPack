@@ -201,7 +201,7 @@ async function start() {
     sections: [
       {
         id: "pipeline", title: "Models and pipeline", subtitle: "What the run is made of.",
-        keywords: "pipeline models nodes slots loaders", icon: "▦",
+        keywords: "pipeline models nodes slots loaders", icon: "▦", tone: "accent",
         mount: (ctx) => mountPipeline({
           load, describe, check, search, ...ctx,
           onApply: (next) => {
@@ -221,7 +221,7 @@ async function start() {
       },
       {
         id: "updates", title: "Updates", subtitle: "FunPack's own code, branch, and restart.",
-        keywords: "update git branch restart pull checkout", icon: "⟳",
+        keywords: "update git branch restart pull checkout", icon: "⟳", tone: "warn",
         // The window asks whether a run is in flight, because the restart that
         // follows an update would take it with it.
         mount: (ctx) => mountUpdates({
@@ -230,17 +230,17 @@ async function start() {
       },
       {
         id: "packs", title: "Node packs", subtitle: "Install, update, or remove a custom_nodes pack.",
-        keywords: "node packs custom_nodes install", icon: "▣",
+        keywords: "node packs custom_nodes install", icon: "▣", tone: "good",
         mount: (ctx) => mountPacks(ctx),
       },
       {
         id: "log", title: "ComfyUI log", subtitle: "The server's own log, without opening devtools.",
-        keywords: "log console errors output", icon: "▤",
+        keywords: "log console errors output", icon: "▤", tone: "danger",
         mount: (ctx) => mountLog(ctx),
       },
       {
         id: "temp", title: "Temp files", subtitle: "Where a file went when it did not land in the bin.",
-        keywords: "temp files output directory", icon: "▥",
+        keywords: "temp files output directory", icon: "▥", tone: "neutral",
         // Opening one puts it in the Preview, which is where somebody hunting
         // for a file wants it -- the same place a result from the bin goes.
         mount: (ctx) => mountTemp({

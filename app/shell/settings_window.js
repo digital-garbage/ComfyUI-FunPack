@@ -65,11 +65,20 @@ export function createSettingsWindow({ sections = [], gitStatus } = {}) {
     }
 
     const nav = composer.filterList.md({
-      items: all.map((s) => ({ id: s.id, label: s.title, hint: s.subtitle, icon: s.icon, keywords: s.keywords })),
+      // No hint line here -- an icon and a name, the way v4's own sidebar
+      // reads. What a section IS goes in its own head once picked, not
+      // repeated under every row whether picked or not.
+      items: all.map((s) => ({
+        id: s.id, label: s.title, icon: s.icon, keywords: s.keywords,
+        tone: s.tone || "neutral",
+      })),
       value: id,
       onChange: showSection,
       placeholder: "Search settings",
     });
+    // A whole pane, not the compact dropdown-style list this element is
+    // usually a small part of.
+    nav.node.classList.add("cx-filter-full");
 
     const body = composer.splitPane.h({ panes: [nav, contentStack], size: 25, min: 15, label: "Settings" });
     const modal = composer.modal.generic({
@@ -100,14 +109,19 @@ function aboutSection(gitStatus) {
     id: "about", title: "About FunPack",
     subtitle: "The version and branch running right now.",
     keywords: "about version commit branch",
-    icon: "◉",
+    icon: "◉", tone: "neutral",
     mount() {
-      const stack = composer.region.stack({ gap: "sm" });
+      const stack = composer.region.stack({ gap: "md" });
+      stack.node.classList.add("cx-about");
       const rows = composer.region.stack({ gap: "none" });
       const row = (label, value) => composer.settingsRow.default({
         label, control: composer.text.sm({ text: value }) });
       rows.set([row("Version", "…"), row("Branch", "…")]);
-      stack.set([rows]);
+      stack.set([
+        composer.text.lg({ text: "◉" }),
+        composer.header.lg({ text: "FunPack" }),
+        rows,
+      ]);
       if (gitStatus) {
         gitStatus().then((s) => {
           rows.set([row("Version", s.version || "unknown"), row("Branch", s.branch || "?")]);

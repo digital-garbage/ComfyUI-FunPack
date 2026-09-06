@@ -172,9 +172,20 @@ define("filterList", "md", ({ items = [], value, onChange, placeholder = "Search
         cls: ["cx-filter-row", "cx-focusable", item.id === selected ? "cx-on" : null],
         attrs: { type: "button", role: "option", "aria-selected": String(item.id === selected) },
         children: [
-          item.icon ? el("span", { cls: "cx-filter-icon", text: item.icon }) : null,
-          el("span", { cls: "cx-filter-label", text: item.label }),
-          item.hint ? el("span", { cls: "cx-filter-hint", text: item.hint }) : null,
+          // `tone` picks one of a FIXED set of chip colours -- never a raw
+          // colour from data, which is the rule `el()`'s style refusal exists
+          // to hold everywhere else too.
+          item.icon ? el("span", {
+            cls: ["cx-filter-icon", item.tone ? `cx-filter-icon-${item.tone}` : null],
+            text: item.icon,
+          }) : null,
+          // A column, not two more flex siblings beside the icon -- a hint
+          // long enough to wrap needs to wrap UNDER its own label, not float
+          // as its own baseline-aligned sibling next to it.
+          el("div", { cls: "cx-filter-text", children: [
+            el("span", { cls: "cx-filter-label", text: item.label }),
+            item.hint ? el("span", { cls: "cx-filter-hint", text: item.hint }) : null,
+          ].filter(Boolean) }),
         ].filter(Boolean),
       });
       row.addEventListener("click", () => { selected = item.id; draw(); if (onChange) onChange(item.id); });

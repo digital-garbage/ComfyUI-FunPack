@@ -215,6 +215,29 @@ test("filterList filters on label and hint, and reports a pick", () => {
   assert.equal(picked, "a");
 });
 
+test("filterList filters on keywords too, though it never draws them", () => {
+  const f = mount(composer.filterList.md({
+    items: [
+      { id: "a", label: "Models and pipeline", hint: "What the run is made of.", keywords: "loaders" },
+      { id: "b", label: "Updates" },
+    ],
+  }));
+  const search = f.node.querySelector("input");
+  search.value = "loaders";
+  fire(search, "input");
+  const rows = f.node.querySelectorAll(".cx-filter-row");
+  assert.equal(rows.length, 1, "a section findable only by a keyword must still be found");
+  assert.equal(f.node.textContent.includes("loaders"), false, "keywords are for search, not display");
+});
+
+test("filterList gives an icon a coloured chip only from a fixed tone, never from raw item data", () => {
+  const f = mount(composer.filterList.md({
+    items: [{ id: "a", label: "Node packs", icon: "▣", tone: "good" }],
+  }));
+  const icon = f.node.querySelector(".cx-filter-icon");
+  assert.ok(icon.classList.contains("cx-filter-icon-good"));
+});
+
 test("filterList says so when nothing matches", () => {
   const f = mount(composer.filterList.md({ items: [{ id: "a", label: "one" }] }));
   const search = f.node.querySelector("input");

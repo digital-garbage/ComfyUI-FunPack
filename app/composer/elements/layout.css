@@ -403,3 +403,14 @@
 /* A split inside a stack is what stretches. The rows around it -- a toolbar, a
    banner, an action bar -- are each their own height. */
 .cx-stack > .cx-split { flex: 1 1 auto; min-block-size: 0; }
+
+/* A stack that is a small poster rather than a form -- an "About" pane's
+   mark, name and facts, centred instead of ranged left like every settings
+   list around it. */
+.cx-about { align-items: center; text-align: center; padding-block: var(--sp-7) 0; }
+.cx-about > .cx-t-lg { font-size: 2.5rem; line-height: 1; color: var(--accent); }
+.cx-about .cx-settings-row {
+  justify-content: center; gap: var(--sp-4); border-bottom: 0; padding-block: var(--sp-2);
+  inline-size: auto; align-self: center;
+}
+.cx-about .cx-settings-control { flex: 0 0 auto; justify-content: flex-start; }

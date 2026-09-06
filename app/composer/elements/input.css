@@ -43,13 +43,46 @@
   background: var(--elev-1); padding: var(--sp-1);
 }
 .cx-filter-row {
-  display: flex; align-items: baseline; gap: var(--sp-3);
+  display: flex; align-items: flex-start; gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4); border: 0; border-radius: var(--r-2);
   background: transparent; color: var(--text);
   font-size: var(--fs-5); text-align: left; cursor: pointer; width: 100%;
 }
 .cx-filter-row:hover { background: var(--hover); }
 .cx-filter-row.cx-on { background: var(--accent-soft); color: var(--accent-hi); }
-.cx-filter-label { flex: 1; }
-.cx-filter-hint { font-size: var(--fs-7); color: var(--muted); }
+/* A column so a wrapping hint sits directly under its own label, both flush
+   to the same left edge, instead of floating as a baseline-aligned sibling
+   of the icon and the label. */
+.cx-filter-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.cx-filter-label { display: block; }
+.cx-filter-hint { display: block; font-size: var(--fs-7); color: var(--muted); line-height: var(--lh-snug); }
 .cx-filter-empty { padding: var(--sp-5); font-size: var(--fs-6); color: var(--faint); text-align: center; }
+
+/* A chip, not a bare glyph floating in the row -- the thing a nav list reads
+   as unfinished without. `tone` is a closed set of pre-approved looks
+   (accent/danger/warn/good/neutral), the same rule as everywhere else in the
+   kit; there is no path from item data to a raw colour. */
+.cx-filter-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex: 0 0 auto; border-radius: var(--r-2);
+  background: var(--elev-3); color: var(--text); font-size: var(--fs-6); line-height: 1;
+  /* Optical, against the label's cap-height, not the row's own top edge. */
+  margin-block-start: 1px;
+}
+.cx-filter-icon-accent  { background: var(--grad-accent); color: var(--on-accent); }
+.cx-filter-icon-danger  { background: linear-gradient(180deg, var(--danger), color-mix(in srgb, var(--danger) 65%, black)); color: #fff; }
+.cx-filter-icon-warn    { background: linear-gradient(180deg, var(--warn), color-mix(in srgb, var(--warn) 65%, black)); color: #fff; }
+.cx-filter-icon-good    { background: linear-gradient(180deg, var(--good), color-mix(in srgb, var(--good) 65%, black)); color: #fff; }
+.cx-filter-icon-neutral { background: linear-gradient(180deg, var(--muted), color-mix(in srgb, var(--muted) 65%, black)); color: #fff; }
+.cx-filter-row.cx-on .cx-filter-icon { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-hi) 50%, transparent); }
+
+/* Used as a whole pane (the Settings sidebar) rather than a compact dropdown
+   list -- the 240px cap and boxed border/background are right for the small
+   version and wrong for this one, so a host opts in with this class instead
+   of the base rules changing under every other consumer. */
+.cx-filter-full { min-block-size: 0; block-size: 100%; }
+.cx-filter-full .cx-filter-list {
+  max-height: none; flex: 1 1 auto; min-block-size: 0;
+  border: 0; background: transparent; padding: 0;
+}
+.cx-filter-full .cx-filter-row { padding: var(--sp-3) var(--sp-3); }
