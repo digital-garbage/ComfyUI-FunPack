@@ -63,6 +63,9 @@ export function createTimeline({ project, onSelect } = {}) {
     if (onSelect) onSelect(project.selected || null);
   }
 
+  /** Frames this clip runs for: its own crop, or the project's length. */
+  const lengthOf = (scene) => scene.length || project.video.length || 1;
+
   function items() {
     return project.scenes.map((scene, i) => ({
       id: scene.id,
@@ -73,7 +76,37 @@ export function createTimeline({ project, onSelect } = {}) {
       badge: String(i + 1),
       thumb: scene.result || null,
       icon: "▦",
+      // A clip as wide as it is long, so the strip reads as time rather than as
+      // a row of equal boxes. Bounded: one very long scene beside several short
+      // ones must not squeeze the rest to nothing.
+      weight: lengthOf(scene),
+      rating: scene.rating || null,
     }));
+  }
+
+  /** Where each scene starts, in frames. The ruler is drawn from this. */
+  function marks() {
+    let at = 0;
+    return project.scenes.map((scene) => {
+      const start = at;
+      at += lengthOf(scene);
+      return { id: scene.id, start, length: lengthOf(scene) };
+    });
+  }
+
+  // The ruler. Its ticks are the scene boundaries rather than a fixed interval:
+  // what a person looks for on this timeline is where one scene becomes the
+  // next, and at 24fps a tick per second is a picket fence.
+  const ruler = composer.ruler.default({ label: "Scenes" });
+
+  function drawRuler() {
+    const spans = marks();
+    const total = spans.reduce((sum, m) => sum + m.length, 0) || 1;
+    ruler.set(spans.map((m, i) => ({
+      at: m.start / total,
+      label: `${i + 1}`,
+      hint: `${m.start}`,
+    })), total);
   }
 
   function draw() {
@@ -90,9 +123,11 @@ export function createTimeline({ project, onSelect } = {}) {
         selection: project.selectedId ? [project.selectedId] : [],
         onActivate: (item) => { project.select(item.id); announce(); },
       });
-      host.set([controls, strip]);
+      host.set([controls, ruler, strip]);
+      drawRuler();
       return;
     }
+    drawRuler();
     // setItems then setValue: setValue redraws against whatever items are
     // current, so seeding the selection first marks a row that is about to be
     // replaced and the strip comes back with nothing on.
@@ -107,6 +142,7 @@ export function createTimeline({ project, onSelect } = {}) {
     draw,
     destroy() {
       if (strip) strip.destroy();
+      ruler.destroy();
       controls.destroy();
       empty.destroy();
       host.destroy();

@@ -6,6 +6,7 @@
 
 import { define } from "../internals/register.js";
 import { el } from "../internals/el.js";
+import { setText } from "../internals/text.js";
 import { uid } from "../internals/ids.js";
 import { drag } from "../internals/drag.js";
 import { roving } from "../internals/focus.js";
@@ -91,6 +92,7 @@ const panel = (variant) => ({ title, actions = [], status = [], body, flush = fa
         status.length ? el("div", { cls: "cx-panel-status", children: status.map((a) => nodeOf(a, `panel.${variant} status`)) }) : null,
       ].filter(Boolean) })
     : null;
+  const title_ = head && head.querySelector(".cx-panel-title");
   const content = el("div", { cls: "cx-panel-body", children: body ? nodeOf(body, `panel.${variant}`) : null });
   // `flush` is for a body that IS the content -- a picture, a video, a canvas.
   // Padding around one of those is a frame nobody asked for, and the thing
@@ -98,7 +100,12 @@ const panel = (variant) => ({ title, actions = [], status = [], body, flush = fa
   const node = el("section", { cls: ["cx-panel", variant === "zone" ? "cx-zone" : null,
                                      flush ? "cx-panel-flush" : null],
     children: [head, content].filter(Boolean) });
-  return { node, body: content, destroy: () => node.remove() };
+  return {
+    node, body: content,
+    /** A zone that is ABOUT something says which: "Scene · 2", not "Scene". */
+    setTitle(next) { if (title_) setText(title_, next); },
+    destroy: () => node.remove(),
+  };
 };
 
 define("panel", "default", panel("default"));

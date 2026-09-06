@@ -17,6 +17,10 @@ import { open as openPipeline } from "./shell/pipeline_window.js";
 import { createPrompts } from "./shell/prompt.js";
 import { createProject } from "./shell/projects.js";
 import { createTimeline } from "./shell/timeline.js";
+import { createInspector } from "./shell/inspector.js";
+import { createWheel } from "./shell/wheel.js";
+import { offerAction } from "./shell/actions.js";
+import { open as openWizard } from "./shell/wizard.js";
 
 const root = document.querySelector("#app");
 
@@ -41,8 +45,12 @@ async function start() {
   // read so a failure to reach the server leaves an empty timeline rather than
   // an undefined one.
   let timeline = null;
+  let inspector = null;
   const project = createProject({
-    onChange: () => { if (timeline) timeline.draw(); },
+    onChange: () => {
+      if (timeline) timeline.draw();
+      if (inspector) inspector.draw();
+    },
     onError: (err) => page.transport.say(`The project could not be saved: ${err.message}`),
   });
 
@@ -60,6 +68,9 @@ async function start() {
   const showScene = (scene) => {
     const box = prompts && prompts.at("generation.prompt");
     if (box) box.setValue(scene ? scene.text : "");
+    // The properties column is about ONE scene, and says which.
+    const at = scene ? project.scenes.findIndex((s) => s.id === scene.id) + 1 : 0;
+    if (page && page.properties) page.properties.setTitle(at ? `Scene · ${at}` : "Scene");
   };
 
   // Which scene a run was started for, read at the moment it starts. A run
@@ -67,7 +78,11 @@ async function start() {
   // end is not the one that was generated.
   let ranFor = null;
 
+  // Before the page, because the properties column is composed with it in.
+  inspector = createInspector({ project, onRename: (name) => project.rename(name) });
+
   const page = build(root, {
+    inspector,
     onGenerate: () => { ranFor = project.selectedId; session.generate(); },
     onCancel: () => run.cancel(),
     onConstructor: () => page.constructor.open(),
@@ -171,9 +186,33 @@ async function start() {
   settle();
   showGroups();
 
+  // What the app can be asked to do, offered by the part that owns each one.
+  // The wheel shows whatever is here; nothing has to tell it about a new one.
+  offerAction({ id: "generate", icon: "▶", label: "Generate", run: () => session.generate() });
+  offerAction({ id: "cancel", icon: "■", label: "Cancel", run: () => run.cancel() });
+  offerAction({ id: "constructor", icon: "✎", label: "Constructor",
+                run: () => page.constructor.open() });
+  offerAction({ id: "scene", icon: "＋", label: "Add scene",
+                run: () => { project.addScene(); showScene(project.selected); } });
+  offerAction({ id: "pipeline", icon: "⚙", label: "Models",
+                run: () => page.menubar.settings.node.click() });
+  offerAction({ id: "assets", icon: "▤", label: "Assets",
+                run: () => page.workspace.toggle("left") });
+  const wheel = createWheel();
+
   // After the prompt exists, so the first scene's text has somewhere to go.
   try {
-    await project.start();
+    const fresh = await project.start();
+    // Nothing to come back to: offer the way in. Dismissing is a real answer --
+    // the project is already made, and it carries on with one empty scene.
+    if (!(fresh.scenes || []).length) {
+      openWizard({ onPick: (choice) => {
+        const wanted = choice === "scenes" ? 3 : 1;
+        for (let i = 0; i < wanted; i += 1) project.addScene();
+        showScene(project.selected);
+      } });
+      if (!project.scenes.length) project.addScene();
+    }
     // The project's own settings win over the pipeline's defaults: they are what
     // it was generated at, and a regenerate is a new scene at the same size --
     // never at whatever the last one happened to be cropped to.
@@ -182,6 +221,7 @@ async function start() {
     }
     timeline = createTimeline({ project, onSelect: showScene });
     page.timelineBody.set([page.transport.warning, timeline]);
+
     showScene(project.selected);
   } catch (err) {
     console.warn(`[FunPack] no project: ${err.message}`);
@@ -200,7 +240,7 @@ async function start() {
   for (const { where, why } of failed) console.warn(`[FunPack] ${where} did not load: ${why}`);
 
   window.FunPack = {
-    manifest, values: allValues, failed, hidden, run, bin: page.bin, project,
+    manifest, values: allValues, failed, hidden, run, bin: page.bin, project, wheel,
     prompts: () => (prompts ? prompts.overrides() : {}),
     mounted: mounted.map((m) => m.id),
   };

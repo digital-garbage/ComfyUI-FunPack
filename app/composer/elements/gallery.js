@@ -194,8 +194,14 @@ define("gallery", "strip", (props = {}) => {
   const node = el("div", { cls: "cx-strip", attrs: { role: "listbox", "aria-label": props.label } });
 
   const api = collection(props, node, (item, on) => {
-    const cell = el("button", { cls: ["cx-strip-cell", on ? "cx-on" : null, "cx-focusable"],
-      attrs: option(on, { title: item.label, "aria-label": item.label }) });
+    const cell = el("button", {
+      cls: ["cx-strip-cell", on ? "cx-on" : null, item.rating ? "cx-rated" : null, "cx-focusable"],
+      attrs: option(on, { title: item.label, "aria-label": item.label,
+                          "data-rating": item.rating || undefined }) });
+    // As wide as what it stands for is long, which is what turns a row of equal
+    // boxes into something that reads as time. Bounded at both ends: one very
+    // long clip beside short ones must not squeeze the rest to a sliver.
+    if (item.weight) cell.style.flexGrow = String(Math.min(6, Math.max(1, Number(item.weight) || 1)));
     // The same fallback the grid has: a thumbnail that does not arrive shows the
     // glyph, not the browser's broken-image icon, which reads as a damaged file.
     cell.append(thumbOf(item, "cx-strip-face", false));
@@ -210,6 +216,31 @@ define("gallery", "strip", (props = {}) => {
     setItems: api.setItems,
     destroy: () => node.remove(),
   };
+});
+
+/**
+ * A scale over something laid out in a row: where each part begins.
+ *
+ * The marks are given rather than computed from an interval -- what a person
+ * looks for on a timeline is where one scene becomes the next, and at 24 frames
+ * a second a tick per second is a picket fence.
+ */
+define("ruler", "default", ({ marks = [], total = 1, label } = {}) => {
+  const node = el("div", { cls: "cx-ruler", attrs: { role: "presentation", "aria-label": label } });
+
+  function set(next = [], span = 1) {
+    node.replaceChildren();
+    for (const mark of next) {
+      const tick = el("span", { cls: "cx-ruler-mark", text: mark.label, attrs: { title: mark.hint } });
+      // Percent, so the ruler tracks the row above it at any width.
+      tick.style.insetInlineStart = `${Math.min(100, Math.max(0, (mark.at || 0) * 100))}%`;
+      node.append(tick);
+    }
+    node.dataset.total = String(span);
+  }
+
+  set(marks, total);
+  return { node, set, destroy: () => node.remove() };
 });
 
 /**

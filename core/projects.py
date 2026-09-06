@@ -44,6 +44,26 @@ def _clean_name(raw, fallback="Untitled") -> str:
     return name[:MAX_NAME] or fallback
 
 
+MAX_SETTING = 16384
+
+
+def _whole(value) -> int | None:
+    """A whole positive number, or nothing. Everything read back out of a
+    project file goes through here: the file outlives the code that wrote it."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if 1 <= number <= MAX_SETTING else None
+
+
+#: What a person can say about a result. Core keeps the word and nothing else:
+#: what any of them MEAN belongs to whatever learns from them, which is not here.
+RATINGS = ("perfect", "good", "wrong", "awful")
+
+
 @dataclass
 class Scene:
     id: str = field(default_factory=_new_id)
@@ -51,20 +71,25 @@ class Scene:
     #: The asset this scene last produced, so a reload shows the timeline the
     #: user left rather than an empty one they have to regenerate.
     result: str | None = None
+    #: How long this clip RUNS on the timeline -- a crop, made here. It is not
+    #: what a regenerate uses: that reads the project, because the crop was a
+    #: timeline decision and a regenerate is a new scene.
+    length: int | None = None
+    rating: str | None = None
 
     @staticmethod
     def from_dict(d) -> "Scene":
         d = d if isinstance(d, dict) else {}
         sid = d.get("id")
         result = d.get("result")
+        rating = d.get("rating")
         return Scene(
             id=sid if is_id(sid) else _new_id(),
             text=d.get("text") if isinstance(d.get("text"), str) else "",
             result=result if isinstance(result, str) else None,
+            length=_whole(d.get("length")),
+            rating=rating if rating in RATINGS else None,
         )
-
-
-MAX_SETTING = 16384
 
 
 def _clean_video(raw) -> dict:

@@ -150,13 +150,21 @@ export function build(root, handlers = {}) {
   // ONE zone, not two panels stacked. A region of the app is one area with one
   // head on it; two heads in a column means two things, and there is only one
   // thing here -- what the next run will do.
-  const properties = composer.panel.zone({
-    title: "Generation",
-    body: composer.region.stack({
-      gap: "sm", label: "Properties",
-      children: [generation, composer.collapsible.default({ label: "Settings", body: settings })],
-    }),
+  // The inspector goes ABOVE the module panels: what this scene and this project
+  // are is read more often than any switch, and a column is read downwards.
+  const propertyRows = composer.region.stack({
+    gap: "sm", label: "Properties",
+    children: [
+      // What this scene and this project ARE, above the switches: a column is
+      // read downwards, and this is the half that is read every time.
+      handlers.inspector,
+      generation,
+      composer.collapsible.default({ label: "Settings", body: settings }),
+    ].filter(Boolean),
   });
+  // Titled after what it is ABOUT, and it follows the timeline -- v4's right
+  // column reads "Scene · 1" and so does this. boot renames it on selection.
+  const properties = composer.panel.zone({ title: "Scene", body: propertyRows });
 
   const workspace = composer.workspace.docked({
     id: "main",

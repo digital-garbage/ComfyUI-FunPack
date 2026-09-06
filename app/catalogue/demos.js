@@ -330,6 +330,10 @@ export const DEMOS = {
     { id: "1", icon: "▦", label: "Scene 1" }, { id: "2", icon: "▦", label: "Scene 2" },
     { id: "3", icon: "▦", label: "Scene 3" }, { id: "4", icon: "▦", label: "Scene 4" },
   ] },
+  "ruler.default": { label: "Scenes", total: 240, marks: [
+    { at: 0, label: "1", hint: "0" }, { at: 0.4, label: "2", hint: "96" },
+    { at: 0.75, label: "3", hint: "180" },
+  ] },
   "wheel.half": { edge: "right", items: [
     { icon: "✂", label: "Split" }, { icon: "⧉", label: "Duplicate" },
     { icon: "★", label: "Rate" }, { icon: "◐", label: "Anchor" },

@@ -265,3 +265,25 @@ def test_video_is_an_object_or_it_is_nothing():
 def test_a_project_with_no_settings_has_an_empty_one(store):
     assert projects.Project.from_dict({}).video == {}
     assert projects.create("Fresh").video == {}
+
+
+def test_a_scene_keeps_a_crop_and_a_rating(store):
+    made = projects.create("Rated")
+    made.scenes = [projects.Scene(text="a cat", length=48, rating="good")]
+    projects.save(made)
+
+    back = projects.get(made.id).scenes[0]
+    assert back.length == 48
+    assert back.rating == "good"
+
+
+def test_a_scene_field_read_back_is_never_trusted():
+    scene = projects.Scene.from_dict({
+        "length": "48",           # a number that arrived as text
+        "rating": "excellent",    # not a word this app knows
+    })
+    assert scene.length == 48
+    assert scene.rating is None
+
+    for junk in (0, -4, True, None, "soon", 999_999):
+        assert projects.Scene.from_dict({"length": junk}).length is None, junk

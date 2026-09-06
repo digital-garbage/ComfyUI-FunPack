@@ -94,3 +94,29 @@ test("a run's result lands on the scene it was started for, not the current one"
   await p.flush();
   assert.equal(sent.at(-1).scenes[0].result, "/view?filename=a.png");
 });
+
+test("renaming a project moves the name in the File menu too", async () => {
+  // The listing and the open project are the same name seen twice; a menu that
+  // kept the old one until a reload is a menu that lies about what is open.
+  const { sent } = server();
+  const p = createProject({});
+  await p.start();
+
+  p.rename("Rooftops");
+  assert.equal(p.project.name, "Rooftops");
+  assert.deepEqual(p.recent.map((r) => r.name), ["Rooftops"]);
+
+  await p.flush();
+  assert.equal(sent.at(-1).name, "Rooftops");
+});
+
+test("a rename that says nothing changes nothing", async () => {
+  const { sent } = server();
+  const p = createProject({});
+  await p.start();
+
+  p.rename("   ");
+  p.rename("Untitled");
+  await p.flush();
+  assert.equal(sent.length, 0);
+});

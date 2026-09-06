@@ -136,6 +136,18 @@ export function createProject({ onChange, onError } = {}) {
       changed();                          // selection is not saved: it is a view
     },
 
+    /** What it is called. The listing in the File menu reads this too, so both
+     *  move together rather than the menu going stale until a reload. */
+    rename(name) {
+      const clean = String(name || "").trim();
+      if (!project || !clean || project.name === clean) return;
+      project.name = clean;
+      const listed = recent.find((p) => p.id === project.id);
+      if (listed) listed.name = clean;
+      scheduleSave();
+      changed();
+    },
+
     /** What the whole project generates at, whichever scene is current. */
     get video() { return (project && project.video) || {}; },
 
@@ -148,13 +160,7 @@ export function createProject({ onChange, onError } = {}) {
     },
 
     /** The text of one scene. The prompt box on the main window edits this. */
-    setText(id, text) {
-      const scene = sceneAt(id);
-      if (!scene || scene.text === text) return;
-      scene.text = text;
-      scheduleSave();
-      changed();
-    },
+    setText(id, text) { this.setScene(id, "text", text); },
 
     addScene() {
       if (!project) return null;
@@ -162,7 +168,7 @@ export function createProject({ onChange, onError } = {}) {
       // through a timeline is how a scene gets inserted, and appending silently
       // would put it somewhere the user was not looking.
       const at = project.scenes.findIndex((s) => s.id === selected);
-      const scene = { id: newId(), text: "", result: null };
+      const scene = { id: newId(), text: "", result: null, length: null, rating: null };
       project.scenes.splice(at < 0 ? project.scenes.length : at + 1, 0, scene);
       selected = scene.id;                // you add a scene in order to fill it
       scheduleSave();
@@ -193,14 +199,18 @@ export function createProject({ onChange, onError } = {}) {
       changed();
     },
 
-    /** Attach what a run produced to the scene it was started from. */
-    setResult(id, result) {
+    /** One field of one scene. Everything a scene holds but its id goes through
+     *  here, so there is one place that saves and one that says it changed. */
+    setScene(id, key, value) {
       const scene = sceneAt(id);
-      if (!scene) return;
-      scene.result = result;
+      if (!scene || scene[key] === value) return;
+      scene[key] = value;
       scheduleSave();
       changed();
     },
+
+    /** Attach what a run produced to the scene it was started from. */
+    setResult(id, result) { this.setScene(id, "result", result); },
 
     flush,
     get unsaved() { return dirty; },

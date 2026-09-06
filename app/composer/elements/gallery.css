@@ -91,7 +91,10 @@
   min-inline-size: 0;
 }
 .cx-strip-cell {
-  flex: none; width: 72px; aspect-ratio: 16 / 10; padding: 0;
+  /* A floor and a ceiling. A clip grows with its length (flex-grow, set by the
+     element), and one clip in a project must not become the whole strip. */
+  flex: none; width: 72px; min-inline-size: 72px; max-inline-size: var(--cell-panel);
+  aspect-ratio: 16 / 10; padding: 0;
   border: var(--bw) solid var(--line); border-radius: var(--r-2);
   background: var(--void); overflow: hidden; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
@@ -114,4 +117,26 @@
   max-inline-size: 100%; max-block-size: 100%;
   inline-size: auto; block-size: auto;
   object-fit: contain;
+}
+
+/* A clip carries its rating as a colour on its edge -- the one thing about a
+   result you want to see without selecting it. */
+.cx-strip-cell.cx-rated { border-color: var(--muted); }
+.cx-strip-cell[data-rating="perfect"] { border-color: var(--good); }
+.cx-strip-cell[data-rating="good"]    { border-color: var(--teal); }
+.cx-strip-cell[data-rating="wrong"]   { border-color: var(--warn); }
+.cx-strip-cell[data-rating="awful"]   { border-color: var(--danger); }
+
+/* Where one scene becomes the next. Positioned in percent so it tracks the row
+   above it at any width, and never taller than the numbers it draws. */
+.cx-ruler {
+  position: relative; block-size: var(--lh-8); flex: none;
+  border-block-end: var(--bw) solid var(--line-2);
+}
+.cx-ruler-mark {
+  position: absolute; inset-block-start: 0;
+  padding-inline-start: var(--sp-1);
+  border-inline-start: var(--bw) solid var(--line);
+  font-size: var(--fs-8); line-height: var(--lh-8); color: var(--faint);
+  font-variant-numeric: tabular-nums;
 }
