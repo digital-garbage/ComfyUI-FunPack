@@ -162,3 +162,60 @@ def test_a_remote_that_cannot_be_reached_is_said_rather_than_guessed(server, mon
     assert body["fetch_ok"] is False
     assert body["checked_remote"] is True
     assert body["behind"] == 0, "a failed fetch was read as 'up to date'"
+
+
+# --- node packs --------------------------------------------------------------
+
+def test_the_pack_list_says_where_it_is_looking(server):
+    status, body = _request(server["port"], "GET", "/funpack/api/packs")
+    assert status == 200, body
+    assert body["root"].endswith("custom_nodes"), body["root"]
+    assert isinstance(body["nodes"], list)
+
+
+def test_removing_something_that_is_not_a_pack_name_is_refused(server):
+    """The delete is the whole risk here: one segment, resolved, inside
+    custom_nodes, and never FunPack itself."""
+    for name in ["..", "../..", "a/b", ".git", ""]:
+        status, body = _request(server["port"], "POST", "/funpack/api/packs/remove",
+                                {"name": name})
+        assert status == 400, (name, status, body)
+        assert body["detail"], name
+
+
+def test_removing_funpack_itself_is_refused_by_name(server):
+    from core import nodes_manager
+    me = nodes_manager.FUNPACK_ROOT.name
+    status, body = _request(server["port"], "POST", "/funpack/api/packs/remove", {"name": me})
+    assert status == 400
+    # It has to say WHICH thing it refused to delete, or the user tries again.
+    assert "FunPack" in body["detail"]
+
+
+def test_a_pack_that_is_not_installed_is_refused_rather_than_created(server):
+    status, body = _request(server["port"], "POST", "/funpack/api/packs/update",
+                            {"name": "ComfyUI-DoesNotExist"})
+    assert status == 400
+    assert "ComfyUI-DoesNotExist" in body["detail"]
+
+
+def test_installing_from_nothing_is_refused(server):
+    status, body = _request(server["port"], "POST", "/funpack/api/packs/install", {"url": ""})
+    assert status == 400
+    assert body["detail"]
+
+
+def test_an_install_outside_comfyui_says_it_cannot_tell_where_packs_live(server, monkeypatch):
+    """A development checkout is not inside custom_nodes. v4 could assume it was,
+    because v4 only ever ran from an install; here the assumption is checked and
+    the answer is a refusal rather than somebody's home directory."""
+    from core import nodes_manager
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "folder_paths", None)
+    monkeypatch.setattr(nodes_manager, "FUNPACK_ROOT",
+                        nodes_manager.Path("/tmp/somewhere/ComfyUI-FunPack-v5"))
+
+    status, body = _request(server["port"], "GET", "/funpack/api/packs")
+    assert status == 400, body
+    assert "custom_nodes" in body["detail"]
+    assert "/tmp/somewhere" in body["detail"], "it did not say where it thinks it is"

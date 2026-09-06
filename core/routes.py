@@ -7,7 +7,8 @@ thin adapters over pure functions in `serve`.
 
 import json
 
-from . import (config, graph as graph_mod, log, projects, update as update_mod,
+from . import (config, graph as graph_mod, log, nodes_manager, projects,
+               update as update_mod,
                registry as registry_mod, serve as static, widgets)
 from .contract import CONTRACT_VERSION
 from .relations import order
@@ -294,6 +295,49 @@ def register(routes, prefix=None):
     @routes.post(P + "/api/git/rollback")
     async def _git_rollback(_req):
         return await _git(update_mod.rollback)
+
+    # --- node packs -----------------------------------------------------------
+    #
+    # A stand-in for ComfyUI-Manager's three operations, so a user is not sent to
+    # another UI to add the one pack a workflow needs. There is no catalogue: the
+    # URL is theirs, which keeps this honest about being git in a directory.
+    #
+    # Every one of these can take minutes (clone, pip), so they run off the loop.
+
+    async def _pack(action, *args):
+        import asyncio
+        try:
+            return web.json_response(await asyncio.to_thread(action, *args))
+        except nodes_manager.CustomNodeError as exc:
+            # Refusals name the pack and what to do: not a name, not installed,
+            # not inside custom_nodes, or FunPack itself.
+            return web.json_response({"detail": str(exc)}, status=400)
+        except Exception as exc:  # noqa: BLE001
+            log.broke("node packs", exc, doing=getattr(action, "__name__", "pack"))
+            return web.json_response({"detail": f"{type(exc).__name__}: {exc}"}, status=500)
+
+    @routes.get(P + "/api/packs")
+    async def _packs(_req):
+        return await _pack(nodes_manager.list_nodes)
+
+    @routes.post(P + "/api/packs/check")
+    async def _packs_check(_req):
+        return await _pack(nodes_manager.check_updates)
+
+    @routes.post(P + "/api/packs/install")
+    async def _packs_install(req):
+        body = await req.json() if req.can_read_body else {}
+        return await _pack(nodes_manager.install, str((body or {}).get("url") or ""))
+
+    @routes.post(P + "/api/packs/update")
+    async def _packs_update(req):
+        body = await req.json() if req.can_read_body else {}
+        return await _pack(nodes_manager.update, str((body or {}).get("name") or ""))
+
+    @routes.post(P + "/api/packs/remove")
+    async def _packs_remove(req):
+        body = await req.json() if req.can_read_body else {}
+        return await _pack(nodes_manager.remove, str((body or {}).get("name") or ""))
 
     @routes.get(P + "/api/nodes")
     async def _nodes(req):
