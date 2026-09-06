@@ -8,6 +8,7 @@ thin adapters over pure functions in `serve`.
 import json
 
 from . import (backend_log, config, graph as graph_mod, log, nodes_manager, projects,
+               temp_files,
                update as update_mod,
                registry as registry_mod, serve as static, widgets)
 from .contract import CONTRACT_VERSION
@@ -320,6 +321,17 @@ def register(routes, prefix=None):
         except (TypeError, ValueError):
             limit = 600
         return web.json_response(await asyncio.to_thread(backend_log.recent, limit))
+
+    @routes.get(P + "/api/temp")
+    async def _temp(req):
+        """Transient outputs, newest first. Walking a directory is filesystem
+        work, so it goes off the loop like everything else here."""
+        import asyncio
+        try:
+            limit = int(req.query.get("limit", temp_files.MAX_FILES))
+        except (TypeError, ValueError):
+            limit = temp_files.MAX_FILES
+        return web.json_response(await asyncio.to_thread(temp_files.listing, limit))
 
     # --- node packs -----------------------------------------------------------
     #

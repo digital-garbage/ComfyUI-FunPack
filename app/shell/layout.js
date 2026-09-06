@@ -190,6 +190,7 @@ export function build(root, handlers = {}) {
     onUpdates: handlers.onUpdates,
     onPacks: handlers.onPacks,
     onLog: handlers.onLog,
+    onTemp: handlers.onTemp,
     onProject: handlers.onProject,
     edits: handlers.edits,
     projects: handlers.projects,

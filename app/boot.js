@@ -24,6 +24,7 @@ import { open as openWizard } from "./shell/wizard.js";
 import { open as openUpdates } from "./shell/updates.js";
 import { open as openPacks } from "./shell/packs.js";
 import { open as openLog } from "./shell/logwindow.js";
+import { open as openTemp } from "./shell/tempfiles.js";
 
 const root = document.querySelector("#app");
 
@@ -114,6 +115,9 @@ async function start() {
     onUpdates: () => openUpdates({ running: () => ["queued", "running"].includes(run.state.phase) }),
     onPacks: () => openPacks(),
     onLog: () => openLog(),
+    // Opening one puts it in the Preview, which is where somebody hunting for a
+    // file wants it -- the same place a result from the bin goes.
+    onTemp: () => openTemp({ onOpen: (item) => page.viewer.setSource(item.url, item.kind) }),
     // What the Edit menu offers, and what the keyboard reaches. One list, so a
     // menu item and its shortcut cannot drift apart.
     edits: {

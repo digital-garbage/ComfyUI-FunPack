@@ -320,3 +320,69 @@ def test_a_silly_limit_does_not_read_a_whole_session_into_memory(server):
         status, body = _request(server["port"], "GET", f"/funpack/api/log?limit={limit}")
         assert status == 200, (limit, body)
         assert len(body["lines"]) <= 2000, limit
+
+
+# --- temp files --------------------------------------------------------------
+
+def test_temp_files_come_back_newest_first_with_where_they_are(server, monkeypatch, tmp_path):
+    """Newest first, because the file somebody is hunting for is the one just
+    written."""
+    import os
+    from core import temp_files
+    (tmp_path / "sub").mkdir()
+    old = tmp_path / "old.png"
+    new = tmp_path / "sub" / "new.mp4"
+    old.write_bytes(b"x")
+    new.write_bytes(b"yy")
+    os.utime(old, (1, 1))
+    os.utime(new, (2000, 2000))
+    monkeypatch.setattr(temp_files, "temp_dir", lambda: str(tmp_path))
+
+    status, body = _request(server["port"], "GET", "/funpack/api/temp")
+    assert status == 200, body
+    assert [f["filename"] for f in body["files"]] == ["new.mp4", "old.png"]
+    assert body["files"][0]["subfolder"] == "sub"
+    assert body["files"][0]["kind"] == "video"
+    assert body["files"][1]["subfolder"] == "", "a file at the root grew a subfolder"
+    assert body["path"] == str(tmp_path)
+
+
+def test_only_media_is_listed(server, monkeypatch, tmp_path):
+    """A temp directory fills with whatever any node felt like writing, and a
+    browser listing 400 .pt files is not a media bin."""
+    from core import temp_files
+    for name in ("keep.png", "keep.wav", "weights.pt", "notes.txt", "no_extension"):
+        (tmp_path / name).write_bytes(b"x")
+    monkeypatch.setattr(temp_files, "temp_dir", lambda: str(tmp_path))
+
+    status, body = _request(server["port"], "GET", "/funpack/api/temp")
+    assert sorted(f["filename"] for f in body["files"]) == ["keep.png", "keep.wav"]
+
+
+def test_an_empty_temp_directory_says_why_it_is_empty(server, monkeypatch, tmp_path):
+    from core import temp_files
+    monkeypatch.setattr(temp_files, "temp_dir", lambda: str(tmp_path))
+    status, body = _request(server["port"], "GET", "/funpack/api/temp")
+    assert body["files"] == []
+    assert "wiped" in body["detail"]
+
+
+def test_no_comfyui_is_a_different_answer_from_an_empty_directory(server, monkeypatch):
+    from core import temp_files
+    monkeypatch.setattr(temp_files, "temp_dir", lambda: None)
+    status, body = _request(server["port"], "GET", "/funpack/api/temp")
+    assert body["files"] == []
+    assert "ComfyUI is not here" in body["detail"]
+    assert body["path"] is None
+
+
+def test_the_listing_is_bounded(server, monkeypatch, tmp_path):
+    from core import temp_files
+    for i in range(30):
+        (tmp_path / f"f{i}.png").write_bytes(b"x")
+    monkeypatch.setattr(temp_files, "temp_dir", lambda: str(tmp_path))
+
+    status, body = _request(server["port"], "GET", "/funpack/api/temp?limit=10")
+    assert len(body["files"]) == 10
+    status, body = _request(server["port"], "GET", "/funpack/api/temp?limit=999999")
+    assert len(body["files"]) <= temp_files.MAX_FILES
