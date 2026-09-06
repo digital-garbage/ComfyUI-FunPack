@@ -21,10 +21,11 @@ import { createInspector } from "./shell/inspector.js";
 import { createWheel } from "./shell/wheel.js";
 import { offerAction } from "./shell/actions.js";
 import { open as openWizard } from "./shell/wizard.js";
-import { open as openUpdates } from "./shell/updates.js";
+import { open as openUpdates, status as gitStatus } from "./shell/updates.js";
 import { open as openPacks } from "./shell/packs.js";
 import { open as openLog } from "./shell/logwindow.js";
 import { open as openTemp } from "./shell/tempfiles.js";
+import { createSettingsWindow } from "./shell/settings_window.js";
 
 const root = document.querySelector("#app");
 
@@ -192,21 +193,67 @@ async function start() {
     onClick: () => generateAll(),
   });
 
+  // One window for everything that is a PREFERENCE rather than an edit to the
+  // project on screen. Each of these already has its own real, tested modal --
+  // a settings section here is a deep link to it, not a rebuild of it.
+  const settings = createSettingsWindow({
+    gitStatus,
+    sections: [
+      {
+        id: "pipeline", title: "Models and pipeline", subtitle: "What the run is made of.",
+        keywords: "pipeline models nodes slots loaders", icon: "▦",
+        action: () => openPipeline({
+          load, describe, check, search,
+          onApply: (next) => {
+            slots = next;
+            // The boxes on the main window are for inputs of THESE slots. A slot
+            // that was removed takes its box with it, and a value saved in the
+            // window is what its box now shows -- otherwise the two windows hold
+            // different text for one input and the run uses whichever was sent.
+            if (prompts) {
+              // sync() rebuilds every control from the PIPELINE's values, which is
+              // right for the prompt and wrong for the project's own settings: they
+              // outrank the pipeline's defaults and have to be put back.
+              Promise.resolve(prompts.sync(next)).then(() => { showGroups(); syncVideo(); });
+            }
+          },
+        }),
+      },
+      {
+        id: "updates", title: "Updates", subtitle: "FunPack's own code, branch, and restart.",
+        keywords: "update git branch restart pull checkout", icon: "⟳",
+        // The window asks whether a run is in flight, because the restart that
+        // follows an update would take it with it.
+        action: () => openUpdates({ running: () => ["queued", "running"].includes(run.state.phase) }),
+      },
+      {
+        id: "packs", title: "Node packs", subtitle: "Install, update, or remove a custom_nodes pack.",
+        keywords: "node packs custom_nodes install", icon: "▣",
+        action: () => openPacks(),
+      },
+      {
+        id: "log", title: "ComfyUI log", subtitle: "The server's own log, without opening devtools.",
+        keywords: "log console errors output", icon: "▤",
+        action: () => openLog(),
+      },
+      {
+        id: "temp", title: "Temp files", subtitle: "Where a file went when it did not land in the bin.",
+        keywords: "temp files output directory", icon: "▥",
+        // Opening one puts it in the Preview, which is where somebody hunting
+        // for a file wants it -- the same place a result from the bin goes.
+        action: () => openTemp({ onOpen: (item) => page.viewer.setSource(
+          item.url, item.kind, item.file ? { ...item.file, type: "temp" } : null) }),
+      },
+    ],
+  });
+
   const page = build(root, {
     inspector,
     onGenerate: generateCurrentScene,
     generateAll: generateAllBtn,
     onCancel: () => run.cancel(),
     onConstructor: () => page.constructor.open(),
-    // The window asks whether a run is in flight, because the restart that
-    // follows an update would take it with it.
-    onUpdates: () => openUpdates({ running: () => ["queued", "running"].includes(run.state.phase) }),
-    onPacks: () => openPacks(),
-    onLog: () => openLog(),
-    // Opening one puts it in the Preview, which is where somebody hunting for a
-    // file wants it -- the same place a result from the bin goes.
-    onTemp: () => openTemp({ onOpen: (item) => page.viewer.setSource(
-      item.url, item.kind, item.file ? { ...item.file, type: "temp" } : null) }),
+    onSettings: () => settings.open(),
     // What the Edit menu offers, and what the keyboard reaches. One list, so a
     // menu item and its shortcut cannot drift apart.
     edits: {
@@ -257,22 +304,6 @@ async function start() {
       // Nothing to put back here: the store says when a project was opened, and
       // whatever follows it is wired to that.
     },
-    onPipeline: () => openPipeline({
-      load, describe, check, search,
-      onApply: (next) => {
-        slots = next;
-        // The boxes on the main window are for inputs of THESE slots. A slot
-        // that was removed takes its box with it, and a value saved in the
-        // window is what its box now shows -- otherwise the two windows hold
-        // different text for one input and the run uses whichever was sent.
-        if (prompts) {
-          // sync() rebuilds every control from the PIPELINE's values, which is
-          // right for the prompt and wrong for the project's own settings: they
-          // outrank the pipeline's defaults and have to be put back.
-          Promise.resolve(prompts.sync(next)).then(() => { showGroups(); syncVideo(); });
-        }
-      },
-    }),
   });
   const session = wire({ run, page, check, id, queuedFor, finishedFor,
                          slots: () => slots, values: allValues,

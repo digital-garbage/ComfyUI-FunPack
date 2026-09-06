@@ -69,8 +69,8 @@ function menu(label, itemsOf, onPick) {
   return button;
 }
 
-export function createMenubar({ workspace, onPipeline, onProject, projects = () => [],
-                                current = () => null, edits = null, onUpdates, onPacks, onLog, onTemp,
+export function createMenubar({ workspace, onProject, projects = () => [],
+                                current = () => null, edits = null, onSettings,
                                 theme = services.theme } = {}) {
   const connection = createConnection();
 
@@ -123,20 +123,12 @@ export function createMenubar({ workspace, onPipeline, onProject, projects = () 
     else theme.set(id);
   });
 
-  const settings = menu("Settings", () => [
-    { id: "pipeline", label: "Models and pipeline…" },
-    { separator: true },
-    { id: "updates", label: "Updates…" },
-    { id: "packs", label: "Node packs…" },
-    { separator: true },
-    { id: "log", label: "ComfyUI log…" },
-    { id: "temp", label: "Temp files…" },
-  ], (id) => {
-    if (id === "pipeline" && onPipeline) onPipeline();
-    else if (id === "updates" && onUpdates) onUpdates();
-    else if (id === "packs" && onPacks) onPacks();
-    else if (id === "log" && onLog) onLog();
-    else if (id === "temp" && onTemp) onTemp();
+  // One window, not five menu items: Models and pipeline, Updates, Node
+  // packs, the log and Temp files all live inside it now, searchable by
+  // name -- a button straight to it, not a dropdown over a single choice.
+  const settings = composer.button.sm({
+    label: "Settings", tone: "ghost",
+    onClick: () => { if (onSettings) onSettings(); },
   });
 
   const bar = composer.toolbar.default({

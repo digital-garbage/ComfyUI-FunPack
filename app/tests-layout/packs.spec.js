@@ -9,7 +9,7 @@ import { test, expect } from "@playwright/test";
 
 const openPacks = async (page) => {
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("menuitem", { name: /Node packs/ }).click();
+  await page.locator(".cx-filter-row", { hasText: "Node packs" }).click();
   await expect(page.locator(".cx-modal")).toBeVisible();
 };
 

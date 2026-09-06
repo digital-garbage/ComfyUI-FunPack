@@ -4,7 +4,7 @@ import { test, expect } from "@playwright/test";
 
 const openLog = async (page) => {
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("menuitem", { name: /ComfyUI log/ }).click();
+  await page.locator(".cx-filter-row", { hasText: "ComfyUI log" }).click();
   await expect(page.locator(".cx-modal")).toBeVisible();
 };
 

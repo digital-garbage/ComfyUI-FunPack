@@ -10,7 +10,7 @@ import { test, expect } from "@playwright/test";
 
 const openUpdates = async (page) => {
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("menuitem", { name: /Updates/ }).click();
+  await page.locator(".cx-filter-row", { hasText: "Updates" }).click();
   await expect(page.locator(".cx-modal")).toBeVisible();
 };
 

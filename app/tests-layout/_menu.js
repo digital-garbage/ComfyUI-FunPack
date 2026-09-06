@@ -1,7 +1,15 @@
-/** The window moved into the Settings menu when the app grew a menu bar. */
-export async function openPipelineWindow(page) {
+/**
+ * Every settings surface (pipeline, updates, node packs, log, temp files)
+ * lives behind ONE Settings button now, found by name in its searchable list.
+ */
+export async function openSettingsSection(page, name) {
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("menuitem", { name: /Models and pipeline/ }).click();
+  await page.locator(".cx-filter-row", { hasText: name }).click();
+}
+
+/** The window moved into the unified Settings window when the app grew one. */
+export async function openPipelineWindow(page) {
+  await openSettingsSection(page, "Models and pipeline");
 }
 
 /**

@@ -257,11 +257,7 @@ export function build(root, handlers = {}) {
   // anything that acts on the app has nowhere else to live.
   const menubar = createMenubar({
     workspace,
-    onPipeline: handlers.onPipeline,
-    onUpdates: handlers.onUpdates,
-    onPacks: handlers.onPacks,
-    onLog: handlers.onLog,
-    onTemp: handlers.onTemp,
+    onSettings: handlers.onSettings,
     onProject: handlers.onProject,
     edits: handlers.edits,
     projects: handlers.projects,
