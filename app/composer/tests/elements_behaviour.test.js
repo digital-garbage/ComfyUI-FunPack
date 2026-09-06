@@ -468,3 +468,20 @@ test("a bin's thumbnails are lazy", () => {
     g.destroy();
   }
 });
+
+test("Enter is a newline in a textarea, not a commit", () => {
+  // A one-line field commits on Enter. A textarea holds the longest thing
+  // anyone types here -- the prompt -- and stealing Enter there means a
+  // multi-line value cannot be typed at all.
+  const committed = [];
+  const box = mount(composer.textarea.md({ label: "Prompt", onCommit: (v) => committed.push(v) }));
+  box.node.value = "first line";
+  const event = new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  box.node.dispatchEvent(event);
+
+  assert.equal(event.defaultPrevented, false, "Enter was swallowed, so no second line can be typed");
+  assert.deepEqual(committed, []);
+
+  fire(box.node, "blur");
+  assert.deepEqual(committed, ["first line"], "blur is what commits a textarea");
+});

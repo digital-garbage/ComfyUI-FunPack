@@ -21,6 +21,7 @@ test("the prompt is written in the Constructor, and typing in it is what runs", 
   const boxes = page.locator(".cx-modal textarea");
   await expect(boxes).toHaveCount(2);
   await boxes.first().fill("a cat on a rooftop");
+  await boxes.first().blur();                   // a control commits on blur
 
   const sent = await page.evaluate(async () => {
     const body = JSON.stringify({ inputs: window.FunPack.prompts() });
@@ -40,6 +41,7 @@ test("what was typed is still there the next time the window opens", async ({ pa
 
   await openConstructor(page);
   await page.locator(".cx-modal textarea").first().fill("a cat on a rooftop");
+  await page.locator(".cx-modal textarea").first().blur();
   await page.locator(".cx-modal").getByRole("button", { name: "Done" }).click();
   await expect(page.locator(".cx-modal")).toHaveCount(0);
 

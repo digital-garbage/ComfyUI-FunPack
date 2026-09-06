@@ -176,7 +176,13 @@ export function build(root, handlers = {}) {
   // The menu bar: who this is, what is not a zone, and whether ComfyUI is
   // still on the other end. A zone head holds what acts on THAT zone, so
   // anything that acts on the app has nowhere else to live.
-  const menubar = createMenubar({ workspace, onPipeline: handlers.onPipeline });
+  const menubar = createMenubar({
+    workspace,
+    onPipeline: handlers.onPipeline,
+    onProject: handlers.onProject,
+    projects: handlers.projects,
+    current: handlers.currentProject,
+  });
   const bar = menubar;
 
   const page = composer.frame.app({ header: bar, main: workspace });

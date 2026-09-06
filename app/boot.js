@@ -71,6 +71,24 @@ async function start() {
     onGenerate: () => { ranFor = project.selectedId; session.generate(); },
     onCancel: () => run.cancel(),
     onConstructor: () => page.constructor.open(),
+    projects: () => project.recent,
+    currentProject: () => (project.project ? project.project.id : null),
+    onProject: async (id) => {
+      if (id === "new") {
+        const asked = composer.modal.prompt({
+          title: "New project", label: "Name", value: "Untitled", confirmLabel: "Create",
+        });
+        const name = await asked.result;
+        if (name === null) return;              // cancelled
+        await project.newProject(name);
+      } else if (id !== (project.project || {}).id) {
+        await project.open(id);
+      } else {
+        return;                                 // already open
+      }
+      // The prompt box follows the project, the same way it follows a scene.
+      showScene(project.selected);
+    },
     onPipeline: () => openPipeline({
       load, describe, check, search,
       onApply: (next) => {
@@ -97,7 +115,12 @@ async function start() {
 
   // Saved on the way out. A debounce that has not fired yet is work the user
   // did and cannot see anywhere, and a reload is exactly when it is lost.
-  window.addEventListener("pagehide", () => { project.flush(); });
+  window.addEventListener("pagehide", () => {
+    // Blur first: a control commits on blur, so text still being typed is not
+    // in the project yet -- and this is exactly the moment it would be lost.
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    project.flush();
+  });
 
   let manifest;
   try {
@@ -118,7 +141,10 @@ async function start() {
   // After the modules, because a region has to exist before anything can be put
   // in it, and a module may be sharing the region a role names.
   try {
-    prompts = createPrompts((await load()).slots, {
+    prompts = await createPrompts((await load()).slots, {
+      // Controls come from the node's own description: a combo gets the node's
+      // real choices, a number its real bounds.
+      describe,
       // Typing in the box writes to the scene it belongs to. Without this the
       // prompt is a value the run uses and the project never hears about, so a
       // reload shows a timeline whose scenes are all empty.

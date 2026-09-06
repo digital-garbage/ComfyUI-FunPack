@@ -43,10 +43,16 @@ test("it is still what the project generates at on the next visit", async ({ pag
   await openConstructor(page);
   await widthBox(page).fill("640");
   await widthBox(page).blur();
-  await page.evaluate(() => window.FunPack.project.flush());
+  const id = await page.evaluate(async () => {
+    await window.FunPack.project.flush();
+    return window.FunPack.project.project.id;
+  });
 
   await page.reload();
   await page.waitForFunction(() => window.FunPack !== undefined);
+  // Opened by id: another test in this file makes projects, and which one a
+  // fresh page picks is "the most recent", not "the one this test used".
+  await page.evaluate((pid) => window.FunPack.project.open(pid), id);
   await expect.poll(() => page.evaluate(() => window.FunPack.project.video.width)).toBe(640);
 
   await openConstructor(page);
@@ -80,4 +86,30 @@ test("what a run produces lands on the scene it was started for", async ({ page 
   // Nothing about the picture ARRIVING is asserted here: the dev server answers
   // 404 for every /view, so the strip shows its glyph -- which is the fallback
   // doing its job, not a missing result.
+});
+
+test("a project can be made and switched to from the File menu", async ({ page }) => {
+  // The store could do all of this from the day it arrived; there was no way in.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  // A name of its own: the dev server keeps real project files, so what is
+  // already in the store is whatever earlier runs left there.
+  const name = `Made ${Date.now()}`;
+  await page.getByRole("button", { name: "File" }).click();
+  await page.getByRole("menuitem", { name: /New project/ }).click();
+  await page.locator(".cx-modal input").fill(name);
+  await page.locator(".cx-modal").getByRole("button", { name: "Create" }).click();
+
+  await expect.poll(() => page.evaluate(() => window.FunPack.project.project.name)).toBe(name);
+  const made = await page.evaluate(() => window.FunPack.project.project.id);
+
+  // And away again. By position, not by name: every other project in the store
+  // may well be called Untitled.
+  await page.getByRole("button", { name: "File" }).click();
+  const items = page.getByRole("menuitem");
+  await expect(items.nth(1)).toHaveText(new RegExp(name));   // the one just made, ticked
+  await items.nth(2).click();
+
+  await expect.poll(() => page.evaluate(() => window.FunPack.project.project.id)).not.toBe(made);
 });

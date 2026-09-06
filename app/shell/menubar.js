@@ -69,8 +69,17 @@ function menu(label, itemsOf, onPick) {
   return button;
 }
 
-export function createMenubar({ workspace, onPipeline, theme = services.theme } = {}) {
+export function createMenubar({ workspace, onPipeline, onProject, projects = () => [],
+                                current = () => null, theme = services.theme } = {}) {
   const connection = createConnection();
+
+  const file = menu("File", () => [
+    { id: "new", label: "New project…" },
+    ...(projects().length ? [{ separator: true }] : []),
+    // A tick rather than leaving the current one out: which project is open is
+    // a fact about the app, and a menu that hides it makes you press one to find out.
+    ...projects().map((p) => ({ id: p.id, label: p.name, icon: p.id === current() ? "✓" : " " })),
+  ], (id) => { if (onProject) onProject(id); });
 
   const view = menu("View", () => [
     { id: "left", label: `${workspace && workspace.isOpen("left") ? "Hide" : "Show"} Assets` },
@@ -93,9 +102,9 @@ export function createMenubar({ workspace, onPipeline, theme = services.theme } 
 
   const bar = composer.toolbar.default({
     label: "FunPack",
-    items: [composer.brand.default({ name: "FunPack" }), view, settings],
+    items: [composer.brand.default({ name: "FunPack" }), file, view, settings],
     trailing: connection.items,
   });
 
-  return { node: bar.node, bar, connection, view, settings };
+  return { node: bar.node, bar, connection, file, view, settings };
 }

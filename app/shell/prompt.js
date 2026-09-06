@@ -3,87 +3,102 @@
 // The prompt is a slot input like any other -- `positive.text` on a
 // CLIPTextEncode -- and until this existed the only way to type one was to open
 // the pipeline window, find the node and edit it there. That is a graph editor,
-// not an app.
+// not an app. The same mechanism now carries the size a project generates at
+// and the sampler dials, because they are slot inputs too.
 //
 // Nothing here knows what a prompt IS. A slot says "this input of mine belongs
 // at generation.prompt, call it Prompt", the shell either offers a region with
 // that name or does not, and a role naming a place nobody offers is simply not
 // shown -- the same rule a module's panel lives by.
+//
+// The CONTROL comes from the node's own description, through the same
+// settingFor/rendererFor pair the pipeline window uses. That is what makes a
+// combo a dropdown of the node's real choices and a number obey the node's real
+// bounds, without this file knowing that samplers or schedulers exist.
 
 import { composer } from "../composer/composer.js";
+import { rendererFor, rendererNameFor, SELF_LABELLING } from "../composer/panel.js";
+import { settingFor } from "./widgets.js";
 import { hostFor } from "./mounts.js";
 
 const isLink = (value) => Array.isArray(value);
 
 /**
- * createPrompts(slots) -> { overrides, sync, fields, destroy }
+ * createPrompts(slots, { describe }) -> { overrides, sync, fields, at, destroy }
  *
  * `overrides` is what the app is holding, addressed by slot and input, ready to
  * be sent with a run. It is not a copy of the pipeline: the pipeline window
  * owns the structure, and these own one value each inside it.
  */
-export function createPrompts(slots = [], { onChange } = {}) {
+export async function createPrompts(slots = [], { describe, onChange } = {}) {
   let fields = [];
 
-  function build(from) {
+  const wanted = (from) => (from || []).flatMap((slot) =>
+    (slot.roles || []).map((role) => ({ slot, role })).filter(({ role }) => hostFor(role.at)));
+
+  async function build(from) {
     // The FIELD, not the control inside it: destroying the control leaves the
     // label and the box it sat in behind, which is a labelled empty space.
     for (const field of fields) field.field.destroy();
     fields = [];
 
-    for (const slot of from || []) {
-      for (const role of slot.roles || []) {
-        const host = hostFor(role.at);
-        if (!host) continue;                       // nobody offers that place
+    const asked = wanted(from);
+    if (!asked.length) return;
+    const described = describe
+      ? await describe([...new Set(asked.map(({ slot }) => slot.node))])
+      : {};
 
-        const current = (slot.inputs || {})[role.input];
-        // A wired input is fed by another node, and a box over one would offer
-        // to write a value the server refuses. Nothing is said: an input that
-        // cannot be typed into has no control, which is the same answer the
-        // pipeline window gives for a socket.
-        if (isLink(current)) continue;
-        const kind = current === undefined ? "string" : typeof current;
-        if (kind !== "string" && kind !== "number") continue;
+    for (const { slot, role } of asked) {
+      const current = (slot.inputs || {})[role.input];
+      // A wired input is fed by another node, and a box over one would offer to
+      // write a value the server refuses. Nothing is said: an input that cannot
+      // be typed into has no control, which is the same answer the pipeline
+      // window gives for a socket.
+      if (isLink(current)) continue;
 
-        // The field exists before its control so the control can report which
-        // field changed. Two places send values now -- a scene's text and the
-        // project's own settings -- and "something changed, go and read it all"
-        // does not say which one.
-        const entry = { slot: slot.id, input: role.input, at: role.at };
-        const told = () => { if (onChange) onChange(entry); };
+      const node = described[slot.node];
+      const widget = ((node && node.widgets) || []).find((w) => w.name === role.input);
+      // No description, or nothing sane to draw for it: absent, not a guess.
+      const setting = widget && settingFor(widget);
+      if (!setting) continue;
 
-        entry.control = kind === "number"
-          // No min or max: what they are is the NODE's business, and it already
-          // refuses a value outside them with a reason, beside Generate.
-          ? composer.number.md({ value: current, onChange: told })
-          : composer.textarea.md({
-              // No label here: the field around it draws one and points at it,
-              // and an aria-label as well would win over the visible words.
-              value: current || "",
-              rows: 2,
-              autoGrow: true,
-              placeholder: role.label || role.input,
-              onInput: told,
-            });
-        entry.field = composer.field.default({
-          label: role.label || role.input,
-          control: entry.control,
-        });
-        host.appendChild(entry.field.node);
-        fields.push(entry);
-      }
+      const entry = { slot: slot.id, input: role.input, at: role.at,
+                      value: current === undefined ? setting.default : current };
+      const told = (next) => {
+        entry.value = next;
+        if (onChange) onChange(entry);
+      };
+      entry.control = rendererFor(setting)({ ...setting, label: role.label || setting.label },
+                                           entry.value, told);
+      // A checkbox row draws its own label and hint; wrapping it in a field
+      // would print both of them twice, one above the other.
+      entry.field = SELF_LABELLING.has(rendererNameFor(setting))
+        ? entry.control
+        : composer.field.default({ label: role.label || setting.label,
+                                   hint: setting.hint, control: entry.control });
+      hostFor(role.at).appendChild(entry.field.node);
+      fields.push(entry);
     }
   }
 
-  build(slots);
+  /** What a caller holds: the value, and a way to set it that both halves see. */
+  const handleFor = (entry) => ({
+    get value() { return entry.value; },
+    setValue(next) {
+      entry.value = next;
+      if (entry.control.setValue) entry.control.setValue(next);
+    },
+  });
+
+  await build(slots);
 
   return {
-    /** {slotId: {input: value}} -- only what a person can actually have typed. */
+    /** {slotId: {input: value}} -- only what a person can actually have set. */
     overrides() {
       const out = {};
-      for (const { slot, input, control } of fields) {
+      for (const { slot, input, value } of fields) {
         out[slot] = out[slot] || {};
-        out[slot][input] = control.value;
+        out[slot][input] = value;
       }
       return out;
     },
@@ -91,32 +106,31 @@ export function createPrompts(slots = [], { onChange } = {}) {
     /**
      * The pipeline changed underneath: rebuild against it.
      *
-     * A slot the pipeline window removed takes its box with it, and a value
-     * saved in that window is what the box then shows. Keeping the old value
-     * would make the two windows disagree about one input, and the last one
-     * sent would win silently.
+     * A slot the pipeline window removed takes its control with it, and a value
+     * saved in that window is what the control then shows. Keeping the old value
+     * would make the two windows disagree about one input, and the last one sent
+     * would win silently.
      */
-    sync(next) { build(next); },
+    sync(next) { return build(next); },
 
     get fields() { return fields.map((f) => ({ slot: f.slot, input: f.input, at: f.at })); },
 
     /**
-     * The control mounted at a place, or null.
-     *
-     * What makes a scene's text editable: the timeline owns the text and this is
-     * the box it is typed in, so the two are bound rather than each holding
-     * their own copy of a prompt.
+     * The control at a place, or null. What makes a scene's text editable: the
+     * timeline owns the text and this is where it is typed, so the two are bound
+     * rather than each holding their own copy of a prompt.
      */
     at(point) {
       const found = fields.find((f) => f.at === point);
-      return found ? found.control : null;
+      return found ? handleFor(found) : null;
     },
 
     /** Every control at a place, by the input it writes. */
     controlsAt(point) {
       return fields.filter((f) => f.at === point)
-        .map(({ input, control }) => ({ input, control }));
+        .map((f) => ({ input: f.input, control: handleFor(f) }));
     },
-    destroy() { build([]); },
+
+    destroy() { return build([]); },
   };
 }

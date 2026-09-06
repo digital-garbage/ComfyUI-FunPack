@@ -14,7 +14,16 @@ function wire(node, { onInput, onCommit }) {
     let last = node.value;
     const commit = () => { if (node.value !== last) { last = node.value; onCommit(node.value); } };
     node.addEventListener("blur", commit);
-    node.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
+    // And `change`, which is what autofill, a password manager and a script
+    // setting the value all fire without ever taking focus. commit() only acts
+    // on a real difference, so the pair costs nothing when both arrive.
+    node.addEventListener("change", commit);
+    // Enter commits a one-line field. In a TEXTAREA it is a newline, and
+    // stealing it there means a multi-line value cannot be typed at all -- the
+    // prompt included, which is the longest multi-line thing in the app.
+    if (node.tagName !== "TEXTAREA") {
+      node.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
+    }
   }
 }
 

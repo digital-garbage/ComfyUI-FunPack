@@ -57,7 +57,14 @@ DEFAULT = [
     {"id": "modifiers", "group": "Preparation", "node": "FunPackLoadModifiers", "inputs": {
         "model": ["model", 0], "settings": ["settings", 0]}},
 
-    {"id": "sampler", "group": "Sampling", "node": "FunPackSampler", "inputs": {
+    {"id": "sampler", "group": "Sampling", "node": "FunPackSampler",
+     # The three dials that get reached for constantly. v4 buried them several
+     # clicks deep in Engine Settings; here they are on the main window because
+     # the slot says they belong there.
+     "roles": [{"at": "generation.sampling", "input": "steps", "label": "Steps"},
+               {"at": "generation.sampling", "input": "sampler_name", "label": "Sampler"},
+               {"at": "generation.sampling", "input": "scheduler", "label": "Scheduler"}],
+     "inputs": {
         "model": ["modifiers", 0], "positive": ["positive", 0], "negative": ["negative", 0],
         "latent": ["latent", 0], "settings": ["settings", 0],
         "seed": 0, "steps": 20, "cfg": 7.0,

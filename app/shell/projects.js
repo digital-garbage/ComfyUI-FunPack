@@ -56,6 +56,10 @@ const put = (project) => json("PUT", `${BASE}/${encodeURIComponent(project.id)}`
 export function createProject({ onChange, onError } = {}) {
   let project = null;
   let selected = null;
+  // Every project this browser knows about, for the File menu. Read once at
+  // startup and kept in step here rather than re-fetched each time the menu
+  // opens: a listing is not a thing that changes behind the user's back.
+  let recent = [];
   let timer = null;
   let saving = null;      // the PUT in flight, so a queued one waits for it
   let dirty = false;
@@ -97,9 +101,13 @@ export function createProject({ onChange, onError } = {}) {
     get selected() { return sceneAt(selected); },
 
     /** The most recent project, or a new one when there are none. */
+    get recent() { return recent; },
+
     async start() {
       const found = await list();
+      recent = found;
       project = found.length ? await read(found[0].id) : await create("Untitled");
+      if (!found.length) recent = [{ id: project.id, name: project.name }];
       selected = (project.scenes || [])[0]?.id ?? null;
       changed();
       return project;
@@ -116,6 +124,7 @@ export function createProject({ onChange, onError } = {}) {
     async newProject(name) {
       await flush();
       project = await create(name);
+      recent = [{ id: project.id, name: project.name }, ...recent];
       selected = (project.scenes || [])[0]?.id ?? null;
       changed();
       return project;
