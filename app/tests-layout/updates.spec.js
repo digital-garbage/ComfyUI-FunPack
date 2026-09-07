@@ -31,8 +31,9 @@ test("the window says which branch you are on and whether there is anything new"
 });
 
 test("a checkout with local changes says so before anything is pressed", async ({ page }) => {
-  // The one state that blocks both actions. A refusal after the press would be
-  // a surprise; this is the same fact, said first.
+  // Update alone still blocks on a dirty tree -- pulling new commits onto
+  // changes in progress needs asking first. A refusal after the press would
+  // be a surprise; this is the same fact, said first.
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);
   await page.route("**/api/git/status", (route) => route.fulfill({
@@ -44,6 +45,44 @@ test("a checkout with local changes says so before anything is pressed", async (
   const modal = page.locator(".cx-modal");
   await expect(modal).toContainText(/local changes/i);
   await expect(modal.getByRole("button", { name: /Update/ })).toBeDisabled();
+});
+
+test("a dirty tree does not block switching branch or rolling back -- those auto-stash", async ({ page }) => {
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await page.route("**/api/git/status", (route) => route.fulfill({
+    json: { ok: true, version: "5.0", branch: "v5", branches: ["v5", "dev"],
+            dirty: true, ahead: 0, behind: 2, fetch_ok: true, repo: "/x",
+            rollback_target: { commit: "abc12345", subject: "prior" } },
+  }));
+  await openUpdates(page);
+
+  const modal = page.locator(".cx-modal");
+  await expect(modal).toContainText(/stash.*automatically/i);
+  await expect(modal.getByLabel("Branch")).toBeEnabled();
+  await expect(modal.getByRole("button", { name: "Roll back" })).toBeEnabled();
+  // The one action a dirty tree still stops.
+  await expect(modal.getByRole("button", { name: /Update/ })).toBeDisabled();
+});
+
+test("switching branch on a dirty tree stashes first, and says so", async ({ page }) => {
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await page.route("**/api/git/status", (route) => route.fulfill({
+    json: { ok: true, version: "5.0", branch: "v5", branches: ["v5", "dev"],
+            dirty: true, ahead: 0, behind: 0, fetch_ok: true, repo: "/x" },
+  }));
+  await page.route("**/api/git/checkout", (route) => route.fulfill({
+    json: { restarting: true, updated: true, branch: "dev",
+            stashed: "FunPack: auto-stashed before switching to dev" },
+  }));
+  await page.route("**/api/health", (route) => route.abort());
+
+  await openUpdates(page);
+  await page.getByLabel("Branch").selectOption("dev");
+
+  await expect(page.locator(".cx-toast-warn")).toContainText(/stashed first/i);
+  await expect(page.locator(".cx-blocking")).toContainText(/Restarting/i);
 });
 
 test("update asks the server to update, and then waits for it to come back", async ({ page }) => {
@@ -169,4 +208,27 @@ test("a generation in flight is said, and the buttons that would kill it are off
   await openUpdates(page);
   await expect(page.locator(".cx-modal")).toContainText(/generation is running/i);
   await expect(page.getByRole("button", { name: /Update \(4\)/ })).toBeDisabled();
+  // The restart it would deliver kills the run just the same.
+  await expect(page.locator(".cx-modal").getByRole("button", { name: "Restart" })).toBeDisabled();
+});
+
+test("Restart ComfyUI is offered with nothing pending, and works", async ({ page }) => {
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+  await page.route("**/api/git/status**", (route) => route.fulfill({
+    json: { ok: true, version: "5.0", branch: "v5", branches: ["v5"], dirty: false,
+            ahead: 0, behind: 0, fetch_ok: true, checked_remote: true, repo: "/x" },
+  }));
+  const asked = [];
+  await page.route("**/api/git/restart", (route) => {
+    asked.push(route.request().method());
+    return route.fulfill({ json: { restarting: true } });
+  });
+  await page.route("**/api/health", (route) => route.abort());
+
+  await openUpdates(page);
+  await page.locator(".cx-modal").getByRole("button", { name: "Restart" }).click();
+
+  await expect.poll(() => asked).toEqual(["POST"]);
+  await expect(page.locator(".cx-blocking")).toContainText(/Restarting/i);
 });

@@ -243,7 +243,7 @@ def register(routes, prefix=None):
         # unhashable key and the refusal turns into a 500. The slots array is
         # shape-checked above; these two fields are read from the same body and
         # were not.
-        if action in ("replace", "remove") and not isinstance(slot_id, str):
+        if action in ("replace", "remove", "wire", "unwire") and not isinstance(slot_id, str):
             return web.json_response(
                 {"problems": [f"which slot to {action} is named by a string, "
                               f"not a {type(slot_id).__name__}"],
@@ -253,11 +253,37 @@ def register(routes, prefix=None):
                 {"problems": [f"a node is named by a string, not a "
                               f"{type(body.get('node')).__name__}"],
                  "queueable": False}, status=400)
+        # wire/unwire both name an INPUT on `slot`; wire additionally names
+        # where it is fed from. Checked as a group because a malformed field in
+        # either reaches graph.wire()/unwire() as a dict key or an index and
+        # fails somewhere that is not this readable.
+        if action in ("wire", "unwire") and not isinstance(body.get("input"), str):
+            return web.json_response(
+                {"problems": [f"which input to {action} is named by a string, "
+                              f"not a {type(body.get('input')).__name__}"],
+                 "queueable": False}, status=400)
+        if action == "wire":
+            if not isinstance(body.get("from_slot"), str):
+                return web.json_response(
+                    {"problems": [f"which slot feeds it is named by a string, not a "
+                                  f"{type(body.get('from_slot')).__name__}"],
+                     "queueable": False}, status=400)
+            from_output = body.get("from_output")
+            if isinstance(from_output, bool) or not isinstance(from_output, int):
+                return web.json_response(
+                    {"problems": [f"which output is a number, not a "
+                                  f"{type(from_output).__name__}"],
+                     "queueable": False}, status=400)
 
         if action == "replace":
             slots, problems = graph_mod.replace(slots, slot_id, body.get("node"))
         elif action == "remove":
             slots, problems = graph_mod.remove(slots, slot_id)
+        elif action == "wire":
+            slots, problems = graph_mod.wire(
+                slots, slot_id, body.get("input"), body.get("from_slot"), body.get("from_output"))
+        elif action == "unwire":
+            slots, problems = graph_mod.unwire(slots, slot_id, body.get("input"))
         elif action in (None, "check"):
             problems = []
         else:
@@ -373,20 +399,22 @@ def register(routes, prefix=None):
 
     @routes.post(P + "/api/git/restart")
     async def _git_restart(_req):
-        """Finish a restart a running generation deferred.
+        """Restart ComfyUI: finishing one a running generation deferred, or one
+        asked for directly with nothing owed. Either way there is exactly one
+        thing to do -- relaunch -- so there is one route for both rather than
+        a second copy of this same guard living behind its own button.
 
-        Never re-runs the git action: HEAD already moved when the change first
-        landed, and there is nothing left to do here but the restart itself.
+        Never re-runs a git action: if a restart WAS pending, HEAD already
+        moved when the change first landed, and there is nothing left to do
+        here but the restart itself.
         """
         global _pending_restart
         async with _git_lock:
-            if not _pending_restart:
-                return web.json_response(
-                    {"detail": "Nothing is waiting on a restart."}, status=400)
             if _generation_running():
                 return web.json_response({
                     "restarting": False,
-                    "blocked": "A generation is still running.",
+                    "blocked": "A generation is running. Wait for it to finish, "
+                              "or cancel it, then restart.",
                 })
             _pending_restart = False
             _schedule_restart()

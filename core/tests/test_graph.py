@@ -17,6 +17,10 @@ NODES = {
     "Save":       {"inputs": {"latent": "LATENT"}, "outputs": []},
     "TwoIn":      {"inputs": {"a": "MODEL", "b": "MODEL"}, "outputs": ["MODEL"]},
     "Wrong":      {"inputs": {"model": "MODEL"}, "outputs": ["IMAGE"]},
+    # A Primitive-shaped node: a WIDGET input, an output of the same type. This
+    # is what "linked inputs" turns out to be -- one of these fed into several
+    # widget inputs elsewhere, no separate grouping mechanism required.
+    "PrimitiveInt": {"inputs": {"value": "INT"}, "outputs": ["INT"]},
 }
 SCHEMAS = graph.Schemas(NODES.get)
 
@@ -404,6 +408,132 @@ def test_override_refuses_a_shape_that_is_not_an_address():
 def test_override_does_not_edit_the_pipeline_it_was_given():
     graph.override(PAIR, {"positive": {"text": "a cat"}})
     assert PAIR[0]["inputs"]["text"] == ""
+
+
+# --- wiring ------------------------------------------------------------
+
+def test_wire_connects_one_slots_output_to_anothers_input():
+    slots = [
+        {"id": "model", "node": "LoadModel", "inputs": {"name": "a.safetensors"}},
+        {"id": "lora", "node": "AddLora", "inputs": {"strength": 1.0}},
+    ]
+    out, problems = graph.wire(slots, "lora", "model", "model", 0, SCHEMAS)
+    assert problems == []
+    assert out[1]["inputs"]["model"] == ["model", 0]
+    assert out[1]["inputs"]["strength"] == 1.0, "an unrelated input was disturbed"
+
+
+def test_wire_refuses_a_slot_that_does_not_exist_on_either_side():
+    slots = pipeline()
+    _out, problems = graph.wire(slots, "gone", "model", "model", 0, SCHEMAS)
+    assert any("gone" in p for p in problems)
+    _out, problems = graph.wire(slots, "lora", "model", "gone", 0, SCHEMAS)
+    assert any("gone" in p for p in problems)
+
+
+def test_wire_refuses_an_input_the_node_does_not_declare():
+    slots = pipeline()
+    _out, problems = graph.wire(slots, "lora", "nope", "model", 0, SCHEMAS)
+    assert any("no input" in p for p in problems)
+
+
+def test_wire_refuses_an_output_index_that_does_not_exist():
+    slots = pipeline()
+    _out, problems = graph.wire(slots, "lora", "model", "model", 3, SCHEMAS)
+    assert any("does not exist" in p for p in problems)
+
+
+def test_wire_refuses_a_type_mismatch():
+    slots = [
+        {"id": "model", "node": "LoadModel", "inputs": {"name": "a.safetensors"}},
+        {"id": "latent", "node": "Empty", "inputs": {"width": 512}},
+    ]
+    # latent's "width" wants INT; model's output 0 is MODEL.
+    _out, problems = graph.wire(slots, "latent", "width", "model", 0, SCHEMAS)
+    assert any("wants INT but" in p for p in problems)
+
+
+def test_wire_refuses_a_link_that_would_close_a_cycle():
+    slots = [
+        {"id": "a", "node": "AddLora", "inputs": {"model": ["b", 0], "strength": 1.0}},
+        {"id": "b", "node": "AddLora", "inputs": {"strength": 1.0}},
+    ]
+    _out, problems = graph.wire(slots, "b", "model", "a", 0, SCHEMAS)
+    assert any("feeding itself" in p or "feeds" in p for p in problems)
+
+
+def test_a_refused_wire_changes_nothing():
+    slots = pipeline()
+    graph.wire(slots, "lora", "nope", "model", 0, SCHEMAS)
+    assert "nope" not in slots[1]["inputs"]
+
+
+def test_wire_does_not_edit_the_pipeline_it_was_given():
+    slots = [
+        {"id": "model", "node": "LoadModel", "inputs": {"name": "a.safetensors"}},
+        {"id": "lora", "node": "AddLora", "inputs": {"strength": 1.0}},
+    ]
+    graph.wire(slots, "lora", "model", "model", 0, SCHEMAS)
+    assert "model" not in slots[1]["inputs"]
+
+
+def test_wiring_a_widget_input_is_how_a_linked_input_works():
+    """A Primitive node's output feeding several widget inputs -- v4's "linked
+    inputs" was exactly this, minus the freezing: nothing here stops a FOURTH
+    slot being wired to the same Primitive later, because there is no group
+    object that has to already know about it."""
+    slots = [
+        {"id": "shared", "node": "PrimitiveInt", "inputs": {"value": 512}},
+        {"id": "a", "node": "Empty", "inputs": {}},
+        {"id": "b", "node": "Empty", "inputs": {}},
+    ]
+    slots, problems = graph.wire(slots, "a", "width", "shared", 0, SCHEMAS)
+    assert problems == []
+    slots, problems = graph.wire(slots, "b", "width", "shared", 0, SCHEMAS)
+    assert problems == []
+    assert slots[1]["inputs"]["width"] == slots[2]["inputs"]["width"] == ["shared", 0]
+
+    # A third consumer, added on afterward -- not a group that had to exist
+    # ahead of time.
+    slots.append({"id": "c", "node": "Empty", "inputs": {}})
+    slots, problems = graph.wire(slots, "c", "width", "shared", 0, SCHEMAS)
+    assert problems == []
+    assert slots[3]["inputs"]["width"] == ["shared", 0]
+
+
+def test_wire_re_wires_an_input_that_already_had_something():
+    slots = pipeline()  # lora.model is already wired to model.0
+    out, problems = graph.wire(slots, "lora", "model", "model", 0, SCHEMAS)
+    assert problems == []
+    assert out[1]["inputs"]["model"] == ["model", 0]
+
+
+# --- unwiring ------------------------------------------------------------
+
+def test_unwire_removes_the_link():
+    slots = pipeline()
+    out, problems = graph.unwire(slots, "lora", "model")
+    assert problems == []
+    assert "model" not in out[1]["inputs"]
+
+
+def test_unwire_refuses_a_slot_that_is_not_there():
+    slots = pipeline()
+    _out, problems = graph.unwire(slots, "gone", "model")
+    assert any("gone" in p for p in problems)
+
+
+def test_unwiring_an_input_that_was_never_wired_is_not_an_error():
+    slots = pipeline()
+    out, problems = graph.unwire(slots, "lora", "strength")
+    assert problems == []
+    assert "strength" not in out[1]["inputs"]
+
+
+def test_unwire_does_not_edit_the_pipeline_it_was_given():
+    slots = pipeline()
+    graph.unwire(slots, "lora", "model")
+    assert slots[1]["inputs"]["model"] == ["model", 0]
 
 
 def test_a_role_is_checked_for_shape_and_nothing_else():

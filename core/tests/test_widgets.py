@@ -97,6 +97,20 @@ def test_a_node_nobody_installed_is_null_rather_than_an_error():
     assert widgets.describe("NoSuchNodeAnywhere") is None
 
 
+def test_output_names_label_a_multi_output_node_for_a_wiring_picker():
+    described = widgets.describe("FunPackDiffusionModelLoader")
+    assert described["outputs"] == ["MODEL", "STRING"]
+    assert described["output_names"] == ["model", "status"]
+
+
+def test_a_node_with_no_return_names_falls_back_to_its_types():
+    """RETURN_NAMES is optional even on a well-formed node -- ComfyUI's own
+    frontend labels an unnamed output after its type, and a wiring picker
+    should read the same way rather than showing a blank."""
+    described = widgets.describe("KSampler")
+    assert described["output_names"] == described["outputs"] == ["LATENT"]
+
+
 def test_asking_about_several_says_which_are_absent():
     found = widgets.describe_all(["KSampler", "NoSuchNodeAnywhere", "KSampler"])
     assert set(found) == {"KSampler", "NoSuchNodeAnywhere"}

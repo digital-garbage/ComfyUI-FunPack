@@ -36,6 +36,14 @@
 .cx-search::-webkit-search-cancel-button { filter: grayscale(1) opacity(.6); }
 
 .cx-filter { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 220px; }
+/* filterList always builds its own search box, which is right everywhere it
+   is the ONLY way to narrow the list -- and wrong stacked under a search box
+   that already re-queries the server on every keystroke: two boxes doing the
+   same job, one of them silently filtering an already-server-filtered
+   subset, with no way to tell which one produced what is on screen. The
+   node-add picker (pipeline_window.js) is the one place that already has an
+   outer search; this hides filterList's own for exactly that container. */
+.cx-node-picker-results .cx-filter > .cx-search { display: none; }
 .cx-filter-list {
   display: flex; flex-direction: column; gap: 1px;
   max-height: 240px; overflow-y: auto; overflow-x: hidden;

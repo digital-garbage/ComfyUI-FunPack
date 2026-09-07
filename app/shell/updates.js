@@ -89,6 +89,13 @@ export function mount({ onRestart = waitForRestart, running = () => false,
       // Update while already up to date is a normal thing to do, and waiting for
       // a restart that is not coming would hang on an overlay for three minutes.
       if (!result || result.restarting === false) { load(); return; }
+      // A stash that happened without being asked for by name has to be said
+      // loudly -- this is the only place it can be, since the restart about
+      // to happen replaces everything on screen.
+      if (result.stashed) {
+        composer.toast.warn({ text: `Local changes were stashed first: "${result.stashed}" `
+                                   + "(git stash pop to get them back).", duration: 8000 });
+      }
       close();
       onRestart();
     } catch (err) {
@@ -144,11 +151,16 @@ export function mount({ onRestart = waitForRestart, running = () => false,
     }
 
     if (s.dirty) {
-      // The one state that blocks both actions, said before either is pressed
-      // rather than as a refusal afterwards.
+      // Update alone still refuses on a dirty tree -- pulling new commits
+      // onto changes the user is in the middle of is not something to do
+      // without asking. Switching or rolling back auto-stash instead: what
+      // was left uncommitted on the branch (or commit) being LEFT is almost
+      // never the point of either action, and `git stash pop` gets it back.
       rows.push(composer.banner.warn({
-        text: "This checkout has local changes. Commit or stash them before updating "
-            + "or switching branch.",
+        text: "This checkout has local changes, including any new files not yet tracked "
+            + "by git. Switching branch or rolling back will stash all of it automatically "
+            + "(recoverable with git stash pop). Updating still needs it committed or "
+            + "stashed by hand first.",
       }));
     }
 
@@ -160,7 +172,7 @@ export function mount({ onRestart = waitForRestart, running = () => false,
         value: s.branch,
         options: (s.branches || []).map((b) => ({ value: b, label: b })),
         onChange: (branch) => { if (branch !== s.branch) act(() => ask("POST", "/checkout", { branch })); },
-        disabled: Boolean(s.dirty) || busy,
+        disabled: busy,
       }),
     }));
 
@@ -172,6 +184,13 @@ export function mount({ onRestart = waitForRestart, running = () => false,
                                       onClick: () => act(() => ask("POST", "/rollback")) }),
       }));
     }
+
+    rows.push(composer.settingsRow.default({
+      label: "Restart ComfyUI",
+      hint: busy ? "Waiting for the generation to finish." : "Nothing else changes.",
+      control: composer.button.md({ label: "Restart", disabled: busy,
+                                    onClick: () => act(() => ask("POST", "/restart")) }),
+    }));
 
     body.set([composer.group.default({ rows })]);
     setFooter({

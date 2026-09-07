@@ -372,6 +372,75 @@ def override(slots: Sequence[dict], edits: Any) -> Tuple[List[dict], List[str]]:
     return out, problems
 
 
+def wire(slots: Sequence[dict], to_slot_id: str, to_input: str,
+        from_slot_id: str, from_output: int,
+        schemas: Optional[Schemas] = None) -> Tuple[List[dict], List[str]]:
+    """Feed one slot's input from another slot's output.
+
+    Not restricted to socket-typed inputs: ComfyUI's own Primitive nodes
+    (PrimitiveInt, PrimitiveFloat...) exist to feed a widget input from a wire,
+    which is how several nodes end up sharing one value edited in one place --
+    v4 called this a "linked input" and froze the set once made. Nothing here
+    freezes: a link is an ordinary entry in a slot's `inputs`, so adding a
+    fourth consumer to an existing Primitive later is just wiring one more
+    slot to it, not editing a group that has to already know about it.
+
+    Refused, not silently accepted, for the same reasons build() would refuse
+    the resulting graph -- a slot that does not exist, an input the node does
+    not declare, a type mismatch, or a link that would close a cycle. Checked
+    here so a bad wire is never written into the pipeline at all.
+    """
+    schemas = schemas or from_comfyui()
+    by_id = slots_by_id(slots)
+    if to_slot_id not in by_id:
+        return list(slots), [f"there is no slot called {to_slot_id!r}"]
+    if from_slot_id not in by_id:
+        return list(slots), [f"there is no slot called {from_slot_id!r}"]
+
+    to_node = by_id[to_slot_id]["node"]
+    declared = schemas.inputs(to_node)
+    if to_input not in declared:
+        return list(slots), [f"{to_node} has no input {to_input!r}"]
+
+    produced = schemas.outputs(by_id[from_slot_id]["node"])
+    if from_output < 0 or from_output >= len(produced):
+        return list(slots), [f"{by_id[from_slot_id]['node']} has {len(produced)} "
+                             f"output(s); {from_output} does not exist"]
+
+    wanted, given = declared[to_input], produced[from_output]
+    if not comfy_types.accepts(wanted, given):
+        return list(slots), [f"{to_slot_id}.{to_input} wants {wanted} but "
+                             f"{from_slot_id!r} gives {given}"]
+
+    out = [dict(slot, inputs=dict(slot.get("inputs") or {})) for slot in slots]
+    slots_by_id(out)[to_slot_id]["inputs"][to_input] = [from_slot_id, from_output]
+
+    # The same refusal build() would make at prompt time, made here instead --
+    # a wire that closes a loop is wrong the moment it is drawn, not once
+    # queued.
+    prompt = {s["id"]: {"inputs": s.get("inputs") or {}} for s in out}
+    problems = cycles(prompt)
+    if problems:
+        return list(slots), problems
+    return out, []
+
+
+def unwire(slots: Sequence[dict], to_slot_id: str, to_input: str) -> Tuple[List[dict], List[str]]:
+    """Remove whatever feeds one input, leaving it unset.
+
+    Not a value written over the link -- override() already refuses that, on
+    purpose, because a value silently unwiring a node is a structural change
+    nobody asked for. This is that same structural change, asked for.
+    """
+    by_id = slots_by_id(slots)
+    if to_slot_id not in by_id:
+        return list(slots), [f"there is no slot called {to_slot_id!r}"]
+
+    out = [dict(slot, inputs=dict(slot.get("inputs") or {})) for slot in slots]
+    slots_by_id(out)[to_slot_id]["inputs"].pop(to_input, None)
+    return out, []
+
+
 def cycles(prompt: Dict[str, dict]) -> List[str]:
     """Slots that feed each other, named in the order the loop runs.
 

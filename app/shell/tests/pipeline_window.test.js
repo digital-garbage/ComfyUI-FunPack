@@ -35,7 +35,7 @@ const DESCRIPTIONS = {
   Loader: {
     node: "Loader", title: "Model loader", widgets: [
       { name: "model_name", type: "COMBO", choices: ["a.safetensors", "b.safetensors"] },
-    ], sockets: [], outputs: ["MODEL"],
+    ], sockets: [], outputs: ["MODEL"], output_names: ["model"],
   },
   Sampler: {
     node: "Sampler", title: "Sampler", widgets: [
@@ -55,6 +55,10 @@ const DESCRIPTIONS = {
   Save: {
     node: "Save", title: "Save image", widgets: [], outputs: [],
     sockets: [{ name: "images", type: "IMAGE" }],
+  },
+  PrimitiveInt: {
+    node: "PrimitiveInt", title: "Primitive Int", sockets: [], outputs: ["INT"],
+    output_names: ["value"], widgets: [{ name: "value", type: "INT", default: 20, min: 1, max: 100 }],
   },
 };
 
@@ -89,6 +93,17 @@ function server({ refuse = null, slots = SLOTS() } = {}) {
       else if (body.action === "replace") {
         held = (body.slots || held).map((s) =>
           (s.id === body.slot ? { ...s, node: body.node, inputs: {} } : s));
+      } else if (body.action === "wire") {
+        held = held.map((s) => (s.id === body.slot
+          ? { ...s, inputs: { ...(s.inputs || {}), [body.input]: [body.from_slot, body.from_output] } }
+          : s));
+      } else if (body.action === "unwire") {
+        held = held.map((s) => {
+          if (s.id !== body.slot) return s;
+          const inputs = { ...(s.inputs || {}) };
+          delete inputs[body.input];
+          return { ...s, inputs };
+        });
       } else if (body.slots) held = body.slots;
       return { slots: held, refused: [], incomplete: [], queueable: true };
     },
@@ -177,7 +192,8 @@ test("a wired input is reported as wired, not offered as a box to type in", asyn
   const { win } = await opened();
   win.enter("Sampling");
   const row = rowFor(win, "Model");
-  assert.equal(hintOf(row), "fed by model");
+  assert.match(hintOf(row), /fed by model/);
+  assert.match(hintOf(row), /Model loader/, "the source's own title was not shown");
   // The failure this guards: `["model", 0]` rendered into a text control, where
   // it reads as the string "model,0" and saves as one.
   assert.equal(row.querySelector("input, select, textarea"), null);
@@ -419,14 +435,208 @@ test("editing does not rebuild the control being typed into", async () => {
   win.close();
 });
 
-test("an unfed socket says wiring is not something this window does", async () => {
-  // A node can be ADDED here but not connected. An input reading only "nothing
-  // is wired to it" reads as a control the user failed to find.
+test("an unfed socket offers to be wired, not just named", async () => {
   const custom = server({ slots: [{ id: "s", group: "Sampling", node: "Sampler", inputs: {} }] });
   const win = openWindow(custom);
   await win.ready;
   win.enter("Sampling");
-  assert.match(hintOf(rowFor(win, "Model")), /cannot wire it yet/);
+  assert.match(hintOf(rowFor(win, "Model")), /nothing feeds it/);
+  assert.doesNotMatch(hintOf(rowFor(win, "Model")), /cannot wire/);
+  assert.ok(rowFor(win, "Model").querySelector("button")?.textContent.includes("Wire"));
+  win.close();
+});
+
+// --- wiring ------------------------------------------------------------
+
+test("wiring an input picks from every OTHER slot's compatible outputs", async () => {
+  const { win } = await opened();
+  const sources = win._sourcesFor("sampler", "model");
+  assert.deepEqual(sources.map((s) => s.label), ["model · model"]);
+  win.close();
+});
+
+test("a slot never offers itself as its own source", async () => {
+  // Wiring the loader's own (nonexistent, in this fixture) socket to its own
+  // output is always a cycle -- filtered before the server ever has to say so.
+  const custom = server({ slots: [
+    { id: "a", group: "G", node: "Sampler", inputs: {} },
+  ] });
+  const win = openWindow(custom);
+  await win.ready;
+  assert.deepEqual(win._sourcesFor("a", "model"), []);
+  win.close();
+});
+
+test("only type-compatible outputs are offered", async () => {
+  // Save's own "images" socket wants IMAGE; nothing in this fixture produces
+  // one, so it must not offer the MODEL or LATENT outputs that do exist.
+  const { win } = await opened();
+  assert.deepEqual(win._sourcesFor("save", "images"), []);
+  win.close();
+});
+
+test("wiring sends the chosen source to the server and shows the result", async () => {
+  const { win, api } = await opened({ server: {
+    slots: [
+      { id: "model", group: "Loaders", node: "Loader", inputs: { model_name: "a.safetensors" } },
+      { id: "sampler", group: "Sampling", node: "Sampler", inputs: { steps: 20, sampler_name: "euler" } },
+    ],
+  } });
+  await win._wire("sampler", "model", "model", 0);
+  const sent = api.calls.at(-1).check;
+  assert.equal(sent.action, "wire");
+  assert.deepEqual(
+    { slot: sent.slot, input: sent.input, from_slot: sent.from_slot, from_output: sent.from_output },
+    { slot: "sampler", input: "model", from_slot: "model", from_output: 0 });
+
+  win.enter("Sampling");
+  assert.match(hintOf(rowFor(win, "Model")), /fed by model/);
+  win.close();
+});
+
+test("unwiring asks the server and the row goes back to unfed", async () => {
+  const { win, api } = await opened();
+  await win._unwire("sampler", "model");
+  const sent = api.calls.at(-1).check;
+  assert.deepEqual({ action: sent.action, slot: sent.slot, input: sent.input },
+                    { action: "unwire", slot: "sampler", input: "model" });
+
+  win.enter("Sampling");
+  assert.match(hintOf(rowFor(win, "Model")), /nothing feeds it/);
+  win.close();
+});
+
+test("the Wire button becomes Change once an input is fed", async () => {
+  const { win } = await opened();
+  win.enter("Sampling");
+  assert.ok(button(win, "Change"), "a wired socket did not offer Change");
+  assert.throws(() => button(win, "Wire…"));
+  win.close();
+});
+
+test("an unfed socket has no Unwire button to press", async () => {
+  const custom = server({ slots: [{ id: "s", group: "Sampling", node: "Sampler", inputs: {} }] });
+  const win = openWindow(custom);
+  await win.ready;
+  win.enter("Sampling");
+  assert.throws(() => button(win, "Unwire"));
+  win.close();
+});
+
+// --- wiring a WIDGET input -- "linked inputs" -------------------------------
+//
+// A widget-typed input (a number, a string, a combo) can hold a link too --
+// that IS what a "linked input" is, several nodes' widgets fed from one
+// Primitive node's output. Found by adversarial review: the sockets loop had
+// all of this and the widgets loop had none of it, so the one thing this
+// feature was built for could not be done through the window at all, and a
+// widget that already held a link (from an imported project, or wired by
+// hand through the server) rendered as an ordinary editable box holding the
+// WRONG value -- the widget's own default -- with nothing saying it was fed
+// from elsewhere.
+
+test("an unlinked widget offers a way to wire it, alongside its normal editor", async () => {
+  const { win } = await opened();
+  win.enter("Sampling");
+  const row = rowFor(win, "Steps");
+  assert.ok(row.querySelector("input[type=number], input:not([type])"),
+    "the normal value editor is gone");
+  assert.ok([...row.querySelectorAll("button")].some((b) =>
+    b.getAttribute("aria-label") === "Wire Steps from another node"), "no way to wire it");
+  win.close();
+});
+
+test("a widget input that already holds a link is shown as wired, not as a box with the wrong default", async () => {
+  const custom = server({ slots: [
+    { id: "shared", group: "Loaders", node: "PrimitiveInt", inputs: { value: 512 } },
+    { id: "s", group: "Sampling", node: "Sampler", inputs: { steps: ["shared", 0] } },
+  ] });
+  const win = openWindow(custom);
+  await win.ready;
+  win.enter("Sampling");
+  const row = rowFor(win, "Steps");
+  assert.match(hintOf(row), /fed by shared/);
+  assert.match(hintOf(row), /Primitive Int/);
+  assert.equal(row.querySelector("input[type=number]"), null,
+    "a linked widget still offered a box holding its own default, not the real source");
+  assert.ok(button(win, "Change"));
+  assert.ok(button(win, "Unwire"));
+  win.close();
+});
+
+test("wiring a widget from a Primitive node sends the wire and shows the result", async () => {
+  const { win, api } = await opened({ server: {
+    slots: [
+      { id: "shared", group: "Loaders", node: "PrimitiveInt", inputs: { value: 512 } },
+      { id: "s", group: "Sampling", node: "Sampler", inputs: { sampler_name: "euler" } },
+    ],
+  } });
+  await win._wire("s", "steps", "shared", 0);
+  const sent = api.calls.at(-1).check;
+  assert.deepEqual(
+    { action: sent.action, slot: sent.slot, input: sent.input, from_slot: sent.from_slot, from_output: sent.from_output },
+    { action: "wire", slot: "s", input: "steps", from_slot: "shared", from_output: 0 });
+
+  win.enter("Sampling");
+  assert.match(hintOf(rowFor(win, "Steps")), /fed by shared/);
+  win.close();
+});
+
+test("unwiring a widget puts its normal editor back", async () => {
+  const custom = server({ slots: [
+    { id: "shared", group: "Loaders", node: "PrimitiveInt", inputs: { value: 512 } },
+    { id: "s", group: "Sampling", node: "Sampler", inputs: { steps: ["shared", 0] } },
+  ] });
+  const win = openWindow(custom);
+  await win.ready;
+  await win._unwire("s", "steps");
+
+  win.enter("Sampling");
+  const row = rowFor(win, "Steps");
+  assert.match(hintOf(row), /^$/);
+  assert.ok(row.querySelector("input[type=number], input:not([type])"),
+    "unwiring did not bring the normal editor back");
+  win.close();
+});
+
+test("a widget picker offers a real Primitive source, filtered by type", async () => {
+  const custom = server({ slots: [
+    { id: "shared", group: "Loaders", node: "PrimitiveInt", inputs: { value: 512 } },
+    { id: "s", group: "Sampling", node: "Sampler", inputs: {} },
+  ] });
+  const win = openWindow(custom);
+  await win.ready;
+  const sources = win._sourcesFor("s", "steps");
+  assert.deepEqual(sources.map((s) => s.label), ["shared · value"]);
+  win.close();
+});
+
+test("wiring an input that already has a drafted, unsaved value does not let the stale value win on Save", async () => {
+  // Found by adversarial review, reproduced live: edit steps (drafted, not
+  // sent), then wire steps to a real source (a STRUCTURE change, committed
+  // immediately) -- then Save. saveDraft() spreads the draft OVER the slot's
+  // current inputs, and until this was fixed the stale drafted "35" silently
+  // overwrote the link the user had just watched get confirmed on screen.
+  const { win, api } = await opened({ server: {
+    slots: [
+      { id: "shared", group: "Loaders", node: "PrimitiveInt", inputs: { value: 512 } },
+      { id: "s", group: "Sampling", node: "Sampler", inputs: { sampler_name: "euler" } },
+    ],
+  } });
+  win.enter("Sampling");
+  const steps = rowFor(win, "Steps").querySelector("input");
+  steps.value = "35";
+  fire(steps, "blur");
+  assert.equal(win.pending, 1, "the edit was not drafted");
+
+  await win._wire("s", "steps", "shared", 0);
+  assert.equal(win.pending, 0, "the stale draft for the now-wired input was not dropped");
+
+  click(button(win, "Save"));
+  await new Promise(setImmediate);
+
+  assert.deepEqual(api.held.find((s) => s.id === "s").inputs.steps, ["shared", 0],
+    "the stale drafted value overwrote the wire on Save");
   win.close();
 });
 

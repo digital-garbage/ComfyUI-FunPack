@@ -149,6 +149,61 @@ def test_an_unknown_action_is_refused(server):
     assert status == 400 and body["problems"]  # a malformed request, not an edit
 
 
+# --- wiring, over HTTP ------------------------------------------------------
+
+def test_a_socket_can_be_wired_over_http(server):
+    status, body = _request(server, "POST", "/funpack/api/pipeline",
+                            {"action": "wire", "slot": "decode", "input": "audio_vae",
+                             "from_slot": "vae", "from_output": 0})
+    assert status == 200, body
+    assert body["refused"] == [], body["refused"]
+    decode = next(s for s in body["slots"] if s["id"] == "decode")
+    assert decode["inputs"]["audio_vae"] == ["vae", 0]
+
+
+def test_a_type_mismatched_wire_is_refused_over_http(server):
+    status, body = _request(server, "POST", "/funpack/api/pipeline",
+                            {"action": "wire", "slot": "latent", "input": "width",
+                             "from_slot": "vae", "from_output": 0})
+    assert status == 200
+    assert any("wants" in p for p in body["refused"])
+
+
+def test_wiring_a_slot_that_does_not_exist_is_refused_over_http(server):
+    status, body = _request(server, "POST", "/funpack/api/pipeline",
+                            {"action": "wire", "slot": "gone", "input": "x",
+                             "from_slot": "vae", "from_output": 0})
+    assert status == 200
+    assert any("gone" in p for p in body["refused"])
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"action": "wire", "slot": ["a"], "input": "x", "from_slot": "vae", "from_output": 0}, "named by a string"),
+    ({"action": "wire", "slot": "decode", "input": 7, "from_slot": "vae", "from_output": 0}, "named by a string"),
+    ({"action": "wire", "slot": "decode", "input": "x", "from_slot": 7, "from_output": 0}, "named by a string"),
+    ({"action": "wire", "slot": "decode", "input": "x", "from_slot": "vae", "from_output": "0"}, "a number"),
+    ({"action": "wire", "slot": "decode", "input": "x", "from_slot": "vae", "from_output": True}, "a number"),
+    ({"action": "unwire", "slot": ["a"], "input": "x"}, "named by a string"),
+    ({"action": "unwire", "slot": "decode", "input": 7}, "named by a string"),
+])
+def test_a_malformed_wire_request_comes_back_as_a_400_not_a_500(server, payload, expected):
+    status, body = _request(server, "POST", "/funpack/api/pipeline", payload)
+    assert status == 400, body
+    assert any(expected in p for p in body["problems"]), body
+
+
+def test_unwiring_a_socket_over_http(server):
+    status, body = _request(server, "POST", "/funpack/api/pipeline",
+                            {"action": "unwire", "slot": "latent", "input": "model"})
+    assert status == 200, body
+    assert body["refused"] == []
+    latent = next(s for s in body["slots"] if s["id"] == "latent")
+    assert "model" not in latent["inputs"]
+    # Unwired now means unfilled: the default pipeline's own latent.model is
+    # required, so removing its feed is a real, reportable incompleteness.
+    assert any("model" in p for p in body["incomplete"])
+
+
 def test_an_explicitly_empty_pipeline_is_not_replaced_by_the_default(server):
     """`slots or default()` resurrects the default, because an empty list is
     falsy. A client that removed every slot is entitled to be told it has none

@@ -42,6 +42,24 @@ export function groupsOf(slots, extra = []) {
 const isLink = (value) => Array.isArray(value) && value.length === 2
   && typeof value[0] === "string" && typeof value[1] === "number";
 
+/**
+ * Whether an output of type `given` could feed an input of type `wanted`.
+ *
+ * Mirrors core/comfy_types.py's accepts() -- a union on either side is a set
+ * of members, not one string, so "IMAGE,MASK" takes a MASK. Kept as its own
+ * copy rather than shared with the server: this is a picker's FILTER, not the
+ * refusal that matters -- the server checks the same thing again, for real,
+ * when the wire is actually sent, and is what a bug here would be caught by.
+ */
+function typeAccepts(wanted, given) {
+  if (wanted === "*" || given === "*") return true;
+  const left = new Set(String(wanted).split(",").map((s) => s.trim()).filter(Boolean));
+  const right = new Set(String(given).split(",").map((s) => s.trim()).filter(Boolean));
+  if (!left.size || !right.size) return wanted === given;
+  for (const t of left) if (right.has(t)) return true;
+  return false;
+}
+
 const countOf = (n) => (n === 0 ? "empty" : `${n} node${n === 1 ? "" : "s"}`);
 
 // The one that is open, if one is.
@@ -158,6 +176,27 @@ export function mount({ load, describe, check, search, onApply,
     for (const id of [...draft.keys()]) {
       if (!now.has(id) || now.get(id) !== was.get(id)) draft.delete(id);
     }
+  }
+
+  /**
+   * Drop one input's own drafted value after it was wired or unwired.
+   *
+   * Wiring is a STRUCTURE change and commits immediately; a value typed into
+   * that same box earlier is still sitting in the draft, waiting for Save --
+   * and saveDraft() spreads the draft OVER the slot's current inputs, so an
+   * untouched stale value would silently overwrite the wire the user just
+   * watched get confirmed on screen. forgetDraftsFor() does not catch this:
+   * it only clears a slot's whole draft when the slot's NODE changes, never
+   * when one of its inputs gets wired on its own.
+   */
+  function forgetDraftedInput(slotId, input) {
+    const edited = draft && draft.get(slotId);
+    if (!edited || !Object.prototype.hasOwnProperty.call(edited, input)) return;
+    const rest = { ...edited };
+    delete rest[input];
+    if (Object.keys(rest).length) draft.set(slotId, rest);
+    else draft.delete(slotId);
+    setFooter(footer());
   }
 
   // ----------------------------------------------------------------- draw
@@ -353,6 +392,28 @@ export function mount({ load, describe, check, search, onApply,
     }
 
     for (const widget of described.widgets) {
+      const wired = (slot.inputs || {})[widget.name];
+      // A widget input can hold a link too -- that is the whole of what a
+      // "linked input" is: a Primitive node's output feeding this box instead
+      // of a value typed into it. Shown the same way a wired socket is, not
+      // as an editable box quietly holding the widget's OWN default while the
+      // real value comes from somewhere this window never says.
+      if (isLink(wired)) {
+        const from = slotBy(wired[0]);
+        rows.push(composer.settingsRow.default({
+          label: humanLabel(widget.name),
+          hint: `${widget.type} — fed by ${wired[0]}${from ? ` (${titleOf(from.node)})` : ""}`,
+          control: composer.toolbar.default({ label: widget.name, items: [
+            composer.button.sm({ label: "Change", onClick: () => pickSource(slot, widget) }),
+            composer.button.sm({
+              label: "Unwire", tone: "ghost",
+              onClick: () => unwireInput(slot.id, widget.name),
+            }),
+          ] }),
+        }));
+        continue;
+      }
+
       let setting = settingFor(widget);
       if (setting && unset(slot, widget)) setting = asUnset(setting);
       if (!setting) {
@@ -362,8 +423,18 @@ export function mount({ load, describe, check, search, onApply,
         continue;
       }
       const current = valueOf(slot, widget.name, setting.default);
-      const control = rendererFor(setting)(setting, current,
+      const editor = rendererFor(setting)(setting, current,
         (next) => { if (next !== NOT_SET) edit(slot.id, widget.name, next); });
+      // Every widget can be wired instead of typed into -- ComfyUI's own
+      // "convert to input" idea, and the only way a value ever gets shared
+      // across several nodes as one linked input in the first place.
+      const control = composer.toolbar.default({ label: widget.name, items: [
+        editor,
+        composer.iconButton.sm({
+          icon: "⛓", label: `Wire ${humanLabel(widget.name)} from another node`,
+          onClick: () => pickSource(slot, widget),
+        }),
+      ] });
       // A checkbox row draws its own label and hint. Wrapping it in a settings
       // row printed both of them twice, one above the other.
       rows.push(SELF_LABELLING.has(rendererNameFor(setting))
@@ -375,18 +446,87 @@ export function mount({ load, describe, check, search, onApply,
 
     for (const socket of described.sockets) {
       const wired = (slot.inputs || {})[socket.name];
+      const from = isLink(wired) ? slotBy(wired[0]) : null;
       rows.push(composer.settingsRow.default({
         label: humanLabel(socket.name),
-        // Said outright, because there is no control here to look for. Wiring
-        // is not something this window does yet, and an input reading only
-        // "nothing is wired to it" reads as a thing the user failed to find.
         hint: isLink(wired)
-          ? `fed by ${wired[0]}`
-          : `${socket.type} — nothing feeds it, and this window cannot wire it yet`,
+          ? `${socket.type} — fed by ${wired[0]}${from ? ` (${titleOf(from.node)})` : ""}`
+          : `${socket.type} — nothing feeds it`,
+        control: composer.toolbar.default({ label: socket.name, items: [
+          composer.button.sm({
+            label: isLink(wired) ? "Change" : "Wire…",
+            onClick: () => pickSource(slot, socket),
+          }),
+          isLink(wired)
+            ? composer.button.sm({
+                label: "Unwire", tone: "ghost",
+                onClick: () => unwireInput(slot.id, socket.name),
+              })
+            : null,
+        ].filter(Boolean) }),
       }));
     }
 
     return rows;
+  }
+
+  /** Every OTHER slot's output that could legally feed this socket. */
+  function sourcesFor(slot, socket) {
+    const found = [];
+    for (const candidate of slots) {
+      if (candidate.id === slot.id) continue;      // a self-wire is always a cycle
+      const described = nodes.get(candidate.node);
+      if (!described) continue;
+      described.outputs.forEach((type, index) => {
+        if (!typeAccepts(socket.type, type)) return;
+        const name = (described.output_names || [])[index] || type;
+        found.push({
+          id: `${candidate.id} ${index}`,
+          label: `${candidate.id} · ${name}`,
+          hint: `${titleOf(candidate.node)} — ${type}`,
+        });
+      });
+    }
+    return found;
+  }
+
+  function pickSource(slot, socket) {
+    const options = sourcesFor(slot, socket);
+    const body = options.length
+      ? composer.filterList.md({
+          items: options, placeholder: "Filter", empty: "Nothing matches",
+          onChange: (id) => {
+            const sep = id.indexOf(" ");
+            const fromSlot = id.slice(0, sep);
+            const fromOutput = Number(id.slice(sep + 1));
+            picker.close("picked");
+            wireInput(slot.id, socket.name, fromSlot, fromOutput);
+          },
+        })
+      : composer.emptyState.default({
+          icon: "◇", title: "Nothing produces this yet",
+          hint: `No node in the pipeline currently outputs a ${socket.type}. `
+              + "Add one first, then wire it here.",
+        });
+
+    const picker = composer.modal.stacked({
+      title: `Wire ${humanLabel(socket.name)}`,
+      size: "md",
+      body,
+    });
+  }
+
+  async function wireInput(slotId, input, fromSlot, fromOutput) {
+    if (await commit(slots, { action: "wire", slot: slotId, input,
+                              from_slot: fromSlot, from_output: fromOutput })) {
+      forgetDraftedInput(slotId, input);
+    }
+  }
+
+  async function unwireInput(slotId, input) {
+    if (await commit(slots, { action: "unwire", slot: slotId, input })) {
+      forgetDraftedInput(slotId, input);
+    }
   }
 
   /** Has this input been given a value -- by the pipeline, or in this draft? */
@@ -457,6 +597,13 @@ export function mount({ load, describe, check, search, onApply,
   /** Add a node to `group`, or -- with `replacing` -- point that slot elsewhere. */
   function pickNode(group, replacing = null) {
     const results = composer.region.stack({ gap: "sm", label: "Results" });
+    // filterList draws its own search box, which is redundant here: this
+    // picker already has one (`box`, below) that re-queries the server on
+    // every keystroke. Left both, someone typing into filterList's own box
+    // gets its LOCAL "Nothing matches" over a STALE "Showing N of M" hint
+    // from whatever the outer server search last actually returned -- two
+    // numbers describing two different things, on screen at once.
+    results.node.classList.add("cx-node-picker-results");
     let latest = 0;
     let typing = null;
 
@@ -561,6 +708,15 @@ export function mount({ load, describe, check, search, onApply,
       commit(slots, { action: "replace", slot: slotId, node: className }),
     _moveTo: moveTo,
     _remove: remove,
+    _wire: wireInput,
+    _unwire: unwireInput,
+    _sourcesFor: (slotId, inputName) => {
+      const slot = slotBy(slotId);
+      const described = slot && nodes.get(slot.node);
+      const input = described && (described.sockets.find((s) => s.name === inputName)
+        || described.widgets.find((w) => w.name === inputName));
+      return slot && input ? sourcesFor(slot, input) : [];
+    },
   };
 }
 
@@ -608,6 +764,9 @@ export function open({ load, describe, check, search, onApply } = {}) {
     _replace: content._replace,
     _moveTo: content._moveTo,
     _remove: content._remove,
+    _wire: content._wire,
+    _unwire: content._unwire,
+    _sourcesFor: content._sourcesFor,
   };
   current = handle;
   return handle;

@@ -98,6 +98,94 @@ test("Save and Cancel hold the bottom instead of scrolling with the settings", a
   expect(after.y).toBeCloseTo(bar.y, 0);
 });
 
+test("unwiring and rewiring a socket round-trips against the real server", async ({ page }) => {
+  // Caught exactly this way once: jsdom's fake check() forwarded every field
+  // by construction, so a real bug -- pipeline.js's check() silently dropping
+  // `input`/`from_slot`/`from_output` because they were not in its
+  // destructured parameter list -- passed every jsdom test and only showed up
+  // as a live refusal ("which input to unwire is named by a string, not a
+  // NoneType") on an actual click.
+  await openWindow(page);
+  await page.locator(".cx-card", { hasText: "Preparation" }).click();
+  await page.locator(".cx-filter-row", { hasText: "latent" }).click();
+
+  const modelRow = page.locator(".cx-settings-row")
+    .filter({ has: page.locator(".cx-settings-label", { hasText: /^Model$/ }) });
+  await expect(modelRow).toContainText("fed by model");
+  await modelRow.getByRole("button", { name: "Unwire" }).click();
+  await expect(modelRow).toContainText("nothing feeds it");
+  await expect(modelRow.getByRole("button", { name: "Wire…" })).toBeVisible();
+
+  await modelRow.getByRole("button", { name: "Wire…" }).click();
+  const picker = page.locator(".cx-modal", { hasText: "Wire Model" });
+  await expect(picker).toBeVisible();
+  // Both real MODEL producers in the default pipeline, not just the one it
+  // started wired to -- proves the picker is not just replaying the old link.
+  await expect(picker).toContainText("model · model");
+  await expect(picker).toContainText("modifiers · model");
+  await picker.getByText("model · model", { exact: false }).click();
+
+  await expect(page.locator(".cx-modal", { hasText: "Wire Model" })).toHaveCount(0);
+  await expect(modelRow).toContainText("fed by model");
+  await expect(modelRow).toContainText("FunPack Diffusion Model Loader");
+});
+
+test("a widget input -- a linked input -- can be wired to another node's output, for real", async ({ page }) => {
+  // Found by adversarial review: the sockets loop had a Wire button and the
+  // widgets loop had none at all, so "linked inputs" -- several widgets
+  // sharing one node's output as their value -- could not be built through
+  // this window despite the backend fully supporting it. Real nodes, real
+  // types: FunPackDiffusionModelLoader's second output is its own STRING
+  // status line, and "negative"'s "text" widget is a STRING too.
+  await openWindow(page);
+  await page.locator(".cx-card", { hasText: "Preparation" }).click();
+  await page.locator(".cx-filter-row", { hasText: "negative" }).click();
+
+  const textRow = page.locator(".cx-settings-row")
+    .filter({ has: page.locator(".cx-settings-label", { hasText: /^Text$/ }) });
+  await expect(textRow.locator("textarea, input")).toBeVisible();
+
+  await textRow.getByRole("button", { name: /^Wire Text/ }).click();
+  const picker = page.locator(".cx-modal", { hasText: "Wire Text" });
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText("model · status");
+  await picker.getByText("model · status", { exact: false }).click();
+
+  await expect(page.locator(".cx-modal", { hasText: "Wire Text" })).toHaveCount(0);
+  await expect(textRow).toContainText("fed by model");
+  await expect(textRow.locator("textarea, input")).toHaveCount(0);
+  await expect(textRow.getByRole("button", { name: "Unwire" })).toBeVisible();
+
+  await textRow.getByRole("button", { name: "Unwire" }).click();
+  await expect(textRow).not.toContainText("fed by");
+  await expect(textRow.locator("textarea, input")).toBeVisible();
+});
+
+test("the Add-node picker has one search box, not two disagreeing ones", async ({ page }) => {
+  // filterList draws its own "Filter these results" search box; this picker
+  // already has an outer one that re-queries the server on every keystroke.
+  // Typing into filterList's own box used to show its correct LOCAL "Nothing
+  // matches" right next to a STALE "Showing 40 of 75" hint left over from
+  // the outer search's last real answer, before it -- or anything -- had
+  // been touched. Found live: two numbers on screen describing two different
+  // searches, neither telling you which is which.
+  await openWindow(page);
+  await page.locator(".cx-card", { hasText: "Sampling" }).click();
+  await page.getByRole("button", { name: "Add node" }).click();
+
+  const picker = page.locator(".cx-modal", { hasText: "Add a node to Sampling" });
+  await expect(picker.getByPlaceholder("Search installed nodes")).toBeVisible();
+  // Hidden via CSS (display: none), not removed from the DOM -- filterList
+  // still builds it, this picker just does not show it. toHaveCount(0) would
+  // check for removal, which is not what the fix does.
+  await expect(picker.getByPlaceholder("Filter these results")).not.toBeVisible();
+  await expect(picker).toContainText(/Showing \d+ of \d+/);
+
+  await picker.getByPlaceholder("Search installed nodes").fill("zzz-nothing-real-matches-this");
+  await expect(picker).toContainText("Nothing matches");
+  await expect(picker).not.toContainText(/Showing \d+ of \d+/);
+});
+
 test("the way in is closed while the window is open", async ({ page }) => {
   // Reported from a real session: two of the same modal, one behind the other.
   // Two windows over one pipeline are two drafts of it -- whichever is saved

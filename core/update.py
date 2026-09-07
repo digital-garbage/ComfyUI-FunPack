@@ -86,6 +86,69 @@ def _is_dirty() -> bool:
     return bool((proc.stdout or "").strip())
 
 
+def _stash_if_dirty(context: str) -> str | None:
+    """Auto-stash local changes rather than refuse, for the two actions where
+    they are almost always incidental to what was just asked for -- a rollback
+    or a branch switch, not "I was in the middle of something on THIS branch"
+    the way a plain update is. Returns the stash's own message if one was
+    made, so the caller can say so: an auto-stash nobody is told about is a
+    silent discard the first time someone goes looking for the change and it
+    is not where they left it.
+
+    `-u` includes untracked files, matching exactly what `_is_dirty()` itself
+    considers dirty (`git status --porcelain` reports those too) -- stashing
+    only tracked changes would leave the tree just as blocked by the ones
+    `_is_dirty()` is still counting.
+    """
+    if not _is_dirty():
+        return None
+    # Named plainly, including "new files" rather than just "changes": `-u`
+    # sweeps up anything untracked too, which reads very differently from an
+    # edit to a file already in the repo, and this message is the one place
+    # that gets shown -- in the UI, and in `git stash list` for anyone who
+    # goes looking on the command line instead.
+    message = f"FunPack: auto-stashed (incl. new files) before {context}"
+    proc = _run_git("stash", "push", "-u", "-m", message)
+    if proc.returncode != 0:
+        raise GitUpdateError((proc.stderr or proc.stdout or "git stash failed").strip())
+    return message
+
+
+def _disclosing(stashed: str | None, work):
+    """Run `work`, and if ANYTHING it raises escapes, make sure the stash is
+    named in what gets reported -- whatever failed, however far past the
+    stash it happened, whatever kind of exception it came out as.
+
+    Round three of the same fix. Round one only caught the ONE `git
+    checkout` call inside checkout() failing. Round two widened that to the
+    whole post-stash body of both checkout() and rollback(), since pull()
+    (called by checkout(pull_after=True), the real default) and
+    `git reset --hard` (inside rollback()) can each fail on their own --
+    but both rounds only caught `GitUpdateError`. `_run_git` can also raise
+    `subprocess.TimeoutExpired` (a hung `git fetch` on a slow or flaky
+    network -- exactly the kind of connection a rented GPU box has) or, in
+    principle, anything else `subprocess.run` itself can throw, and none of
+    those are a `GitUpdateError`, so they sailed straight past the narrower
+    catch with the stash disclosure lost the same way, one exception type
+    later. Catching broadly here also means an unexpected failure comes back
+    as a clean, named `GitUpdateError` (a 400 the UI can show) instead of an
+    unhandled exception (a bare 500 in `core/routes.py`'s generic handler) --
+    which is what every OTHER failure path in this file already does by
+    converting a bad `returncode` to `GitUpdateError` itself; this just
+    covers the exceptions `_run_git` can raise instead of returning.
+    """
+    if not stashed:
+        return work()
+    try:
+        return work()
+    except Exception as exc:
+        raise GitUpdateError(
+            f'{exc if isinstance(exc, GitUpdateError) else f"{type(exc).__name__}: {exc}"}'
+            f'\n\n(Local changes were stashed first, before this failed: '
+            f'"{stashed}". They are still there -- git stash pop to get them '
+            f'back.)') from exc
+
+
 def _ahead_behind(branch: str) -> tuple[int, int]:
     proc = _run_git("rev-list", "--left-right", "--count", f"HEAD...origin/{branch}")
     if proc.returncode != 0:
@@ -154,22 +217,38 @@ def rollback_target() -> dict | None:
 
 
 def rollback() -> dict:
-    """Hard-reset to HEAD@{1} -- undoes the most recent Update or Switch branch. Refuses on
-    a dirty tree, same as pull()/checkout(), so nothing local is silently discarded. Does
-    NOT reinstall requirements for the commit being rolled back to -- an update that changed
-    dependencies and turned out bad may need `pip install -r requirements.txt` run by hand
-    after rolling back the code; automatically reversing a pip install is its own can of
-    worms (downgrades can break OTHER already-installed packages) and out of scope here."""
-    if _is_dirty():
-        raise GitUpdateError("Working tree has local changes. Commit or stash them before rolling back.")
+    """Hard-reset to HEAD@{1} -- undoes the most recent Update or Switch branch. A dirty tree
+    is auto-stashed rather than refused (see _stash_if_dirty) -- local changes sitting around
+    right before a deliberate "undo the last update" are almost never the point of doing it,
+    and `git stash` is nothing is silently discarded, only moved somewhere it can be found
+    again. Does NOT reinstall requirements for the commit being rolled back to -- an update
+    that changed dependencies and turned out bad may need `pip install -r requirements.txt`
+    run by hand after rolling back the code; automatically reversing a pip install is its own
+    can of worms (downgrades can break OTHER already-installed packages) and out of scope
+    here.
+
+    The target is read BEFORE stashing, not after: `git stash push` writes its
+    own HEAD reflog entry, so stashing first shifts what `HEAD@{1}` means --
+    it silently manufactured a rollback target out of the stash's own move on
+    a repo that had none, and shifted a real one to point at the wrong commit
+    everywhere else. Found by a real-git test, not reasoned out in advance.
+    """
     target = rollback_target()
     if target is None:
         raise GitUpdateError("Nothing to roll back to.")
-    before = _current_commit()
-    reset = _run_git("reset", "--hard", target["commit"])
-    if reset.returncode != 0:
-        raise GitUpdateError((reset.stderr or reset.stdout or "git reset failed").strip())
-    return {"branch": _current_branch(), "before": before, "after": _current_commit()}
+    stashed = _stash_if_dirty("rolling back")
+
+    def _do():
+        before = _current_commit()
+        reset = _run_git("reset", "--hard", target["commit"])
+        if reset.returncode != 0:
+            raise GitUpdateError((reset.stderr or reset.stdout or "git reset failed").strip())
+        return {"branch": _current_branch(), "before": before, "after": _current_commit()}
+
+    result = _disclosing(stashed, _do)
+    if stashed:
+        result["stashed"] = stashed
+    return result
 
 
 def status(*, remote: bool = True) -> dict:
@@ -468,31 +547,54 @@ def pull(branch: str | None = None, *, install_deps: bool = False) -> dict:
 
 
 def checkout(branch: str, *, pull_after: bool = True, install_deps: bool = False) -> dict:
-    """Switch branch, optionally pull, return combined result."""
+    """Switch branch, optionally pull, return combined result.
+
+    A dirty tree is auto-stashed rather than refused -- see _stash_if_dirty and
+    rollback()'s reasoning, which applies the same way here: whatever was left
+    uncommitted on the branch being LEFT is not why anyone pressed "switch",
+    and it comes back with `git stash pop` on whichever branch they return to.
+    Stashing happens before the checkout below, so pull()'s own dirty check
+    (still in force, unchanged) finds a clean tree and never raises FOR THAT
+    reason -- but pull() can still fail for others (diverged branches, a
+    failed fetch), same as the checkout step itself can, so both run inside
+    _disclosing() rather than only the checkout call being covered.
+    """
     branch = (branch or "").strip()
     if not branch:
         raise GitUpdateError("Branch name is required.")
     branches = _list_branches()
     if branch not in branches:
         raise GitUpdateError(f'Branch "{branch}" is not available locally or on origin.')
-    if _is_dirty():
-        raise GitUpdateError("Working tree has local changes. Commit or stash them before switching branches.")
-    before_branch = _current_branch()
-    before_commit = _current_commit()
-    if branch != before_branch:
-        co = _run_git("checkout", branch)
-        if co.returncode != 0:
-            raise GitUpdateError((co.stderr or co.stdout or "git checkout failed").strip())
-    result = {"branch": branch, "before_branch": before_branch, "before": before_commit}
-    if pull_after:
-        pulled = pull(branch, install_deps=install_deps)
-        result.update(pulled)
-    else:
-        result["after"] = _current_commit()
-        result["updated"] = result["before"] != result["after"]
-        # A branch switch alone can cross a requirements change just as a pull can — the
-        # checkout above already moved the working tree onto the other branch's files.
-        if install_deps and result["updated"] and requirements_changed(before_commit,
-                                                                      result["after"]):
-            result["requirements"] = install_requirements()
+    stashed = _stash_if_dirty(f"switching to {branch}")
+
+    def _do():
+        before_branch = _current_branch()
+        before_commit = _current_commit()
+        if branch != before_branch:
+            co = _run_git("checkout", branch)
+            if co.returncode != 0:
+                raise GitUpdateError((co.stderr or co.stdout or "git checkout failed").strip())
+        result = {"branch": branch, "before_branch": before_branch, "before": before_commit}
+        if pull_after:
+            # Runs inside the same wrapper: pull() can fail for its own
+            # reasons (diverged branches, a failed fetch) well after the
+            # checkout above succeeded, and that failure is exactly as
+            # capable of losing the stash disclosure as the checkout step
+            # itself was -- found by a second round of review, after the
+            # first fix only covered the checkout call directly above.
+            pulled = pull(branch, install_deps=install_deps)
+            result.update(pulled)
+        else:
+            result["after"] = _current_commit()
+            result["updated"] = result["before"] != result["after"]
+            # A branch switch alone can cross a requirements change just as a pull can — the
+            # checkout above already moved the working tree onto the other branch's files.
+            if install_deps and result["updated"] and requirements_changed(before_commit,
+                                                                          result["after"]):
+                result["requirements"] = install_requirements()
+        return result
+
+    result = _disclosing(stashed, _do)
+    if stashed:
+        result["stashed"] = stashed
     return result

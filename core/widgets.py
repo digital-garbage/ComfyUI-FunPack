@@ -98,6 +98,13 @@ def describe(class_type: str) -> Optional[dict]:
                         and not described.get("forceInput"))
             (widgets if editable else sockets).append(described)
 
+    outputs = list(getattr(node, "RETURN_TYPES", ()) or ())
+    # RETURN_NAMES is optional even on a well-formed node -- absent means
+    # "named after its type", which is what ComfyUI's own frontend falls back
+    # to, so a wiring picker reads "MODEL" rather than an empty label.
+    names = list(getattr(node, "RETURN_NAMES", ()) or ())
+    names += outputs[len(names):]
+
     return {
         "node": class_type,
         "title": _display_name(class_type, node),
@@ -105,7 +112,8 @@ def describe(class_type: str) -> Optional[dict]:
         "category": getattr(node, "CATEGORY", "") or "",
         "widgets": widgets,
         "sockets": sockets,
-        "outputs": list(getattr(node, "RETURN_TYPES", ()) or ()),
+        "outputs": outputs,
+        "output_names": names,
     }
 
 

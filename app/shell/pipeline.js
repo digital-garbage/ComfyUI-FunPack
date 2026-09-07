@@ -18,7 +18,8 @@ const NODES = "/funpack/api/nodes";
  * about it is worth saying, such as settings that will not be applied.
  */
 export async function check({ fetch: doFetch = globalThis.fetch, slots, values, inputs,
-                              action = "check", slot, node } = {}) {
+                              action = "check", slot, node,
+                              input, from_slot: fromSlot, from_output: fromOutput } = {}) {
   // `slots` and an action travel together on purpose: a remove is "take this
   // one out of THIS pipeline", and sending the action without the pipeline the
   // user is looking at would apply it to the server's defaults instead.
@@ -34,6 +35,12 @@ export async function check({ fetch: doFetch = globalThis.fetch, slots, values, 
   if (inputs && Object.keys(inputs).length) body.inputs = inputs;
   if (slot !== undefined) body.slot = slot;
   if (node !== undefined) body.node = node;
+  // wire's own fields, forwarded the same way -- an unlisted key here is one
+  // that reaches the server as though it was never sent, which is exactly how
+  // this dropped `input` silently until a live click on Unwire caught it.
+  if (input !== undefined) body.input = input;
+  if (fromSlot !== undefined) body.from_slot = fromSlot;
+  if (fromOutput !== undefined) body.from_output = fromOutput;
 
   const response = await doFetch(ENDPOINT, {
     method: "POST",

@@ -353,10 +353,24 @@ def test_a_blocked_restart_is_actually_finishable_once_the_run_ends(server, monk
     assert body["restart_pending"] is False, "stayed pending after actually restarting"
 
 
-def test_restarting_with_nothing_pending_is_refused(server):
+def test_restarting_with_nothing_pending_just_restarts(server, monkeypatch):
+    """The route now doubles as a plain "Restart ComfyUI" button: nothing owed
+    is not a reason to refuse, it is the normal case for someone pressing it
+    on purpose."""
     status, body = _request(server["port"], "POST", "/funpack/api/git/restart")
-    assert status == 400
-    assert "detail" in body
+    assert status == 200, body
+    assert body["restarting"] is True
+    time.sleep(1.0)
+    assert server["restarts"] == [1]
+
+
+def test_restarting_with_nothing_pending_still_respects_a_running_generation(server, monkeypatch):
+    monkeypatch.setattr(routes, "_generation_running", lambda: True)
+    status, body = _request(server["port"], "POST", "/funpack/api/git/restart")
+    assert status == 200, body
+    assert body["restarting"] is False
+    assert body["blocked"]
+    assert server["restarts"] == []
 
 
 def test_a_rollback_pressed_twice_while_blocked_does_not_roll_back_twice(server, monkeypatch):
