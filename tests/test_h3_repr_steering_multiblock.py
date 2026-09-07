@@ -88,6 +88,55 @@ def test_empty_steer_block_falls_back_to_default_block():
     assert ("double_block", rs.DEFAULT_BLOCK) in dit
 
 
+def test_strength_zero_does_not_claim_to_be_applying(monkeypatch, capsys):
+    """passive_capture (see _sample_chunk) calls this with strength forced to 0.0 while a
+    real learned direction may already exist -- the console must not say "applying" when
+    nothing was actually injected (the same trap already fixed for h3_q_steering's version
+    of this print)."""
+    monkeypatch.setattr(rs, "direction", lambda _k, block=None: (torch.tensor([1.0, 0.0, 0.0]), 5, 5))
+    node = S()
+    patched = node._install_h3_repr_steering(
+        _FakeModel(), "key", strength=0.0, capture_holder=[{}], steer_block="5")
+
+    out = _run_block(patched, 5)
+    assert torch.allclose(out, torch.ones(4, 3)), "strength 0 -> no injection despite a real direction"
+    stdout = capsys.readouterr().out
+    assert "applying learned direction" not in stdout
+    assert "strength is 0" in stdout
+
+
+def test_passive_capture_installs_and_captures_with_reins_toggle_off(monkeypatch):
+    """The _sample_chunk-level gate: `if refinement_key and (h3_repr_steering or
+    h3_repr_steering_passive_capture))` -- with the REINS checkbox off, passive_capture
+    alone must still get _install_h3_repr_steering called, with strength forced to 0.0."""
+    monkeypatch.setattr(rs, "direction", lambda _k, block=None: (None, 0, 0))
+    node = S()
+    h3_repr_steering = False
+    h3_repr_steering_passive_capture = True
+    refinement_key = "key"
+    capture_holder = [{}]
+    if refinement_key and (h3_repr_steering or h3_repr_steering_passive_capture):
+        patched = node._install_h3_repr_steering(
+            _FakeModel(), refinement_key,
+            0.05 if h3_repr_steering else 0.0,
+            capture_holder, steer_block="5")
+    out = _run_block(patched, 5)
+    assert torch.allclose(out, torch.ones(4, 3)), "REINS off -> never injects, even passively"
+    assert 5 in capture_holder[0], "passive capture must still record a descriptor"
+
+
+def test_passive_capture_default_matches_input_types_default():
+    """The exact bug class caught live in h3_q_steer_block (sample()'s own default disagreed
+    with INPUT_TYPES, so every pre-existing workflow -- missing this new optional widget --
+    silently turned the feature on): both must default to False here too."""
+    import inspect
+    sig_default = inspect.signature(S.sample).parameters[
+        "h3_repr_steering_passive_capture"].default
+    input_types_default = S.INPUT_TYPES()["optional"][
+        "h3_repr_steering_passive_capture"][1]["default"]
+    assert sig_default is False and input_types_default is False
+
+
 if __name__ == "__main__":
     test_empty_steer_block_falls_back_to_default_block()
     print("ok (run via pytest for the monkeypatch-dependent cases)")

@@ -3017,6 +3017,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "",
                     "tooltip": "Which block(s) query-steering is captured AND applied at. Blank = off (nowhere to apply is not a lesser version of this, it costs nothing and captures nothing). Same syntax as h3_block_repeat -- a block, a range, or a comma list; try 0,1, the early blocks where h3_repr_steering's own stylistic effect turned out to live. Each named block learns and steers with its OWN direction, independent of every other block and of h3_repr_steering_block (different store, different vector space).",
                 }),
+                "h3_repr_steering_passive_capture": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Keep banking REINS' liked-minus-disliked history at every candidate block even while h3_repr_steering itself is OFF -- every rating still trains it, nothing is ever added back into the video. Off by default: turning REINS off has always also stopped it from learning, and this flips that only when you explicitly ask for it. Turn this on to build up rating history before committing to steering for real, or to compare 'REINS off' against 'REINS on' without losing ratings made during the off half. Has no effect when h3_repr_steering is already on (that already captures unconditionally).",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -3726,6 +3730,7 @@ class FunPackLTXAVSceneChainSampler:
                       bounded_attention_enabled=False,
                       h3_repr_steering=False, h3_repr_steering_strength=0.05,
                       h3_repr_steering_block="25", h3_repr_capture_slot="",
+                      h3_repr_steering_passive_capture=False,
                       h3_av_decouple=0.0,
                       h3_explore_temperature=0.0, h3_explore_temperature_block="40-49",
                       h3_block_repeat="", h3_block_repeat_times=1,
@@ -3817,10 +3822,15 @@ class FunPackLTXAVSceneChainSampler:
             if _influence_on:
                 model = self._install_block_influence(model, _influence_capture)
         _repr_capture = [{}]
-        if h3_repr_steering and refinement_key:
+        if refinement_key and (h3_repr_steering or h3_repr_steering_passive_capture):
+            # Passive capture forces strength to 0 rather than skipping the strength
+            # argument -- _install_h3_repr_steering already captures every candidate block
+            # unconditionally and only gates INJECTION on strength>0.0, so this reuses that
+            # existing behavior exactly instead of adding a second capture-only code path.
             model = self._install_h3_repr_steering(
-                model, refinement_key, h3_repr_steering_strength, _repr_capture,
-                steer_block=h3_repr_steering_block)
+                model, refinement_key,
+                h3_repr_steering_strength if h3_repr_steering else 0.0,
+                _repr_capture, steer_block=h3_repr_steering_block)
         model = self._install_h3_av_decouple(model, h3_av_decouple)
         model = self._install_h3_attn_temperature(
             model, h3_explore_temperature, h3_explore_temperature_block)
@@ -6869,12 +6879,24 @@ class FunPackLTXAVSceneChainSampler:
             patches_replace["dit"] = dit_patches
             to["patches_replace"] = patches_replace
             patched.model_options["transformer_options"] = to
-            _steered = sorted(b for b, d in directions.items() if d is not None)
-            if _steered:
-                _per_block = ", ".join(f"{b} ({_counts[b][0]}/{_counts[b][1]})" for b in _steered)
+            _have_direction = sorted(b for b, d in directions.items() if d is not None)
+            # Gated on strength too, not just direction-availability -- passive_capture (see
+            # _sample_chunk) deliberately calls this with strength forced to 0.0 while real
+            # directions exist, which used to make this print "applying ... strength 0" (the
+            # exact silent-success-message trap fixed for h3_q_steering's own version of this
+            # same print) every time REINS itself was off but passive_capture was on.
+            if _have_direction and _strength > 0.0:
+                _per_block = ", ".join(f"{b} ({_counts[b][0]}/{_counts[b][1]})"
+                                       for b in _have_direction)
                 print(f"[FunPackSceneChain] H3 representation steering: applying learned "
                       f"direction(s) at block (liked/disliked): {_per_block}, "
                       f"strength {_strength:g}.")
+            elif _have_direction:
+                _per_block = ", ".join(f"{b} ({_counts[b][0]}/{_counts[b][1]})"
+                                       for b in _have_direction)
+                print(f"[FunPackSceneChain] H3 representation steering: learned direction(s) "
+                      f"available at block (liked/disliked): {_per_block}, but strength is "
+                      f"0 -- capturing only, nothing applied.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 representation steering", _e,
@@ -7947,6 +7969,7 @@ class FunPackLTXAVSceneChainSampler:
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                h3_repr_steering=False, h3_repr_steering_strength=0.05,
                h3_repr_steering_block="25", h3_repr_capture_slot="",
+               h3_repr_steering_passive_capture=False,
                h3_av_decouple=0.0,
                h3_explore_temperature=0.0, h3_explore_temperature_block="40-49",
                h3_block_repeat="", h3_block_repeat_times=1,
@@ -8848,6 +8871,7 @@ class FunPackLTXAVSceneChainSampler:
                     h3_repr_steering_strength=h3_repr_steering_strength,
                     h3_repr_steering_block=h3_repr_steering_block,
                     h3_repr_capture_slot=h3_repr_capture_slot,
+                    h3_repr_steering_passive_capture=h3_repr_steering_passive_capture,
                     h3_av_decouple=h3_av_decouple,
                     h3_explore_temperature=h3_explore_temperature,
                     h3_explore_temperature_block=h3_explore_temperature_block,
