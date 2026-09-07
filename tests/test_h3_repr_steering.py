@@ -9,7 +9,8 @@ import h3_repr_steering as rs  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _isolate_state(monkeypatch, tmp_path):
-    monkeypatch.setattr(rs, "state_path", lambda key: str(tmp_path / f"{key}.pt"))
+    monkeypatch.setattr(rs, "state_path",
+                        lambda key, kind="repr_steer": str(tmp_path / f"{key}.{kind}.pt"))
 
 
 def _pend(v, block=None):

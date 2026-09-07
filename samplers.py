@@ -3006,6 +3006,17 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0, "min": -50, "max": 50,
                     "tooltip": "Only repeat during part of the schedule. 0 = every step (the original behaviour). Positive N = the FINAL N steps -- structure is already settled, so this only refines. Negative N = the FIRST |N| steps instead -- apply while structure is still forming, then get out of the way and let the untouched rest of the schedule resolve it, the same way the model ordinarily turns a rough early layout into a finished image. Counted in STEPS, not sigma, so it lands on the same point of the schedule regardless of step count or sampler.",
                 }),
+                # Appended here, not next to h3_repr_steering_* above — same widgets_values
+                # positional-mapping trap noted near h3_repr_steering_block. New widgets go at
+                # the end, always.
+                "h3_q_steer_strength": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Same liked-minus-disliked learned direction as h3_repr_steering, but captured and applied on the QUERY vectors going into attention at h3_q_steer_block, not on the block's hidden state. Steers WHICH keys the video rows attend to -- it does not add anything to the residual stream the way h3_repr_steering does, so it is a genuinely different lever, not the same mechanism twice. 0 = off, model not cloned. Needs 2+ liked and 2+ disliked ratings at the SAME block before it steers -- captures read-only until then. Its learned direction lives in its own store, separate from h3_repr_steering's.",
+                }),
+                "h3_q_steer_block": ("STRING", {
+                    "default": "",
+                    "tooltip": "Which block(s) query-steering is captured AND applied at. Blank = off (nowhere to apply is not a lesser version of this, it costs nothing and captures nothing). Same syntax as h3_block_repeat -- a block, a range, or a comma list; try 0,1, the early blocks where h3_repr_steering's own stylistic effect turned out to live. Each named block learns and steers with its OWN direction, independent of every other block and of h3_repr_steering_block (different store, different vector space).",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -3720,6 +3731,7 @@ class FunPackLTXAVSceneChainSampler:
                       h3_block_repeat="", h3_block_repeat_times=1,
                       h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                       h3_block_repeat_last_steps=0,
+                      h3_q_steer_strength=0.0, h3_q_steer_block="",
                       refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -3809,6 +3821,11 @@ class FunPackLTXAVSceneChainSampler:
             model = self._install_h3_repr_steering(
                 model, refinement_key, h3_repr_steering_strength, _repr_capture,
                 steer_block=h3_repr_steering_block)
+        _q_steer_capture = [{}]
+        if refinement_key and self._parse_block_spec(h3_q_steer_block):
+            model = self._install_h3_q_steering(
+                model, refinement_key, h3_q_steer_strength, _q_steer_capture,
+                steer_block=h3_q_steer_block)
         model = self._install_h3_av_decouple(model, h3_av_decouple)
         model = self._install_h3_attn_temperature(
             model, h3_explore_temperature, h3_explore_temperature_block)
@@ -3828,6 +3845,12 @@ class FunPackLTXAVSceneChainSampler:
                     _rs.save_capture_slot(refinement_key, h3_repr_capture_slot, _repr_capture[0])
                 else:
                     _rs.save_pending(refinement_key, _repr_capture[0])
+            if _q_steer_capture[0]:
+                try:
+                    from . import h3_repr_steering as _rs
+                except ImportError:
+                    import h3_repr_steering as _rs
+                _rs.save_pending(refinement_key, _q_steer_capture[0], kind="q_steer")
             if _influence_capture[0]:
                 try:
                     from . import block_influence as _bi
@@ -7064,6 +7087,156 @@ class FunPackLTXAVSceneChainSampler:
                         "not applied this run")
             return model
 
+    def _install_h3_q_steering(self, model, refinement_key, strength, capture_holder,
+                                steer_block=None):
+        """EXPERIMENTAL, unvalidated (H3 only). Same liked-minus-disliked mean-difference
+        mechanism as h3_repr_steering (see that module's docstring for the shared math), but
+        captured and applied on QUERY vectors going into attention instead of on the block's
+        hidden state. Reshapes Q from (heads, head_dim) back into one flat hidden-sized
+        vector per video row so it can reuse h3_repr_steering.capture()/direction() verbatim.
+        The learned direction lives under its own kind="q_steer" sidecar file -- entirely
+        separate from h3_repr_steering's hidden-state directions, same refinement_key -- a
+        block index means a different vector space in each store, so nothing here reads or
+        writes the other's rows.
+
+        Only Q is biased, never K or V. Adding a fixed vector to every KEY uniformly is a
+        provable no-op through softmax: for a fixed query the shift q.c is the same constant
+        added to every key's logit in that row, and softmax is invariant to a constant added
+        across the whole row -- biasing K would look installed and cost real compute while
+        changing nothing. Biasing Q does not have that problem (q'.k_j = q.k_j + c.k_j, and
+        c.k_j varies per key), so Q is the only side of this that can actually move the
+        output. V was not picked either: a uniform additive V bias is mathematically
+        identical to adding straight to the block's output (attention weights sum to 1), which
+        is just h3_repr_steering's own mechanism wearing an attention-shaped costume, not a
+        different lever.
+
+        Only VIDEO-row queries are touched, matching h3_repr_steering's masking rationale
+        (H3 has no separate audio-attention path to spare -- see that module's docstring).
+        `steer_block` -- same range/list syntax as h3_block_repeat -- defaults to
+        h3_repr_steering.DEFAULT_BLOCK if blank; each named block captures and steers with
+        its own independently-learned direction. Assumes batch size 1 (this sampler's only
+        supported shape); no-ops with a one-time notice otherwise rather than guessing at a
+        batched reshape.
+        """
+        try:
+            _strength = float(strength or 0.0)
+        except (TypeError, ValueError):
+            _strength = 0.0
+        try:
+            try:
+                from . import h3_repr_steering as _rs
+            except ImportError:
+                import h3_repr_steering as _rs
+            steer_blocks = (self._parse_block_spec(steer_block)
+                            if steer_block else {_rs.DEFAULT_BLOCK})
+            if not steer_blocks:
+                return model
+            directions = {}
+            _counts = {}
+            for _sb in sorted(steer_blocks):
+                direction, n_liked, n_disliked = _rs.direction(refinement_key, block=_sb,
+                                                                kind="q_steer")
+                directions[_sb] = direction
+                _counts[_sb] = (n_liked, n_disliked)
+                if direction is None:
+                    print(f"[FunPackSceneChain] H3 query steering: not enough data yet "
+                          f"({n_liked} liked / {n_disliked} disliked, need "
+                          f"{_rs.MIN_PER_GROUP} of each at block {_sb}) — capturing this run, "
+                          "not steering it.")
+
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+
+            _seg_holder = {"mod_segments": None}
+            _active_block = {"cur": None}
+            _warned_batch = {"on": False}
+
+            def _make_hook(block):
+                inner = dit_patches.get(("double_block", block))
+
+                def _hook(args, extra):
+                    _seg_holder["mod_segments"] = args.get("mod_segments")
+                    _active_block["cur"] = block
+                    try:
+                        return (extra["original_block"](args) if inner is None
+                                else inner(args, extra))
+                    finally:
+                        _active_block["cur"] = None
+                return _hook
+
+            for _b in steer_blocks:
+                dit_patches[("double_block", _b)] = _make_hook(_b)
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+
+            _mask_cache = {}
+            _inner_attn_override = to.get("optimized_attention_override")
+
+            def _next(func, q_, k_, v_, heads_, **kw):
+                return (_inner_attn_override(func, q_, k_, v_, heads_, **kw)
+                        if _inner_attn_override is not None
+                        else func(q_, k_, v_, heads_, **kw))
+
+            def _override(func, q, k, v, heads, mask=None, skip_reshape=True,
+                          transformer_options=None, **kwargs):
+                block = _active_block["cur"]
+                if block is None or mask is not None or not skip_reshape:
+                    return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
+                                **kwargs)
+                if q.shape[0] != 1:
+                    if not _warned_batch["on"]:
+                        _warned_batch["on"] = True
+                        print("[FunPackSceneChain] H3 query steering: batch size > 1 is not "
+                              "supported by this mechanism — running unmodified this "
+                              "generation.")
+                    return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
+                                **kwargs)
+                seq_len = q.shape[-2]
+                vmask = _mask_cache.get(seq_len, "MISS")
+                if vmask == "MISS":
+                    vmask = _rs.video_mask_from_mod_segments(
+                        _seg_holder["mod_segments"], seq_len, q.device)
+                    _mask_cache[seq_len] = vmask
+                if vmask is None or not bool(vmask.any()):
+                    return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
+                                **kwargs)
+                # (B=1, H, S, D) -> (S, H*D) for the masked rows, so h3_repr_steering.capture()
+                # sees the same shape it already expects from a hidden state.
+                q_flat = q[0].permute(1, 0, 2).reshape(seq_len, -1)
+                desc = _rs.capture(q_flat, vmask)
+                if desc is not None:
+                    # Captured BEFORE injection, same reasoning as h3_repr_steering: a steered
+                    # block's descriptor must reflect the network's natural Q, not this run's
+                    # own strength setting.
+                    capture_holder[0][block] = desc
+                direction = directions.get(block)
+                if direction is not None and _strength > 0.0:
+                    head_dim = q.shape[-1]
+                    rows = q[:, :, vmask, :]
+                    row_norm = rows.detach().float().norm(dim=-1).mean()
+                    if torch.isfinite(row_norm) and row_norm > 0:
+                        dir_per_head = direction.to(q.dtype).to(q.device).view(heads, 1, head_dim)
+                        q = q.clone()
+                        q[:, :, vmask, :] = rows + dir_per_head * _strength * row_norm
+                return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
+                            **kwargs)
+
+            to["optimized_attention_override"] = _override
+            patched.model_options["transformer_options"] = to
+            _steered = sorted(b for b, d in directions.items() if d is not None)
+            if _steered:
+                _per_block = ", ".join(f"{b} ({_counts[b][0]}/{_counts[b][1]})"
+                                       for b in _steered)
+                print(f"[FunPackSceneChain] H3 query steering: applying learned direction(s) "
+                      f"at block (liked/disliked): {_per_block}, strength {_strength:g}.")
+            return patched
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 query steering", _e,
+                        "not applied and not capturing this run")
+            return model
+
     @staticmethod
     def _parse_block_spec(spec, n_blocks=50):
         """"40" | "38-42" | "10,40,44" | "" -> a set of block indices. Anything unparseable
@@ -7714,6 +7887,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_block_repeat="", h3_block_repeat_times=1,
                h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                h3_block_repeat_last_steps=0,
+               h3_q_steer_strength=0.0, h3_q_steer_block="0,1",
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
@@ -8617,6 +8791,8 @@ class FunPackLTXAVSceneChainSampler:
                     h3_block_repeat_video_only=h3_block_repeat_video_only,
                     h3_block_repeat_span_loop=h3_block_repeat_span_loop,
                     h3_block_repeat_last_steps=h3_block_repeat_last_steps,
+                    h3_q_steer_strength=h3_q_steer_strength,
+                    h3_q_steer_block=h3_q_steer_block,
                     refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene

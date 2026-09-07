@@ -70,12 +70,12 @@ def _log():
     return fl
 
 
-def state_path(refinement_key):
+def state_path(refinement_key, kind="repr_steer"):
     try:
         from .conditioning import refinement_state_path
     except ImportError:
         from conditioning import refinement_state_path
-    return refinement_state_path(refinement_key, "repr_steer", prefix="refine_v2", extension="pt")
+    return refinement_state_path(refinement_key, kind, prefix="refine_v2", extension="pt")
 
 
 def _mask_from_mod_segments(mod_segments, seq_len, device, tag):
@@ -133,8 +133,8 @@ def capture(hidden_state, video_mask):
 # one that steers, so block_sweep() can be answered from data already being collected instead
 # of needing its own separate collection pass.
 
-def _load(refinement_key):
-    path = state_path(refinement_key)
+def _load(refinement_key, kind="repr_steer"):
+    path = state_path(refinement_key, kind)
     if not os.path.exists(path):
         return {"rows": [], "pending": None, "slots": {}}
     try:
@@ -149,33 +149,38 @@ def _load(refinement_key):
     return data
 
 
-def _save(refinement_key, data):
-    path = state_path(refinement_key)
+def _save(refinement_key, data, kind="repr_steer"):
+    path = state_path(refinement_key, kind)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     torch.save(data, tmp)
     os.replace(tmp, path)
 
 
-def save_pending(refinement_key, descriptors):
+def save_pending(refinement_key, descriptors, kind="repr_steer"):
     """Written on EVERY captured run, win or lose -- same fix trajectory_probe needed: a
     pending capture must not survive to be paired with the NEXT run's rating instead of its
     own, and the only way to guarantee that is to overwrite it every time, not just when a
     rating happens to follow. `descriptors` is {block: tensor}, whatever candidate blocks the
     sampler actually captured this run -- not required to cover every entry in
-    CANDIDATE_BLOCKS (a shape the hook has never seen just means that block is missing)."""
+    CANDIDATE_BLOCKS (a shape the hook has never seen just means that block is missing).
+
+    `kind` picks which sidecar file this is read/written under (see state_path) -- a second
+    mechanism capturing a DIFFERENT vector space at the same block index (h3_q_steering
+    captures Q, not hidden state) uses its own kind so the two never share rows under the
+    same block key."""
     if not refinement_key or not descriptors:
         return
-    data = _load(refinement_key)
+    data = _load(refinement_key, kind)
     data["pending"] = {int(b): d.detach().float().cpu() for b, d in descriptors.items()}
     try:
-        _save(refinement_key, data)
+        _save(refinement_key, data, kind)
     except OSError as e:
         _log().failed("H3 representation steering", "save pending", e,
                        "this run's capture is not kept")
 
 
-def commit(refinement_key, reward):
+def commit(refinement_key, reward, kind="repr_steer"):
     """Pairs the pending capture with a rating's WEIGHT and appends it to the log. `reward`
     is the caller's already-resolved, already-admissibility-filtered reward -- this function
     trusts it rather than re-deriving a verdict, same as the value functions do with the same
@@ -187,12 +192,12 @@ def commit(refinement_key, reward):
     reports the reward it is ABOUT to commit cannot tell that apart from a real commit."""
     if not refinement_key:
         return "no_key"
-    data = _load(refinement_key)
+    data = _load(refinement_key, kind)
     pending = data.get("pending")
     data["pending"] = None
     if pending is None:
         try:
-            _save(refinement_key, data)
+            _save(refinement_key, data, kind)
         except OSError:
             pass
         return "no_pending"
@@ -200,12 +205,12 @@ def commit(refinement_key, reward):
         data["rows"].append({"desc": pending, "weight": float(reward)})
     except (TypeError, ValueError):
         try:
-            _save(refinement_key, data)
+            _save(refinement_key, data, kind)
         except OSError:
             pass
         return "no_pending"
     try:
-        _save(refinement_key, data)
+        _save(refinement_key, data, kind)
     except OSError as e:
         _log().failed("H3 representation steering", "commit", e, "rating not recorded")
         return "no_pending"
@@ -274,16 +279,16 @@ def discard_slot(refinement_key, slot_id):
             pass
 
 
-def clear_all(refinement_key):
+def clear_all(refinement_key, kind="repr_steer"):
     if not refinement_key:
         return
     try:
-        os.remove(state_path(refinement_key))
+        os.remove(state_path(refinement_key, kind))
     except FileNotFoundError:
         pass
 
 
-def direction(refinement_key, block=None):
+def direction(refinement_key, block=None, kind="repr_steer"):
     """-> (unit_vector, n_positive, n_negative), or (None, n_positive, n_negative) if either
     side is under MIN_PER_GROUP. One Awful and one Perfect is not a direction, it is two
     points -- doesn't matter how many barely-positive rows sit between them.
@@ -303,7 +308,7 @@ def direction(refinement_key, block=None):
     that block was in CANDIDATE_BLOCKS (or missing it for any other reason) are skipped, not
     treated as zero."""
     block = DEFAULT_BLOCK if block is None else int(block)
-    data = _load(refinement_key)
+    data = _load(refinement_key, kind)
     rows = [r for r in data["rows"]
             if isinstance(r, dict) and "weight" in r and isinstance(r.get("desc"), dict)
             and block in r["desc"]]

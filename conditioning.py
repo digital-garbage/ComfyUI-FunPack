@@ -10216,6 +10216,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     }.get(_rs_outcome, _rs_outcome)
                     print(f"[FunPackRefiner] H3 representation steering: weight "
                           f"{_rs_reward:+.3f} for rating '{rating_label}' — {_rs_note}")
+                    # Query steering rides the same rating, its own kind="q_steer" store —
+                    # see h3_repr_steering.py / _install_h3_q_steering. Unconditional and
+                    # silent-on-no-pending for the same reason as REINS above: a run with the
+                    # sampler's h3_q_steer_block blank never captured anything to commit.
+                    _rs_q_outcome = _rs.commit(refinement_key, _rs_reward, kind="q_steer")
+                    if _rs_q_outcome == "recorded":
+                        print(f"[FunPackRefiner] H3 query steering: weight "
+                              f"{_rs_reward:+.3f} for rating '{rating_label}' — recorded")
                     # Block-influence probe rides the same rating. Measurement only -- it
                     # steers nothing, so it is committed unconditionally alongside REINS
                     # rather than behind its own admissibility gate. DELIBERATELY SILENT:
