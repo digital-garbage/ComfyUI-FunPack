@@ -238,6 +238,12 @@ test("filterList gives an icon a coloured chip only from a fixed tone, never fro
   assert.ok(icon.classList.contains("cx-filter-icon-good"));
 });
 
+test("an unknown filterList icon tone is refused rather than rendered as a blank chip", () => {
+  assert.throws(() => mount(composer.filterList.md({
+    items: [{ id: "a", label: "Node packs", icon: "▣", tone: "sparkly-typo" }],
+  })), RangeError);
+});
+
 test("filterList says so when nothing matches", () => {
   const f = mount(composer.filterList.md({ items: [{ id: "a", label: "one" }] }));
   const search = f.node.querySelector("input");

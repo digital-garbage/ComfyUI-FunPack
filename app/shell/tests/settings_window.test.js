@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
+import { setupDom, teardownDom, fire } from "../../composer/tests/_dom.js";
 
 let createSettingsWindow;
 test.before(async () => {
@@ -116,6 +116,20 @@ test("a gitStatus rejection is shown as a hint rather than left blank or thrown"
   w.open("about");
   await new Promise((r) => setTimeout(r, 0));
   assert.match(document.querySelector(".cx-modal").textContent, /Could not read version information/);
+  w.close();
+});
+
+test("a click outside the window does not close it -- a half-finished edit in any section is not a click away from gone", () => {
+  // The bug this guards: pipeline_window.js's own standalone modal has
+  // ALWAYS refused to close on an outside click (a group edit's draft is
+  // the only copy of it), but Settings' own modal was built without
+  // carrying that over, so hosting Models and pipeline in here silently
+  // lost the protection its own file was written to guarantee.
+  const alpha = fakeSection("a", "Alpha");
+  const w = createSettingsWindow({ sections: [alpha] });
+  w.open("a");
+  fire(document.body, "pointerdown");
+  assert.ok(document.querySelector(".cx-modal"), "an outside click closed the window");
   w.close();
 });
 

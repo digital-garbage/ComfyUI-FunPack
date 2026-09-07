@@ -152,6 +152,8 @@ define("textarea", "md", ({ value = "", rows = 4, autoGrow = false, placeholder,
  * Items are DATA -- {id, label, hint, icon} -- never a render callback, so a
  * module cannot smuggle markup in through a "just render this" escape hatch.
  */
+const FILTER_ICON_TONES = new Set(["accent", "danger", "warn", "good", "neutral"]);
+
 define("filterList", "md", ({ items = [], value, onChange, placeholder = "Search", empty = "Nothing matches" } = {}) => {
   let selected = value;
   const search = el("input", { cls: ["cx-input", "cx-input-sm", "cx-search", "cx-focusable"],
@@ -168,13 +170,18 @@ define("filterList", "md", ({ items = [], value, onChange, placeholder = "Search
     list.replaceChildren();
     if (!shown.length) { list.append(el("div", { cls: "cx-filter-empty", text: empty })); return; }
     for (const item of shown) {
+      // `tone` picks one of a FIXED set of chip colours -- never a raw
+      // colour from data, which is the rule `el()`'s style refusal exists to
+      // hold everywhere else too. Enforced, not just claimed: an unknown
+      // tone throws, the same as button.js's own tone check, rather than
+      // silently rendering an unstyled chip.
+      if (item.tone && !FILTER_ICON_TONES.has(item.tone)) {
+        throw new RangeError(`Unknown filterList icon tone "${item.tone}". Known: ${[...FILTER_ICON_TONES].join(", ")}.`);
+      }
       const row = el("button", {
         cls: ["cx-filter-row", "cx-focusable", item.id === selected ? "cx-on" : null],
         attrs: { type: "button", role: "option", "aria-selected": String(item.id === selected) },
         children: [
-          // `tone` picks one of a FIXED set of chip colours -- never a raw
-          // colour from data, which is the rule `el()`'s style refusal exists
-          // to hold everywhere else too.
           item.icon ? el("span", {
             cls: ["cx-filter-icon", item.tone ? `cx-filter-icon-${item.tone}` : null],
             text: item.icon,

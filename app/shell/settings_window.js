@@ -83,6 +83,14 @@ export function createSettingsWindow({ sections = [], gitStatus } = {}) {
     const body = composer.splitPane.h({ panes: [nav, contentStack], size: 25, min: 15, label: "Settings" });
     const modal = composer.modal.generic({
       title: "Settings", size: "xl", body,
+      // Mirrors pipeline_window.js's own standalone modal: a half-finished
+      // edit (Models and pipeline's draft, most concretely) must not vanish
+      // because a click landed on the backdrop. This window has no way to
+      // ask "does the section on screen have unsaved work" per section, so
+      // it holds the door for all of them, the same conservative call
+      // pipeline_window.js already made for itself -- the X button and every
+      // section's own "Close" still work.
+      closeOnOutside: false,
       onClose: () => {
         if (activeCleanup) { activeCleanup.destroy?.(); activeCleanup = null; }
         if (current === handle) current = null;
