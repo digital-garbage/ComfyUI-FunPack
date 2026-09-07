@@ -5,6 +5,13 @@
 export async function openSettingsSection(page, name) {
   await page.getByRole("button", { name: "Settings" }).click();
   await page.locator(".cx-filter-row", { hasText: name }).click();
+  // The sidebar is a hover-expanding rail now (v4's own behaviour): leaving
+  // the mouse where the click landed keeps it open, overlaying the content
+  // every caller is about to interact with -- exactly what a real person's
+  // mouse does NOT do once they move on to the thing they picked. Hovering
+  // the section's own head (never under the rail, whatever the viewport) is
+  // what actually collapses it, at any width a test runs at.
+  await page.locator(".cx-modal-head").hover();
 }
 
 /** The window moved into the unified Settings window when the app grew one. */

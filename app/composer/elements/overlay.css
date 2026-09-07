@@ -30,6 +30,13 @@
 }
 @keyframes cx-pop { from { opacity: 0; transform: translateY(-6px) scale(.99); } }
 
+/* A modal that hosts SWITCHABLE content -- Settings, so far -- rather than
+   one fixed question: sizing to whichever section is showing means the frame
+   itself grows and shrinks on every click, which nothing in a real System
+   Settings window does. A real height, not a max, holds the frame still;
+   .cx-modal-body's own scroll takes the rest. */
+.cx-settings-modal { height: min(660px, 90vh); }  /* v4's own window size, verbatim */
+
 .cx-modal-head {
   display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-5);
   padding: var(--sp-6); border-bottom: var(--bw) solid var(--line);
@@ -43,6 +50,12 @@
 .cx-modal-body {
   padding: var(--sp-6); overflow-y: auto;
   display: flex; flex-direction: column; min-block-size: 0;
+  /* Latent until a modal had a real (not max-) height: a shrink-wrapped card
+     always summed head+body+foot exactly, so the foot landed at the bottom by
+     accident. .cx-settings-modal is a fixed height, and without this the body
+     stopped short of it, leaving the foot floating above true bottom with a
+     gap of bare card showing under it. */
+  flex: 1 1 auto;
 }
 .cx-modal-foot {
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-6);

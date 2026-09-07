@@ -111,11 +111,38 @@ test("the search box also matches a section's keywords, not only its visible tit
   w.close();
 });
 
-test("a gitStatus rejection is shown as a hint rather than left blank or thrown", async () => {
+test("a gitStatus rejection degrades to unknown rather than throwing or hanging on ellipsis", async () => {
   const w = createSettingsWindow({ sections: [], gitStatus: () => Promise.reject(new Error("offline")) });
   w.open("about");
   await new Promise((r) => setTimeout(r, 0));
-  assert.match(document.querySelector(".cx-modal").textContent, /Could not read version information/);
+  assert.match(document.querySelector(".cx-modal").textContent, /unknown/);
+  w.close();
+});
+
+test("a systemInfo rejection leaves the identity facts showing instead of losing them too", async () => {
+  const w = createSettingsWindow({
+    sections: [],
+    gitStatus: () => Promise.resolve({ ok: true, version: "5.0.0", branch: "v5" }),
+    systemInfo: () => Promise.reject(new Error("offline")),
+  });
+  w.open("about");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(document.querySelector(".cx-modal").textContent, /5\.0\.0/);
+  assert.match(document.querySelector(".cx-modal").textContent, /v5/);
+  w.close();
+});
+
+test("system facts arrive independently of git status -- one being slow does not hold the other back", async () => {
+  let resolveGit;
+  const w = createSettingsWindow({
+    sections: [],
+    gitStatus: () => new Promise((r) => { resolveGit = r; }),
+    systemInfo: () => Promise.resolve({ cpu: { threads: 8 }, python: "3.12.0", gpus: [] }),
+  });
+  w.open("about");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(document.querySelector(".cx-modal").textContent, /3\.12\.0/, "system facts waited on git");
+  resolveGit({ ok: true, version: "5.0.0", branch: "v5" });
   w.close();
 });
 

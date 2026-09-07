@@ -182,6 +182,26 @@ test("the project tab renames the project", () => {
   assert.deepEqual(renamed, ["Rooftops"]);
 });
 
+test("whatever mounted at project.negative shows only on the Project tab", () => {
+  // The host has to survive a redraw (a scene selection, a rating) without
+  // losing whatever a module appended into it -- it lives OUTSIDE the part
+  // of the tree draw() tears down and rebuilds.
+  const inspector = createInspector({ project: fakeProject() });
+  document.body.replaceChildren(inspector.node);
+  const marker = document.createElement("div");
+  marker.textContent = "Negative prompt field";
+  inspector.negativeHost.node.appendChild(marker);
+
+  assert.equal(inspector.negativeHost.node.hidden, true, "showing on the Scene tab");
+  inspector.show("project");
+  assert.equal(inspector.negativeHost.node.hidden, false);
+  assert.ok(inspector.node.contains(marker), "the field did not survive the tab switch");
+
+  inspector.show("scene");
+  assert.equal(inspector.negativeHost.node.hidden, true);
+  assert.ok(inspector.node.contains(marker), "the field did not survive switching away and back");
+});
+
 test("with no scene selected the inspector says so instead of drawing nothing", () => {
   const inspector = createInspector({ project: fakeProject({ selected: null, scenes: [] }) });
   document.body.replaceChildren(inspector.node);

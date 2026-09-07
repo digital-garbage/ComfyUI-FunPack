@@ -38,22 +38,25 @@
 .cx-filter { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 220px; }
 .cx-filter-list {
   display: flex; flex-direction: column; gap: 1px;
-  max-height: 240px; overflow-y: auto;
+  max-height: 240px; overflow-y: auto; overflow-x: hidden;
   border: var(--bw) solid var(--line); border-radius: var(--r-3);
   background: var(--elev-1); padding: var(--sp-1);
 }
 .cx-filter-row {
-  display: flex; align-items: flex-start; gap: var(--sp-3);
+  display: flex; align-items: center; gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4); border: 0; border-radius: var(--r-2);
   background: transparent; color: var(--text);
   font-size: var(--fs-5); text-align: left; cursor: pointer; width: 100%;
 }
 .cx-filter-row:hover { background: var(--hover); }
 .cx-filter-row.cx-on { background: var(--accent-soft); color: var(--accent-hi); }
+.cx-filter-row.cx-on .cx-filter-label { font-weight: var(--fw-semibold); }
 /* A column so a wrapping hint sits directly under its own label, both flush
    to the same left edge, instead of floating as a baseline-aligned sibling
-   of the icon and the label. */
-.cx-filter-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+   of the icon and the label. Centred on the icon: with the hint gone (a
+   nav row now, not a compact picker's two-line entry) top-aligning the two
+   just looks like a mistake. */
+.cx-filter-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; justify-content: center; }
 .cx-filter-label { display: block; }
 .cx-filter-hint { display: block; font-size: var(--fs-7); color: var(--muted); line-height: var(--lh-snug); }
 .cx-filter-empty { padding: var(--sp-5); font-size: var(--fs-6); color: var(--faint); text-align: center; }
@@ -75,6 +78,66 @@
 .cx-filter-icon-good    { background: linear-gradient(180deg, var(--good), color-mix(in srgb, var(--good) 65%, black)); color: #fff; }
 .cx-filter-icon-neutral { background: linear-gradient(180deg, var(--muted), color-mix(in srgb, var(--muted) 65%, black)); color: #fff; }
 .cx-filter-row.cx-on .cx-filter-icon { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-hi) 50%, transparent); }
+
+/* The Settings sidebar: a 52px icon rail by default, expanding to a full list
+   on hover or keyboard focus and OVERLAYING the content rather than pushing
+   it -- v4's own sidebar, and the reason nothing here uses splitPane's
+   resizable two-pane shape: this one is not meant to stay open. */
+.cx-settings-body { position: relative; min-block-size: 0; block-size: 100%; }
+.cx-settings-rail {
+  position: absolute; inset-block: 0; inset-inline-start: 0; z-index: 2;
+  /* .cx-filter's own min-width:220px is a floor for its NORMAL (small,
+     always-220px-ish) role; here it would keep this element from ever
+     actually reaching 52px regardless of inline-size below, since min-width
+     always wins over a smaller width -- the search box then rendered at its
+     un-shrunk content width and this clipped it to "Sear", not an icon. */
+  min-inline-size: 52px; inline-size: 52px; overflow: hidden;
+  background: var(--elev-2); border-inline-end: var(--bw) solid var(--line);
+  transition: inline-size var(--dur-2) var(--ease-standard),
+              box-shadow var(--dur-2) var(--ease-standard);
+}
+.cx-settings-rail:hover, .cx-settings-rail:focus-within {
+  inline-size: 218px;
+  box-shadow: 18px 0 40px -18px color-mix(in srgb, var(--shadow-ink) 80%, transparent);
+}
+/* The label, and the search box's placeholder -- the icon chip stays put so
+   the collapsed rail still says something, the way a dock of icons does.
+   The label's WIDTH collapses too, not just its opacity: an invisible label
+   still claiming its flex share left the icon sitting off-centre with dead
+   space after it, rather than centred in the icon-only rail. */
+.cx-settings-rail .cx-filter-text {
+  flex: 0 1 0; inline-size: 0; overflow: hidden;
+  transition: flex-basis var(--dur-2) var(--ease-standard);
+}
+.cx-settings-rail .cx-filter-row {
+  justify-content: center;
+  /* The row's own gap still opens a space before a zero-width label -- two
+     flex items with nothing between them still get one gap's worth of
+     nothing, which shifted the centred GROUP (icon + gap) off the icon. */
+  gap: 0;
+}
+.cx-settings-rail .cx-filter-label {
+  opacity: 0; transition: opacity var(--dur-1) var(--ease-standard); white-space: nowrap;
+}
+.cx-settings-rail .cx-search::placeholder {
+  opacity: 0; transition: opacity var(--dur-1) var(--ease-standard);
+}
+.cx-settings-rail:hover .cx-search::placeholder,
+.cx-settings-rail:focus-within .cx-search::placeholder { opacity: 1; }
+.cx-settings-rail:hover .cx-filter-label, .cx-settings-rail:focus-within .cx-filter-label { opacity: 1; }
+.cx-settings-rail:hover .cx-filter-text, .cx-settings-rail:focus-within .cx-filter-text {
+  flex: 1 1 auto; inline-size: auto;
+}
+.cx-settings-rail:hover .cx-filter-row, .cx-settings-rail:focus-within .cx-filter-row {
+  justify-content: flex-start; gap: var(--sp-3);
+}
+.cx-settings-content {
+  /* The rail's own right edge, plus real breathing room from the scale --
+     flush against it read as a layout bug, not a deliberate two regions
+     meeting. sp-8, not the gutter (sp-5): the gutter is for regions that
+     border each other structurally: this is content clearing an overlay. */
+  margin-inline-start: calc(52px + var(--sp-8)); block-size: 100%; overflow-y: auto; min-inline-size: 0;
+}
 
 /* Used as a whole pane (the Settings sidebar) rather than a compact dropdown
    list -- the 240px cap and boxed border/background are right for the small

@@ -198,6 +198,9 @@ async function start() {
   // window would build -- pipeline_window.js etc. -- inside this one instead.
   const settings = createSettingsWindow({
     gitStatus,
+    // The machine ComfyUI runs on, for About -- injected the same as every
+    // other network call in this file, not imported into settings_window.js.
+    systemInfo: () => fetch("/funpack/api/system").then((r) => r.json()),
     sections: [
       {
         id: "pipeline", title: "Models and pipeline", subtitle: "What the run is made of.",

@@ -69,6 +69,56 @@ test("switching sections tears down the last one -- its own polling stops", asyn
   expect(logRequests, "the log kept polling after it was navigated away from").toBe(before);
 });
 
+test("the sidebar is a collapsed icon rail that expands on hover, matching v4", async ({ page }) => {
+  await app(page);
+  await page.getByRole("button", { name: "Settings" }).click();
+
+  const rail = page.locator(".cx-settings-rail");
+  const collapsed = await rail.boundingBox();
+  expect(collapsed.width, "the rail did not start collapsed").toBeLessThan(60);
+
+  // Labels are present (findable by name) but faded out while collapsed --
+  // opacity, not display/visibility, so Playwright's own visibility check
+  // (which ignores opacity) cannot tell the two states apart; read it directly.
+  const label = page.locator(".cx-filter-label", { hasText: "Node packs" });
+  await expect(label).toHaveCSS("opacity", "0");
+
+  await rail.hover();
+  await expect.poll(async () => (await rail.boundingBox()).width).toBeGreaterThan(200);
+  await expect(label).toHaveCSS("opacity", "1");
+
+  // And back, once the mouse leaves -- not stuck open.
+  await page.mouse.move(500, 400);
+  await expect.poll(async () => (await rail.boundingBox()).width).toBeLessThan(60);
+});
+
+test("the collapsed rail never scrolls sideways -- the full-width rows underneath it are clipped, not scrollable", async ({ page }) => {
+  // The bug this guards: .cx-filter-list sets overflow-y:auto and left
+  // overflow-x unset, which the CSS spec then computes as overflow-x:auto
+  // too -- so the rows (still their full un-collapsed width) put a
+  // horizontal scrollbar on the 52px rail instead of just being clipped.
+  await app(page);
+  await page.getByRole("button", { name: "Settings" }).click();
+  const overflowX = await page.evaluate(() =>
+    getComputedStyle(document.querySelector(".cx-settings-rail .cx-filter-list")).overflowX);
+  expect(overflowX).toBe("hidden");
+
+  const rail = await page.locator(".cx-settings-rail").boundingBox();
+  const list = await page.locator(".cx-settings-rail .cx-filter-list").boundingBox();
+  expect(list.x, "the row list starts outside the collapsed rail").toBeGreaterThanOrEqual(rail.x - 2);
+  expect(list.x + list.width, "the row list extends past the collapsed rail")
+    .toBeLessThanOrEqual(rail.x + rail.width + 2);
+});
+
+test("there is real space between the collapsed rail and the content beside it", async ({ page }) => {
+  await app(page);
+  await page.getByRole("button", { name: "Settings" }).click();
+
+  const rail = await page.locator(".cx-settings-rail").boundingBox();
+  const title = await page.getByRole("heading", { name: "About FunPack" }).boundingBox();
+  expect(title.x - (rail.x + rail.width), "the content sits flush against the rail").toBeGreaterThan(15);
+});
+
 test("closing and reopening always starts fresh, on About", async ({ page }) => {
   await app(page);
   await page.getByRole("button", { name: "Settings" }).click();

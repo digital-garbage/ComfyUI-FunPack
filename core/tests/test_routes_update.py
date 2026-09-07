@@ -89,6 +89,18 @@ def test_the_app_can_see_which_branch_it_is_on(server):
     assert server["restarts"] == [], "reading the status restarted ComfyUI"
 
 
+def test_system_info_describes_the_host_comfyui_runs_on(server):
+    """The About panel's hardware facts -- best-effort, but never a 500. This
+    machine has no CUDA device, so gpus is empty and mps says whether that is
+    because there is genuinely nothing (mps False too) or an Apple GPU instead."""
+    status, body = _request(server["port"], "GET", "/funpack/api/system")
+    assert status == 200
+    assert isinstance(body["cpu"]["threads"], int) and body["cpu"]["threads"] > 0
+    assert isinstance(body["gpus"], list)
+    assert body["python"]
+    assert body["memory"]["total_gb"] or body["memory"]["total_gb"] == 0
+
+
 def test_switching_to_a_branch_that_is_not_there_is_refused_by_name(server):
     """A refusal has to say which branch and that it exists nowhere -- otherwise
     the user cannot tell it from a typo in their own request."""

@@ -408,7 +408,9 @@
    mark, name and facts, centred instead of ranged left like every settings
    list around it. */
 .cx-about { align-items: center; text-align: center; padding-block: var(--sp-7) 0; }
-.cx-about > .cx-t-lg { font-size: 2.5rem; line-height: 1; color: var(--accent); }
+/* v4's own mark size, from the scale (--fs-d1) rather than a literal --
+   the whole point of naming display steps at all. */
+.cx-about > .cx-t-lg { font-size: var(--fs-d1); line-height: var(--lh-tight); color: var(--accent); }
 .cx-about .cx-settings-row {
   justify-content: center; gap: var(--sp-4); border-bottom: 0; padding-block: var(--sp-2);
   inline-size: auto; align-self: center;

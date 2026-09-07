@@ -9,6 +9,7 @@ import asyncio
 import json
 
 from . import (backend_log, config, graph as graph_mod, log, nodes_manager, projects,
+               sysinfo,
                temp_files,
                update as update_mod,
                registry as registry_mod, serve as static, widgets)
@@ -408,6 +409,14 @@ def register(routes, prefix=None):
         async with _git_lock:
             payload = await asyncio.to_thread(update_mod.status, remote=remote)
         payload["restart_pending"] = _pending_restart
+        return web.json_response(payload)
+
+    @routes.get(P + "/api/system")
+    async def _system_info(_req):
+        # The machine ComfyUI runs on, not the browser -- on a rental those are
+        # different machines, and the host is the one worth looking at.
+        # to_thread: this shells out (sysctl) and can wait on a GPU query.
+        payload = await asyncio.to_thread(sysinfo.collect)
         return web.json_response(payload)
 
     @routes.post(P + "/api/git/update")
