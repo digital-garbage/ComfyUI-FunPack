@@ -27,7 +27,12 @@ export function createInspector({ project, onRename } = {}) {
   });
 
   const rows = composer.region.stack({ gap: "sm", label: "Inspector rows" });
-  host.set([tabs, rows]);
+  // A STABLE host for whatever the pipeline declares at "project.negative" --
+  // stable because offer() is wired to it once, at startup, while `rows` is
+  // torn down and rebuilt by every draw() below. A field appended into a node
+  // that gets replaced on the next scene selection would not survive it.
+  const negative = composer.region.stack({ gap: "sm", label: "Negative prompt" });
+  host.set([tabs, rows, negative]);
 
   function sceneRows() {
     const scene = project.selected;
@@ -94,6 +99,9 @@ export function createInspector({ project, onRename } = {}) {
 
   function draw() {
     tabs.setValue(tab);
+    // Whatever mounted at "project.negative" belongs to the project, not the
+    // scene -- shown only on the tab that means "the project".
+    negative.node.hidden = tab !== "project";
     // Wrapped in a group, which is what draws the card AND is the container the
     // stacking rule measures: settings rows outside one keep their 180px control
     // column whatever the width, and a four-button group is then clipped.
@@ -110,5 +118,8 @@ export function createInspector({ project, onRename } = {}) {
     get tab() { return tab; },
     show(next) { tab = next; draw(); },
     destroy() { host.destroy(); },
+    /** Where layout.js offers "project.negative" -- a project-level role,
+     *  not a per-run one, so it lives beside Name/Scenes, not the prompt. */
+    negativeHost: negative,
   };
 }

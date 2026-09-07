@@ -40,6 +40,34 @@ test("the size the project generates at is typed once and used by the run", asyn
   expect(latent.inputs.model, "the wiring was replaced by a value").toEqual(["model", 0]);
 });
 
+test("the negative prompt lives on the Project tab, not the Constructor, and still reaches the pipeline", async ({ page }) => {
+  // Most FunPack pipelines run at CFG 1, where a negative prompt does
+  // nothing -- it is a project-level field, set rarely, not one more box
+  // beside the prompt every Generate reads.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  await openConstructor(page);
+  await expect(page.locator(".cx-modal").getByText("Negative", { exact: true })).toHaveCount(0);
+  await page.locator(".cx-modal .cx-icon-btn").click();
+
+  await page.getByRole("tab", { name: "Project" }).click();
+  const negativeField = page.locator(".cx-field", { hasText: "Negative prompt" });
+  await expect(negativeField).toBeVisible();
+  const negativeBox = negativeField.locator("textarea");
+  await negativeBox.fill("blurry, low quality");
+  await negativeBox.blur();
+
+  const sent = await page.evaluate(async () => {
+    const body = JSON.stringify({ inputs: window.FunPack.prompts() });
+    const res = await fetch("/funpack/api/pipeline",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    return res.json();
+  });
+  const negativeSlot = sent.slots.find((s) => s.id === "negative");
+  expect(negativeSlot.inputs.text).toBe("blurry, low quality");
+});
+
 test("it is still what the project generates at on the next visit", async ({ page }) => {
   // The whole point of it being the PROJECT's: a scene regenerated tomorrow
   // comes back at the same size, not at whatever the pipeline defaults to.

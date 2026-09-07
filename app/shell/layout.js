@@ -279,6 +279,12 @@ export function build(root, handlers = {}) {
   // What the project generates at. A pipeline with no such inputs offers no
   // roles, nothing mounts, and the group is simply not there.
   offer("project.video", constructor.video.node);
+  // A negative prompt is a project-level choice here (most FunPack pipelines
+  // run at CFG 1, where it does nothing), not a per-run field beside the
+  // prompt every Generate reads. The inspector is optional, the same as
+  // everywhere else it is read below -- a caller building a page without one
+  // (every test here) gets a page with no "project.negative" host, not a throw.
+  if (handlers.inspector) offer("project.negative", handlers.inspector.negativeHost.node);
   offer("settings.general", settings.node, settingsEmpty.node);
   // One host, five names. Each carries the same stand-in, and settle() takes it
   // down once anything at all has mounted into the panel they share.

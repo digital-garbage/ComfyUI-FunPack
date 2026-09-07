@@ -15,11 +15,14 @@ test("the prompt is written in the Constructor, and typing in it is what runs", 
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);
 
-  await expect(page.locator("textarea"), "the prompt is on the main window").toHaveCount(0);
+  // Negative prompt lives on the Project tab now, not the Constructor -- a
+  // real textarea in the DOM (the Scene tab is the default, so it is hidden,
+  // not absent), which is why this checks what is VISIBLE, not what exists.
+  await expect(page.locator("textarea:visible"), "the prompt is on the main window").toHaveCount(0);
   await openConstructor(page);
 
   const boxes = page.locator(".cx-modal textarea");
-  await expect(boxes).toHaveCount(2);
+  await expect(boxes).toHaveCount(1);
   await boxes.first().fill("a cat on a rooftop");
   await boxes.first().blur();                   // a control commits on blur
 
@@ -55,6 +58,6 @@ test("a region that filled does not keep its stand-in", async ({ page }) => {
 
   await openConstructor(page);
   const modal = page.locator(".cx-modal");
-  await expect(modal.locator("textarea")).toHaveCount(2);
+  await expect(modal.locator("textarea")).toHaveCount(1);
   await expect(modal.getByText("Nothing to write yet")).toHaveCount(0);
 });

@@ -43,7 +43,10 @@ DEFAULT = [
      "roles": [{"at": "generation.prompt", "input": "text", "label": "Prompt"}],
      "inputs": {"clip": ["clip", 0], "text": ""}},
     {"id": "negative", "group": "Preparation", "node": "CLIPTextEncode",
-     "roles": [{"at": "generation.prompt", "input": "text", "label": "Negative"}],
+     # A project-level field, not a per-run one: most FunPack pipelines run at
+     # CFG 1, where a negative prompt does nothing, so it does not belong beside
+     # the prompt every Generate reads.
+     "roles": [{"at": "project.negative", "input": "text", "label": "Negative prompt"}],
      "inputs": {"clip": ["clip", 0], "text": ""}},
 
     {"id": "latent", "group": "Preparation", "node": "FunPackEmptyLatent",
