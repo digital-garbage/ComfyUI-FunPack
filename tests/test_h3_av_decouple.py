@@ -67,6 +67,17 @@ def test_zero_strength_is_a_true_noop():
     assert node._install_h3_av_decouple(model, "not-a-number") is model
 
 
+def test_nan_strength_is_also_a_true_noop():
+    """NaN fails every ordered comparison under IEEE 754, so a bail check written as
+    `strength <= 0.0` treats NaN as "on" -- the opposite of what `strength > 0.0`-based
+    checks elsewhere (e.g. the sampler's own guard deciding whether h3_q_steering can be
+    installed alongside this) would conclude for the same value. Must bail here too, or the
+    two disagree and silently recreate the av_decouple-defeats-q_steering composition bug."""
+    model = _FakeModel()
+    node = S()
+    assert node._install_h3_av_decouple(model, float("nan")) is model
+
+
 def test_enabled_installs_override_and_block0_hook():
     node = S()
     patched = node._install_h3_av_decouple(_FakeModel(), 0.5)

@@ -3821,15 +3821,28 @@ class FunPackLTXAVSceneChainSampler:
             model = self._install_h3_repr_steering(
                 model, refinement_key, h3_repr_steering_strength, _repr_capture,
                 steer_block=h3_repr_steering_block)
+        model = self._install_h3_av_decouple(model, h3_av_decouple)
+        model = self._install_h3_attn_temperature(
+            model, h3_explore_temperature, h3_explore_temperature_block)
         _q_steer_capture = [{}]
         if refinement_key and self._parse_block_spec(h3_q_steer_block):
-            # h3_av_decouple, if also enabled, becomes the OUTER optimized_attention_override
-            # (installed after this one) and always calls its inner override with a non-None
-            # mask for exactly the video-row partition -- which is the one thing q_steering's
-            # own override treats as "someone else already handled this call, back off". The
-            # two features cannot currently compose: q_steering would capture/inject nothing
-            # while still paying the clone+hook cost and printing a false "applying" line, so
-            # skip installing it entirely and say why, rather than let it silently no-op.
+            # Installed LAST (outermost optimized_attention_override) so it always sees Q
+            # before av_decouple or attn_temperature touch it -- capture must reflect the
+            # network's natural Q, not a temperature-scaled one, if h3_q_steer_block and
+            # h3_explore_temperature_block ever name the same block (each learns/applies
+            # independently, but they'd otherwise silently compose: temperature's scaling
+            # would leak into what gets captured and banked as "natural").
+            #
+            # h3_av_decouple still cannot compose with this at all regardless of order: it
+            # always calls its inner override with a non-None mask for exactly the video-row
+            # partition, which is the one case q_steering's own override treats as "someone
+            # else already handled this call, back off" -- so it would capture/inject nothing
+            # while still paying the clone+hook cost and printing a false "applying" line.
+            # Skip installing it entirely and say why, rather than let it silently no-op.
+            # `> 0.0` here, matching _install_h3_av_decouple's own gate (`not (x > 0.0)` to
+            # bail) on the SAME comparison -- for a NaN strength both must agree on "off", or
+            # this guard and that gate would independently decide "on"/"off" and reproduce
+            # the exact bug this comment is describing.
             if float(h3_av_decouple or 0.0) > 0.0:
                 print("[FunPackSceneChain] H3 query steering: h3_av_decouple is also enabled "
                       "this run -- its attention masking defeats query steering's video-row "
@@ -3840,9 +3853,6 @@ class FunPackLTXAVSceneChainSampler:
                 model = self._install_h3_q_steering(
                     model, refinement_key, h3_q_steer_strength, _q_steer_capture,
                     steer_block=h3_q_steer_block)
-        model = self._install_h3_av_decouple(model, h3_av_decouple)
-        model = self._install_h3_attn_temperature(
-            model, h3_explore_temperature, h3_explore_temperature_block)
 
         try:
             sampled = comfy.sample.sample_custom(
@@ -6908,7 +6918,12 @@ class FunPackLTXAVSceneChainSampler:
             _strength = float(strength or 0.0)
         except (TypeError, ValueError):
             _strength = 0.0
-        if _strength <= 0.0:
+        # NOT (>0.0), not <=0.0 -- for NaN both comparisons are False under IEEE 754, so
+        # `<= 0.0` would let a NaN strength through as "on" while _sample_chunk's own
+        # `float(h3_av_decouple or 0.0) > 0.0` guard (deciding whether to skip installing
+        # h3_q_steering) treats the SAME NaN as "off" -- the two would disagree and silently
+        # recreate the av_decouple-defeats-q_steering bug this file already fixed once.
+        if not (_strength > 0.0):
             return model
         try:
             try:

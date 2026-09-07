@@ -298,5 +298,42 @@ def test_q_steer_alone_is_unaffected_by_the_av_decouple_guard(monkeypatch, capsy
     assert "h3_av_decouple is also enabled" not in out
 
 
+def test_captures_natural_q_even_when_temperature_targets_the_same_block(monkeypatch):
+    """h3_q_steer_block and h3_explore_temperature_block naming the SAME block must not leak
+    temperature's Q-scaling into what q_steering captures/injects -- capture is supposed to
+    reflect the network's natural Q (same promise h3_repr_steering makes for hidden state).
+    Requires q_steering to be installed AFTER (more outer than) attn_temperature, matching
+    the order _sample_chunk now uses -- this test composes them directly in that order."""
+    monkeypatch.setattr(_rs, "direction", lambda *a, **k: (None, 0, 0))
+    model = S()._install_h3_attn_temperature(_FakeModel(), 1.0, "0")  # 2x temperature
+    capture_holder = [{}]
+    model = S()._install_h3_q_steering(model, "fake_key", 0.0, capture_holder, steer_block="0")
+
+    # _MOD_SEGMENTS tags BOTH row 0 and row 2 as video -- set both to the SAME value so the
+    # captured mean-over-video-rows equals that value exactly, cleanly distinguishing
+    # "natural Q" (5.0) from "already temperature-scaled Q" (2.5) -- a single video row set
+    # to 5.0 with the other left at 0 would average to 2.5 either way and prove nothing.
+    q = torch.zeros(1, 2, 4, 1)
+    q[0, 0, 0, 0] = 5.0
+    q[0, 0, 2, 0] = 5.0
+
+    def fake_func(q_, k_, v_, heads_, mask=None, skip_reshape=True, **kw):
+        return q_.clone()
+
+    dit = model.model_options["transformer_options"]["patches_replace"]["dit"]
+    hook = dit[("double_block", 0)]  # q_steering's hook, wrapping temperature's
+
+    def _original_block(a):
+        override = model.model_options["transformer_options"]["optimized_attention_override"]
+        override(fake_func, q, torch.zeros_like(q), torch.zeros_like(q), 2, skip_reshape=True)
+        return {"img": a["img"]}
+
+    hook({"img": torch.ones(4, 3), "mod_segments": _MOD_SEGMENTS}, {"original_block": _original_block})
+
+    # If temperature's 2x scaling had already been applied before q_steering saw Q, this
+    # would read 2.5, not 5.0.
+    assert torch.allclose(capture_holder[0][0], torch.tensor([5.0, 0.0]))
+
+
 if __name__ == "__main__":
     print("run via pytest -- these tests need the monkeypatch/capsys fixtures")
