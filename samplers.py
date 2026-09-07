@@ -3823,9 +3823,23 @@ class FunPackLTXAVSceneChainSampler:
                 steer_block=h3_repr_steering_block)
         _q_steer_capture = [{}]
         if refinement_key and self._parse_block_spec(h3_q_steer_block):
-            model = self._install_h3_q_steering(
-                model, refinement_key, h3_q_steer_strength, _q_steer_capture,
-                steer_block=h3_q_steer_block)
+            # h3_av_decouple, if also enabled, becomes the OUTER optimized_attention_override
+            # (installed after this one) and always calls its inner override with a non-None
+            # mask for exactly the video-row partition -- which is the one thing q_steering's
+            # own override treats as "someone else already handled this call, back off". The
+            # two features cannot currently compose: q_steering would capture/inject nothing
+            # while still paying the clone+hook cost and printing a false "applying" line, so
+            # skip installing it entirely and say why, rather than let it silently no-op.
+            if float(h3_av_decouple or 0.0) > 0.0:
+                print("[FunPackSceneChain] H3 query steering: h3_av_decouple is also enabled "
+                      "this run -- its attention masking defeats query steering's video-row "
+                      "capture and injection entirely, so query steering is NOT installed "
+                      "this run (nothing captured, nothing applied). Disable h3_av_decouple "
+                      "to use query steering.")
+            else:
+                model = self._install_h3_q_steering(
+                    model, refinement_key, h3_q_steer_strength, _q_steer_capture,
+                    steer_block=h3_q_steer_block)
         model = self._install_h3_av_decouple(model, h3_av_decouple)
         model = self._install_h3_attn_temperature(
             model, h3_explore_temperature, h3_explore_temperature_block)
@@ -7215,12 +7229,22 @@ class FunPackLTXAVSceneChainSampler:
                 direction = directions.get(block)
                 if direction is not None and _strength > 0.0:
                     head_dim = q.shape[-1]
+                    # Checks TOTAL element count only, not the heads/head_dim split -- a
+                    # direction's flat vector carries no record of its original split, so a
+                    # coincidental same-total, different-split mismatch (e.g. 8x16 vs 4x32,
+                    # both 128) would pass this check and reshape onto the wrong head
+                    # boundaries instead of being caught. Narrow scenario (a model swap that
+                    # changes head count without changing hidden size, on a reused
+                    # refinement_key) -- catching it would mean storing heads/head_dim
+                    # alongside every captured descriptor, which touches the persistence
+                    # format h3_repr_steering.direction() shares with REINS itself, so left
+                    # unhandled rather than risking that for a case this narrow.
                     if direction.numel() != heads * head_dim:
-                        # A direction banked under a different head/head_dim layout (model
-                        # swap, a different H3 variant on the same refinement_key) cannot be
-                        # reshaped onto this run's Q at all -- .view() would hard-crash the
-                        # generation instead of degrading, exactly what this file's other
-                        # experimental knobs (batch>1 above, av_decouple's shape check) avoid.
+                        # A direction banked under a different TOTAL size (model swap, a
+                        # different H3 variant on the same refinement_key) cannot be reshaped
+                        # onto this run's Q at all -- .view() would hard-crash the generation
+                        # instead of degrading, exactly what this file's other experimental
+                        # knobs (batch>1 above, av_decouple's shape check) avoid.
                         if block not in _warned_shape:
                             _warned_shape.add(block)
                             print(f"[FunPackSceneChain] H3 query steering: block {block}'s "

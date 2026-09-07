@@ -10217,13 +10217,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     print(f"[FunPackRefiner] H3 representation steering: weight "
                           f"{_rs_reward:+.3f} for rating '{rating_label}' — {_rs_note}")
                     # Query steering rides the same rating, its own kind="q_steer" store —
-                    # see h3_repr_steering.py / _install_h3_q_steering. Unconditional and
-                    # silent-on-no-pending for the same reason as REINS above: a run with the
-                    # sampler's h3_q_steer_block blank never captured anything to commit.
+                    # see h3_repr_steering.py / _install_h3_q_steering. Loud on every outcome,
+                    # same as REINS just above (REINS is NOT silent on no_pending/no_key --
+                    # an earlier version of this comment claimed it was, which was wrong).
                     _rs_q_outcome = _rs.commit(refinement_key, _rs_reward, kind="q_steer")
-                    if _rs_q_outcome == "recorded":
-                        print(f"[FunPackRefiner] H3 query steering: weight "
-                              f"{_rs_reward:+.3f} for rating '{rating_label}' — recorded")
+                    _rs_q_note = {
+                        "recorded": "recorded",
+                        "no_pending": "NOT recorded — no captured generation was waiting "
+                                      "(the sampler's h3_q_steer_block was likely blank or "
+                                      "h3_av_decouple was also on when that run sampled)",
+                        "no_key": "NOT recorded — no refinement key",
+                    }.get(_rs_q_outcome, _rs_q_outcome)
+                    print(f"[FunPackRefiner] H3 query steering: weight "
+                          f"{_rs_reward:+.3f} for rating '{rating_label}' — {_rs_q_note}")
                     # Block-influence probe rides the same rating. Measurement only -- it
                     # steers nothing, so it is committed unconditionally alongside REINS
                     # rather than behind its own admissibility gate. DELIBERATELY SILENT:

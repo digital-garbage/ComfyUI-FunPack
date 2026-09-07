@@ -262,5 +262,41 @@ def test_mismatched_direction_length_does_not_crash(monkeypatch, capsys):
     assert "learned direction has 3 values" in capsys.readouterr().out
 
 
+def _run_chunk_with(refinement_key="fake_key", **kw):
+    """Runs _sample_chunk against a stubbed sample_custom (returns the input latent
+    unchanged) -- enough comfy surface for the install-time gating logic to execute for
+    real, without a real sampler or GPU."""
+    sys.modules["comfy.sample"].prepare_noise = lambda samples, seed, **_: torch.zeros_like(samples)
+    sys.modules["comfy.sample"].sample_custom = lambda model, noise, cfg, smp, sigmas, pos, neg, samples, **k: samples
+    latent = {"samples": torch.zeros(1, 2, 2, 2, 2)}
+    sampler = type("F", (), {"extra_options": {}, "sampler_function": None})()
+    S()._sample_chunk(object(), sampler, torch.tensor([1.0, 0.0]), 0, 1.0, [], [], latent,
+                      refinement_key=refinement_key, **kw)
+
+
+def test_av_decouple_together_skips_q_steer_install_with_a_declared_reason(monkeypatch, capsys):
+    """h3_av_decouple, when also enabled, becomes the OUTER optimized_attention_override and
+    always hands its inner override a non-None mask for exactly the video-row partition --
+    the one case q_steering's own override treats as 'someone else already handled this,
+    back off'. The two features cannot compose today, so q_steering must not be installed at
+    all when both are requested together (paying the clone/hook cost and printing 'applying'
+    while doing nothing would be worse than not installing)."""
+    monkeypatch.setattr(_rs, "save_pending", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("q_steer must never capture anything when av_decouple is also on")))
+    _run_chunk_with(h3_q_steer_block="0,1", h3_q_steer_strength=1.0, h3_av_decouple=1.0)
+    out = capsys.readouterr().out
+    assert "h3_av_decouple is also enabled" in out
+    assert "NOT installed this run" in out
+
+
+def test_q_steer_alone_is_unaffected_by_the_av_decouple_guard(monkeypatch, capsys):
+    """Sanity check for the fix above: the guard must only fire when av_decouple is actually
+    on, not whenever q_steer is requested at all."""
+    monkeypatch.setattr(_rs, "direction", lambda *a, **k: (None, 0, 0))
+    _run_chunk_with(h3_q_steer_block="0,1", h3_q_steer_strength=1.0, h3_av_decouple=0.0)
+    out = capsys.readouterr().out
+    assert "h3_av_decouple is also enabled" not in out
+
+
 if __name__ == "__main__":
     print("run via pytest -- these tests need the monkeypatch/capsys fixtures")
