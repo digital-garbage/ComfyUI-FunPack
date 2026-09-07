@@ -295,6 +295,19 @@ export function createProject({ onChange, onError, onOpen } = {}) {
       changed();
     },
 
+    /** The negative prompt, whichever scene is current -- a project-level
+     *  choice, the same as video, not a per-scene one. */
+    get negative() { return (project && project.negative) || ""; },
+
+    setNegative(value) {
+      if (!project) return;
+      if (project.negative === value) return;
+      remember();
+      project.negative = value;
+      scheduleSave();
+      changed();
+    },
+
     /** The text of one scene. The prompt box on the main window edits this. */
     setText(id, text) { this.setScene(id, "text", text); },
 

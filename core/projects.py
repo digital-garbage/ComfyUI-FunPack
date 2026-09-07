@@ -134,6 +134,13 @@ class Project:
     #: at the project's length: the crop was a timeline decision and a regenerate
     #: is a new scene.
     video: dict = field(default_factory=dict)
+    #: A negative prompt, sent at whatever "project.negative" input the
+    #: pipeline declares. Project-level for the same reason `video` is:
+    #: something set rarely, once, not re-typed per scene.
+    #: ponytail: one string, not a dict keyed by input name the way `video`
+    #: is -- there is exactly one such role today. Generalise if a second
+    #: project-level TEXT role ever shows up.
+    negative: str = ""
     updated_at: float = 0.0
 
     @staticmethod
@@ -141,11 +148,13 @@ class Project:
         d = d if isinstance(d, dict) else {}
         pid = d.get("id")
         raw = d.get("scenes")
+        negative = d.get("negative")
         return Project(
             id=pid if is_id(pid) else _new_id(),
             name=_clean_name(d.get("name")),
             scenes=[Scene.from_dict(s) for s in (raw if isinstance(raw, list) else [])],
             video=_clean_video(d.get("video")),
+            negative=negative if isinstance(negative, str) else "",
             updated_at=float(d.get("updated_at") or 0.0),
         )
 

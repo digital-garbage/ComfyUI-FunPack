@@ -17,9 +17,9 @@ test.before(async () => {
 test.after(() => teardownDom());
 
 /** A server that remembers the last body it was PUT. */
-function server({ video = {} } = {}) {
+function server({ video = {}, negative = "" } = {}) {
   const sent = [];
-  const project = { id: "abcdef012345", name: "Untitled", scenes: [], video, updated_at: 1 };
+  const project = { id: "abcdef012345", name: "Untitled", scenes: [], video, negative, updated_at: 1 };
   globalThis.fetch = async (path, opts = {}) => {
     const body = opts.body ? JSON.parse(opts.body) : null;
     if (opts.method === "PUT") sent.push(body);
@@ -73,6 +73,53 @@ test("with no project open there is nothing to set and nothing breaks", () => {
   const p = createProject({});
   p.setVideo("width", 832);
   assert.deepEqual(p.video, {});
+});
+
+test("the negative prompt does not follow a switch to another project", async () => {
+  // The bug this guards: negative prompt used to have no per-project sync at
+  // all (unlike video), so it silently carried over from whichever project
+  // was open last -- typed for one project, sent as another's. This is the
+  // same store shape as "a run's result still lands on its scene..." above,
+  // for the same reason: a single store, switched with open(), not two.
+  const store = {
+    a: { id: "aaaaaaaaaaaa", name: "A", scenes: [{ id: "scene-a", text: "" }], negative: "", updated_at: 1 },
+    b: { id: "bbbbbbbbbbbb", name: "B", scenes: [{ id: "scene-b", text: "" }], negative: "", updated_at: 1 },
+  };
+  globalThis.fetch = async (path, opts = {}) => {
+    if (path === "/funpack/api/projects") {
+      return { ok: true, status: 200, json: async () => ({ projects: [{ id: store.a.id }, { id: store.b.id }] }) };
+    }
+    const id = decodeURIComponent(String(path).split("/").pop());
+    const key = id === store.a.id ? "a" : "b";
+    if (opts.method === "PUT") {
+      const body = JSON.parse(opts.body);
+      store[key] = body;
+      return { ok: true, status: 200, json: async () => ({ ...body, updated_at: (store[key].updated_at || 1) + 1 }) };
+    }
+    return { ok: true, status: 200, json: async () => store[key] };
+  };
+
+  const p = createProject({});
+  await p.start();               // opens project A
+  p.setNegative("blurry, low quality");
+  await p.flush();
+
+  await p.open(store.b.id);
+  assert.equal(p.negative, "", "project B opened holding project A's negative prompt");
+});
+
+test("setting the negative prompt to what it already is saves nothing", async () => {
+  const { sent } = server({ negative: "blurry" });
+  const p = createProject({});
+  await p.start();
+
+  p.setNegative("blurry");
+  await p.flush();
+  assert.equal(sent.length, 0, "an unchanged value was saved anyway");
+
+  p.setNegative("smudged");
+  await p.flush();
+  assert.equal(sent.length, 1);
 });
 
 test("a run's result lands on the scene it was started for, not the current one", async () => {

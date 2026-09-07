@@ -59,7 +59,7 @@ async function start() {
     // A different project is open. Everything that follows the project rather
     // than one of its fields is put back here -- by every route in, including
     // the ones that are not the File menu.
-    onOpen: () => { showScene(project.selected); syncVideo(); },
+    onOpen: () => { showScene(project.selected); syncVideo(); syncNegative(); },
     onError: (err) => page.transport.say(`The project could not be saved: ${err.message}`),
   });
 
@@ -91,6 +91,16 @@ async function start() {
     for (const { input, control } of (prompts ? prompts.controlsAt("project.video") : [])) {
       control.setValue(project.video[input] !== undefined ? project.video[input] : control.default);
     }
+  };
+
+  // Same reason and same shape as syncVideo: a project that never touched
+  // this is the pipeline's own default, not "whatever the last project had
+  // typed here" -- without this, switching projects left the box (and so
+  // overrides(), and so the run) still holding the FIRST project's negative
+  // prompt.
+  const syncNegative = () => {
+    const box = prompts && prompts.at("project.negative");
+    if (box) box.setValue(project.negative || box.default);
   };
 
   // A scene's text and the prompt box are the same value seen twice. The box is
@@ -217,7 +227,7 @@ async function start() {
               // sync() rebuilds every control from the PIPELINE's values, which is
               // right for the prompt and wrong for the project's own settings: they
               // outrank the pipeline's defaults and have to be put back.
-              Promise.resolve(prompts.sync(next)).then(() => { showGroups(); syncVideo(); });
+              Promise.resolve(prompts.sync(next)).then(() => { showGroups(); syncVideo(); syncNegative(); });
             }
           },
         }),
@@ -390,10 +400,14 @@ async function start() {
       // prompt is a value the run uses and the project never hears about, so a
       // reload shows a timeline whose scenes are all empty.
       onChange: (field) => {
-        // Two places take a value now, and which one is decided by where the
-        // pipeline asked for the control -- not by what it is called.
+        // Three places take a value now, and which one is decided by where
+        // the pipeline asked for the control -- not by what it is called.
         if (field && field.at === "project.video") {
           project.setVideo(field.input, field.control.value);
+          return;
+        }
+        if (field && field.at === "project.negative") {
+          project.setNegative(field.control.value);
           return;
         }
         const box = prompts && prompts.at("generation.prompt");

@@ -68,6 +68,34 @@ test("the negative prompt lives on the Project tab, not the Constructor, and sti
   expect(negativeSlot.inputs.text).toBe("blurry, low quality");
 });
 
+test("the negative prompt does not follow a switch to another project", async ({ page }) => {
+  // The bug this guards, found by an adversarial pass on the commit that
+  // added this field: unlike width/height/length (synced on every project
+  // switch via syncVideo()), nothing re-read the negative prompt control
+  // when a different project opened -- so it silently carried over, typed
+  // for one project and sent as another's.
+  await page.goto("/funpack/");
+  await page.waitForFunction(() => window.FunPack !== undefined);
+
+  await page.getByRole("tab", { name: "Project" }).click();
+  const negativeBox = page.locator(".cx-field", { hasText: "Negative prompt" }).locator("textarea");
+  await negativeBox.fill("blurry, low quality, project A only");
+  await negativeBox.blur();
+  await page.evaluate(() => window.FunPack.project.flush());
+
+  const name = `Clean project ${Date.now()}`;
+  await page.getByRole("button", { name: "File" }).click();
+  await page.getByRole("menuitem", { name: /New project/ }).click();
+  await page.locator(".cx-modal input").fill(name);
+  await page.locator(".cx-modal").getByRole("button", { name: "Create" }).click();
+  await expect.poll(() => page.evaluate(() => window.FunPack.project.project.name)).toBe(name);
+
+  await expect(negativeBox).toHaveValue("");
+  const overrides = await page.evaluate(() => window.FunPack.prompts());
+  expect(overrides.negative?.text, "the new project's run would send the old one's negative prompt")
+    .toBeFalsy();
+});
+
 test("it is still what the project generates at on the next visit", async ({ page }) => {
   // The whole point of it being the PROJECT's: a scene regenerated tomorrow
   // comes back at the same size, not at whatever the pipeline defaults to.
