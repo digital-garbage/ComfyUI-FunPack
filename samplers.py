@@ -7152,6 +7152,7 @@ class FunPackLTXAVSceneChainSampler:
             _seg_holder = {"mod_segments": None}
             _active_block = {"cur": None}
             _warned_batch = {"on": False}
+            _warned_shape = set()
 
             def _make_hook(block):
                 inner = dit_patches.get(("double_block", block))
@@ -7214,6 +7215,21 @@ class FunPackLTXAVSceneChainSampler:
                 direction = directions.get(block)
                 if direction is not None and _strength > 0.0:
                     head_dim = q.shape[-1]
+                    if direction.numel() != heads * head_dim:
+                        # A direction banked under a different head/head_dim layout (model
+                        # swap, a different H3 variant on the same refinement_key) cannot be
+                        # reshaped onto this run's Q at all -- .view() would hard-crash the
+                        # generation instead of degrading, exactly what this file's other
+                        # experimental knobs (batch>1 above, av_decouple's shape check) avoid.
+                        if block not in _warned_shape:
+                            _warned_shape.add(block)
+                            print(f"[FunPackSceneChain] H3 query steering: block {block}'s "
+                                  f"learned direction has {direction.numel()} values, but this "
+                                  f"run's Q is {heads}x{head_dim} ({heads * head_dim}) -- the "
+                                  f"model or its head layout changed since this direction was "
+                                  f"captured. Not applying it this run (still capturing).")
+                        return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
+                                    **kwargs)
                     rows = q[:, :, vmask, :]
                     row_norm = rows.detach().float().norm(dim=-1).mean()
                     if torch.isfinite(row_norm) and row_norm > 0:
@@ -7225,12 +7241,22 @@ class FunPackLTXAVSceneChainSampler:
 
             to["optimized_attention_override"] = _override
             patched.model_options["transformer_options"] = to
-            _steered = sorted(b for b, d in directions.items() if d is not None)
-            if _steered:
+            _have_direction = sorted(b for b, d in directions.items() if d is not None)
+            # Gated on strength too, not just direction-availability -- a learned direction
+            # sitting at strength 0 injects nothing (see the strength>0.0 check in _override),
+            # so claiming "applying" there would be exactly the silent-success-message trap
+            # this project has been burned by before.
+            if _have_direction and _strength > 0.0:
                 _per_block = ", ".join(f"{b} ({_counts[b][0]}/{_counts[b][1]})"
-                                       for b in _steered)
+                                       for b in _have_direction)
                 print(f"[FunPackSceneChain] H3 query steering: applying learned direction(s) "
                       f"at block (liked/disliked): {_per_block}, strength {_strength:g}.")
+            elif _have_direction:
+                _per_block = ", ".join(f"{b} ({_counts[b][0]}/{_counts[b][1]})"
+                                       for b in _have_direction)
+                print(f"[FunPackSceneChain] H3 query steering: learned direction(s) available "
+                      f"at block (liked/disliked): {_per_block}, but strength is 0 -- "
+                      f"capturing only, nothing applied.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 query steering", _e,
@@ -7887,7 +7913,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_block_repeat="", h3_block_repeat_times=1,
                h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                h3_block_repeat_last_steps=0,
-               h3_q_steer_strength=0.0, h3_q_steer_block="0,1",
+               h3_q_steer_strength=0.0, h3_q_steer_block="",
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                alg_anchor=False, alg_anchor_strength=2.0, alg_anchor_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
