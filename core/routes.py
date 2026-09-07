@@ -8,7 +8,7 @@ thin adapters over pure functions in `serve`.
 import asyncio
 import json
 
-from . import (backend_log, config, graph as graph_mod, log, nodes_manager, projects,
+from . import (backend_log, config, graph as graph_mod, log, media, nodes_manager, projects,
                sysinfo,
                temp_files,
                update as update_mod,
@@ -627,6 +627,56 @@ def register(routes, prefix=None):
             found.to_dict(),
             headers={"Content-Disposition":
                      f'attachment; filename="{safe or found.id}.funpack_project.json"'})
+
+    # ── media ─────────────────────────────────────────────────────────────
+    # Files the user brought IN, as opposed to something a run produced. A
+    # reference image today; whatever a model module wires a reference input
+    # to tomorrow. Kept apart from projects (its own store, its own ids) and
+    # from ComfyUI's own /upload/image (that one lands in the output tree and
+    # is meant for a single frame save, not something the user manages).
+
+    @routes.get(P + "/api/media")
+    async def _media_list(_req):
+        return web.json_response({"media": media.listing()})
+
+    @routes.post(P + "/api/media")
+    async def _media_upload(req):
+        if not req.content_type or not req.content_type.startswith("multipart/"):
+            return web.json_response(
+                {"problems": ["expected a multipart upload"]}, status=400)
+        saved, problems = [], []
+        reader = await req.multipart()
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if not part.filename:
+                continue  # a form field that is not a file
+            data = await part.read(decode=False)
+            try:
+                saved.append(media.save_upload(part.filename, data))
+            except ValueError as exc:
+                problems.append(f"{part.filename}: {exc}")
+        if not saved and problems:
+            return web.json_response({"problems": problems}, status=400)
+        return web.json_response({"media": saved, "problems": problems})
+
+    @routes.get(P + "/api/media/{mid}/file")
+    async def _media_file(req):
+        path = media.path_for(req.match_info["mid"])
+        if path is None:
+            return web.json_response({"problems": ["no such media"]}, status=404)
+        # FileResponse, not a hand-read body: it answers Range requests on its
+        # own, which is what lets a <video> scrub an imported clip instead of
+        # re-downloading it whole on every seek.
+        return web.FileResponse(path, headers={
+            "Content-Type": media.content_type(req.match_info["mid"])})
+
+    @routes.delete(P + "/api/media/{mid}")
+    async def _media_delete(req):
+        if not media.delete(req.match_info["mid"]):
+            return web.json_response({"problems": ["no such media"]}, status=404)
+        return web.json_response({"deleted": True})
 
     @routes.get(P + "/api/log/funpack")
     async def _log(req):

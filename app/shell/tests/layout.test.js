@@ -39,6 +39,35 @@ test("a result taken into the bin is what the viewer shows", () => {
   assert.equal(img.getAttribute("src"), "/view?filename=a.png&subfolder=&type=output");
 });
 
+test("the Media tab is not fetched until it is opened", () => {
+  let asked = false;
+  globalThis.fetch = async () => { asked = true; return { ok: true, json: async () => ({ media: [] }) }; };
+  const p = page();
+
+  assert.equal(asked, false, "the media library fetched before its tab was opened");
+  assert.equal(p.assets.node.contains(p.bin.host.node), true, "Results is not the default tab");
+  assert.equal(p.assets.node.contains(p.mediaLibrary.host.node), false);
+});
+
+test("opening the Media tab shows the library and fetches it, once", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return { ok: true, json: async () => ({ media: [] }) }; };
+  const p = page();
+
+  const [resultsBtn, mediaBtn] = p.assetsTabs.node.querySelectorAll(".cx-tab");
+  fire(mediaBtn, "click");
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.equal(p.assets.node.contains(p.mediaLibrary.host.node), true, "switching tabs did not swap the body");
+  assert.equal(p.assets.node.contains(p.bin.host.node), false);
+  assert.equal(calls, 1);
+
+  fire(resultsBtn, "click");
+  fire(mediaBtn, "click");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(calls, 1, "returning to Media re-fetched instead of keeping what it already had");
+});
+
 test("a video result reaches the viewer as a video", () => {
   const p = page();
   p.bin.absorb([file("clip.mp4")]);

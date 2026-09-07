@@ -18,6 +18,7 @@ import { composer } from "../composer/composer.js";
 import { offer } from "./mounts.js";
 import { createTransport } from "./transport.js";
 import { createBin } from "./bin.js";
+import { createMediaLibrary } from "./media.js";
 import { createMenubar } from "./menubar.js";
 import { createConstructor } from "./constructor.js";
 
@@ -41,10 +42,26 @@ export function build(root, handlers = {}) {
   const bin = createBin({
     onOpen: (item) => viewer.setSource(item.url, item.kind, item.file),
   });
+  // What a run produced, and what the user brought in, are different things
+  // kept in different stores -- see media.js. One zone, two tabs onto it,
+  // rather than a second zone: the Assets column is already the scarce one.
+  const mediaLibrary = createMediaLibrary({});
+  let mediaLoaded = false;
+  const assetsBody = composer.region.stack({ gap: "sm", fill: true, children: [bin.host] });
+  const assetsTabs = composer.tabs.underline({
+    value: "results", label: "Assets",
+    tabs: [{ value: "results", label: "Results" }, { value: "media", label: "Media" }],
+    onChange: (next) => {
+      assetsBody.set([next === "media" ? mediaLibrary.host : bin.host]);
+      // Fetched on first visit, not on boot: the library exists whether or
+      // not this tab is ever opened, matching every Settings section.
+      if (next === "media" && !mediaLoaded) { mediaLoaded = true; mediaLibrary.refresh(); }
+    },
+  });
   const assets = composer.panel.zone({
     title: "Assets",
     actions: [bin.control],
-    body: bin.host,
+    body: composer.region.stack({ gap: "sm", fill: true, children: [assetsTabs, assetsBody] }),
   });
 
   // ComfyUI's own route, not FunPack's -- ordinary image upload already exists
@@ -292,7 +309,7 @@ export function build(root, handlers = {}) {
     offer(`generation.${point}`, generation.node, generationEmpty.node);
   }
 
-  return { workspace, assets, bin, preview, viewer, timeline, timelineBody,
+  return { workspace, assets, bin, mediaLibrary, assetsTabs, preview, viewer, timeline, timelineBody,
            timelineEmpty, generation, settings, syncRegions,
            properties, transport, constructor, menubar,
            connection: menubar.connection, bar, page };

@@ -416,3 +416,5 @@
   inline-size: auto; align-self: center;
 }
 .cx-about .cx-settings-control { flex: 0 0 auto; justify-content: flex-start; }
+/* The fact key ("Chip", "Memory", ...) reads as a label, not a value. */
+.cx-about .cx-settings-label { font-weight: var(--fw-semibold); }

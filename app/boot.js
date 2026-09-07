@@ -475,7 +475,8 @@ async function start() {
   for (const { where, why } of failed) console.warn(`[FunPack] ${where} did not load: ${why}`);
 
   window.FunPack = {
-    manifest, values: allValues, failed, hidden, run, bin: page.bin, project, wheel,
+    manifest, values: allValues, failed, hidden, run, bin: page.bin,
+    media: page.mediaLibrary, project, wheel,
     viewer: page.viewer,
     prompts: () => (prompts ? prompts.overrides() : {}),
     mounted: mounted.map((m) => m.id),

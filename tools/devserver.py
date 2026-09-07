@@ -101,7 +101,10 @@ def _register_nodes() -> str:
 
 
 def build_app() -> web.Application:
-    app = web.Application()
+    # Matches ComfyUI's own --max-upload-size default (100MB, server.py) --
+    # aiohttp's bare default is 1MB, which made every real-sized upload here
+    # fail in a way production never would, on a ceiling nothing declared.
+    app = web.Application(client_max_size=100 * 1024 * 1024)
     routes = web.RouteTableDef()
     funpack_routes.register(routes)
 

@@ -29,5 +29,6 @@ node_modules/
 app/test-results/
 app/playwright-report/
 
-# User projects — their content, not ours.
+# User projects, and what they imported — their content, not ours.
 projects/
+media/

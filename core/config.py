@@ -19,3 +19,8 @@ MODULE_EXTS = frozenset({".js"})
 # project is FunPack's own state, and clearing outputs must not take a user's
 # edits with it.
 PROJECTS_DIR = ROOT / "projects"
+
+# Uploaded media (reference images, imported clips) -- FunPack's own state for
+# the same reason PROJECTS_DIR is: clearing ComfyUI's output tree must not take
+# something the user deliberately imported with it.
+MEDIA_DIR = ROOT / "media"
