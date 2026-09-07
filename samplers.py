@@ -3010,8 +3010,8 @@ class FunPackLTXAVSceneChainSampler:
                 # positional-mapping trap noted near h3_repr_steering_block. New widgets go at
                 # the end, always.
                 "h3_q_steer_strength": ("FLOAT", {
-                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Same liked-minus-disliked learned direction as h3_repr_steering, but captured and applied on the QUERY vectors going into attention at h3_q_steer_block, not on the block's hidden state. Steers WHICH keys the video rows attend to -- it does not add anything to the residual stream the way h3_repr_steering does, so it is a genuinely different lever, not the same mechanism twice. 0 = off, model not cloned. Needs 2+ liked and 2+ disliked ratings at the SAME block before it steers -- captures read-only until then. Its learned direction lives in its own store, separate from h3_repr_steering's.",
+                    "default": 0.0, "min": 0.0, "max": 10.0, "step": 0.01,
+                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Same liked-minus-disliked learned direction as h3_repr_steering, but captured and applied on the QUERY vectors going into attention at h3_q_steer_block, not on the block's hidden state. Steers WHICH keys the video rows attend to -- it does not add anything to the residual stream the way h3_repr_steering does, so it is a genuinely different lever, not the same mechanism twice. 0 = off, model not cloned. Needs 2+ liked and 2+ disliked ratings at the SAME block before it steers -- captures read-only until then. Its learned direction lives in its own store, separate from h3_repr_steering's. Ceiling raised well past h3_repr_steering_strength's own 2.0 -- unlike REINS' hidden-state injection, this only reaches the output through softmax, which can be comparatively insensitive to a Q shift (see the 2026-09-07 findings: 1.0 barely moved 0/1 alone), so there's headroom worth exploring before assuming a value is doing nothing.",
                 }),
                 "h3_q_steer_block": ("STRING", {
                     "default": "",
