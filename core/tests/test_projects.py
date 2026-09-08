@@ -378,3 +378,61 @@ def test_a_scene_field_read_back_is_never_trusted():
 
     for junk in (0, -4, True, None, "soon", 999_999):
         assert projects.Scene.from_dict({"length": junk}).length is None, junk
+
+
+# --- the project-level prompt fields: negative, anchor, postfix --------------
+
+def test_negative_survives_a_round_trip(store):
+    made = projects.create("Negative")
+    made.negative = "blurry, low quality"
+    projects.save(made)
+    assert projects.get(made.id).negative == "blurry, low quality"
+
+
+def test_anchor_survives_a_round_trip(store):
+    made = projects.create("Anchor")
+    made.anchor = "a lone rider on a frost-glider"
+    projects.save(made)
+    assert projects.get(made.id).anchor == "a lone rider on a frost-glider"
+
+
+def test_postfix_and_its_toggle_survive_a_round_trip(store):
+    made = projects.create("Postfix")
+    made.postfix = "cinematic, 35mm"
+    made.postfix_enabled = False
+    projects.save(made)
+
+    back = projects.get(made.id)
+    assert back.postfix == "cinematic, 35mm"
+    assert back.postfix_enabled is False
+
+
+def test_a_fresh_project_has_empty_text_fields_and_postfix_on(store):
+    made = projects.create("Fresh")
+    assert made.negative == made.anchor == made.postfix == ""
+    assert made.postfix_enabled is True
+
+
+def test_a_project_file_from_before_these_fields_existed_reads_as_the_v4_default():
+    """postfix_enabled defaults ON, matching v4 -- a project saved before this
+    field existed must not silently read as "postfix off" just because
+    nothing was there to say "on"."""
+    project = projects.Project.from_dict({"name": "Old"})
+    assert project.postfix_enabled is True
+    assert project.negative == project.anchor == project.postfix == ""
+
+
+def test_the_text_fields_read_back_are_never_trusted():
+    for junk in (0, -4, True, None, ["a", "list"], {"not": "a string"}):
+        project = projects.Project.from_dict(
+            {"negative": junk, "anchor": junk, "postfix": junk})
+        assert project.negative == project.anchor == project.postfix == "", junk
+
+
+def test_postfix_enabled_read_back_is_never_trusted():
+    for junk in ("yes", 1, 0, None, [], "false"):
+        # Anything that is not a real bool degrades to the v4 default (on),
+        # the same rule every other field here follows: a file cannot say
+        # something with a value core does not recognise as that thing.
+        assert projects.Project.from_dict({"postfix_enabled": junk}).postfix_enabled is True, junk
+    assert projects.Project.from_dict({"postfix_enabled": False}).postfix_enabled is False

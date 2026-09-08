@@ -137,10 +137,25 @@ class Project:
     #: A negative prompt, sent at whatever "project.negative" input the
     #: pipeline declares. Project-level for the same reason `video` is:
     #: something set rarely, once, not re-typed per scene.
-    #: ponytail: one string, not a dict keyed by input name the way `video`
-    #: is -- there is exactly one such role today. Generalise if a second
-    #: project-level TEXT role ever shows up.
     negative: str = ""
+    #: Text prepended to every scene's prompt. v4's "anchor" -- the shared
+    #: subject/setting line a whole project holds once instead of retyping
+    #: per scene.
+    anchor: str = ""
+    #: Text appended to every scene's prompt. v4's "postfix" -- symmetric to
+    #: anchor, but with its own on/off switch: v4 proved that a postfix
+    #: someone spent time writing needs to be turned off for a quick test
+    #: without losing it, which clearing the field would do. Anchor never
+    #: grew the same need in v4 and does not get one here either.
+    postfix: str = ""
+    postfix_enabled: bool = True
+    #: ponytail: three flat strings (plus one bool), not a dict keyed by role
+    #: name -- an earlier version of this comment said to generalise once a
+    #: second project-level text role showed up, and now three have. Tried
+    #: it: postfix's own enabled flag does not fit a plain role->string map
+    #: any better than a fourth field would, so the "simpler" shape turns out
+    #: not to be. Three named fields stay more readable than an abstraction
+    #: that has to special-case one of its own four entries anyway.
     updated_at: float = 0.0
 
     @staticmethod
@@ -149,12 +164,21 @@ class Project:
         pid = d.get("id")
         raw = d.get("scenes")
         negative = d.get("negative")
+        anchor = d.get("anchor")
+        postfix = d.get("postfix")
+        postfix_enabled = d.get("postfix_enabled")
         return Project(
             id=pid if is_id(pid) else _new_id(),
             name=_clean_name(d.get("name")),
             scenes=[Scene.from_dict(s) for s in (raw if isinstance(raw, list) else [])],
             video=_clean_video(d.get("video")),
             negative=negative if isinstance(negative, str) else "",
+            anchor=anchor if isinstance(anchor, str) else "",
+            postfix=postfix if isinstance(postfix, str) else "",
+            # True unless the file explicitly says False -- absent (a project
+            # from before this field existed) must read as "on", the same as
+            # v4's own default, not as "off" because nothing was there to say.
+            postfix_enabled=postfix_enabled if isinstance(postfix_enabled, bool) else True,
             updated_at=float(d.get("updated_at") or 0.0),
         )
 
