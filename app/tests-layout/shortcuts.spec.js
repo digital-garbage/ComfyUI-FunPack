@@ -113,3 +113,37 @@ test("anchor, postfix and a variable survive a reload", async ({ page }) => {
   await expect(page.locator(".cx-field", { hasText: "Anchor" }).locator("textarea")).toHaveValue("cinematic");
   await expect(page.locator("body")).toContainText("$subject");
 });
+
+test("each Generate draws a fresh seed for shortcut expansion, not a fixed hash of the text", async ({ page }) => {
+  // core/shortcuts.py's expand() falls back to hashing the literal text when
+  // seed is 0/absent -- a FIXED pick, not the "picks at random each time"
+  // the Shortcuts editor's own hint promises. Regression test for that: the
+  // request boot.js actually sends must carry a real, varying seed.
+  await app(page);
+  const seeds = [];
+  page.on("request", (req) => {
+    if (req.url().includes("/api/prompt/expand") && req.method() === "POST") {
+      const body = req.postDataJSON();
+      if (body && typeof body.seed === "number") seeds.push(body.seed);
+    }
+  });
+
+  await page.locator(".cx-panel-head").getByRole("button", { name: "Constructor" }).click();
+  await page.locator(".cx-modal textarea").first().fill("a fox runs");
+  await page.locator(".cx-modal textarea").first().blur();
+  await page.locator(".cx-modal").getByRole("button", { name: "Done" }).click();
+
+  const generate = page.getByRole("button", { name: "Generate", exact: true });
+  for (let i = 0; i < 2; i += 1) {
+    await generate.click();
+    await expect.poll(() => seeds.length, { timeout: 10000 }).toBeGreaterThan(i);
+    // The dev server has no /prompt route, so this run is refused right
+    // after queueing -- the button comes back quickly, same as
+    // generate_all.spec.js relies on for its own walk.
+    await expect(generate).toBeEnabled({ timeout: 10000 });
+  }
+
+  expect(seeds.length).toBeGreaterThanOrEqual(2);
+  expect(seeds.every((s) => s > 0)).toBe(true);
+  expect(new Set(seeds).size, "the same seed was sent twice in a row").toBeGreaterThan(1);
+});

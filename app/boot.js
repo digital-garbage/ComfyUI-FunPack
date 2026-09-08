@@ -351,6 +351,15 @@ async function start() {
         body: JSON.stringify({
           text, anchor: project.anchor, postfix: project.postfix,
           postfix_enabled: project.postfixEnabled, variables: project.variables,
+          // Without a seed, core/shortcuts.py's expand() falls back to
+          // hashing the literal text -- a fixed function of it, not a
+          // "picks at random each time" the Shortcuts editor's own hint
+          // promises. This app has no per-run sampler seed reachable from
+          // here to reuse (v4's version threaded its actual generation
+          // seed through the same fallback; nothing plays that role here
+          // yet), so a fresh one is drawn per queue instead -- real
+          // variety across separate Generate clicks, even on unedited text.
+          seed: Math.floor(Math.random() * 2 ** 31) || 1,
         }),
       });
       if (res.ok) {
