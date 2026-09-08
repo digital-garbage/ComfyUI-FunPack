@@ -177,3 +177,46 @@ test("removing a variable works even mid-edit on a different row", async ({ page
   await expect(page.locator('input[placeholder="name"]')).toHaveCount(rowCount - 1);
   await expect(page.locator("body")).not.toContainText("$row1");
 });
+
+test("a variable's own ✕ removes only that row, even with its own field mid-edit", async ({ page }) => {
+  // The row being removed is the one with the uncommitted edit -- removal
+  // detaches its still-focused name field, and a browser fires `blur` on a
+  // detached-while-focused element regardless of the mousedown's
+  // preventDefault. That reentrant commit must find its OWN row already
+  // gone (by reference, not by the index it closed over) and no-op, rather
+  // than overwriting whatever row now sits at that same numeric slot.
+  await app(page);
+  await page.getByRole("tab", { name: "Project" }).click();
+
+  const add = page.getByRole("button", { name: "+ Add variable" });
+  await add.click();
+  await page.locator('input[placeholder="name"]').last().fill("rowA");
+  await add.click();
+  await page.locator('input[placeholder="name"]').last().fill("rowB");
+
+  const rowCount = await page.locator('input[placeholder="name"]').count();
+  const rowANameField = page.locator('input[placeholder="name"]').nth(rowCount - 2);
+  await rowANameField.pressSequentially("-edited", { delay: 20 });
+  // rowA's OWN ✕, not rowB's -- the second-to-last remove button.
+  const removeButtons = page.getByRole("button", { name: "✕" });
+  await removeButtons.nth(rowCount - 2).click();
+
+  await expect(page.locator('input[placeholder="name"]')).toHaveCount(rowCount - 1);
+  await expect(page.locator("body")).toContainText("$rowB");
+  await expect(page.locator("body")).not.toContainText("rowA-edited");
+});
+
+test("a variable's ✕ can be removed with the keyboard", async ({ page }) => {
+  await app(page);
+  await page.getByRole("tab", { name: "Project" }).click();
+  await page.getByRole("button", { name: "+ Add variable" }).click();
+  await page.locator('input[placeholder="name"]').last().fill("keyboard");
+  await page.locator('input[placeholder="name"]').last().blur();
+
+  const before = await page.locator('input[placeholder="name"]').count();
+  await page.getByRole("button", { name: "✕" }).last().focus();
+  await page.keyboard.press("Enter");
+
+  await expect(page.locator('input[placeholder="name"]')).toHaveCount(before - 1);
+  await expect(page.locator("body")).not.toContainText("$keyboard");
+});

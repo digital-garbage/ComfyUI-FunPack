@@ -18,21 +18,26 @@ const RATINGS = [
 
 /**
  * A "✕" that removes something the moment it is pressed, not the moment a
- * browser would normally call it clicked.
+ * browser would normally call it clicked -- for a MOUSE press. Between a
+ * text field's blur-commit and its own click, a browser blurs the field
+ * FIRST -- and a commit here triggers a full, non-keyed redraw of this whole
+ * list (draw() -> node.replaceChildren()). Wired only to `onClick`, pressing
+ * ✕ right after typing in ANOTHER row's field destroys this exact button
+ * mid-gesture: the field's blur/commit/redraw runs before the click the
+ * mousedown started ever reaches it, so the press does nothing and says
+ * nothing. `mousedown` fires first, and calling `onRemove` there -- after
+ * `preventDefault()` stops the browser's own focus-move, and so the blur it
+ * would otherwise cause -- removes the row before a redraw gets the chance
+ * to pull the rug out from under this button itself.
  *
- * Between a text field's blur-commit and its own click, a browser blurs the
- * field FIRST -- and a commit here triggers a full, non-keyed redraw of this
- * whole list (draw() -> node.replaceChildren()). Wire this to `onClick` and
- * pressing ✕ right after typing in ANOTHER row's field destroys this exact
- * button mid-gesture: the field's blur/commit/redraw runs before the click
- * the mousedown started ever reaches it, so the press does nothing and says
- * nothing. `mousedown` fires first and `preventDefault()` on it stops the
- * browser's own focus-move (and so the blur it would otherwise cause) before
- * this handler's own redraw gets the chance to pull the rug out from under
- * itself.
+ * `onClick` stays wired too, and is what a KEYBOARD Enter/Space reaches --
+ * no mousedown precedes those, only a synthesised `click`. A real mouse
+ * click still fires both: `onRemove` must tolerate being called twice for
+ * the one press (its own reference-lookup guard makes the second call, on
+ * an already-removed row, a safe no-op -- see the callers below).
  */
 function removeButton(onRemove) {
-  const btn = composer.button.sm({ label: "✕", tone: "danger" });
+  const btn = composer.button.sm({ label: "✕", tone: "danger", onClick: onRemove });
   btn.node.addEventListener("mousedown", (e) => { e.preventDefault(); onRemove(); });
   return btn;
 }
@@ -157,12 +162,12 @@ export function createInspector({ project, onRename } = {}) {
       composer.hint.default({ text: "$name in the anchor, a scene, or the postfix is replaced with its value." }),
       // Every write below reads `project.variables` FRESH at commit time
       // (never the `vars` snapshot this render closed over) and hands
-      // setVariables a brand new array -- two things that both have to hold:
+      // setVariables a brand new array -- necessary for two reasons:
       //
       // 1. setVariables's own remember() clones `project` for undo BEFORE
       //    applying the new list, so that clone must still show the OLD
-      //    values. An earlier version of this mutated the shared row object
-      //    in place and passed the SAME array back -- by the time remember()
+      //    values. An earlier version mutated the shared row object in
+      //    place and passed the SAME array back -- by the time remember()
       //    cloned it, the "before" snapshot already held the new value, and
       //    Undo after any variable edit silently did nothing.
       // 2. setVariables's changed() triggers boot.js's `inspector.draw()`,
@@ -170,28 +175,50 @@ export function createInspector({ project, onRename } = {}) {
       //    before a second, still-pending commit on the same row can fire.
       //    Reading `project.variables` fresh (rather than the `vars` this
       //    closure captured at render time) means that second commit builds
-      //    its own edit on top of whatever the first commit already saved,
-      //    instead of overwriting it with a stale copy.
+      //    its own edit on top of whatever the first commit already saved.
       //
-      // The index `i` stays valid across such a redraw because only Add/✕
-      // change the array's shape, and neither can fire between two commits
-      // on the same still-open row.
-      ...vars.map((v, i) => composer.settingsRow.default({
-        label: `$${v.name || "…"}`,
-        control: composer.toolbar.default({ label: `$${v.name}`, items: [
-          composer.input.md({
-            value: v.name, placeholder: "name",
-            onCommit: (name) => project.setVariables(project.variables.map(
-              (x, j) => (j === i ? { ...x, name: name.replace(/^\$+/, "") } : x))),
-          }),
-          composer.input.md({
-            value: v.value, placeholder: "value",
-            onCommit: (value) => project.setVariables(project.variables.map(
-              (x, j) => (j === i ? { ...x, value } : x))),
-          }),
-          removeButton(() => project.setVariables(project.variables.filter((_, j) => j !== i))),
-        ] }),
-      })),
+      // Rows are addressed by the ROW OBJECT ITSELF (found by reference in
+      // the current array), never by the index this render closed over.
+      // Removing row0 shrinks the array, so a commit still in flight for a
+      // LATER row would write to the wrong slot under its old index -- and
+      // that is not just two clicks in quick succession: removeButton's own
+      // mousedown handler triggers a synchronous redraw that detaches
+      // whatever field still has an uncommitted edit, and a browser fires
+      // `blur` on a detached-while-focused element even with the mousedown's
+      // default prevented. That blur commits REENTRANTLY, inside the very
+      // setVariables() call that is still removing a row, indexed against an
+      // array that has already changed shape underneath it -- including when
+      // the row being removed IS the one with the uncommitted edit, where the
+      // reentrant commit would otherwise silently overwrite whatever row now
+      // sits at that same numeric slot. Looking the row up by reference makes
+      // a commit for a row no longer in the array a no-op instead.
+      ...vars.map((row) => {
+        const commit = (patch) => {
+          const current = project.variables;
+          const at = current.indexOf(row);
+          if (at === -1) return;                 // this row is already gone
+          project.setVariables(current.map((x, j) => (j === at ? { ...x, ...patch } : x)));
+        };
+        const remove = () => {
+          const current = project.variables;
+          if (!current.includes(row)) return;     // already removed (see removeButton)
+          project.setVariables(current.filter((x) => x !== row));
+        };
+        return composer.settingsRow.default({
+          label: `$${row.name || "…"}`,
+          control: composer.toolbar.default({ label: `$${row.name}`, items: [
+            composer.input.md({
+              value: row.name, placeholder: "name",
+              onCommit: (name) => commit({ name: name.replace(/^\$+/, "") }),
+            }),
+            composer.input.md({
+              value: row.value, placeholder: "value",
+              onCommit: (value) => commit({ value }),
+            }),
+            removeButton(remove),
+          ] }),
+        });
+      }),
       composer.button.md({ label: "+ Add variable",
         onClick: () => project.setVariables([...project.variables, { name: "", value: "" }]) }),
     ];
