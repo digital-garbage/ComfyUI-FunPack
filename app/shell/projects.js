@@ -308,6 +308,56 @@ export function createProject({ onChange, onError, onOpen } = {}) {
       changed();
     },
 
+    /** Text prepended to every scene's prompt at generation (core/prompt_build.py)
+     *  -- a project-level choice, the same as negative. */
+    get anchor() { return (project && project.anchor) || ""; },
+
+    setAnchor(value) {
+      if (!project) return;
+      if (project.anchor === value) return;
+      remember();
+      project.anchor = value;
+      scheduleSave();
+      changed();
+    },
+
+    /** Text appended to every scene's prompt, when postfixEnabled is true. */
+    get postfix() { return (project && project.postfix) || ""; },
+
+    setPostfix(value) {
+      if (!project) return;
+      if (project.postfix === value) return;
+      remember();
+      project.postfix = value;
+      scheduleSave();
+      changed();
+    },
+
+    get postfixEnabled() { return project ? project.postfix_enabled !== false : true; },
+
+    setPostfixEnabled(value) {
+      if (!project) return;
+      if (project.postfix_enabled === value) return;
+      remember();
+      project.postfix_enabled = value;
+      scheduleSave();
+      changed();
+    },
+
+    /** $name -> text, substituted into anchor/scene/postfix at generation.
+     *  A list, not a dict: order is what the user set, and the whole list is
+     *  replaced at once -- one row is typed at a time, but no row can be
+     *  addressed by name alone while it is still being renamed. */
+    get variables() { return (project && project.variables) || []; },
+
+    setVariables(list) {
+      if (!project) return;
+      remember();
+      project.variables = list;
+      scheduleSave();
+      changed();
+    },
+
     /** The text of one scene. The prompt box on the main window edits this. */
     setText(id, text) { this.setScene(id, "text", text); },
 

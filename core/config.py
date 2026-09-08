@@ -24,3 +24,8 @@ PROJECTS_DIR = ROOT / "projects"
 # the same reason PROJECTS_DIR is: clearing ComfyUI's output tree must not take
 # something the user deliberately imported with it.
 MEDIA_DIR = ROOT / "media"
+
+# The shortcut library: trigger -> replacement text. Global, not per-project --
+# a shortcut is reused across every project, not redefined in each one, so it
+# lives beside PROJECTS_DIR rather than inside any one project file.
+SHORTCUTS_FILE = ROOT / "shortcuts.json"

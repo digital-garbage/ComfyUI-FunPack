@@ -10,6 +10,8 @@ import json
 
 from . import (backend_log, config, graph as graph_mod, log, media, nodes_manager, probe as probe_mod,
                projects,
+               prompt_build,
+               shortcuts as shortcuts_mod,
                sysinfo,
                temp_files,
                update as update_mod,
@@ -728,6 +730,69 @@ def register(routes, prefix=None):
         if not media.delete(req.match_info["mid"]):
             return web.json_response({"problems": ["no such media"]}, status=404)
         return web.json_response({"deleted": True})
+
+    # ── shortcuts ─────────────────────────────────────────────────────────
+    # A trigger -> replacement text library, global across every project --
+    # see core/shortcuts.py. CRUD here; the expansion itself is stateless
+    # (below), not tied to saving or loading a shortcut.
+
+    @routes.get(P + "/api/shortcuts")
+    async def _shortcuts_list(_req):
+        return web.json_response({"shortcuts": [s.to_dict() for s in shortcuts_mod.listing()]})
+
+    @routes.post(P + "/api/shortcuts")
+    async def _shortcuts_save(req):
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"problems": ["that is not JSON"]}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"problems": [f"a shortcut is an object, not a {type(body).__name__}"]}, status=400)
+        original_name = body.get("original_name")
+        try:
+            items = shortcuts_mod.save(body, original_name if isinstance(original_name, str) else None)
+        except ValueError as exc:
+            return web.json_response({"problems": [str(exc)]}, status=400)
+        return web.json_response({"shortcuts": [s.to_dict() for s in items]})
+
+    @routes.delete(P + "/api/shortcuts/{name}")
+    async def _shortcuts_delete(req):
+        items = shortcuts_mod.delete(req.match_info["name"])
+        return web.json_response({"shortcuts": [s.to_dict() for s in items]})
+
+    @routes.post(P + "/api/shortcuts/clear")
+    async def _shortcuts_clear(_req):
+        shortcuts_mod.clear()
+        return web.json_response({"shortcuts": []})
+
+    @routes.post(P + "/api/prompt/expand")
+    async def _prompt_expand(req):
+        """What a scene's typed text becomes at generation: anchor + shortcuts
+        + $variables + postfix, applied here rather than client-side so the
+        library and the algorithm have exactly one implementation. Stateless
+        -- everything it needs travels in the body -- for the same reason
+        /api/pipeline is: this runs for a preview as freely as for a real run,
+        and neither should require a project to exist on the server's disk."""
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"problems": ["that is not JSON"]}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"problems": [f"a request is an object, not a {type(body).__name__}"]}, status=400)
+        variables = body.get("variables")
+        seed = body.get("seed")
+        expanded = await asyncio.to_thread(
+            prompt_build.build,
+            body.get("text") or "",
+            anchor=body.get("anchor") or "",
+            postfix=body.get("postfix") or "",
+            postfix_enabled=body.get("postfix_enabled") is not False,
+            variables=variables if isinstance(variables, list) else None,
+            seed=seed if isinstance(seed, int) and not isinstance(seed, bool) else 0,
+        )
+        return web.json_response({"text": expanded})
 
     @routes.get(P + "/api/log/funpack")
     async def _log(req):

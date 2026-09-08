@@ -96,6 +96,12 @@ export async function createPrompts(slots = [], { describe, onChange } = {}) {
     // without it, a project that never touched this input has no way to say
     // "go back to normal" and the last project's value is left standing.
     get default() { return entry.default; },
+    // The real DOM node, for a caller that needs to attach something to the
+    // FIELD rather than read/write its value -- autocomplete.js's attach(),
+    // concretely. Not every control renders one text input (a combo, a
+    // stepper), so this is undefined rather than a guess for anything but
+    // the multiline/text controls that have one.
+    get node() { return entry.control.node; },
     setValue(next) {
       entry.value = next;
       if (entry.control.setValue) entry.control.setValue(next);

@@ -33,6 +33,22 @@ export function createInspector({ project, onRename } = {}) {
   // that gets replaced on the next scene selection would not survive it.
   const negative = composer.region.stack({ gap: "sm", label: "Negative prompt" });
   host.set([tabs, rows, negative]);
+  // Every `.cx-stack` (composer/elements/layout.css) allows itself to shrink
+  // below its own content's height -- `host` is also a FILL stack (flex:1 1
+  // auto), so it competes for room with its OWN siblings in layout.js's outer
+  // Properties column (the Generation section, the Settings collapsible) the
+  // same way `rows`/`negative` compete with each other inside it. Without
+  // flex-shrink:0 at every one of these levels, once the Project tab grew
+  // past a couple of settings rows (Prompt craft, Variables), the column
+  // squeezed whichever stack ran out of room below its own content instead
+  // of growing past it -- and the spilled-over content landed on top of
+  // whatever sits next in the flow, up to and including swallowing that
+  // sibling's own clicks. flex-grow stays (fill:true still means "take any
+  // LEFTOVER room" when this tab's content is short); only shrinking below
+  // content is refused.
+  host.node.style.flexShrink = "0";
+  rows.node.style.flexShrink = "0";
+  negative.node.style.flexShrink = "0";
 
   function sceneRows() {
     const scene = project.selected;
@@ -78,6 +94,7 @@ export function createInspector({ project, onRename } = {}) {
   function projectRows() {
     const open = project.project;
     if (!open) return [composer.hint.default({ text: "No project is open." })];
+    const vars = project.variables;
     return [
       composer.label.section({ text: "Project" }),
       composer.settingsRow.default({
@@ -94,6 +111,56 @@ export function createInspector({ project, onRename } = {}) {
         text: "Size and length live in the Constructor: they are what every scene "
             + "is generated at.",
       }),
+      composer.label.section({ text: "Prompt craft" }),
+      composer.field.default({
+        label: "Anchor",
+        hint: "Prepended to every scene's prompt at generation.",
+        control: composer.textarea.md({
+          value: project.anchor, rows: 2, placeholder: "cinematic, shared subject/setting",
+          onCommit: (v) => project.setAnchor(v),
+        }),
+      }),
+      composer.field.default({
+        label: "Postfix",
+        hint: "Appended to every scene's prompt, while the toggle below is on.",
+        control: composer.textarea.md({
+          value: project.postfix, rows: 2, placeholder: "4k, high detail",
+          onCommit: (v) => project.setPostfix(v),
+        }),
+      }),
+      composer.toggle.default({
+        label: "Postfix enabled", checked: project.postfixEnabled,
+        onChange: (v) => project.setPostfixEnabled(v),
+      }),
+      composer.label.section({ text: "Variables" }),
+      composer.hint.default({ text: "$name in the anchor, a scene, or the postfix is replaced with its value." }),
+      // `vars` (project.variables) is mutated IN PLACE and handed back to the
+      // same setVariables call, rather than rebuilt via .map() from this
+      // closure's own index -- setVariables's changed() triggers boot.js's
+      // `inspector.draw()`, which tears down and rebuilds every field here
+      // (including the one NOT being edited) before a second, still-pending
+      // commit on this same row can fire. A rebuilt-`next`-array version reads
+      // its OWN stale `vars` snapshot at that point and would silently
+      // overwrite whatever the first commit just wrote; mutating the shared
+      // object means the second commit's own edit survives no matter which
+      // node the redraw already detached.
+      ...vars.map((v, i) => composer.settingsRow.default({
+        label: `$${v.name || "…"}`,
+        control: composer.toolbar.default({ label: `$${v.name}`, items: [
+          composer.input.md({
+            value: v.name, placeholder: "name",
+            onCommit: (name) => { v.name = name.replace(/^\$+/, ""); project.setVariables(vars); },
+          }),
+          composer.input.md({
+            value: v.value, placeholder: "value",
+            onCommit: (value) => { v.value = value; project.setVariables(vars); },
+          }),
+          composer.button.sm({ label: "✕", tone: "danger",
+            onClick: () => { vars.splice(i, 1); project.setVariables(vars); } }),
+        ] }),
+      })),
+      composer.button.md({ label: "+ Add variable",
+        onClick: () => project.setVariables([...vars, { name: "", value: "" }]) }),
     ];
   }
 

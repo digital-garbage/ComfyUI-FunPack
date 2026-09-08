@@ -78,8 +78,11 @@ export function createGenerator({ run, transport, check, ready, slots, values, i
           // What the boxes on the main window hold, addressed by slot. Sent
           // apart from `slots` on purpose: the pipeline window owns the
           // structure and these own one value inside it, so neither has to
-          // carry the other's.
-          ...(inputs ? { inputs: inputs() } : {}),
+          // carry the other's. Awaited: boot.js's own `inputs` expands the
+          // prompt box's text (anchor, shortcuts, $variables, postfix) with a
+          // server round-trip before a run reads it, and a plain synchronous
+          // return value awaits to itself unchanged.
+          ...(inputs ? { inputs: await inputs() } : {}),
           // What every panel in the app holds. Sent even when empty: "nothing
           // is set" is an answer, and the server tells the difference between
           // that and a client too old to send any.

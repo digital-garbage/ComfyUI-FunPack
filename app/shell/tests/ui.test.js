@@ -129,8 +129,13 @@ function fakeProject(over = {}) {
     selectedId: scene.id,
     selected: scene,
     video: { length: 97 },
+    anchor: "", postfix: "", postfixEnabled: true, variables: [],
     setScene: (id, key, value) => { written.push([id, key, value]); scene[key] = value; },
     rename: (name) => written.push(["project", "name", name]),
+    setAnchor: (v) => written.push(["project", "anchor", v]),
+    setPostfix: (v) => written.push(["project", "postfix", v]),
+    setPostfixEnabled: (v) => written.push(["project", "postfix_enabled", v]),
+    setVariables: (v) => written.push(["project", "variables", v]),
     ...over,
   };
 }

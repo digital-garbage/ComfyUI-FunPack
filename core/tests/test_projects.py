@@ -436,3 +436,43 @@ def test_postfix_enabled_read_back_is_never_trusted():
         # something with a value core does not recognise as that thing.
         assert projects.Project.from_dict({"postfix_enabled": junk}).postfix_enabled is True, junk
     assert projects.Project.from_dict({"postfix_enabled": False}).postfix_enabled is False
+
+
+def test_variables_survive_a_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path)
+    p = projects.create("v")
+    p.variables = [{"name": "subject", "value": "a fox"}]
+    projects.save(p)
+    back = projects.get(p.id)
+    assert back.variables == [{"name": "subject", "value": "a fox"}]
+
+
+def test_a_fresh_project_has_no_variables():
+    assert projects.Project().variables == []
+
+
+def test_a_variable_with_no_name_is_dropped():
+    p = projects.Project.from_dict({"variables": [
+        {"name": "", "value": "x"}, {"name": "  ", "value": "y"}, {"name": "ok", "value": "z"},
+    ]})
+    assert p.variables == [{"name": "ok", "value": "z"}]
+
+
+def test_a_leading_dollar_in_a_saved_variable_name_is_stripped():
+    p = projects.Project.from_dict({"variables": [{"name": "$subject", "value": "fox"}]})
+    assert p.variables == [{"name": "subject", "value": "fox"}]
+
+
+def test_a_variables_value_that_is_not_a_string_reads_back_empty():
+    p = projects.Project.from_dict({"variables": [{"name": "a", "value": 5}, {"name": "b"}]})
+    assert p.variables == [{"name": "a", "value": ""}, {"name": "b", "value": ""}]
+
+
+def test_variables_that_are_not_a_list_read_back_empty():
+    for junk in ("nope", {"a": "b"}, 5, None):
+        assert projects.Project.from_dict({"variables": junk}).variables == []
+
+
+def test_entries_in_variables_that_are_not_objects_are_dropped():
+    p = projects.Project.from_dict({"variables": ["nope", 5, {"name": "ok", "value": "1"}]})
+    assert p.variables == [{"name": "ok", "value": "1"}]

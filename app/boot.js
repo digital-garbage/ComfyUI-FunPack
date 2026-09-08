@@ -15,6 +15,7 @@ import { wire, waitForTerminal } from "./shell/session.js";
 import { check, load, describe, search } from "./shell/pipeline.js";
 import { mount as mountPipeline } from "./shell/pipeline_window.js";
 import { createPrompts } from "./shell/prompt.js";
+import { attach as attachAutocomplete } from "./shell/autocomplete.js";
 import { createProject } from "./shell/projects.js";
 import { createTimeline } from "./shell/timeline.js";
 import { createInspector } from "./shell/inspector.js";
@@ -25,6 +26,7 @@ import { mount as mountUpdates, status as gitStatus } from "./shell/updates.js";
 import { mount as mountPacks } from "./shell/packs.js";
 import { mount as mountLog } from "./shell/logwindow.js";
 import { mount as mountTemp } from "./shell/tempfiles.js";
+import { mount as mountShortcuts } from "./shell/shortcuts.js";
 import { createSettingsWindow } from "./shell/settings_window.js";
 
 const root = document.querySelector("#app");
@@ -108,6 +110,11 @@ async function start() {
   const showScene = (scene) => {
     const box = prompts && prompts.at("generation.prompt");
     if (box) box.setValue(scene ? scene.text : "");
+    // The box's own DOM node, so autocomplete has an actual field to attach
+    // to. `attach()` is a no-op on a node it has already seen -- the guard is
+    // needed because showScene() runs on every selection change, and box.node
+    // only actually CHANGES after a pipeline edit rebuilds the control.
+    if (box && box.node) attachAutocomplete(box.node);
     // The properties column is about ONE scene, and says which.
     const at = scene ? project.scenes.findIndex((s) => s.id === scene.id) + 1 : 0;
     if (page && page.properties) page.properties.setTitle(at ? `Scene · ${at}` : "Scene");
@@ -252,6 +259,11 @@ async function start() {
         mount: (ctx) => mountLog(ctx),
       },
       {
+        id: "shortcuts", title: "Shortcuts", subtitle: "Trigger words that expand into a prompt at generation.",
+        keywords: "shortcuts triggers replacements autocomplete prompt", icon: "✱", tone: "accent",
+        mount: (ctx) => mountShortcuts(ctx),
+      },
+      {
         id: "temp", title: "Temp files", subtitle: "Where a file went when it did not land in the bin.",
         keywords: "temp files output directory", icon: "▥", tone: "neutral",
         // Opening one puts it in the Preview, which is where somebody hunting
@@ -322,9 +334,39 @@ async function start() {
       // whatever follows it is wired to that.
     },
   });
+  // What a run actually sends for the prompt box: not the literal typed text,
+  // but that text with the project's anchor/postfix/$variables/shortcuts
+  // applied (core/prompt_build.py) -- scene.text itself stays exactly what
+  // was typed, so editing and regenerating always shows that, not an
+  // expanded copy nothing can trace back to it. Only the "generation.prompt"
+  // field is touched; every other override goes through unchanged.
+  async function queueInputs() {
+    const raw = prompts ? prompts.overrides() : {};
+    const field = prompts && prompts.fields.find((f) => f.at === "generation.prompt");
+    const text = field && (raw[field.slot] || {})[field.input];
+    if (!field || text == null) return raw;
+    try {
+      const res = await fetch("/funpack/api/prompt/expand", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text, anchor: project.anchor, postfix: project.postfix,
+          postfix_enabled: project.postfixEnabled, variables: project.variables,
+        }),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        raw[field.slot] = { ...raw[field.slot], [field.input]: body.text };
+      }
+      // A non-OK response leaves `raw` holding the literal typed text -- the
+      // run still queues, just without anchor/shortcuts/variables applied,
+      // rather than being blocked by a prompt-craft feature failing.
+    } catch { /* same fallback: the network call itself failed */ }
+    return raw;
+  }
+
   const session = wire({ run, page, check, id, queuedFor, finishedFor,
                          slots: () => slots, values: allValues,
-                         inputs: () => (prompts ? prompts.overrides() : {}),
+                         inputs: queueInputs,
                          // Read by run.start() at the moment IT queues -- not
                          // at Generate-click time, which is what onGenerate
                          // sets ranFor/ranForProject from.

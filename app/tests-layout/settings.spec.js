@@ -47,7 +47,7 @@ test("picking a section swaps the content in place -- the window stays open, and
   // itself inside the body, beside the still-visible nav list.
   await expect(page.locator(".cx-modal-title")).toHaveText("Settings");
   await expect(page.locator(".cx-modal")).toContainText("Node packs");
-  await expect(page.locator(".cx-filter-row")).toHaveCount(6);  // About + the five, still all there
+  await expect(page.locator(".cx-filter-row")).toHaveCount(7);  // About + the six, still all there
 });
 
 test("switching sections tears down the last one -- its own polling stops", async ({ page }) => {

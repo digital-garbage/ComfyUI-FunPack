@@ -124,6 +124,26 @@ def _clean_video(raw) -> dict:
     return clean
 
 
+def _clean_variables(raw) -> list:
+    """[{"name": str, "value": str}, ...] -- anything else in a slot is
+    dropped rather than guessed at, the same rule every other field reads
+    back out of a project file follows. A name that is empty after stripping
+    the leading `$` is not a variable anyone could ever reference, so it is
+    dropped rather than kept as a row nothing can ever match."""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").lstrip("$").strip()
+        if not name:
+            continue
+        value = item.get("value")
+        out.append({"name": name[:MAX_NAME], "value": value if isinstance(value, str) else ""})
+    return out
+
+
 @dataclass
 class Project:
     id: str = field(default_factory=_new_id)
@@ -156,6 +176,12 @@ class Project:
     #: any better than a fourth field would, so the "simpler" shape turns out
     #: not to be. Three named fields stay more readable than an abstraction
     #: that has to special-case one of its own four entries anyway.
+    #:
+    #: $name -> text, substituted into anchor/scene/postfix at generation
+    #: (core/prompt_build.py). A LIST, not a dict: order is what a person set,
+    #: and preserving it is what makes "the row I just added" stay at the
+    #: bottom instead of jumping around alphabetically on the next save.
+    variables: list = field(default_factory=list)
     updated_at: float = 0.0
 
     @staticmethod
@@ -179,6 +205,7 @@ class Project:
             # from before this field existed) must read as "on", the same as
             # v4's own default, not as "off" because nothing was there to say.
             postfix_enabled=postfix_enabled if isinstance(postfix_enabled, bool) else True,
+            variables=_clean_variables(d.get("variables")),
             updated_at=float(d.get("updated_at") or 0.0),
         )
 
