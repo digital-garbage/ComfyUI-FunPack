@@ -44,9 +44,44 @@ VIDEO_CHANNELS = 24
 AUDIO_CHANNELS = 32
 VIDEO_SPATIAL_RATIO = 16
 
+# Mirrors comfy/model_detection.py's own signature for this architecture: key
+# NAMES only, no shapes or values, so a checkpoint file can be identified by
+# its safetensors header alone -- without loading a single weight.
+#
+# Only the two prefixes ComfyUI's own loading path can actually end up
+# reading H3's tensors under: bare (a standalone unet-only file, where
+# `unet_prefix_from_state_dict`'s guess strips nothing and the original
+# unprefixed keys survive), and "model.diffusion_model." (the first, and
+# only H3-relevant, candidate that function tries for a full-checkpoint
+# layout). A bare "diffusion_model." (no "model." in front) was here too,
+# copied verbatim from the old v4 probe this was ported from -- traced
+# through comfy/model_detection.py and comfy/sd.py and confirmed it is not
+# reachable: ComfyUI's own prefix guess for that layout falls through to
+# "model.", strips nothing (no key starts with "model."), and the ORIGINAL
+# "diffusion_model."-prefixed keys are what detect_unet_config then searches
+# under key_prefix="" -- which never finds them, so ComfyUI's real loader
+# would refuse a file this probe would have called H3. A false "yes" is
+# exactly the failure this feature exists to prevent, so it is gone rather
+# than left in on the chance some file happens to use it.
+_PREFIXES = ("", "model.diffusion_model.")
+_SIGNATURE_KEYS = ("video_patch_proj.weight", "audio_patch_proj.weight")
+
 
 def is_h3(model) -> bool:
     return has_block(model, MODEL_CLASS)
+
+
+def detect(keys) -> bool:
+    """Whether a safetensors file's tensor names are MiniMax H3's own.
+
+    Read before anything is loaded: this is what lets core refuse a
+    mismatched checkpoint (or say what a file actually is) before queueing
+    a run that would otherwise fail deep inside sampling, far from the
+    mistake.
+    """
+    keyset = set(keys)
+    return any(all(f"{prefix}{key}" in keyset for key in _SIGNATURE_KEYS)
+               for prefix in _PREFIXES)
 
 
 def traits(model):
@@ -112,4 +147,4 @@ def empty_latent(model, width, height, length, batch_size=1):
 
 
 TRAITS = traits
-PROVIDES = {"empty_latent": empty_latent, "decode": decode}
+PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect}

@@ -8,7 +8,8 @@ thin adapters over pure functions in `serve`.
 import asyncio
 import json
 
-from . import (backend_log, config, graph as graph_mod, log, media, nodes_manager, projects,
+from . import (backend_log, config, graph as graph_mod, log, media, nodes_manager, probe as probe_mod,
+               projects,
                sysinfo,
                temp_files,
                update as update_mod,
@@ -445,6 +446,28 @@ def register(routes, prefix=None):
         # different machines, and the host is the one worth looking at.
         # to_thread: this shells out (sysctl) and can wait on a GPU query.
         payload = await asyncio.to_thread(sysinfo.collect)
+        return web.json_response(payload)
+
+    @routes.get(P + "/api/probe")
+    async def _probe(req):
+        """Which model family a checkpoint file is, before anything loads it.
+
+        Reads a safetensors header off disk -- to_thread because that is
+        real (if small) file I/O -- and asks every installed model module
+        whether the tensor names are its own. Nothing here names a family:
+        that answer comes back from whichever module claimed it.
+        """
+        filename = (req.query.get("file") or "").strip()
+        if not filename:
+            return web.json_response(
+                {"problems": ["which file is named by ?file="]}, status=400)
+        path = probe_mod.resolve_diffusion_model(filename)
+        if path is None:
+            return web.json_response({
+                "module": None, "title": None, "detected": False,
+                "reason": f"{filename}: not found in the models folders",
+            })
+        payload = await asyncio.to_thread(probe_mod.detect, path)
         return web.json_response(payload)
 
     @routes.post(P + "/api/git/update")

@@ -523,6 +523,58 @@ test("an unfed socket has no Unwire button to press", async () => {
   win.close();
 });
 
+// --- a node's own outputs, shown on its own panel ---------------------------
+//
+// Wiring is always asked for by the CONSUMING input, never from the output's
+// own side -- but an output that is never shown anywhere on its own node's
+// panel is a real blind spot: open the node that PRODUCES something and
+// there was nothing here saying what it produces, or whether anything reads
+// it yet. Missed by two full review rounds because every one of them
+// reasoned from "does wiring an input work", never "can you see what a node
+// makes just by looking at it".
+
+test("a node's own outputs are listed on its panel, named and typed", async () => {
+  const { win } = await opened();
+  win.enter("Loaders");
+  const rows = [...win.node.querySelectorAll(".cx-settings-row")]
+    .filter((r) => r.querySelector(".cx-settings-label")?.textContent === "model");
+  // "model" is both an INPUT widget on other nodes and this node's OWN
+  // output name -- the output row is the one with no input control, only
+  // the read-only hint.
+  const outputRow = rows.find((r) => !r.querySelector("input, select, textarea, button"));
+  assert.ok(outputRow, "the Loader's own 'model' output is not shown at all");
+  assert.match(outputRow.querySelector(".cx-hint")?.textContent ?? "", /MODEL/);
+  win.close();
+});
+
+test("an output already consumed says who reads it", async () => {
+  const { win } = await opened();
+  win.enter("Loaders");
+  const rows = [...win.node.querySelectorAll(".cx-settings-row")]
+    .filter((r) => r.querySelector(".cx-settings-label")?.textContent === "model");
+  const outputRow = rows.find((r) => !r.querySelector("input, select, textarea, button"));
+  assert.match(outputRow.querySelector(".cx-hint")?.textContent ?? "", /feeds sampler\.model/);
+  win.close();
+});
+
+test("an output nothing reads yet says so", async () => {
+  const custom = server({ slots: [{ id: "s", group: "Sampling", node: "Sampler", inputs: {} }] });
+  const win = openWindow(custom);
+  await win.ready;
+  win.enter("Sampling");
+  const outputRow = rowFor(win, "LATENT");
+  assert.match(outputRow.querySelector(".cx-hint")?.textContent ?? "", /nothing reads this yet/);
+  win.close();
+});
+
+test("a node with no outputs shows no Outputs section", async () => {
+  const { win } = await opened();
+  win.enter("Other");                            // "save" has no group of its own
+  assert.equal([...win.node.querySelectorAll(".cx-eyebrow")]
+    .some((el) => el.textContent === "Outputs"), false);
+  win.close();
+});
+
 // --- wiring a WIDGET input -- "linked inputs" -------------------------------
 //
 // A widget-typed input (a number, a string, a combo) can hold a link too --

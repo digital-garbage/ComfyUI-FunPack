@@ -161,6 +161,24 @@ test("a widget input -- a linked input -- can be wired to another node's output,
   await expect(textRow.locator("textarea, input")).toBeVisible();
 });
 
+test("a node's own outputs are shown on its own panel, named and consumed", async ({ page }) => {
+  // Wiring is always asked for by the consuming input; that does not mean an
+  // output should be invisible on the node that PRODUCES it. Missed by two
+  // review rounds, both reasoning only from the consuming side -- found
+  // live, by someone just looking at a node and not seeing what it makes.
+  await openWindow(page);
+  await page.locator(".cx-card", { hasText: "Loaders" }).click();
+  await page.locator('[aria-label="Nodes"] .cx-filter-row', { hasText: "model" }).click();
+
+  const outputsHeading = page.locator(".cx-eyebrow", { hasText: "Outputs" });
+  await expect(outputsHeading).toBeVisible();
+  const modelOutputRow = page.locator(".cx-settings-row")
+    .filter({ has: page.locator(".cx-settings-label", { hasText: /^model$/ }) })
+    .filter({ hasNot: page.locator("input, select, textarea, button") });
+  await expect(modelOutputRow).toContainText("MODEL");
+  await expect(modelOutputRow).toContainText(/feeds/);
+});
+
 test("the Add-node picker has one search box, not two disagreeing ones", async ({ page }) => {
   // filterList draws its own "Filter these results" search box; this picker
   // already has an outer one that re-queries the server on every keystroke.

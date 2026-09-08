@@ -467,7 +467,41 @@ export function mount({ load, describe, check, search, onApply,
       }));
     }
 
+    // Outputs are never wired from HERE -- wiring is always asked for by the
+    // input that wants one, through its own Wire button, so the same link
+    // is never described two different ways depending on which end you
+    // opened. But an output that is never SHOWN anywhere on its own node is
+    // a real blind spot, not just a different workflow: open a node that
+    // exists to produce things and there was nothing here saying what it
+    // produces, or whether anything downstream already reads it.
+    if (described.outputs && described.outputs.length) {
+      rows.push(composer.label.section({ text: "Outputs" }));
+      described.outputs.forEach((type, index) => {
+        const name = (described.output_names || [])[index] || type;
+        const consumers = consumersOf(slot.id, index);
+        rows.push(composer.settingsRow.default({
+          label: name,
+          hint: consumers.length
+            ? `${type} — feeds ${consumers.join(", ")}`
+            : `${type} — nothing reads this yet`,
+        }));
+      });
+    }
+
     return rows;
+  }
+
+  /** Every (consumerId.inputName) currently wired to this slot's output. */
+  function consumersOf(slotId, index) {
+    const found = [];
+    for (const other of slots) {
+      for (const [name, value] of Object.entries(other.inputs || {})) {
+        if (isLink(value) && value[0] === slotId && value[1] === index) {
+          found.push(`${other.id}.${name}`);
+        }
+      }
+    }
+    return found;
   }
 
   /** Every OTHER slot's output that could legally feed this socket. */
