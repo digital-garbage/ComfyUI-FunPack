@@ -16,6 +16,27 @@ const RATINGS = [
   { value: "disliked", label: "Disliked" },
 ];
 
+/**
+ * A "✕" that removes something the moment it is pressed, not the moment a
+ * browser would normally call it clicked.
+ *
+ * Between a text field's blur-commit and its own click, a browser blurs the
+ * field FIRST -- and a commit here triggers a full, non-keyed redraw of this
+ * whole list (draw() -> node.replaceChildren()). Wire this to `onClick` and
+ * pressing ✕ right after typing in ANOTHER row's field destroys this exact
+ * button mid-gesture: the field's blur/commit/redraw runs before the click
+ * the mousedown started ever reaches it, so the press does nothing and says
+ * nothing. `mousedown` fires first and `preventDefault()` on it stops the
+ * browser's own focus-move (and so the blur it would otherwise cause) before
+ * this handler's own redraw gets the chance to pull the rug out from under
+ * itself.
+ */
+function removeButton(onRemove) {
+  const btn = composer.button.sm({ label: "✕", tone: "danger" });
+  btn.node.addEventListener("mousedown", (e) => { e.preventDefault(); onRemove(); });
+  return btn;
+}
+
 export function createInspector({ project, onRename } = {}) {
   const host = composer.region.stack({ gap: "sm", fill: true });
   let tab = "scene";
@@ -168,8 +189,7 @@ export function createInspector({ project, onRename } = {}) {
             onCommit: (value) => project.setVariables(project.variables.map(
               (x, j) => (j === i ? { ...x, value } : x))),
           }),
-          composer.button.sm({ label: "✕", tone: "danger",
-            onClick: () => project.setVariables(project.variables.filter((_, j) => j !== i)) }),
+          removeButton(() => project.setVariables(project.variables.filter((_, j) => j !== i))),
         ] }),
       })),
       composer.button.md({ label: "+ Add variable",

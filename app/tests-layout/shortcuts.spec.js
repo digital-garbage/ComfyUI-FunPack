@@ -147,3 +147,33 @@ test("each Generate draws a fresh seed for shortcut expansion, not a fixed hash 
   expect(seeds.every((s) => s > 0)).toBe(true);
   expect(new Set(seeds).size, "the same seed was sent twice in a row").toBeGreaterThan(1);
 });
+
+test("removing a variable works even mid-edit on a different row", async ({ page }) => {
+  // A real race: row0's blur-commit triggers a full, non-keyed redraw of
+  // this whole list (inspector.js's draw() -> node.replaceChildren()) --
+  // wired to a plain click, pressing row1's ✕ right after typing in row0
+  // (without ever blurring it first) destroys row1's own button mid-
+  // gesture, so the click that started on it never arrives and nothing is
+  // removed. mousedown+preventDefault on the ✕ (inspector.js's
+  // removeButton()) is what this proves still works.
+  await app(page);
+  await page.getByRole("tab", { name: "Project" }).click();
+
+  const add = page.getByRole("button", { name: "+ Add variable" });
+  await add.click();
+  await page.locator('input[placeholder="name"]').last().fill("row0");
+  await add.click();
+  await page.locator('input[placeholder="name"]').last().fill("row1");
+
+  const rowCount = await page.locator('input[placeholder="name"]').count();
+  // Type into row0's name field WITHOUT blurring it, then press row1's own
+  // ✕ (the last one -- rows are appended, never reordered) in one motion --
+  // the exact sequence the race needs.
+  const row0Name = page.locator('input[placeholder="name"]').nth(rowCount - 2);
+  await row0Name.pressSequentially("-edited", { delay: 20 });
+  const removeButtons = page.getByRole("button", { name: "✕" });
+  await removeButtons.last().click();
+
+  await expect(page.locator('input[placeholder="name"]')).toHaveCount(rowCount - 1);
+  await expect(page.locator("body")).not.toContainText("$row1");
+});
