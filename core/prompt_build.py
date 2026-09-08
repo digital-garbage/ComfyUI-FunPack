@@ -9,8 +9,11 @@ expanded copy nothing can trace back.
 Order matches v4's: anchor and postfix are joined to the scene text FIRST,
 then shortcuts expand across the whole combined string (a shortcut trigger
 sitting right at the anchor/scene boundary still matches), then `$variables`
-resolve last (so a variable's value can itself contain a shortcut trigger or
-another variable and still expand).
+resolve last. Resolving last means a variable's OWN text is never re-scanned
+for shortcut triggers -- only the anchor/scene/postfix text is -- but a
+variable may still reference another variable, since resolve_variables()
+recurses through the variable map itself (see its own docstring for the
+cycle-safety that recursion needs).
 """
 
 from __future__ import annotations

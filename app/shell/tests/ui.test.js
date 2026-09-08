@@ -207,6 +207,35 @@ test("whatever mounted at project.negative shows only on the Project tab", () =>
   assert.ok(inspector.node.contains(marker), "the field did not survive switching away and back");
 });
 
+test("editing a variable never mutates the array a caller already holds a reference to", () => {
+  // The real projects.js store's setVariables() calls remember() -- which
+  // deep-clones `project` for the undo stack -- BEFORE applying the new
+  // list. If a caller mutated the array project.variables already points at
+  // and handed that SAME array back, remember()'s clone would capture the
+  // ALREADY-EDITED values as the "before" state, and Undo would restore
+  // exactly what is already on screen: a silent no-op. This fixture stands
+  // in for that hazard by keeping its own reference to the array from
+  // before the edit and checking it is untouched afterward.
+  const before = [{ name: "a", value: "1" }];
+  let current = before;
+  const project = fakeProject({
+    variables: before,
+    setVariables: (list) => { current = list; },
+  });
+  Object.defineProperty(project, "variables", { get: () => current });
+  const inspector = createInspector({ project });
+  document.body.replaceChildren(inspector.node);
+  inspector.show("project");
+
+  const nameInput = inspector.node.querySelector('input[placeholder="name"]');
+  nameInput.value = "b";
+  fire(nameInput, "change");
+
+  assert.notEqual(current, before, "the same array was handed back to setVariables");
+  assert.deepEqual(before, [{ name: "a", value: "1" }],
+    "a reference taken before the edit changed value out from under it");
+});
+
 test("with no scene selected the inspector says so instead of drawing nothing", () => {
   const inspector = createInspector({ project: fakeProject({ selected: null, scenes: [] }) });
   document.body.replaceChildren(inspector.node);

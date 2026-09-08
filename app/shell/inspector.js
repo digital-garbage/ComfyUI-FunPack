@@ -134,33 +134,46 @@ export function createInspector({ project, onRename } = {}) {
       }),
       composer.label.section({ text: "Variables" }),
       composer.hint.default({ text: "$name in the anchor, a scene, or the postfix is replaced with its value." }),
-      // `vars` (project.variables) is mutated IN PLACE and handed back to the
-      // same setVariables call, rather than rebuilt via .map() from this
-      // closure's own index -- setVariables's changed() triggers boot.js's
-      // `inspector.draw()`, which tears down and rebuilds every field here
-      // (including the one NOT being edited) before a second, still-pending
-      // commit on this same row can fire. A rebuilt-`next`-array version reads
-      // its OWN stale `vars` snapshot at that point and would silently
-      // overwrite whatever the first commit just wrote; mutating the shared
-      // object means the second commit's own edit survives no matter which
-      // node the redraw already detached.
+      // Every write below reads `project.variables` FRESH at commit time
+      // (never the `vars` snapshot this render closed over) and hands
+      // setVariables a brand new array -- two things that both have to hold:
+      //
+      // 1. setVariables's own remember() clones `project` for undo BEFORE
+      //    applying the new list, so that clone must still show the OLD
+      //    values. An earlier version of this mutated the shared row object
+      //    in place and passed the SAME array back -- by the time remember()
+      //    cloned it, the "before" snapshot already held the new value, and
+      //    Undo after any variable edit silently did nothing.
+      // 2. setVariables's changed() triggers boot.js's `inspector.draw()`,
+      //    rebuilding every field here (including ones not being edited)
+      //    before a second, still-pending commit on the same row can fire.
+      //    Reading `project.variables` fresh (rather than the `vars` this
+      //    closure captured at render time) means that second commit builds
+      //    its own edit on top of whatever the first commit already saved,
+      //    instead of overwriting it with a stale copy.
+      //
+      // The index `i` stays valid across such a redraw because only Add/✕
+      // change the array's shape, and neither can fire between two commits
+      // on the same still-open row.
       ...vars.map((v, i) => composer.settingsRow.default({
         label: `$${v.name || "…"}`,
         control: composer.toolbar.default({ label: `$${v.name}`, items: [
           composer.input.md({
             value: v.name, placeholder: "name",
-            onCommit: (name) => { v.name = name.replace(/^\$+/, ""); project.setVariables(vars); },
+            onCommit: (name) => project.setVariables(project.variables.map(
+              (x, j) => (j === i ? { ...x, name: name.replace(/^\$+/, "") } : x))),
           }),
           composer.input.md({
             value: v.value, placeholder: "value",
-            onCommit: (value) => { v.value = value; project.setVariables(vars); },
+            onCommit: (value) => project.setVariables(project.variables.map(
+              (x, j) => (j === i ? { ...x, value } : x))),
           }),
           composer.button.sm({ label: "✕", tone: "danger",
-            onClick: () => { vars.splice(i, 1); project.setVariables(vars); } }),
+            onClick: () => project.setVariables(project.variables.filter((_, j) => j !== i)) }),
         ] }),
       })),
       composer.button.md({ label: "+ Add variable",
-        onClick: () => project.setVariables([...vars, { name: "", value: "" }]) }),
+        onClick: () => project.setVariables([...project.variables, { name: "", value: "" }]) }),
     ];
   }
 
