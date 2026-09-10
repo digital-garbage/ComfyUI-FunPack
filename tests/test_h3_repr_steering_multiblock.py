@@ -137,6 +137,58 @@ def test_passive_capture_default_matches_input_types_default():
     assert sig_default is False and input_types_default is False
 
 
+def test_strip_dit_patches_unwinds_a_leaked_reins_chain(monkeypatch):
+    """An interrupt mid-run can leave REINS' dit hooks on the shared model (same class as
+    the scene-wrapper leak this project already fixed once -- see
+    project_scene_wrapper_leak / _strip_funpack_scene_wrappers). Simulate that: install
+    REINS on a model (the "leaked" state a killed run would have left behind), then
+    install it AGAIN on the clone (what the next run's _install_h3_repr_steering does
+    when it sees the leak and chains onto it as its own "inner") -- and confirm
+    _strip_funpack_dit_patches unwinds back to the pristine, unpatched state instead of
+    leaving two layers of hooks stacked."""
+    import samplers as sm
+
+    monkeypatch.setattr(rs, "direction", lambda _k, block=None: (None, 0, 0))
+    node = S()
+    leaked = node._install_h3_repr_steering(
+        _FakeModel(), "key", strength=0.0, capture_holder=[{}], steer_block="5")
+    # A second, un-cleaned-up install on top -- what the next run would produce if the
+    # strip never ran.
+    doubly_leaked = node._install_h3_repr_steering(
+        leaked, "key", strength=0.0, capture_holder=[{}], steer_block="5")
+    dit = doubly_leaked.model_options["transformer_options"]["patches_replace"]["dit"]
+    assert getattr(dit[("double_block", 5)], sm._FUNPACK_DIT_HOOK_TAG, False)
+
+    # REINS installs a hook at every CANDIDATE_BLOCK (50), not just the steered one, so
+    # two stacked installs leave 2 layers at each of the 50 -- 100 total.
+    stripped = sm._strip_funpack_dit_patches(doubly_leaked)
+    assert stripped == 2 * len(rs.CANDIDATE_BLOCKS), "both leaked layers at every block should unwind"
+    dit_after = doubly_leaked.model_options.get("transformer_options", {}) \
+        .get("patches_replace", {}).get("dit", {})
+    assert ("double_block", 5) not in dit_after, "nothing left to restore -- key removed"
+    # Idempotent: stripping an already-clean model finds nothing to do.
+    assert sm._strip_funpack_dit_patches(doubly_leaked) == 0
+
+
+def test_strip_dit_patches_preserves_a_foreign_untagged_hook():
+    """The strip must only remove FunPack's own tagged hooks -- an untagged (third-party,
+    or hand-installed-by-a-test) entry at a DIFFERENT block must survive untouched, same
+    guarantee _strip_funpack_scene_wrappers gives for a foreign wrapper."""
+    import samplers as sm
+
+    model = _FakeModel()
+
+    def _foreign(args, extra):
+        return {"img": args["img"]}
+
+    model.model_options = {"transformer_options": {"patches_replace": {
+        "dit": {("double_block", 3): _foreign}}}}
+    stripped = sm._strip_funpack_dit_patches(model)
+    assert stripped == 0
+    dit = model.model_options["transformer_options"]["patches_replace"]["dit"]
+    assert dit[("double_block", 3)] is _foreign
+
+
 if __name__ == "__main__":
     test_empty_steer_block_falls_back_to_default_block()
     print("ok (run via pytest for the monkeypatch-dependent cases)")

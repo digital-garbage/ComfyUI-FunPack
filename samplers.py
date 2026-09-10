@@ -954,6 +954,72 @@ def _strip_funpack_scene_wrappers(model):
         return 0
 
 
+# The H3 dit-level mechanisms -- REINS, query steering, attention decouple/temperature,
+# block repeat, span loop, the influence probe -- install via transformer_options rather
+# than the scene-wrapper slot above: patches_replace["dit"][("double_block", n)] hooks
+# (one dict entry per block, each chaining whatever was already there as its own "inner")
+# and, for the attention-side mechanisms, the single optimized_attention_override slot
+# (chained the same way as model_function_wrapper). Same leak class as
+# _FUNPACK_SCENE_WRAPPER_TAG exists for: an interrupt mid-run skips whatever would
+# normally restore these, so they survive on the shared model, and the next run's
+# _install_* reads the leaked entry as ITS OWN "inner" and wraps another layer on top --
+# unbounded growth across interrupted runs, never freed, which is exactly what a
+# "potential memory leak ... avoid circular references" warning from ComfyUI's model
+# management is describing.
+_FUNPACK_DIT_HOOK_TAG = "_funpack_dit_hook"
+
+
+def _tag_dit_hook(hook, prev):
+    """Mark a dit-patch hook or optimized_attention_override function (and what it
+    chained through) so a later run can identify and unwind one leaked by a previous
+    interrupted/failed run."""
+    setattr(hook, _FUNPACK_DIT_HOOK_TAG, True)
+    setattr(hook, "_funpack_dit_prev", prev)
+    return hook
+
+
+def _strip_funpack_dit_patches(model):
+    """Unwind FunPack dit-level patches (patches_replace["dit"] double_block hooks +
+    optimized_attention_override) leaked by a previous interrupted/failed run. Mirrors
+    _strip_funpack_scene_wrappers for this separate install mechanism. Idempotent; never
+    raises."""
+    try:
+        to = model.model_options.get("transformer_options")
+        if not isinstance(to, dict):
+            return 0
+        stripped = 0
+        dit = (to.get("patches_replace") or {}).get("dit")
+        if isinstance(dit, dict):
+            for key, hook in list(dit.items()):
+                w, n = hook, 0
+                while w is not None and getattr(w, _FUNPACK_DIT_HOOK_TAG, False):
+                    w = getattr(w, "_funpack_dit_prev", None)
+                    n += 1
+                if n:
+                    stripped += n
+                    if w is not None:
+                        dit[key] = w
+                    else:
+                        del dit[key]
+        w, n = to.get("optimized_attention_override"), 0
+        while w is not None and getattr(w, _FUNPACK_DIT_HOOK_TAG, False):
+            w = getattr(w, "_funpack_dit_prev", None)
+            n += 1
+        if n:
+            stripped += n
+            if w is not None:
+                to["optimized_attention_override"] = w
+            else:
+                to.pop("optimized_attention_override", None)
+        if stripped:
+            print(f"[FunPackSceneChain] Stripped {stripped} leaked H3 dit patch(es) "
+                  "(REINS/query steering/attention decouple/temperature/block repeat/"
+                  "span loop/influence probe) from a previous run")
+        return stripped
+    except Exception:
+        return 0
+
+
 def _alg_blur_frames(model, latent_image, kappa, frame_indices=(), tail_count=0):
     """ALG (arXiv:2506.08456): low-pass filter selected frames of the packed video stream.
 
@@ -6871,7 +6937,7 @@ class FunPackLTXAVSceneChainSampler:
                                 out[mask] = rows + (direction.to(out.dtype).to(out.device)
                                                     * _strength * row_norm).to(rows.dtype)
                     return {"img": out}
-                return _hook
+                return _tag_dit_hook(_hook, inner)
 
             for _block in _rs.CANDIDATE_BLOCKS:
                 dit_patches[("double_block", _block)] = _make_hook(
@@ -6970,7 +7036,7 @@ class FunPackLTXAVSceneChainSampler:
                 _seg_holder["mod_segments"] = args.get("mod_segments")
                 return extra["original_block"](args) if _inner0 is None else _inner0(args, extra)
 
-            dit_patches[("double_block", 0)] = _capture_hook
+            dit_patches[("double_block", 0)] = _tag_dit_hook(_capture_hook, _inner0)
             patches_replace["dit"] = dit_patches
             to["patches_replace"] = patches_replace
 
@@ -7045,7 +7111,7 @@ class FunPackLTXAVSceneChainSampler:
                                              mask=None, skip_reshape=skip_reshape, **kwargs)
                 return out
 
-            to["optimized_attention_override"] = _override
+            to["optimized_attention_override"] = _tag_dit_hook(_override, _inner_attn_override)
             patched.model_options["transformer_options"] = to
             print(f"[FunPackSceneChain] H3 attention decoupling: cross-modal "
                   f"video<->audio attention logit penalty {_strength:g}.")
@@ -7107,7 +7173,7 @@ class FunPackLTXAVSceneChainSampler:
                                 else inner(args, extra))
                     finally:
                         _active["on"] = False
-                return _hook
+                return _tag_dit_hook(_hook, inner)
 
             for _b in _blocks:
                 dit_patches[("double_block", _b)] = _make_hook(_b)
@@ -7128,7 +7194,7 @@ class FunPackLTXAVSceneChainSampler:
                 return call(func, q / _temperature, k, v, heads,
                            mask=mask, skip_reshape=skip_reshape, **kwargs)
 
-            to["optimized_attention_override"] = _override
+            to["optimized_attention_override"] = _tag_dit_hook(_override, _inner_attn_override)
             patched.model_options["transformer_options"] = to
             print(f"[FunPackSceneChain] H3 attention temperature: {_temperature:g}x at "
                   f"block(s) {sorted(_blocks)}.")
@@ -7216,7 +7282,7 @@ class FunPackLTXAVSceneChainSampler:
                                 else inner(args, extra))
                     finally:
                         _active_block["cur"] = None
-                return _hook
+                return _tag_dit_hook(_hook, inner)
 
             for _b in steer_blocks:
                 dit_patches[("double_block", _b)] = _make_hook(_b)
@@ -7300,7 +7366,7 @@ class FunPackLTXAVSceneChainSampler:
                 return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
                             **kwargs)
 
-            to["optimized_attention_override"] = _override
+            to["optimized_attention_override"] = _tag_dit_hook(_override, _inner_attn_override)
             patched.model_options["transformer_options"] = to
             _have_direction = sorted(b for b, d in directions.items() if d is not None)
             # Gated on strength too, not just direction-availability -- a learned direction
@@ -7487,12 +7553,14 @@ class FunPackLTXAVSceneChainSampler:
                         h = torch.where(mask.view(-1, *([1] * (h.dim() - 1))), h, single)
                 return {"img": h}
 
-            def _passthrough(args, _extra):
-                return {"img": args["img"]}   # the head already ran this block
+            def _make_passthrough(prev):
+                def _passthrough(args, _extra):
+                    return {"img": args["img"]}   # the head already ran this block
+                return _tag_dit_hook(_passthrough, prev)
 
-            dit_patches[("double_block", lo)] = _head
+            dit_patches[("double_block", lo)] = _tag_dit_hook(_head, dit_patches.get(("double_block", lo)))
             for _b in range(lo + 1, hi + 1):
-                dit_patches[("double_block", _b)] = _passthrough
+                dit_patches[("double_block", _b)] = _make_passthrough(dit_patches.get(("double_block", _b)))
             patches_replace["dit"] = dit_patches
             to["patches_replace"] = patches_replace
             patched.model_options["transformer_options"] = to
@@ -7579,7 +7647,7 @@ class FunPackLTXAVSceneChainSampler:
                             out = torch.where(mask.view(-1, *([1] * (out.dim() - 1))),
                                               out, first)
                     return {"img": out}
-                return _repeat
+                return _tag_dit_hook(_repeat, inner)
 
             for _b in sorted(blocks):
                 dit_patches[("double_block", _b)] = _make_repeat(_b)
@@ -7697,7 +7765,7 @@ class FunPackLTXAVSceneChainSampler:
                     except Exception:  # noqa: BLE001
                         pass  # a probe never breaks a generation
                     return {"img": out}
-                return _probe
+                return _tag_dit_hook(_probe, inner)
 
             for _b in range(int(n_blocks)):
                 dit_patches[("double_block", _b)] = _make_probe(_b)
@@ -8183,6 +8251,11 @@ class FunPackLTXAVSceneChainSampler:
         # per-scene finally, but a hard kill between install and restore (or a crash in a
         # third-party wrapper we chained onto) could still leave one behind in-process.
         _strip_funpack_scene_wrappers(model)
+        # Same defense again for the H3 dit-level mechanisms (REINS, query steering,
+        # attention decouple/temperature, block repeat, span loop, influence probe) --
+        # these install via patches_replace["dit"] / optimized_attention_override, a
+        # third mechanism the two strips above don't cover.
+        _strip_funpack_dit_patches(model)
 
         # Blackwell (sm_120) GPUs can't run xformers attention with a tensor mask; the LTX
         # guide path uses one, so anchor scenes generate but guide scenes crash. Route masked
