@@ -189,6 +189,45 @@ def test_strip_dit_patches_preserves_a_foreign_untagged_hook():
     assert dit[("double_block", 3)] is _foreign
 
 
+def test_strip_dit_patches_unwinds_a_mixed_chain_across_mechanisms(monkeypatch):
+    """The realistic leak scenario isn't one mechanism repeating on itself -- it's several
+    DIFFERENT mechanisms each leaking on a separate interrupted run and chaining onto
+    whatever the last one left behind. Stack REINS -> av_decouple -> q_steering (the
+    latter two both use the single-slot optimized_attention_override chain, not just the
+    per-block dit_patches dict) and confirm one strip call unwinds all of it, on both
+    slots, back to nothing."""
+    import samplers as sm
+
+    monkeypatch.setattr(rs, "direction", lambda _k, block=None, kind=None: (None, 0, 0))
+    node = S()
+    m = node._install_h3_repr_steering(
+        _FakeModel(), "key", strength=0.0, capture_holder=[{}], steer_block="5")
+    m = node._install_h3_av_decouple(m, strength=1.0)
+    m = node._install_h3_q_steering(
+        m, "key", strength=0.0, capture_holder=[{}], steer_block="5")
+
+    to = m.model_options["transformer_options"]
+    dit = to["patches_replace"]["dit"]
+    # block 0: REINS (all 50 blocks) then av_decouple's capture hook wraps it -- 2 layers,
+    # two DIFFERENT mechanisms, not the same function stacked on itself.
+    assert getattr(dit[("double_block", 0)], sm._FUNPACK_DIT_HOOK_TAG, False)
+    # block 5: REINS then q_steering wraps it -- another 2-layer, different-mechanism chain.
+    assert getattr(dit[("double_block", 5)], sm._FUNPACK_DIT_HOOK_TAG, False)
+    # av_decouple's override, then q_steering's wraps IT -- the single-slot chain, untested
+    # anywhere else in this file.
+    assert getattr(to["optimized_attention_override"], sm._FUNPACK_DIT_HOOK_TAG, False)
+
+    stripped = sm._strip_funpack_dit_patches(m)
+    assert stripped > 0
+    to_after = m.model_options.get("transformer_options", {})
+    dit_after = to_after.get("patches_replace", {}).get("dit", {})
+    assert ("double_block", 0) not in dit_after, "mixed REINS+av_decouple chain must fully unwind"
+    assert ("double_block", 5) not in dit_after, "mixed REINS+q_steering chain must fully unwind"
+    assert "optimized_attention_override" not in to_after, \
+        "the single-slot av_decouple+q_steering chain must fully unwind too"
+    assert sm._strip_funpack_dit_patches(m) == 0, "idempotent once clean"
+
+
 if __name__ == "__main__":
     test_empty_steer_block_falls_back_to_default_block()
     print("ok (run via pytest for the monkeypatch-dependent cases)")
