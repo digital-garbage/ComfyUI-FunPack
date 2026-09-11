@@ -637,6 +637,24 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     protected_edges.add((sid, ci_name))
                     report["wired"].append(f"timeline image -> {sid}.{ci_name}")
                 continue
+            if source == "prevframe":
+                # Auto-chained continuity: the immediately preceding scene's last rendered
+                # frame, extracted server-side into the input folder (never a media-bin
+                # entry — see server._extract_prev_scene_frame). Scene 1, or any scene run
+                # solo with nothing rendered before it, simply leaves the socket unconnected.
+                fn = params.get("prev_scene_frame")
+                if not fn:
+                    deliberately_empty.add((sid, ci_name))
+                    report["wired"].append(
+                        f"Previous scene's last frame -> {sid}.{ci_name}: no prior scene "
+                        "render yet, left unconnected")
+                    continue
+                graph.setdefault("prevframe_load", {
+                    "class_type": "LoadImage", "inputs": {"image": fn}})
+                graph[sid]["inputs"][ci_name] = ["prevframe_load", 0]
+                protected_edges.add((sid, ci_name))
+                report["wired"].append(f"Previous scene's last frame -> {sid}.{ci_name}")
+                continue
             if source.startswith("ref#"):
                 # "ref#image:2" — the second image reference, whichever that currently is.
                 kind, _, num = source[4:].partition(":")

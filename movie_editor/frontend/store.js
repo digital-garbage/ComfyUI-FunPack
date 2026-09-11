@@ -3628,6 +3628,17 @@
     return [{ node: cfg.node, input: cfg.input, value: cfg.value }];
   }
 
+  // "Reference image 2" (input_sources "prevframe") auto-fills from whatever scene rendered
+  // immediately before the one being generated — only meaningful for a single-scene run.
+  function _prevSceneMedia(onlyScene) {
+    if (!onlyScene) return null;
+    const scenes = (state.project?.scenes || []).filter((s) => !s.excluded);
+    const idx = scenes.findIndex((s) => s.id === onlyScene);
+    if (idx <= 0) return null;
+    const media = state.sceneRenders[scenes[idx - 1].id]?.media;
+    return media && media.filename ? { filename: media.filename, subfolder: media.subfolder || "" } : null;
+  }
+
   async function _generateRun(sceneIds, onlyScene, prefix, resetSession, extraOverrides) {
     _interrupted = false;
     _markGenInFlight(sceneIds);
@@ -3635,7 +3646,7 @@
     try {
       const overrides = [...(_anchorGuideNodeOverrides(sceneIds) || []), ...(extraOverrides || [])];
       const r = await _retryOnTunnel(
-        () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession, overrides),
+        () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession, overrides, _prevSceneMedia(onlyScene)),
         10,
       );
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
@@ -3696,25 +3707,28 @@
     return `funpack_sweep_${safe}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
-  // Line format: one or both of "reins:strength;block" and "sweep:blocks;seam|noseam;
-  // times[;laststeps]", joined with "|". e.g. "reins:0.15;49|sweep:40-41;noseam;1;0" or just
-  // "reins:0.1;49" alone. Whichever half is OMITTED is explicitly turned OFF for that line
-  // (not "whatever Engine Settings has") — every line fully states what it tests, nothing
-  // carries over from the project's own settings or the previous line.
+  // Line format: any of "reins:strength;block", "sweep:blocks;seam|noseam;times[;laststeps]"
+  // and "av:penalty", joined with "|". e.g. "reins:0.15;49|sweep:40-41;noseam;1;0|av:5" or
+  // just "reins:0.1;49" alone. Whichever part is OMITTED is explicitly turned OFF for that
+  // line (not "whatever Engine Settings has") — every line fully states what it tests,
+  // nothing carries over from the project's own settings or the previous line.
   // sweep's laststeps: positive = the final N steps (refine only, structure already
   // settled); negative = the first |N| steps instead (apply while structure is still
   // forming, then stop); omitted/0 = every step.
+  // av's penalty is the RAW attention-logit penalty h3_av_decouple takes directly (not a
+  // 0-1 fraction) -- see that field's own tooltip for why there's no way to pre-calibrate it.
   function parseComboSweepConfig(text) {
     return String(text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
-      let reins = null, sweep = null;
+      let reins = null, sweep = null, av = null;
       for (const seg of line.split("|").map((s) => s.trim()).filter(Boolean)) {
-        const m = seg.match(/^(reins|sweep):(.*)$/i);
+        const m = seg.match(/^(reins|sweep|av):(.*)$/i);
         if (!m) continue;
-        if (m[1].toLowerCase() === "reins") {
+        const kind = m[1].toLowerCase();
+        if (kind === "reins") {
           const [strength, block] = m[2].split(";").map((s) => (s || "").trim());
           const st = parseFloat(strength);
           if (Number.isFinite(st) && block) reins = { strength: st, block };
-        } else {
+        } else if (kind === "sweep") {
           const [blocks, seam, times, lastSteps] = m[2].split(";").map((s) => (s || "").trim());
           if (blocks) {
             sweep = {
@@ -3723,9 +3737,12 @@
               lastSteps: Math.min(50, Math.max(-50, parseInt(lastSteps, 10) || 0)),
             };
           }
+        } else {
+          const penalty = parseFloat(m[2].trim());
+          if (Number.isFinite(penalty) && penalty > 0) av = penalty;
         }
       }
-      return reins || sweep ? { label: line, reins, sweep } : null;
+      return reins || sweep || av != null ? { label: line, reins, sweep, av } : null;
     }).filter(Boolean);
   }
 
@@ -3746,6 +3763,7 @@
       { node: "sampler", input: "seed", value: seedValue },
       { node: "sampler", input: "h3_repr_steering", value: !!c.reins },
       { node: "sampler", input: "h3_block_repeat", value: c.sweep ? c.sweep.blocks : "" },
+      { node: "sampler", input: "h3_av_decouple", value: c.av || 0 },
       { node: "vhs", input: "filename_prefix", value: _sweepFilenamePrefix(c.label) },
     ];
     if (c.reins) {
