@@ -32,3 +32,4 @@ app/playwright-report/
 # User projects, and what they imported — their content, not ours.
 projects/
 media/
+shortcuts.json

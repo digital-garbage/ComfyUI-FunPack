@@ -162,6 +162,32 @@ def test_a_two_variable_cycle_is_left_literal():
     assert out == "$a"  # the cycle is detected, not expanded forever
 
 
+def test_the_same_cycle_resolves_differently_depending_on_which_end_is_asked_for():
+    # A="$B", B="$A": which one comes back literal depends on where resolution
+    # STARTS -- the memoization added to bound fan-out below must key on the
+    # stack a variable is reached through, not on its name alone, or one of
+    # these two would silently answer with the other's result.
+    variables = [{"name": "a", "value": "$b"}, {"name": "b", "value": "$a"}]
+    assert shortcuts.resolve_variables("$a", variables) == "$a"
+    assert shortcuts.resolve_variables("$b", variables) == "$b"
+
+
+def test_a_variable_referencing_the_same_name_twice_is_not_a_cycle_and_stays_fast():
+    # "$v1 $v1" is not a cycle (v1 never appears in its own expansion chain),
+    # so the cycle guard never trips -- and without memoization, evaluating
+    # the two "$v1" occurrences independently makes a chain of variables that
+    # each reference the next twice cost 2**N evaluations of the deepest one.
+    # 24 variables to double every one of the last variable's evaluations
+    # would need real seconds and tens of megabytes without a cache or an
+    # output-size cap; this finishes near-instantly and stays bounded.
+    depth = 24
+    variables = [{"name": f"v{i}", "value": f"$v{i + 1} $v{i + 1}"} for i in range(depth)]
+    variables.append({"name": f"v{depth}", "value": "leaf"})
+    out = shortcuts.resolve_variables("$v0", variables)
+    assert "leaf" in out
+    assert len(out) <= shortcuts._VARIABLE_MAX_OUTPUT + 32  # capped, not 2**24 copies of "leaf "
+
+
 def test_a_leading_dollar_in_the_declared_name_is_ignored():
     out = shortcuts.resolve_variables("$subject", [{"name": "$subject", "value": "fox"}])
     assert out == "fox"

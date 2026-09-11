@@ -215,6 +215,14 @@ def expand(text: str, shortcuts: list[Shortcut] | None = None, seed: int = 0) ->
 
 _VARIABLE_TOKEN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 _VARIABLE_MAX_DEPTH = 64
+#: A ceiling on total resolved length, in characters -- far past anything a
+#: real prompt needs, and not a working limit for one. It exists because a
+#: variable referencing the same other variable more than once is not a
+#: cycle (see below) and the OUTPUT for that shape is legitimately
+#: exponential even once the per-(name,stack) evaluations are memoized: each
+#: level's re.sub still has to concatenate the (now O(1)-computed) child
+#: result multiple times, so the memo bounds compute but not output size.
+_VARIABLE_MAX_OUTPUT = 100_000
 
 
 def resolve_variables(text: str, variables) -> str:
@@ -224,6 +232,20 @@ def resolve_variables(text: str, variables) -> str:
     left literal rather than recursed into), and undefined names are left as
     literal `$name`: an unset variable is a typo to notice and fix, not a
     blank the prompt swallows silently.
+
+    Memoized per (name, stack): a value referencing the SAME variable more
+    than once (`v0 = "$v1 $v1"`) is not a cycle -- `name in stack` never
+    trips -- so without this a chain of only two dozen such variables costs
+    2**24 evaluations of the last one and tens of megabytes of output before
+    _VARIABLE_MAX_DEPTH ever gets the chance to matter (that cap bounds
+    depth, not the branching this shape produces). The cache key includes
+    `stack`, not just `name`, because the SAME variable can legitimately
+    resolve differently depending on which cycle it is being asked from
+    (A="$B", B="$A": resolving from A ends in literal "$A", from B in
+    literal "$B") -- collapsing by name alone would answer one of those with
+    the other's result. Past memoization, `_VARIABLE_MAX_OUTPUT` bounds the
+    total characters produced -- once hit, remaining tokens are left literal
+    rather than expanded.
     """
     var_map: dict[str, str] = {}
     for v in (variables or []):
@@ -233,15 +255,27 @@ def resolve_variables(text: str, variables) -> str:
     if not var_map:
         return str(text or "")
 
+    memo: dict[tuple[str, frozenset], str] = {}
+    budget = [_VARIABLE_MAX_OUTPUT]
+
     def _expand(s, stack, depth):
         if depth > _VARIABLE_MAX_DEPTH:
             return s
 
         def _repl(m):
+            if budget[0] <= 0:
+                return m.group(0)
             name = m.group(1)
             if name not in var_map or name in stack:
                 return m.group(0)
-            return _expand(var_map[name], stack | {name}, depth + 1)
+            key = (name, stack)
+            if key in memo:
+                result = memo[key]
+            else:
+                result = _expand(var_map[name], stack | {name}, depth + 1)
+                memo[key] = result
+            budget[0] -= len(result)
+            return result
 
         return _VARIABLE_TOKEN.sub(_repl, s)
 
