@@ -121,6 +121,29 @@ def test_prev_scene_frame_scopes_output_name_to_the_requesting_scene(tmp_path, m
     assert (tmp_path / fn).is_file()
 
 
+def test_prev_scene_frame_sanitizes_a_hostile_scene_id(tmp_path, monkeypatch):
+    """scene_id traces back to client-supplied only_scene (and, via project import, a
+    scene's own id) — it must never be trusted as an output path fragment either."""
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+    _fake_folder_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr(__import__("shutil"), "which", lambda name: "/usr/bin/ffmpeg")
+    written = {}
+
+    def fake_run(cmd, **kw):
+        out_path = cmd[-1]
+        written["path"] = out_path
+        with open(out_path, "wb") as f:
+            f.write(b"png")
+        return type("R", (), {"returncode": 0})()
+    monkeypatch.setattr(__import__("subprocess"), "run", fake_run)
+
+    fn = _extract_prev_scene_frame({"filename": "clip.mp4"}, "../../../../tmp/evilout")
+    assert fn is not None
+    out_path = Path(written["path"])
+    assert out_path.parent == tmp_path
+    assert ".." not in fn and "/" not in fn
+
+
 FRESH = "__funpack_fresh_prompt__"
 
 

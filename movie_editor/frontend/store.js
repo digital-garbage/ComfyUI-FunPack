@@ -3668,11 +3668,18 @@
       // reading the queued prompt, but it is not worth a UI element on every run either.
       const fired = ((r.report && r.report.wired) || []).filter((w) => w.startsWith("linked "));
       if (fired.length) console.info("[FunPack] linked inputs sent this run:\n  " + fired.join("\n  "));
+      const notices = [];
       if (ignored.length) {
-        state.notice = ignored.length === 1
+        notices.push(ignored.length === 1
           ? ignored[0]
-          : `${ignored.length} settings didn't reach the pipeline — ${ignored[0]}`;
+          : `${ignored.length} settings didn't reach the pipeline — ${ignored[0]}`);
       }
+      // A predecessor render existed but its last frame couldn't be retrieved (temp file
+      // gone, no ffmpeg) — must not look identical to "scene 1, nothing to chain from".
+      const prevFrameMiss = ((r.report && r.report.unsatisfied) || [])
+        .find((u) => u.includes("previous scene's last frame"));
+      if (prevFrameMiss) notices.push(prevFrameMiss);
+      if (notices.length) state.notice = notices.join(" — ");
       pollStart = Date.now();
       let runMsg = `${prefix}: generating…`;
       if (r.prompt_repairs_cleared) {

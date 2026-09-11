@@ -441,8 +441,15 @@ def _extract_prev_scene_frame(prev_media: Optional[dict], scene_id: str) -> Opti
     src = os.path.join(tempdir, sub_in, fn_in)
     if not folder_paths.is_within_directory(tempdir, src) or not os.path.isfile(src):
         return None
-    out_fn = f"funpack_prevframe_{scene_id}.png"
+    # scene_id ultimately traces back to client-supplied `only_scene` (and, transitively, a
+    # scene's `id`, which a project import can set to anything) — never trusted as a path
+    # fragment either, same as the source side above.
+    import re
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(scene_id))[:80] or "run"
+    out_fn = f"funpack_prevframe_{safe_id}.png"
     out_path = os.path.join(tempdir, out_fn)
+    if not folder_paths.is_within_directory(tempdir, out_path):
+        return None
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-sseof", "-1", "-i", src, "-update", "1", "-q:v", "2", out_path],
@@ -1851,8 +1858,13 @@ if web is not None and PromptServer is not None:
             # `only_scene` (not target.scenes[0]) is the requesting scene: _solo() expands
             # `target` to every scene sharing a generative unit, so two concurrent solo
             # requests for different scenes in the same unit would otherwise scope their
-            # extraction to the same first-scene id and clobber each other's frame.
-            scene_scope = body.get("only_scene") or (target.scenes[0].id if target.scenes else "run")
+            # extraction to the same first-scene id and clobber each other's frame. Only
+            # trust it when it actually names a scene in THIS run — a scene_ids-driven
+            # request never goes through _solo()'s own only_scene validation.
+            target_scene_ids = {s.id for s in target.scenes}
+            only_scene = body.get("only_scene")
+            scene_scope = only_scene if only_scene in target_scene_ids else (
+                target.scenes[0].id if target.scenes else "run")
             prev_scene_frame = (
                 _extract_prev_scene_frame(prev_scene_media, scene_scope)
                 if prev_scene_media else None
