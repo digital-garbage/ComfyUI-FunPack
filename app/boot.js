@@ -28,6 +28,7 @@ import { mount as mountLog } from "./shell/logwindow.js";
 import { mount as mountTemp } from "./shell/tempfiles.js";
 import { mount as mountShortcuts } from "./shell/shortcuts.js";
 import { createSettingsWindow } from "./shell/settings_window.js";
+import { wireReferences } from "./shell/reference_wiring.js";
 
 const root = document.querySelector("#app");
 
@@ -390,25 +391,24 @@ async function start() {
       const source = slotForRole("assets.source_image");
       if (source) raw[source.id] = { ...raw[source.id], media_id: scene.source_image || "" };
 
-      const refs = scene.references || [];
-      refs.forEach((mediaId, i) => {
-        const at = `assets.reference_${i + 1}`;
-        const slot = (slots || []).find((s) => (s.roles || []).some((r) => r.at === at));
-        if (!slot) return;
-        raw[slot.id] = { ...raw[slot.id], media_id: mediaId };
-        // Only a reference the scene actually has gets wired into whatever
-        // reads it -- an unwired slot, not an empty image, is what "not in
-        // use" has to mean to an autogrow reference input; see
-        // modules/models/minimax_h3/pipeline.py's own docstring for why. The
-        // wire's target is the role's own data (`wireTo`), never a slot id
-        // this file would otherwise have to know: the preset declares where
-        // its own reference lands, the same way it declares everything else.
-        const role = slot.roles.find((r) => r.at === at);
-        if (role && role.wireTo) {
-          raw[role.wireTo.slot] = { ...raw[role.wireTo.slot],
-            [role.wireTo.input]: [slot.id, 0] };
-        }
-      });
+      const { overrides, unwired } = wireReferences(
+        scene.references || [], slots || [], source ? [source.id] : []);
+      for (const [id, fields] of Object.entries(overrides)) {
+        raw[id] = { ...raw[id], ...fields };
+      }
+      // `unwired` covers two different causes -- the pipeline has fewer
+      // reference slots than the scene has references (H3's R2V caps at 4
+      // today), or a malformed preset points two references at the same
+      // slot/destination -- but from here they look the same, and saying
+      // "no slot" for the second would send someone hunting for a bigger
+      // pipeline instead of the real, preset-authoring cause. Word it as
+      // what is actually and always true of both: the reference did not
+      // make it into this run.
+      if (unwired > 0) {
+        composer.toast.warn({ text: unwired === 1
+          ? "1 reference could not be wired into this pipeline and will not be used."
+          : `${unwired} references could not be wired into this pipeline and will not be used.` });
+      }
     }
 
     const field = prompts && prompts.fields.find((f) => f.at === "generation.prompt");
