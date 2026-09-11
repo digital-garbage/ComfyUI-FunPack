@@ -85,6 +85,21 @@ export async function load({ fetch: doFetch = globalThis.fetch } = {}) {
 }
 
 /**
+ * presets() -> [{ id, title, module, slots }]
+ *
+ * Alternate starting points a module offers beside the one true default --
+ * loaded into the same editable pipeline `load()` returns, not a different
+ * kind of thing. An empty list is a real answer (nothing offers one), not
+ * a failure to fetch.
+ */
+export async function presets({ fetch: doFetch = globalThis.fetch } = {}) {
+  const response = await doFetch(`${ENDPOINT}/presets`);
+  if (!response.ok) throw new Error(`presets could not be read (${response.status})`);
+  const payload = await response.json();
+  return payload.presets || [];
+}
+
+/**
  * describe(classes) -> { [className]: description | null }
  *
  * A null is an answer, not a gap: the slot points at a node this install does

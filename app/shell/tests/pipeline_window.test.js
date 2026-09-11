@@ -166,6 +166,56 @@ test("the window opens on a card per group, counting what is in each", async () 
   win.close();
 });
 
+// --- presets -----------------------------------------------------------------
+
+test("with no presets offered, no Load preset button shows up", async () => {
+  const { win } = await opened();
+  const buttons = [...win.node.querySelectorAll("button")].map((b) => b.textContent);
+  assert.ok(!buttons.includes("Load preset…"));
+  win.close();
+});
+
+test("picking an offered preset replaces the pipeline with it", async () => {
+  const preset = { id: "p1", title: "A Test Preset",
+    slots: [{ id: "only", group: "Loaders", node: "Loader", inputs: {} }] };
+  const { win, api } = await opened({ props: { presets: async () => [preset] } });
+
+  const load = [...win.node.querySelectorAll("button")].find((b) => b.textContent === "Load preset…");
+  assert.ok(load, "no Load preset button, though presets() was offered");
+  click(load);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const card = [...document.querySelectorAll(".cx-card-title")].find((n) => n.textContent === "A Test Preset");
+  assert.ok(card, "the offered preset was not listed");
+  click(card.closest(".cx-card"));
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(api.held, preset.slots);
+  assert.deepEqual(cardLabels(win), ["Loaders"]);
+  win.close();
+});
+
+test("a preset that fails to build is refused, not silently shown as loaded", async () => {
+  const preset = { id: "p1", title: "Broken Preset", slots: [{ id: "x", node: "Nope", inputs: {} }] };
+  const { win } = await opened({
+    server: { refuse: "there is no node called 'Nope' installed" },
+    props: { presets: async () => [preset] },
+  });
+
+  const load = [...win.node.querySelectorAll("button")].find((b) => b.textContent === "Load preset…");
+  click(load);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const card = [...document.querySelectorAll(".cx-card-title")].find((n) => n.textContent === "Broken Preset");
+  click(card.closest(".cx-card"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(bannerTexts(win), ["there is no node called 'Nope' installed"]);
+  // Still the original pipeline -- SLOTS()'s three groups, not the preset's one.
+  assert.deepEqual(cardLabels(win), ["Loaders", "Sampling", "Other"]);
+  win.close();
+});
+
 // --- parameters ------------------------------------------------------------
 
 test("a node's parameters show the value the slot holds, not the node's default", async () => {

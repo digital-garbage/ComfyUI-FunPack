@@ -83,7 +83,7 @@ let current = null;
  * jsdom suite both drive it without reading the DOM back; `open()` forwards
  * every one of these rather than wrapping a second copy of this state.
  */
-export function mount({ load, describe, check, search, onApply,
+export function mount({ load, describe, check, search, onApply, presets,
                         setFooter = () => {}, close = () => {} } = {}) {
   let slots = [];
   const nodes = new Map();          // class name -> description | null
@@ -243,8 +243,48 @@ export function mount({ load, describe, check, search, onApply,
         })),
         onActivate: (item) => enter(item.id),
       }),
-      composer.toolbar.default({ label: "Groups", items: [newGroupButton()] }),
+      composer.toolbar.default({ label: "Groups",
+        items: [newGroupButton(), ...(presets ? [presetsButton()] : [])] }),
     ];
+  }
+
+  /**
+   * A starting point offered by a module, loaded the same way any structural
+   * edit lands -- through commit(), which is what makes it real: the server
+   * checks it the same as a hand-drawn wire would be, and a preset that does
+   * not actually build is refused here rather than shown as if it had loaded.
+   */
+  function presetsButton() {
+    return composer.button.md({
+      label: "Load preset…",
+      onClick: async () => {
+        let offered;
+        try {
+          offered = await presets();
+        } catch (err) {
+          notes = { refused: [`Presets could not be read: ${err.message}`], incomplete: notes.incomplete };
+          draw();
+          return;
+        }
+        if (!offered.length) {
+          notes = { refused: ["No module offers a preset pipeline."], incomplete: notes.incomplete };
+          draw();
+          return;
+        }
+        const window_ = composer.modal.generic({
+          title: "Load a preset",
+          subtitle: "Replaces the pipeline you are looking at with this one.",
+          body: composer.gallery.cards({
+            items: offered.map((p) => ({ id: p.id, label: p.title })),
+            onActivate: async (item) => {
+              const picked = offered.find((p) => p.id === item.id);
+              window_.close("picked");
+              if (picked) await commit(picked.slots);
+            },
+          }),
+        });
+      },
+    });
   }
 
   function newGroupButton() {
@@ -760,14 +800,14 @@ export function mount({ load, describe, check, search, onApply,
  * Opening while one is already open returns THAT one and focuses it, rather
  * than stacking a second over it.
  */
-export function open({ load, describe, check, search, onApply } = {}) {
+export function open({ load, describe, check, search, onApply, presets } = {}) {
   if (current) {
     current.focus();
     return current;
   }
   let window_ = null;
   const content = mount({
-    load, describe, check, search, onApply,
+    load, describe, check, search, onApply, presets,
     setFooter: (f) => window_ && window_.setFooter(f),
     close: () => window_ && window_.close("done"),
   });

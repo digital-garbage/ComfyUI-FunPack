@@ -12,7 +12,7 @@ import { composer } from "./composer/composer.js";
 import { createRun, viewUrl, DONE, FAILED, CANCELLED } from "./shell/run.js";
 import { clientId, connect, queuedFor, finishedFor } from "./shell/client.js";
 import { wire, waitForTerminal } from "./shell/session.js";
-import { check, load, describe, search } from "./shell/pipeline.js";
+import { check, load, describe, search, presets } from "./shell/pipeline.js";
 import { mount as mountPipeline } from "./shell/pipeline_window.js";
 import { createPrompts } from "./shell/prompt.js";
 import { attach as attachAutocomplete } from "./shell/autocomplete.js";
@@ -253,7 +253,7 @@ async function start() {
         id: "pipeline", title: "Models and pipeline", subtitle: "What the run is made of.",
         keywords: "pipeline models nodes slots loaders", icon: "▦", tone: "accent",
         mount: (ctx) => mountPipeline({
-          load, describe, check, search, ...ctx,
+          load, describe, check, search, presets, ...ctx,
           onApply: (next) => {
             slots = next;
             // The boxes on the main window are for inputs of THESE slots. A slot
