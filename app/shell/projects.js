@@ -415,6 +415,12 @@ export function createProject({ onChange, onError, onOpen } = {}) {
     /** Attach what a run produced to the scene it was started from. */
     setResult(id, result) { this.setScene(id, "result", result); },
 
+    /** The media library id sizing this scene's generation, or null for none. */
+    setSourceImage(id, mediaId) { this.setScene(id, "source_image", mediaId); },
+
+    /** Media library ids, in order -- this scene's own reference images. */
+    setReferences(id, mediaIds) { this.setScene(id, "references", mediaIds); },
+
     /**
      * The same, but for a run that may have finished after the user switched
      * to a DIFFERENT project. A run takes minutes and nothing stops someone

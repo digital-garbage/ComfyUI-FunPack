@@ -42,7 +42,7 @@ function removeButton(onRemove) {
   return btn;
 }
 
-export function createInspector({ project, onRename } = {}) {
+export function createInspector({ project, onRename, onPickSourceImage, onPickReference } = {}) {
   const host = composer.region.stack({ gap: "sm", fill: true });
   let tab = "scene";
 
@@ -114,6 +114,30 @@ export function createInspector({ project, onRename } = {}) {
         label: "Result",
         hint: scene.result ? "This scene has been generated." : "Not generated yet.",
       }),
+      composer.label.section({ text: "Reference media" }),
+      composer.settingsRow.default({
+        label: "Resolution source",
+        hint: scene.source_image
+          ? "Sets this scene's aspect ratio. The project's own Width/Height set the actual resolution; its pixels are not used."
+          : "Pick an image in the Media bin to set this scene's aspect ratio.",
+        control: composer.toolbar.default({ label: "Resolution source", items: [
+          composer.button.sm({ label: scene.source_image ? "Change" : "Pick…",
+            onClick: () => onPickSourceImage && onPickSourceImage(scene.id) }),
+          ...(scene.source_image ? [removeButton(
+            () => project.setSourceImage(scene.id, null))] : []),
+        ] }),
+      }),
+      composer.label.section({ text: "References" }),
+      ...scene.references.map((mediaId, i) => composer.settingsRow.default({
+        label: `Reference ${i + 1}`,
+        control: composer.toolbar.default({ label: `Reference ${i + 1}`, items: [
+          composer.hint.default({ text: mediaId }),
+          removeButton(() => project.setReferences(
+            scene.id, scene.references.filter((_, j) => j !== i))),
+        ] }),
+      })),
+      composer.button.md({ label: "+ Add reference",
+        onClick: () => onPickReference && onPickReference(scene.id) }),
     ];
   }
 

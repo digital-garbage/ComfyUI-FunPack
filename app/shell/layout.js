@@ -45,7 +45,7 @@ export function build(root, handlers = {}) {
   // What a run produced, and what the user brought in, are different things
   // kept in different stores -- see media.js. One zone, two tabs onto it,
   // rather than a second zone: the Assets column is already the scarce one.
-  const mediaLibrary = createMediaLibrary({});
+  const mediaLibrary = createMediaLibrary({ onPick: handlers.onMediaPick });
   let mediaLoaded = false;
   const assetsBody = composer.region.stack({ gap: "sm", fill: true, children: [bin.host] });
   const assetsTabs = composer.tabs.underline({

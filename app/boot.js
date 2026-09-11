@@ -128,8 +128,38 @@ async function start() {
   let ranFor = null;
   let ranForProject = null;
 
+  // A scene waiting for the NEXT item picked in the Media bin -- there is one
+  // bin and one onPick, shared by every scene, so "which field asked" has to
+  // live somewhere between the click that asked and the click that answers.
+  let pendingPick = null;                         // { sceneId, kind: "source" | "reference" }
+  const requestPick = (sceneId, kind) => {
+    pendingPick = { sceneId, kind };
+    composer.toast.info({ text: "Click an image in the Media tab (Assets ▸ Media) to use it." });
+  };
+  // What the Media bin's own onActivate calls, for every item -- not only
+  // while something is pending. Nothing happens for a plain gallery click
+  // (there is nothing to consume the pick with yet -- see media.js's own
+  // docstring), and picking a non-image for either field is the world
+  // disagreeing with what was asked, said rather than silently ignored.
+  const handleMediaPick = (entry) => {
+    if (!pendingPick) return;
+    if (entry.kind !== "image") {
+      composer.toast.warn({ text: `${entry.name} is a ${entry.kind}, not an image.` });
+      return;
+    }
+    const { sceneId, kind } = pendingPick;
+    pendingPick = null;
+    if (kind === "source") { project.setSourceImage(sceneId, entry.id); return; }
+    const scene = project.scenes.find((s) => s.id === sceneId);
+    project.setReferences(sceneId, [...(scene ? scene.references : []), entry.id]);
+  };
+
   // Before the page, because the properties column is composed with it in.
-  inspector = createInspector({ project, onRename: (name) => project.rename(name) });
+  inspector = createInspector({
+    project, onRename: (name) => project.rename(name),
+    onPickSourceImage: (sceneId) => requestPick(sceneId, "source"),
+    onPickReference: (sceneId) => requestPick(sceneId, "reference"),
+  });
 
   // "Load Project File..." trigger. One input, kept and reused rather than
   // built fresh per click -- a fresh one would need its `change` listener
@@ -278,6 +308,7 @@ async function start() {
 
   const page = build(root, {
     inspector,
+    onMediaPick: handleMediaPick,
     onGenerate: generateCurrentScene,
     generateAll: generateAllBtn,
     onCancel: () => run.cancel(),
@@ -334,14 +365,52 @@ async function start() {
       // whatever follows it is wired to that.
     },
   });
-  // What a run actually sends for the prompt box: not the literal typed text,
-  // but that text with the project's anchor/postfix/$variables/shortcuts
-  // applied (core/prompt_build.py) -- scene.text itself stays exactly what
-  // was typed, so editing and regenerating always shows that, not an
-  // expanded copy nothing can trace back to it. Only the "generation.prompt"
-  // field is touched; every other override goes through unchanged.
+  // The slot a role names, whether or not this shell hosts a field for it --
+  // "assets.source_image"/"assets.reference_N" mount nothing on screen (see
+  // requestPick/handleMediaPick above), so prompts.js's own `fields` never
+  // carries them; this reads the pipeline's raw slots directly instead, the
+  // same generic "found by role name, never by this preset's own slot id"
+  // contract "generation.prompt" below also uses.
+  const slotForRole = (at) => (slots || []).find((s) => (s.roles || []).some((r) => r.at === at));
+
+  // What a run actually sends: the prompt box's typed text, expanded with the
+  // project's anchor/postfix/$variables/shortcuts (core/prompt_build.py) --
+  // scene.text itself stays exactly what was typed, so editing and
+  // regenerating always shows that, not an expanded copy nothing can trace
+  // back to it -- plus whatever media the selected scene has picked, for any
+  // pipeline that wired an "assets.*" role to ask for one.
   async function queueInputs() {
     const raw = prompts ? prompts.overrides() : {};
+
+    // The scene about to generate's own picked media -- set here rather than
+    // through prompts.js because these roles mount no field for a person to
+    // type into (a media id is picked in the Media bin, never typed).
+    const scene = project.selected;
+    if (scene) {
+      const source = slotForRole("assets.source_image");
+      if (source) raw[source.id] = { ...raw[source.id], media_id: scene.source_image || "" };
+
+      const refs = scene.references || [];
+      refs.forEach((mediaId, i) => {
+        const at = `assets.reference_${i + 1}`;
+        const slot = (slots || []).find((s) => (s.roles || []).some((r) => r.at === at));
+        if (!slot) return;
+        raw[slot.id] = { ...raw[slot.id], media_id: mediaId };
+        // Only a reference the scene actually has gets wired into whatever
+        // reads it -- an unwired slot, not an empty image, is what "not in
+        // use" has to mean to an autogrow reference input; see
+        // modules/models/minimax_h3/pipeline.py's own docstring for why. The
+        // wire's target is the role's own data (`wireTo`), never a slot id
+        // this file would otherwise have to know: the preset declares where
+        // its own reference lands, the same way it declares everything else.
+        const role = slot.roles.find((r) => r.at === at);
+        if (role && role.wireTo) {
+          raw[role.wireTo.slot] = { ...raw[role.wireTo.slot],
+            [role.wireTo.input]: [slot.id, 0] };
+        }
+      });
+    }
+
     const field = prompts && prompts.fields.find((f) => f.at === "generation.prompt");
     const text = field && (raw[field.slot] || {})[field.input];
     if (!field || text == null) return raw;

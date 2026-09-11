@@ -87,6 +87,35 @@ def test_every_slot_id_is_unique_and_every_link_points_somewhere_real():
                     f"{slot['id']}.{name} is wired to {value[0]!r}, which is not a slot here")
 
 
+def test_a_picked_references_wire_target_resolves_and_builds_clean(registered):
+    """The exact edit boot.js's queueInputs() makes at generate time (see its
+    own use of each ref_source_N role's `wireTo`) -- proving the dotted
+    autogrow key really is what core/graph.py's AUTOGROW expansion (and
+    ComfyUI's own _io.build_nested_inputs at execution time) both agree it is,
+    not just that the STATIC, unwired preset happens to build."""
+    from core import graph
+    from modules.models.minimax_h3.pipeline import h3_reference_to_video
+
+    if "ImageTransformKJ" not in registered.NODE_CLASS_MAPPINGS:
+        pytest.skip("ComfyUI-KJNodes is not installed on this machine")
+
+    slots = h3_reference_to_video()
+    ref_slot = next(s for s in slots if s["id"] == "ref_source_1")
+    role = ref_slot["roles"][0]
+    assert role["wireTo"] == {"slot": "r2v", "input": "ref_images.ref_image_0"}
+
+    edited, refused = graph.override(
+        slots, {ref_slot["id"]: {"media_id": "abcdef012345"},
+                role["wireTo"]["slot"]: {role["wireTo"]["input"]: [ref_slot["id"], 0]}})
+    assert refused == []
+
+    _prompt, problems = graph.build(edited)
+    structural = [p for p in problems if "is not one of" not in p
+                  and "and nothing fills it" not in p]
+    assert structural == [], f"unexpected graph problems: {structural}"
+    assert _prompt["r2v"]["inputs"]["ref_images.ref_image_0"] == ["ref_source_1", 0]
+
+
 def test_no_reference_slot_is_pre_wired_into_r2v():
     """References only enter the graph when boot.js actually adds the wire for
     a reference the user picked -- see the preset module's own docstring. A

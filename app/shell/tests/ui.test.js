@@ -120,7 +120,8 @@ test("a wheel that is already open is not opened again", () => {
 // --- the inspector ----------------------------------------------------------
 
 function fakeProject(over = {}) {
-  const scene = { id: "aaaaaaaaaaaa", text: "", result: null, length: null, rating: null };
+  const scene = { id: "aaaaaaaaaaaa", text: "", result: null, length: null, rating: null,
+                  source_image: null, references: [] };
   const written = [];
   return {
     written,
@@ -136,6 +137,8 @@ function fakeProject(over = {}) {
     setPostfix: (v) => written.push(["project", "postfix", v]),
     setPostfixEnabled: (v) => written.push(["project", "postfix_enabled", v]),
     setVariables: (v) => written.push(["project", "variables", v]),
+    setSourceImage: (id, mediaId) => { written.push([id, "source_image", mediaId]); scene.source_image = mediaId; },
+    setReferences: (id, refs) => { written.push([id, "references", refs]); scene.references = refs; },
     ...over,
   };
 }
@@ -234,6 +237,53 @@ test("editing a variable never mutates the array a caller already holds a refere
   assert.notEqual(current, before, "the same array was handed back to setVariables");
   assert.deepEqual(before, [{ name: "a", value: "1" }],
     "a reference taken before the edit changed value out from under it");
+});
+
+test("picking a resolution source calls back with the scene it is for", () => {
+  const project = fakeProject();
+  const picked = [];
+  const inspector = createInspector({ project, onPickSourceImage: (id) => picked.push(id) });
+  document.body.replaceChildren(inspector.node);
+
+  const pick = [...inspector.node.querySelectorAll("button")].find((b) => b.textContent === "Pick…");
+  fire(pick, "click");
+  assert.deepEqual(picked, [project.selected.id]);
+});
+
+test("a picked resolution source shows Change and can be cleared", () => {
+  const project = fakeProject({ scenes: [{ id: "aaaaaaaaaaaa", text: "", result: null,
+    length: null, rating: null, source_image: "abcdef012345", references: [] }] });
+  project.selected = project.scenes[0];
+  const inspector = createInspector({ project });
+  document.body.replaceChildren(inspector.node);
+
+  assert.match(inspector.node.textContent, /Change/);
+  const clear = [...inspector.node.querySelectorAll("button")].find((b) => b.textContent === "✕");
+  fire(clear, "click");
+  assert.deepEqual(project.written.at(-1), [project.selected.id, "source_image", null]);
+});
+
+test("adding a reference calls back, and each one can be removed on its own", () => {
+  const project = fakeProject({ scenes: [{ id: "aaaaaaaaaaaa", text: "", result: null,
+    length: null, rating: null, source_image: null, references: ["111111111111", "222222222222"] }] });
+  project.selected = project.scenes[0];
+  const picked = [];
+  const inspector = createInspector({ project, onPickReference: (id) => picked.push(id) });
+  document.body.replaceChildren(inspector.node);
+
+  assert.match(inspector.node.textContent, /111111111111/);
+  assert.match(inspector.node.textContent, /222222222222/);
+
+  const add = [...inspector.node.querySelectorAll("button")].find((b) => b.textContent === "+ Add reference");
+  fire(add, "click");
+  assert.deepEqual(picked, [project.selected.id]);
+
+  // The FIRST reference's own ✕ -- removing it must not touch the second,
+  // even though both are plain strings and a value-based removal could not
+  // tell two identical references apart.
+  const removes = [...inspector.node.querySelectorAll("button")].filter((b) => b.textContent === "✕");
+  fire(removes[0], "click");
+  assert.deepEqual(project.written.at(-1), [project.selected.id, "references", ["222222222222"]]);
 });
 
 test("with no scene selected the inspector says so instead of drawing nothing", () => {

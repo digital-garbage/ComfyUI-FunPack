@@ -9,11 +9,17 @@ apply to it exactly as they do to anything else).
 
 The chain mirrors what this app's own H3 user actually runs by hand today:
 loaders, MiniMaxH3SigmaShift patching the model's flow shifts, an
-ImageTransformKJ node turning a dropped-in picture into a canvas-multiple
-width/height (nothing else about that image is used -- its pixels stop here),
-those two ints wired into MiniMaxH3ReferenceToVideo's width/height, and
-Reference-to-Video's own conditioning+latent feeding a plain sampler at CFG 1
-(H3 wants no negative guidance) into FunPackDecode and a video/audio mux.
+ImageTransformKJ node turning a dropped-in picture into canvas-multiple
+width/height ints -- but the picture supplies only its ASPECT RATIO, not the
+resolution. The actual pixel budget is target_width*target_height, role-
+mounted at "project.video" exactly like the default pipeline's own
+width/height: a project setting, typed once, not implied by whatever a phone
+camera happened to produce. "total_pixels" keep_proportion is what makes that
+true -- it fits the image's own aspect ratio into that budget's area, rather
+than using the image's raw size. Those two resulting ints feed
+MiniMaxH3ReferenceToVideo's width/height, and Reference-to-Video's own
+conditioning+latent feeds a plain sampler at CFG 1 (H3 wants no negative
+guidance) into FunPackDecode and a video/audio mux.
 
 The image and each reference are FunPackLoadMedia nodes: fed by a `media_id`
 this app sets from what is picked in the Media bin, at "assets.*" roles that
@@ -54,10 +60,20 @@ def h3_reference_to_video():
          # scene's own text -- neither is addressed by this preset's slot id.
          "roles": [{"at": "assets.source_image", "input": "media_id"}],
          "inputs": {"media_id": ""}},
-        {"id": "image_transform", "group": "Reference media", "node": "ImageTransformKJ", "inputs": {
-            "image": ["source_image", 0], "target_width": 0, "target_height": 0,
+        {"id": "image_transform", "group": "Reference media", "node": "ImageTransformKJ",
+         # target_width/height are the PIXEL BUDGET, set in Project settings
+         # like any other project resolution -- not the dropped picture's own
+         # size. "total_pixels" is what makes that budget win: it takes
+         # target_width*target_height as an area and fits the image's own
+         # aspect ratio into it, so the picture supplies the SHAPE and the
+         # project supplies the SCALE. A 12-megapixel phone photo dropped in
+         # must not become the generation's actual resolution.
+         "roles": [{"at": "project.video", "input": "target_width", "label": "Width"},
+                   {"at": "project.video", "input": "target_height", "label": "Height"}],
+         "inputs": {
+            "image": ["source_image", 0], "target_width": 1344, "target_height": 768,
             "upscale_method": "lanczos",
-            "keep_proportion": {"keep_proportion": "stretch"},
+            "keep_proportion": {"keep_proportion": "total_pixels"},
             "divisible_by": 32,
             "extra_padding": {"extra_padding": "disabled"},
             "invert_crop": {"invert_crop": "disabled"},
@@ -102,12 +118,20 @@ def h3_reference_to_video():
     for n in range(1, MAX_REFERENCES + 1):
         slots.append({
             "id": f"ref_source_{n}", "group": "Reference media", "node": "FunPackLoadMedia",
-            "roles": [{"at": f"assets.reference_{n}", "input": "media_id"}],
+            # `wireTo` is not read by core or by graph.py -- it is this
+            # preset's own data, read by boot.js at queue time (see
+            # queueInputs()'s handling of "assets.reference_N" there) to know
+            # where a reference's IMAGE output should land WITHOUT boot.js
+            # having to know "r2v" or "ref_images" itself. Not wired here in
+            # the STATIC slot list -- see the module docstring above: an
+            # unwired optional autogrow slot is what "this reference is not
+            # in use" actually looks like to MiniMaxH3ReferenceToVideo,
+            # absent from its `ref_images` dict entirely, not an empty image
+            # degrading its output. Only a scene that actually has this many
+            # references gets this wire added, per-run.
+            "roles": [{"at": f"assets.reference_{n}", "input": "media_id",
+                       "wireTo": {"slot": "r2v", "input": f"ref_images.ref_image_{n - 1}"}}],
             "inputs": {"media_id": ""}})
-        # Not wired to r2v here -- see the module docstring. An unwired
-        # optional autogrow slot is what "this reference is not in use"
-        # actually looks like to MiniMaxH3ReferenceToVideo: absent from its
-        # `ref_images` dict entirely, not an empty image degrading its output.
 
     return slots
 

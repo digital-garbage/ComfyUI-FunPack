@@ -21,7 +21,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 
-from . import config
+from . import config, media
 
 #: A generated id, never a user-supplied name, is what reaches the filesystem.
 _ID = re.compile(r"\A[0-9a-f]{12}\Z")
@@ -83,6 +83,15 @@ class Scene:
     #: timeline decision and a regenerate is a new scene.
     length: int | None = None
     rating: str | None = None
+    #: A media library id, picked to size this scene's generation -- not
+    #: included in it. v4's "drop a picture on the timeline" only ever fed a
+    #: resolution/aspect-ratio node; the picture's own pixels went nowhere. Per
+    #: scene, not per project: different shots can want a different canvas.
+    source_image: str | None = None
+    #: Media library ids, in the order they were added -- reference images for
+    #: whatever the pipeline's own reference input wants them for. Per scene
+    #: for the same reason source_image is: a reference is about THIS shot.
+    references: list[str] = field(default_factory=list)
 
     @staticmethod
     def from_dict(d) -> "Scene":
@@ -90,12 +99,16 @@ class Scene:
         sid = d.get("id")
         result = d.get("result")
         rating = d.get("rating")
+        source_image = d.get("source_image")
+        raw_refs = d.get("references")
         return Scene(
             id=sid if is_id(sid) else _new_id(),
             text=d.get("text") if isinstance(d.get("text"), str) else "",
             result=result if isinstance(result, str) else None,
             length=_whole(d.get("length")),
             rating=rating if rating in RATINGS else None,
+            source_image=source_image if media.is_id(source_image) else None,
+            references=[r for r in raw_refs if media.is_id(r)] if isinstance(raw_refs, list) else [],
         )
 
 

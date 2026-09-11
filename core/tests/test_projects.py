@@ -380,6 +380,31 @@ def test_a_scene_field_read_back_is_never_trusted():
         assert projects.Scene.from_dict({"length": junk}).length is None, junk
 
 
+def test_a_scenes_source_image_and_references_survive_a_round_trip(store):
+    made = projects.create("Referenced")
+    made.scenes = [projects.Scene(text="a fox", source_image="abcdef012345",
+                                  references=["111111111111", "222222222222"])]
+    projects.save(made)
+
+    back = projects.get(made.id).scenes[0]
+    assert back.source_image == "abcdef012345"
+    assert back.references == ["111111111111", "222222222222"]
+
+
+def test_a_scenes_media_ids_that_are_not_shaped_like_media_ids_are_dropped():
+    scene = projects.Scene.from_dict({
+        "source_image": "not a real id",
+        "references": ["111111111111", "also not one", 4, None],
+    })
+    assert scene.source_image is None
+    assert scene.references == ["111111111111"]
+
+
+def test_a_scenes_references_field_of_the_wrong_shape_degrades_to_empty():
+    for junk in ("111111111111", 4, None, {"a": 1}):
+        assert projects.Scene.from_dict({"references": junk}).references == [], junk
+
+
 # --- the project-level prompt fields: negative, anchor, postfix --------------
 
 def test_negative_survives_a_round_trip(store):

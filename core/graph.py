@@ -85,6 +85,18 @@ def from_comfyui() -> Schemas:
         for section in ("required", "optional"):
             for name, declared in (spec.get(section) or {}).items():
                 kind, options = comfy_types.declared(declared)
+                # An Autogrow is not one input -- "ref_images" is really
+                # "ref_image_0".."ref_image_9", each a real socket, none of
+                # them named "ref_images" itself. Expanded here (see
+                # comfy_types' own docstring) so a wire naming one is checked
+                # against its own declared type, rather than refused as an
+                # input the node does not have.
+                if kind == comfy_types.AUTOGROW:
+                    for instance_name, instance_kind, instance_options in (
+                            comfy_types.autogrow_instances(options)):
+                        edited = comfy_types.widget_type(instance_kind, instance_options)
+                        inputs[f"{name}.{instance_name}"] = edited if edited else instance_kind
+                    continue
                 # A MatchType input's own type name says nothing about what it
                 # actually accepts -- resolve it to the real union (see
                 # comfy_types' own docstring) before anything below judges a

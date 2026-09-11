@@ -32,6 +32,17 @@ The shapes, all current, all present in a stock install:
   a union nor a widget nor anything `accepts()` can compare -- it would refuse
   every wire into or out of a MatchType socket, including a completely legal
   one.
+* **An Autogrow** (V3's `io.Autogrow`) is not one input, it is a TEMPLATE for
+  as many numbered ones as get used -- MiniMaxH3ReferenceToVideo's
+  `ref_images` is really `ref_image_0`, `ref_image_1`, ... up to its own `max`,
+  each an ordinary IMAGE socket that happens to not exist until something
+  wires it. `INPUT_TYPES()` reports the group as one entry of type
+  `COMFY_AUTOGROW_V3`, carrying the template (the WRAPPED input's own
+  declaration, a `prefix`, and `min`/`max`) rather than a real type at all --
+  there is no socket named literally "ref_images" to wire into. Left alone,
+  every numbered instance is unreachable: not present in `declared` at all, so
+  a wire naming one is refused as an input the node does not have, for a node
+  that plainly does.
 
 Nothing here names a node.
 """
@@ -40,6 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 COMBO = "COMBO"
 MATCH_TYPE = "COMFY_MATCHTYPE_V3"
+AUTOGROW = "COMFY_AUTOGROW_V3"
 
 # What a person types INTO. Everything else arrives on a wire.
 PRIMITIVE = frozenset({"STRING", "INT", "FLOAT", "BOOLEAN", COMBO})
@@ -125,6 +137,43 @@ def reveals(options: Optional[dict]) -> bool:
     options = options or {}
     raw = options.get("options") or []
     return any(isinstance(option, dict) and option.get("inputs") for option in raw)
+
+
+def autogrow_instances(options: Optional[dict]) -> List[Tuple[str, Any, Dict[str, Any]]]:
+    """(dotted_name, kind, options) for every numbered instance an Autogrow's
+    `template` allows -- "ref_images" carrying `{"template": {"input":
+    {"required": {"ref_image": ("IMAGE", {...})}}, "prefix": "ref_image_",
+    "min": 0, "max": 9}}` becomes ("ref_image_0", "IMAGE", {...}) through
+    ("ref_image_9", "IMAGE", {...}).
+
+    Every instance is wireable regardless of `min`: an autogrow's own `min` is
+    how many the ORIGINAL node would insist on before it runs, which is not
+    this codebase's concern here -- core's `required` list is built from
+    `INPUT_TYPES()`'s "required"/"optional" split at the GROUP level, and this
+    only widens what a slot's `inputs` dict is allowed to name, never what it
+    must.
+
+    The wrapped input can itself be any single-value declaration this module
+    understands (a widget, a union, ...); it is run back through `declared()`
+    the same as any other input would be. A malformed or unrecognised template
+    (a future Autogrow shape this codebase has not seen) yields no instances
+    rather than a guess -- the group stays unreachable exactly as it was
+    before, not reachable under a wrong assumption about its shape.
+    """
+    template = (options or {}).get("template")
+    if not isinstance(template, dict):
+        return []
+    wrapped = (template.get("input") or {}).get("required") or {}
+    if len(wrapped) != 1:
+        return []
+    (inner_name, inner_decl), = wrapped.items()
+    prefix = template.get("prefix")
+    lo, hi = template.get("min"), template.get("max")
+    if (not isinstance(prefix, str) or not isinstance(lo, int) or not isinstance(hi, int)
+            or isinstance(lo, bool) or isinstance(hi, bool) or lo > hi):
+        return []
+    kind, inner_options = declared(inner_decl)
+    return [(f"{prefix}{i}", kind, inner_options) for i in range(lo, hi + 1)]
 
 
 def match_type_union(allowed: Any) -> Optional[str]:
