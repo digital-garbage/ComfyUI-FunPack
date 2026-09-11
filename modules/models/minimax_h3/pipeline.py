@@ -73,10 +73,10 @@ def h3_reference_to_video():
          "inputs": {
             "image": ["source_image", 0], "target_width": 1344, "target_height": 768,
             "upscale_method": "lanczos",
-            "keep_proportion": {"keep_proportion": "total_pixels"},
+            "keep_proportion": "total_pixels",
             "divisible_by": 32,
-            "extra_padding": {"extra_padding": "disabled"},
-            "invert_crop": {"invert_crop": "disabled"},
+            "extra_padding": "disabled",
+            "invert_crop": "disabled",
             "bboxes": ""}},
 
         {"id": "r2v", "group": "Preparation", "node": "MiniMaxH3ReferenceToVideo",
@@ -112,7 +112,7 @@ def h3_reference_to_video():
             "images": ["decode", 0], "fps": 24.0, "audio": ["decode", 1]}},
         {"id": "save", "group": "Render", "node": "SaveVideo", "inputs": {
             "video": ["video", 0], "filename_prefix": "FunPack",
-            "format": {"format": "auto"}}},
+            "format": "auto"}},
     ]
 
     for n in range(1, MAX_REFERENCES + 1):

@@ -87,17 +87,41 @@ def _register_nodes() -> str:
     dev server exists for, looking at the app, cannot reach the half of the app
     that matters. ComfyUI itself does both of these at startup; this is the same
     two steps without the rest of ComfyUI.
+
+    This also loads comfy_extras (MiniMaxH3SigmaShift, CreateVideo, ...) and,
+    if present, the KJNodes pack (ImageTransformKJ) -- without them a preset
+    that names one of those nodes looks broken here specifically, not because
+    the preset is wrong, but because this server stopped one step short of
+    what `pytest`'s own `registered` fixture already does for the real thing.
     """
+    import asyncio
+
     try:
         import nodes as comfy_nodes
     except Exception as exc:                     # noqa: BLE001
         return f"  WITHOUT ComfyUI's nodes ({exc}): the pipeline will look empty"
 
+    extras_note = ""
+    try:
+        asyncio.run(comfy_nodes.init_extra_nodes(init_custom_nodes=False))
+    except Exception as exc:                     # noqa: BLE001
+        extras_note = f"; comfy_extras WITHOUT loading fully ({exc})"
+
+    kjnodes_note = ""
+    kjnodes = Path(COMFYUI) / "custom_nodes" / "ComfyUI-KJNodes" if COMFYUI else None
+    if kjnodes and kjnodes.is_dir():
+        try:
+            asyncio.run(comfy_nodes.load_custom_node(str(kjnodes), module_parent="custom_nodes"))
+        except Exception as exc:                 # noqa: BLE001
+            kjnodes_note = f"; KJNodes WITHOUT loading ({exc})"
+    else:
+        kjnodes_note = "; KJNodes not installed, skipped"
+
     from core import nodes as funpack_nodes
     ours = funpack_nodes.install_into(comfy_nodes.NODE_CLASS_MAPPINGS,
                                       comfy_nodes.NODE_DISPLAY_NAME_MAPPINGS)
     return (f"  {len(comfy_nodes.NODE_CLASS_MAPPINGS)} nodes registered "
-            f"({len(ours)} of them FunPack's)")
+            f"({len(ours)} of them FunPack's){extras_note}{kjnodes_note}")
 
 
 def build_app() -> web.Application:

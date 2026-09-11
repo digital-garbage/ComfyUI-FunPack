@@ -53,10 +53,23 @@ def test_the_route_serves_it(registered):
 
 
 def test_the_preset_builds_a_real_graph_with_no_structural_problems(registered):
-    """Every reason build() could refuse this graph, other than "nothing has
-    been picked in a combo yet" (choices exist and this ran with none set) --
-    that one is a real state (a fresh install, nothing configured), not a bug
-    in how this preset wires itself together."""
+    """Every reason build() could refuse this graph, other than a loader's own
+    file combo (model_name/clip_name.../vae_name) being unset -- those are
+    real "fresh install, no files on disk" states this preset deliberately
+    leaves for the user to fill in, not a bug in how it wires itself together.
+
+    Anything the preset itself SUPPLIES has to be a value the real node
+    schema actually accepts -- an "is not one of" for one of those is not a
+    fresh-install state, it is this preset handing the node a value that was
+    never valid. That exact bug shipped once: keep_proportion/extra_padding/
+    invert_crop/format were wrapped in a redundant {"field": "value"} dict
+    (copied from nowhere -- no other module in this codebase does this), so
+    every one of them failed this same check silently -- caught only by
+    loading the preset in a real browser, not by this test, because an
+    earlier version of this assertion swallowed ALL "is not one of" messages
+    instead of just the loader-file ones. See modules/models/minimax_h3/
+    pipeline.py's keep_proportion/extra_padding/invert_crop/format inputs.
+    """
     from core import graph
 
     if "ImageTransformKJ" not in registered.NODE_CLASS_MAPPINGS:
@@ -65,8 +78,8 @@ def test_the_preset_builds_a_real_graph_with_no_structural_problems(registered):
     from modules.models.minimax_h3.pipeline import h3_reference_to_video
 
     _prompt, problems = graph.build(h3_reference_to_video())
-    structural = [p for p in problems if "is not one of" not in p
-                  and "and nothing fills it" not in p]
+    unset_loader_file = ("needs 'model_name'", "needs 'clip_name", "needs 'vae_name'")
+    structural = [p for p in problems if not any(marker in p for marker in unset_loader_file)]
     assert structural == [], f"unexpected graph problems: {structural}"
 
 
@@ -110,8 +123,8 @@ def test_a_picked_references_wire_target_resolves_and_builds_clean(registered):
     assert refused == []
 
     _prompt, problems = graph.build(edited)
-    structural = [p for p in problems if "is not one of" not in p
-                  and "and nothing fills it" not in p]
+    unset_loader_file = ("needs 'model_name'", "needs 'clip_name", "needs 'vae_name'")
+    structural = [p for p in problems if not any(marker in p for marker in unset_loader_file)]
     assert structural == [], f"unexpected graph problems: {structural}"
     assert _prompt["r2v"]["inputs"]["ref_images.ref_image_0"] == ["ref_source_1", 0]
 
