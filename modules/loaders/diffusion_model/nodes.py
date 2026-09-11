@@ -11,9 +11,22 @@ import folder_paths
 from comfy_api.latest import io
 
 from ..._core import log
+from .. import gguf_support
 from ..common import (COMPUTE_DTYPES, WEIGHT_DTYPES, attention_choices,
                       attention_override, dtype_of, set_fp16_accumulation,
                       weight_model_options)
+
+
+def _model_file_choices():
+    """Diffusion model files, `.gguf` included.
+
+    Core's extension set has no `.gguf`, so those files are on disk and
+    invisible to every picker. Appended rather than merged in sorted order, so
+    an existing pipeline's saved choice keeps its position in the list and
+    nothing a user already picked moves.
+    """
+    return list(folder_paths.get_filename_list("diffusion_models")) + \
+        gguf_support.gguf_names("diffusion_models")
 
 
 class FunPackDiffusionModelLoader(io.ComfyNode):
@@ -25,7 +38,7 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
             category="FunPack/Loaders",
             description="Load a diffusion model, choosing precision and attention backend.",
             inputs=[
-                io.Combo.Input("model_name", options=folder_paths.get_filename_list("diffusion_models")),
+                io.Combo.Input("model_name", options=_model_file_choices()),
                 io.Combo.Input("weight_dtype", options=WEIGHT_DTYPES, default="default",
                                tooltip="How the weights are stored. 'default' keeps whatever "
                                        "the file already is."),
@@ -57,8 +70,31 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
         model_options = weight_model_options(weight_dtype)
         notes.append(f"weight dtype: {weight_dtype}")
 
-        path = folder_paths.get_full_path_or_raise("diffusion_models", model_name)
-        state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
+        if gguf_support.is_gguf(model_name):
+            path = gguf_support.gguf_path("diffusion_models", model_name)
+            if not path:
+                raise RuntimeError(f"{model_name} is no longer where it was listed from.")
+            misnamed = False
+        else:
+            path = folder_paths.get_full_path_or_raise("diffusion_models", model_name)
+            # The CONTENT decides, not the extension. A .gguf renamed to
+            # .safetensors used to reach the safetensors parser and fail with
+            # a UTF-8 decode error from reading a binary header as JSON --
+            # true, and no help at all.
+            misnamed = gguf_support.has_gguf_magic(path)
+        if gguf_support.is_gguf(model_name) or misnamed:
+            if misnamed:
+                notes.append(f"{model_name} is named .safetensors but is a GGUF "
+                             f"container -- loaded as GGUF")
+            state_dict, gguf_options, gguf_note = gguf_support.load_state_dict(path)
+            # The quantized path needs its own torch operations, and they must
+            # not be lost to the dtype options above -- a GGUF loaded with
+            # stock ops would try to matmul block-quantized storage.
+            model_options = {**model_options, **gguf_options}
+            metadata = None
+            notes.append(gguf_note)
+        else:
+            state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
         model = comfy.sd.load_diffusion_model_state_dict(
             state_dict, model_options=model_options, metadata=metadata)
         if model is None:

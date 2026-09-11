@@ -385,6 +385,270 @@ test("a node is described once, however many slots point at it", async () => {
   win.close();
 });
 
+test("reopening a group re-asks for its node descriptions, so a file added mid-session shows up", async () => {
+  // The bug this pins: `nodes` used to cache a class's description for the
+  // life of the window, keyed only by class name. A model file dropped onto
+  // disk after the window opened was invisible in an already-known node's
+  // panel with no way to see it short of reloading the page -- which throws
+  // the whole in-progress pipeline edit away with the stale cache.
+  let files = ["a.safetensors"];
+  const custom = server({ slots: [{ id: "l", group: "Loaders", node: "Loader", inputs: {} }] });
+  custom.describe = async (classes) => {
+    custom.calls.push({ describe: [...classes] });
+    return { Loader: { ...DESCRIPTIONS.Loader, widgets: [
+      { name: "model_name", type: "COMBO", choices: [...files] },
+    ] } };
+  };
+  const win = openWindow(custom);
+  await win.ready;
+  await win.enter("Loaders");
+  const optionsOf = () => [...rowFor(win, "Model name").querySelector("select").options]
+    .map((o) => o.textContent);
+  assert.deepEqual(optionsOf().filter((t) => t !== "— not set —"), ["a.safetensors"]);
+
+  files.push("b.safetensors");
+  win.leave();
+  await win.enter("Loaders");
+  assert.deepEqual(optionsOf().filter((t) => t !== "— not set —"),
+    ["a.safetensors", "b.safetensors"],
+    "reopening the group did not pick up the file added since it was last open");
+  win.close();
+});
+
+test("Refresh models re-asks without leaving the group", async () => {
+  let files = ["a.safetensors"];
+  const custom = server({ slots: [{ id: "l", group: "Loaders", node: "Loader", inputs: {} }] });
+  custom.describe = async (classes) => {
+    custom.calls.push({ describe: [...classes] });
+    return { Loader: { ...DESCRIPTIONS.Loader, widgets: [
+      { name: "model_name", type: "COMBO", choices: [...files] },
+    ] } };
+  };
+  const win = openWindow(custom);
+  await win.ready;
+  await win.enter("Loaders");
+
+  files.push("b.safetensors");
+  click(button(win, "Refresh models"));
+  await new Promise(setImmediate);
+
+  const optionsOf = [...rowFor(win, "Model name").querySelector("select").options]
+    .map((o) => o.textContent);
+  assert.deepEqual(optionsOf.filter((t) => t !== "— not set —"), ["a.safetensors", "b.safetensors"]);
+  win.close();
+});
+
+test("a failed Refresh models says so, instead of looking like there was nothing new", async () => {
+  const custom = server({ slots: [{ id: "l", group: "Loaders", node: "Loader", inputs: {} }] });
+  // mount() destructures `describe` once, at open time -- reassigning
+  // `custom.describe` afterward would not reach it. A stable wrapper that
+  // reads a mutable flag is what lets a later part of the test change what
+  // happens on the NEXT call.
+  let fail = false;
+  const base = custom.describe;
+  custom.describe = (classes) => {
+    if (fail) return Promise.reject(new Error("those nodes could not be described (500)"));
+    return base(classes);
+  };
+  const win = openWindow(custom);
+  await win.ready;
+  await win.enter("Loaders");
+
+  fail = true;
+  click(button(win, "Refresh models"));
+  await new Promise(setImmediate);
+
+  assert.match(bannerTexts(win).join(" "), /could not be described/);
+  win.close();
+});
+
+test("an older learn() answering after a newer one does not put its stale choices back", async () => {
+  // Two overlapping force-refreshes (e.g. two quick clicks of Refresh models,
+  // or leave+enter fast enough that the first request is still in flight):
+  // whichever answer comes back LAST must not be allowed to be the OLDER one.
+  const custom = server({ slots: [{ id: "l", group: "Loaders", node: "Loader", inputs: {} }] });
+  let deferred = false;
+  let resolvers = [];
+  const base = custom.describe;
+  custom.describe = (classes) => {
+    if (!deferred) return base(classes);
+    custom.calls.push({ describe: [...classes] });
+    return new Promise((resolve) => resolvers.push({ resolve, classes }));
+  };
+  const win = openWindow(custom);
+  await win.ready;   // past the initial, non-force learn() before describe() defers
+
+  deferred = true;
+  const first = win.enter("Loaders");   // in flight
+  const second = win.enter("Loaders");  // also in flight, started after
+  // Answer the newer request first, then the older one.
+  resolvers[1].resolve({ Loader: { ...DESCRIPTIONS.Loader, widgets: [
+    { name: "model_name", type: "COMBO", choices: ["fresh.safetensors"] },
+  ] } });
+  await second;
+  resolvers[0].resolve({ Loader: { ...DESCRIPTIONS.Loader, widgets: [
+    { name: "model_name", type: "COMBO", choices: ["stale.safetensors"] },
+  ] } });
+  await first;
+
+  const options = [...rowFor(win, "Model name").querySelector("select").options]
+    .map((o) => o.textContent);
+  assert.ok(options.includes("fresh.safetensors"), "the newer answer should have won");
+  assert.ok(!options.includes("stale.safetensors"), "the older, late-arriving answer overwrote it");
+  win.close();
+});
+
+test("a superseded rescan's late failure does not overwrite a newer rescan's success with a false error", async () => {
+  const custom = server({ slots: [{ id: "l", group: "Loaders", node: "Loader", inputs: {} }] });
+  let deferred = false;
+  let handlers = [];
+  const base = custom.describe;
+  custom.describe = (classes) => {
+    if (!deferred) return base(classes);
+    return new Promise((resolve, reject) => handlers.push({ resolve, reject }));
+  };
+  const win = openWindow(custom);
+  await win.ready;
+
+  deferred = true;
+  const first = win.enter("Loaders");   // will fail, but only after the second has already won
+  const second = win.enter("Loaders");  // succeeds
+  handlers[1].resolve({ Loader: DESCRIPTIONS.Loader });
+  await second;
+  handlers[0].reject(new Error("stale network failure from the OLD request"));
+  await first;
+
+  assert.deepEqual(bannerTexts(win), [],
+    "a rejection from a superseded request must not overwrite the newer success with an error banner");
+  win.close();
+});
+
+test("a successful rescan clears a refusal banner an earlier failed one left behind", async () => {
+  const custom = server({ slots: [{ id: "l", group: "Loaders", node: "Loader", inputs: {} }] });
+  let fail = false;
+  const base = custom.describe;
+  custom.describe = (classes) => {
+    if (fail) return Promise.reject(new Error("those nodes could not be described (500)"));
+    return base(classes);
+  };
+  const win = openWindow(custom);
+  await win.ready;
+  await win.enter("Loaders");
+
+  fail = true;
+  click(button(win, "Refresh models"));
+  await new Promise(setImmediate);
+  assert.match(bannerTexts(win).join(" "), /could not be described/);
+
+  fail = false;
+  click(button(win, "Refresh models"));
+  await new Promise(setImmediate);
+  assert.deepEqual(bannerTexts(win), [], "the earlier failure's banner should be gone after a success");
+  win.close();
+});
+
+test("a scan failure does not follow the user to the index or into a different group", async () => {
+  const custom = server({ slots: [
+    { id: "l", group: "Loaders", node: "Loader", inputs: {} },
+    { id: "s", group: "Sampling", node: "Sampler",
+      inputs: { model: ["l", 0], steps: 20, sampler_name: "euler" } },
+  ] });
+  let fail = false;
+  const base = custom.describe;
+  custom.describe = (classes) => {
+    if (fail) return Promise.reject(new Error("could not be described (500)"));
+    return base(classes);
+  };
+  const win = openWindow(custom);
+  await win.ready;
+
+  fail = true;
+  await win.enter("Loaders");
+  assert.match(bannerTexts(win).join(" "), /could not be described/, "sanity: the failure shows in Loaders");
+
+  win.leave();
+  assert.deepEqual(bannerTexts(win), [], "Loaders' scan failure bled into the index");
+
+  fail = false;
+  await win.enter("Sampling");
+  assert.deepEqual(bannerTexts(win), [], "Loaders' scan failure bled into an unrelated group");
+  win.close();
+});
+
+test("leaving a group before its rescan answers does not let a late failure land on the index", async () => {
+  const custom = server({ slots: [{ id: "l", group: "Loaders", node: "Loader", inputs: {} }] });
+  let deferred = false;
+  let handlers = [];
+  const base = custom.describe;
+  custom.describe = (classes) => {
+    if (!deferred) return base(classes);
+    return new Promise((resolve, reject) => handlers.push({ resolve, reject }));
+  };
+  const win = openWindow(custom);
+  await win.ready;
+
+  deferred = true;
+  const entering = win.enter("Loaders");   // rescan() now in flight, unresolved
+  win.leave();                             // back out before it answers
+  assert.deepEqual(bannerTexts(win), [], "sanity: nothing shown right after leaving");
+
+  handlers[0].reject(new Error("stale network failure from the left group"));
+  await entering;
+
+  assert.deepEqual(bannerTexts(win), [],
+    "a rescan answering after its group was left must not paint the index with its failure");
+  win.close();
+});
+
+test("leaving a group before its commit() answers does not let a late refusal land on the index", async () => {
+  // The commit()-side counterpart of the rescan race above: an edit (Remove,
+  // Save, wire...) started in one group can still answer after the user has
+  // backed out to the index. Its DATA must still apply -- an edit that
+  // happened does not un-happen -- but its refusal banner belongs to the
+  // group that made it, not to whatever the user is looking at by the time
+  // the answer arrives.
+  const custom = server({ refuse: "removing 'l' is ambiguous", slots: [
+    { id: "l", group: "Loaders", node: "Loader", inputs: {} },
+  ] });
+  let deferred = false;
+  let handlers = [];
+  const base = custom.check;
+  custom.check = (body) => {
+    if (!deferred) return base(body);
+    return new Promise((resolve) => handlers.push({ resolve, body }));
+  };
+  const win = openWindow(custom);
+  await win.ready;
+  await win.enter("Loaders");
+
+  deferred = true;
+  click(button(win, "Remove"));       // commit() now in flight, unresolved
+  win.leave();                        // back out before it answers
+  assert.deepEqual(bannerTexts(win), [], "sanity: nothing shown right after leaving");
+
+  handlers[0].resolve({ slots: [], refused: ["removing 'l' is ambiguous"], incomplete: [], queueable: false });
+  await new Promise(setImmediate);
+
+  assert.deepEqual(bannerTexts(win), [],
+    "a commit() refusal answering after its group was left must not paint the index with it");
+  win.close();
+});
+
+test("a load() that comes back refused still shows why, not an empty pipeline", async () => {
+  // refresh()'s `load` can be backed by a plain stateless read (always
+  // refused: []) or, when re-validating an already-saved pipeline on open,
+  // by the same check() a structural edit uses -- which CAN refuse (a real
+  // network failure/500 from the server mid-request). Silently dropping
+  // that field would replace the screen with an unexplained empty pipeline.
+  const win = openWindow({
+    load: async () => ({ slots: [], refused: ["the pipeline could not be read (500)"], incomplete: [] }),
+    describe: async () => ({}), check: async () => ({}), search: async () => ({ nodes: [], total: 0 }),
+  });
+  await win.ready;
+  assert.match(bannerTexts(win).join(" "), /could not be read/);
+  win.close();
+});
+
 test("a pipeline that cannot be read says so instead of showing an empty window", async () => {
   const win = openWindow({
     load: async () => { throw new Error("the pipeline could not be read (500)"); },

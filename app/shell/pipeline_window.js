@@ -92,6 +92,24 @@ export function mount({ load, describe, check, search, onApply, presets,
   let editing = null;               // group name
   let selected = null;              // slot id
   let notes = { refused: [], incomplete: [] };
+  // Kept separate from `notes.refused`: that field is about an EDIT the
+  // server rejected (commit()), and stays on screen until the user does
+  // something about it. A rescan() failure is unrelated to any edit -- and
+  // sharing one field meant a rescan that happened to succeed a moment later
+  // could silently wipe out a real, still-unaddressed commit() refusal the
+  // user had not yet seen or acted on.
+  let scanFailed = null;
+  let learnGen = 0;                 // guards against two learn() calls landing out of order
+  // Bumped by leave() only: every enter() is reached through the index,
+  // which only ever renders after a leave(), so leave() alone sees every
+  // group-to-group transition. Which VIEW an in-flight commit() belongs to
+  // -- a commit started in one group can still answer after the user has
+  // backed out to the index. Its DATA (slots) must still apply either way,
+  // an edit that happened does not un-happen because someone stopped
+  // looking, but its refusal banner belongs to a group that is no longer on
+  // screen, and painting it on the index is the same misattribution
+  // rescanGen/scanFailed already exist to prevent for a scan failure.
+  let viewGen = 0;
 
   const body = composer.region.stack({ gap: "md", label: "Pipeline", fill: true });
 
@@ -100,19 +118,38 @@ export function mount({ load, describe, check, search, onApply, presets,
   async function refresh() {
     const answer = await load();
     slots = answer.slots;
-    notes = { refused: [], incomplete: answer.incomplete || [] };
+    // `load` can be backed by a plain read (always `refused: []`) or, when a
+    // previously-saved pipeline is being re-validated on open, by the same
+    // check() a structural edit uses -- which can refuse. Reading it here
+    // rather than hardcoding `[]` is what keeps that case from replacing the
+    // screen with an unexplained empty pipeline.
+    notes = { refused: answer.refused || [], incomplete: answer.incomplete || [] };
     await learn(slots.map((slot) => slot.node));
   }
 
-  /** Descriptions for classes we have not seen. Asked once per class. */
-  async function learn(classes) {
-    const unknown = [...new Set(classes)].filter((c) => c && !nodes.has(c));
-    if (!unknown.length) return;
-    const described = await describe(unknown);
+  /**
+   * Descriptions for classes we have not seen -- or, with `force`, for
+   * classes we have. A class's combo choices are a file listing (model
+   * names, LoRAs), and this window's `nodes` cache lives for as long as the
+   * window is open: without forcing a re-ask on entry, a file added to disk
+   * mid-session stayed invisible in an already-opened group until the whole
+   * page reloaded, which throws the in-progress edit away with it.
+   */
+  async function learn(classes, { force = false } = {}) {
+    const wanted = [...new Set(classes)].filter(Boolean);
+    const ask = force ? wanted : wanted.filter((c) => !nodes.has(c));
+    if (!ask.length) return;
+    const mine = ++learnGen;
+    const described = await describe(ask);
+    // A newer learn() (another force-refresh, or the group being left and
+    // re-entered) answered first. Applying this older one now would put its
+    // stale choices back over the fresh ones just drawn -- the exact bug this
+    // whole mechanism exists to fix, reintroduced by its own race.
+    if (mine !== learnGen) return;
     // Every class asked about gets an entry, `null` included: without it an
     // absent node is asked for again on every redraw, and reads on screen as a
     // node still being looked up rather than one that is not installed.
-    for (const name of unknown) nodes.set(name, described[name] ?? null);
+    for (const name of ask) nodes.set(name, described[name] ?? null);
   }
 
   // Which edit is the current one. Two structural edits can be in flight at
@@ -126,12 +163,13 @@ export function mount({ load, describe, check, search, onApply, presets,
   /** Send the pipeline as it now stands and keep what the server says of it. */
   async function commit(next, action = {}) {
     const mine = ++edits;
+    const myView = viewGen;
     let answer;
     try {
       answer = await check({ slots: next, ...action });
     } catch (err) {
       if (mine !== edits) return false;
-      notes = { refused: [err.message], incomplete: notes.incomplete };
+      if (myView === viewGen) notes = { refused: [err.message], incomplete: notes.incomplete };
       draw();
       return false;
     }
@@ -140,15 +178,25 @@ export function mount({ load, describe, check, search, onApply, presets,
     if (mine !== edits) return false;
     // A refused edit did not happen, so what is on screen must stay what it
     // was: showing the refusal beside the change it refused is how someone
-    // comes to believe an edit landed when it did not.
+    // comes to believe an edit landed when it did not. But the refusal is
+    // only shown if the user is still looking at the view that made the
+    // edit -- otherwise it paints a group's own rejection onto whatever the
+    // user has since navigated to, the same misattribution scanFailed exists
+    // to prevent for a failed rescan.
     if (answer.refused.length) {
-      notes = { refused: answer.refused, incomplete: notes.incomplete };
+      // `incomplete` describes the WHOLE pipeline, not this one edit, so it
+      // stays live regardless of view -- only `refused`, which is about
+      // THIS edit specifically, is view-scoped.
+      notes = { refused: myView === viewGen ? answer.refused : notes.refused, incomplete: notes.incomplete };
       draw();
       return false;
     }
+    // The edit happened server-side regardless of where the user is looking
+    // now, so the data applies unconditionally -- only the refusal notes are
+    // view-scoped, same reasoning as the branch above.
     forgetDraftsFor(slots, answer.slots);
     slots = answer.slots;
-    notes = { refused: [], incomplete: answer.incomplete };
+    notes = { refused: myView === viewGen ? [] : notes.refused, incomplete: answer.incomplete };
     await learn(slots.map((slot) => slot.node));
     if (onApply) onApply(slots);
     draw();
@@ -225,6 +273,7 @@ export function mount({ load, describe, check, search, onApply, presets,
   function messages({ everything = false } = {}) {
     return [
       ...notes.refused.map((text) => composer.banner.danger({ text })),
+      ...(scanFailed ? [composer.banner.danger({ text: scanFailed })] : []),
       // Not an error: a fresh install has no model picked, and colouring that
       // red says something went wrong when nothing has yet.
       ...(everything ? notes.incomplete.map((text) => composer.banner.warn({ text })) : []),
@@ -315,17 +364,72 @@ export function mount({ load, describe, check, search, onApply, presets,
 
   // ---- one group: nodes on the left, the selected node's parameters right
 
-  function enter(name) {
+  let rescanGen = 0;
+
+  /**
+   * Force-refresh a group's node descriptions and report if the server
+   * could not be reached -- describe() is a real fetch and a network hiccup
+   * or a restarted server leaves it rejecting, same as every other server
+   * call this window makes. Silently doing nothing here would make a refresh
+   * failure look identical to "nothing new to show", which defeats the point.
+   *
+   * `learnGen` inside learn() only guards which answer gets WRITTEN to the
+   * `nodes` cache; it says nothing about which rescan() call is allowed to
+   * touch `scanFailed`. Without its own token, an older rescan's late
+   * rejection could still slap a stale error banner over a newer rescan's
+   * fresh, successful result.
+   */
+  async function rescan(classes) {
+    const mine = ++rescanGen;
+    try {
+      await learn(classes, { force: true });
+      if (mine !== rescanGen) return;
+      scanFailed = null;
+    } catch (err) {
+      if (mine !== rescanGen) return;
+      scanFailed = err.message;
+    }
+    draw();
+  }
+
+  async function enter(name) {
     editing = name;
     draft = new Map();
-    selected = (groupsOf(slots, extraGroups).byGroup.get(name) || [])[0]?.id ?? null;
+    const mine = groupsOf(slots, extraGroups).byGroup.get(name) || [];
+    selected = mine[0]?.id ?? null;
+    // A scan failure belongs to the group whose rescan raised it. Carrying
+    // it into a different group -- or the index, via leave() -- points
+    // someone at the wrong place to investigate; this group's own rescan()
+    // below sets its own, current answer moments later.
+    scanFailed = null;
+    // Same reasoning as rescanGen above, for an in-flight commit() started
+    // in whatever group was open before this one: its refusal belongs there,
+    // not here.
+    viewGen += 1;
     draw();
+    // Refetched fresh rather than served from `nodes`: a combo's choices are
+    // a file listing, and a file added to disk since this window opened must
+    // show up without forcing a full page reload, which would drop the whole
+    // in-progress edit along with the stale cache.
+    await rescan(mine.map((slot) => slot.node));
   }
 
   function leave() {
     editing = null;
     draft = null;
     selected = null;
+    scanFailed = null;
+    // Invalidates any rescan() still in flight for the group being left --
+    // without this, its answer lands after leave() (with editing now null)
+    // and a LATE failure writes scanFailed straight onto the index, since
+    // rescan()'s own guard only checks whether a NEWER rescan() has started,
+    // never whether the one it belongs to has since been left.
+    rescanGen += 1;
+    // Same for an in-flight commit(): its DATA still applies when it lands
+    // (an edit that happened does not un-happen because someone stopped
+    // looking), but its refusal banner belongs to the group just left, not
+    // to the index this draw() is about to show.
+    viewGen += 1;
     draw();
   }
 
@@ -346,6 +450,14 @@ export function mount({ load, describe, check, search, onApply, presets,
         composer.button.sm({
           label: "Remove", tone: "ghost", disabled: !selected,
           onClick: () => remove(selected),
+        }),
+        composer.button.sm({
+          label: "Refresh models", tone: "ghost",
+          // Same file listing a re-entry already forces -- exposed here too,
+          // because a file dropped in AFTER this group was opened has no
+          // other way to appear short of reloading the page, which would
+          // throw away every edit made in this session.
+          onClick: () => rescan(mine.map((slot) => slot.node)),
         }),
       ] }),
     ] });

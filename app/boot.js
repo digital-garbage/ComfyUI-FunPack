@@ -254,7 +254,18 @@ async function start() {
         id: "pipeline", title: "Models and pipeline", subtitle: "What the run is made of.",
         keywords: "pipeline models nodes slots loaders", icon: "▦", tone: "accent",
         mount: (ctx) => mountPipeline({
-          load, describe, check, search, presets, ...ctx,
+          // load() always answers with the server's stateless default -- it
+          // holds no session, by design (core/routes.py's _pipeline()). The
+          // window itself only remembers what was saved for as long as it
+          // stays open; closing Settings and reopening this section made a
+          // fresh one every time, so a saved preset and every edit on top of
+          // it vanished the moment someone closed Settings to look at
+          // something else, with no error and no way to tell it had happened.
+          // Re-validating the already-saved `slots` through check() (rather
+          // than replaying `load()`'s raw answer) keeps `incomplete` and
+          // `queueable` correct, exactly as a fresh commit() would.
+          load: () => (slots ? check({ slots }) : load()),
+          describe, check, search, presets, ...ctx,
           onApply: (next) => {
             slots = next;
             // The boxes on the main window are for inputs of THESE slots. A slot

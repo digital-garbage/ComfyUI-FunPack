@@ -1,0 +1,7 @@
+# Version floors ONLY where FunPack needs one, and never a bare upgrade of
+# anything the rest of ComfyUI compiles against.
+#
+# Reads .gguf containers in the FunPack loaders. Pure python + numpy; it does
+# not pull CUDA or any model. Without it a .gguf needs the ComfyUI-GGUF node
+# pack instead.
+gguf

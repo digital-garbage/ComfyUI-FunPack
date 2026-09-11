@@ -200,3 +200,132 @@ def test_a_torch_build_without_the_flag_reports_that_rather_than_pretending():
     from modules.loaders import common
     if getattr(getattr(torch.backends, "cuda", None), "matmul", None) is None:
         assert common.set_fp16_accumulation(True) is None
+
+
+# --- GGUF routing: does the WIRING actually reach gguf_support.py, not just ---
+# --- whether gguf_support.py itself works in isolation -------------------------
+
+def test_a_gguf_model_name_is_routed_through_gguf_support(monkeypatch):
+    """A .gguf model file must never reach load_torch_file -- that parser
+    reads a safetensors header, and a GGUF container is not one."""
+    import comfy.sd
+    from modules.loaders import gguf_support
+    from modules.loaders.diffusion_model import nodes
+
+    monkeypatch.setattr(gguf_support, "gguf_path", lambda folder, name: f"/fake/{name}")
+    monkeypatch.setattr(gguf_support, "load_state_dict",
+                        lambda path: ({"w": 1}, {"custom_operations": "ops"}, "gguf: quantized"))
+    monkeypatch.setattr(comfy.sd, "load_diffusion_model_state_dict",
+                        lambda sd, model_options, metadata: object() if sd == {"w": 1}
+                        and model_options.get("custom_operations") == "ops" else None)
+
+    out = nodes.FunPackDiffusionModelLoader.execute(
+        model_name="model-Q4_K_M.gguf", weight_dtype="default",
+        compute_dtype="default", attention="default")
+
+    assert out.result[0] is not None
+    assert "gguf: quantized" in out.result[1]
+
+
+def test_a_safetensors_named_file_that_is_actually_gguf_is_still_routed(monkeypatch):
+    """The CONTENT decides, not the extension -- a .gguf renamed to
+    .safetensors must not reach the safetensors parser and fail with a
+    decode error that names nothing useful."""
+    import comfy.sd
+    import folder_paths
+    from modules.loaders import gguf_support
+    from modules.loaders.diffusion_model import nodes
+
+    monkeypatch.setattr(folder_paths, "get_full_path_or_raise", lambda kind, name: "/fake/path")
+    monkeypatch.setattr(gguf_support, "has_gguf_magic", lambda path: True)
+    monkeypatch.setattr(gguf_support, "load_state_dict",
+                        lambda path: ({"w": 1}, {}, "gguf: dequantized at load"))
+    monkeypatch.setattr(comfy.sd, "load_diffusion_model_state_dict",
+                        lambda sd, model_options, metadata: object())
+
+    out = nodes.FunPackDiffusionModelLoader.execute(
+        model_name="model.safetensors", weight_dtype="default",
+        compute_dtype="default", attention="default")
+
+    assert "named .safetensors but is a GGUF container" in out.result[1]
+
+
+def test_an_ordinary_safetensors_model_never_touches_gguf_support(monkeypatch):
+    """The common case must not pay for the uncommon one: a real
+    .safetensors file goes through load_torch_file, not gguf_support."""
+    import comfy.sd
+    import comfy.utils
+    import folder_paths
+    from modules.loaders import gguf_support
+    from modules.loaders.diffusion_model import nodes
+
+    monkeypatch.setattr(folder_paths, "get_full_path_or_raise", lambda kind, name: "/fake/path")
+    monkeypatch.setattr(gguf_support, "has_gguf_magic", lambda path: False)
+    monkeypatch.setattr(gguf_support, "load_state_dict",
+                        lambda path: (_ for _ in ()).throw(AssertionError("gguf path taken")))
+    monkeypatch.setattr(comfy.utils, "load_torch_file",
+                        lambda path, return_metadata: ({"w": 1}, {}))
+    monkeypatch.setattr(comfy.sd, "load_diffusion_model_state_dict",
+                        lambda sd, model_options, metadata: object())
+
+    nodes.FunPackDiffusionModelLoader.execute(
+        model_name="model.safetensors", weight_dtype="default",
+        compute_dtype="default", attention="default")
+
+
+def test_a_gguf_text_encoder_is_routed_through_gguf_support(monkeypatch):
+    """A .gguf encoder cannot go through load_clip -- it reads files itself
+    and does not understand the container."""
+    import comfy.sd
+    from modules.loaders import gguf_support
+    from modules.loaders.clip import nodes
+
+    monkeypatch.setattr(gguf_support, "gguf_path", lambda folder, name: f"/fake/{name}")
+    monkeypatch.setattr(gguf_support, "load_clip_state_dict",
+                        lambda path: ({"w": 1}, {}, "gguf: quantized"))
+    monkeypatch.setattr(comfy.sd, "load_text_encoder_state_dicts",
+                        lambda state_dicts, **kw: object() if state_dicts == [{"w": 1}] else None)
+
+    out = nodes.FunPackCLIPLoader.execute(clip_name1="encoder-Q5_K.gguf", type="ltxv")
+
+    assert out.result[0] is not None
+    assert "gguf: quantized" in out.result[1]
+
+
+def test_a_gguf_encoder_alongside_a_plain_connector_loads_both(monkeypatch):
+    """LTX-2.3's normal shape: a GGUF encoder plus a .safetensors connector
+    in the same list. Each slot must be read the way ITS file needs, not
+    however the first slot in the list happened to be."""
+    import comfy.sd
+    import comfy.utils
+    import folder_paths
+    from modules.loaders import gguf_support
+    from modules.loaders.clip import nodes
+
+    monkeypatch.setattr(gguf_support, "gguf_path", lambda folder, name: f"/fake/{name}")
+    monkeypatch.setattr(gguf_support, "load_clip_state_dict",
+                        lambda path: ({"gguf": 1}, {}, "gguf: quantized"))
+    monkeypatch.setattr(folder_paths, "get_full_path_or_raise", lambda kind, name: f"/fake/{name}")
+    monkeypatch.setattr(comfy.utils, "load_torch_file", lambda path: {"plain": 1})
+    seen = {}
+    monkeypatch.setattr(comfy.sd, "load_text_encoder_state_dicts",
+                        lambda state_dicts, **kw: seen.update(sd=state_dicts) or object())
+
+    nodes.FunPackCLIPLoader.execute(
+        clip_name1="encoder-Q5_K.gguf", clip_name2="connector.safetensors", type="ltxv")
+
+    assert seen["sd"] == [{"gguf": 1}, {"plain": 1}]
+
+
+def test_a_gguf_encoder_that_vanished_since_being_listed_is_refused_by_name(monkeypatch):
+    """gguf_path() returns None once a listed file is gone. Without a check,
+    that None reaches load_clip_state_dict and fails deep inside gguf/pack
+    machinery instead of naming the missing file, the way the diffusion model
+    loader already refuses the identical condition."""
+    from modules.loaders import gguf_support
+    from modules.loaders.clip import nodes
+
+    monkeypatch.setattr(gguf_support, "gguf_path", lambda folder, name: None)
+
+    with pytest.raises(RuntimeError, match="encoder-Q5_K.gguf.*no longer where it was listed"):
+        nodes.FunPackCLIPLoader.execute(clip_name1="encoder-Q5_K.gguf", type="ltxv")
