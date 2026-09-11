@@ -14,6 +14,7 @@ from movie_editor.server import (
     _build_render_filter,
     _clip_bytes_for_media,
     _clip_needs_trim,
+    _extract_prev_scene_frame,
     _has_graphics_export_content,
     _parse_has_scenes,
     _parse_prompt_variants,
@@ -60,6 +61,66 @@ def test_list_temp_media_lists_media_newest_first(tmp_path, monkeypatch):
     clip = next(f for f in files if f["filename"] == "clip.webm")
     assert clip["subfolder"] == "previews"
     assert clip["kind"] == "video"
+# ── _extract_prev_scene_frame: prevframe extraction, never a media-bin asset ──────
+
+
+def _fake_folder_paths(tempdir, monkeypatch):
+    fake = type("FP", (), {
+        "get_temp_directory": staticmethod(lambda: str(tempdir)),
+        "is_within_directory": staticmethod(
+            lambda d, t: __import__("os").path.commonpath(
+                [__import__("os").path.realpath(d), __import__("os").path.realpath(t)]
+            ) == __import__("os").path.realpath(d)),
+    })
+    monkeypatch.setitem(__import__("sys").modules, "folder_paths", fake)
+
+
+def test_prev_scene_frame_rejects_a_non_dict_payload(tmp_path, monkeypatch):
+    """A malformed prev_scene_media must degrade to 'nothing to extract', not blow up the
+    whole generate request — it round-trips through client JSON and is never trusted."""
+    _fake_folder_paths(tmp_path, monkeypatch)
+    assert _extract_prev_scene_frame("not-a-dict", "scene1") is None
+    assert _extract_prev_scene_frame(["also", "not"], "scene1") is None
+    assert _extract_prev_scene_frame({}, "scene1") is None
+
+
+def test_prev_scene_frame_blocks_subfolder_traversal(tmp_path, monkeypatch):
+    (tmp_path / "real.mp4").write_bytes(b"x")
+    secret_dir = tmp_path.parent / "funpack_traversal_secret"
+    secret_dir.mkdir(exist_ok=True)
+    (secret_dir / "real.mp4").write_bytes(b"secret")
+    _fake_folder_paths(tmp_path, monkeypatch)
+    escaping = {"filename": "real.mp4", "subfolder": f"../{secret_dir.name}"}
+    assert _extract_prev_scene_frame(escaping, "scene1") is None
+
+
+def test_prev_scene_frame_returns_none_without_ffmpeg(tmp_path, monkeypatch):
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+    _fake_folder_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr(__import__("shutil"), "which", lambda name: None)
+    assert _extract_prev_scene_frame({"filename": "clip.mp4"}, "scene1") is None
+
+
+def test_prev_scene_frame_scopes_output_name_to_the_requesting_scene(tmp_path, monkeypatch):
+    """Regression: the output filename must key off the scene actually asking (`only_scene`),
+    not the first scene of whatever generative unit the server expanded it into — otherwise
+    two different scenes in one unit clobber each other's extracted frame."""
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+    _fake_folder_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr(__import__("shutil"), "which", lambda name: "/usr/bin/ffmpeg")
+
+    def fake_run(cmd, **kw):
+        out_path = cmd[-1]
+        with open(out_path, "wb") as f:
+            f.write(b"png")
+        return type("R", (), {"returncode": 0})()
+    monkeypatch.setattr(__import__("subprocess"), "run", fake_run)
+
+    fn = _extract_prev_scene_frame({"filename": "clip.mp4"}, "scene_b")
+    assert fn == "funpack_prevframe_scene_b.png"
+    assert (tmp_path / fn).is_file()
+
+
 FRESH = "__funpack_fresh_prompt__"
 
 

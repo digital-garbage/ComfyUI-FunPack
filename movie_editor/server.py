@@ -424,7 +424,7 @@ def _extract_prev_scene_frame(prev_media: Optional[dict], scene_id: str) -> Opti
     import os
     import shutil
     import subprocess
-    if not prev_media or not prev_media.get("filename"):
+    if not isinstance(prev_media, dict) or not prev_media.get("filename"):
         return None
     if shutil.which("ffmpeg") is None:
         return None
@@ -438,8 +438,8 @@ def _extract_prev_scene_frame(prev_media: Optional[dict], scene_id: str) -> Opti
     # is then re-checked against tempdir in case a crafted subfolder still escaped it.
     fn_in = os.path.basename(str(prev_media["filename"]))
     sub_in = str(prev_media.get("subfolder") or "").strip("/\\")
-    src = os.path.normpath(os.path.join(tempdir, sub_in, fn_in))
-    if os.path.commonpath([src, tempdir]) != tempdir or not os.path.isfile(src):
+    src = os.path.join(tempdir, sub_in, fn_in)
+    if not folder_paths.is_within_directory(tempdir, src) or not os.path.isfile(src):
         return None
     out_fn = f"funpack_prevframe_{scene_id}.png"
     out_path = os.path.join(tempdir, out_fn)
@@ -1848,8 +1848,13 @@ if web is not None and PromptServer is not None:
                 sampler_inputs, _settings = pipeline_caps.apply_simple_mode(sampler_inputs, _settings)
                 studio_inputs["studio_settings"] = json.dumps(_settings)
             prev_scene_media = body.get("prev_scene_media")
+            # `only_scene` (not target.scenes[0]) is the requesting scene: _solo() expands
+            # `target` to every scene sharing a generative unit, so two concurrent solo
+            # requests for different scenes in the same unit would otherwise scope their
+            # extraction to the same first-scene id and clobber each other's frame.
+            scene_scope = body.get("only_scene") or (target.scenes[0].id if target.scenes else "run")
             prev_scene_frame = (
-                _extract_prev_scene_frame(prev_scene_media, target.scenes[0].id if target.scenes else "run")
+                _extract_prev_scene_frame(prev_scene_media, scene_scope)
                 if prev_scene_media else None
             )
             graph, report = builder.build(oi, models_cfg, {
