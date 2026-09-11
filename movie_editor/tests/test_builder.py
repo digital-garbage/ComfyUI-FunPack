@@ -921,6 +921,46 @@ def test_prevframe_extraction_failure_is_declared_not_silent():
     assert any("could not be retrieved" in u for u in report["unsatisfied"])
 
 
+# ── "prevvideo": previous scene's whole clip, passed through with no extraction ───
+
+
+def _video_models(**srcs):
+    return {"slots": [
+        {"id": "v", "node_class": "VideoRefNode", "inputs": {}, "wires": {},
+         "input_sources": dict(srcs)},
+    ]}
+
+
+VIDEO_OI = dict(REF_OI)
+VIDEO_OI["VideoRefNode"] = {"input": {"required": {"clip": ["VIDEO"]}}, "output": ["CONDITIONING"]}
+
+
+def test_prevvideo_wires_the_previous_render_with_no_extraction():
+    models = _video_models(**{"clip": "prevvideo"})
+    graph, report = builder.build(
+        VIDEO_OI, models, dict(PARAMS, prev_scene_video="clip_s1.mp4 [temp]"))
+    load = graph[graph["slot_v"]["inputs"]["clip"][0]]
+    assert load["class_type"] == "LoadVideo"
+    assert load["inputs"]["file"] == "clip_s1.mp4 [temp]"
+    assert not any("no prior" in w.lower() for w in report["wired"] if "video" in w.lower())
+
+
+def test_prevvideo_with_no_predecessor_is_silent():
+    models = _video_models(**{"clip": "prevvideo"})
+    graph, report = builder.build(VIDEO_OI, models, dict(PARAMS))
+    assert not isinstance(graph["slot_v"]["inputs"].get("clip"), list)
+    assert not any("previous scene" in u.lower() for u in report["unsatisfied"])
+
+
+def test_prevvideo_retrieval_failure_is_declared_not_silent():
+    models = _video_models(**{"clip": "prevvideo"})
+    graph, report = builder.build(
+        VIDEO_OI, models, dict(PARAMS, prev_scene_video=None, prev_scene_expected=True))
+    assert not isinstance(graph["slot_v"]["inputs"].get("clip"), list)
+    assert any("previous scene's video" in u and "could not be retrieved" in u
+               for u in report["unsatisfied"])
+
+
 def test_the_loader_matches_what_the_destination_socket_asks_for():
     """An audio reference feeding an AUDIO socket needs LoadAudio, not LoadImage — the
     loader is chosen by the socket's type, not by guessing from the file."""

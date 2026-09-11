@@ -409,12 +409,36 @@ def _copy_scene_media(ref: str, indir: str) -> Optional[str]:
     return fn
 
 
+def _resolve_prev_scene_media(prev_media: Optional[dict]):
+    """(folder_paths module, tempdir, subfolder, filename) for the previous scene's own
+    rendered TEMP file, with subfolder/filename validated as safe path fragments — they
+    round-trip through the saved project JSON and are never trusted as literal paths.
+    None for anything that doesn't check out (missing predecessor, gone file, bad path,
+    folder_paths unavailable). Shared by the frame-extraction and video-passthrough paths
+    so the sanitization only lives in one place.
+    """
+    import os
+    if not isinstance(prev_media, dict) or not prev_media.get("filename"):
+        return None
+    try:
+        import folder_paths
+        tempdir = os.path.normpath(folder_paths.get_temp_directory())
+    except Exception:
+        return None
+    fn_in = os.path.basename(str(prev_media["filename"]))
+    sub_in = str(prev_media.get("subfolder") or "").strip("/\\")
+    src = os.path.join(tempdir, sub_in, fn_in)
+    if not folder_paths.is_within_directory(tempdir, src) or not os.path.isfile(src):
+        return None
+    return folder_paths, tempdir, sub_in, fn_in
+
+
 def _extract_prev_scene_frame(prev_media: Optional[dict], scene_id: str) -> Optional[str]:
-    """Last frame of the previous scene's render (a ComfyUI TEMP video), grabbed into
-    ComfyUI's TEMP folder as a plain PNG — never the input folder or the media bin, so it
-    is wiped on the next ComfyUI restart same as any other preview render, with nothing for
-    the user to see or manage. `scene_id` scopes the output name to the scene consuming it,
-    so concurrent requests for different scenes don't clobber each other's extracted frame.
+    """Last frame of the previous scene's render, grabbed into ComfyUI's TEMP folder as a
+    plain PNG — never the input folder or the media bin, so it is wiped on the next ComfyUI
+    restart same as any other preview render, with nothing for the user to see or manage.
+    `scene_id` scopes the output name to the scene consuming it, so concurrent requests for
+    different scenes don't clobber each other's extracted frame.
 
     Returns the bare filename (load it as f"{name} [temp]") or None — for "no predecessor
     render", a missing/garbage-collected source file, no ffmpeg, or a malformed path. The
@@ -422,29 +446,19 @@ def _extract_prev_scene_frame(prev_media: Optional[dict], scene_id: str) -> Opti
     ever fails closed.
     """
     import os
+    import re
     import shutil
     import subprocess
-    if not isinstance(prev_media, dict) or not prev_media.get("filename"):
-        return None
     if shutil.which("ffmpeg") is None:
         return None
-    try:
-        import folder_paths
-        tempdir = os.path.normpath(folder_paths.get_temp_directory())
-    except Exception:
+    resolved = _resolve_prev_scene_media(prev_media)
+    if not resolved:
         return None
-    # filename/subfolder round-trip through the saved project JSON — never trust them as
-    # path fragments. basename() strips any directory component outright; the joined path
-    # is then re-checked against tempdir in case a crafted subfolder still escaped it.
-    fn_in = os.path.basename(str(prev_media["filename"]))
-    sub_in = str(prev_media.get("subfolder") or "").strip("/\\")
+    folder_paths, tempdir, sub_in, fn_in = resolved
     src = os.path.join(tempdir, sub_in, fn_in)
-    if not folder_paths.is_within_directory(tempdir, src) or not os.path.isfile(src):
-        return None
     # scene_id ultimately traces back to client-supplied `only_scene` (and, transitively, a
     # scene's `id`, which a project import can set to anything) — never trusted as a path
     # fragment either, same as the source side above.
-    import re
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(scene_id))[:80] or "run"
     out_fn = f"funpack_prevframe_{safe_id}.png"
     out_path = os.path.join(tempdir, out_fn)
@@ -458,6 +472,18 @@ def _extract_prev_scene_frame(prev_media: Optional[dict], scene_id: str) -> Opti
     except Exception:
         return None
     return out_fn if os.path.isfile(out_path) else None
+
+
+def _prev_scene_video_ref(prev_media: Optional[dict]) -> Optional[str]:
+    """Annotated `[temp]` path string for a video-loading node, pointing straight at the
+    previous scene's own rendered TEMP file — no copy, no extraction, ComfyUI resolves and
+    reads it in place at generation time. None when there's nothing valid to point at."""
+    resolved = _resolve_prev_scene_media(prev_media)
+    if not resolved:
+        return None
+    _folder_paths, _tempdir, sub_in, fn_in = resolved
+    rel = f"{sub_in}/{fn_in}" if sub_in else fn_in
+    return f"{rel} [temp]"
 
 
 def _prepare_references(proj: Project) -> list[dict]:
@@ -1869,6 +1895,9 @@ if web is not None and PromptServer is not None:
                 _extract_prev_scene_frame(prev_scene_media, scene_scope)
                 if prev_scene_media else None
             )
+            prev_scene_video = (
+                _prev_scene_video_ref(prev_scene_media) if prev_scene_media else None
+            )
             graph, report = builder.build(oi, models_cfg, {
                 "prompt": prompt, "seed": _resolve_run_seed(target),
                 "num_frames_per_scene": effective_frames,
@@ -1892,6 +1921,7 @@ if web is not None and PromptServer is not None:
                 # Project.h3_references stays readable for old project files; it is inert.
                 "references": _prepare_references(target),
                 "prev_scene_frame": prev_scene_frame,
+                "prev_scene_video": prev_scene_video,
                 "prev_scene_expected": bool(prev_scene_media),
                 "reset_session": reset_session,
                 "refinement_key": (target.refinement_key or "default"),

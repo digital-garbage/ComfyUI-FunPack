@@ -3674,11 +3674,11 @@
           ? ignored[0]
           : `${ignored.length} settings didn't reach the pipeline — ${ignored[0]}`);
       }
-      // A predecessor render existed but its last frame couldn't be retrieved (temp file
-      // gone, no ffmpeg) — must not look identical to "scene 1, nothing to chain from".
-      const prevFrameMiss = ((r.report && r.report.unsatisfied) || [])
-        .find((u) => u.includes("previous scene's last frame"));
-      if (prevFrameMiss) notices.push(prevFrameMiss);
+      // A predecessor render existed but its last frame/video couldn't be retrieved (temp
+      // file gone, no ffmpeg) — must not look identical to "scene 1, nothing to chain from".
+      const prevChainMiss = ((r.report && r.report.unsatisfied) || [])
+        .find((u) => u.includes("previous scene's last frame") || u.includes("previous scene's video"));
+      if (prevChainMiss) notices.push(prevChainMiss);
       if (notices.length) state.notice = notices.join(" — ");
       pollStart = Date.now();
       let runMsg = `${prefix}: generating…`;

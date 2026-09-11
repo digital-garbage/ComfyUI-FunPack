@@ -179,10 +179,11 @@
     // pipeline plumbing — it stays offered in both modes.
     if (slot.role === "image_processing" && ci.name === "image" && typeAccepts(ci.type, "IMAGE")) {
       return all.filter((s) => !s.value || s.value === "timeline" || s.value === "prevframe"
-        || s.value.startsWith("out:") || s.value.startsWith("ref:"));
+        || s.value === "prevvideo" || s.value.startsWith("out:") || s.value.startsWith("ref:"));
     }
     return all.filter((s) => !s.value || s.value.startsWith("out:")
-      || s.value === "timeline" || s.value === "prevframe" || s.value.startsWith("ref:"));
+      || s.value === "timeline" || s.value === "prevframe" || s.value === "prevvideo"
+      || s.value.startsWith("ref:"));
   }
 
   // ── linked inputs (one control drives several node inputs) ────────────────────
@@ -1134,6 +1135,8 @@
     const out = [{ value: "", label: "(auto-wire)" }];
     if (typeAccepts(type, "IMAGE")) out.push({ value: "timeline", label: "Timeline (scene image)" });
     if (typeAccepts(type, "IMAGE")) out.push({ value: "prevframe", label: "Previous scene's last frame" });
+    if (typeAccepts(type, "VIDEO") || typeAccepts(type, "IMAGE"))
+      out.push({ value: "prevvideo", label: "Previous scene's video" });
     referenceSlots(slot, type).forEach((r) => out.push(r));
     referenceSources(type).forEach((r) => out.push(r));
     coreProducers.filter((p) => typeAccepts(type, p.type)).forEach((p) =>

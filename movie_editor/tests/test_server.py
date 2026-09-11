@@ -15,6 +15,7 @@ from movie_editor.server import (
     _clip_bytes_for_media,
     _clip_needs_trim,
     _extract_prev_scene_frame,
+    _prev_scene_video_ref,
     _has_graphics_export_content,
     _parse_has_scenes,
     _parse_prompt_variants,
@@ -142,6 +143,37 @@ def test_prev_scene_frame_sanitizes_a_hostile_scene_id(tmp_path, monkeypatch):
     out_path = Path(written["path"])
     assert out_path.parent == tmp_path
     assert ".." not in fn and "/" not in fn
+
+
+# ── _prev_scene_video_ref: whole-clip passthrough, no extraction ──────────────
+
+
+def test_prev_scene_video_ref_points_at_the_temp_file_in_place(tmp_path, monkeypatch):
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+    _fake_folder_paths(tmp_path, monkeypatch)
+    assert _prev_scene_video_ref({"filename": "clip.mp4"}) == "clip.mp4 [temp]"
+
+
+def test_prev_scene_video_ref_keeps_a_real_subfolder(tmp_path, monkeypatch):
+    sub = tmp_path / "previews"
+    sub.mkdir()
+    (sub / "clip.mp4").write_bytes(b"x")
+    _fake_folder_paths(tmp_path, monkeypatch)
+    assert (_prev_scene_video_ref({"filename": "clip.mp4", "subfolder": "previews"})
+            == "previews/clip.mp4 [temp]")
+
+
+def test_prev_scene_video_ref_blocks_traversal_and_missing_files(tmp_path, monkeypatch):
+    _fake_folder_paths(tmp_path, monkeypatch)
+    assert _prev_scene_video_ref({"filename": "gone.mp4"}) is None
+    assert _prev_scene_video_ref("not-a-dict") is None
+    assert _prev_scene_video_ref({}) is None
+    (tmp_path / "real.mp4").write_bytes(b"x")
+    secret_dir = tmp_path.parent / "funpack_video_traversal_secret"
+    secret_dir.mkdir(exist_ok=True)
+    (secret_dir / "real.mp4").write_bytes(b"secret")
+    escaping = {"filename": "real.mp4", "subfolder": f"../{secret_dir.name}"}
+    assert _prev_scene_video_ref(escaping) is None
 
 
 FRESH = "__funpack_fresh_prompt__"

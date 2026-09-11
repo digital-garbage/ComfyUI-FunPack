@@ -663,6 +663,40 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                         f"Previous scene's last frame -> {sid}.{ci_name}: no prior scene "
                         "render yet, left unconnected")
                 continue
+            if source == "prevvideo":
+                # Same auto-chained continuity as "prevframe", but the whole previous
+                # scene's rendered clip instead of just its last frame — no extraction, the
+                # loader reads the existing TEMP file in place via its "[temp]" annotation.
+                ref = params.get("prev_scene_video")
+                deliberately_empty.add((sid, ci_name))
+                if ref:
+                    want = next((ci["type"] for ci in connection_inputs(nd_s or {})
+                                 if ci["name"] == ci_name), None)
+                    found = _reference_loader(object_info, "video", want)
+                    if found:
+                        cls, oidx, file_input = found
+                        nid = "prevvideo_load"
+                        graph.setdefault(nid, {
+                            "class_type": cls,
+                            "inputs": {**_widget_defaults(object_info.get(cls)),
+                                       file_input: ref}})
+                        graph[sid]["inputs"][ci_name] = [nid, oidx]
+                        protected_edges.add((sid, ci_name))
+                        report["wired"].append(f"Previous scene's video -> {sid}.{ci_name}")
+                    else:
+                        report["unsatisfied"].append(
+                            f"{s.get('node_class')}.{ci_name}: no installed node can load "
+                            "a video into this input.")
+                elif params.get("prev_scene_expected"):
+                    report["unsatisfied"].append(
+                        f"{s.get('node_class')}.{ci_name}: previous scene's video could "
+                        "not be retrieved (its render may be gone) — left unconnected. "
+                        "Regenerate the previous scene first if you need it.")
+                else:
+                    report["wired"].append(
+                        f"Previous scene's video -> {sid}.{ci_name}: no prior scene "
+                        "render yet, left unconnected")
+                continue
             if source.startswith("ref#"):
                 # "ref#image:2" — the second image reference, whichever that currently is.
                 kind, _, num = source[4:].partition(":")
