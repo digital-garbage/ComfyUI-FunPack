@@ -29,7 +29,9 @@ node_modules/
 app/test-results/
 app/playwright-report/
 
-# User projects, and what they imported — their content, not ours.
-projects/
-media/
-shortcuts.json
+# User projects, and what they imported — their content, not ours. Rooted
+# (leading slash): a bare "media/" also matches modules/media/, this app's own
+# source code for loading media into the graph.
+/projects/
+/media/
+/shortcuts.json
