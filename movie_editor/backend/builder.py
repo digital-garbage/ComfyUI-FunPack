@@ -639,21 +639,29 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                 continue
             if source == "prevframe":
                 # Auto-chained continuity: the immediately preceding scene's last rendered
-                # frame, extracted server-side into the input folder (never a media-bin
+                # frame, extracted server-side into ComfyUI's TEMP folder (never a media-bin
                 # entry — see server._extract_prev_scene_frame). Scene 1, or any scene run
                 # solo with nothing rendered before it, simply leaves the socket unconnected.
                 fn = params.get("prev_scene_frame")
-                if not fn:
-                    deliberately_empty.add((sid, ci_name))
+                deliberately_empty.add((sid, ci_name))
+                if fn:
+                    graph.setdefault("prevframe_load", {
+                        "class_type": "LoadImage", "inputs": {"image": f"{fn} [temp]"}})
+                    graph[sid]["inputs"][ci_name] = ["prevframe_load", 0]
+                    protected_edges.add((sid, ci_name))
+                    report["wired"].append(f"Previous scene's last frame -> {sid}.{ci_name}")
+                elif params.get("prev_scene_expected"):
+                    # There WAS a preceding render to chain from, but it could not be
+                    # retrieved (temp file gone, no ffmpeg, bad path) — a silent empty
+                    # socket here would look identical to "scene 1", so say so instead.
+                    report["unsatisfied"].append(
+                        f"{s.get('node_class')}.{ci_name}: previous scene's last frame "
+                        "could not be retrieved (its render may be gone) — left "
+                        "unconnected. Regenerate the previous scene first if you need it.")
+                else:
                     report["wired"].append(
                         f"Previous scene's last frame -> {sid}.{ci_name}: no prior scene "
                         "render yet, left unconnected")
-                    continue
-                graph.setdefault("prevframe_load", {
-                    "class_type": "LoadImage", "inputs": {"image": fn}})
-                graph[sid]["inputs"][ci_name] = ["prevframe_load", 0]
-                protected_edges.add((sid, ci_name))
-                report["wired"].append(f"Previous scene's last frame -> {sid}.{ci_name}")
                 continue
             if source.startswith("ref#"):
                 # "ref#image:2" — the second image reference, whichever that currently is.

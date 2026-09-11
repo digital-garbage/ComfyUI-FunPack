@@ -409,24 +409,40 @@ def _copy_scene_media(ref: str, indir: str) -> Optional[str]:
     return fn
 
 
-def _extract_prev_scene_frame(prev_media: Optional[dict], indir: str) -> Optional[str]:
-    """Last frame of the previous scene's render (a ComfyUI TEMP video), grabbed into the
-    input folder as a plain PNG so the builder can wire it with an ordinary LoadImage —
-    no media-bin entry, nothing the user has to see or manage."""
+def _extract_prev_scene_frame(prev_media: Optional[dict], scene_id: str) -> Optional[str]:
+    """Last frame of the previous scene's render (a ComfyUI TEMP video), grabbed into
+    ComfyUI's TEMP folder as a plain PNG — never the input folder or the media bin, so it
+    is wiped on the next ComfyUI restart same as any other preview render, with nothing for
+    the user to see or manage. `scene_id` scopes the output name to the scene consuming it,
+    so concurrent requests for different scenes don't clobber each other's extracted frame.
+
+    Returns the bare filename (load it as f"{name} [temp]") or None — for "no predecessor
+    render", a missing/garbage-collected source file, no ffmpeg, or a malformed path. The
+    caller distinguishes "nothing to extract" from "extraction failed" itself; this only
+    ever fails closed.
+    """
     import os
+    import shutil
     import subprocess
     if not prev_media or not prev_media.get("filename"):
         return None
+    if shutil.which("ffmpeg") is None:
+        return None
     try:
         import folder_paths
-        tempdir = folder_paths.get_temp_directory()
+        tempdir = os.path.normpath(folder_paths.get_temp_directory())
     except Exception:
         return None
-    src = os.path.join(tempdir, prev_media.get("subfolder") or "", prev_media["filename"])
-    if not os.path.isfile(src):
+    # filename/subfolder round-trip through the saved project JSON — never trust them as
+    # path fragments. basename() strips any directory component outright; the joined path
+    # is then re-checked against tempdir in case a crafted subfolder still escaped it.
+    fn_in = os.path.basename(str(prev_media["filename"]))
+    sub_in = str(prev_media.get("subfolder") or "").strip("/\\")
+    src = os.path.normpath(os.path.join(tempdir, sub_in, fn_in))
+    if os.path.commonpath([src, tempdir]) != tempdir or not os.path.isfile(src):
         return None
-    fn = f"funpack_prevframe_{abs(hash(src))}.png"
-    out_path = os.path.join(indir, fn)
+    out_fn = f"funpack_prevframe_{scene_id}.png"
+    out_path = os.path.join(tempdir, out_fn)
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-sseof", "-1", "-i", src, "-update", "1", "-q:v", "2", out_path],
@@ -434,7 +450,7 @@ def _extract_prev_scene_frame(prev_media: Optional[dict], indir: str) -> Optiona
         )
     except Exception:
         return None
-    return fn if os.path.isfile(out_path) else None
+    return out_fn if os.path.isfile(out_path) else None
 
 
 def _prepare_references(proj: Project) -> list[dict]:
@@ -1831,14 +1847,11 @@ if web is not None and PromptServer is not None:
                     _settings = {}
                 sampler_inputs, _settings = pipeline_caps.apply_simple_mode(sampler_inputs, _settings)
                 studio_inputs["studio_settings"] = json.dumps(_settings)
-            prev_scene_frame = None
-            if body.get("prev_scene_media"):
-                try:
-                    import folder_paths
-                    prev_scene_frame = _extract_prev_scene_frame(
-                        body["prev_scene_media"], folder_paths.get_input_directory())
-                except Exception:  # noqa: BLE001
-                    prev_scene_frame = None
+            prev_scene_media = body.get("prev_scene_media")
+            prev_scene_frame = (
+                _extract_prev_scene_frame(prev_scene_media, target.scenes[0].id if target.scenes else "run")
+                if prev_scene_media else None
+            )
             graph, report = builder.build(oi, models_cfg, {
                 "prompt": prompt, "seed": _resolve_run_seed(target),
                 "num_frames_per_scene": effective_frames,
@@ -1862,6 +1875,7 @@ if web is not None and PromptServer is not None:
                 # Project.h3_references stays readable for old project files; it is inert.
                 "references": _prepare_references(target),
                 "prev_scene_frame": prev_scene_frame,
+                "prev_scene_expected": bool(prev_scene_media),
                 "reset_session": reset_session,
                 "refinement_key": (target.refinement_key or "default"),
             }, media=(media_pack or {}).get("primary") if media_pack else None)

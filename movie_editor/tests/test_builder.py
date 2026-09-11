@@ -891,6 +891,36 @@ def test_a_malformed_slot_says_it_is_malformed_not_that_nothing_is_marked():
     assert not any("none marked" in w for w in report["wired"])
 
 
+# ── "prevframe": previous scene's last frame, auto-chained (never a media-bin entry) ──
+
+
+def test_prevframe_wires_the_extracted_frame_as_a_temp_loadimage():
+    models = _slot_models(**{"ref_images.ref_image0": "prevframe"})
+    graph, report = builder.build(REF_OI, models, dict(PARAMS, prev_scene_frame="funpack_prevframe_s2.png"))
+    load = graph[graph["slot_r"]["inputs"]["ref_images.ref_image0"][0]]
+    assert load["class_type"] == "LoadImage"
+    assert load["inputs"]["image"] == "funpack_prevframe_s2.png [temp]"
+    assert not any("prevframe" in w.lower() and "no prior" in w.lower() for w in report["wired"])
+
+
+def test_prevframe_with_no_predecessor_is_silent():
+    """Scene 1, or a scene run solo with nothing before it — a normal state, not a mistake."""
+    models = _slot_models(**{"ref_images.ref_image0": "prevframe"})
+    graph, report = builder.build(REF_OI, models, dict(PARAMS))
+    assert not isinstance(graph["slot_r"]["inputs"].get("ref_images.ref_image0"), list)
+    assert not any("previous scene" in u.lower() for u in report["unsatisfied"])
+
+
+def test_prevframe_extraction_failure_is_declared_not_silent():
+    """A predecessor DID render, but the frame couldn't be retrieved (temp gone, no ffmpeg) —
+    that must not look identical to 'scene 1', or the user has no way to tell them apart."""
+    models = _slot_models(**{"ref_images.ref_image0": "prevframe"})
+    graph, report = builder.build(
+        REF_OI, models, dict(PARAMS, prev_scene_frame=None, prev_scene_expected=True))
+    assert not isinstance(graph["slot_r"]["inputs"].get("ref_images.ref_image0"), list)
+    assert any("could not be retrieved" in u for u in report["unsatisfied"])
+
+
 def test_the_loader_matches_what_the_destination_socket_asks_for():
     """An audio reference feeding an AUDIO socket needs LoadAudio, not LoadImage — the
     loader is chosen by the socket's type, not by guessing from the file."""
