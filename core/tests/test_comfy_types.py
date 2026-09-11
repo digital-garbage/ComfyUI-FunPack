@@ -100,3 +100,29 @@ def test_a_union_still_refuses_a_type_it_does_not_name():
 def test_the_wildcard_takes_anything_either_way():
     assert t.accepts("*", "MODEL")
     assert t.accepts("MODEL", "*")
+
+
+# --- MatchType ---------------------------------------------------------------
+
+def test_a_matchtype_input_resolves_its_string_form_of_allowed_types():
+    """An input's options carry the union ready-made, off INPUT_TYPES()."""
+    assert t.match_type_union("IMAGE,MASK") == "IMAGE,MASK"
+
+
+def test_a_matchtype_output_resolves_a_list_of_io_type_classes():
+    """An output's V3 schema carries a list of classes instead -- each with
+    its own type name on `.io_type`, the way io.Image.io_type == "IMAGE"."""
+    class _Image:
+        io_type = "IMAGE"
+
+    class _Mask:
+        io_type = "MASK"
+
+    assert t.match_type_union([_Image, _Mask]) == "IMAGE,MASK"
+
+
+def test_a_matchtype_with_nothing_resolvable_gives_up_rather_than_guessing():
+    assert t.match_type_union(None) is None
+    assert t.match_type_union("") is None
+    assert t.match_type_union([]) is None
+    assert t.match_type_union(object()) is None

@@ -21,6 +21,17 @@ The shapes, all current, all present in a stock install:
   and lists the widget's own type first: `("FLOAT,INT", {"widgetType": "FLOAT"})`
   is a number you type, not a socket. Read as a socket it demands a source for a
   field nobody needs to wire.
+* **A MatchType** (V3's `io.MatchType`) is one socket standing in for several
+  interchangeable types -- ImageTransformKJ's `image` input takes an IMAGE or a
+  MASK through the one plug. Its own type name, `COMFY_MATCHTYPE_V3`, says
+  nothing about which: the real types live in a `template` alongside it (a
+  string `"IMAGE,MASK"` on an input's own `options`, a list of io type classes
+  on an output's V3 schema entry -- two different shapes for the same idea,
+  because one comes from the V1-compat `INPUT_TYPES()` dict and the other from
+  the V3 schema object directly). Read literally, the bare type name is neither
+  a union nor a widget nor anything `accepts()` can compare -- it would refuse
+  every wire into or out of a MatchType socket, including a completely legal
+  one.
 
 Nothing here names a node.
 """
@@ -28,6 +39,7 @@ Nothing here names a node.
 from typing import Any, Dict, List, Optional, Tuple
 
 COMBO = "COMBO"
+MATCH_TYPE = "COMFY_MATCHTYPE_V3"
 
 # What a person types INTO. Everything else arrives on a wire.
 PRIMITIVE = frozenset({"STRING", "INT", "FLOAT", "BOOLEAN", COMBO})
@@ -113,6 +125,26 @@ def reveals(options: Optional[dict]) -> bool:
     options = options or {}
     raw = options.get("options") or []
     return any(isinstance(option, dict) and option.get("inputs") for option in raw)
+
+
+def match_type_union(allowed: Any) -> Optional[str]:
+    """A MatchType's real wire type, as a union string `accepts()` understands.
+
+    `allowed` arrives as either shape described above: a ready-made string off
+    an input's `options["template"]["allowed_types"]`, or a list of io type
+    classes off an output's V3 schema `template.allowed_types` -- each with its
+    own type name on `.io_type` (`io.Image.io_type == "IMAGE"`). Anything else
+    (a template this codebase has not seen, a future SDK change) resolves to
+    None rather than a guess, which callers turn into "no comparison possible"
+    the same way an unrecognised type already does.
+    """
+    if isinstance(allowed, str):
+        return allowed or None
+    if isinstance(allowed, (list, tuple)):
+        names = [getattr(t, "io_type", None) for t in allowed]
+        names = [n for n in names if isinstance(n, str) and n]
+        return ",".join(names) if names else None
+    return None
 
 
 def accepts(wanted: Any, given: Any) -> bool:

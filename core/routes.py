@@ -201,6 +201,25 @@ def register(routes, prefix=None):
                                   "incomplete": incomplete,
                                   "queueable": not incomplete})
 
+    @routes.get(P + "/api/pipeline/presets")
+    async def _pipeline_presets(_req):
+        """Every alternate starting point a module offers, beside the one true
+        default -- a preset is loaded into the SAME editable pipeline, not a
+        second kind of thing; picking one is nothing more than replacing
+        `slots` with its list, same as any other structural edit."""
+        found = []
+        for spec, make in modules().providers("pipeline_presets"):
+            try:
+                offered = make()
+            except Exception as exc:  # noqa: BLE001
+                log.failed("pipeline_presets", exc)
+                continue
+            for preset in (offered or []):
+                if isinstance(preset, dict) and preset.get("id") and preset.get("slots"):
+                    found.append({"id": preset["id"], "title": preset.get("title") or preset["id"],
+                                  "module": spec.id, "slots": preset["slots"]})
+        return web.json_response({"presets": found})
+
     @routes.post(P + "/api/pipeline")
     async def _pipeline_edit(req):
         """Replace or remove a slot, and say what that did to the graph.

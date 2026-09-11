@@ -27,6 +27,7 @@ from comfy.nested_tensor import NestedTensor
 from comfy_extras.nodes_minimax_h3 import temporal_shape
 
 from ..._core import traits as _traits
+from .pipeline import presets as _pipeline_presets
 
 has_block = _traits.has_block
 
@@ -147,4 +148,5 @@ def empty_latent(model, width, height, length, batch_size=1):
 
 
 TRAITS = traits
-PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect}
+PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect,
+            "pipeline_presets": _pipeline_presets}

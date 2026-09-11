@@ -494,3 +494,13 @@ def test_the_default_pipeline_says_where_its_prompt_belongs(server):
     places = {r["at"] for _id, r in roles}
     assert places == {"generation.prompt", "project.video", "project.negative", "generation.sampling"}
     assert all(r["input"] and r["label"] for _id, r in roles)
+
+def test_a_module_provided_preset_is_offered(server, registered):
+    """MiniMax H3's Reference-to-Video pipeline, offered beside the app's one
+    true default -- not instead of it. See modules/models/minimax_h3/pipeline.py."""
+    _status, body = _request(server, "GET", "/funpack/api/pipeline/presets")
+    ids = [p["id"] for p in body["presets"]]
+    assert "minimax_h3_reference_to_video" in ids
+    preset = next(p for p in body["presets"] if p["id"] == "minimax_h3_reference_to_video")
+    assert preset["module"] == "model_minimax_h3"
+    assert preset["slots"]

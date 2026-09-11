@@ -85,6 +85,15 @@ def from_comfyui() -> Schemas:
         for section in ("required", "optional"):
             for name, declared in (spec.get(section) or {}).items():
                 kind, options = comfy_types.declared(declared)
+                # A MatchType input's own type name says nothing about what it
+                # actually accepts -- resolve it to the real union (see
+                # comfy_types' own docstring) before anything below judges a
+                # wire against it, or a completely legal one is refused.
+                if kind == comfy_types.MATCH_TYPE:
+                    resolved = comfy_types.match_type_union(
+                        (options.get("template") or {}).get("allowed_types"))
+                    if resolved:
+                        kind = resolved
                 # The type as ComfyUI would WIRE it. A list of choices is a
                 # combo; so is the string "COMBO" and every V3 dynamic combo,
                 # and none of them can be fed by a wire.
@@ -106,7 +115,24 @@ def from_comfyui() -> Schemas:
                 if bounds:
                     limits[name] = bounds
 
-        return {"inputs": inputs, "outputs": list(node.RETURN_TYPES),
+        outputs = list(node.RETURN_TYPES)
+        # Same resolution, the output side: RETURN_TYPES carries no template of
+        # its own (it is the V1-compat tuple, plain strings only), so a real
+        # union has to come from the V3 schema's own output list -- read only
+        # when a MatchType actually shows up here, so a node with none of these
+        # never pays for a schema object it does not need.
+        if comfy_types.MATCH_TYPE in outputs and hasattr(node, "GET_SCHEMA"):
+            schema_outputs = node.GET_SCHEMA().outputs
+            for i, kind in enumerate(outputs):
+                if kind != comfy_types.MATCH_TYPE or i >= len(schema_outputs):
+                    continue
+                template = getattr(schema_outputs[i], "template", None)
+                resolved = comfy_types.match_type_union(
+                    getattr(template, "allowed_types", None))
+                if resolved:
+                    outputs[i] = resolved
+
+        return {"inputs": inputs, "outputs": outputs,
                 "required": required, "limits": limits}
     return Schemas(lookup)
 
