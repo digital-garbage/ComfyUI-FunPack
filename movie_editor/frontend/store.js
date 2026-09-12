@@ -3676,9 +3676,11 @@
       }
       // A predecessor render existed but its last frame/video couldn't be retrieved (temp
       // file gone, no ffmpeg) — must not look identical to "scene 1, nothing to chain from".
-      const prevChainMiss = ((r.report && r.report.unsatisfied) || [])
-        .find((u) => u.includes("previous scene's last frame") || u.includes("previous scene's video"));
-      if (prevChainMiss) notices.push(prevChainMiss);
+      // A scene can have both a prevframe AND a prevvideo socket, so both can fail at once —
+      // collect every match, not just the first, or one silently drops.
+      const prevChainMisses = ((r.report && r.report.unsatisfied) || [])
+        .filter((u) => u.includes("previous scene's last frame") || u.includes("previous scene's video"));
+      notices.push(...prevChainMisses);
       if (notices.length) state.notice = notices.join(" — ");
       pollStart = Date.now();
       let runMsg = `${prefix}: generating…`;

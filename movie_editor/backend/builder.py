@@ -675,7 +675,12 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     found = _reference_loader(object_info, "video", want)
                     if found:
                         cls, oidx, file_input = found
-                        nid = "prevvideo_load"
+                        # Scoped by loader class, not a bare fixed id: two "prevvideo"
+                        # sockets can want different loaders (a VIDEO input needs LoadVideo,
+                        # an IMAGE-frames input needs VHS_LoadVideo) — a shared unscoped id
+                        # would let the second socket's setdefault silently reuse the
+                        # first's node, wiring a mismatched-type output into it.
+                        nid = f"prevvideo_load_{cls}"
                         graph.setdefault(nid, {
                             "class_type": cls,
                             "inputs": {**_widget_defaults(object_info.get(cls)),

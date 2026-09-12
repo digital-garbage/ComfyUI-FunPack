@@ -933,6 +933,10 @@ def _video_models(**srcs):
 
 VIDEO_OI = dict(REF_OI)
 VIDEO_OI["VideoRefNode"] = {"input": {"required": {"clip": ["VIDEO"]}}, "output": ["CONDITIONING"]}
+VIDEO_OI["VHS_LoadVideo"] = {"input": {"required": {"video": [["a.mp4"]]}}, "output": ["IMAGE"],
+                             "output_name": ["IMAGE"]}
+VIDEO_OI["ImageFramesNode"] = {"input": {"required": {"frames": ["IMAGE"]}},
+                               "output": ["CONDITIONING"]}
 
 
 def test_prevvideo_wires_the_previous_render_with_no_extraction():
@@ -950,6 +954,26 @@ def test_prevvideo_with_no_predecessor_is_silent():
     graph, report = builder.build(VIDEO_OI, models, dict(PARAMS))
     assert not isinstance(graph["slot_v"]["inputs"].get("clip"), list)
     assert not any("previous scene" in u.lower() for u in report["unsatisfied"])
+
+
+def test_prevvideo_scopes_the_loader_node_by_class_not_a_bare_shared_id():
+    """Two 'prevvideo' sockets that need DIFFERENT loaders (one wants the whole VIDEO,
+    the other wants raw IMAGE frames) must each get their own loader node — a shared
+    unscoped node id would let the second socket's setdefault silently reuse the
+    first's node, wiring a mismatched-type output into it."""
+    models = {"slots": [
+        {"id": "v", "node_class": "VideoRefNode", "inputs": {}, "wires": {},
+         "input_sources": {"clip": "prevvideo"}},
+        {"id": "f", "node_class": "ImageFramesNode", "inputs": {}, "wires": {},
+         "input_sources": {"frames": "prevvideo"}},
+    ]}
+    graph, _report = builder.build(
+        VIDEO_OI, models, dict(PARAMS, prev_scene_video="clip_s1.mp4 [temp]"))
+    video_link = graph["slot_v"]["inputs"]["clip"]
+    frames_link = graph["slot_f"]["inputs"]["frames"]
+    assert video_link[0] != frames_link[0], "both sockets wired to the same loader node"
+    assert graph[video_link[0]]["class_type"] == "LoadVideo"
+    assert graph[frames_link[0]]["class_type"] == "VHS_LoadVideo"
 
 
 def test_prevvideo_retrieval_failure_is_declared_not_silent():
