@@ -949,6 +949,23 @@ def test_prevvideo_wires_the_previous_render_with_no_extraction():
     assert not any("no prior" in w.lower() for w in report["wired"] if "video" in w.lower())
 
 
+def test_prevvideo_two_sockets_needing_the_same_loader_share_one_node():
+    """The class-scoped node id (test above) must not over-correct into a unique node per
+    socket — two sockets wanting the SAME loader class should still share it, same as the
+    sibling ref_load_{ref_id}_{cls} bin-reference path does."""
+    models = {"slots": [
+        {"id": "v1", "node_class": "VideoRefNode", "inputs": {}, "wires": {},
+         "input_sources": {"clip": "prevvideo"}},
+        {"id": "v2", "node_class": "VideoRefNode", "inputs": {}, "wires": {},
+         "input_sources": {"clip": "prevvideo"}},
+    ]}
+    graph, _report = builder.build(
+        VIDEO_OI, models, dict(PARAMS, prev_scene_video="clip_s1.mp4 [temp]"))
+    load_ids = [n for n, d in graph.items() if d["class_type"] == "LoadVideo"]
+    assert len(load_ids) == 1
+    assert graph["slot_v1"]["inputs"]["clip"] == graph["slot_v2"]["inputs"]["clip"]
+
+
 def test_prevvideo_with_no_predecessor_is_silent():
     models = _video_models(**{"clip": "prevvideo"})
     graph, report = builder.build(VIDEO_OI, models, dict(PARAMS))
