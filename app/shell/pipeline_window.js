@@ -282,19 +282,47 @@ export function mount({ load, describe, check, search, onApply, presets,
 
   // ---- the index: one card per group
 
+  const ADD_CARD = "__add__";
+
   function index() {
     const { order, byGroup } = groupsOf(slots, extraGroups);
     return [
       ...messages({ everything: true }),
       composer.gallery.cards({
-        items: order.map((name) => ({
-          id: name, label: name, hint: countOf(byGroup.get(name).length),
-        })),
-        onActivate: (item) => enter(item.id),
+        items: [
+          ...order.map((name) => ({
+            id: name, label: name, hint: countOf(byGroup.get(name).length),
+          })),
+          // A card, not a button below the list -- a group and a node outside
+          // any group are both things this window can hold, and "+" sits
+          // beside what it adds to rather than under all of it.
+          { id: ADD_CARD, icon: "+", label: "Add group/node" },
+        ],
+        onActivate: (item) => (item.id === ADD_CARD ? addCard() : enter(item.id)),
       }),
-      composer.toolbar.default({ label: "Groups",
-        items: [newGroupButton(), ...(presets ? [presetsButton()] : [])] }),
+      ...(presets ? [composer.toolbar.default({ label: "Groups", items: [presetsButton()] })] : []),
     ];
+  }
+
+  /** What the "+ Add group/node" card offers: a new empty group, or a node
+   * that belongs to none -- the "Other" bucket groupsOf() already gives one. */
+  function addCard() {
+    const window_ = composer.modal.generic({
+      title: "Add",
+      body: composer.gallery.cards({
+        items: [
+          { id: "group", icon: "▧", label: "New group…",
+            hint: "A named place to put nodes in, like Loaders or Sampling." },
+          { id: "node", icon: "▦", label: "Add a node…",
+            hint: "Not in any group -- appears under “Other”." },
+        ],
+        onActivate: (item) => {
+          window_.close("picked");
+          if (item.id === "group") newGroup();
+          else pickNode(UNGROUPED);
+        },
+      }),
+    });
   }
 
   /**
@@ -336,30 +364,25 @@ export function mount({ load, describe, check, search, onApply, presets,
     });
   }
 
-  function newGroupButton() {
-    return composer.button.md({
-      label: "New group",
-      onClick: async () => {
-        const picked = await composer.modal.prompt({
-          title: "New group",
-          label: "Name",
-          placeholder: "Upscaling",
-          validate: (name) => {
-            if (!name.trim()) return "A group needs a name.";
-            if (groupsOf(slots, extraGroups).byGroup.has(name.trim())) {
-              return "There is already a group called that.";
-            }
-            return null;
-          },
-        }).result;
-        if (picked === null) return;
-        // Held only for as long as this window is open. A group with no node in
-        // it is not part of the pipeline, so there is nothing to save it on --
-        // said in the card rather than left to be discovered after a reload.
-        extraGroups.push(picked.trim());
-        draw();
+  async function newGroup() {
+    const picked = await composer.modal.prompt({
+      title: "New group",
+      label: "Name",
+      placeholder: "Upscaling",
+      validate: (name) => {
+        if (!name.trim()) return "A group needs a name.";
+        if (groupsOf(slots, extraGroups).byGroup.has(name.trim())) {
+          return "There is already a group called that.";
+        }
+        return null;
       },
-    });
+    }).result;
+    if (picked === null) return;
+    // Held only for as long as this window is open. A group with no node in
+    // it is not part of the pipeline, so there is nothing to save it on --
+    // said in the card rather than left to be discovered after a reload.
+    extraGroups.push(picked.trim());
+    draw();
   }
 
   // ---- one group: nodes on the left, the selected node's parameters right

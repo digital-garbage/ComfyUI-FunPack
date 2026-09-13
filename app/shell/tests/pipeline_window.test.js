@@ -130,8 +130,11 @@ function rowFor(win, label) {
 }
 
 const hintOf = (row) => row.querySelector(".cx-hint")?.textContent ?? "";
+// Excludes the "+ Add group/node" card: these callers assert which GROUPS
+// exist, and the add-card is not one -- it is always there, own test below.
 const cardLabels = (win) =>
-  [...win.node.querySelectorAll(".cx-card-title")].map((n) => n.textContent);
+  [...win.node.querySelectorAll(".cx-card-title")].map((n) => n.textContent)
+    .filter((t) => t !== "Add group/node");
 const bannerTexts = (win) =>
   [...win.node.querySelectorAll(".cx-banner-text")].map((n) => n.textContent);
 
@@ -163,6 +166,85 @@ test("the window opens on a card per group, counting what is in each", async () 
   assert.deepEqual(cardLabels(win), ["Loaders", "Sampling", "Other"]);
   const hints = [...win.node.querySelectorAll(".cx-card .cx-hint")].map((n) => n.textContent);
   assert.deepEqual(hints, ["1 node", "1 node", "1 node"]);
+  win.close();
+});
+
+// --- the add-card ------------------------------------------------------------
+
+test("an 'Add group/node' card sits alongside the groups, not among them", async () => {
+  const { win } = await opened();
+  const titles = [...win.node.querySelectorAll(".cx-card-title")].map((n) => n.textContent);
+  assert.deepEqual(titles, ["Loaders", "Sampling", "Other", "Add group/node"]);
+  win.close();
+});
+
+function addCard(win) {
+  const card = [...win.node.querySelectorAll(".cx-card-title")]
+    .find((n) => n.textContent === "Add group/node");
+  assert.ok(card, "no 'Add group/node' card");
+  click(card.closest(".cx-card"));
+}
+
+// Nested modals mount into the document, not under win.node, and outlive a
+// failed assertion unless closed -- left open they leak into the next test.
+const outside = (win) => [...document.querySelectorAll(".cx-card-title")]
+  .filter((n) => !win.node.contains(n));
+const closeTopModal = () => {
+  const modals = document.querySelectorAll(".cx-modal");
+  const top = modals[modals.length - 1];
+  top?.querySelector('button[aria-label="Close"]')?.click();
+};
+
+test("the add card offers a new group or a node outside any group", async () => {
+  const { win } = await opened();
+  addCard(win);
+  const offered = outside(win).map((n) => n.textContent);
+  assert.deepEqual(offered, ["New group…", "Add a node…"]);
+  closeTopModal();
+  win.close();
+});
+
+test("picking 'New group…' from the add card makes an empty group", async () => {
+  const { win } = await opened();
+  addCard(win);
+  const newGroup = outside(win).find((n) => n.textContent === "New group…");
+  click(newGroup.closest(".cx-card"));
+
+  const input = document.querySelector(".cx-field input");
+  assert.ok(input, "no name field on the New group prompt");
+  input.value = "Upscaling";
+  const create = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Create");
+  click(create);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(cardLabels(win), ["Loaders", "Sampling", "Other", "Upscaling"]);
+  win.close();
+});
+
+test("picking 'Add a node…' from the add card adds it to Other, not to the group it was opened from", async () => {
+  const { win, api } = await opened();
+  win.enter("Sampling");
+  win.leave();
+  addCard(win);
+  const addNode = outside(win).find((n) => n.textContent === "Add a node…");
+  click(addNode.closest(".cx-card"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const row = [...document.querySelectorAll(".cx-filter-row")]
+    .find((r) => r.querySelector(".cx-filter-label")?.textContent === "Save image");
+  assert.ok(row, "the Save node was not offered by the picker");
+  click(row);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const added = api.held.find((s) => s.node === "Save" && s.id !== "save");
+  assert.ok(added, "no second Save slot was added");
+  // pickNode(UNGROUPED) stamps the literal "Other" group -- the same bucket
+  // groupsOf() already gives an ungrouped slot, not a special unset marker.
+  assert.equal(added.group, "Other");
+  assert.deepEqual(cardLabels(win), ["Loaders", "Sampling", "Other"]);
+  const hints = [...win.node.querySelectorAll(".cx-card .cx-hint")].map((n) => n.textContent);
+  assert.deepEqual(hints, ["1 node", "1 node", "2 nodes"]);
   win.close();
 });
 
