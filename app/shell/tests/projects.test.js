@@ -122,6 +122,20 @@ test("setting the negative prompt to what it already is saves nothing", async ()
   assert.equal(sent.length, 1);
 });
 
+test("a scene added on the client has the same shape as one the server sent", async () => {
+  // core's Scene dataclass always has source_image/references -- the
+  // Inspector reads scene.references unconditionally (a list to map over,
+  // never a maybe-undefined field). A scene born here that skipped them
+  // crashed the very next thing that tried to draw it.
+  server();
+  const p = createProject({});
+  await p.start();
+  p.addScene();
+  const scene = p.selected;
+  assert.equal(scene.source_image, null);
+  assert.deepEqual(scene.references, []);
+});
+
 test("a run's result lands on the scene it was started for, not the current one", async () => {
   // A run takes minutes and the user goes on clicking. Reading "the selected
   // scene" when it finishes attaches the picture to whatever they wandered to.

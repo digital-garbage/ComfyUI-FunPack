@@ -368,7 +368,14 @@ export function createProject({ onChange, onError, onOpen } = {}) {
       // would put it somewhere the user was not looking.
       remember();
       const at = project.scenes.findIndex((s) => s.id === selected);
-      const scene = { id: newId(), text: "", result: null, length: null, rating: null };
+      const scene = {
+        id: newId(), text: "", result: null, length: null, rating: null,
+        // Matching core's Scene dataclass shape exactly: the Inspector reads
+        // scene.references unconditionally (a list to map over, never a
+        // maybe-undefined field), and a scene born here has to look the same
+        // as one that came back from the server.
+        source_image: null, references: [],
+      };
       project.scenes.splice(at < 0 ? project.scenes.length : at + 1, 0, scene);
       selected = scene.id;                // you add a scene in order to fill it
       scheduleSave();

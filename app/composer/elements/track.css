@@ -1,0 +1,50 @@
+/* A real timeline: a ruler in seconds, clips as wide as they play for, and a
+ * playhead over both. Pixel-positioned rather than percent/flex-grow -- what
+ * makes the ruler's ticks and the clips underneath actually line up. */
+.cx-track { overflow-x: auto; min-inline-size: 0; }
+.cx-track-inner { position: relative; min-inline-size: 100%; }
+
+.cx-track-ruler {
+  position: relative; block-size: var(--lh-8); min-inline-size: 100%;
+  border-block-end: var(--bw) solid var(--line-2);
+}
+.cx-track-tick {
+  position: absolute; inset-block-start: 0;
+  padding-inline-start: var(--sp-1);
+  border-inline-start: var(--bw) solid var(--line);
+  font-size: var(--fs-8); line-height: var(--lh-8); color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A fixed row height, not aspect-ratio off the clip's own width -- a clip's
+   width now tracks real duration and can run to hundreds of pixels, and
+   16:10 off THAT would make a half-minute scene taller than the window. */
+.cx-track-clips { display: flex; min-inline-size: 100%; block-size: 45px; }
+.cx-track-clip {
+  flex: none; padding: 0; block-size: 100%;
+  border: var(--bw) solid var(--line); border-radius: var(--r-2);
+  background: var(--void); overflow: hidden; cursor: grab;
+  display: flex; align-items: center; justify-content: center;
+}
+.cx-track-clip + .cx-track-clip { border-inline-start: none; }
+.cx-track-face { position: relative; inline-size: 100%; block-size: 100%; display: flex; align-items: center; justify-content: center; }
+.cx-track-clip:hover { border-color: var(--accent); }
+.cx-track-clip.cx-on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.cx-track-clip.cx-dragging { opacity: 0.4; cursor: grabbing; }
+/* Still on the timeline, still there to bring back -- excluded from a batch
+   run reads as dimmed, not gone, the way a deleted scene would be. */
+.cx-track-clip.cx-excluded { opacity: 0.45; }
+/* A clip carries its rating as a colour on its edge -- the one thing about a
+   result you want to see without selecting it. */
+.cx-track-clip.cx-rated { border-color: var(--muted); }
+.cx-track-clip[data-rating="liked"]    { border-color: var(--good); }
+.cx-track-clip[data-rating="disliked"] { border-color: var(--danger); }
+
+/* Spans both rows, so where the ruler reads and where the clip sits are
+   visibly the same point -- a plain marker on just one of them would not
+   read as "this is where you are" the way a line through both does. */
+.cx-track-playhead {
+  position: absolute; inset-block: 0; inline-size: 0;
+  border-inline-start: 2px solid var(--accent-hi);
+  pointer-events: none; z-index: 1;
+}

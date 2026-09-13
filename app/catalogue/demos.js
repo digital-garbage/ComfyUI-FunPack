@@ -334,6 +334,11 @@ export const DEMOS = {
     { at: 0, label: "1", hint: "0" }, { at: 0.4, label: "2", hint: "96" },
     { at: 0.75, label: "3", hint: "180" },
   ] },
+  "track.default": { label: "Timeline", pxPerSecond: 40, playhead: 6.5, selection: ["2"], items: [
+    { id: "1", icon: "▦", label: "Scene 1", badge: "1", start: 0, duration: 4 },
+    { id: "2", icon: "▦", label: "Scene 2", badge: "2", start: 4, duration: 6, rating: "liked" },
+    { id: "3", icon: "▦", label: "Scene 3", badge: "3", start: 10, duration: 3, excluded: true },
+  ] },
   "wheel.half": { edge: "right", items: [
     { icon: "✂", label: "Split" }, { icon: "⧉", label: "Duplicate" },
     { icon: "★", label: "Rate" }, { icon: "◐", label: "Anchor" },

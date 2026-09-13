@@ -498,6 +498,124 @@ test("a bin's thumbnails are lazy", () => {
   }
 });
 
+// --- track -------------------------------------------------------------
+
+const CLIPS = [
+  { id: "a", label: "Scene 1", start: 0, duration: 4 },
+  { id: "b", label: "Scene 2", start: 4, duration: 6 },
+  { id: "c", label: "Scene 3", start: 10, duration: 2 },
+];
+
+test("a clip's width is proportional to its duration, not equal to its neighbours'", () => {
+  // The third clip is 2s at 10px/s = 20px, under the 24px floor -- widened to
+  // stay clickable, which is why it is not exactly proportional to the other
+  // two the way the first two are to each other.
+  const t = mount(composer.track.default({ items: CLIPS, pxPerSecond: 10 }));
+  const widths = [...t.node.querySelectorAll(".cx-track-clip")].map((c) => parseFloat(c.style.width));
+  assert.deepEqual(widths, [40, 60, 24]);
+});
+
+test("a clip under the pixel floor is not squeezed to nothing", () => {
+  const t = mount(composer.track.default({
+    items: [{ id: "a", label: "Sliver", start: 0, duration: 0.1 }], pxPerSecond: 10,
+  }));
+  const width = parseFloat(t.node.querySelector(".cx-track-clip").style.width);
+  assert.ok(width >= 24, `a 0.1s clip at 10px/s rendered ${width}px wide`);
+});
+
+test("the ruler reads real elapsed time, not a tick per clip", () => {
+  // Three clips, but the ruler's ticks are seconds -- there is no reason their
+  // count should match the clip count in either direction.
+  const t = mount(composer.track.default({ items: CLIPS, pxPerSecond: 40 }));
+  const ticks = [...t.node.querySelectorAll(".cx-track-tick")].map((n) => n.textContent);
+  assert.deepEqual(ticks, ["0:00", "0:02", "0:04", "0:06", "0:08", "0:10", "0:12"]);
+});
+
+test("clicking partway into a clip seeks to that exact second, not to the clip's start", () => {
+  // A clip covers most of the track's own area -- if a click on one only
+  // ever resolved to its START, an exact-second seek would only ever be
+  // reachable from the thin ruler strip above it.
+  const seen = [];
+  const t = mount(composer.track.default({
+    items: CLIPS, pxPerSecond: 40, onSeek: (seconds, item) => seen.push([seconds, item && item.id]),
+  }));
+  // Clip "b" spans 4s-10s -> 160px-400px at 40px/s. 250px is 6.25s into it.
+  t.node.querySelector('[data-id="b"]')
+    .dispatchEvent(new window.MouseEvent("click", { bubbles: true, clientX: 250 }));
+  assert.deepEqual(seen, [[6.25, "b"]]);
+});
+
+test("clicking empty track (the ruler, the gap past the clips) seeks by position", () => {
+  const seen = [];
+  const t = mount(composer.track.default({
+    items: CLIPS, pxPerSecond: 10, onSeek: (seconds, item) => seen.push([seconds, item && item.id]),
+  }));
+  const inner = t.node.querySelector(".cx-track-inner");
+  inner.dispatchEvent(new window.MouseEvent("click", { bubbles: true, clientX: 45 }));
+  // 45px at 10px/s = 4.5s, which falls inside clip "b" (4s..10s).
+  assert.deepEqual(seen, [[4.5, "b"]]);
+});
+
+test("a seek past the last clip clamps to the track's own end", () => {
+  const seen = [];
+  const t = mount(composer.track.default({
+    items: CLIPS, pxPerSecond: 10, onSeek: (seconds, item) => seen.push([seconds, item && item.id]),
+  }));
+  t.node.querySelector(".cx-track-inner")
+    .dispatchEvent(new window.MouseEvent("click", { bubbles: true, clientX: 9999 }));
+  assert.deepEqual(seen, [[12, "c"]]);
+});
+
+test("setPlayhead moves the marker without redrawing the clips", () => {
+  const t = mount(composer.track.default({ items: CLIPS, pxPerSecond: 10, playhead: 0 }));
+  const before = t.node.querySelector(".cx-track-clip");
+  t.setPlayhead(7);
+  const head = t.node.querySelector(".cx-track-playhead");
+  assert.equal(head.style.insetInlineStart, "70px");
+  assert.equal(t.node.querySelector(".cx-track-clip"), before, "the clip row was rebuilt for a playhead move");
+});
+
+test("setValue redraws the selected clip without a fresh setItems call", () => {
+  const t = mount(composer.track.default({ items: CLIPS, pxPerSecond: 10 }));
+  assert.equal(t.node.querySelectorAll('[aria-selected="true"]').length, 0);
+  t.setValue(["b"]);
+  const on = t.node.querySelector('[aria-selected="true"]');
+  assert.equal(on && on.dataset.id, "b");
+});
+
+test("dragging a clip onto another reports the reorder by id, not by position", () => {
+  const reordered = [];
+  const t = mount(composer.track.default({ items: CLIPS, pxPerSecond: 10, onReorder: (from, to) => reordered.push([from, to]) }));
+  const cells = t.node.querySelectorAll(".cx-track-clip");
+  const store = {};
+  const dt = {
+    effectAllowed: null,
+    setData: (type, v) => { store[type] = v; },
+    getData: (type) => store[type] || "",
+    get types() { return Object.keys(store); },
+  };
+  const fireDrag = (node, type) => {
+    const e = new window.Event(type, { bubbles: true, cancelable: true });
+    e.dataTransfer = dt;
+    node.dispatchEvent(e);
+  };
+  fireDrag(cells[0], "dragstart");
+  fireDrag(cells[2], "drop");
+  assert.deepEqual(reordered, [["a", "c"]]);
+});
+
+test("an excluded clip is dimmed, a rated one carries its rating", () => {
+  const t = mount(composer.track.default({
+    items: [
+      { id: "a", label: "A", start: 0, duration: 1, excluded: true },
+      { id: "b", label: "B", start: 1, duration: 1, rating: "liked" },
+    ], pxPerSecond: 10,
+  }));
+  const [a, b] = t.node.querySelectorAll(".cx-track-clip");
+  assert.equal(a.classList.contains("cx-excluded"), true);
+  assert.equal(b.getAttribute("data-rating"), "liked");
+});
+
 test("Enter is a newline in a textarea, not a commit", () => {
   // A one-line field commits on Enter. A textarea holds the longest thing
   // anyone types here -- the prompt -- and stealing Enter there means a

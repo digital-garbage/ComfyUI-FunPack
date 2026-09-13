@@ -8,6 +8,10 @@
 // scene. v4 had one prompt for the whole project and split it by markers in the
 // text, which meant the text was both the content and the structure: editing a
 // scene could re-cut every other one.
+//
+// A real single-track timeline: clips as wide as they play for, a ruler in
+// seconds, and a playhead -- composer's `track.default` does the drawing, this
+// file only turns scenes into seconds and seconds back into a selected scene.
 
 import { composer } from "../composer/composer.js";
 
@@ -17,11 +21,20 @@ const EMPTY = {
   hint: "What you generate lands here, in the order it plays.",
 };
 
-// How wide a clip is at rest, in pixels -- what "zoom" changes. Persisted per
+// How wide a second is, in pixels -- what "zoom" changes. Persisted per
 // browser like the media bin's own view choice: a per-viewer convenience, not
 // state a run depends on, so nothing breaks if storage is unavailable.
 const ZOOM_KEY = "funpack.timeline.zoom";
-const ZOOM_LEVELS = { sm: 48, md: 72, lg: 128 };
+const ZOOM_LEVELS = { sm: 20, md: 40, lg: 80 };
+
+// No module declares an `fps` role today -- the one pipeline that ships
+// (minimax_h3) hands CreateVideo a literal 24.0 rather than a project.video
+// input, so there is nothing to read it FROM yet. This mirrors that literal
+// rather than inventing a setting nothing produces.
+// ponytail: becomes a real per-pipeline value the day a module declares a
+// role at project.video.fps, the same way length/target_width/target_height
+// already are -- read here with a fallback so that day needs no change here.
+const FPS_FALLBACK = 24;
 
 function recallZoom() {
   try { return ZOOM_LEVELS[window.localStorage.getItem(ZOOM_KEY)] ? window.localStorage.getItem(ZOOM_KEY) : "md"; }
@@ -40,7 +53,15 @@ function rememberZoom(level) {
 export function createTimeline({ project, onSelect } = {}) {
   const host = composer.region.stack({ gap: "sm", fill: true });
   const empty = composer.emptyState.default(EMPTY);
-  let strip = null;
+  let track = null;
+  let pxPerSecond = ZOOM_LEVELS[recallZoom()];
+  // The playhead's own position, in seconds -- decoupled from which scene is
+  // selected so a click partway through a clip reads as that exact second,
+  // not snapped to whichever scene it landed in. Re-synced to the selected
+  // scene's start whenever the selection changes from somewhere OTHER than a
+  // track click (Add/Remove/Move, or a selection made elsewhere in the app) --
+  // see draw().
+  let playhead = 0;
 
   // Rebuilt on every draw, so a stale handler cannot act on a scene that has
   // moved. The buttons that act on "the current scene" read it at click time
@@ -53,19 +74,19 @@ export function createTimeline({ project, onSelect } = {}) {
       composer.iconButton.sm({ icon: "◀", label: "Move earlier", onClick: () => move(-1) }),
       composer.iconButton.sm({ icon: "▶", label: "Move later", onClick: () => move(1) }),
     ],
-    // Zoom changes clip WIDTH, not the frame counts behind them -- a bigger
-    // strip to work with, not a different one.
+    // Zoom changes seconds->pixels, not the durations behind them -- a bigger
+    // track to work with, not a different one.
     trailing: [composer.segmented.sm({
       label: "Zoom",
       value: recallZoom(),
       options: [{ value: "sm", label: "S" }, { value: "md", label: "M" }, { value: "lg", label: "L" }],
-      onChange: (level) => { rememberZoom(level); applyZoom(level); },
+      onChange: (level) => {
+        rememberZoom(level);
+        pxPerSecond = ZOOM_LEVELS[level] || ZOOM_LEVELS.md;
+        if (track) track.setZoom(pxPerSecond);
+      },
     })],
   });
-
-  function applyZoom(level) {
-    if (strip) strip.node.style.setProperty("--strip-w", `${ZOOM_LEVELS[level] || ZOOM_LEVELS.md}px`);
-  }
 
   function add() {
     project.addScene();
@@ -90,67 +111,79 @@ export function createTimeline({ project, onSelect } = {}) {
   }
 
   /** Frames this clip runs for: its own crop, or the project's length. */
-  const lengthOf = (scene) => scene.length || project.video.length || 1;
+  const framesOf = (scene) => scene.length || project.video.length || 1;
+  const fps = () => (Number(project.video.fps) > 0 ? Number(project.video.fps) : FPS_FALLBACK);
+  const secondsOf = (scene) => framesOf(scene) / fps();
 
-  function items() {
-    return project.scenes.map((scene, i) => ({
-      id: scene.id,
-      // The number is what a scene is called before it has any text, and the
-      // text is what it is called after -- a strip of "Scene 1..8" is a strip
-      // nobody can read their own project off.
-      label: scene.text ? `${i + 1}. ${scene.text}` : `Scene ${i + 1}`,
-      badge: String(i + 1),
-      thumb: scene.result || null,
-      icon: "▦",
-      // A clip as wide as it is long, so the strip reads as time rather than as
-      // a row of equal boxes. Bounded: one very long scene beside several short
-      // ones must not squeeze the rest to nothing.
-      weight: lengthOf(scene),
-      rating: scene.rating || null,
-      excluded: Boolean(scene.excluded),
-    }));
-  }
-
-  /** Where each scene starts, in frames. The ruler is drawn from this. */
-  function marks() {
+  /** Where each scene starts, in seconds -- contiguous, so a click anywhere
+   *  on the track belongs to exactly one of them. */
+  function spans() {
     let at = 0;
     return project.scenes.map((scene) => {
       const start = at;
-      at += lengthOf(scene);
-      return { id: scene.id, start, length: lengthOf(scene) };
+      const duration = secondsOf(scene);
+      at += duration;
+      return { scene, start, duration };
     });
   }
 
-  // The ruler. Its ticks are the scene boundaries rather than a fixed interval:
-  // what a person looks for on this timeline is where one scene becomes the
-  // next, and at 24fps a tick per second is a picket fence.
-  const ruler = composer.ruler.default({ label: "Scenes" });
-
-  function drawRuler() {
-    const spans = marks();
-    const total = spans.reduce((sum, m) => sum + m.length, 0) || 1;
-    ruler.set(spans.map((m, i) => ({
-      at: m.start / total,
-      label: `${i + 1}`,
-      hint: `${m.start}`,
-    })), total);
+  function items() {
+    return project.scenes.map((scene, i) => {
+      const { start, duration } = spans()[i];
+      return {
+        id: scene.id,
+        // The number is what a scene is called before it has any text, and the
+        // text is what it is called after -- a strip nobody can read their own
+        // project off.
+        label: scene.text ? `${i + 1}. ${scene.text}` : `Scene ${i + 1}`,
+        badge: String(i + 1),
+        thumb: scene.result || null,
+        icon: "▦",
+        start, duration,
+        rating: scene.rating || null,
+        excluded: Boolean(scene.excluded),
+      };
+    });
   }
 
   function draw() {
     const scenes = project.scenes;
     if (!scenes.length) {
       host.set([empty]);
-      strip = null;
+      track = null;
       return;
     }
-    if (!strip) {
-      strip = composer.gallery.strip({
-        label: "Scenes",
-        items: items(),
+    const built = items();
+    // The invariant: the playhead always lies within the SELECTED scene's
+    // span. A track click asserts both at once (see onSeek below) and stays
+    // exactly where it was clicked; anything else that changes the selection
+    // -- Add, Remove, Move, a pick made elsewhere -- only moves the selection,
+    // so this is what pulls the playhead back to match it.
+    const current = built.find((i) => i.id === project.selectedId);
+    if (current && !(playhead >= current.start && playhead < current.start + current.duration)) {
+      playhead = current.start;
+    }
+    if (!track) {
+      track = composer.track.default({
+        label: "Timeline",
+        items: built,
         selection: project.selectedId ? [project.selectedId] : [],
-        onActivate: (item) => { project.select(item.id); announce(); },
+        playhead,
+        pxPerSecond,
+        onSeek: (seconds, item) => {
+          playhead = seconds;
+          // select() no-ops, without announcing, when the click landed
+          // inside the scene already current -- the common case for a pure
+          // seek. The playhead still needs to move, so it is set directly
+          // rather than only through whatever redraw a real selection
+          // change would have triggered.
+          if (item) project.select(item.id);
+          announce();
+          track.setPlayhead(playhead);
+          track.setValue(project.selectedId ? [project.selectedId] : []);
+        },
         // Ids, resolved to a position HERE, now -- not carried from whenever
-        // the drag started. A remove or an undo can redraw the strip while a
+        // the drag started. A remove or an undo can redraw the track while a
         // drag is still in flight (the mouse held down is a different input
         // channel from the keyboard shortcut that triggers one), and a
         // position captured at dragstart would then name whatever has since
@@ -163,17 +196,12 @@ export function createTimeline({ project, onSelect } = {}) {
           announce();
         },
       });
-      host.set([controls, ruler, strip]);
-      applyZoom(recallZoom());
-      drawRuler();
+      host.set([controls, track]);
       return;
     }
-    drawRuler();
-    // setItems then setValue: setValue redraws against whatever items are
-    // current, so seeding the selection first marks a row that is about to be
-    // replaced and the strip comes back with nothing on.
-    strip.setItems(items());
-    strip.setValue(project.selectedId ? [project.selectedId] : []);
+    track.setItems(built);
+    track.setValue(project.selectedId ? [project.selectedId] : []);
+    track.setPlayhead(playhead);
   }
 
   draw();
@@ -182,8 +210,7 @@ export function createTimeline({ project, onSelect } = {}) {
     node: host.node,
     draw,
     destroy() {
-      if (strip) strip.destroy();
-      ruler.destroy();
+      if (track) track.destroy();
       controls.destroy();
       empty.destroy();
       host.destroy();
