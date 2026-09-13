@@ -54,6 +54,16 @@ function formatTime(seconds) {
 // A floor, not a cap: a scene under a second would otherwise render as a
 // sliver nothing could click or even see next to a normal one. Everything
 // else stays exactly proportional -- this only rescues the degenerate case.
+//
+// Known, accepted limit: several floored clips in a row still paint on top of
+// each other (later DOM order wins), so a run of very short adjacent scenes
+// can visually collapse into just the last one. Fixing that by shifting later
+// clips right to make room was tried and rejected -- the pushed offset never
+// resolves once introduced (nothing shrinks to give the room back), which
+// desyncs every clip after the run from the ruler and playhead for the rest
+// of the track. That failure is worse than an occasional occluded sliver, so
+// exact position over the seconds axis wins; seeking by click still resolves
+// correctly either way, since that reads time, not which clip is on top.
 const MIN_CLIP_PX = 24;
 
 /**
@@ -116,6 +126,11 @@ define("track", "default", ({
         },
         children: [faceOf(item)],
       });
+      // Positioned from its own start, not stacked after the previous clip in
+      // normal flow -- a clip under the pixel floor would otherwise push
+      // every clip after it further right than the ruler and the playhead,
+      // which both stay in pure seconds*pxPerSecond, ever agree it is.
+      cell.style.insetInlineStart = `${item.start * pxPerSecond}px`;
       cell.style.width = `${Math.max(MIN_CLIP_PX, item.duration * pxPerSecond)}px`;
       clips.append(cell);
     }

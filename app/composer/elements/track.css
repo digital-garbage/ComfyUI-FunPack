@@ -18,15 +18,18 @@
 
 /* A fixed row height, not aspect-ratio off the clip's own width -- a clip's
    width now tracks real duration and can run to hundreds of pixels, and
-   16:10 off THAT would make a half-minute scene taller than the window. */
-.cx-track-clips { display: flex; min-inline-size: 100%; block-size: 45px; }
+   16:10 off THAT would make a half-minute scene taller than the window.
+   Positioned (not flex-flow) for the same reason each clip sets its own
+   insetInlineStart in JS: a clip under the pixel floor must not push every
+   clip after it out of step with the ruler and the playhead, which both
+   stay in pure seconds*pxPerSecond regardless of any floor. */
+.cx-track-clips { position: relative; min-inline-size: 100%; block-size: 45px; }
 .cx-track-clip {
-  flex: none; padding: 0; block-size: 100%;
+  position: absolute; inset-block: 0; padding: 0;
   border: var(--bw) solid var(--line); border-radius: var(--r-2);
   background: var(--void); overflow: hidden; cursor: grab;
   display: flex; align-items: center; justify-content: center;
 }
-.cx-track-clip + .cx-track-clip { border-inline-start: none; }
 .cx-track-face { position: relative; inline-size: 100%; block-size: 100%; display: flex; align-items: center; justify-content: center; }
 .cx-track-clip:hover { border-color: var(--accent); }
 .cx-track-clip.cx-on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }

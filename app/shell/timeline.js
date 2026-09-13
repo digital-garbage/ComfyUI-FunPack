@@ -59,9 +59,21 @@ export function createTimeline({ project, onSelect } = {}) {
   // selected so a click partway through a clip reads as that exact second,
   // not snapped to whichever scene it landed in. Re-synced to the selected
   // scene's start whenever the selection changes from somewhere OTHER than a
-  // track click (Add/Remove/Move, or a selection made elsewhere in the app) --
-  // see draw().
+  // track click (Add/Remove/Move, a selection made elsewhere, or a different
+  // project opened entirely) -- see draw().
   let playhead = 0;
+  // What the LAST seek asked for, consumed by the very next draw(). project.
+  // select() -- called from onSeek below -- fires its onChange synchronously
+  // (boot.js wires it straight to this timeline's own draw()), so a draw can
+  // run in the middle of onSeek's own body, before onSeek gets back around to
+  // setting the playhead itself. Without this, that reentrant draw reads the
+  // OLD `playhead` value against the NEWLY selected scene, and a seek that
+  // lands exactly on a clip's boundary -- clamped to the very end of the
+  // track, for one -- fails the "inside the span" check and gets silently
+  // snapped back to that scene's start. Recording the seek here lets the
+  // reentrant draw trust the number just clicked, exactly, instead of
+  // re-deriving (and getting wrong) where the playhead belongs.
+  let pendingSeek = null;
 
   // Rebuilt on every draw, so a stale handler cannot act on a scene that has
   // moved. The buttons that act on "the current scene" read it at click time
@@ -110,8 +122,12 @@ export function createTimeline({ project, onSelect } = {}) {
     if (onSelect) onSelect(project.selected || null);
   }
 
-  /** Frames this clip runs for: its own crop, or the project's length. */
-  const framesOf = (scene) => scene.length || project.video.length || 1;
+  /** Frames this clip runs for: its own crop, or the project's length. A
+   *  negative or NaN length (corrupted project data -- nothing in the UI
+   *  produces one) would otherwise pass through as truthy and break the
+   *  contiguous, non-decreasing spans the click-seek math in track.js relies
+   *  on, the same guard `fps()` below already uses for the same reason. */
+  const framesOf = (scene) => (scene.length > 0 ? scene.length : 0) || project.video.length || 1;
   const fps = () => (Number(project.video.fps) > 0 ? Number(project.video.fps) : FPS_FALLBACK);
   const secondsOf = (scene) => framesOf(scene) / fps();
 
@@ -154,15 +170,30 @@ export function createTimeline({ project, onSelect } = {}) {
       return;
     }
     const built = items();
-    // The invariant: the playhead always lies within the SELECTED scene's
-    // span. A track click asserts both at once (see onSeek below) and stays
-    // exactly where it was clicked; anything else that changes the selection
-    // -- Add, Remove, Move, a pick made elsewhere -- only moves the selection,
-    // so this is what pulls the playhead back to match it.
     const current = built.find((i) => i.id === project.selectedId);
-    if (current && !(playhead >= current.start && playhead < current.start + current.duration)) {
-      playhead = current.start;
+    if (current) {
+      if (pendingSeek && pendingSeek.id === current.id) {
+        // Trust the seek just clicked exactly, rather than re-deriving it --
+        // this draw may be running INSIDE onSeek's own body (project.select's
+        // onChange fires synchronously), before onSeek gets back around to
+        // setting the playhead itself, and a seek clamped to the very edge of
+        // the track would otherwise fail a span check and snap back to the
+        // scene's start.
+        playhead = pendingSeek.seconds;
+      } else {
+        // Anything else that changed the selection -- Add, Remove, Move, a
+        // pick made elsewhere, a different project opened entirely -- only
+        // moved the selection; this is what pulls the playhead back onto it.
+        // Always, not just when the old value falls outside the new scene's
+        // span: two scenes from two different projects can share a span by
+        // pure coincidence (even the same id, if one is ever reused), and
+        // trusting "still numerically inside" as a proxy for "still the same
+        // seek" is exactly what lets a stale playhead survive a project it
+        // has nothing to do with.
+        playhead = current.start;
+      }
     }
+    pendingSeek = null;
     if (!track) {
       track = composer.track.default({
         label: "Timeline",
@@ -172,12 +203,18 @@ export function createTimeline({ project, onSelect } = {}) {
         pxPerSecond,
         onSeek: (seconds, item) => {
           playhead = seconds;
+          if (item) pendingSeek = { id: item.id, seconds };
           // select() no-ops, without announcing, when the click landed
           // inside the scene already current -- the common case for a pure
-          // seek. The playhead still needs to move, so it is set directly
-          // rather than only through whatever redraw a real selection
-          // change would have triggered.
+          // seek, and when it does no reentrant draw() happens at all. The
+          // playhead still needs to move, so it is set directly rather than
+          // only through whatever redraw a real selection change would have
+          // triggered. Cleared right after, unconditionally: a no-op select
+          // leaves no reentrant draw to consume pendingSeek, and without this
+          // it can survive to be wrongly replayed by a LATER, unrelated draw
+          // whose current scene happens to share this one's id.
           if (item) project.select(item.id);
+          pendingSeek = null;
           announce();
           track.setPlayhead(playhead);
           track.setValue(project.selectedId ? [project.selectedId] : []);

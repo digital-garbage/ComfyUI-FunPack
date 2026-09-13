@@ -33,18 +33,46 @@ test.after(() => teardownDom());
 
 /** Just enough of the store for the timeline to read and act on. Video length
  *  is 24 frames at the 24fps fallback -- one second per scene by default,
- *  which keeps the maths in each test readable. */
-function fakeProject(scenes, video = { length: 24 }) {
+ *  which keeps the maths in each test readable.
+ *
+ *  `onChange` fires on every real mutation, exactly like the real store's
+ *  `changed()` -- boot.js wires it straight to `timeline.draw()`, SYNCHRONOUSLY,
+ *  which is what lets a draw() run in the middle of the track's own onSeek
+ *  handler. A fixture whose select()/addScene()/etc. do not also fire this
+ *  cannot reach that reentrancy at all, and a bug that only shows up there
+ *  would pass every test and still be live in the real app.
+ */
+function fakeProject(scenes, video = { length: 24 }, { onChange } = {}) {
   let selected = scenes[0] ? scenes[0].id : null;
   const moved = [];
+  const fire = () => { if (onChange) onChange(); };
   return {
     get scenes() { return scenes; },
     get selectedId() { return selected; },
     get selected() { return scenes.find((s) => s.id === selected) || null; },
     video,
     moved,
-    addScene() { const s = { id: `s${scenes.length}`, text: "", result: null, length: null }; scenes.push(s); selected = s.id; },
-    removeScene(id) { const at = scenes.findIndex((s) => s.id === id); if (at >= 0) scenes.splice(at, 1); },
+    addScene() {
+      const s = { id: `s${scenes.length}`, text: "", result: null, length: null };
+      scenes.push(s); selected = s.id; fire(); return s;
+    },
+    // Simulates opening a DIFFERENT project over the same store: the scenes
+    // array is replaced wholesale, same as the real store's open() does,
+    // while this fakeProject object itself -- and any timeline built against
+    // it -- stays the same one.
+    _openOtherProject(newScenes) {
+      scenes.length = 0;
+      scenes.push(...newScenes);
+      selected = newScenes[0] ? newScenes[0].id : null;
+      fire();
+    },
+    removeScene(id) {
+      const at = scenes.findIndex((s) => s.id === id);
+      if (at < 0) return;
+      scenes.splice(at, 1);
+      if (selected === id) selected = (scenes[at] || scenes[at - 1] || null)?.id ?? null;
+      fire();
+    },
     move(id, by) {
       moved.push({ id, by });
       const at = scenes.findIndex((s) => s.id === id);
@@ -52,8 +80,9 @@ function fakeProject(scenes, video = { length: 24 }) {
       if (at < 0 || to < 0 || to >= scenes.length) return;
       const [scene] = scenes.splice(at, 1);
       scenes.splice(to, 0, scene);
+      fire();
     },
-    select(id) { if (!scenes.some((s) => s.id === id) || id === selected) return; selected = id; },
+    select(id) { if (!scenes.some((s) => s.id === id) || id === selected) return; selected = id; fire(); },
   };
 }
 
@@ -258,5 +287,54 @@ test("clicking mid-clip moves the playhead to that exact second without changing
 
   assert.equal(project.selectedId, "s0", "a click within the selected clip changed the selection");
   assert.equal(t.node.querySelector(".cx-track-playhead").style.insetInlineStart, "20px");
+  t.destroy();
+});
+
+// --- reentrancy: project.select()'s onChange redraws SYNCHRONOUSLY, exactly
+// like boot.js wires it, so a draw can run in the middle of onSeek's own body
+// before onSeek gets back around to setting the playhead itself. ------------
+
+test("a seek clamped to the very end of the track lands there, not snapped back to that clip's start", () => {
+  let t;
+  const project = fakeProject(scenes(2), undefined, { onChange: () => t && t.draw() });
+  t = createTimeline({ project });                     // s0 0-1s, s1 1-2s -- starts on s0
+  document.body.append(t.node);
+
+  const inner = t.node.querySelector(".cx-track-inner");
+  // Clicking past the track's own end clamps to its total span (80px = 2s),
+  // which selects s1 -- a REAL selection change, so project.select() fires
+  // its onChange and draw() runs reentrantly, before onSeek's own
+  // track.setPlayhead call. The clamped second is exactly s1's end, which
+  // fails a naive "playhead < span end" check.
+  inner.dispatchEvent(new window.MouseEvent("click", { bubbles: true, clientX: 9999 }));
+
+  assert.equal(project.selectedId, "s1");
+  assert.equal(t.node.querySelector(".cx-track-playhead").style.insetInlineStart, "80px",
+    "a seek to the track's own end was snapped back to the newly selected clip's start");
+  t.destroy();
+});
+
+test("the playhead resets rather than surviving into an unrelated project by coincidence", () => {
+  // Same store, same timeline instance -- opening a different project
+  // replaces its scenes wholesale, not through a track seek, so nothing
+  // should carry the old playhead value forward, even when that value
+  // happens to still fall inside the new first scene's span.
+  let t;
+  const project = fakeProject(scenes(2), undefined, { onChange: () => t && t.draw() });
+  t = createTimeline({ project });                      // s0 0-1s, s1 1-2s
+  document.body.append(t.node);
+
+  t.node.querySelector(".cx-track-inner")
+    .dispatchEvent(new window.MouseEvent("click", { bubbles: true, clientX: 30 })); // seek to 0.75s in s0
+  assert.equal(t.node.querySelector(".cx-track-playhead").style.insetInlineStart, "30px");
+
+  // A different project, coincidentally with a first scene long enough that
+  // 0.75s would still fall inside it.
+  const other = scenes(1);
+  other[0].length = 480;                                // 20s at the 24fps fallback
+  project._openOtherProject(other);
+
+  assert.equal(t.node.querySelector(".cx-track-playhead").style.insetInlineStart, "0px",
+    "the old project's playhead position survived into a project it has nothing to do with");
   t.destroy();
 });

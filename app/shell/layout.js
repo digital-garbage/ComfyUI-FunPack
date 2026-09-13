@@ -207,13 +207,6 @@ export function build(root, handlers = {}) {
   // appear here" left above the modules that appeared is a region explaining
   // itself to nobody.
 
-  // The result gets the room. Draggable, so a long timeline can take it back.
-  const centre = composer.splitPane.v({
-    size: 74,
-    label: "Preview and timeline",
-    panes: [preview, timeline],
-  });
-
   // Right: everything about the run. Generation is open, settings folded away
   // -- one is read constantly and the other rarely, and a fold says which is
   // which without needing a second place to look. A settings WINDOW is a
@@ -259,7 +252,7 @@ export function build(root, handlers = {}) {
     leftLabel: "Assets",
     rightLabel: "Properties",
     left: assets,
-    centre,
+    centre: preview,
     right: properties,
     // Named toggles live in the timeline bar instead -- see regionToggle above.
     rails: false,
@@ -268,6 +261,17 @@ export function build(root, handlers = {}) {
   ws = workspace;
   syncRegions();
 
+  // v4's own arrangement (three resizable columns over a FULL-WIDTH timeline,
+  // borrowed there from OpenCut): the timeline is not a quarter of the centre
+  // column, it is the row every column sits above. Assets and Properties are
+  // about the SELECTED scene; the timeline is what is asking to be selected
+  // from, so it reads under the columns that describe one, not squeezed
+  // beside the preview inside just the middle one.
+  const shell = composer.splitPane.v({
+    size: 74,
+    label: "Workspace and timeline",
+    panes: [workspace, timeline],
+  });
 
   // The menu bar: who this is, what is not a zone, and whether ComfyUI is
   // still on the other end. A zone head holds what acts on THAT zone, so
@@ -282,7 +286,7 @@ export function build(root, handlers = {}) {
   });
   const bar = menubar;
 
-  const page = composer.frame.app({ header: bar, main: workspace });
+  const page = composer.frame.app({ header: bar, main: shell });
 
   root.replaceChildren(page.node);
 

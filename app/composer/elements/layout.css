@@ -388,8 +388,16 @@
    automatic minimum is its content, so a stack holding anything that scrolls --
    a strip of scenes, a wide table -- handed its content's full width up to
    whatever contains it, and the page scrolled sideways instead of the scroller
-   scrolling. The rule below covers a stack's children; this covers the stack. */
-.cx-stack { display: flex; flex-direction: column; min-block-size: 0; min-inline-size: 0; }
+   scrolling. The rule below covers a stack's children; this covers the stack.
+   No min-block-size:0 here, on purpose: that would let a plain grouping stack
+   -- rows of fields nested inside a scrollable panel -- get flex-shrunk below
+   its own content height the moment its container runs short on room, and
+   since nothing here clips it, the excess paints over the next row instead of
+   the panel scrolling. .cx-stack-fill below is the one stack meant to give up
+   height for that; a stack that hasn't opted into that must keep its natural
+   size so a tight column scrolls at the real scroll boundary instead of
+   silently overlapping. */
+.cx-stack { display: flex; flex-direction: column; min-inline-size: 0; }
 .cx-stack > * { min-inline-size: 0; }
 .cx-stack-none { gap: 0; }
 .cx-stack-sm { gap: var(--sp-4); }
