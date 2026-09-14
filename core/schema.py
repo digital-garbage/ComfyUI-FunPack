@@ -8,7 +8,7 @@ That is the same rule the UI follows: absent, not approximate.
 import math
 from typing import Any, Dict, List, Tuple
 
-from .contract import NUMERIC, STAGES, TYPES, UI_HINTS, ModuleSpec
+from .contract import CATEGORIES, NUMERIC, STAGES, TYPES, UI_HINTS, ModuleSpec
 
 
 class SchemaError(ValueError):
@@ -342,6 +342,16 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
     if stage not in STAGES:
         raise SchemaError(f"module {announcement['id']!r} has unknown stage {stage!r}. Known: {', '.join(STAGES)}.")
 
+    # Unlike stage, empty is valid here -- most modules have no reason to name a
+    # category until something actually groups by it, and "uncategorised" is a
+    # real, displayable bucket rather than a refusal.
+    category = announcement.get("category") or ""
+    if category and category not in CATEGORIES:
+        raise SchemaError(
+            f"module {announcement['id']!r} has unknown category {category!r}. "
+            f"Known: {', '.join(sorted(CATEGORIES))}."
+        )
+
     status = announcement.get("status", "experimental")
     if status not in ("proven", "experimental"):
         raise SchemaError(f"module {announcement['id']!r} has unknown status {status!r}.")
@@ -375,6 +385,7 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
         after=_ids("after"),
         before=_ids("before"),
         stage=stage,
+        category=category,
         ui=announcement.get("ui"),
         status=status,
         source=source,

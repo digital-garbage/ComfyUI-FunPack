@@ -9,6 +9,7 @@ ID = "appearance"
 TITLE = "Appearance"
 MOUNT = "settings.general"
 STAGE = "load"
+CATEGORY = "system"
 STATUS = "proven"
 
 SETTINGS = {

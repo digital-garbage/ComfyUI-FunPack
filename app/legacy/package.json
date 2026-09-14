@@ -1,0 +1,8 @@
+{
+  "name": "funpack-movie-editor-frontend",
+  "private": true,
+  "description": "Movie Editor browser frontend. Plain <script>-tag modules (no bundler). Node is used only to unit-test pure logic extracted into *.js with dual browser/CommonJS exports (e.g. scene_align.js).",
+  "scripts": {
+    "test": "node --test"
+  }
+}

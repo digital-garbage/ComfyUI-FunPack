@@ -38,6 +38,7 @@ ID = "alg"
 TITLE = "Anchor de-staticking"
 MOUNT = "generation.sampling"
 STAGE = "sampling"
+CATEGORY = "guidance"
 STATUS = "proven"
 REQUIRES = ["temporal_latent"]
 

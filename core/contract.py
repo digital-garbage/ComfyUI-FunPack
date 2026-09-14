@@ -41,6 +41,14 @@ UI_HINTS: Dict[str, List[str]] = {
 # inserting one module means renumbering the others.
 STAGES: List[str] = ["load", "conditioning", "latent", "guidance", "sampling", "post"]
 
+# Presentation grouping, independent of STAGE: stage is execution order, category
+# is "what is this module FOR" -- a module can be stage="sampling" and
+# category="continuity" at once. Closed set for the same reason TYPES is closed:
+# an unrecognised category has no place in the UI to render into. Empty/absent is
+# valid and means "uncategorised", never a hard error -- most modules will not
+# need this until the panel that groups by it actually exists.
+CATEGORIES = frozenset({"continuity", "guidance", "conditioning", "sampling", "post", "system"})
+
 
 @dataclass(frozen=True)
 class ModuleSpec:
@@ -54,6 +62,7 @@ class ModuleSpec:
     after: List[str] = field(default_factory=list)      # module ids
     before: List[str] = field(default_factory=list)
     stage: str = "sampling"
+    category: str = ""                                   # "" means uncategorised
     # ComfyUI node classes this module contributes. Kept out of `settings` on
     # purpose: a setting is a preference, a node is graph structure, and letting
     # a new setting change a node's socket list would rot every saved workflow.
@@ -93,6 +102,7 @@ class ModuleSpec:
             "after": list(self.after),
             "before": list(self.before),
             "stage": self.stage,
+            "category": self.category,
             "ui": self.ui,
             "status": self.status,
         }

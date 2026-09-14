@@ -26,6 +26,7 @@ ID = "sharpen"
 TITLE = "Detail"
 MOUNT = "generation.sampling"
 STAGE = "sampling"
+CATEGORY = "sampling"
 STATUS = "proven"
 REQUIRES = ["spatial_latent"]
 

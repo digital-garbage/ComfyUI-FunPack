@@ -1,0 +1,470 @@
+// Prompt to install missing custom-node packs for the built-in pipeline (via Manager).
+(function () {
+  const { el } = window.dom;
+  const S = window.Store;
+  const API = window.MovieEditorAPI;
+  const LS_KEY = "funpack_pipeline_deps_dismissed";
+
+  let overlay = null;
+  let _pollTimer = null;
+  let _activeJobId = null;
+  // Set when picking a family moved the project onto that model's frame grid / frame rate,
+  // so the modal can say what changed rather than leaving it to be noticed later.
+  let geometryNote = "";
+
+  function dismissed() {
+    try { return localStorage.getItem(LS_KEY) === "1"; } catch (_) { return false; }
+  }
+
+  function setDismissed() {
+    try { localStorage.setItem(LS_KEY, "1"); } catch (_) {}
+  }
+
+  // Bumped by every close the USER asked for. chooseFamily / applyFamily / useOwnPipeline
+  // each span two or three round-trips and then reopen the modal with fresh deps; without
+  // this, a continuation that started before the user dismissed the modal reopens it
+  // afterwards — which is exactly what "No, I'll use my own pipeline" looked like, since
+  // disabling the built-in pipeline installs nothing, so `needs_setup` is still true when
+  // the in-flight chooseFamily lands.
+  let _closeToken = 0;
+
+  function closeModal() {
+    if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
+    overlay?.remove();
+    overlay = null;
+  }
+
+  // Close AND supersede anything already in flight. Use this for every close the user
+  // initiates; closeModal() alone is for internal teardown before a reopen.
+  function dismissModal() {
+    _closeToken += 1;
+    closeModal();
+  }
+
+  function builtInPipelineActive(st) {
+    const m = st.models || {};
+    return !m.disable_core;
+  }
+
+  // The Editor keeps the live model config at state.models and reloads it from the
+  // server; Easy Gen has neither, and reads it off state.project.models (see
+  // PipelineCaps.models). Write back to whichever this host actually has.
+  async function refreshModels(saved) {
+    if (typeof S.loadModels === "function") { await S.loadModels(); return; }
+    const p = S.get().project;
+    if (p) p.models = JSON.parse(JSON.stringify(saved));
+    if (typeof S.notify === "function") S.notify();
+    else S.set?.({});   // Easy Gen's store notifies through set()
+  }
+
+  async function useOwnPipeline() {
+    const proj = S.get().project;
+    if (!proj) {
+      // Nothing to write the choice to. Still close: leaving the modal up with a button
+      // that does nothing when pressed is the worse of the two failures.
+      dismissModal();
+      return;
+    }
+    // Dismissed BEFORE the awaits: the decision is already made, and holding the modal open
+    // for two round-trips is what let an in-flight family lookup reopen it afterwards.
+    setDismissed();
+    dismissModal();
+    const models = JSON.parse(JSON.stringify(S.get().models || proj.models || { slots: [] }));
+    models.disable_core = true;
+    try {
+      await API.saveModels(proj.id, models);
+    } catch (e) {
+      // The choice did NOT persist — saying so beats a project that quietly still runs the
+      // built-in pipeline on the next Generate.
+      alert("Could not save the pipeline choice: " + (e?.message || e)
+            + "\n\nSet it in Models → Enable built-in pipeline.");
+      return;
+    }
+    await refreshModels(models);
+  }
+
+  function packList(deps) {
+    const ul = el("ul", "pipe-setup-list");
+    (deps.missing_packs || []).forEach((p) => {
+      const li = el("li", null, p.title);
+      if (p.missing_classes?.length) {
+        li.append(el("span", "pipe-setup-sub", p.missing_classes.join(", ")));
+      }
+      ul.append(li);
+    });
+    return ul;
+  }
+
+  function manualBlock(deps) {
+    const box = el("div", "pipe-setup-manual");
+    box.append(el("div", "pipe-setup-manual-title", "Or clone these repos into custom_nodes manually:"));
+    const ul = el("ul", "pipe-setup-list");
+    (deps.manual_urls || []).forEach((u) => {
+      const li = el("li");
+      const a = el("a", null, u.title);
+      a.href = u.url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      li.append(a);
+      ul.append(li);
+    });
+    box.append(ul);
+    return box;
+  }
+
+  async function cancelInstall() {
+    const jobId = _activeJobId;
+    if (!jobId) {
+      window.FunPackRestart?.removeOverlay?.();
+      return;
+    }
+    try { await API.pipelineDepsInstallCancel(jobId); } catch (_) { /* server may already be gone */ }
+    _activeJobId = null;
+    if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
+    window.FunPackRestart?.removeOverlay?.();
+  }
+
+  function progressMessage(st) {
+    if (st.kind === "manager") {
+      return "Cloning ComfyUI-Manager…\nRestart follows automatically when ready.";
+    }
+    const n = Math.min(st.done + 1, st.total || 1);
+    const title = st.current_title || "…";
+    let msg = `Downloading and installing missing nodes:\n${n} out of ${st.total || "?"} - ${title}`;
+    if (st.stale) {
+      msg += "\n\nNo progress for a while. You can cancel and try again from ComfyUI-Manager.";
+    }
+    return msg;
+  }
+
+  async function pollInstall(jobId, msgEl) {
+    try {
+      const st = await API.pipelineDepsInstallStatus(jobId);
+      if (st.state === "installing" || st.state === "queued") {
+        msgEl.textContent = progressMessage(st);
+        _pollTimer = setTimeout(() => pollInstall(jobId, msgEl), 1200);
+        return;
+      }
+      if (st.state === "cancelled") {
+        _activeJobId = null;
+        window.FunPackRestart?.removeOverlay?.();
+        return;
+      }
+      if (st.state === "restarting") {
+        msgEl.textContent = st.kind === "manager"
+          ? "ComfyUI-Manager installed.\nRestarting ComfyUI…"
+          : "Install complete.\nRestarting ComfyUI…";
+        _activeJobId = null;
+        window.FunPackRestart?.waitForReload?.(msgEl, Date.now());
+        return;
+      }
+      if (st.state === "error") {
+        _activeJobId = null;
+        window.FunPackRestart?.removeOverlay?.();
+        alert(st.error || "Install failed.");
+        return;
+      }
+      _pollTimer = setTimeout(() => pollInstall(jobId, msgEl), 1200);
+    } catch (e) {
+      _activeJobId = null;
+      window.FunPackRestart?.removeOverlay?.();
+      alert(String(e.message || e));
+    }
+  }
+
+  function beginInstallOverlay(initialMessage) {
+    closeModal();
+    const msg = window.FunPackRestart?.showOverlay?.(initialMessage, {
+      cancelLabel: "Cancel install",
+      onCancel: () => cancelInstall(),
+    });
+    return msg;
+  }
+
+  async function startManagerInstall() {
+    const msg = beginInstallOverlay("Cloning ComfyUI-Manager…\nRestart follows automatically when ready.");
+    if (!msg) return;
+    try {
+      const res = await API.pipelineDepsInstallManager();
+      _activeJobId = res.job_id;
+      pollInstall(res.job_id, msg);
+    } catch (e) {
+      _activeJobId = null;
+      window.FunPackRestart?.removeOverlay?.();
+      alert("Install failed: " + (e.message || e));
+    }
+  }
+
+  async function restartComfyOnly() {
+    closeModal();
+    const msg = beginInstallOverlay("Restarting ComfyUI…\nComfyUI-Manager is on disk but not loaded yet.");
+    if (!msg) return;
+    try {
+      await API.restart();
+    } catch (_) { /* expected while server exits */ }
+    window.FunPackRestart?.waitForReload?.(msg, Date.now());
+  }
+
+  async function startInstall(deps) {
+    const ids = (deps.missing_packs || []).map((p) => p.id);
+    if (!ids.length) return;
+    const msg = beginInstallOverlay(
+      "Downloading and installing missing nodes:\n1 out of " + ids.length + " - " + (deps.missing_packs[0]?.title || "…"),
+    );
+    if (!msg) return;
+    try {
+      const res = await API.pipelineDepsInstall(ids);
+      _activeJobId = res.job_id;
+      pollInstall(res.job_id, msg);
+    } catch (e) {
+      _activeJobId = null;
+      window.FunPackRestart?.removeOverlay?.();
+      alert("Install failed: " + (e.message || e));
+    }
+  }
+
+  // The family decides which nodes and which model files the project needs, so it is the
+  // FIRST question — asking it after an install would have installed the wrong thing.
+  // Persist the family and bring the project onto its frame geometry. Split out from
+  // chooseFamily so the onboarding wizard can pick a family without the modal reopening
+  // itself on top of the wizard.
+  async function applyFamily(key) {
+    if (!S.get().project) return "";
+    geometryNote = "";   // otherwise a previous pick's note is returned again
+    const models = JSON.parse(JSON.stringify(S.get().models || S.get().project?.models || { slots: [] }));
+    models.model_family = key;
+    await API.saveModels(S.get().project.id, models);
+    await refreshModels(models);
+    return applyFamilyGeometry();
+  }
+
+  // Frame geometry belongs to the model, not to taste: a family change may move the project
+  // onto a different frame grid (LTX 8k+1 / H3 17k+5) and a fixed rate (H3 is always 24 fps).
+  // Split out from applyFamily because the family is now DETECTED from the checkpoint, so a
+  // change can arrive from the Models panel without anyone visiting the wizard — and the
+  // migration has to happen either way or the run fails, or plays back at the wrong speed.
+  function applyFamilyGeometry() {
+    const st = S.get();
+    const grid = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(st) : null;
+    if (grid && st.project) {
+      const patch = {};
+      const frames = Number(st.project.num_frames_per_scene);
+      const snapped = window.PipelineCaps.snapFramesTo(frames, st, "round");
+      if (frames !== snapped) patch.num_frames_per_scene = snapped;
+      if (grid.fps && Number(st.project.frame_rate) !== grid.fps) patch.frame_rate = grid.fps;
+      if (Object.keys(patch).length) {
+        S.patchProject(patch);
+        // Shown in the modal below; if setup is already complete and the modal closes, the
+        // new values are visible in the inspector's Frames / FPS fields either way.
+        geometryNote = "Project moved onto this model's frame geometry: "
+          + (patch.num_frames_per_scene || frames) + " frames per scene"
+          + (patch.frame_rate ? " at " + patch.frame_rate + " fps" : "")
+          + " (grid " + grid.label + ").";
+      }
+    }
+    return geometryNote;
+  }
+
+  async function chooseFamily(key) {
+    if (!S.get().project) return;
+    const tok = _closeToken;
+    await applyFamily(key);
+    if (tok !== _closeToken) return;   // user closed the modal while this was in flight
+    let deps;
+    try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { closeModal(); return; }
+    if (tok !== _closeToken) return;
+    if (!deps?.needs_setup) { closeModal(); return; }
+    openModal(deps);
+  }
+
+  function familyStep(deps) {
+    const box = el("div", "pipe-setup-family");
+    box.append(el("div", "pipe-setup-manual-title", "Which model is this project for?"));
+    (deps.families || []).forEach((f) => {
+      const active = f.key === deps.family;
+      const b = el("button", "btn ghost pipe-setup-family-btn" + (active ? " active" : ""));
+      b.type = "button";
+      const title = el("div", "pipe-setup-family-title", f.label);
+      if (!f.released) title.append(el("span", "pipe-setup-sub", "not released yet"));
+      b.append(title);
+      b.append(el("div", "pipe-setup-sub", f.summary || ""));
+      b.onclick = () => chooseFamily(f.key);
+      box.append(b);
+    });
+    return box;
+  }
+
+  // What the chosen family still needs, plus anything about it a user cannot read off
+  // their own graph — MiniMax H3's two interchangeable-looking diffusion checkpoints
+  // above all. Shown whenever there is something to say, not only when it is missing.
+  function readinessBlock(r) {
+    const box = el("div", "pipe-setup-readiness");
+    if (r.note) box.append(el("div", "pipe-setup-hint", r.note));
+    if (r.source_url) {
+      const a = el("a", "pipe-setup-link", r.source_title || r.source_url);
+      a.href = r.source_url; a.target = "_blank"; a.rel = "noopener";
+      box.append(a);
+    }
+    const missing = r.missing_nodes || [];
+    if (missing.length) {
+      box.append(el("div", "pipe-setup-manual-title", "Nodes not in your ComfyUI yet:"));
+      const ul = el("ul", "pipe-setup-list");
+      missing.forEach((n) => {
+        const li = el("li", null, n.label);
+        li.append(el("span", "pipe-setup-sub", n.class + (n.why ? " — " + n.why : "")));
+        ul.append(li);
+      });
+      box.append(ul);
+    }
+    if ((r.models || []).length) {
+      box.append(el("div", "pipe-setup-manual-title",
+        r.released ? "Model files this pipeline uses:" : "Model files to download when they are published:"));
+      const ul = el("ul", "pipe-setup-list");
+      r.models.forEach((m) => {
+        const li = el("li", null, m.label);
+        li.append(el("span", "pipe-setup-sub", "models/" + m.folder + (m.hint ? " — " + m.hint : "")));
+        ul.append(li);
+      });
+      box.append(ul);
+    }
+    return box;
+  }
+
+  function openModal(deps) {
+    // One-shot, and read AFTER closeModal(): reopening is how a family switch gets here, so
+    // clearing it on close would drop the very message that switch produced.
+    const geometryLine = geometryNote;
+    geometryNote = "";
+    closeModal();
+    overlay = el("div", "modal-overlay pipe-setup-overlay");
+    const modal = el("div", "modal pipe-setup-modal");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", "Pipeline setup"));
+    modal.append(head);
+
+    const content = el("div", "modal-content");
+    content.append(familyStep(deps));
+    if (geometryLine) content.append(el("div", "pipe-setup-hint", geometryLine));
+    const r = deps.readiness;
+    const unreleased = r && !r.released;
+    if (unreleased || (r && (r.note || (r.missing_nodes || []).length))) {
+      content.append(readinessBlock(r));
+    }
+    // Only talk about installing when there is something Manager can actually install.
+    // A family that is not released yet has nothing to fetch, and offering to fetch it
+    // would be a promise the button cannot keep.
+    const hasPacks = (deps.missing_packs || []).length > 0;
+    if (hasPacks && deps.needs_manager_install) {
+      content.append(el("p", "pipe-setup-lead",
+        "Nodes required for the built-in pipeline are missing. Install ComfyUI-Manager first, then we can fetch the rest."));
+    } else if (hasPacks && deps.needs_manager_restart) {
+      content.append(el("p", "pipe-setup-lead",
+        "ComfyUI-Manager is on disk but not running yet. Restart ComfyUI to load it, then install the missing node packs."));
+    } else if (hasPacks) {
+      content.append(el("p", "pipe-setup-lead",
+        "Node packs required for the built-in pipeline are missing. Do you want to install them?"));
+    }
+    if (hasPacks) {
+      content.append(packList(deps));
+    }
+    if (hasPacks && deps.needs_manager_install) {
+      content.append(el("div", "pipe-setup-hint",
+        "ComfyUI-Manager handles downloads and updates for custom node packs."));
+      content.append(manualBlock(deps));
+    } else if (hasPacks && !deps.manager_available) {
+      content.append(manualBlock(deps));
+    }
+    if ((deps.unmapped_classes || []).length) {
+      content.append(el("div", "pipe-setup-warn",
+        "Unmapped missing classes: " + deps.unmapped_classes.join(", ")));
+    }
+    modal.append(content);
+
+    const foot = el("div", "pipe-setup-foot");
+    if (!hasPacks) {
+      // nothing installable — the only useful action left is to close and come back
+    } else if (deps.needs_manager_install) {
+      const mgrBtn = el("button", "btn primary", "Install ComfyUI-Manager");
+      mgrBtn.type = "button";
+      mgrBtn.onclick = () => startManagerInstall();
+      foot.append(mgrBtn);
+    } else if (hasPacks && deps.needs_manager_restart) {
+      const restartBtn = el("button", "btn primary", "Restart ComfyUI");
+      restartBtn.type = "button";
+      restartBtn.onclick = () => restartComfyOnly();
+      foot.append(restartBtn);
+    } else if (hasPacks && deps.manager_available) {
+      const installBtn = el("button", "btn primary", "Install missing nodes");
+      installBtn.type = "button";
+      installBtn.onclick = () => startInstall(deps);
+      foot.append(installBtn);
+    }
+    const ownBtn = el("button", "btn", "No, I'll use my own pipeline");
+    ownBtn.type = "button";
+    // This PERSISTS disable_core on the project — without a warning it read like a
+    // harmless "dismiss", then Generate failed ("no outputs") and Studio/Chain Sampler
+    // settings vanished with no visible cause.
+    ownBtn.onclick = () => {
+      if (!confirm(
+        "This DISABLES the built-in FunPack pipeline for this project and saves that choice.\n\n"
+        + "Generation will then run ONLY the nodes you wire yourself in Models — until you wire "
+        + "a final IMAGE to the 🌐 Global video output, Generate has nothing to run.\n\n"
+        + "You can re-enable it any time: Models → Enable built-in pipeline.\n\nContinue?"
+      )) return;
+      useOwnPipeline();
+    };
+    foot.append(ownBtn);
+    const dismissBtn = el("button", "btn ghost", "Close");
+    dismissBtn.type = "button";
+    dismissBtn.onclick = () => dismissModal();
+    foot.append(dismissBtn);
+    modal.append(foot);
+
+    overlay.append(modal);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) dismissModal(); });
+    document.body.append(overlay);
+  }
+
+  // The onboarding wizard asks the same questions in its own chrome, so this modal must
+  // not open behind it — or, worse, on top of the editor the moment the wizard finishes.
+  function markHandled() {
+    setDismissed();
+    dismissModal();
+  }
+
+  async function maybePrompt() {
+    if (window.__FUNPACK_TOUR__) return;
+    if (window.Onboarding?.isOpen?.()) return;
+    if (dismissed()) return;
+    const st = S.get();
+    if (!st.project || !builtInPipelineActive(st)) return;
+    const tok = _closeToken;
+    let deps;
+    try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { return; }
+    if (tok !== _closeToken) return;
+    if (!deps?.needs_setup) return;
+    openModal(deps);
+  }
+
+  // Opened on demand from Models → Model family, so the setup panel is reachable again
+  // after it has been dismissed once (the auto-prompt is one-shot per browser).
+  async function open() {
+    if (!S.get().project) return;
+    const tok = _closeToken;
+    let deps;
+    try { deps = await API.pipelineDeps(S.get().project?.id); } catch (_) { return; }
+    if (tok !== _closeToken) return;
+    openModal(deps);
+  }
+
+  window.PipelineSetup = {
+    maybePrompt, open, close: closeModal,
+    // Exposed for the onboarding wizard, which renders the prerequisite step in its
+    // own full-screen chrome but must not re-implement the install/poll/restart
+    // machinery below.
+    applyFamily, applyFamilyGeometry, useOwnPipeline, markHandled,
+    installPacks: startInstall,
+    installManager: startManagerInstall,
+    restartComfy: restartComfyOnly,
+  };
+})();

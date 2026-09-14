@@ -1,0 +1,154 @@
+// Temp files browser: a lightweight media-bin view over ComfyUI's temp directory
+// (scene previews & other transient outputs that are wiped on restart). A section of
+// the unified Settings window. Each item can be opened in a new tab or saved to disk
+// — no in-app player.
+(function () {
+  const { el, clear } = window.dom;
+  const API = window.MovieEditorAPI;
+
+  let files = [];
+  // Probe <video> elements still holding a network connection. Chrome keeps stalled media
+  // connections open and allows only ~6 per origin — a grid of live <video> thumbnails
+  // starved the pool so /view tabs wouldn't load and even generate/API calls hung until a
+  // ComfyUI reboot. Thumbnails are snapshotted to a canvas and the probe released at once.
+  const _probes = new Set();
+
+  function _releaseProbe(vid) {
+    _probes.delete(vid);
+    try { vid.removeAttribute("src"); vid.load(); } catch (_) {}
+  }
+
+  function _releaseAllProbes() { [..._probes].forEach(_releaseProbe); }
+
+  function _fmtSize(n) {
+    if (!n && n !== 0) return "";
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function _appendThumb(thumb, f) {
+    const url = API.tempFileUrl(f);
+    if (f.kind === "image") {
+      const img = el("img");
+      img.src = url; img.loading = "lazy";
+      thumb.append(img);
+      return;
+    }
+    if (f.kind === "video") {
+      const ph = el("span", "media-icon media-vid-ph", "▶");
+      thumb.append(ph);
+      const vid = document.createElement("video");
+      vid.muted = true; vid.preload = "metadata"; vid.playsInline = true;
+      vid.src = url;
+      _probes.add(vid);
+      vid.onerror = () => _releaseProbe(vid);
+      vid.onloadeddata = () => {
+        if (thumb.isConnected && !thumb.querySelector("canvas")) {
+          const canvas = document.createElement("canvas");
+          canvas.className = "media-vid-thumb";
+          canvas.width = vid.videoWidth || 320;
+          canvas.height = vid.videoHeight || 180;
+          try {
+            canvas.getContext("2d").drawImage(vid, 0, 0, canvas.width, canvas.height);
+            ph.remove();
+            thumb.append(canvas);
+          } catch (_) {}
+        }
+        _releaseProbe(vid); // frame captured — free the media connection immediately
+      };
+      return;
+    }
+    thumb.append(el("span", "media-icon media-aud-ph", "♪"));
+  }
+
+  function _card(f) {
+    const card = el("div", "media-card tmp-card");
+    const thumb = el("div", "media-thumb");
+    _appendThumb(thumb, f);
+    card.append(thumb);
+
+    const nameRow = el("div", "media-name-row");
+    const nameEl = el("div", "media-name", f.filename);
+    nameEl.title = f.subfolder ? `${f.subfolder}/${f.filename}` : f.filename;
+    nameRow.append(nameEl);
+    card.append(nameRow);
+
+    const meta = el("div", "pj-meta tmp-meta", _fmtSize(f.size));
+    card.append(meta);
+
+    const acts = el("div", "tmp-card-acts");
+    if (f.kind === "video" || f.kind === "image" || f.kind === "audio") {
+      const open = el("button", "btn ghost tiny", f.kind === "video" ? "↗ Open video" : "↗ Open");
+      open.title = "Open in a new browser tab";
+      open.onclick = () => window.open(API.tempFileUrl(f), "_blank");
+      acts.append(open);
+    }
+    const save = el("button", "btn ghost tiny", "⤓ Save");
+    save.title = "Download to your computer";
+    save.onclick = async () => {
+      save.disabled = true;
+      try { await API.downloadTempFile(f); }
+      catch (e) { alert("Save failed: " + (e.message || e)); }
+      finally { save.disabled = false; }
+    };
+    acts.append(save);
+    card.append(acts);
+    return card;
+  }
+
+  function renderBody(body) {
+    clear(body);
+    if (!files.length) {
+      body.append(el("div", "pj-meta media-grid-empty", "No temp media right now. Scene previews and other transient outputs appear here while ComfyUI is running."));
+      return;
+    }
+    const grid = el("div", "media-grid tmp-grid");
+    files.forEach((f) => grid.append(_card(f)));
+    body.append(grid);
+  }
+
+  async function refresh(body, countEl) {
+    _releaseAllProbes(); // drop probes from the previous grid before rebuilding
+    body.append(el("div", "pj-meta", "Loading…"));
+    try {
+      files = (await API.listTemp()).files || [];
+    } catch (e) {
+      clear(body);
+      body.append(el("div", "pj-meta media-grid-empty", "Could not list temp files: " + (e.message || e)));
+      return;
+    }
+    if (countEl) countEl.textContent = files.length ? `${files.length} file(s)` : "";
+    clear(body);
+    renderBody(body);
+  }
+
+  function mount(container, ctx) {
+    container.append(el("div", "es-hint",
+      "Transient ComfyUI outputs — scene previews and the like. These are wiped when ComfyUI restarts, so save anything worth keeping."));
+    const body = el("div", "tmp-body");
+    container.append(body);
+
+    const countEl = el("span", "pj-meta tmp-count");
+    const refreshBtn = el("button", "btn ghost tiny", "⟳ Refresh");
+    refreshBtn.onclick = () => refresh(body, countEl);
+    ctx.setActions([countEl, refreshBtn]);
+
+    refresh(body, countEl);
+    return () => _releaseAllProbes();
+  }
+
+  window.SettingsWindow.register({
+    id: "tempfiles", group: "System", order: 2, title: "Temp Files",
+    subtitle: "Transient ComfyUI outputs — wiped when the server restarts.",
+    keywords: "temp files previews transient media save download browser",
+    iconBg: "linear-gradient(180deg,#62d6cd,#2c9e95)",
+    icon: '<svg viewBox="0 0 16 16" width="13" height="13"><path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.5 1.8h5.7c.7 0 1.2.5 1.2 1.2v6c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2V4.2z" fill="#fff"/></svg>',
+    mount,
+  });
+
+  window.TempBrowserModal = {
+    open: () => window.SettingsWindow.open("tempfiles"),
+    close: () => window.SettingsWindow.close(),
+  };
+})();

@@ -36,6 +36,8 @@ def app(tmp_path, monkeypatch):
     (app_dir / "boot.js").write_text("export const app = 1;")
     (app_dir / "composer" / "composer.css").write_text(":root{}")
     (app_dir / "index.html").write_text("<p>shell</p>")
+    (app_dir / "legacy").mkdir(parents=True)
+    (app_dir / "legacy" / "index.html").write_text("<p>legacy shell</p>")
 
     mod_dir = tmp_path / "modules" / "timing" / "audio_clock"
     mod_dir.mkdir(parents=True)
@@ -130,8 +132,9 @@ def test_query_string_does_not_change_the_target(app):
 
 
 def test_index_is_served(app):
+    # The legacy (v4-derived) frontend is the served app now.
     status, body = get(app, P + "/")
-    assert status == 200 and "shell" in body
+    assert status == 200 and "legacy shell" in body
 
 
 def test_health(app):

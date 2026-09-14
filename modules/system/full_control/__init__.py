@@ -22,6 +22,7 @@ ID = "full_control"
 TITLE = "Full control"
 MOUNT = "settings.general"
 STAGE = "load"
+CATEGORY = "system"
 STATUS = "proven"
 
 SETTINGS = {

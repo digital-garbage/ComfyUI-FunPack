@@ -833,7 +833,10 @@ def register(routes, prefix=None):
 
     @routes.get(P + "/")
     async def _index(_req):
-        return _respond(static.serve(config.APP_DIR, "index.html", config.APP_EXTS))
+        # The legacy (v4-derived) frontend is the served app now -- the composer
+        # entry point at app/index.html stays in the tree, unreferenced, until a
+        # later cleanup pass removes it (nothing else imports it).
+        return _respond(static.serve(config.APP_DIR, "legacy/index.html", config.APP_EXTS))
 
     @routes.get(P)
     async def _index_bare(_req):

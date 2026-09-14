@@ -188,6 +188,21 @@ def test_unknown_status_is_refused():
         validate(announce(status="probably-fine"))
 
 
+def test_category_is_optional_and_defaults_to_uncategorised():
+    spec = validate(announce())
+    assert spec.category == ""
+
+
+def test_unknown_category_is_refused():
+    with pytest.raises(SchemaError, match="unknown category"):
+        validate(announce(category="vibes"))
+
+
+def test_a_known_category_is_kept():
+    spec = validate(announce(category="guidance"))
+    assert spec.category == "guidance"
+
+
 def test_relations_must_be_lists_of_ids():
     with pytest.raises(SchemaError, match="after"):
         validate(announce(after="audio_clock"))     # a bare string is a common slip
@@ -201,6 +216,7 @@ def test_the_manifest_carries_what_the_ui_needs():
     assert manifest["id"] == "audio_clock"
     assert manifest["requires"] == ["audio_stream"]
     assert manifest["stage"] == "latent"
+    assert manifest["category"] == ""
     assert "source" not in manifest, "the import path is core's business, not the browser's"
 
 
