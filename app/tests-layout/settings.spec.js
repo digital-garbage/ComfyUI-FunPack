@@ -3,6 +3,14 @@
 
 import { test, expect } from "@playwright/test";
 
+// Skipped: / now serves the ported v4 frontend (app/legacy/), not composer --
+// these specs assert on .cx-workspace*/window.FunPack, which no longer exist
+// on the served page. Pending rewrite against the v4-derived DOM as part of
+// the v4-UI-onto-v5-backend port's pixel-exactness verification step (see
+// the plan file). Not deleted: the assertions are still the right SHAPE of
+// check, just against selectors this page no longer has.
+test.skip(true, "composer retired in favor of the v4 UI port -- rewrite against app/legacy's DOM");
+
 async function app(page) {
   await page.goto("/funpack/");
   await page.waitForFunction(() => window.FunPack !== undefined);

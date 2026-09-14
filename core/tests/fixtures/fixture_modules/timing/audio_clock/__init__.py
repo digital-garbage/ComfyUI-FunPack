@@ -4,6 +4,7 @@ ID = "audio_clock"
 TITLE = "Audio clock"
 MOUNT = "generation.timing"
 STAGE = "conditioning"
+CATEGORY = "guidance"
 STATUS = "proven"
 REQUIRES = ["audio_stream"]
 

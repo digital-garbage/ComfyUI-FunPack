@@ -7,6 +7,14 @@
 
 import { test, expect } from "@playwright/test";
 
+// Skipped: / now serves the ported v4 frontend (app/legacy/), not composer --
+// these specs assert on .cx-workspace*/window.FunPack, which no longer exist
+// on the served page. Pending rewrite against the v4-derived DOM as part of
+// the v4-UI-onto-v5-backend port's pixel-exactness verification step (see
+// the plan file). Not deleted: the assertions are still the right SHAPE of
+// check, just against selectors this page no longer has.
+test.skip(true, "composer retired in favor of the v4 UI port -- rewrite against app/legacy's DOM");
+
 // A 2x2 PNG, so the loader has something real to fetch without a server behind
 // it. Every other route on the dev server answers 404, and an image that never
 // arrives would make this pass whether the loader ran or not.

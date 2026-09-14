@@ -27,6 +27,7 @@ def test_the_good_module_loads(scanned):
     spec = scanned.specs["audio_clock"]
     assert spec.title == "Audio clock"
     assert spec.stage == "conditioning"
+    assert spec.category == "guidance"
     assert spec.status == "proven"
 
 
