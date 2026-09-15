@@ -3701,6 +3701,20 @@
       return false;
     }
     _wireGenerateBridge();
+    // GenerateBridge holds exactly ONE run, and _genRunPrefix/_genRunSceneIds/
+    // _genAdoptedRun belong to whichever call is currently driving it. A
+    // second call reaching here while a first is still queuing/running (the
+    // main Generate/Selected buttons are gated against this by `busy(st)` in
+    // actionbar.js, but H3 Combo Sweep's own "Run sweep" button is not) would
+    // silently overwrite those with ITS scene/prefix, then get refused deeper
+    // inside (session.js's own starting/phase guard) -- leaving the real run's
+    // eventual result recorded onto the WRONG scene when it finishes, and its
+    // clock stop possibly skipped. Refused here, loudly, before any of that
+    // shared state is touched, rather than corrupting it silently.
+    if (state.gen && (state.gen.state === "queuing" || state.gen.state === "running")) {
+      console.warn(`[FunPack] "${prefix || "a generation"}" was refused: another generation is already in flight.`);
+      return false;
+    }
     // A run started through the normal click path owns its own clock
     // lifecycle (the _clockedX wrapper's `finally`, spanning the whole
     // batch) — any stale flag left over from a PRIOR adopted run must not
