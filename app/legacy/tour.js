@@ -385,6 +385,38 @@
     // promises not to touch real files. Closing it in the same pass.
     API.listTemp = ok({ files: [] });
     API.downloadTempFile = ok({});
+    // git_actions.js's window.FunPackGit AND menubar.js's independent
+    // restartComfy() both call window.MovieEditorAPI.restart() directly --
+    // a real server restart, killing any real generation in progress -- and
+    // both are wired one click from the same .settings-win sidebar the
+    // models-modal step already proved reachable (Custom Nodes' inline
+    // "Restart ComfyUI" button, and the built-in "Updates & ComfyUI"
+    // section). settings_window.js's System section also calls G.refresh()
+    // -- a real GET /api/git/status -- the INSTANT it mounts, same
+    // zero-click shape as pipeline_state.js's ensureLoaded(). gitStatus's
+    // mock returning {ok:false} also cleanly short-circuits git_actions.js's
+    // _ensureStatus() gate on update/switchBranch/rollback via its existing
+    // alert path, so those three are covered without needing UI changes;
+    // gitUpdate/gitCheckout/gitRollback are still mocked directly too, in
+    // case anything ever bypasses that gate.
+    API.restart = ok({});
+    API.gitStatus = ok({ ok: false, detail: "Git status is not available in the tour." });
+    API.gitUpdate = ok({ ok: false });
+    API.gitCheckout = ok({ ok: false });
+    API.gitRollback = ok({ ok: false });
+    // menubar.js's FunPackMaintenance also reaches deleteRefinementKey/
+    // clearGlobalTaste ("This cannot be undone", same words as the custom-
+    // node remove confirm round 7 closed) and exportRefinementKeyFile.
+    // Currently dormant -- v5's own api.js has these as stubs ("refinement
+    // keys are not built in v5 yet") -- but the same "block it now, before a
+    // future backend wires it up" reasoning as saveClipToMediaBin/
+    // renameMedia applies: these are exactly the kind of irreversible
+    // action that must never go live unnoticed.
+    API.refinementKeys = ok({ keys: [] });
+    API.exportRefinementKeyFile = ok({});
+    API.deleteRefinementKey = ok({ deleted: "demo-key", removed: 0 });
+    API.absoluteStoreInfo = ok({ exists: false });
+    API.clearAbsoluteStore = ok({});
   }
 
   function patchStore(Store) {
