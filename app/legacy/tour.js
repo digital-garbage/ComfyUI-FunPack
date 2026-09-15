@@ -344,7 +344,7 @@
       "generate", "generateMontage", "generateSelected", "renderFinal", "exportSelected",
       "saveSelectedToMediaBin", "commit", "newProject", "loadProject", "deleteProject",
       "importProject", "downloadProject", "uploadMedia", "deleteMedia", "deleteMediaMany",
-      "interrupt", "resetStudioSession", "syncFromPreview",
+      "interrupt", "resetStudioSession", "syncFromPreview", "saveClipToMediaBin",
     ];
     const labels = {
       generate: "Generate",
@@ -369,6 +369,12 @@
       // call) without going through anything else already on this list, so
       // it needs its own block rather than relying on "commit" to cover it.
       syncFromPreview: "Sync scenes from preview",
+      // Not reachable via a real network call today -- API.importClipToMediaBin
+      // is itself a stub ("no render/stitch stage yet") -- but the button
+      // already renders during the tour (tour-s2 satisfies
+      // clipSaveableToMediaBin()), so this needs blocking now rather than
+      // whenever that stage lands and the stub silently becomes a real PUT.
+      saveClipToMediaBin: "Save video",
     };
     blocked.forEach((name) => {
       if (typeof Store[name] !== "function") return;
