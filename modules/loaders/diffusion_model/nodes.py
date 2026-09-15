@@ -11,7 +11,7 @@ import folder_paths
 from comfy_api.latest import io
 
 from ..._core import log
-from .. import gguf_support
+from .. import gguf_support, sla_attention
 from ..common import (COMPUTE_DTYPES, WEIGHT_DTYPES, attention_choices,
                       attention_override, dtype_of, set_fp16_accumulation,
                       weight_model_options)
@@ -49,6 +49,55 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                        "listed; 'default' keeps ComfyUI's launch choice."),
                 io.Boolean.Input("fp16_accumulation", default=False, optional=True,
                                  tooltip="Faster fp16 matmuls where the torch build supports it."),
+                io.Boolean.Input("sla", default=False, optional=True,
+                                 tooltip="Block-sparse attention for MiniMax H3 -- the "
+                                         "inference path lightx2v's SLA turbo LoRA was "
+                                         "distilled against, which is why that LoRA gives no "
+                                         "speedup on its own. Roughly 3.7x the attention "
+                                         "throughput at 768p/15s. Runs ALONGSIDE the attention "
+                                         "backend above rather than replacing it: SLA takes "
+                                         "H3's long packed self-attention, the chosen backend "
+                                         "takes the text refiner, masked calls and any trailing "
+                                         "dense steps. Skipped, with the reason, on anything "
+                                         "that is not MiniMax H3 or on a machine without Triton."),
+                # SLA settings. Every one is validated at its default (see sla_attention);
+                # they are here because a knob whose value was measured is still a knob.
+                io.Float.Input("sla_sparsity", default=sla_attention.SLA_DEFAULTS["sparsity_ratio"],
+                              min=0.0, max=0.95, step=0.05, optional=True,
+                              tooltip="Fraction of key blocks skipped, when attention is "
+                                      "sla_h3. 0.90 is validated; 0.85 is lightx2v's own value "
+                                      "and ~15% slower. Break-even is around 0.60 -- below that "
+                                      "the kernel is SLOWER than dense, so a low value is a "
+                                      "loss, not a safe fallback."),
+                io.Combo.Input("sla_block_size",
+                               options=["64", "128"],
+                               default=str(sla_attention.SLA_DEFAULTS["block_size"]),
+                               optional=True,
+                               tooltip="How many sequence tokens share one key selection. H3 "
+                                       "packs audio at 80 rows per second, so a 128-row block "
+                                       "forces 1.6s of speech down one attention pattern while "
+                                       "the same rows are 3% of a video frame. Use 128 only "
+                                       "when the audio does not matter."),
+                io.Boolean.Input("sla_protect_audio",
+                                 default=sla_attention.SLA_DEFAULTS["protect_audio"], optional=True,
+                                 tooltip="Always attend the [text | cond | audio] prefix, "
+                                         "whatever top-k picks. Audio is ~1% of the packed "
+                                         "sequence, so plain top-k regularly drops all of it "
+                                         "and the soundtrack degrades while the video still "
+                                         "looks fine. Costs about 7%."),
+                io.Int.Input("sla_min_seq_len",
+                            default=sla_attention.SLA_DEFAULTS["min_seq_len"],
+                            min=0, max=1000000, step=1024, optional=True,
+                            tooltip="Sequences shorter than this stay dense. Guards the short "
+                                    "text refiner, which must never be sparsified, and "
+                                    "low-resolution runs where block selection costs more "
+                                    "than it saves."),
+                io.Int.Input("sla_dense_last_steps",
+                            default=sla_attention.SLA_DEFAULTS["dense_last_steps"],
+                            min=0, max=8, optional=True,
+                            tooltip="Run the last N sampling steps at full attention. 0 "
+                                    "matches lightx2v; 1 was tested and did not help, for "
+                                    "+20% time."),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -58,7 +107,10 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
 
     @classmethod
     def execute(cls, model_name: str, weight_dtype: str, compute_dtype: str,
-                attention: str, fp16_accumulation: bool = False) -> io.NodeOutput:
+                attention: str, fp16_accumulation: bool = False, sla: bool = False,
+                sla_sparsity: float = None, sla_block_size: str = None,
+                sla_protect_audio: bool = None, sla_min_seq_len: int = None,
+                sla_dense_last_steps: int = None) -> io.NodeOutput:
         notes = [f"FunPack Diffusion Model Loader | {model_name}"]
 
         accumulation = set_fp16_accumulation(fp16_accumulation)
@@ -120,18 +172,38 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
             notes.append("compute dtype: unsupported by this ComfyUI, ignored")
 
         override = attention_override(attention)
-        if override is not None:
-            model.model_options.setdefault("transformer_options", {})[
-                "optimized_attention_override"] = override
-            notes.append(f"attention: {attention}")
+
+        # SLA wraps the chosen backend rather than replacing it: there is one
+        # override slot, so the backend goes in as SLA's dense fall-through.
+        # When SLA does not take (not H3, no Triton, switched off) the backend
+        # is installed on its own -- asking for sparse attention must never
+        # cost the backend that was picked.
+        installed = False
+        if sla:
+            model, sla_note, installed = sla_attention.install_sla(
+                model,
+                sparsity_ratio=sla_sparsity, block_size=sla_block_size,
+                min_seq_len=sla_min_seq_len, dense_last_steps=sla_dense_last_steps,
+                protect_audio=sla_protect_audio,
+                dense_fn=override, dense_label=attention)
+            notes.append(sla_note)
+        if not installed:
+            if override is not None:
+                model.model_options.setdefault("transformer_options", {})[
+                    "optimized_attention_override"] = override
+                notes.append(f"attention: {attention}")
+            else:
+                notes.append("attention: default (as launched)")
         else:
-            notes.append("attention: default (as launched)")
+            notes.append(f"attention: {attention} (dense calls)")
 
         # Never reach into the model's shape to describe it: a log line that
         # assumes structure can fail the load it was only meant to narrate.
         kind = type(getattr(model, "model", model)).__name__
+        applied_attention = "sla_h3" if installed else (
+            attention if override is not None else "default (as launched)")
         log.info("FunPack Diffusion Model Loader",
                  f"{model_name} loaded as {kind}, weights "
                  f"{weight_dtype}, compute {compute_dtype}, attention "
-                 f"{attention if override is not None else 'default (as launched)'}")
+                 f"{applied_attention}")
         return io.NodeOutput(model, "\n".join(notes))
