@@ -3,12 +3,16 @@
 // Three kinds of function live here, per the port plan:
 //   (a) compatible, same shape        -- just a different URL.
 //   (b) compatible route, different shape -- a small adapter in the body.
-//   (c) no v5 equivalent yet          -- a stub. Calling one NEVER throws or
-//       rejects: it resolves to `{ unsupported: true, reason }`. This is the
-//       "feature-independent" contract the port asked for -- one module that
-//       hasn't been built yet must not be able to crash a caller that forgot
-//       to check for it. Real UI wiring for "show this control disabled" is
-//       a separate, later pass; this just makes the absence survivable.
+//   (c) no v5 equivalent yet          -- a stub. Calling one REJECTS with a
+//       plain Error naming why, same as any other failed request. v4's ~60
+//       caller files were already written defensively for exactly this --
+//       every call site that matters is already inside a try/catch or a
+//       .catch() with a sensible fallback, because a real request can always
+//       fail on a rental. A stub that instead *resolved* to a sentinel value
+//       would skip all of that existing handling and hand callers a value
+//       shaped nothing like what they expect, which breaks quietly further
+//       downstream instead of failing where the call happened -- worse, not
+//       better, for "one unbuilt module can't take the rest down with it."
 (function () {
   const BASE = window.location.pathname.replace(/\/+$/, "").replace(/\/index\.html$/, "");
   const FUNPACK = "/funpack";
@@ -48,20 +52,20 @@
     return res.status === 204 ? null : res.json();
   }
 
-  // A module v5 has not built yet. Resolves rather than rejects, so a caller
-  // that does `const x = await API.thing()` without a try/catch gets a value
-  // it can branch on instead of an uncaught rejection taking down whatever
-  // called it.
-  const unsupported = (reason) => Promise.resolve({ unsupported: true, reason });
-  // Same contract for a plain (non-async) URL getter: a placeholder anchor
-  // rather than a broken href built from `undefined`.
+  // A module v5 has not built yet. See the header: this rejects, on purpose,
+  // so the try/catch every real caller already has around a fallible request
+  // is what handles it -- not a new contract those ~60 files never learned.
+  const unsupported = (reason) => Promise.reject(new Error(reason));
+  // A plain (non-async) URL getter has no promise to reject -- a placeholder
+  // anchor is the closest equivalent; whatever it's set as `href` on simply
+  // goes nowhere when clicked, which is a control staying inert, not broken.
   const unsupportedUrl = () => "#";
 
   const ClientAPI = {
     health: () => j("GET", API("/api/health")),
 
     // --- projects (a) ------------------------------------------------------
-    listProjects: async () => (await j("GET", API("/api/projects"))).projects,
+    listProjects: () => j("GET", API("/api/projects")), // {projects:[...]} -- callers unwrap .projects themselves
     createProject: (name) => j("POST", API("/api/projects"), { name }),
     getProject: (id) => j("GET", API(`/api/projects/${id}`)),
     saveProject: (id, data) => j("PUT", API(`/api/projects/${id}`), data),
@@ -96,7 +100,7 @@
     clearTransitions: () => unsupported("no transitions library in v5 yet"),
 
     // --- prompt shortcuts (a/b) ---------------------------------------------
-    shortcuts: async () => (await j("GET", API("/api/shortcuts"))).shortcuts,
+    shortcuts: () => j("GET", API("/api/shortcuts")), // {shortcuts:[...]} -- callers unwrap .shortcuts themselves
     suggestionStats: () => unsupported("no revolver in v5 yet"),
     saveCategory: () => unsupported("shortcut categories are per-shortcut fields in v5, not a separate CRUD"),
     saveShortcut: (item) => j("POST", API("/api/shortcuts"), item),
@@ -121,7 +125,7 @@
     customNodeRemove: (name) => j("POST", API("/api/packs/remove"), { name }),
 
     // --- media bin (a) ---------------------------------------------------------
-    listMedia: async () => (await j("GET", API("/api/media"))).media,
+    listMedia: () => j("GET", API("/api/media")), // {media:[...]} -- callers unwrap .media themselves
     mediaUrl: (id) => API(`/api/media/${encodeURIComponent(id)}/file`),
     deleteMedia: (id) => j("DELETE", API(`/api/media/${encodeURIComponent(id)}`)),
     renameMedia: () => unsupported("media has no name field in v5 -- it is addressed by id"),
@@ -149,17 +153,26 @@
       const body = await j("GET", API(`/api/nodes?classes=${encodeURIComponent(cls)}`));
       return body.nodes ? body.nodes[cls] : null;
     },
-    pipelinePorts: () => j("GET", API("/api/pipeline")), // pid ignored: v5's pipeline draft is global, not per-project
+    // v5's /api/pipeline is real, but its shape ({slots, refused, incomplete,
+    // queueable}) is nothing like v4's ({ports, core_producers, requirements,
+    // wiring, default_slots}) -- returning it under this name would answer
+    // with real JSON that quietly means nothing to the one caller (models.js)
+    // that reads it, which is worse than an honest stub: it never surfaces as
+    // "not built", just as permanently-empty ports/wiring. Stub until the
+    // Models & Pipeline panel is rewritten to read the real shape directly.
+    pipelinePorts: () => unsupported("v5's pipeline shape does not match v4's ports/wiring model yet"),
     pipelineDeps: () => unsupported("v5 offers manual pack install only -- no auto-detect for the loaded pipeline"),
     pipelineDepsInstall: () => unsupported("v5 offers manual pack install only -- no auto-detect for the loaded pipeline"),
     pipelineDepsInstallManager: () => unsupported("v5 offers manual pack install only -- no auto-detect for the loaded pipeline"),
     pipelineDepsInstallStatus: () => unsupported("v5 offers manual pack install only -- no auto-detect for the loaded pipeline"),
     pipelineDepsInstallCancel: () => unsupported("v5 offers manual pack install only -- no auto-detect for the loaded pipeline"),
     imageTargets: () => unsupported("not built in v5 yet"),
-    coreGraph: () => j("GET", API("/api/pipeline")),
+    // Same mismatch as pipelinePorts above -- v4's caller reads `.nodes`,
+    // which /api/pipeline's real response does not have.
+    coreGraph: () => unsupported("v5's pipeline shape does not match v4's core-graph model yet"),
     getModels: () => unsupported("the Models panel needs its own rewrite against v5's pipeline-slot shape"),
     saveModels: () => unsupported("the Models panel needs its own rewrite against v5's pipeline-slot shape"),
-    settingsCard: () => { throw new Error("settings card export is not built in v5 yet"); },
+    settingsCard: async () => { throw new Error("settings card export is not built in v5 yet"); },
     refreshModels: () => unsupported("v5 has no model-file cache to refresh -- it reads the folders live"),
     parseWorkflow: () => unsupported("workflow import is LOW priority, not built yet"),
     applyWorkflow: () => unsupported("workflow import is LOW priority, not built yet"),
@@ -199,18 +212,18 @@
     probeSetEnabled: () => unsupported("trajectory probe is LOW priority, not built yet"),
     probeClear: () => unsupported("trajectory probe is LOW priority, not built yet"),
     probeAnalyse: () => unsupported("trajectory probe is LOW priority, not built yet"),
-    probeExport: () => { throw new Error("trajectory probe is LOW priority, not built yet"); },
+    probeExport: async () => { throw new Error("trajectory probe is LOW priority, not built yet"); },
     probeImport: () => unsupported("trajectory probe is LOW priority, not built yet"),
     reinsStatus: () => unsupported("REINS is LOW priority, not built yet"),
     reinsSweep: () => unsupported("REINS is LOW priority, not built yet"),
     reinsClear: () => unsupported("REINS is LOW priority, not built yet"),
     reinsRateSlot: () => unsupported("REINS is LOW priority, not built yet"),
     reinsDiscardSlot: () => unsupported("REINS is LOW priority, not built yet"),
-    reinsExport: () => { throw new Error("REINS is LOW priority, not built yet"); },
+    reinsExport: async () => { throw new Error("REINS is LOW priority, not built yet"); },
     blockInfluenceStatus: () => unsupported("block influence probe is LOW priority, not built yet"),
     blockInfluenceSetEnabled: () => unsupported("block influence probe is LOW priority, not built yet"),
     blockInfluenceClear: () => unsupported("block influence probe is LOW priority, not built yet"),
-    blockInfluenceExport: () => { throw new Error("block influence probe is LOW priority, not built yet"); },
+    blockInfluenceExport: async () => { throw new Error("block influence probe is LOW priority, not built yet"); },
     detailProbeStatus: () => unsupported("detail probe is LOW priority, not built yet"),
     detailProbeSetEnabled: () => unsupported("detail probe is LOW priority, not built yet"),
     detailProbeClear: () => unsupported("detail probe is LOW priority, not built yet"),
@@ -250,7 +263,7 @@
     // --- refinement keys / absolute taste store (c) -- not built in v5 -------
     refinementKeys: () => unsupported("refinement keys are not built in v5 yet"),
     importRefinementKey: () => unsupported("refinement keys are not built in v5 yet"),
-    exportRefinementKeyFile: () => { throw new Error("refinement keys are not built in v5 yet"); },
+    exportRefinementKeyFile: async () => { throw new Error("refinement keys are not built in v5 yet"); },
     deleteRefinementKey: () => unsupported("refinement keys are not built in v5 yet"),
     absoluteStoreInfo: () => unsupported("refinement keys are not built in v5 yet"),
     clearAbsoluteStore: () => unsupported("refinement keys are not built in v5 yet"),
