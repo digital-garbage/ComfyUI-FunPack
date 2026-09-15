@@ -240,6 +240,49 @@ test("onAdopt fires BEFORE the run is adopted, not after reattach resolves", asy
   assert.deepEqual(order, ["onAdopt:s1:p1", "adopt", "subscriber-saw-it"]);
 });
 
+test("onAdopt's third argument carries every scene a multi-scene run covers", async () => {
+  // No chain sampler to split a multi-scene selection into several /prompt
+  // calls, so one run can cover several scenes at once. sceneId alone (the
+  // first) is what every existing caller still reads; sceneIds is additive,
+  // for a caller that needs the whole list back on reattach.
+  const run = fakeRun();
+  let got = null;
+  await reattach(run, "me", {
+    queuedFor: async () => ({ promptId: "q1", running: true, sceneId: "s1",
+                              sceneIds: ["s1", "s2", "s3"], projectId: "p1" }),
+    finishedFor: async () => { throw new Error("should not be asked"); },
+    onAdopt: (sceneId, projectId, sceneIds) => { got = { sceneId, projectId, sceneIds }; },
+  });
+  assert.deepEqual(got, { sceneId: "s1", projectId: "p1", sceneIds: ["s1", "s2", "s3"] });
+
+  // The finished-run path recovers it from the raw extra_data finishedFor
+  // hands back through onFound, the same way it already reads funpack_scene_id.
+  const run2 = fakeRun();
+  run2.seen = () => ["f1"];
+  let got2 = null;
+  await reattach(run2, "me", {
+    queuedFor: async () => null,
+    finishedFor: async (_id, _seen, { onFound } = {}) => {
+      if (onFound) onFound({ client_id: "me", funpack_scene_id: "s2",
+                             funpack_scene_ids: ["s2", "s4"], funpack_project_id: "p2" });
+      return "f1";
+    },
+    onAdopt: (sceneId, projectId, sceneIds) => { got2 = { sceneId, projectId, sceneIds }; },
+  });
+  assert.deepEqual(got2, { sceneId: "s2", projectId: "p2", sceneIds: ["s2", "s4"] });
+});
+
+test("onAdopt's third argument falls back to just the first scene when nothing said more", async () => {
+  const run = fakeRun();
+  let got = null;
+  await reattach(run, "me", {
+    queuedFor: async () => ({ promptId: "q1", running: true, sceneId: "s1", projectId: "p1" }),
+    finishedFor: async () => { throw new Error("should not be asked"); },
+    onAdopt: (sceneId, projectId, sceneIds) => { got = sceneIds; },
+  });
+  assert.deepEqual(got, ["s1"]);
+});
+
 test("history is not asked about a run this page never saw", async () => {
   const run = fakeRun();
   let asked = false;

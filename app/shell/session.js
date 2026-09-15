@@ -202,7 +202,15 @@ export async function reattach(run, id, { queuedFor, finishedFor, onAdopt } = {}
       if (run.state.phase === "idle") {
         const sceneId = queued.sceneId || null;
         const projectId = queued.projectId || null;
-        if (onAdopt) onAdopt(sceneId, projectId);
+        // A caller that queued more than one scene in a single run (no chain
+        // sampler to split them, so the whole selection goes as one /prompt)
+        // has nowhere else to recover that list from on reattach -- `sceneId`
+        // alone would only ever be the first of them. Optional third
+        // argument: every existing caller takes just the first two and never
+        // sees this.
+        const sceneIds = (queued.sceneIds && queued.sceneIds.length) ? queued.sceneIds
+          : (sceneId ? [sceneId] : []);
+        if (onAdopt) onAdopt(sceneId, projectId, sceneIds);
         run.adopt(queued.promptId, { running: queued.running });
         return { promptId: queued.promptId, sceneId, projectId };
       }
@@ -216,7 +224,9 @@ export async function reattach(run, id, { queuedFor, finishedFor, onAdopt } = {}
     if (finished && run.state.phase === "idle") {
       const sceneId = (meta && meta.funpack_scene_id) || null;
       const projectId = (meta && meta.funpack_project_id) || null;
-      if (onAdopt) onAdopt(sceneId, projectId);
+      const sceneIds = (meta && Array.isArray(meta.funpack_scene_ids) && meta.funpack_scene_ids.length)
+        ? meta.funpack_scene_ids : (sceneId ? [sceneId] : []);
+      if (onAdopt) onAdopt(sceneId, projectId, sceneIds);
       run.adopt(finished);
       return { promptId: finished, sceneId, projectId };
     }

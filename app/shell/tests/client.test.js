@@ -19,7 +19,7 @@ test("the run this browser queued is found by its client id", async () => {
       queue_pending: [],
     }),
   });
-  assert.deepEqual(found, { promptId: "mine", running: true, sceneId: null, projectId: null });
+  assert.deepEqual(found, { promptId: "mine", running: true, sceneId: null, sceneIds: [], projectId: null });
 });
 
 test("another browser's run is not adopted", async () => {
@@ -54,7 +54,7 @@ test("a malformed queue entry is skipped rather than crashing the load", async (
       queue_pending: [undefined, {}, [3, null, {}, { client_id: "me" }, []]],
     }),
   });
-  assert.deepEqual(found, { promptId: "mine", running: true, sceneId: null, projectId: null });
+  assert.deepEqual(found, { promptId: "mine", running: true, sceneId: null, sceneIds: [], projectId: null });
 });
 
 test("where a run belongs travels with it, when it said so at queue time", async () => {
@@ -65,7 +65,25 @@ test("where a run belongs travels with it, when it said so at queue time", async
       queue_pending: [],
     }),
   });
-  assert.deepEqual(found, { promptId: "mine", running: true, sceneId: "s1", projectId: "p1" });
+  assert.deepEqual(found, { promptId: "mine", running: true, sceneId: "s1", sceneIds: [], projectId: "p1" });
+});
+
+test("a run covering more than one scene carries the whole list, not just the first", async () => {
+  // No chain sampler to split a multi-scene selection into several /prompt
+  // calls, so one run can cover several scenes at once -- reattach needs
+  // every one of them, or a reload only ever recovers the first (see this
+  // field's own comment in client.js for why sceneId alone is not enough).
+  const found = await queuedFor("me", {
+    fetch: answering({
+      queue_running: [[1, "mine", {}, { client_id: "me", funpack_scene_id: "s1",
+                                        funpack_scene_ids: ["s1", "s2", "s3"],
+                                        funpack_project_id: "p1" }, []]],
+      queue_pending: [],
+    }),
+  });
+  assert.deepEqual(found, {
+    promptId: "mine", running: true, sceneId: "s1", sceneIds: ["s1", "s2", "s3"], projectId: "p1",
+  });
 });
 
 test("a run queued before this existed has nowhere it said it belongs, and says so with null", async () => {
@@ -156,7 +174,7 @@ test("a run still waiting its turn is found too", async () => {
       queue_pending: [[2, "mine", {}, { client_id: "me" }, []]],
     }),
   });
-  assert.deepEqual(promptId, { promptId: "mine", running: false, sceneId: null, projectId: null },
+  assert.deepEqual(promptId, { promptId: "mine", running: false, sceneId: null, sceneIds: [], projectId: null },
     "a job waiting its turn was reported as one already under way");
 });
 
@@ -167,7 +185,7 @@ test("a run under way is preferred over one still waiting", async () => {
       queue_pending: [[2, "waiting", {}, { client_id: "me" }, []]],
     }),
   });
-  assert.deepEqual(promptId, { promptId: "under-way", running: true, sceneId: null, projectId: null });
+  assert.deepEqual(promptId, { promptId: "under-way", running: true, sceneId: null, sceneIds: [], projectId: null });
 });
 
 test("somebody else's pending run is not adopted either", async () => {

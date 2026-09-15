@@ -3417,6 +3417,16 @@
       if (!msg) return;
       set({ gen: { state: "error", promptId: (state.gen && state.gen.promptId) || null, media: [], msg } });
     });
+    // check()'s `notes` -- e.g. "N settings didn't reach the pipeline" -- says
+    // something is true of the pipeline without stopping the run. The OLD
+    // per-run code went out of its way to surface this (its own comment: "the
+    // whole report was being thrown away here"); it must not go back to being
+    // thrown away just because it now arrives through a different seam.
+    GB.on("warn", (msg) => {
+      if (!msg) return;
+      state.notice = msg;
+      notify();
+    });
     GB.on("hold", (msg) => {
       set({ gen: { state: "queuing", promptId: null, media: [], msg: msg || "" } });
     });
@@ -3429,10 +3439,16 @@
     // A run this page did not start itself -- found on reload via ComfyUI's
     // own /queue or /history, not anything remembered client-side (see
     // app/shell/client.js). There is no prefix for it, and no scene selected
-    // it, so both are set from what the bridge found instead of a click.
-    GB.on("adopt", ({ sceneId, projectId }) => {
+    // it, so both are set from what the bridge found instead of a click. The
+    // clock is primed here for the same reason the old resumeRunningGeneration
+    // did: reattach starts blind, and without this _elapsed()/genElapsed()
+    // read a clock that was never started (Date.now() minus zero) instead of
+    // real elapsed time.
+    GB.on("adopt", ({ sceneId, projectId, sceneIds }) => {
       _genRunPrefix = "Generation";
-      _genRunSceneIds = sceneId ? [sceneId] : [];
+      _genRunSceneIds = (sceneIds && sceneIds.length) ? sceneIds : (sceneId ? [sceneId] : []);
+      pollStart = Date.now();
+      _genClockStart("all", true);       // true: approximate — we never saw the press
       if (projectId && (!state.project || state.project.id !== projectId)
           && (state.projects || []).some((p) => p.id === projectId)) {
         loadProject(projectId).then(notify);
@@ -3442,6 +3458,14 @@
     GB.subscribe((runState) => {
       const { phase, promptId, progress, images, audio, error } = runState;
       if (phase === "idle") return;             // the resting state — nothing new to draw
+      // Every terminal phase stops the button's own wall clock here, not only
+      // in _generateRun's caller's `finally` -- a run ADOPTED on reload never
+      // goes through _generateRun at all, and without this its _genClockStart
+      // (see the "adopt" handler above) would never be matched by a stop,
+      // permanently wedging genElapsed() for the rest of the session (its own
+      // guard is "if already started, do nothing"). Harmless to call twice for
+      // a normally-clicked run — the second call is a no-op.
+      if (phase === "done" || phase === "failed" || phase === "cancelled") _genClockStop();
       if (phase === "queued") {
         set({ gen: { state: "queuing", promptId, media: [], msg: `${_genRunPrefix}: queuing…` } });
       } else if (phase === "running") {
@@ -3694,6 +3718,7 @@
       try {
         queued = await GB.generate({
           sceneId: onlyScene || targetSceneIds[0],
+          sceneIds: targetSceneIds,
           projectId: state.project ? state.project.id : null,
           inputs,
         });

@@ -4,11 +4,11 @@
 // "Preserved and rewired" list) -- this file is only the small ES-module shim
 // that hands their globals-free API to v4's global-script callers.
 //
-// Single scene at a time, on purpose: v5 has no chain-sampler/montage stage
-// (postponed, LTX-only -- see the port plan), so "Generate" here means what
-// app/boot.js's own generateCurrentScene/generateAll mean -- one real queue per
-// scene, run to a terminal state before the next one starts. store.js supplies
-// the scene loop; this only knows how to run ONE.
+// One real queue per RUN, run to a terminal state before the next one starts
+// -- v5 has no chain-sampler/montage stage (postponed, LTX-only -- see the
+// port plan), so a run can cover one scene or every active scene at once
+// (H3's own whole-timeline-in-one-call shape); store.js decides which and
+// hands the scene list in, this only knows how to run what it's given.
 import { createRun, viewUrl, DONE, FAILED, CANCELLED } from "../shell/run.js";
 import { clientId, connect, queuedFor, finishedFor } from "../shell/client.js";
 import { wire, waitForTerminal } from "../shell/session.js";
@@ -33,10 +33,16 @@ const transport = {
   release: (state) => fire("release", state),
 };
 
-// Which scene/project a run belongs to. Set by generate() at click time; read
-// by run.start() at the moment IT actually queues (see session.js's own
-// comment on why this can't be read only after the fact).
+// Which scene(s)/project a run belongs to. Set by generate() at click time;
+// read by run.start() at the moment IT actually queues (see session.js's own
+// comment on why this can't be read only after the fact). `ranFor` is the
+// FIRST scene -- the single-scalar shape every other funpack_scene_id reader
+// (client.js's queuedFor, session.js's finishedFor path) still expects --
+// `ranForList` is every scene THIS run actually covers, sent alongside it so
+// a reattach after reload can recover the whole list instead of only the
+// first (see client.js's own funpack_scene_ids comment).
 let ranFor = null;
+let ranForList = [];
 let ranForProject = null;
 // The inputs the NEXT queued run should send -- built by the caller (store.js
 // knows the scene text, anchor, postfix, variables; this file does not) and
@@ -56,13 +62,15 @@ const session = wire({
   values: () => ({}),
   inputs: async () => pendingInputs || {},
   extra: () => (ranForProject && ranFor
-    ? { funpack_scene_id: ranFor, funpack_project_id: ranForProject } : null),
-  onAdopt: (sceneId, projectId) => {
+    ? { funpack_scene_id: ranFor, funpack_scene_ids: ranForList, funpack_project_id: ranForProject }
+    : null),
+  onAdopt: (sceneId, projectId, sceneIds) => {
     ranFor = sceneId; ranForProject = projectId;
+    ranForList = (sceneIds && sceneIds.length) ? sceneIds : (sceneId ? [sceneId] : []);
     // A run this PAGE queued sets ranFor itself, at click time (see generate()
     // below). A run only found on reload -- nobody here called generate() for
-    // it -- has no other way to tell store.js which scene it belongs to.
-    fire("adopt", { sceneId, projectId });
+    // it -- has no other way to tell store.js which scene(s) it belongs to.
+    fire("adopt", { sceneId, projectId, sceneIds: ranForList });
   },
 });
 
@@ -89,9 +97,15 @@ window.GenerateBridge = {
   waitForTerminal: () => waitForTerminal(run),
   ready: session.ready,
   slotForRole,
-  /** Queue one scene's generation. `inputs` is {slotId: {inputName: value}}. */
-  async generate({ sceneId, projectId, inputs } = {}) {
+  /**
+   * Queue one run. `inputs` is {slotId: {inputName: value}}. `sceneIds`, when
+   * the run covers more than one scene (no chain sampler to split it into
+   * several calls), is every scene it covers -- `sceneId` alone is kept as
+   * the first of them, for reattach's single-scalar contract.
+   */
+  async generate({ sceneId, sceneIds, projectId, inputs } = {}) {
     ranFor = sceneId || null;
+    ranForList = (sceneIds && sceneIds.length) ? sceneIds : (sceneId ? [sceneId] : []);
     ranForProject = projectId || null;
     pendingInputs = inputs || null;
     return session.generate();

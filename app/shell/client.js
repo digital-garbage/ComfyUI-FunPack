@@ -80,8 +80,14 @@ export async function queuedFor(id, { fetch: doFetch = globalThis.fetch, base = 
       if (extra && extra.client_id === id && promptId) {
         // Where the run belongs, if it said so when queued -- carried through
         // so a reload mid-generation can still land the result on its scene
-        // instead of just knowing a run is going.
+        // instead of just knowing a run is going. `sceneIds` (plural) is
+        // separate: a run covering more than one scene (no chain sampler to
+        // split it into several /prompt calls) still needs the FIRST id for
+        // the single-scalar attribution every existing caller reads, but
+        // reattach needs the whole list or every scene past the first
+        // silently gets no result recorded on reload.
         return { promptId, running, sceneId: extra.funpack_scene_id || null,
+                 sceneIds: Array.isArray(extra.funpack_scene_ids) ? extra.funpack_scene_ids : [],
                  projectId: extra.funpack_project_id || null };
       }
     }
