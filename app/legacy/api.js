@@ -192,7 +192,24 @@
     coreGraph: () => unsupported("v5's pipeline shape does not match v4's core-graph model yet"),
     getModels: () => unsupported("the Models panel needs its own rewrite against v5's pipeline-slot shape"),
     saveModels: () => unsupported("the Models panel needs its own rewrite against v5's pipeline-slot shape"),
-    settingsCard: async () => { throw new Error("settings card export is not built in v5 yet"); },
+    // The settings card is a PNG, not JSON -- fetched as a blob so the modal
+    // can show it, download it and put it on the clipboard from the one
+    // response. `slots` is the CALLER's live pipeline (v5's pipeline has no
+    // server-side copy to fall back on, see /api/pipeline's own docs) --
+    // window.PipelineState.slots() is what every other pipeline-editing
+    // caller already sends the same way.
+    settingsCard: async (slots, projectName, theme) => {
+      const res = await fetch(API("/api/settings-card"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slots: slots || [], project_name: projectName || null, theme: theme || "dark" }),
+      });
+      if (!res.ok) {
+        let payload = null;
+        try { payload = await res.json(); } catch (_) {}
+        throw new Error(readApiError(res, payload));
+      }
+      return res.blob();
+    },
     refreshModels: () => unsupported("v5 has no model-file cache to refresh -- it reads the folders live"),
     parseWorkflow: () => unsupported("workflow import is LOW priority, not built yet"),
     applyWorkflow: () => unsupported("workflow import is LOW priority, not built yet"),

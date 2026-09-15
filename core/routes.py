@@ -11,6 +11,7 @@ import json
 from . import (backend_log, config, graph as graph_mod, log, media, nodes_manager, probe as probe_mod,
                projects,
                prompt_build,
+               settings_card,
                shortcuts as shortcuts_mod,
                sysinfo,
                temp_files,
@@ -219,6 +220,41 @@ def register(routes, prefix=None):
                     found.append({"id": preset["id"], "title": preset.get("title") or preset["id"],
                                   "module": spec.id, "slots": preset["slots"]})
         return web.json_response({"presets": found})
+
+    @routes.post(P + "/api/settings-card")
+    async def _settings_card(req):
+        """Render the CALLER's pipeline as a PNG. See core/settings_card.py.
+
+        The pipeline is stateless server-side (same reason /api/pipeline is a
+        GET that always rebuilds the default graph): the client holds the one
+        live copy of what is actually loaded, including any unsaved edit, so
+        it is the client that sends `slots` here rather than this route
+        re-deriving them. Host facts (torch/CUDA/GPU) are the one thing the
+        SERVER knows and the browser does not, which is why those still come
+        from sysinfo.collect() rather than the request body.
+        """
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"problems": ["that is not JSON"]}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"problems": [f"a request is an object, not a {type(body).__name__}"]},
+                status=400)
+        slots = body.get("slots")
+        if slots is None:
+            slots = _pipeline()
+        malformed = graph_mod.shape_problems(slots)
+        if malformed:
+            return web.json_response({"problems": malformed}, status=400)
+
+        host = await asyncio.to_thread(sysinfo.collect)
+        report = settings_card.collect(slots, host, project_name=body.get("project_name"))
+        try:
+            png = await asyncio.to_thread(settings_card.render_png, report, body.get("theme") or "dark")
+        except Exception as exc:  # noqa: BLE001 -- a bad font/Pillow install must not 500 opaquely
+            return web.json_response({"problems": [f"could not render the card: {exc}"]}, status=500)
+        return web.Response(body=png, content_type="image/png")
 
     @routes.post(P + "/api/pipeline")
     async def _pipeline_edit(req):
