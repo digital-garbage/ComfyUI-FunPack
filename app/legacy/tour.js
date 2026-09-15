@@ -228,12 +228,17 @@
       guide_settings: { stack_enabled: false },
       continuity_settings: {},
       generation_meta: {},
-      scene_renders: {
-        "tour-s1": {
-          media: { filename: "tour_demo_render.mp4", subfolder: "funpack_tour", type: "output" },
-          inSec: 0,
-        },
-      },
+      // A fake scene_renders entry used to point player.js at a real-shaped
+      // ComfyUI /view URL for a file that doesn't exist -- since bootstrap()
+      // notifies immediately on tour start, player.js's render() (a plain
+      // Store subscriber, not a blocked/mocked action) picks this up and
+      // issues a real GET, then a real HEAD retry, against the live
+      // backend with zero clicks. It always 404s, so no data leaks, but
+      // it's still a genuine unmocked reach into the real install. An
+      // always-unrendered demo scene is an honest trade-off -- the tour's
+      // own FAQ text ("My scene says Not generated yet in preview...") fits
+      // it naturally.
+      scene_renders: {},
       scene_ghosts: [],
       created_at: now,
       updated_at: now,

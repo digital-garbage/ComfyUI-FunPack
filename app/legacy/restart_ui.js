@@ -21,6 +21,16 @@
   }
 
   function waitForReload(msgEl, startMs) {
+    // Both tour.js's restartComfy call sites now mock API.restart() to a
+    // no-op, but that mock ALSO reuses API.health (mocked ok:true for the
+    // Settings About panel's own reasons) -- the first poll here reads that
+    // same mock and reloads the real page mid-tour, resetting tour
+    // progress. Nothing actually restarted, so there is nothing to wait
+    // for; just clear the overlay instead of polling toward a reload.
+    if (window.__FUNPACK_TOUR__) {
+      setTimeout(() => document.querySelector(".restart-overlay")?.remove(), 900);
+      return;
+    }
     const start = startMs || Date.now();
     const tick = async () => {
       try {
