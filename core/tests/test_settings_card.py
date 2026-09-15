@@ -184,6 +184,27 @@ def test_render_png_stays_fast_even_when_both_caps_are_individually_honored():
     assert len(png) < 5_000_000
 
 
+def test_a_funpack_list_row_with_many_keys_does_not_blow_up_the_embed():
+    """extensive_testing round 3: _short() bounded each KEY's value but not
+    the JOINED row -- a dict with 150 keys x 400-char values produced one
+    row string with no cap of its own. Row count and per-key length both
+    stayed under budget while the report JSON embedded in the PNG's tEXt
+    chunk (which scales with it) reached 123MB, with zero truncation
+    declared anywhere on the card."""
+    import json
+    import time
+    entry = {f"k{i}": "x" * sc._MAX_VALUE_CHARS for i in range(150)}
+    big_list = json.dumps([entry for _ in range(2000)])
+    rep = sc.collect([{"id": "s", "node": "X", "inputs": {"list_1": big_list}}], HOST)
+    text = " ".join(v for _, v in rep["sections"][0]["rows"])
+    assert len(text) < 2_000_000
+    start = time.monotonic()
+    png = sc.render_png(rep, "dark")
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0
+    assert len(png) < 5_000_000
+
+
 def test_render_png_stays_fast_when_one_slot_has_many_large_lists():
     """The Finding B composition gap, carried all the way through to the
     actual render (67.8s / 123MB before the fix)."""

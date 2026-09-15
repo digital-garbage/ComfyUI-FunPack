@@ -64,6 +64,7 @@ _NOISE_INPUTS = {"control_after_generate"}
 # so this is a real limit worth declaring rather than a corner cut short.
 _MAX_VALUE_CHARS = 400
 _MAX_ROWS = 2000
+_MAX_KEYS_PER_LIST_ROW = 50
 
 
 def _short(value):
@@ -94,8 +95,19 @@ def _rows_from_list(value):
         return None
     out = []
     for i, row in enumerate(rows[:_MAX_ROWS], 1):
-        parts = [f"{k}={_short(v)}" for k, v in row.items()]
-        out.append((f"[{i}]", "  ".join(parts) if parts else "—"))
+        # extensive_testing round 3: _short() on each KEY's value bounded
+        # nothing about the JOINED row -- a dict with many keys produced one
+        # row whose string had no cap of its own, so row count and per-key
+        # length both stayed under budget while a single row's value (and
+        # the report JSON embedded in the PNG's tEXt chunk, which scales
+        # 1:1 with it) ballooned past 100MB. Also bound how many keys get
+        # processed at all: a row with an absurd key count still costs one
+        # f-string+join per key before any length cap ever applies.
+        items = list(row.items())
+        parts = [f"{k}={_short(v)}" for k, v in items[:_MAX_KEYS_PER_LIST_ROW]]
+        if len(items) > _MAX_KEYS_PER_LIST_ROW:
+            parts.append(f"…(+{len(items) - _MAX_KEYS_PER_LIST_ROW} more keys)")
+        out.append((f"[{i}]", _short("  ".join(parts)) if parts else "—"))
     if len(rows) > _MAX_ROWS:
         out.append(("", f"… {len(rows) - _MAX_ROWS} more rows omitted"))
     return out          # [] for an empty list; the caller collapses that onto one line
