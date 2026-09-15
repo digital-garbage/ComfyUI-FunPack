@@ -116,8 +116,12 @@ def _rows_from_list(value):
         # 1:1 with it) ballooned past 100MB. Also bound how many keys get
         # processed at all: a row with an absurd key count still costs one
         # f-string+join per key before any length cap ever applies.
+        # The KEY is caller data too, same as the value -- an uncapped key
+        # still gets fully materialized into `parts` before _short() on the
+        # joined result ever runs, so a huge key is real per-row cost even
+        # though the final string comes out short.
         items = list(row.items())
-        parts = [f"{k}={_short(v)}" for k, v in items[:_MAX_KEYS_PER_LIST_ROW]]
+        parts = [f"{_cap(k)}={_short(v)}" for k, v in items[:_MAX_KEYS_PER_LIST_ROW]]
         if len(items) > _MAX_KEYS_PER_LIST_ROW:
             parts.append(f"…(+{len(items) - _MAX_KEYS_PER_LIST_ROW} more keys)")
         out.append((f"[{i}]", _short("  ".join(parts)) if parts else "—"))
@@ -200,6 +204,10 @@ def collect(slots: list, host: dict, *, project_name=None, render=None) -> dict:
                 break
             if name in _NOISE_INPUTS:
                 continue
+            # `inputs` is a caller-controlled dict -- the KEY, not just the
+            # value, is attacker data. Every row below carries `name`
+            # verbatim into the drawn label and the embedded JSON.
+            name = _cap(name)
             if is_link(value):
                 source = by_id.get(value[0])
                 source_label = _cap((source or {}).get("id") or value[0])

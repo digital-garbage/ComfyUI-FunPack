@@ -228,6 +228,27 @@ def test_many_empty_input_slots_with_huge_ids_do_not_blow_up_the_embed():
     assert len(embedded) < 2_000_000
 
 
+def test_a_huge_input_name_is_capped_not_embedded_whole():
+    """The `inputs` dict's KEYS are caller data too, not just its values --
+    found during round-4 cleanup by re-reading collect()'s row loop, not by
+    an attacker report. Every row carries `name` verbatim into the drawn
+    label and the embedded JSON, so it needs the same cap as any value."""
+    rep = sc.collect([{"id": "s", "node": "X", "inputs": {"k" * 50_000: "v"}}], HOST)
+    key = rep["sections"][0]["rows"][0][0]
+    assert len(key) < 500
+
+
+def test_a_huge_funpack_list_dict_key_is_capped_not_just_its_value():
+    """Same gap, one level deeper: _rows_from_list joins `f"{k}={_short(v)}"`
+    per dict key in a funpack_list row -- _short() bounded v but not k, so a
+    huge key still got fully materialized into the join before the final
+    _short() on the joined string ever ran."""
+    rows = json.dumps([{("k" * 500_000): "v"}])
+    rep = sc.collect([{"id": "l", "node": "X", "inputs": {"lora_list": rows}}], HOST)
+    text = " ".join(v for _, v in rep["sections"][0]["rows"])
+    assert len(text) < 2000
+
+
 def test_render_png_stays_fast_when_one_slot_has_many_large_lists():
     """The Finding B composition gap, carried all the way through to the
     actual render (67.8s / 123MB before the fix)."""
