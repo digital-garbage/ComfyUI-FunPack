@@ -127,7 +127,10 @@
           frames_mode: "project",
           fps_mode: "project",
           source: { type: "empty", media_ref: null },
-          rating: "good",
+          // No scene_renders entry exists (see demoProject() below) so this
+          // scene has no render -- rating must stay unset or the UI's
+          // rating badge (gated on hasRender()) silently disagrees with it.
+          rating: "",
           excluded: false,
           gen_unit_id: "tour-s1",
           cut_offset_frames: 0,
