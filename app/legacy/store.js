@@ -726,6 +726,17 @@
   }
 
   let _validateRendersToken = 0;
+  // state.notice is one shared field with several unrelated writers (the
+  // stale-render sweep below, GB's "warn" note, loadProject errors, a
+  // dropped-reference notice). _recordSegment clears it on a successful
+  // render specifically to retire THIS function's own "N saved renders no
+  // longer on disk" message once a regen fixes it -- not to blank whatever
+  // unrelated notice happens to be showing at that moment. Track which case
+  // is current so that clear only fires for its own message (round 2 of
+  // extensive_testing on the reference-wiring feature: an unconditional
+  // clear here was quietly eating the reference-unwired notice the instant
+  // the very run it described finished).
+  let _noticeIsStaleRenders = false;
 
   async function _validateSceneRenders() {
     if (!state.project) return;
@@ -774,6 +785,7 @@
     if (missing || clearedRatings) {
       if (missing) {
         state.notice = `${missing} saved render${missing > 1 ? "s" : ""} no longer on disk — regenerate those clips.`;
+        _noticeIsStaleRenders = true;
       }
       _syncEditorStateToProject();
       scheduleSave();
@@ -784,6 +796,7 @@
   function clearNotice() {
     if (!state.notice) return;
     state.notice = "";
+    _noticeIsStaleRenders = false;
     notify();
   }
 
@@ -795,11 +808,13 @@
       // Corrupt / incompatible project file: keep the current view, surface why instead of
       // leaving the app in a half-loaded state.
       state.notice = `Could not open this project: ${e && e.message ? e.message : e}`;
+      _noticeIsStaleRenders = false;
       notify();
       return;
     }
     state.project = loaded;
     state.notice = "";
+    _noticeIsStaleRenders = false;
     // Before anything reads a preference: anchorEnabled decides how the global prompt
     // splits into scenes, and syncGlobalPromptFromTimeline() below runs on that answer.
     _applyProjectEditorSettings(loaded);
@@ -3391,7 +3406,10 @@
     if (clearedRating) scheduleSaveSilent();
     if (recordedSceneIds.length) {
       _validateRendersToken++;
-      state.notice = "";
+      // Only retire THIS function's own stale-render notice -- an unrelated
+      // one currently showing (e.g. a reference that couldn't be wired into
+      // the very run that just finished) is not this function's to clear.
+      if (_noticeIsStaleRenders) { state.notice = ""; _noticeIsStaleRenders = false; }
       _syncEditorStateToProject();
       scheduleSaveSilent();
     }
@@ -3459,6 +3477,7 @@
     GB.on("warn", (msg) => {
       if (!msg) return;
       state.notice = msg;
+      _noticeIsStaleRenders = false;
       notify();
     });
     GB.on("hold", (msg) => {
@@ -3848,7 +3867,7 @@
       // state.notice field -- setting this one first let that note silently
       // clobber it. Setting it last means an unwired reference is always
       // what the person sees, never lost to a race with an unrelated note.
-      if (unwiredNotice) { state.notice = unwiredNotice; notify(); }
+      if (unwiredNotice) { state.notice = unwiredNotice; _noticeIsStaleRenders = false; notify(); }
       if (!queued) {
         // Refused before it ever reached run.start() (an incomplete pipeline,
         // or the queue itself saying no) -- the bridge's own "say" hook
