@@ -3038,8 +3038,6 @@
     return raw;
   }
 
-  let pollTimer = null;
-  let progressTimer = null;
   let pollStart = 0;
   // Wall clock for the WHOLE operation the user started, as distinct from pollStart, which
   // restarts on every run of a multi-run montage. The transport buttons count from the press
@@ -3060,83 +3058,17 @@
   function _markGenInFlight(ids) { (ids || []).forEach((id) => _genInFlightIds.add(id)); }
   function _clearGenInFlight(ids) { (ids || []).forEach((id) => _genInFlightIds.delete(id)); }
 
-  function _clearGenTimers() { clearInterval(pollTimer); clearInterval(progressTimer); }
-
-  // Ask ComfyUI to stop the current generation. The running poll then resolves as
-  // "Interrupted" and the run loop stops.
+  // Ask ComfyUI to stop the current generation. GenerateBridge's own run.cancel()
+  // (app/shell/run.js) knows the real state-agnostic /api/jobs/.../cancel route
+  // and falls back to /interrupt on an older ComfyUI -- reused rather than
+  // duplicated here (see that file's own comment on why plain /interrupt alone
+  // silently does nothing for a job still waiting behind another one).
   async function interrupt() {
     _interrupted = true;
     updateGenProgress({ msg: "Interrupting…" });
-    try { await API.interrupt(); } catch (_) {}
-  }
-
-  // Re-attach to a generation that was already running when the UI (re)loaded. The job
-  // lives in ComfyUI's still-running queue; bridge.active_generation hands back its
-  // prompt id + the project/scenes it targets. We restore the "running" gen state so
-  // Generate stays blocked and Interrupt is offered — exactly like a live run — and,
-  // when the matching project is loaded, record the result onto its scenes on completion.
-  async function resumeRunningGeneration(act) {
-    if (!act || !act.running || !act.prompt_id) return false;
-    _interrupted = false;
-    // A reloaded montage can have further runs still queued behind the running one. Re-attach
-    // to each in turn so Generate stays blocked (and outputs get recorded) until the queue
-    // drains — not just for the one prompt that happened to be running at reload.
-    let cur = act;
-    let lastPromptId = null;
-    // Re-attaching means we never saw the press, so the button's clock can only count from
-    // here. Flagged approximate so it reads "1m 4s+" rather than claiming a total it can't know.
-    _genClockStart("all", true);
-    try {
-      while (cur && cur.running && cur.prompt_id && cur.prompt_id !== lastPromptId && !_interrupted) {
-        lastPromptId = cur.prompt_id;
-        pollStart = Date.now();
-        const sceneIds = (cur.scene_ids && cur.scene_ids.length)
-          ? cur.scene_ids
-          : (cur.only_scene ? [cur.only_scene] : []);
-        const more = cur.pending > 0 ? ` · ${cur.pending} run(s) queued` : "";
-        set({ gen: { state: "running", promptId: cur.prompt_id, media: [], msg: `Generation running (reconnected after reload)…${more}` } });
-        if (state.project && cur.pid && state.project.id === cur.pid && sceneIds.length) {
-          // Full re-attach: poll history and place the output on the run's scenes when done.
-          _markGenInFlight(sceneIds);
-          try { await _pollPromise(cur.prompt_id, sceneIds, "Generation running (reconnected)"); }
-          finally { _clearGenInFlight(sceneIds); }
-        } else {
-          // No matching project loaded (or single-scene run on another project): we can't map
-          // the output, but still surface Interrupt and clear busy when it stops.
-          await _monitorActive(cur.prompt_id);
-        }
-        if (_interrupted) break;
-        // Another queued run may now be executing — re-attach to it.
-        try { cur = await API.active(); } catch (_) { cur = null; }
-      }
-    } finally { _genClockStop(); }
-    return true;
-  }
-
-  // Lightweight queue watcher used when we can't fully re-attach (see above). Polls
-  // /active until the prompt leaves the queue or the user interrupts.
-  function _monitorActive(promptId) {
-    return new Promise((resolve) => {
-      _clearGenTimers();
-      pollTimer = setInterval(async () => {
-        if (_interrupted) {
-          _clearGenTimers();
-          set({ gen: { state: "idle", promptId, media: [], msg: "Interrupted." } });
-          resolve();
-          return;
-        }
-        try {
-          const a = await API.active();
-          if (!a || !a.running || a.prompt_id !== promptId) {
-            _clearGenTimers();
-            set({ gen: { state: "done", promptId, media: [], msg: "Generation finished. Open Settings ▸ Temp files to view or save the output, then regenerate to place it." } });
-            resolve();
-          } else {
-            updateGenProgress({ msg: `Generation running (reconnected) ${_elapsed()}` });
-          }
-        } catch (_) { /* transient — keep watching */ }
-      }, 2000);
-    });
+    const GB = window.GenerateBridge;
+    if (GB) { try { await GB.cancel(); } catch (_) {} return; }
+    try { await API.interrupt(); } catch (_) {}     // bridge not loaded — last resort
   }
 
   function _elapsed() {
@@ -3449,83 +3381,160 @@
     }
   }
 
-  // Poll a single queued prompt to completion. Resolves true on success, false on error.
-  function _pollPromise(promptId, targetSceneIds, prefix) {
-    prefix = prefix || "Generating…";
-    return new Promise((resolve) => {
-      _clearGenTimers();
-      let pendingStreak = 0;
-      let transientStreak = 0;
-      // Faster step-progress poll (sampler current/total steps, plus what it says it's
-      // doing — "scene 2/3 · pass 2 of 2"). The message is rebuilt from prefix + elapsed
-      // the same way the slower poll below builds it, rather than regex-stripping the last
-      // one off the end: a suffix the strip pattern doesn't know about (the phase label)
-      // would otherwise be re-appended every tick and grow without limit.
-      progressTimer = setInterval(async () => {
-        if (_interrupted) return;
-        try {
-          const pr = await API.progress();
-          if (pr && pr.max > 0) {
-            const phase = pr.label ? `  ·  ${pr.label}` : "";
-            updateGenProgress({
-              step: pr.value,
-              maxStep: pr.max,
-              phase: pr.label || "",
-              msg: `${prefix} ${_elapsed()}  ·  sampling ${pr.value}/${pr.max}${phase}`,
-            });
-          }
-        } catch (_) {}
-      }, 700);
-      pollTimer = setInterval(async () => {
-        if (_interrupted) {
-          _clearGenTimers();
-          set({ gen: { state: "idle", promptId, media: [], msg: "Interrupted." } });
-          resolve(false);
-          return;
-        }
-        try {
-          const s = await API.status(state.project.id, promptId);
-          transientStreak = 0;
-          if (s.state === "error") {
-            _clearGenTimers();
-            const msg = s.error ? `ComfyUI error: ${s.error}` : "Generation failed inside ComfyUI — check the ComfyUI terminal for details.";
-            set({ gen: { state: "error", promptId, media: [], msg } });
-            resolve(false);
-          } else if (s.state === "completed") {
-            _clearGenTimers();
-            _recordSegment(s.media, targetSceneIds, { sceneLayout: s.scene_layout });
-            set({ gen: { state: "done", promptId, media: s.media, msg: s.media.length ? "" : "Completed but no output media found — check ComfyUI terminal." } });
-            resolve(true);
-          } else {
-            // "pending" after "running" means the job left the queue without a history
-            // entry — it likely crashed or was interrupted by ComfyUI.
-            if (s.state === "pending") pendingStreak++; else pendingStreak = 0;
-            if (pendingStreak >= 3) {
-              _clearGenTimers();
-              set({ gen: { state: "error", promptId, media: [], msg: "Job disappeared from ComfyUI queue — it may have crashed or been interrupted. Check the ComfyUI terminal." } });
-              resolve(false);
-              return;
-            }
-            const step = (state.gen.maxStep > 0) ? `  ·  sampling ${state.gen.step}/${state.gen.maxStep}` : "";
-            const phase = state.gen.phase ? `  ·  ${state.gen.phase}` : "";
-            updateGenProgress({ state: s.state, msg: `${prefix} ${_elapsed()}${step}${phase}` });
-          }
-        } catch (e) {
-          if (_isTransientTunnelError(e)) {
-            transientStreak++;
-            if (transientStreak < 120) {
-              updateGenProgress({
-                msg: `${prefix} ${_elapsed()} · tunnel reconnect (${transientStreak})…`,
-              });
-              return;
-            }
-          }
-          _clearGenTimers();
-          set({ gen: { ...state.gen, state: "error", msg: _friendlyGenError(e.message) } });
-          resolve(false);
-        }
-      }, 2000);
+  // The extension is what actually tells kinds apart, not which ComfyUI output
+  // key a file arrived under -- SaveVideo hands its file back through the same
+  // generic "images" list the frontend's own gallery mechanism reuses for every
+  // output kind (see app/shell/run.js's `handle()`), so the key alone can't
+  // tell a produced video from a produced image.
+  function _kindForFilename(name) {
+    const ext = String(name || "").split(".").pop().toLowerCase();
+    if (ext === "gif") return "gifs";
+    if (["mp4", "webm", "mov", "mkv"].includes(ext)) return "videos";
+    if (["mp3", "wav", "flac", "ogg", "m4a"].includes(ext)) return "audio";
+    return "images";
+  }
+
+  // Which scene(s) + status prefix the run GenerateBridge is currently driving
+  // belongs to -- set by _generateRun right before it queues, or by the
+  // "adopt" handler below when the run was found on reload instead of started
+  // by this page.
+  let _genRunPrefix = "Generating…";
+  let _genRunSceneIds = [];
+  let _genBridgeWired = false;
+
+  // One persistent subscription translating GenerateBridge's real run state
+  // (app/shell/run.js -- ComfyUI's own /prompt + /ws, not a second queue of
+  // FunPack's own) into the state.gen shape every existing status/progress/
+  // clock UI already renders. Wired once; every _generateRun call after that
+  // just sets what the NEXT status message should say and lets this paint it.
+  function _wireGenerateBridge() {
+    if (_genBridgeWired) return;
+    const GB = window.GenerateBridge;
+    if (!GB) return;
+    _genBridgeWired = true;
+
+    GB.on("say", (msg) => {
+      if (!msg) return;
+      set({ gen: { state: "error", promptId: (state.gen && state.gen.promptId) || null, media: [], msg } });
     });
+    GB.on("hold", (msg) => {
+      set({ gen: { state: "queuing", promptId: null, media: [], msg: msg || "" } });
+    });
+    GB.on("release", (runState) => {
+      // Only idle is worth clearing back to Ready here -- any other phase is
+      // already being painted by the subscribe() below, and stomping it with
+      // a stale "release" delivery would flash the status backwards.
+      if (runState.phase === "idle") set({ gen: { state: "idle", promptId: null, media: [], msg: "" } });
+    });
+    // A run this page did not start itself -- found on reload via ComfyUI's
+    // own /queue or /history, not anything remembered client-side (see
+    // app/shell/client.js). There is no prefix for it, and no scene selected
+    // it, so both are set from what the bridge found instead of a click.
+    GB.on("adopt", ({ sceneId, projectId }) => {
+      _genRunPrefix = "Generation";
+      _genRunSceneIds = sceneId ? [sceneId] : [];
+      if (projectId && (!state.project || state.project.id !== projectId)
+          && (state.projects || []).some((p) => p.id === projectId)) {
+        loadProject(projectId).then(notify);
+      }
+    });
+
+    GB.subscribe((runState) => {
+      const { phase, promptId, progress, images, audio, error } = runState;
+      if (phase === "idle") return;             // the resting state — nothing new to draw
+      if (phase === "queued") {
+        set({ gen: { state: "queuing", promptId, media: [], msg: `${_genRunPrefix}: queuing…` } });
+      } else if (phase === "running") {
+        const step = progress ? `  ·  sampling ${progress.value}/${progress.max}` : "";
+        set({
+          gen: {
+            state: "running", promptId, media: [],
+            step: progress ? progress.value : 0, maxStep: progress ? progress.max : 0,
+            msg: `${_genRunPrefix}: generating… ${_elapsed()}${step}`,
+          },
+        });
+      } else if (phase === "done") {
+        const mediaList = [...(images || []), ...(audio || [])]
+          .map((f) => ({ ...f, kind: _kindForFilename(f.filename) }));
+        if (mediaList.length && _genRunSceneIds.length) _recordSegment(mediaList, _genRunSceneIds, {});
+        set({
+          gen: {
+            state: "done", promptId, media: mediaList,
+            msg: mediaList.length ? "" : "Completed but no output media found — check the ComfyUI terminal.",
+          },
+        });
+      } else if (phase === "failed") {
+        set({
+          gen: {
+            state: "error", promptId, media: [],
+            msg: error ? `ComfyUI error: ${error.message}` : "Generation failed inside ComfyUI — check the ComfyUI terminal for details.",
+          },
+        });
+      } else if (phase === "cancelled") {
+        set({ gen: { state: "idle", promptId, media: [], msg: "Interrupted." } });
+      }
+    });
+  }
+
+  // What a run actually sends for the prompt: the scene's own text for a
+  // single-scene run, or the full verbatim montage (anchor + every active
+  // scene's text, transitions included) for a multi-scene one -- the same
+  // split `generate()`/`generateMontage()` already make below. Plus
+  // project.video's width/height, wherever the pipeline asks for them, by
+  // role.input name -- same convention app/boot.js's syncVideo() uses.
+  //
+  // Reference-image wiring (assets.source_image/reference_N, app/boot.js's
+  // wireReferences()) is NOT built here yet: v4's legacy project/scene shape
+  // doesn't round-trip source_image/references through api.js's
+  // getProject/saveProject adapter today, so there is nothing yet to wire —
+  // a placeholder left for the next pass, not a silent gap.
+  async function _buildQueueInputs(targetSceneIds) {
+    const raw = {};
+    const GB = window.GenerateBridge;
+    if (!GB || !state.project) return raw;
+
+    for (const slot of (window.PipelineState.slots() || [])) {
+      for (const role of (slot.roles || [])) {
+        if (role.at !== "project.video") continue;
+        const v = state.project[role.input];
+        if (v === undefined) continue;
+        raw[slot.id] = { ...(raw[slot.id] || {}), [role.input]: v };
+      }
+    }
+
+    const found = GB.slotForRole("generation.prompt");
+    if (!found) return raw;
+    const text = targetSceneIds.length > 1
+      ? buildGlobalPromptFromTimeline(state.project)
+      : (() => {
+          const sc = scene(targetSceneIds[0]);
+          const anchor = (state.project.anchor || "").trim();
+          const own = ((sc && sc.text) || "").trim();
+          return [anchor, own].filter(Boolean).join(" ");
+        })();
+    if (text == null) return raw;
+    try {
+      const res = await fetch("/funpack/api/prompt/expand", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text, anchor: state.project.anchor || "", postfix: state.project.postfix || "",
+          postfix_enabled: !!state.project.postfix_enabled, variables: state.project.variables || [],
+          // No per-run sampler seed is reachable from here (nothing threads a
+          // real generation seed through this path yet) — a fresh one per
+          // queue gives real variety across separate Generate clicks, same
+          // as app/boot.js's own queueInputs().
+          seed: Math.floor(Math.random() * 2 ** 31) || 1,
+        }),
+      });
+      const expanded = res.ok ? (await res.json()).text : text;
+      raw[found.slot.id] = { ...(raw[found.slot.id] || {}), [found.role.input]: expanded };
+    } catch (_) {
+      // The literal typed text still queues — the run just runs without
+      // anchor/shortcuts/$variables applied, rather than being blocked by a
+      // prompt-craft feature failing.
+      raw[found.slot.id] = { ...(raw[found.slot.id] || {}), [found.role.input]: text };
+    }
+    return raw;
   }
 
   async function _pollFfmpegJob(statusFn, jobId, clipCount, busyLabel) {
@@ -3630,6 +3639,8 @@
 
   // "Reference image 2" (input_sources "prevframe") auto-fills from whatever scene rendered
   // immediately before the one being generated — only meaningful for a single-scene run.
+  // Currently unused: v5's reference-image wiring (assets.reference_N) isn't built for
+  // legacy scenes yet (see _buildQueueInputs's own comment) — kept for when it is.
   function _prevSceneMedia(onlyScene) {
     if (!onlyScene) return null;
     const scenes = (state.project?.scenes || []).filter((s) => !s.excluded);
@@ -3639,65 +3650,71 @@
     return media && media.filename ? { filename: media.filename, subfolder: media.subfolder || "" } : null;
   }
 
+  // Generate one run through v5's real check -> queue -> terminal flow
+  // (GenerateBridge, wired in generate_bridge.js over app/shell/run.js and
+  // session.js). `resetSession` (Studio-session reset) and `extraOverrides`
+  // (REINS captures, the anchor-guide i2v bypass) are v4 Studio/Chain-Sampler
+  // machinery with no v5 module providing them yet -- said loudly rather than
+  // silently dropped, per the port plan's "leave placeholders for features".
   async function _generateRun(sceneIds, onlyScene, prefix, resetSession, extraOverrides) {
     _interrupted = false;
-    _markGenInFlight(sceneIds);
-    set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
-    try {
-      const overrides = [...(_anchorGuideNodeOverrides(sceneIds) || []), ...(extraOverrides || [])];
-      const r = await _retryOnTunnel(
-        () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession, overrides, _prevSceneMedia(onlyScene)),
-        10,
-      );
-      if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
-      _queueRenderPrompts(sceneIds);
-      if (r.validation && state.project) {
-        state.project.generation_meta = {
-          ...(state.project.generation_meta || {}),
-          prompt_hash: r.validation.prompt_hash,
-          run_hash: r.validation.run_hash,
-        };
-      }
-      // The builder reports values the user SET that did not reach the graph — a linked
-      // input pointing at a node that was replaced, a widget renamed out from under it. The
-      // run is valid, it just isn't the one they configured, and nothing used to say so:
-      // the whole report was being thrown away here.
-      const ignored = (r.report && r.report.ignored) || [];
-      // Positive confirmation, console-only: which linked inputs fired and with what value.
-      // Checking that a project setting actually reached the graph should not require
-      // reading the queued prompt, but it is not worth a UI element on every run either.
-      const fired = ((r.report && r.report.wired) || []).filter((w) => w.startsWith("linked "));
-      if (fired.length) console.info("[FunPack] linked inputs sent this run:\n  " + fired.join("\n  "));
-      const notices = [];
-      if (ignored.length) {
-        notices.push(ignored.length === 1
-          ? ignored[0]
-          : `${ignored.length} settings didn't reach the pipeline — ${ignored[0]}`);
-      }
-      // A predecessor render existed but its last frame/video couldn't be retrieved (temp
-      // file gone, no ffmpeg) — must not look identical to "scene 1, nothing to chain from".
-      // A scene can have both a prevframe AND a prevvideo socket, so both can fail at once —
-      // collect every match, not just the first, or one silently drops.
-      const prevChainMisses = ((r.report && r.report.unsatisfied) || [])
-        .filter((u) => u.includes("previous scene's last frame") || u.includes("previous scene's video"));
-      notices.push(...prevChainMisses);
-      if (notices.length) state.notice = notices.join(" — ");
-      pollStart = Date.now();
-      let runMsg = `${prefix}: generating…`;
-      if (r.prompt_repairs_cleared) {
-        const anchorOnly = r.validation?.anchors_changed_since_last_queue && !r.validation?.text_changed_since_last_queue;
-        runMsg += anchorOnly
-          ? " · guides refreshed, stale repairs cleared"
-          : " · stale repairs cleared (training kept)";
-      }
-      else if (r.reset_session) runMsg += " · Studio session reset";
-      set({ gen: { state: "running", promptId: r.prompt_id, media: [], msg: runMsg } });
-      return await _pollPromise(r.prompt_id, sceneIds, prefix);
-    } catch (e) {
-      set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
+    const GB = window.GenerateBridge;
+    if (!GB) {
+      set({ gen: { state: "error", promptId: null, media: [], msg: "Generation isn't wired up yet — reload the page." } });
       return false;
+    }
+    _wireGenerateBridge();
+    if (resetSession) {
+      console.warn("[FunPack] a Studio session reset was requested, but v5 has no Studio session to reset yet — ignored.");
+    }
+    const overrides = [...(_anchorGuideNodeOverrides(sceneIds) || []), ...(extraOverrides || [])];
+    if (overrides.length) {
+      console.warn("[FunPack] this run asked for per-node overrides (REINS captures / the anchor-guide "
+        + "i2v bypass) that v5's generate flow does not support yet -- ignored:", overrides);
+    }
+    const targetSceneIds = (sceneIds || []).filter(Boolean);
+    if (!targetSceneIds.length) {
+      set({ gen: { state: "error", promptId: null, media: [], msg: "No scenes to generate." } });
+      return false;
+    }
+    _genRunPrefix = prefix || "Generating…";
+    _genRunSceneIds = targetSceneIds;
+    _markGenInFlight(targetSceneIds);
+    set({ gen: { state: "queuing", promptId: null, media: [], msg: `${_genRunPrefix}: queuing…`, step: 0, maxStep: 0 } });
+    try {
+      let inputs;
+      try {
+        inputs = await _buildQueueInputs(targetSceneIds);
+      } catch (e) {
+        set({ gen: { state: "error", promptId: null, media: [], msg: `Could not build the prompt: ${e.message}` } });
+        return false;
+      }
+      const waiting = GB.waitForTerminal();
+      let queued;
+      try {
+        queued = await GB.generate({
+          sceneId: onlyScene || targetSceneIds[0],
+          projectId: state.project ? state.project.id : null,
+          inputs,
+        });
+      } catch (e) {
+        waiting.cancel();
+        set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
+        return false;
+      }
+      if (!queued) {
+        // Refused before it ever reached run.start() (an incomplete pipeline,
+        // or the queue itself saying no) -- the bridge's own "say" hook
+        // already turned the reason into state.gen, and nothing will ever
+        // transition the run this was waiting on.
+        waiting.cancel();
+        return false;
+      }
+      _queueRenderPrompts(targetSceneIds);
+      pollStart = Date.now();
+      return (await waiting) === GB.DONE;
     } finally {
-      _clearGenInFlight(sceneIds);
+      _clearGenInFlight(targetSceneIds);
     }
   }
 
@@ -4628,21 +4645,17 @@
     await loadModels();
     window.addEventListener("funpack-models-changed", loadModels);
     await refreshProjectList();
-    // Re-attach to a generation already running in ComfyUI (UI was reloaded mid-run).
-    // Load its project first so Generate is blocked, Interrupt is shown, and the result
-    // lands on the right scenes — then skip the welcome page, there's work in flight.
+    // Re-attach to a generation already running in ComfyUI (UI was reloaded mid-run) is
+    // GenerateBridge's own job (generate_bridge.js, over app/shell/session.js's wire()) --
+    // it asks ComfyUI's own /queue and /history directly, not anything remembered here,
+    // and starts the moment its module loads. `ready` resolves once it knows whether it
+    // found one; the "adopt" hook (see _wireGenerateBridge) loads the right project and
+    // scene for it as soon as it does. Skip the welcome page in that case — there's work
+    // in flight.
     let resumed = false;
+    _wireGenerateBridge();
     try {
-      const act = await API.active();
-      if (act && act.running && act.prompt_id) {
-        if (act.pid && (state.projects || []).some((p) => p.id === act.pid)
-            && (!state.project || state.project.id !== act.pid)) {
-          await loadProject(act.pid);
-        }
-        notify();
-        resumeRunningGeneration(act);  // fire-and-forget poll loop
-        resumed = true;
-      }
+      if (window.GenerateBridge) resumed = await window.GenerateBridge.ready;
     } catch (_) { /* queue unreachable — boot normally */ }
     notify();
     // One front door: the full-screen welcome, unless a running generation was resumed.

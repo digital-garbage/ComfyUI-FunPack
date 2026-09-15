@@ -121,6 +121,10 @@
   <script src="api.js"></script>
   <script src="dom.js"></script>
   <script src="pipeline_state.js"></script>
+  <!-- Module scripts always defer, so this runs after every classic script
+       above regardless of position -- placed here only for readability next
+       to the pipeline state it depends on (window.PipelineState). -->
+  <script type="module" src="generate_bridge.js"></script>
   <script src="settings_window.js"></script>
   <script src="appearance_settings.js"></script>
   <script src="floating_window.js"></script>
