@@ -190,8 +190,12 @@ def test_a_non_h3_model_is_not_handed_a_minimax_kwarg():
 # ── the H3 gate ───────────────────────────────────────────────────────────────
 
 class _Patcher:
-    def __init__(self, class_name):
-        inner = type(class_name, (), {})()
+    def __init__(self, class_name, module="comfy.ldm.minimax.model"):
+        # has_block (core/traits.py) matches a QUALIFIED class name -- module and
+        # name both -- so the stub needs a real __module__ and a modules() walk
+        # the way an nn.Module provides, not just a bare type() with a name.
+        cls = type(class_name, (), {"__module__": module, "modules": lambda self: [self]})
+        inner = cls()
         self.model = types.SimpleNamespace(diffusion_model=inner)
         self.model_options = {}
         self.wrappers = []
@@ -209,6 +213,18 @@ def test_sla_refuses_a_model_that_is_not_h3_and_says_so():
     """Head shape alone matches LTX too, and sparsifying LTX attention is a quality loss
     with no LoRA compensating for it. Silence would read as "it is on"."""
     model = _Patcher("LTXVModel")
+    out, note, installed = sla.install_sla(model)
+    assert out is model and installed is False
+    assert "not a MiniMax H3 model" in note
+
+
+def test_a_same_named_class_from_a_different_module_is_not_treated_as_h3():
+    """A bare class-name match would treat any unrelated MiniMaxH3Model -- built by a
+    different custom node, or a future FunPack model reusing the name by accident --
+    as the real thing, and sparsify it at H3's ratio with H3's prefix-pinning logic
+    on a model that was never validated for either. The qualified check requires the
+    DEFINING module too, not just the name."""
+    model = _Patcher("MiniMaxH3Model", module="some_other_package.model")
     out, note, installed = sla.install_sla(model)
     assert out is model and installed is False
     assert "not a MiniMax H3 model" in note

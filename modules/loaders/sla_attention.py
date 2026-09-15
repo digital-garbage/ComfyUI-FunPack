@@ -24,10 +24,22 @@ below exists and why a run that never sparsified says so in the log.
 """
 import logging
 
+from .._core import traits as _traits
+
 SLA_NAME = "sla_h3"
 
 _H3_HEAD_DIM = 128
-_H3_MODEL_NAMES = ("MiniMaxH3Model",)
+# Qualified on purpose, per core/traits.py's has_block: "a bare name matches on
+# the class name alone... actively wrong" for a false positive that silently
+# sparsifies a model this was never validated on -- exactly the LTX-collision
+# risk this file's own docstring already warns about, just not guarded against
+# strongly enough before this fix (v4 matched the bare name; found in extensive_
+# testing round 1 on this port). Kept as a local string matching modules/models/
+# minimax_h3's own MODEL_CLASS rather than importing that module -- it pulls in
+# comfy_extras at import time, which this file deliberately does not require
+# just to be importable on a machine with no ComfyUI on the path. Keep the two
+# in sync if the H3 model class is ever renamed.
+_H3_MODEL_CLASS = "comfy.ldm.minimax.model.MiniMaxH3Model"
 
 # Validated on an RTX 5090 at 768p/15s (ComfyUI-H3-SLA-Attention's own measurements):
 # 3.7x the attention throughput of stock ComfyUI at sparsity 0.90 / block 64.
@@ -67,10 +79,12 @@ def is_h3_model(model):
     SLA is only sound on H3: the sparsity ratio it runs at is the one the turbo LoRA
     was distilled to tolerate, and H3's packed [text | cond | audio | video] sequence
     is what the prefix pinning is for. Head shape alone would also match LTX, and
-    silently sparsifying LTX attention is a quality loss with no LoRA compensating it.
+    silently sparsifying LTX attention is a quality loss with no LoRA compensating it
+    -- which is also why the class name is matched qualified (module + name), not
+    bare: a bare name is exactly as blind to an unrelated same-named class as it is
+    to LTX's different head shape.
     """
-    diffusion = getattr(getattr(model, "model", None), "diffusion_model", None)
-    return type(diffusion).__name__ in _H3_MODEL_NAMES
+    return _traits.has_block(model, _H3_MODEL_CLASS)
 
 
 def new_state():
