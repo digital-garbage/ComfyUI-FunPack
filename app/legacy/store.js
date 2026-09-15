@@ -3409,6 +3409,16 @@
   // phase would kill it after run 1 of N and never restart it for the rest.
   // Only an adopted run has nobody else who will ever stop it.
   let _genAdoptedRun = false;
+  // Whether GenerateBridge has a run of THIS page's making in flight --
+  // dedicated to that question alone, and nothing else's. state.gen.state
+  // looks like it would answer this but doesn't: Export, Save to Media bin
+  // and Render Final all set it to "running" for their own, entirely local
+  // work, and asking GenerateBridge's own run.state.phase instead has a real
+  // gap of its own (it stays "idle" for the whole check() round trip before
+  // run.start() ever fires). Flipped synchronously the moment a call is
+  // accepted -- before any await -- so two calls fired back to back without
+  // an await between them still serialize correctly.
+  let _genRunActive = false;
 
   // One persistent subscription translating GenerateBridge's real run state
   // (app/shell/run.js -- ComfyUI's own /prompt + /ws, not a second queue of
@@ -3456,6 +3466,7 @@
       _genRunPrefix = "Generation";
       _genRunSceneIds = (sceneIds && sceneIds.length) ? sceneIds : (sceneId ? [sceneId] : []);
       _genAdoptedRun = true;
+      _genRunActive = true;
       pollStart = Date.now();
       _genClockStart("all", true);       // true: approximate — we never saw the press
       if (projectId && (!state.project || state.project.id !== projectId)
@@ -3475,9 +3486,14 @@
       // of N and never restarted it for the rest. An adopted run has nobody
       // else who will ever stop it (see the "adopt" handler above for why it
       // needs starting here at all), so it alone is cleared once it lands.
-      if (_genAdoptedRun && (phase === "done" || phase === "failed" || phase === "cancelled")) {
-        _genAdoptedRun = false;
-        _genClockStop();
+      if (phase === "done" || phase === "failed" || phase === "cancelled") {
+        // _genRunActive is cleared unconditionally here -- covers BOTH an
+        // adopted run (nothing else ever clears it) and a click-started one
+        // (_generateRun's own `finally` also clears it, redundantly but
+        // harmlessly, for the paths that never reach a terminal phase at all
+        // -- a check() refusal, for one, which this subscription never sees).
+        _genRunActive = false;
+        if (_genAdoptedRun) { _genAdoptedRun = false; _genClockStop(); }
       }
       if (phase === "queued") {
         set({ gen: { state: "queuing", promptId, media: [], msg: `${_genRunPrefix}: queuing…` } });
@@ -3703,7 +3719,7 @@
     _wireGenerateBridge();
     // GenerateBridge holds exactly ONE run, and _genRunPrefix/_genRunSceneIds/
     // _genAdoptedRun belong to whichever call is currently driving it. A
-    // second call reaching here while a first is still queuing/running (the
+    // second call reaching here while a first is still queued/running (the
     // main Generate/Selected buttons are gated against this by `busy(st)` in
     // actionbar.js, but H3 Combo Sweep's own "Run sweep" button is not) would
     // silently overwrite those with ITS scene/prefix, then get refused deeper
@@ -3711,10 +3727,22 @@
     // eventual result recorded onto the WRONG scene when it finishes, and its
     // clock stop possibly skipped. Refused here, loudly, before any of that
     // shared state is touched, rather than corrupting it silently.
-    if (state.gen && (state.gen.state === "queuing" || state.gen.state === "running")) {
+    //
+    // Asked of _genRunActive, a flag dedicated to exactly this question --
+    // NOT state.gen.state (Export, Save to Media bin and Render Final also
+    // set that to "running" for their own, entirely local work -- reading it
+    // here would wrongly refuse a real sweep run with a message borrowed from
+    // whichever unrelated job happened to be in progress) and NOT
+    // GenerateBridge's own run.state.phase either (it stays "idle" for the
+    // whole check() round trip, before run.start() ever fires -- a real gap
+    // a second call could still race through). Checked and flipped in the
+    // same synchronous breath, before any await, so two calls fired back to
+    // back with nothing awaited between them still serialize correctly.
+    if (_genRunActive) {
       console.warn(`[FunPack] "${prefix || "a generation"}" was refused: another generation is already in flight.`);
       return false;
     }
+    _genRunActive = true;
     // A run started through the normal click path owns its own clock
     // lifecycle (the _clockedX wrapper's `finally`, spanning the whole
     // batch) — any stale flag left over from a PRIOR adopted run must not
@@ -3730,6 +3758,7 @@
     }
     const targetSceneIds = (sceneIds || []).filter(Boolean);
     if (!targetSceneIds.length) {
+      _genRunActive = false;         // never actually started — nothing to hold the flag for
       set({ gen: { state: "error", promptId: null, media: [], msg: "No scenes to generate." } });
       return false;
     }
@@ -3771,6 +3800,12 @@
       pollStart = Date.now();
       return (await waiting) === GB.DONE;
     } finally {
+      // Redundant with the GB.subscribe terminal-phase clearing above for a
+      // run that actually reached one, and the only place that clears it at
+      // all for a run that got refused before ever transitioning (check()
+      // saying no, or GB.generate() throwing) -- that subscription never
+      // sees either of those, since nothing ever left "idle".
+      _genRunActive = false;
       _clearGenInFlight(targetSceneIds);
     }
   }
