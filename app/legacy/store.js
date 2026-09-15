@@ -969,16 +969,21 @@
   }
 
   async function commit(opts = {}) {
-    // Every mutating path in this module funnels through here before it can
-    // reach a real network write -- scheduleSave()'s own setTimeout calls
-    // this closure-scoped function directly, so patching Store.commit (or
-    // any individual caller) from outside cannot stop it. The tour's own
+    // Every PROJECT-save path in this module funnels through here before it
+    // can reach a real network write -- scheduleSave()'s own setTimeout
+    // calls this closure-scoped function directly, so patching Store.commit
+    // (or any individual caller) from outside cannot stop it. The tour's own
     // welcome copy promises "nothing here touches your real files," and
-    // enumerating every caller in tour.js's blocklist misses ones reachable
+    // enumerating every caller in tour.js's blocklist missed ones reachable
     // outside a click (keyboard shortcuts bypass the tour's click-blocking
     // backdrop entirely, since CSS pointer-events does nothing to keydown
-    // listeners) -- so the guard belongs here, once, covering every path by
-    // construction instead of by an ever-growing enumeration.
+    // listeners) -- so the guard belongs here, once, covering every project-
+    // save path by construction instead of by an ever-growing enumeration.
+    // NOTE: this is not the one true funnel for every mutation tour.js needs
+    // to worry about -- shortcut/transition/category CRUD (saveShortcut,
+    // deleteTransition, etc.) call their own API.* functions directly and
+    // never reach commit() at all; those still need their own entries in
+    // tour.js's patchStore() blocklist.
     if (window.__FUNPACK_TOUR__) return;
     if (!state.project) return;
     if (_commitPromise) { _commitQueued = true; return _commitPromise; }

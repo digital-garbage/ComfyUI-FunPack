@@ -345,6 +345,13 @@
       "saveSelectedToMediaBin", "commit", "newProject", "loadProject", "deleteProject",
       "importProject", "downloadProject", "uploadMedia", "deleteMedia", "deleteMediaMany",
       "interrupt", "resetStudioSession", "syncFromPreview", "saveClipToMediaBin",
+      // Not reachable via any current UI (no Settings > Shortcuts panel is
+      // wired up in v5 yet) -- same "block it now, before a future UI wires
+      // it up" reasoning as saveClipToMediaBin above. These all call real,
+      // unmocked API.* functions that (unlike project saves) don't funnel
+      // through commit(), so the store.js guard doesn't cover them.
+      "saveShortcut", "deleteShortcut", "addCategory", "importShortcuts", "clearShortcuts",
+      "saveTransition", "deleteTransition", "importTransitions", "clearTransitions",
     ];
     const labels = {
       generate: "Generate",
@@ -364,10 +371,13 @@
       // Blocking "commit" only stops external callers of Store.commit -- the
       // property gets reassigned below, but scheduleSave()'s own setTimeout
       // calls the closure-scoped `commit` function directly, bypassing this
-      // patch. syncFromPreview() is the one UI entry point that reaches
-      // scheduleSave() (and, through it, a real API.saveProject network
-      // call) without going through anything else already on this list, so
-      // it needs its own block rather than relying on "commit" to cover it.
+      // patch. store.js's commit() now has its own window.__FUNPACK_TOUR__
+      // guard as a backstop for every PROJECT-save path (including ones this
+      // list doesn't name, like the keyboard shortcuts that reach
+      // removeSelectedScenes()/splitScene()/etc.) -- but that guard only
+      // covers commit()'s own callers. syncFromPreview() and every entry
+      // below it call a DIFFERENT real, unmocked API.* function that never
+      // reaches commit() at all, so they still need their own block here.
       syncFromPreview: "Sync scenes from preview",
       // Not reachable via a real network call today -- API.importClipToMediaBin
       // is itself a stub ("no render/stitch stage yet") -- but the button
@@ -375,6 +385,20 @@
       // clipSaveableToMediaBin()), so this needs blocking now rather than
       // whenever that stage lands and the stub silently becomes a real PUT.
       saveClipToMediaBin: "Save video",
+      // None of these are reachable via any current UI -- no Settings >
+      // Shortcuts panel exists in v5 yet -- but each calls a real, unmocked
+      // API.* function (POST/DELETE /api/shortcuts, /api/transitions) that,
+      // unlike a project save, writes GLOBAL state, not per-project state.
+      // Blocking pre-emptively, same reasoning as saveClipToMediaBin.
+      saveShortcut: "Save shortcut",
+      deleteShortcut: "Delete shortcut",
+      addCategory: "Add category",
+      importShortcuts: "Import shortcuts",
+      clearShortcuts: "Clear shortcuts",
+      saveTransition: "Save transition",
+      deleteTransition: "Delete transition",
+      importTransitions: "Import transitions",
+      clearTransitions: "Clear transitions",
     };
     blocked.forEach((name) => {
       if (typeof Store[name] !== "function") return;
