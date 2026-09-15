@@ -322,7 +322,20 @@ def render_png(report: dict, theme: str = "dark") -> bytes:
     except Exception:
         wrap_at = VALUE_CHARS
 
-    blocks = [("title", report.get("project") or "FunPack pipeline")]
+    # extensive_testing round 5: row VALUES are wrapped to card width before
+    # drawing (bounding each d.text() call's cost), but "head"/"title" block
+    # payloads were drawn as one unwrapped string -- PIL's text-render cost
+    # scales with string length regardless of visible width, so a _cap()
+    # -allowed 400-char title, repeated once per slot up to _MAX_ROWS slots,
+    # cost 20.5s of pure font-render CPU even though every documented cap
+    # was individually honored. Single-line draws still need a width bound.
+    _HEAD_DRAW_CHARS = wrap_at
+
+    def _draw_cap(text):
+        text = str(text)
+        return text[:_HEAD_DRAW_CHARS] + "…" if len(text) > _HEAD_DRAW_CHARS else text
+
+    blocks = [("title", _draw_cap(report.get("project") or "FunPack pipeline"))]
     sub = report.get("generated")
     if sub:
         blocks.append(("sub", sub))
@@ -332,7 +345,8 @@ def render_png(report: dict, theme: str = "dark") -> bytes:
             blocks.append(("row", (k if i == 0 else "", piece)))
     for section in report.get("sections") or []:
         cls = section.get("node_class")
-        blocks.append(("head", f"{section['title']}   ({cls})" if cls else section["title"]))
+        head_text = f"{section['title']}   ({cls})" if cls else section["title"]
+        blocks.append(("head", _draw_cap(head_text)))
         for k, v in section.get("rows") or []:
             if v == "":
                 blocks.append(("row", (k, "")))

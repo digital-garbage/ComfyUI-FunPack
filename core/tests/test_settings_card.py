@@ -249,6 +249,24 @@ def test_a_huge_funpack_list_dict_key_is_capped_not_just_its_value():
     assert len(text) < 2000
 
 
+def test_render_png_stays_fast_with_many_slots_all_at_the_head_field_cap():
+    """extensive_testing round 5: row VALUES are wrapped to card width before
+    drawing, but "head" block titles (built from slot id/group/node, each
+    individually _cap()-allowed up to 400 chars) were drawn as one unwrapped
+    string -- PIL's render cost scales with string length regardless of
+    visible width, so this cost 20.5s even with every documented cap
+    honored and slot count at exactly _MAX_ROWS."""
+    import time
+    slots = [{"id": "I" * 400, "group": "G" * 400, "node": "N" * 400, "inputs": {}}
+              for _ in range(sc._MAX_ROWS)]
+    rep = sc.collect(slots, HOST)
+    start = time.monotonic()
+    png = sc.render_png(rep, "dark")
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0
+    assert len(png) < 5_000_000
+
+
 def test_render_png_stays_fast_when_one_slot_has_many_large_lists():
     """The Finding B composition gap, carried all the way through to the
     actual render (67.8s / 123MB before the fix)."""
