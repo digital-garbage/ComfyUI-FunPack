@@ -3401,6 +3401,14 @@
   let _genRunPrefix = "Generating…";
   let _genRunSceneIds = [];
   let _genBridgeWired = false;
+  // Whether the wall clock currently running belongs to a run ADOPTED on
+  // reload rather than one _generateRun started. A montage/selected batch
+  // makes several _generateRun calls under ONE press (genWallStart spans the
+  // whole batch, primed once by _clockedMontage/_clockedSelected's own
+  // wrapper) -- stopping the clock after every individual run's terminal
+  // phase would kill it after run 1 of N and never restart it for the rest.
+  // Only an adopted run has nobody else who will ever stop it.
+  let _genAdoptedRun = false;
 
   // One persistent subscription translating GenerateBridge's real run state
   // (app/shell/run.js -- ComfyUI's own /prompt + /ws, not a second queue of
@@ -3447,6 +3455,7 @@
     GB.on("adopt", ({ sceneId, projectId, sceneIds }) => {
       _genRunPrefix = "Generation";
       _genRunSceneIds = (sceneIds && sceneIds.length) ? sceneIds : (sceneId ? [sceneId] : []);
+      _genAdoptedRun = true;
       pollStart = Date.now();
       _genClockStart("all", true);       // true: approximate — we never saw the press
       if (projectId && (!state.project || state.project.id !== projectId)
@@ -3458,14 +3467,18 @@
     GB.subscribe((runState) => {
       const { phase, promptId, progress, images, audio, error } = runState;
       if (phase === "idle") return;             // the resting state — nothing new to draw
-      // Every terminal phase stops the button's own wall clock here, not only
-      // in _generateRun's caller's `finally` -- a run ADOPTED on reload never
-      // goes through _generateRun at all, and without this its _genClockStart
-      // (see the "adopt" handler above) would never be matched by a stop,
-      // permanently wedging genElapsed() for the rest of the session (its own
-      // guard is "if already started, do nothing"). Harmless to call twice for
-      // a normally-clicked run — the second call is a no-op.
-      if (phase === "done" || phase === "failed" || phase === "cancelled") _genClockStop();
+      // Only an ADOPTED run's terminal phase stops the clock here -- one
+      // _generateRun starting mid-batch's own caller (_clockedGenerate/
+      // Montage/Selected) already stops it in a `finally` that wraps the
+      // WHOLE batch, not each individual run inside it, so unconditionally
+      // stopping here on every terminal phase killed the clock after run 1
+      // of N and never restarted it for the rest. An adopted run has nobody
+      // else who will ever stop it (see the "adopt" handler above for why it
+      // needs starting here at all), so it alone is cleared once it lands.
+      if (_genAdoptedRun && (phase === "done" || phase === "failed" || phase === "cancelled")) {
+        _genAdoptedRun = false;
+        _genClockStop();
+      }
       if (phase === "queued") {
         set({ gen: { state: "queuing", promptId, media: [], msg: `${_genRunPrefix}: queuing…` } });
       } else if (phase === "running") {
@@ -3688,6 +3701,11 @@
       return false;
     }
     _wireGenerateBridge();
+    // A run started through the normal click path owns its own clock
+    // lifecycle (the _clockedX wrapper's `finally`, spanning the whole
+    // batch) — any stale flag left over from a PRIOR adopted run must not
+    // make this new run's terminal phase stop that batch clock early.
+    _genAdoptedRun = false;
     if (resetSession) {
       console.warn("[FunPack] a Studio session reset was requested, but v5 has no Studio session to reset yet — ignored.");
     }
