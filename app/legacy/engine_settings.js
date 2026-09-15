@@ -127,9 +127,18 @@
   // sent {the one field just touched} ∪ {everything else reset to default},
   // and place() blind-overwrote the sink with that -- silently discarding
   // every previously-set value across every module, on every reopen. Reading
-  // the same JSON contract back out is the fix: any string input that decodes
-  // to a plain object is treated as a settings blob and merged in.
-  function valuesAlreadyPlaced(currentSlots) {
+  // the same JSON contract back out is the fix.
+  //
+  // No route tells the client WHICH node/input is the real sink (that is
+  // core/graph.py's private business, by design -- core does not name an
+  // implementation), so this can't look up the one true location and instead
+  // scans every string input for one that decodes to a plain object. To keep
+  // that honest rather than a coincidence machine: a decoded key is only
+  // accepted when it names a module THIS SESSION ALREADY KNOWS IS INSTALLED
+  // (`knownModuleIds`) -- an unrelated node whose string input happens to
+  // parse as `{"tags": {...}}` cannot inject a bogus "tags" entry that then
+  // round-trips forever through every future save.
+  function valuesAlreadyPlaced(currentSlots, knownModuleIds) {
     const merged = {};
     (currentSlots || []).forEach((slot) => {
       Object.values(slot.inputs || {}).forEach((v) => {
@@ -138,6 +147,7 @@
         try { parsed = JSON.parse(v); } catch (_) { return; }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
         Object.entries(parsed).forEach(([moduleId, own]) => {
+          if (!knownModuleIds.has(moduleId)) return;
           if (own && typeof own === "object") merged[moduleId] = { ...(merged[moduleId] || {}), ...own };
         });
       });
@@ -161,7 +171,7 @@
         Object.entries(m.settings || {}).forEach(([name, spec]) => { own[name] = spec.default; });
         if (Object.keys(own).length) values[m.id] = own;
       });
-      const already = valuesAlreadyPlaced(slots);
+      const already = valuesAlreadyPlaced(slots, new Set(Object.keys(modulesById)));
       Object.entries(already).forEach(([moduleId, own]) => {
         values[moduleId] = { ...(values[moduleId] || {}), ...own };
       });
