@@ -54,13 +54,27 @@ THEMES = {
 # Inputs every node carries that say nothing about the setup.
 _NOISE_INPUTS = {"control_after_generate"}
 
+# This route is unauthenticated, the same as /api/pipeline -- but unlike that
+# route's O(n) dict work, render_png's image height grows with wrapped-line
+# count, so one crafted long value amplifies a small request into a very
+# large render (found in extensive_testing: a single 200k-char value forced a
+# 77,400px-tall, ~250MB image and a multi-second single-threaded draw loop).
+# A value this long was never going to be readable on a fixed-width card
+# anyway -- the card's whole purpose is a compact summary, not a full dump --
+# so this is a real limit worth declaring rather than a corner cut short.
+_MAX_VALUE_CHARS = 400
+_MAX_ROWS = 2000
+
 
 def _short(value):
     if isinstance(value, bool):
         return "on" if value else "off"
     if value is None or value == "":
         return "—"
-    return str(value)
+    text = str(value)
+    if len(text) > _MAX_VALUE_CHARS:
+        return text[:_MAX_VALUE_CHARS] + f"… ({len(text) - _MAX_VALUE_CHARS} more chars)"
+    return text
 
 
 def _rows_from_list(value):
@@ -79,9 +93,11 @@ def _rows_from_list(value):
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
         return None
     out = []
-    for i, row in enumerate(rows, 1):
+    for i, row in enumerate(rows[:_MAX_ROWS], 1):
         parts = [f"{k}={_short(v)}" for k, v in row.items()]
         out.append((f"[{i}]", "  ".join(parts) if parts else "—"))
+    if len(rows) > _MAX_ROWS:
+        out.append(("", f"… {len(rows) - _MAX_ROWS} more rows omitted"))
     return out          # [] for an empty list; the caller collapses that onto one line
 
 
@@ -118,8 +134,18 @@ def collect(slots: list, host: dict, *, project_name=None, render=None) -> dict:
     """
     by_id = {s.get("id"): s for s in (slots or []) if isinstance(s, dict)}
     sections = []
+    total_rows = 0
+    omitted_slots = 0
     for slot in slots or []:
         if not isinstance(slot, dict):
+            continue
+        # A card is a compact summary, not a full dump -- and without a cap
+        # here, a pipeline with an unreasonable number of slots (or one slot
+        # with an unreasonable number of inputs) would keep growing the PNG's
+        # height with no bound (see _MAX_VALUE_CHARS's own comment for the
+        # same reasoning applied to one value instead of the whole card).
+        if total_rows >= _MAX_ROWS:
+            omitted_slots += 1
             continue
         group = slot.get("group")
         node = slot.get("node") or ""
@@ -142,7 +168,12 @@ def collect(slots: list, host: dict, *, project_name=None, render=None) -> dict:
                 rows.extend((f"    {k}", v) for k, v in listed)
                 continue
             rows.append((name, _short(value)))
+        total_rows += len(rows)
         sections.append({"title": title, "node_class": node, "rows": rows})
+    if omitted_slots:
+        sections.append({"title": "(truncated)", "node_class": "",
+                         "rows": [("", f"… {omitted_slots} more slot(s) omitted "
+                                       f"— {_MAX_ROWS}-row card limit reached")]})
 
     head = []
     if render:

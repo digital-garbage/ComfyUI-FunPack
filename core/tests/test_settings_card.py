@@ -121,6 +121,37 @@ def test_booleans_read_as_on_off_not_python():
     assert rows["sla"] == "on" and rows["fp16_accumulation"] == "off"
 
 
+# --- bounding what an unbounded client can force this route to render ------------------
+
+
+def test_a_very_long_value_is_truncated_not_rendered_whole():
+    """extensive_testing found a single 200k-char value forced a 77,400px-tall
+    image and a multi-second render -- this machine's own GPU box, reachable
+    over a rental's plain-http IP with no auth, same as every other pipeline
+    route. A card exists to be a compact summary; nobody reads a 200k-char
+    row on it, so truncating is a real limit, not a corner cut short."""
+    rep = sc.collect([{"id": "a", "node": "X", "inputs": {"text": "x" * 200_000}}], HOST)
+    value = _rows(rep, "a")["text"]
+    assert len(value) < 500
+    assert "more chars" in value
+
+
+def test_a_pipeline_with_an_unreasonable_slot_count_is_capped_not_rendered_whole():
+    slots = [{"id": f"s{i}", "node": "X", "inputs": {"a": "v"}} for i in range(5000)]
+    rep = sc.collect(slots, HOST)
+    total_rows = sum(len(s["rows"]) for s in rep["sections"])
+    assert total_rows <= sc._MAX_ROWS + 1   # +1 for the truncation note's own row
+    assert "omitted" in rep["sections"][-1]["rows"][0][1]
+
+
+def test_a_funpack_list_with_an_unreasonable_row_count_is_capped():
+    import json
+    rows = json.dumps([{"i": i} for i in range(5000)])
+    rep = sc.collect([{"id": "l", "node": "X", "inputs": {"lora_list": rows}}], HOST)
+    text = " ".join(v for _, v in rep["sections"][0]["rows"])
+    assert "more rows omitted" in text
+
+
 # --- rendering --------------------------------------------------------------------------
 
 

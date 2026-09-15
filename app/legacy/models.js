@@ -113,14 +113,21 @@
   // on /api/pipeline being stateless), so this sends PS.slots() up rather
   // than a project id the way v4's version did.
   function openSettingsCard() {
-    document.querySelectorAll(".sc-overlay").forEach((n) => n.remove());
+    // A prior overlay reached only via re-clicking "Export settings…" (never
+    // through its own ✕/Close, which is the only path that revokes its blob
+    // URL) would otherwise leak that blob every reopen -- found in this
+    // feature's own extensive_testing round, carried over unfixed from v4.
+    document.querySelectorAll(".sc-overlay").forEach((n) => {
+      if (n._scObjectUrl) URL.revokeObjectURL(n._scObjectUrl);
+      n.remove();
+    });
     const overlay = el("div", "modal-overlay sc-overlay");
     const modal = el("div", "modal sc-modal");
     const head = el("div", "modal-head");
     head.append(el("div", "modal-title", "Export settings"));
     const hr = el("div", "modal-head-right");
     const x = el("button", "btn ghost tiny", "✕");
-    const close = () => { if (url) URL.revokeObjectURL(url); overlay.remove(); };
+    const close = () => { if (url) URL.revokeObjectURL(url); overlay._scObjectUrl = null; overlay.remove(); };
     x.onclick = close;
     hr.append(x); head.append(hr);
     const content = el("div", "modal-content sc-content");
@@ -150,6 +157,7 @@
       .then((b) => {
         if (!overlay.isConnected) return;
         blob = b; url = URL.createObjectURL(b);
+        overlay._scObjectUrl = url;
         clear(content);
         const img = el("img", "sc-img");
         img.src = url;
