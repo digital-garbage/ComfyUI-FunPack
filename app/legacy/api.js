@@ -170,6 +170,9 @@
       const body = await j("GET", API(`/api/nodes?classes=${encodeURIComponent(cls)}`));
       return body.nodes ? body.nodes[cls] : null;
     },
+    // Several at once -- {nodes: {className: spec|null}} -- for a pipeline
+    // view describing every slot's node in one request instead of one per row.
+    describeNodes: (classes) => j("GET", API(`/api/nodes?classes=${encodeURIComponent((classes || []).join(","))}`)),
     // v5's /api/pipeline is real, but its shape ({slots, refused, incomplete,
     // queueable}) is nothing like v4's ({ports, core_producers, requirements,
     // wiring, default_slots}) -- returning it under this name would answer

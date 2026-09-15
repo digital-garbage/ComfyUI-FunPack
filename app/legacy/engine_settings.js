@@ -18,16 +18,12 @@
   };
   const CATEGORY_ORDER = ["continuity", "guidance", "conditioning", "sampling", "post", "system", ""];
 
+  const PS = window.PipelineState;
   let _mounted = null;
   let unsub = null;
   let category = null;      // selected sidebar category, chosen once modules load
-  let loading = true;
-  let loadError = null;
-  let saving = false;
-  let saveNotes = [];
-  let modulesById = {};      // id -> manifest module (settings, title, category)
-  let slots = null;          // current in-memory pipeline slots, re-sent on every edit
-  let values = {};           // moduleId -> {settingName: value}, the UI's own draft
+  let seeded = false;        // whether `values` has been seeded from PS's slots yet
+  let values = {};           // moduleId -> {settingName: value}, this panel's own draft
 
   function field(labelText, control, hint) {
     const row = el("div", "sw-row eng-field");
@@ -120,105 +116,44 @@
     return field(label, input, hint);
   }
 
-  // What a settings_sink already holds, read back out of the live slots --
-  // place() (core/graph.py) writes the whole values blob as one opaque JSON
-  // string into the sink's input, and never merges. Re-seeding `values` from
-  // schema defaults alone (as this used to do) meant every mount's first edit
-  // sent {the one field just touched} ∪ {everything else reset to default},
-  // and place() blind-overwrote the sink with that -- silently discarding
-  // every previously-set value across every module, on every reopen. Reading
-  // the same JSON contract back out is the fix.
-  //
-  // No route tells the client WHICH node/input is the real sink (that is
-  // core/graph.py's private business, by design -- core does not name an
-  // implementation), so this can't look up the one true location and instead
-  // scans every string input for one that decodes to a plain object. To keep
-  // that honest rather than a coincidence machine: a decoded key is only
-  // accepted when it names a module THIS SESSION ALREADY KNOWS IS INSTALLED
-  // (`knownModuleIds`) -- an unrelated node whose string input happens to
-  // parse as `{"tags": {...}}` cannot inject a bogus "tags" entry that then
-  // round-trips forever through every future save.
-  function valuesAlreadyPlaced(currentSlots, knownModuleIds) {
-    const merged = {};
-    (currentSlots || []).forEach((slot) => {
-      Object.values(slot.inputs || {}).forEach((v) => {
-        if (typeof v !== "string") return;
-        let parsed;
-        try { parsed = JSON.parse(v); } catch (_) { return; }
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
-        Object.entries(parsed).forEach(([moduleId, own]) => {
-          if (!knownModuleIds.has(moduleId)) return;
-          if (own && typeof own === "object") merged[moduleId] = { ...(merged[moduleId] || {}), ...own };
-        });
-      });
+  // `values` is seeded once PipelineState has actually loaded -- from each
+  // setting's own default, then whatever the graph already holds wins (see
+  // PipelineState.valuesAlreadyPlaced's own comment for why that recovery
+  // step exists at all). Runs at most once per session: PipelineState itself
+  // only ever loads once, and reseeding on a second call would blow away
+  // whatever the user already changed in THIS panel.
+  function ensureSeeded() {
+    if (seeded || PS.loading() || PS.loadError()) return;
+    seeded = true;
+    values = {};
+    Object.values(PS.modulesById()).forEach((m) => {
+      const own = {};
+      Object.entries(m.settings || {}).forEach(([name, spec]) => { own[name] = spec.default; });
+      if (Object.keys(own).length) values[m.id] = own;
     });
-    return merged;
+    const already = PS.valuesAlreadyPlaced();
+    Object.entries(already).forEach(([moduleId, own]) => {
+      values[moduleId] = { ...(values[moduleId] || {}), ...own };
+    });
   }
 
-  async function ensureLoaded() {
-    loading = true; loadError = null;
-    try {
-      const [manifest, pipe] = await Promise.all([API.modules(), API.pipeline()]);
-      modulesById = {};
-      (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
-      slots = pipe.slots || [];
-      // Seed from each setting's own default, then let whatever is already
-      // placed in the graph win -- a field never placed before (a module
-      // just installed, say) still needs a value from somewhere.
-      values = {};
-      Object.values(modulesById).forEach((m) => {
-        const own = {};
-        Object.entries(m.settings || {}).forEach(([name, spec]) => { own[name] = spec.default; });
-        if (Object.keys(own).length) values[m.id] = own;
-      });
-      const already = valuesAlreadyPlaced(slots, new Set(Object.keys(modulesById)));
-      Object.entries(already).forEach(([moduleId, own]) => {
-        values[moduleId] = { ...(values[moduleId] || {}), ...own };
-      });
-    } catch (e) {
-      loadError = e && e.message ? e.message : String(e);
-    }
-    loading = false;
-  }
-
-  // Edits arrive faster than a round-trip: a checkbox flipped while a slider's
-  // request is still in flight must not be dropped. `values` is one shared,
-  // synchronously-mutated object, so a save started after the in-flight one
-  // finishes already sees every edit made in between -- `pending` just says
-  // "go again" rather than trusting a single request to have carried it.
-  let pending = false;
-
-  async function commit() {
-    if (saving) { pending = true; return; }
-    saving = true;
-    do {
-      pending = false;
-      try {
-        const res = await API.editPipeline({ slots, values });
-        if (res && res.slots) slots = res.slots;
-        saveNotes = (res && res.notes) || [];
-      } catch (e) {
-        saveNotes = [`Could not save: ${e && e.message ? e.message : e}`];
-      }
-    } while (pending);
-    saving = false;
-    render();
-  }
+  function commit() { PS.save({ values }).then(render); }
 
   function categoriesWithContent() {
     const found = new Set();
-    Object.values(modulesById).forEach((m) => {
+    Object.values(PS.modulesById()).forEach((m) => {
       if (Object.keys(m.settings || {}).length) found.add(m.category || "");
     });
     return CATEGORY_ORDER.filter((c) => found.has(c));
   }
 
   function renderPane(pane) {
-    if (loading) { pane.append(hintEl("Loading…")); return; }
-    if (loadError) {
-      pane.append(hintEl(`Could not load Engine settings: ${loadError}`));
+    if (PS.loading()) { pane.append(hintEl("Loading…")); return; }
+    if (PS.loadError()) {
+      pane.append(hintEl(`Could not load Engine settings: ${PS.loadError()}`));
       return;
     }
+    ensureSeeded();
     const cats = categoriesWithContent();
     if (!cats.length) {
       pane.append(hintEl(
@@ -228,10 +163,11 @@
     }
     if (!category || !cats.includes(category)) category = cats[0];
 
-    const modulesInCategory = Object.values(modulesById)
+    const modulesInCategory = Object.values(PS.modulesById())
       .filter((m) => (m.category || "") === category && Object.keys(m.settings || {}).length);
 
-    if (saveNotes.length) pane.append(hintEl(saveNotes.join(" ")));
+    const notes = PS.saveNotes();
+    if (notes.length) pane.append(hintEl(notes.join(" ")));
 
     modulesInCategory.forEach((m) => {
       const g = group(pane, m.title || m.id);
@@ -243,7 +179,7 @@
   }
 
   function renderContent(container) {
-    if (loading || loadError || !categoriesWithContent().length) {
+    if (PS.loading() || PS.loadError() || !categoriesWithContent().length) {
       const solo = el("div", "models-pane");
       renderPane(solo);
       container.append(solo);
@@ -280,14 +216,10 @@
     body.append(content);
     _mounted = { content };
     render();
-    // Only on the FIRST open this session: the server holds no pipeline state
-    // of its own (GET /api/pipeline always returns the bare default -- see
-    // valuesAlreadyPlaced()'s comment), so a fetch on every reopen would
-    // throw away whatever this session already placed and never recover it.
-    // The in-memory `slots`/`values` this module already holds ARE the
-    // session's pipeline; closing and reopening the panel must not re-fetch
-    // over them.
-    if (slots === null) ensureLoaded().then(render);
+    // PipelineState loads at most once per session and is shared with every
+    // other panel that edits the pipeline -- closing and reopening this one
+    // must not re-fetch over whatever is already held (see pipeline_state.js).
+    PS.ensureLoaded().then(render);
     unsub = S.subscribe(() => {}); // kept: other sections rely on the same subscribe/unsub shape
     return () => {
       if (unsub) { unsub(); unsub = null; }
