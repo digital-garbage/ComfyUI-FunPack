@@ -287,6 +287,55 @@
     });
   }
 
+  // v5's own per-scene reference fields (core/projects.py's Scene.source_image/
+  // .references) -- a different thing from v4's i2v anchor/guides above, which
+  // feed the sampler's own conditioning. These are read at generate time by
+  // whatever the pipeline's own "assets.source_image"/"assets.reference_N"
+  // roles ask for (see store.js's _buildQueueInputs / app/shell/reference_wiring.js),
+  // which today means H3's reference-to-video slot. Shared with the gen-unit's
+  // root scene, same as the i2v anchor above ("shared with the root clip").
+  function renderReferenceMedia(st, scene, parent) {
+    parent = parent || body;
+    if (!window.MediaPicker) return;
+    const tag = el("div", "insp-tag"); tag.textContent = "Reference media (v5 pipeline)"; parent.append(tag);
+
+    const srcPick = window.MediaPicker.create({
+      value: scene.source_image || null,
+      mediaBin: st.mediaBin,
+      filter: (m) => m.kind === "image",
+      noneLabel: "— choose resolution source —",
+      onChange: (mediaId) => S.setSourceImage(scene.id, mediaId),
+    });
+    parent.append(field("Resolution source", srcPick));
+    parent.append(el("div", "insp-hint",
+      "Sets this scene's aspect ratio for generation — the project's own Width/Height "
+      + "set the actual resolution, this image's pixels are not used."));
+
+    const refs = scene.references || [];
+    if (refs.length) {
+      const list = el("div", "insp-block");
+      refs.forEach((mediaId, i) => {
+        const row = el("div", "fields-row ref-row");
+        const asset = (st.mediaBin || []).find((m) => m.id === mediaId);
+        row.append(el("span", "insp-hint", asset ? asset.name : `${mediaId} (missing)`));
+        const rm = el("button", "btn ghost tiny danger", "✕");
+        rm.title = "Remove this reference";
+        rm.onclick = () => S.setReferences(scene.id, refs.filter((_, j) => j !== i));
+        row.append(rm);
+        list.append(row);
+      });
+      parent.append(list);
+    }
+    const addPick = window.MediaPicker.create({
+      value: null,
+      mediaBin: st.mediaBin,
+      filter: (m) => m.kind === "image",
+      noneLabel: "+ Add reference",
+      onChange: (mediaId) => { if (mediaId) S.setReferences(scene.id, [...refs, mediaId]); },
+    });
+    parent.append(field("References", addPick));
+  }
+
   function renderScene(st, scene) {
     const root = S.genUnitRoot(S.genUnitId(scene)) || scene;
     const unitScenes = (st.project.scenes || []).filter((s) => S.genUnitId(s) === S.genUnitId(scene))
@@ -345,6 +394,7 @@
       if ((root.source?.type) === "generated_frame") renderGeneratedFrameSource(st, root);
       if ((root.source?.type) === "v2v") renderVideoSource(st, root, body, "V2V source video");
     }
+    renderReferenceMedia(st, root, body);
 
     const effFrames = effOf(scene, "frames"), effFps = effOf(scene, "fps") || 1;
     const planDur = effFrames / effFps;

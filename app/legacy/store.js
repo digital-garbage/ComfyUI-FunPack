@@ -2870,6 +2870,22 @@
     if (Object.keys(p).length) patchScene(id, p);
   }
 
+  // A media library id, picked to size this scene's generation -- v5's real
+  // core/projects.py Scene field, not a v4 concept (v4's "drop a picture on
+  // the timeline" fed a resolution node the same way, through source.media_ref
+  // instead). api.js round-trips this already, whole-object-passthrough, so
+  // nothing here needs its own adapter -- it just needed a setter and a place
+  // to show it (see inspector.js's "Reference media" section).
+  function setSourceImage(id, mediaId) { patchScene(id, { source_image: mediaId || null }); }
+
+  // Media library ids, in the order they were added -- reference images for
+  // whatever the pipeline's own reference input wants them for (see
+  // app/shell/reference_wiring.js's wireReferences(), which _buildQueueInputs
+  // in the generate path below calls with this list at queue time).
+  function setReferences(id, mediaIds) {
+    patchScene(id, { references: Array.isArray(mediaIds) ? mediaIds.filter(Boolean) : [] });
+  }
+
   const ENGINE_PRESETS = {
     draft: {
       label: "Fast draft",
@@ -3536,11 +3552,16 @@
   // project.video's width/height, wherever the pipeline asks for them, by
   // role.input name -- same convention app/boot.js's syncVideo() uses.
   //
-  // Reference-image wiring (assets.source_image/reference_N, app/boot.js's
-  // wireReferences()) is NOT built here yet: v4's legacy project/scene shape
-  // doesn't round-trip source_image/references through api.js's
-  // getProject/saveProject adapter today, so there is nothing yet to wire —
-  // a placeholder left for the next pass, not a silent gap.
+  // Reference-image wiring (assets.source_image/reference_N -- H3's own
+  // reference-to-video slot today) reads the FIRST scene in this run's own
+  // source_image/references (core/projects.py's real per-scene fields --
+  // api.js's getProject/saveProject already round-trip them whole-object-
+  // passthrough, nothing v4-specific to adapt). One run can cover several
+  // scenes at once (H3's whole-timeline-in-one-call shape, no chain sampler
+  // to split it up), and there is no per-scene reference slot to give each
+  // one its own set -- the run's first/anchor scene's picks stand for the
+  // whole run, the same way its text already does for a single-scene run
+  // below.
   async function _buildQueueInputs(targetSceneIds) {
     const raw = {};
     const GB = window.GenerateBridge;
@@ -3552,6 +3573,31 @@
         const v = state.project[role.input];
         if (v === undefined) continue;
         raw[slot.id] = { ...(raw[slot.id] || {}), [role.input]: v };
+      }
+    }
+
+    const primary = scene(targetSceneIds[0]);
+    if (primary) {
+      const source = GB.slotForRole("assets.source_image");
+      const reservedSlotIds = [];
+      if (source) {
+        raw[source.slot.id] = { ...(raw[source.slot.id] || {}), media_id: primary.source_image || "" };
+        reservedSlotIds.push(source.slot.id);
+      }
+      const { overrides, unwired } = GB.wireReferences(
+        primary.references || [], window.PipelineState.slots() || [], reservedSlotIds);
+      for (const [slotId, fields] of Object.entries(overrides)) {
+        raw[slotId] = { ...(raw[slotId] || {}), ...fields };
+      }
+      // Two different causes look the same from here -- fewer reference
+      // slots than references picked, or a malformed preset pointing two
+      // references at the same destination -- but both are true either way:
+      // the reference did not make it into this run (see wireReferences's
+      // own comment for why the wording doesn't try to guess which).
+      if (unwired > 0) {
+        state.notice = unwired === 1
+          ? "1 reference could not be wired into this pipeline and will not be used."
+          : `${unwired} references could not be wired into this pipeline and will not be used.`;
       }
     }
 
@@ -4782,7 +4828,7 @@
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
     addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,
     isOverlayAudioTrack, isSeparatedAudioTrack,
-    resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, scenesOverridingProjectFrames, useProjectFramesEverywhere, setSourceTrim, trimSceneLeft, slipScene,
+    resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, scenesOverridingProjectFrames, useProjectFramesEverywhere, setSourceTrim, setSourceImage, setReferences, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate: _clockedGenerate, generateMontage: _clockedMontage, generateSelected: _clockedSelected, genElapsed, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, saveClipToMediaBin, clipSaveableToMediaBin,
     runComboSweep, parseComboSweepConfig, rateComboResult, discardComboResult, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,

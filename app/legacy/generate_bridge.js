@@ -13,6 +13,7 @@ import { createRun, viewUrl, DONE, FAILED, CANCELLED } from "../shell/run.js";
 import { clientId, connect, queuedFor, finishedFor } from "../shell/client.js";
 import { wire, waitForTerminal } from "../shell/session.js";
 import { check } from "../shell/pipeline.js";
+import { wireReferences } from "../shell/reference_wiring.js";
 
 const PS = window.PipelineState;
 const id = clientId();
@@ -112,6 +113,7 @@ window.GenerateBridge = {
   waitForTerminal: () => waitForTerminal(run),
   ready: session.ready,
   slotForRole,
+  wireReferences,
   /**
    * Queue one run. `inputs` is {slotId: {inputName: value}}. `sceneIds`, when
    * the run covers more than one scene (no chain sampler to split it into
