@@ -23,7 +23,21 @@ const run = createRun({ clientId: id, connect });
 // its own `state.gen` -- so these just fan out to whoever subscribes via
 // GenerateBridge.on(...).
 const listeners = { say: [], warn: [], hold: [], release: [], disabled: [], adopt: [] };
-function fire(kind, arg) { (listeners[kind] || []).forEach((fn) => { try { fn(arg); } catch (_) {} }); }
+// The most recent "adopt" payload, replayed to a listener that registers
+// AFTER it already fired. This module's own reattach (inside wire(), below)
+// starts the moment this script evaluates -- before store.js's classic
+// script has even run, let alone reached the point in its boot sequence
+// where it calls GB.on("adopt", ...) -- so on a reload during a generation,
+// adopt routinely fires and is gone before anyone is listening. Unlike
+// "say"/"warn"/"hold"/"release" (transient status text, fine to miss), this
+// event carries the ONLY copy of which scene(s) a reattached run belongs to;
+// losing it doesn't just miss a message, it orphans that run's eventual
+// result from ever being recorded onto its scene.
+let lastAdopt = null;
+function fire(kind, arg) {
+  if (kind === "adopt") lastAdopt = arg;
+  (listeners[kind] || []).forEach((fn) => { try { fn(arg); } catch (_) {} });
+}
 const transport = {
   generate: { setDisabled: (v) => fire("disabled", v) },
   say: (msg) => fire("say", msg),
@@ -91,6 +105,7 @@ window.GenerateBridge = {
   subscribe: (fn) => run.subscribe(fn),
   on: (kind, fn) => {
     (listeners[kind] || (listeners[kind] = [])).push(fn);
+    if (kind === "adopt" && lastAdopt) { try { fn(lastAdopt); } catch (_) {} }
     return () => { listeners[kind] = (listeners[kind] || []).filter((f) => f !== fn); };
   },
   cancel: () => run.cancel(),
