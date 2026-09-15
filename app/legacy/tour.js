@@ -351,6 +351,40 @@
       ), (c) => c.charCodeAt(0))],
       { type: "image/png" }
     ));
+    // pipeline_state.js (window.PipelineState) is a standalone module models.js
+    // uses -- like GenerateBridge, it talks to MovieEditorAPI directly and
+    // never goes through window.Store, so it was invisible to every prior
+    // round's Store-shaped sweep. ensureLoaded() fires API.modules()+
+    // API.pipeline() the INSTANT the models-modal tour step's panel mounts --
+    // zero clicks needed, since `slots` starts null every session -- and any
+    // ordinary widget edit on that same screen calls save() -> API.editPipeline(),
+    // a real POST. None of the three are covered by any of the (stale,
+    // v4-shaped) pipeline-related names already mocked above.
+    API.modules = ok({ modules: [] });
+    API.pipeline = ok({ slots: [], incomplete: [], refused: [], queueable: false });
+    API.editPipeline = (body) => Promise.resolve({
+      slots: (body && body.slots) || [], incomplete: [], refused: [],
+      queueable: false, notes: [],
+    });
+    // custom_nodes.js self-registers its own Settings section ("Custom
+    // Nodes", System group) in the SAME sidebar the models-modal step opens
+    // -- the identical reachability round 5 already proved live for Combo
+    // Sweep. Its panel calls API.customNodes() on mount, and its buttons
+    // reach real git clone/pull and an irreversible directory delete
+    // (API.customNodeInstall/Update/Remove) -- worse than anything found so
+    // far, since it can destroy real files on disk, not just make a stray
+    // network call.
+    API.customNodesCheck = ok({ checked: {} });
+    API.customNodes = ok({ nodes: [], root: "" });
+    API.customNodeInstall = ok({ name: "demo-node", requirements: { ran: false } });
+    API.customNodeUpdate = ok({ requirements: { ran: false } });
+    API.customNodeRemove = ok({});
+    // temp_browser.js's own Settings section -- read-only (list + download a
+    // real temp file), lower severity than the above, but still a real
+    // network read of the live server's actual temp files during a tour that
+    // promises not to touch real files. Closing it in the same pass.
+    API.listTemp = ok({ files: [] });
+    API.downloadTempFile = ok({});
   }
 
   function patchStore(Store) {
