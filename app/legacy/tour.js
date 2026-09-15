@@ -269,9 +269,11 @@
         // that panel renders (pre-existing in v4's tour.js too, found while
         // verifying this port live).
         parsed: {
+          // Matches demoProject()'s own three scenes verbatim -- tour-s2 is
+          // a video clip with no prompt text, same as its timeline entry.
           scenes: [
             { text: "Wide establishing shot of the city at dawn, soft haze." },
-            { text: "B-roll alley clip." },
+            { text: "" },
             { text: "Close-up reaction, emotional beat, shallow depth of field." },
           ],
           transitions: [],
@@ -342,7 +344,7 @@
       "generate", "generateMontage", "generateSelected", "renderFinal", "exportSelected",
       "saveSelectedToMediaBin", "commit", "newProject", "loadProject", "deleteProject",
       "importProject", "downloadProject", "uploadMedia", "deleteMedia", "deleteMediaMany",
-      "interrupt", "resetStudioSession",
+      "interrupt", "resetStudioSession", "syncFromPreview",
     ];
     const labels = {
       generate: "Generate",
@@ -359,6 +361,14 @@
       downloadProject: "Download project",
       uploadMedia: "Upload media",
       resetStudioSession: "Reset Studio session",
+      // Blocking "commit" only stops external callers of Store.commit -- the
+      // property gets reassigned below, but scheduleSave()'s own setTimeout
+      // calls the closure-scoped `commit` function directly, bypassing this
+      // patch. syncFromPreview() is the one UI entry point that reaches
+      // scheduleSave() (and, through it, a real API.saveProject network
+      // call) without going through anything else already on this list, so
+      // it needs its own block rather than relying on "commit" to cover it.
+      syncFromPreview: "Sync scenes from preview",
     };
     blocked.forEach((name) => {
       if (typeof Store[name] !== "function") return;
