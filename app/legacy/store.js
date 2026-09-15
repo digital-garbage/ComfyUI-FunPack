@@ -636,6 +636,14 @@
   }
 
   async function applyGlobalPromptQuiet(text) {
+    // Same shape as commit()'s guard above, and needed for the same reason:
+    // this has TWO internal closure-scoped callers (setEditorSetting's
+    // anchorEnabled toggle, applyPromptTemplate) besides its exported
+    // property, so blocking Store.applyGlobalPromptQuiet from tour.js alone
+    // would miss both. It reaches a real, unmocked API.parsePrompt network
+    // call, so it needs its own gate here rather than relying on
+    // scheduleSaveSilent()/commit() downstream to cover it.
+    if (window.__FUNPACK_TOUR__) return false;
     if (!state.project) return false;
     const trimmed = String(text || "").trim();
     if (!trimmed) return false;

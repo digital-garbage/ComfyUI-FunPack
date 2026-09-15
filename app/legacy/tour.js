@@ -337,6 +337,20 @@
     API.exportClip = ok({});
     API.exportClipsCombined = ok({ job_id: "tour-demo" });
     API.interrupt = ok({});
+    // models.js's "Export settings..." button calls API.settingsCard
+    // directly -- it never goes through window.Store, so it was never a
+    // candidate for patchStore()'s blocklist, and it's a real, unmocked
+    // POST /api/settings-card one click away on the models-modal tour step
+    // (the FIRST screen that step shows, no sidebar navigation needed).
+    // The real function resolves a Blob (models.js feeds it straight to
+    // URL.createObjectURL), so the mock needs to be a real Blob too, not
+    // JSON -- a 1x1 transparent PNG is enough for the card to render.
+    API.settingsCard = () => Promise.resolve(new Blob(
+      [Uint8Array.from(atob(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+      ), (c) => c.charCodeAt(0))],
+      { type: "image/png" }
+    ));
   }
 
   function patchStore(Store) {
