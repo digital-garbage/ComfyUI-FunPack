@@ -29,6 +29,7 @@ used yet rather than by registering it anywhere.
 ID = "pipeline"
 TITLE = "Pipeline"
 STAGE = "load"
+CATEGORY = "system"
 STATUS = "proven"
 
 # Slot ids are stable: they are how an override says which slot it means, and

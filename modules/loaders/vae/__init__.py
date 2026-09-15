@@ -9,6 +9,7 @@ from .nodes import FunPackVAELoader
 ID = "loader_vae"
 TITLE = "VAE loader"
 STAGE = "load"
+CATEGORY = "system"
 STATUS = "proven"
 
 NODES = [FunPackVAELoader]

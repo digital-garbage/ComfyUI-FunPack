@@ -5,6 +5,7 @@ from .nodes import ACCEPTS, FunPackSampler
 ID = "sampling_sampler"
 TITLE = "Sampler"
 STAGE = "sampling"
+CATEGORY = "sampling"
 STATUS = "proven"
 
 NODES = [FunPackSampler]

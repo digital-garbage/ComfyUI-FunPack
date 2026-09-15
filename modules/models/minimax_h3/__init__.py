@@ -34,6 +34,7 @@ has_block = _traits.has_block
 ID = "model_minimax_h3"
 TITLE = "MiniMax H3"
 STAGE = "load"
+CATEGORY = "system"
 STATUS = "experimental"
 
 # Qualified on purpose: a bare class name matches anything built with a class of

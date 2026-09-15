@@ -9,6 +9,7 @@ from .nodes import FunPackLoadMedia
 ID = "media_load"
 TITLE = "Media loader"
 STAGE = "load"
+CATEGORY = "system"
 STATUS = "proven"
 
 NODES = [FunPackLoadMedia]

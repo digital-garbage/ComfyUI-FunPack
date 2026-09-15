@@ -5,6 +5,7 @@ from .nodes import FunPackLoadModifiers, FunPackModifierSettings
 ID = "sampling_modifiers"
 TITLE = "Modifiers"
 STAGE = "sampling"
+CATEGORY = "sampling"
 STATUS = "proven"
 
 NODES = [FunPackModifierSettings, FunPackLoadModifiers]
