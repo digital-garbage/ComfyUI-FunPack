@@ -136,6 +136,7 @@ def collect(slots: list, host: dict, *, project_name=None, render=None) -> dict:
     sections = []
     total_rows = 0
     omitted_slots = 0
+    mid_slot_truncations = 0
     for slot in slots or []:
         if not isinstance(slot, dict):
             continue
@@ -151,7 +152,15 @@ def collect(slots: list, host: dict, *, project_name=None, render=None) -> dict:
         node = slot.get("node") or ""
         title = f"{group} · {slot.get('id')}" if group else str(slot.get("id") or node or "node")
         rows = []
+        # extensive_testing round 2: this check used to run once per SLOT, so
+        # one slot with many funpack_list inputs (each individually capped at
+        # _MAX_ROWS by _rows_from_list) could blow the card-wide budget by a
+        # large multiple before the *next* slot's check ever fired. Checking
+        # the running budget per INPUT closes that.
         for name, value in (slot.get("inputs") or {}).items():
+            if total_rows + len(rows) >= _MAX_ROWS:
+                mid_slot_truncations += 1
+                break
             if name in _NOISE_INPUTS:
                 continue
             if is_link(value):
@@ -170,9 +179,14 @@ def collect(slots: list, host: dict, *, project_name=None, render=None) -> dict:
             rows.append((name, _short(value)))
         total_rows += len(rows)
         sections.append({"title": title, "node_class": node, "rows": rows})
-    if omitted_slots:
+    if omitted_slots or mid_slot_truncations:
+        parts = []
+        if mid_slot_truncations:
+            parts.append(f"{mid_slot_truncations} slot(s) cut short")
+        if omitted_slots:
+            parts.append(f"{omitted_slots} slot(s) omitted entirely")
         sections.append({"title": "(truncated)", "node_class": "",
-                         "rows": [("", f"… {omitted_slots} more slot(s) omitted "
+                         "rows": [("", f"… {', '.join(parts)} "
                                        f"— {_MAX_ROWS}-row card limit reached")]})
 
     head = []
@@ -280,6 +294,30 @@ def render_png(report: dict, theme: str = "dark") -> bytes:
                 continue
             for i, piece in enumerate(_wrap(v, wrap_at)):
                 blocks.append(("row", (k if i == 0 else "", piece)))
+
+    # extensive_testing round 2: _MAX_ROWS and _MAX_VALUE_CHARS each bound one
+    # factor, but a value near the char cap still wraps into several lines
+    # (no spaces to break on), so their PRODUCT was never bounded -- 2000
+    # rows of 400-char values honored both caps individually and still cost
+    # ~14s/~10MB. Cap the thing that actually drives render_png's cost --
+    # rendered lines -- directly, rather than trying to predict it from
+    # collect()'s row count.
+    _MAX_WRAPPED_LINES = 1200
+    row_lines = 0
+    capped_blocks = []
+    line_truncated = False
+    for kind, payload in blocks:
+        if kind == "row":
+            if row_lines >= _MAX_WRAPPED_LINES:
+                line_truncated = True
+                continue
+            row_lines += 1
+        capped_blocks.append((kind, payload))
+    if line_truncated:
+        capped_blocks.append(("head", "(truncated)"))
+        capped_blocks.append(("row", ("", f"… card exceeded {_MAX_WRAPPED_LINES} "
+                                           f"rendered lines, rest omitted")))
+    blocks = capped_blocks
 
     height = PAD
     for kind, _ in blocks:

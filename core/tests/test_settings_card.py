@@ -152,6 +152,53 @@ def test_a_funpack_list_with_an_unreasonable_row_count_is_capped():
     assert "more rows omitted" in text
 
 
+def test_many_funpack_lists_on_one_slot_still_respect_the_card_wide_cap():
+    """extensive_testing round 2: the per-card check used to fire once per
+    SLOT, so one slot with many funpack_list inputs -- each individually
+    capped at _MAX_ROWS by _rows_from_list -- blew the card-wide budget by a
+    large multiple before the next slot's check ever ran. 50 inputs x 2000
+    rows each used to produce 100,050 total rows from a single slot."""
+    import json
+    big_list = json.dumps([{"i": i} for i in range(2000)])
+    inputs = {f"list_{n}": big_list for n in range(50)}
+    rep = sc.collect([{"id": "s", "node": "X", "inputs": inputs}], HOST)
+    total_rows = sum(len(s["rows"]) for s in rep["sections"])
+    assert total_rows <= sc._MAX_ROWS + 5
+    assert "truncated" in rep["sections"][-1]["title"]
+
+
+def test_render_png_stays_fast_even_when_both_caps_are_individually_honored():
+    """extensive_testing round 2: a request that honors BOTH _MAX_ROWS and
+    _MAX_VALUE_CHARS exactly -- 2000 rows of 400-char, space-free values --
+    still cost ~14s and ~10MB, because nothing bounded their product. This is
+    the test the round-1 fix should have had: it actually calls render_png,
+    not just collect."""
+    import time
+    slots = [{"id": f"s{i}", "node": "X", "inputs": {"a": "x" * sc._MAX_VALUE_CHARS}}
+              for i in range(2000)]
+    rep = sc.collect(slots, HOST)
+    start = time.monotonic()
+    png = sc.render_png(rep, "dark")
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0
+    assert len(png) < 5_000_000
+
+
+def test_render_png_stays_fast_when_one_slot_has_many_large_lists():
+    """The Finding B composition gap, carried all the way through to the
+    actual render (67.8s / 123MB before the fix)."""
+    import json
+    import time
+    big_list = json.dumps([{"i": i} for i in range(2000)])
+    inputs = {f"list_{n}": big_list for n in range(50)}
+    rep = sc.collect([{"id": "s", "node": "X", "inputs": inputs}], HOST)
+    start = time.monotonic()
+    png = sc.render_png(rep, "dark")
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0
+    assert len(png) < 5_000_000
+
+
 # --- rendering --------------------------------------------------------------------------
 
 
