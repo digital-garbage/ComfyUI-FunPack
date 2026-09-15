@@ -83,6 +83,14 @@ def is_h3_model(model):
     -- which is also why the class name is matched qualified (module + name), not
     bare: a bare name is exactly as blind to an unrelated same-named class as it is
     to LTX's different head shape.
+
+    has_block's contract is "does this model CONTAIN one", not "IS this model
+    one" -- true today because nothing in v5 wraps diffusion_model in anything
+    that could nest an unrelated MiniMaxH3Model submodule (checked: comfy's own
+    model_base.py assigns the raw architecture instance directly, and no
+    composite/multi-model pipeline exists in this codebase yet). Revisit this
+    gate if that ever changes -- the same assumption underpins minimax_h3's own
+    equally consequential is_h3() gate, so it would need fixing in both places.
     """
     return _traits.has_block(model, _H3_MODEL_CLASS)
 
