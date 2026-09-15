@@ -264,7 +264,18 @@
       },
       preview: {
         combined_prompt: "Demo combined prompt preview",
-        parsed: { scenes: 3 },
+        // `parsed.scenes` is an array of {text} rendered by inspector.js's
+        // renderSplit() -- a bare count here throws on .forEach the moment
+        // that panel renders (pre-existing in v4's tour.js too, found while
+        // verifying this port live).
+        parsed: {
+          scenes: [
+            { text: "Wide establishing shot of the city at dawn, soft haze." },
+            { text: "B-roll alley clip." },
+            { text: "Close-up reaction, emotional beat, shallow depth of field." },
+          ],
+          transitions: [],
+        },
         warning: "",
         parse_error: "",
       },
