@@ -3562,10 +3562,19 @@
   // one its own set -- the run's first/anchor scene's picks stand for the
   // whole run, the same way its text already does for a single-scene run
   // below.
+  // Returns {raw, unwiredNotice} rather than setting state.notice itself --
+  // GB.generate() below runs check() right after this, and check()'s own
+  // "warn" note (app/shell/session.js's transport.warn -> the GB.on("warn")
+  // handler a few hundred lines up) writes the SAME state.notice field. Two
+  // writers, one field, whichever fires last wins; setting this one here
+  // let check()'s note silently clobber it before anyone ever saw it. The
+  // caller applies unwiredNotice AFTER GB.generate() resolves instead, so it
+  // wins that race on purpose (see extensive_testing round 1 finding).
   async function _buildQueueInputs(targetSceneIds) {
     const raw = {};
+    let unwiredNotice = null;
     const GB = window.GenerateBridge;
-    if (!GB || !state.project) return raw;
+    if (!GB || !state.project) return { raw, unwiredNotice };
 
     for (const slot of (window.PipelineState.slots() || [])) {
       for (const role of (slot.roles || [])) {
@@ -3595,14 +3604,14 @@
       // the reference did not make it into this run (see wireReferences's
       // own comment for why the wording doesn't try to guess which).
       if (unwired > 0) {
-        state.notice = unwired === 1
+        unwiredNotice = unwired === 1
           ? "1 reference could not be wired into this pipeline and will not be used."
           : `${unwired} references could not be wired into this pipeline and will not be used.`;
       }
     }
 
     const found = GB.slotForRole("generation.prompt");
-    if (!found) return raw;
+    if (!found) return { raw, unwiredNotice };
     const text = targetSceneIds.length > 1
       ? buildGlobalPromptFromTimeline(state.project)
       : (() => {
@@ -3633,7 +3642,7 @@
       // prompt-craft feature failing.
       raw[found.slot.id] = { ...(raw[found.slot.id] || {}), [found.role.input]: text };
     }
-    return raw;
+    return { raw, unwiredNotice };
   }
 
   async function _pollFfmpegJob(statusFn, jobId, clipCount, busyLabel) {
@@ -3813,9 +3822,9 @@
     _markGenInFlight(targetSceneIds);
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${_genRunPrefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
-      let inputs;
+      let inputs, unwiredNotice;
       try {
-        inputs = await _buildQueueInputs(targetSceneIds);
+        ({ raw: inputs, unwiredNotice } = await _buildQueueInputs(targetSceneIds));
       } catch (e) {
         set({ gen: { state: "error", promptId: null, media: [], msg: `Could not build the prompt: ${e.message}` } });
         return false;
@@ -3834,6 +3843,12 @@
         set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
         return false;
       }
+      // Applied AFTER generate() resolves, on purpose: check() (run inside
+      // GB.generate(), above) can fire its own "warn" note into this same
+      // state.notice field -- setting this one first let that note silently
+      // clobber it. Setting it last means an unwired reference is always
+      // what the person sees, never lost to a race with an unrelated note.
+      if (unwiredNotice) { state.notice = unwiredNotice; notify(); }
       if (!queued) {
         // Refused before it ever reached run.start() (an incomplete pipeline,
         // or the queue itself saying no) -- the bridge's own "say" hook

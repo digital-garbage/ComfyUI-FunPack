@@ -307,6 +307,15 @@
       onChange: (mediaId) => S.setSourceImage(scene.id, mediaId),
     });
     parent.append(field("Resolution source", srcPick));
+    if (scene.source_image && !(st.mediaBin || []).some((m) => m.id === scene.source_image)) {
+      // MediaPicker's own collapsed view can't tell "nothing picked" from
+      // "picked something since deleted from the bin" -- both render as its
+      // noneLabel placeholder (media_picker.js's drawSel `else` branch). The
+      // id is still sent at generate time and only refused deep inside
+      // ComfyUI, so say so here instead of leaving the field looking empty.
+      parent.append(el("div", "insp-hint warn",
+        "The picked resolution-source image was deleted from the Media bin — pick another."));
+    }
     parent.append(el("div", "insp-hint",
       "Sets this scene's aspect ratio for generation — the project's own Width/Height "
       + "set the actual resolution, this image's pixels are not used."));
