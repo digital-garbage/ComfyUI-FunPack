@@ -31,6 +31,11 @@
       }
       if (payload.error) return String(payload.error);
       if (Array.isArray(payload.problems) && payload.problems.length) return payload.problems.join("; ");
+      // /api/pipeline's malformed-request 400 (core/routes.py's shape_problems
+      // check) uses "refused" rather than "problems" -- its own sibling 400s
+      // in the same handler use "problems", but this one doesn't, so both are
+      // checked rather than trusting the route to be internally consistent.
+      if (Array.isArray(payload.refused) && payload.refused.length) return payload.refused.join("; ");
     }
     const status = res && res.status ? `HTTP ${res.status}` : "";
     const statusText = (res && res.statusText ? res.statusText : "").trim();
@@ -63,6 +68,18 @@
 
   const ClientAPI = {
     health: () => j("GET", API("/api/health")),
+
+    // --- module manifest / live pipeline (new in v5, no v4 equivalent) -----
+    // What the Engine Settings panel renders from: every module that loaded,
+    // its category, and its typed settings schema. `traits`, when given, is
+    // a comma-joined list -- modules the current model can't use are excluded
+    // server-side rather than shown disabled (core/traits.py's split()).
+    modules: (traits) => j("GET", API("/api/modules" + (traits ? `?traits=${encodeURIComponent(traits)}` : ""))),
+    // The live, editable pipeline -- {slots, refused, incomplete, queueable}.
+    // Stateless on the server (see routes.py): the caller holds `slots` in
+    // memory across edits and re-sends the full list each time.
+    pipeline: () => j("GET", API("/api/pipeline")),
+    editPipeline: (body) => j("POST", API("/api/pipeline"), body),
 
     // --- projects (a) ------------------------------------------------------
     listProjects: () => j("GET", API("/api/projects")), // {projects:[...]} -- callers unwrap .projects themselves
