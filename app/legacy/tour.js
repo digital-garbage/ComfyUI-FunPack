@@ -352,6 +352,22 @@
       // through commit(), so the store.js guard doesn't cover them.
       "saveShortcut", "deleteShortcut", "addCategory", "importShortcuts", "clearShortcuts",
       "saveTransition", "deleteTransition", "importTransitions", "clearTransitions",
+      // A fourth caller of the generation funnel, alongside generate/
+      // generateMontage/generateSelected above -- but reached through the
+      // Settings window's "H3 Combo Sweep" panel (Learning group), not the
+      // timeline. Its "models-modal" tour step spotlights the WHOLE
+      // .settings-win element (sidebar included), so this panel is openable
+      // and runnable mid-tour. Unlike generate/renderFinal/etc., it doesn't
+      // go through window.MovieEditorAPI at all -- it calls
+      // window.GenerateBridge -> app/shell/session.js's real queue-and-poll
+      // pipeline directly, which patchApi() never touches (that only
+      // patches MovieEditorAPI) and which has no tour-mode awareness of its
+      // own -- so this needed its own block, not just a mock on API.generate.
+      "runComboSweep",
+      // Currently harmless (API.renameMedia is itself a stub -- "media has
+      // no name field in v5"), but the button already renders in the tour's
+      // media bin. Same "block it now" reasoning as saveClipToMediaBin.
+      "renameMedia",
     ];
     const labels = {
       generate: "Generate",
@@ -399,6 +415,8 @@
       deleteTransition: "Delete transition",
       importTransitions: "Import transitions",
       clearTransitions: "Clear transitions",
+      runComboSweep: "Generate",
+      renameMedia: "Rename media",
     };
     blocked.forEach((name) => {
       if (typeof Store[name] !== "function") return;
