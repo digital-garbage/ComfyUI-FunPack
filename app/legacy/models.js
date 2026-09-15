@@ -242,6 +242,14 @@
     iconBg: "linear-gradient(180deg,#b18cff,#7a4fd0)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"><path d="M8 1.8 14 5v6l-6 3.2L2 11V5l6-3.2z"/><path d="M2 5l6 3 6-3M8 8v6.2"/></svg>',
     mount,
+    // Group-level pinning only, deliberately -- v4 could pin ONE node (settings_window.js's
+    // own comment: "the node page is the thing that takes several clicks to reach"), which
+    // needed a concept of "the currently open node" this flat slot list doesn't have yet
+    // (nothing here drills into a single slot the way the old per-role node page did).
+    // `openNodeId`/`ModelsModal.openNode` below still work if something hands them a real
+    // slot id -- pinned_buttons.js still calls them -- but nothing on this screen currently
+    // PRODUCES a node-level pin to begin with, so a per-node pin from before this rewrite
+    // is the only way this path is reached today. Group-level is the honest current target.
     pinTarget: () => (group
       ? { kind: "section", id: "models", sub: group, label: `Models ▸ ${group}` }
       : null),

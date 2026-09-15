@@ -48,21 +48,62 @@
     return merged;
   }
 
+  // Two panels can mount close enough together that both call this before
+  // the first fetch settles (`slots` only becomes non-null at the end of a
+  // load, so a bare `if (slots !== null) return` doesn't cover the window
+  // while one is already in flight). Every caller awaits the SAME in-flight
+  // promise instead, so exactly one fetch ever goes out per session, however
+  // many panels ask.
+  let loadPromise = null;
+
   async function ensureLoaded() {
     if (slots !== null) return; // session-wide: every consumer shares this one load
+    if (loadPromise) return loadPromise;
     loading = true; loadError = null;
-    try {
-      const [manifest, pipe] = await Promise.all([API.modules(), API.pipeline()]);
-      modulesById = {};
-      (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
-      slots = pipe.slots || [];
-      incomplete = pipe.incomplete || [];
-      refused = pipe.refused || [];
-      queueable = !!pipe.queueable;
-    } catch (e) {
-      loadError = e && e.message ? e.message : String(e);
-    }
-    loading = false;
+    loadPromise = (async () => {
+      try {
+        const [manifest, pipe] = await Promise.all([API.modules(), API.pipeline()]);
+        modulesById = {};
+        (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
+        slots = pipe.slots || [];
+        incomplete = pipe.incomplete || [];
+        refused = pipe.refused || [];
+        queueable = !!pipe.queueable;
+      } catch (e) {
+        loadError = e && e.message ? e.message : String(e);
+      }
+      loading = false;
+      loadPromise = null;
+    })();
+    return loadPromise;
+  }
+
+  // `save()`'s body is one level deeper than a shallow spread can merge
+  // correctly: `inputs`/`values` are both {outerId: {innerKey: value}}, and
+  // two queued saves that both touch `inputs` (two different slots, or even
+  // two fields on the SAME slot from models.js's per-call-fresh objects) had
+  // the second's `inputs` object silently REPLACE the first's rather than
+  // combine with it -- the earlier edit vanished with no error. Merges one
+  // level deeper than Object.assign/spread does, for exactly the two keys
+  // that are ever shaped this way.
+  function mergeBodies(a, b) {
+    const out = { ...(a || {}) };
+    Object.entries(b || {}).forEach(([key, val]) => {
+      const prior = out[key];
+      const bothPlainObjects = val && typeof val === "object" && !Array.isArray(val)
+        && prior && typeof prior === "object" && !Array.isArray(prior);
+      if (!bothPlainObjects) { out[key] = val; return; }
+      const merged = { ...prior };
+      Object.entries(val).forEach(([innerId, inner]) => {
+        const priorInner = merged[innerId];
+        merged[innerId] = (inner && typeof inner === "object" && !Array.isArray(inner)
+          && priorInner && typeof priorInner === "object" && !Array.isArray(priorInner))
+          ? { ...priorInner, ...inner }
+          : inner;
+      });
+      out[key] = merged;
+    });
+    return out;
   }
 
   // One shared save queue for every caller. `body` is layered onto the
@@ -74,7 +115,7 @@
   // retry-after-in-flight shape exists (a same-panel double-edit dropped
   // one edit before this).
   async function save(body) {
-    pendingBody = { ...(pendingBody || {}), ...body };
+    pendingBody = mergeBodies(pendingBody, body);
     if (saving) { pending = true; return; }
     saving = true;
     do {
