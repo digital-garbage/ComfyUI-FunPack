@@ -205,6 +205,29 @@ def test_a_funpack_list_row_with_many_keys_does_not_blow_up_the_embed():
     assert len(png) < 5_000_000
 
 
+def test_many_empty_input_slots_with_huge_ids_do_not_blow_up_the_embed():
+    """extensive_testing round 4: a slot with no inputs contributes zero
+    rows, so total_rows never bounded how many SLOTS get processed -- 3000
+    slots with empty inputs and 4000-char id/group strings reached 193.6s
+    render time and a 12.1MB embedded JSON, with total_rows at 0 the whole
+    way (every existing row-based cap stayed dormant). Also covers
+    project_name, which reached the "title" block the same uncapped way."""
+    import time
+    slots = [{"id": "X" * 4000, "group": "Y" * 4000, "node": "N", "inputs": {}}
+              for _ in range(600)]
+    rep = sc.collect(slots, HOST, project_name="P" * 4000)
+    assert len(rep["project"]) < 500
+    start = time.monotonic()
+    png = sc.render_png(rep, "dark")
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0
+    assert len(png) < 5_000_000
+
+    from PIL import Image
+    embedded = Image.open(__import__("io").BytesIO(png)).text["funpack_settings"]
+    assert len(embedded) < 2_000_000
+
+
 def test_render_png_stays_fast_when_one_slot_has_many_large_lists():
     """The Finding B composition gap, carried all the way through to the
     actual render (67.8s / 123MB before the fix)."""

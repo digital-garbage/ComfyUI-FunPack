@@ -78,6 +78,19 @@ def _short(value):
     return text
 
 
+def _cap(value):
+    """Length-cap a string that isn't a display VALUE (so no bool/"—"
+    formatting) -- a slot id, group, node class, or project name. Falsy
+    values pass through unchanged so "no group"/"no id" fallbacks still work.
+    """
+    if not value:
+        return value
+    text = str(value)
+    if len(text) > _MAX_VALUE_CHARS:
+        return text[:_MAX_VALUE_CHARS] + f"… ({len(text) - _MAX_VALUE_CHARS} more chars)"
+    return text
+
+
 def _rows_from_list(value):
     """A funpack_list widget's JSON array as [(label, value)], or None if it isn't one.
 
@@ -149,6 +162,7 @@ def collect(slots: list, host: dict, *, project_name=None, render=None) -> dict:
     total_rows = 0
     omitted_slots = 0
     mid_slot_truncations = 0
+    slots_processed = 0
     for slot in slots or []:
         if not isinstance(slot, dict):
             continue
@@ -157,12 +171,23 @@ def collect(slots: list, host: dict, *, project_name=None, render=None) -> dict:
         # with an unreasonable number of inputs) would keep growing the PNG's
         # height with no bound (see _MAX_VALUE_CHARS's own comment for the
         # same reasoning applied to one value instead of the whole card).
-        if total_rows >= _MAX_ROWS:
+        # extensive_testing round 4: a slot with no inputs contributes zero
+        # rows, so total_rows alone never bounded how many SLOTS get
+        # processed -- 3000 slots with empty inputs and huge id/group strings
+        # reached 193.6s / 12.1MB embedded, with total_rows at 0 throughout.
+        # Cap slot count directly, independent of row count.
+        if total_rows >= _MAX_ROWS or slots_processed >= _MAX_ROWS:
             omitted_slots += 1
             continue
-        group = slot.get("group")
-        node = slot.get("node") or ""
-        title = f"{group} · {slot.get('id')}" if group else str(slot.get("id") or node or "node")
+        slots_processed += 1
+        # Same round: slot id/group/node were never length-capped at all --
+        # they reach the "head" block kind in render_png, which the round-2
+        # line-truncation loop doesn't count (only "row" kind), so an
+        # uncapped id/group bypassed every existing cap.
+        group = _cap(slot.get("group"))
+        node = _cap(slot.get("node") or "")
+        slot_id = _cap(slot.get("id"))
+        title = f"{group} · {slot_id}" if group else str(slot_id or node or "node")
         rows = []
         # extensive_testing round 2: this check used to run once per SLOT, so
         # one slot with many funpack_list inputs (each individually capped at
@@ -177,7 +202,7 @@ def collect(slots: list, host: dict, *, project_name=None, render=None) -> dict:
                 continue
             if is_link(value):
                 source = by_id.get(value[0])
-                source_label = (source or {}).get("id") or value[0]
+                source_label = _cap((source or {}).get("id") or value[0])
                 rows.append((name, f"‹wired from {source_label}›"))
                 continue
             listed = _rows_from_list(value)
@@ -206,7 +231,7 @@ def collect(slots: list, host: dict, *, project_name=None, render=None) -> dict:
         head.append({"title": "Render", "node_class": "",
                      "rows": [(k, _short(v)) for k, v in render.items()]})
     return {
-        "project": project_name or None,
+        "project": _cap(project_name) or None,
         "host": _host_rows(host),
         "sections": head + sections,
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -314,12 +339,19 @@ def render_png(report: dict, theme: str = "dark") -> bytes:
     # ~14s/~10MB. Cap the thing that actually drives render_png's cost --
     # rendered lines -- directly, rather than trying to predict it from
     # collect()'s row count.
+    # extensive_testing round 4: this loop only counted "row" kind blocks,
+    # so slot count itself was unbounded whenever slots carried no rows (an
+    # empty-input slot contributes only a "head" block) -- 3000 such slots
+    # reached 193.6s/12.1MB before slot count was separately capped in
+    # collect(). Count "head" blocks toward the same budget too, as defense
+    # in depth against any other way a block could reach render_png with no
+    # accompanying row.
     _MAX_WRAPPED_LINES = 1200
     row_lines = 0
     capped_blocks = []
     line_truncated = False
     for kind, payload in blocks:
-        if kind == "row":
+        if kind in ("row", "head"):
             if row_lines >= _MAX_WRAPPED_LINES:
                 line_truncated = True
                 continue
