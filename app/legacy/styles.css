@@ -1062,6 +1062,24 @@ input[type=number] { font-family: var(--font-ui); }
   font-size: 16px; padding: 0 2px; line-height: 1;
 }
 .me-rating-picker-close:hover { color: var(--text); }
+
+/* Sampler quick-access bar: same fixed-popup shape as the rating picker, a
+   thin hovering panel above the timeline rather than a modal. */
+.sq-panel {
+  position: fixed; z-index: 10001; width: 300px; max-height: 60vh; overflow-y: auto;
+  background: var(--popup); border: 1px solid var(--popup-line);
+  border-radius: 8px; box-shadow: 0 16px 48px color-mix(in srgb, var(--shadow-ink) 64.7%, transparent);
+  color: var(--text); font: 12px var(--font-sans); box-sizing: border-box;
+}
+.sq-panel * { box-sizing: border-box; }
+.sq-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 9px 12px 8px; border-bottom: 1px solid var(--overlay-2);
+  font-weight: 700; font-size: 13px; position: sticky; top: 0; background: var(--popup);
+}
+.sq-body { padding: 10px 12px 12px; }
+.sq-body .sw-rows { margin-top: 0; }
+.sq-body .sw-rows-label:first-child { margin-top: 0; }
 .me-rating-section { padding: 8px 10px 6px; border-bottom: 1px solid var(--overlay-1); }
 .me-rating-section-label {
   font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;

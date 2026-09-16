@@ -7,10 +7,18 @@
 // CONTENT is new. A category with nothing to show is simply absent from the
 // sidebar: this tab looking emptier than v4's screenshot is it reflecting
 // real backend state, not a bug (see the port plan).
+//
+// The field-widget builder and the module-values tree it reads/writes both
+// live outside this file now (settings_field.js, PipelineState.currentValues/
+// setModuleValue) -- the sampler quick-access bar (sampler_quickbar.js)
+// edits the SAME tree through the SAME functions, so there is exactly one
+// place that knows how to render a setting and exactly one place that knows
+// how to save one.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
   const API = window.MovieEditorAPI;
+  const SF = window.SettingsField;
 
   const CATEGORY_LABELS = {
     continuity: "Continuity", guidance: "Guidance", conditioning: "Conditioning",
@@ -22,122 +30,10 @@
   let _mounted = null;
   let unsub = null;
   let category = null;      // selected sidebar category, chosen once modules load
-  let seeded = false;        // whether `values` has been seeded from PS's slots yet
-  let values = {};           // moduleId -> {settingName: value}, this panel's own draft
 
-  function field(labelText, control, hint) {
-    const row = el("div", "sw-row eng-field");
-    const main = el("div", "sw-row-main");
-    main.append(el("div", "sw-row-title", labelText));
-    if (hint) main.append(el("div", "sw-row-hint", hint));
-    row.append(main, control);
-    return row;
+  function onChange(moduleId, name, value) {
+    PS.setModuleValue(moduleId, name, value).then(render);
   }
-  function toggleField(labelText, checkbox, hint) {
-    checkbox.style.width = "auto";
-    return field(labelText, checkbox, hint);
-  }
-  function group(parent, label) {
-    if (label) parent.append(el("div", "sw-rows-label", label));
-    const g = el("div", "sw-rows");
-    parent.append(g);
-    return g;
-  }
-  function hintEl(text) { return el("div", "sw-hint", text); }
-
-  // A `when` clause names sibling settings on the SAME module that must hold
-  // their given value for this row to show -- e.g. a strength slider only
-  // matters once its own "enabled" checkbox is on.
-  function whenSatisfied(moduleId, when) {
-    if (!when) return true;
-    const current = values[moduleId] || {};
-    return Object.entries(when).every(([k, v]) => current[k] === v);
-  }
-
-  function currentValue(moduleId, name, spec) {
-    const v = values[moduleId] && values[moduleId][name];
-    return v !== undefined ? v : spec.default;
-  }
-  function setValue(moduleId, name, v) {
-    values[moduleId] = { ...(values[moduleId] || {}), [name]: v };
-  }
-
-  function controlFor(moduleId, name, spec) {
-    const label = spec.label || name;
-    const hint = spec.hint ? spec.hint + (spec.unit ? ` (${spec.unit})` : "") : (spec.unit || "");
-    const value = currentValue(moduleId, name, spec);
-
-    if (spec.type === "bool") {
-      const cb = el("input", "");
-      cb.type = "checkbox";
-      cb.checked = !!value;
-      cb.onchange = () => { setValue(moduleId, name, cb.checked); commit(); render(); };
-      return toggleField(label, cb, spec.hint);
-    }
-    if (spec.type === "int" || spec.type === "float") {
-      const useSlider = (spec.ui || "slider") === "slider" && spec.min != null && spec.max != null;
-      const input = el("input", "eng-num-input");
-      input.type = useSlider ? "range" : "number";
-      if (spec.min != null) input.min = spec.min;
-      if (spec.max != null) input.max = spec.max;
-      if (spec.step != null) input.step = spec.step;
-      input.value = value;
-      const commitFn = () => {
-        const n = spec.type === "int" ? parseInt(input.value, 10) : parseFloat(input.value);
-        if (!Number.isNaN(n)) { setValue(moduleId, name, n); commit(); }
-      };
-      input.onchange = () => { commitFn(); render(); };
-      return field(label, input, hint);
-    }
-    if (spec.type === "enum") {
-      const select = el("select", "eng-select");
-      (spec.options || []).forEach((opt) => {
-        const o = el("option", "", opt.label || opt.value);
-        o.value = opt.value;
-        if (opt.value === value) o.selected = true;
-        select.append(o);
-      });
-      select.onchange = () => { setValue(moduleId, name, select.value); commit(); render(); };
-      return field(label, select, hint);
-    }
-    if (spec.type === "color") {
-      const input = el("input", "");
-      input.type = "color";
-      input.value = value || "#000000";
-      input.onchange = () => { setValue(moduleId, name, input.value); commit(); };
-      return field(label, input, hint);
-    }
-    // text / multiline / path: a plain box. Committed on blur, not on every
-    // keystroke -- a POST per character would be a request storm.
-    const input = el(spec.type === "multiline" ? "textarea" : "input", "eng-text-input");
-    if (spec.type !== "multiline") input.type = "text";
-    input.value = value || "";
-    input.onblur = () => { setValue(moduleId, name, input.value); commit(); };
-    return field(label, input, hint);
-  }
-
-  // `values` is seeded once PipelineState has actually loaded -- from each
-  // setting's own default, then whatever the graph already holds wins (see
-  // PipelineState.valuesAlreadyPlaced's own comment for why that recovery
-  // step exists at all). Runs at most once per session: PipelineState itself
-  // only ever loads once, and reseeding on a second call would blow away
-  // whatever the user already changed in THIS panel.
-  function ensureSeeded() {
-    if (seeded || PS.loading() || PS.loadError()) return;
-    seeded = true;
-    values = {};
-    Object.values(PS.modulesById()).forEach((m) => {
-      const own = {};
-      Object.entries(m.settings || {}).forEach(([name, spec]) => { own[name] = spec.default; });
-      if (Object.keys(own).length) values[m.id] = own;
-    });
-    const already = PS.valuesAlreadyPlaced();
-    Object.entries(already).forEach(([moduleId, own]) => {
-      values[moduleId] = { ...(values[moduleId] || {}), ...own };
-    });
-  }
-
-  function commit() { PS.save({ values }).then(render); }
 
   function categoriesWithContent() {
     const found = new Set();
@@ -148,15 +44,14 @@
   }
 
   function renderPane(pane) {
-    if (PS.loading()) { pane.append(hintEl("Loading…")); return; }
+    if (PS.loading()) { pane.append(SF.hintEl("Loading…")); return; }
     if (PS.loadError()) {
-      pane.append(hintEl(`Could not load Engine settings: ${PS.loadError()}`));
+      pane.append(SF.hintEl(`Could not load Engine settings: ${PS.loadError()}`));
       return;
     }
-    ensureSeeded();
     const cats = categoriesWithContent();
     if (!cats.length) {
-      pane.append(hintEl(
+      pane.append(SF.hintEl(
         "No installed module exposes a setting yet. This fills in as model "
         + "and effect modules are built -- see the port plan."));
       return;
@@ -167,13 +62,14 @@
       .filter((m) => (m.category || "") === category && Object.keys(m.settings || {}).length);
 
     const notes = PS.saveNotes();
-    if (notes.length) pane.append(hintEl(notes.join(" ")));
+    if (notes.length) pane.append(SF.hintEl(notes.join(" ")));
 
+    const values = PS.currentValues();
     modulesInCategory.forEach((m) => {
-      const g = group(pane, m.title || m.id);
+      const g = SF.group(pane, m.title || m.id);
       Object.entries(m.settings || {}).forEach(([name, spec]) => {
-        if (!whenSatisfied(m.id, spec.when)) return;
-        g.append(controlFor(m.id, name, spec));
+        if (!SF.whenSatisfied(values, m.id, spec.when)) return;
+        g.append(SF.controlFor(m.id, name, spec, values, onChange));
       });
     });
   }

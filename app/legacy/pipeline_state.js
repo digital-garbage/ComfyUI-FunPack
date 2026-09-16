@@ -136,8 +136,85 @@
     saving = false;
   }
 
+  // Edits already sent toward the server but not yet confirmed by a landed
+  // `slots` response. valuesAlreadyPlaced() only reflects an edit AFTER its
+  // save's response arrives -- without this overlay, a second setModuleValue
+  // call fired before the first one's round-trip resolves would compute its
+  // own "whole tree" snapshot from data that does not include the first
+  // edit yet, and silently revert it when its own write lands. Cleared per
+  // key once valuesAlreadyPlaced() actually agrees with it (see
+  // _reconcilePending), not wholesale on every resolve -- clearing the
+  // whole thing on any one save's completion would erase a DIFFERENT edit
+  // that is still in flight.
+  let pendingValues = {};
+
+  function _reconcilePending() {
+    const already = valuesAlreadyPlaced();
+    Object.keys(pendingValues).forEach((moduleId) => {
+      const pend = pendingValues[moduleId];
+      const real = already[moduleId] || {};
+      Object.keys(pend).forEach((name) => { if (real[name] === pend[name]) delete pend[name]; });
+      if (!Object.keys(pend).length) delete pendingValues[moduleId];
+    });
+  }
+
+  // The full module-settings tree as it stands right now: every installed
+  // module's own defaults, then whatever the graph already holds wins (same
+  // recovery valuesAlreadyPlaced() exists for), then any not-yet-confirmed
+  // edit wins over that. Always computed fresh rather than cached, so two
+  // editors of the same tree (Engine Settings, the sampler quick-access bar)
+  // can never hold a stale copy of each other's CONFIRMED state between
+  // them -- the pending overlay above is the one deliberate exception,
+  // needed so an in-flight edit from either editor isn't lost by the other.
+  function currentValues() {
+    const merged = {};
+    Object.values(modulesById).forEach((m) => {
+      const own = {};
+      Object.entries(m.settings || {}).forEach(([name, spec]) => { own[name] = spec.default; });
+      if (Object.keys(own).length) merged[m.id] = own;
+    });
+    const already = valuesAlreadyPlaced();
+    Object.entries(already).forEach(([moduleId, own]) => {
+      merged[moduleId] = { ...(merged[moduleId] || {}), ...own };
+    });
+    Object.entries(pendingValues).forEach(([moduleId, own]) => {
+      merged[moduleId] = { ...(merged[moduleId] || {}), ...own };
+    });
+    return merged;
+  }
+
+  // Patch ONE field and save the WHOLE tree. place() (core/graph.py) writes
+  // values as a single opaque JSON blob with no merge on the server side --
+  // sending only the module being edited would silently erase every other
+  // module's settings from that blob. Every write goes through here so that
+  // rule lives in one place instead of being re-derived per caller.
+  // pendingValues is updated SYNCHRONOUSLY, before the read below, so a
+  // second setModuleValue call made while this one is still in flight sees
+  // this edit too (see currentValues()) -- that is what actually closes the
+  // race, not save()'s own body-merge queue, which only merges DELTAS and
+  // has nothing to merge against once a caller is sending a full snapshot.
+  //
+  // The returned promise is NOT "this specific edit is server-confirmed" --
+  // save()'s queue has exactly one caller actually await the network (the
+  // one that finds `saving` false); every other concurrent caller's save()
+  // call returns as soon as it queues, before its own write is sent, let
+  // alone answered. Harmless today: both real callers (engine_settings.js,
+  // sampler_quickbar.js) only do `.then(render)`, and render() reads
+  // currentValues(), which already carries this edit optimistically via
+  // pendingValues regardless of where the real network call is. A future
+  // caller that needs "my write actually landed" (a per-edit success
+  // toast, reading saveNotes()/incomplete() right after resolve) cannot
+  // get that from this promise as written -- it would need save() itself
+  // reworked to resolve each queued caller at ITS OWN write's landing, not
+  // at whichever write happens to be in flight when the queue drains.
+  function setModuleValue(moduleId, name, value) {
+    pendingValues[moduleId] = { ...(pendingValues[moduleId] || {}), [name]: value };
+    const values = currentValues();
+    return save({ values }).then(_reconcilePending);
+  }
+
   window.PipelineState = {
-    ensureLoaded, save, valuesAlreadyPlaced,
+    ensureLoaded, save, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     slots: () => slots,
     incomplete: () => incomplete,
