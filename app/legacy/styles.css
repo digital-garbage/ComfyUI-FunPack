@@ -1080,6 +1080,31 @@ input[type=number] { font-family: var(--font-ui); }
 .sq-body { padding: 10px 12px 12px; }
 .sq-body .sw-rows { margin-top: 0; }
 .sq-body .sw-rows-label:first-child { margin-top: 0; }
+
+/* Picker wheel: a hub plus radial items, each absolutely positioned by its
+   own inline transform (the geometry lives in wheel.js, this just supplies
+   the look). Anchored at {left,top} = the point it was opened/dragged to,
+   with every child centered on that point via translate(-50%,-50%) before
+   its own radial offset. */
+.fp-wheel { position: fixed; z-index: 10002; width: 0; height: 0; }
+.fp-wheel-hub {
+  position: absolute; left: 0; top: 0; transform: translate(-50%, -50%);
+  width: 40px; height: 40px; border-radius: 50%; cursor: grab;
+  background: var(--popup); border: 1px solid var(--popup-line); color: var(--text);
+  font-size: 16px; box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-ink) 55%, transparent);
+}
+.fp-wheel-hub:active { cursor: grabbing; }
+.fp-wheel-item {
+  position: absolute; left: 0; top: 0; width: 56px; height: 56px; border-radius: 50%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  background: var(--popup); border: 1px solid var(--popup-line); color: var(--text);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-ink) 45%, transparent);
+  cursor: pointer;
+}
+.fp-wheel-item:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: var(--ink-3); }
+.fp-wheel-item-icon { font-size: 16px; line-height: 1; }
+.fp-wheel-item-label { font-size: 8px; line-height: 1.1; max-width: 48px; text-align: center;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .me-rating-section { padding: 8px 10px 6px; border-bottom: 1px solid var(--overlay-1); }
 .me-rating-section-label {
   font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;
