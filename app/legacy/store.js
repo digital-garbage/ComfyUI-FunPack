@@ -2683,10 +2683,17 @@
     if (!project) return;
     project.overlay_tracks = project.overlay_tracks || [];
     let lanes = project.overlay_lanes = project.overlay_lanes || [];
-    if (!lanes.length) {
+    // Only conjure a lane to house ORPHANED tracks (an old project saved
+    // before lanes existed, or a lane removed out from under its tracks).
+    // Never create one just because nothing has asked for one yet -- the
+    // timeline starts with zero overlay lanes until the user explicitly
+    // adds one (see defaultOverlayLaneId(), the one place that creates the
+    // very first lane, only when an overlay is actually being added).
+    if (!lanes.length && project.overlay_tracks.length) {
       const id = _uid();
       lanes = project.overlay_lanes = [{ id, label: "Overlay 1" }];
     }
+    if (!lanes.length) return;
     const ids = new Set(lanes.map((l) => l.id));
     const fallback = lanes[0].id;
     project.overlay_tracks.forEach((t) => {
@@ -2723,7 +2730,16 @@
   }
 
   function defaultOverlayLaneId() {
-    const lanes = ensureOverlayLanes();
+    let lanes = ensureOverlayLanes();
+    if (!lanes.length) {
+      // Called only from addImageOverlay/addTextOverlay, i.e. the user is
+      // explicitly adding their first overlay to this project -- this IS
+      // the "user adds it explicitly" moment the empty-by-default rule
+      // waits for, so create the first lane here rather than pre-seeding
+      // one on every project load.
+      const id = _uid();
+      lanes = state.project.overlay_lanes = [{ id, label: "Overlay 1" }];
+    }
     return lanes[lanes.length - 1]?.id || lanes[0]?.id;
   }
 
