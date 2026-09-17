@@ -6,6 +6,17 @@
   const API = window.MovieEditorAPI;
   const body = document.getElementById("media-body");
 
+  // Every store change that touches this panel (e.g. toggling a reference mark) rebuilds
+  // the whole grid from scratch — cheap for the buttons/badges, but a fresh <img>/<video>
+  // per card meant every thumbnail visibly reloaded and every video re-decoded its first
+  // frame, just because an unrelated R button was clicked. Cache the already-built preview
+  // node per media id and re-append (move, not recreate) it into the new card instead.
+  const thumbCache = new Map();   // media id -> {url, node}
+  function _pruneThumbCache(bin) {
+    const ids = new Set(bin.map((m) => m.id));
+    for (const id of thumbCache.keys()) if (!ids.has(id)) thumbCache.delete(id);
+  }
+
   const mediaSelected = new Set();   // media bin multi-select
   let mediaSelectMode = false;     // when off, click = preview; when on, click = toggle selection
   const MF_KEY = "fp_media_filter";
@@ -83,6 +94,8 @@
 
   function _appendMediaThumb(thumb, m) {
     const url = API.mediaUrl(m.id);
+    const cached = thumbCache.get(m.id);
+    if (cached && cached.url === url) { thumb.append(cached.node); return; }
     if (m.kind === "image") {
       const img = el("img");
       img.src = url;
@@ -93,6 +106,7 @@
       // decode and rasterize the full-size bitmap first, which is why big images felt like
       // they "resisted" dragging. Opting the image out hands the drag back to the card.
       img.draggable = false;
+      thumbCache.set(m.id, { url, node: img });
       thumb.append(img);
       return;
     }
@@ -120,6 +134,7 @@
             canvas.getContext("2d").drawImage(vid, 0, 0, canvas.width, canvas.height);
             ph.remove();
             thumb.append(canvas);
+            thumbCache.set(m.id, { url, node: canvas });
           } catch (_) {}
         }
         release();
@@ -434,6 +449,7 @@
   function mediaTab(st) {
     const bin = st.mediaBin || [];
     _pruneMediaSelection(bin);
+    _pruneThumbCache(bin);
     const total = bin.length;
     const items = _sortMediaBin(_filterMediaBin(bin));
     const shown = items.length;
