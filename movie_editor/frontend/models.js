@@ -191,6 +191,20 @@
   function ensureLinks() { if (!config.links) config.links = []; return config.links; }
   function linkOf(slotId, input) { return (config.links || []).find((l) => (l.members || []).some((m) => m.slotId === slotId && m.input === input)); }
   function linkSelHas(slotId, input) { return linkSel.some((s) => s.slotId === slotId && s.input === input); }
+  // When adding to an already-existing link, only offer inputs whose kind — and, for a
+  // combo, whose exact option set — that link's shared value could actually hold. A
+  // same-kind combo with a DIFFERENT choices list still corrupts the link: the new
+  // member's own stale-value self-heal (widgetField's "value not in choices" branch)
+  // fires on next render and pushes its default back out to every other member.
+  function linkPickKindOk(kind, choices) {
+    if (!linkTarget) return true;
+    const link = (config.links || []).find((l) => l.id === linkTarget);
+    if (!link || !link.kind) return true;
+    if (link.kind !== kind) return false;
+    if (kind !== "combo") return true;
+    const a = link.choices || [], b = choices || [];
+    return a.length === b.length && a.every((c) => b.includes(c));
+  }
   function applyLinkValue(link, value) {
     link.value = value;
     (link.members || []).forEach((m) => { const s = slotById(m.slotId); if (s) { s.inputs = s.inputs || {}; s.inputs[m.input] = value; } });
@@ -904,7 +918,7 @@
           f.classList.add("linked");
           const ctrl = f.querySelector("input,select"); if (ctrl) ctrl.disabled = true;
           f.append(el("span", "link-tag", "🔗 " + lk.name));
-        } else if (linkMode && !isList) {
+        } else if (linkMode && !isList && linkPickKindOk(spec.kind, spec.choices)) {
           const chk = el("button", "eye-btn link-pick" + (linkSelHas(slot.id, spec.name) ? " on" : ""), "+");
           chk.type = "button"; chk.title = "Add to link selection";
           chk.onclick = (e) => {
