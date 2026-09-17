@@ -24,6 +24,7 @@
   let container = null;           // mounted content root inside the Settings window
   let linkMode = false;           // selecting inputs to bind into one shared control
   let linkSel = [];               // [{slotId, input, kind, choices, label}]
+  let linkTarget = null;          // existing link id being added to, or null = creating a new link
 
   function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : (key === "custom" ? "Node" : (key || "?")); }
   function slotName(slot) { return slot.label || slot.node_class; }
@@ -1808,6 +1809,12 @@
     name.onchange = async () => { link.name = name.value.trim() || link.name; await persist(); render(); };
     head.append(name);
     head.append(linkExposeBtn(link));
+    if (!linkMode) {
+      const add = el("button", "btn ghost tiny", "＋ Add inputs");
+      add.title = "Pick more node inputs to drive from this link";
+      add.onclick = () => { linkMode = true; linkSel = []; linkTarget = link.id; render(); };
+      head.append(add);
+    }
     const rm = el("button", "btn ghost tiny danger", "unlink all");
     rm.onclick = async () => { config.links = (config.links || []).filter((l) => l.id !== link.id); await persist(); render(); };
     head.append(rm);
@@ -1879,6 +1886,7 @@
 
   async function saveLinkSelection() {
     if (linkSel.length < 1) return;
+    if (linkTarget) return addLinkSelection();
     const def = "size " + ((config.links || []).length + 1);
     const nm = prompt("Link name:", def); if (nm == null) return;
     const first = linkSel[0]; const s0 = slotById(first.slotId);
@@ -1892,7 +1900,7 @@
     }
     ensureLinks().push(link);
     applyLinkValue(link, val);
-    linkMode = false; linkSel = [];
+    linkMode = false; linkSel = []; linkTarget = null;
     // Members are picked ON node pages, where saving is deferred until the node's Save
     // button. Going through that buffer meant "Save link" only marked the page dirty, and
     // the jump to the links view then offered to DISCARD the link it had just made — so a
@@ -1902,19 +1910,37 @@
     setView("links");
   }
 
+  // Adding inputs to an already-existing link (as opposed to creating a new one). Reuses
+  // the same pick-on-node-pages flow, just appends to link.members instead of making a link.
+  async function addLinkSelection() {
+    const link = (config.links || []).find((l) => l.id === linkTarget);
+    const sel = linkSel;
+    linkMode = false; linkSel = []; linkTarget = null;
+    if (!link) { render(); return; }
+    const existing = new Set((link.members || []).map((m) => m.slotId + " " + m.input));
+    const fresh = sel.filter((s) => !existing.has(s.slotId + " " + s.input));
+    link.members = (link.members || []).concat(fresh.map((s) => ({ slotId: s.slotId, input: s.input })));
+    applyLinkValue(link, link.value);
+    if (deferSave) { await persistNow(); deferDirty = false; }
+    else await persist();
+    setView("links");
+  }
+
   // Persistent bar while picking link members — stays visible as the user moves
   // between node pages, replacing the old everything-expanded scrollable list.
   function linkModeBar() {
     const bar = el("div", "models-linkbar");
+    const target = linkTarget && (config.links || []).find((l) => l.id === linkTarget);
+    const verb = target ? `Adding to "${target.name}"` : "Linking";
     bar.append(el("span", "models-linkbar-txt",
       linkSel.length
-        ? `Linking ${linkSel.length} input${linkSel.length > 1 ? "s" : ""}: ${linkSel.map((s) => s.label).join(", ")}`
+        ? `${verb} ${linkSel.length} input${linkSel.length > 1 ? "s" : ""}: ${linkSel.map((s) => s.label).join(", ")}`
         : "Pick inputs to link: open a node in the sidebar and click ＋ next to its inputs."));
-    const save = el("button", "btn primary tiny", `Save link (${linkSel.length})`);
+    const save = el("button", "btn primary tiny", `${target ? "Add" : "Save link"} (${linkSel.length})`);
     save.disabled = linkSel.length < 1;
     save.onclick = saveLinkSelection;
     const cancel = el("button", "btn ghost tiny", "Cancel");
-    cancel.onclick = () => { linkMode = false; linkSel = []; render(); };
+    cancel.onclick = () => { linkMode = false; linkSel = []; linkTarget = null; render(); };
     bar.append(save, cancel);
     return bar;
   }
@@ -2788,7 +2814,7 @@
     container.append(el("div", "pj-meta models-loading", "Loading models & pipeline…"));
     body.append(container);
     view = "pipeline";
-    linkMode = false; linkSel = [];
+    linkMode = false; linkSel = []; linkTarget = null;
     const imp = el("button", "btn ghost tiny", "⇪ Import workflow…");
     imp.title = "Import a ComfyUI workflow (API format) as the pipeline";
     imp.disabled = !window.Store?.get().project;
