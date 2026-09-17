@@ -649,6 +649,9 @@ REF_OI["MiniMaxH3ReferenceToVideo"] = {
         "ref_images": ["COMFY_AUTOGROW_V3", {
             "template": {"input": {"optional": {"ref_image": ["IMAGE", {}]}},
                          "prefix": "ref_image", "min": 0, "max": 4}}],
+        "ref_videos": ["COMFY_AUTOGROW_V3", {
+            "template": {"input": {"optional": {"ref_video": ["VIDEO", {}]}},
+                         "prefix": "ref_video", "min": 0, "max": 4}}],
     }},
     "output": ["CONDITIONING"], "output_name": ["conditioning"]}
 
@@ -759,6 +762,71 @@ REF_OI["LoadAudio"] = {"input": {"required": {"audio": [["a.wav"]]}}, "output": 
                        "output_name": ["AUDIO"]}
 REF_OI["LoadVideo"] = {"input": {"required": {"file": [["a.mp4"]]}}, "output": ["VIDEO"],
                        "output_name": ["VIDEO"]}
+
+
+def test_media_or_drops_the_image_when_its_paired_video_is_also_filled():
+    """Same reference index wired to both an IMAGE and a VIDEO autogrow socket: sending
+    both is redundant at best, so the video wins and the image socket is dropped."""
+    models = {"slots": [
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "lv", "node_class": "LoadVideo", "inputs": {}, "wires": {}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {"prompt": "hi"},
+         "wires": {},
+         "input_sources": {"ref_images.ref_image0": "out:li:IMAGE", "ref_videos.ref_video0": "out:lv:VIDEO"}},
+    ]}
+    graph, report = builder.build(REF_OI, models, PARAMS, media={"filename": "scene.png"})
+    ins = graph["slot_r"]["inputs"]
+    assert "ref_images.ref_image0" not in ins
+    assert ins["ref_videos.ref_video0"] == ["slot_lv", 0]
+    assert any("ref_images.ref_image0" in m and "dropped" in m for m in report["wired"])
+
+
+def test_media_or_leaves_a_lone_image_reference_alone():
+    """No paired video wired at that index — the image reference is untouched."""
+    models = {"slots": [
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {"prompt": "hi"},
+         "wires": {}, "input_sources": {"ref_images.ref_image0": "out:li:IMAGE"}},
+    ]}
+    graph, _ = builder.build(REF_OI, models, PARAMS, media={"filename": "scene.png"})
+    assert graph["slot_r"]["inputs"]["ref_images.ref_image0"] == ["slot_li", 0]
+
+
+def test_media_or_reindexes_survivors_to_close_the_gap():
+    """Two image refs (0 and 1, ordinary multi-reference use) plus one video ref at index
+    0: dropping ref_image0 must not leave ref_image1 stranded at a non-zero index — V3
+    autogrow expansion wants the list contiguous from 0."""
+    models = {"slots": [
+        {"id": "li0", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "li1", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "lv", "node_class": "LoadVideo", "inputs": {}, "wires": {}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {"prompt": "hi"},
+         "wires": {}, "input_sources": {
+             "ref_images.ref_image0": "out:li0:IMAGE",
+             "ref_images.ref_image1": "out:li1:IMAGE",
+             "ref_videos.ref_video0": "out:lv:VIDEO"}},
+    ]}
+    graph, _ = builder.build(REF_OI, models, PARAMS, media={"filename": "scene.png"})
+    ins = graph["slot_r"]["inputs"]
+    assert "ref_images.ref_image1" not in ins           # no gap left behind
+    assert ins["ref_images.ref_image0"] == ["slot_li1", 0]  # survivor re-indexed down
+    assert ins["ref_videos.ref_video0"] == ["slot_lv", 0]   # untouched, its own list has no gap
+
+
+def test_media_or_can_be_switched_off_per_node():
+    """slot.media_or === False opts a node out — both sockets stay, letting the node see
+    (and presumably reject or otherwise handle) both references itself."""
+    models = {"slots": [
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "lv", "node_class": "LoadVideo", "inputs": {}, "wires": {}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {"prompt": "hi"},
+         "wires": {}, "media_or": False,
+         "input_sources": {"ref_images.ref_image0": "out:li:IMAGE", "ref_videos.ref_video0": "out:lv:VIDEO"}},
+    ]}
+    graph, _ = builder.build(REF_OI, models, PARAMS, media={"filename": "scene.png"})
+    ins = graph["slot_r"]["inputs"]
+    assert ins["ref_images.ref_image0"] == ["slot_li", 0]
+    assert ins["ref_videos.ref_video0"] == ["slot_lv", 0]
 
 
 def _ref_params(*refs):

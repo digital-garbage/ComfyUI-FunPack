@@ -20,6 +20,7 @@ Output is a ComfyUI /prompt graph: {node_id: {class_type, inputs}}.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any, Optional
 
@@ -993,6 +994,35 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             report["blocking"].append(msg)
         report["unsatisfied"].append(msg)
 
+    # 6. media-OR: when a node has a video reference AND its same-index image reference
+    # both wired (e.g. you left an image-reference workflow's socket filled and then also
+    # filled the matching video-reference one), the video wins and the image socket is
+    # dropped — sending both is redundant at best and an unintended double reference at
+    # worst. Opt-out per node (slot.media_or === False); on by default. Runs last, after
+    # every wiring phase, so it only sees sockets that actually ended up filled.
+    # Dropping ref_image_N alone would leave a gap if ref_image_(N+1) survives — ordinary
+    # multi-reference use, not an edge case, for a list whose whole point is more than one
+    # entry — and V3 autogrow expansion needs contiguous indices from 0. So each affected
+    # list's survivors get re-indexed afterward to close any gap the drop left behind.
+    reindex_groups: set[tuple[str, str, str]] = set()
+    for s in slots:
+        if s.get("media_or") is False:
+            continue
+        sid = slot_node_id.get(s["id"])
+        if not sid or sid not in graph:
+            continue
+        node_inputs = graph[sid]["inputs"]
+        for image_name, video_name in _media_or_pairs(slot_def.get(s["id"])):
+            if isinstance(node_inputs.get(image_name), list) and isinstance(node_inputs.get(video_name), list):
+                del node_inputs[image_name]
+                report["wired"].append(
+                    f"{s.get('node_class')}.{image_name}: dropped — {video_name} is also "
+                    "filled and takes priority (video over image reference).")
+                parent, child = image_name.split(".", 1)
+                reindex_groups.add((sid, parent, re.sub(r"\d+$", "", child)))
+    for sid, parent, prefix in reindex_groups:
+        _reindex_autogrow_group(graph[sid]["inputs"], parent, prefix)
+
     return graph, report
 
 
@@ -1163,6 +1193,37 @@ def _canonical_input(node_def: Optional[dict], name: str) -> str:
         if ci.get("autogrow") and ci["name"].rsplit(".", 1)[-1] == name:
             return ci["name"]
     return name
+
+
+def _media_or_pairs(node_def: Optional[dict]) -> list[tuple[str, str]]:
+    """Same-index autogrow sockets that name the same reference slot once as IMAGE and
+    once as VIDEO (MiniMax H3's ref_images.ref_image_0 / ref_videos.ref_video_0, and any
+    node following the same convention) — found generically by swapping "image" for
+    "video" in the dotted socket id, no per-node list to maintain."""
+    names = {ci["name"] for ci in connection_inputs(node_def or {}) if ci.get("autogrow")}
+    pairs = []
+    for name in names:
+        video_name = re.sub("image", "video", name, flags=re.IGNORECASE)
+        if video_name != name and video_name in names:
+            pairs.append((name, video_name))
+    return pairs
+
+
+def _reindex_autogrow_group(node_inputs: dict, parent: str, prefix: str) -> None:
+    """Renumber `<parent>.<prefix><N>` entries still present in `node_inputs` to be
+    contiguous from 0, preserving relative order — used after media-OR removes one entry
+    from the middle of an autogrow list, which V3 expansion otherwise can't parse."""
+    entries = []
+    for key in node_inputs:
+        if not key.startswith(parent + "."):
+            continue
+        suffix = key[len(parent) + 1:][len(prefix):]
+        if key[len(parent) + 1:].startswith(prefix) and suffix.isdigit():
+            entries.append((int(suffix), key))
+    entries.sort()
+    for new_idx, (old_idx, key) in enumerate(entries):
+        if new_idx != old_idx:
+            node_inputs[f"{parent}.{prefix}{new_idx}"] = node_inputs.pop(key)
 
 
 def _resolve_target(target: str, port_to_core, slot_node_id) -> Optional[tuple[str, str]]:

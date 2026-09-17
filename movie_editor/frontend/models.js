@@ -173,6 +173,20 @@
     }
   }
 
+  // Same-index autogrow sockets naming the same reference slot once as IMAGE and once as
+  // VIDEO (MiniMax H3's ref_images.ref_image_0 / ref_videos.ref_video_0, and anything else
+  // following the convention) — mirrors backend/builder.py's _media_or_pairs so the toggle
+  // only appears where the backend will actually act on it.
+  function mediaOrPairs(connectionInputs) {
+    const names = new Set((connectionInputs || []).filter((ci) => ci.autogrow).map((ci) => ci.name));
+    const pairs = [];
+    names.forEach((name) => {
+      const videoName = name.replace(/image/gi, "video");
+      if (videoName !== name && names.has(videoName)) pairs.push([name, videoName]);
+    });
+    return pairs;
+  }
+
   function allowedSources(slot, ci) {
     const all = sources(slot, ci.type);
     if (!pipelineLocked()) return all;
@@ -880,6 +894,16 @@
       });
       if (advBox) sbox.append(advBox);
       card.append(sbox);
+
+      if (mediaOrPairs(cand.connection_inputs).length) {
+        const orRow = el("label", "field node-media-or-field");
+        const cb = el("input"); cb.type = "checkbox"; cb.style.width = "auto";
+        cb.checked = slot.media_or !== false;
+        cb.onchange = async () => { slot.media_or = cb.checked ? undefined : false; await persist(); };
+        orRow.append(cb);
+        orRow.append(el("span", null, "When both an image and a video reference are filled at the same slot, send only the video"));
+        card.append(orRow);
+      }
     }
 
     if (cand && cand.inputs.length) {
@@ -1900,6 +1924,7 @@
 
   async function saveLinkSelection() {
     if (linkSel.length < 1) return;
+    if (!settleForegroundEdit()) return;
     if (linkTarget) return addLinkSelection();
     const def = "size " + ((config.links || []).length + 1);
     const nm = prompt("Link name:", def); if (nm == null) return;
@@ -2181,6 +2206,24 @@
     )) return;
     if (deferDirty) restoreBaseline();
     _setView(v);
+  }
+
+  // Link picking happens ON a node's own page (via beginEdit()'s deferSave buffer), which
+  // means an unrelated edit to that node's own fields can be sitting buffered when the
+  // user hits "Save link"/"Add". Previously that edit got persisted silently along with
+  // the link — the same dirty-change decision setView() already confirms before leaving a
+  // page, applied here since saving a link is also a page-leaving action. Discards the
+  // stray edit (not the link, which the caller creates afterward) on confirm; returns
+  // false to abort the save if the user declines.
+  function settleForegroundEdit() {
+    if (!deferDirty) return true;
+    if (!confirm(
+      "This node has unsaved changes that aren't part of the link.\n\n"
+      + "Discard them and save the link? Cancel to go back and save or discard them first."
+    )) return false;
+    restoreBaseline();
+    deferDirty = false;
+    return true;
   }
 
   const mnItem = (opts) => window.SettingsWindow.navItem(opts);
