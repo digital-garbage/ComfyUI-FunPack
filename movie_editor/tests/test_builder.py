@@ -1112,6 +1112,65 @@ def test_a_widget_reference_that_is_gone_reports_instead_of_silently_defaulting(
                for u in report["unsatisfied"])
 
 
+# ── numbered reference SLOTS on a widget ("Reference video 1") ────────────────
+# The point, same as the socket-side version: pick it once and it keeps following whichever
+# file is currently marked first, instead of needing to be reselected every time the
+# reference changes.
+
+
+def test_a_widget_reference_slot_resolves_to_the_first_marked_video():
+    models = {"slots": [
+        {"id": "lv", "node_class": "VHS_LoadVideo", "inputs": {"video": "ref#video:1"}, "wires": {}},
+    ]}
+    params = _ref_params(
+        {"id": "m1", "kind": "video", "name": "a.mp4", "filename": "funpack_movie_m1.mp4"},
+        {"id": "m2", "kind": "video", "name": "b.mp4", "filename": "funpack_movie_m2.mp4"})
+    graph, report = builder.build(VIDEO_OI, models, params)
+    assert graph["slot_lv"]["inputs"]["video"] == "funpack_movie_m1.mp4"
+    assert any("slot_lv.video" in w for w in report["wired"])
+
+
+def test_reordering_the_marks_repoints_a_widget_reference_slot_with_no_config_change():
+    models = {"slots": [
+        {"id": "lv", "node_class": "VHS_LoadVideo", "inputs": {"video": "ref#video:1"}, "wires": {}},
+    ]}
+    first = {"id": "m1", "kind": "video", "name": "a.mp4", "filename": "funpack_movie_m1.mp4"}
+    second = {"id": "m2", "kind": "video", "name": "b.mp4", "filename": "funpack_movie_m2.mp4"}
+    g1, _ = builder.build(VIDEO_OI, models, _ref_params(first, second))
+    g2, _ = builder.build(VIDEO_OI, models, _ref_params(second, first))
+    assert g1["slot_lv"]["inputs"]["video"] == "funpack_movie_m1.mp4"
+    assert g2["slot_lv"]["inputs"]["video"] == "funpack_movie_m2.mp4"
+
+
+def test_a_widget_reference_slot_with_nothing_marked_yet_is_quiet_not_an_error():
+    """An empty reference slot is a normal state before anything is marked, same tone the
+    socket-side "none marked, left unconnected" case takes — not something to alarm over."""
+    models = {"slots": [
+        {"id": "lv", "node_class": "VHS_LoadVideo", "inputs": {"video": "ref#video:1"}, "wires": {}},
+    ]}
+    graph, report = builder.build(VIDEO_OI, models, _ref_params())
+    assert graph["slot_lv"]["inputs"]["video"] == "a.mp4"  # the node's own default, untouched
+    assert not any("VHS_LoadVideo.video" in u for u in report["unsatisfied"])
+    assert any("slot_lv.video" in w and "none marked" in w for w in report["wired"])
+
+
+def test_a_real_installed_file_named_like_a_reference_sentinel_is_not_hijacked():
+    """A file that happens to be named "ref#video:1" (or "ref:whatever") is a legitimate
+    installed choice, not FunPack's own notation -- picking it must not get silently
+    swapped for whatever the media bin happens to have marked reference video 1."""
+    oi = dict(VIDEO_OI)
+    oi["VHS_LoadVideo"] = {"input": {"required": {"video": [["ref#video:1"]]}}, "output": ["IMAGE"],
+                           "output_name": ["IMAGE"]}
+    models = {"slots": [
+        {"id": "lv", "node_class": "VHS_LoadVideo", "inputs": {"video": "ref#video:1"}, "wires": {}},
+    ]}
+    params = _ref_params({"id": "m1", "kind": "video", "name": "unrelated.mp4",
+                          "filename": "funpack_movie_m1.mp4"})
+    graph, report = builder.build(oi, models, params)
+    assert graph["slot_lv"]["inputs"]["video"] == "ref#video:1"
+    assert not any("slot_lv.video" in w for w in report["wired"])
+
+
 def test_a_plain_widget_value_that_is_not_a_reference_is_left_alone():
     models = {"slots": [
         {"id": "lv", "node_class": "VHS_LoadVideo", "inputs": {"video": "a.mp4"}, "wires": {}},

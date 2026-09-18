@@ -614,6 +614,28 @@
     return out;
   }
 
+  // Numbered reference SLOTS for a widget field — "Reference video 1" is whatever is
+  // marked first among the video references, not a particular file, same indirection
+  // referenceSlots() gives a connection socket. This is the one worth leaving set: pick it
+  // once and re-marking a different file as R1 in the Media Bin re-points it with no need
+  // to reopen the node and reselect (widgetRefOptions' direct-id picks require exactly
+  // that reselect every time the reference changes). Always offers at least "1" so the
+  // option exists before anything is marked yet.
+  function widgetRefSlotOptions(refKind) {
+    const st = window.Store?.get() || {};
+    const marks = st.project?.references || [];
+    const bin = st.mediaBin || [];
+    const ofKind = window.References.referencesOfKind(marks, bin, refKind);
+    const top = Math.max(1, ofKind.length);
+    const out = [];
+    for (let n = 1; n <= top; n++) {
+      const m = ofKind[n - 1];
+      out.push({ value: `ref#${refKind}:${n}`,
+                 label: m ? `Reference ${refKind} ${n} · ${m.name}` : `Reference ${refKind} ${n}` });
+    }
+    return out;
+  }
+
   function widgetField(spec, value, onChange) {
     if (spec.kind === "list") return listField(spec, value, onChange);
     const wrap = el("label", "field");
@@ -621,9 +643,15 @@
     let ctrl;
     if (spec.kind === "combo") {
       ctrl = el("select");
+      const slotOpts = spec.ref_kind ? widgetRefSlotOptions(spec.ref_kind) : [];
       const refOpts = spec.ref_kind ? widgetRefOptions(spec.ref_kind) : [];
+      if (slotOpts.length) {
+        const og = el("optgroup"); og.label = "Reference slot (auto-follows the mark)";
+        slotOpts.forEach((o) => { const opt = el("option", null, o.label); opt.value = o.value; if (o.value === value) opt.selected = true; og.append(opt); });
+        ctrl.append(og);
+      }
       if (refOpts.length) {
-        const og = el("optgroup"); og.label = `Media Bin reference (${spec.ref_kind})`;
+        const og = el("optgroup"); og.label = `Specific reference (${spec.ref_kind})`;
         refOpts.forEach((o) => { const opt = el("option", null, o.label); opt.value = o.value; if (o.value === value) opt.selected = true; og.append(opt); });
         ctrl.append(og);
       }
@@ -637,34 +665,57 @@
         if (refFilenames.has(c) && c !== value) return;
         const o = el("option", null, String(c)); o.value = c; if (c === value) o.selected = true; ctrl.append(o);
       });
-      // Gated on spec.ref_kind, not just the "ref:" prefix: only the fields FunPack itself
-      // knows are reference-capable (WIDGET_REFERENCE_FIELDS, nodes.py) should ever be read
-      // as a sentinel. An ordinary combo can have a real installed file that happens to be
-      // named "ref:whatever" — treating that as a dangling reference would flag a working
-      // file as missing and, on the builder side, log a false "no longer in the media bin".
-      const isRef = !!spec.ref_kind && typeof value === "string" && value.startsWith("ref:");
-      const refKnown = refOpts.some((o) => o.value === value);
+      // Gated on spec.ref_kind, not just the "ref:"/"ref#" prefix: only the fields FunPack
+      // itself knows are reference-capable (WIDGET_REFERENCE_FIELDS, nodes.py) should ever
+      // be read as a sentinel. An ordinary combo can have a real installed file that
+      // happens to be named "ref:whatever" (or, for the slot form, literally "ref#video:1")
+      // — treating that as a dangling reference would flag a working file as missing and,
+      // on the builder side, either log a false "no longer in the media bin" or, worse,
+      // silently swap in whatever's actually marked reference N instead of the file the
+      // combo says is selected. A real installed choice always wins over the sentinel
+      // reading of the same string — the builder applies the identical rule.
+      const isRef = !!spec.ref_kind && typeof value === "string"
+        && (value.startsWith("ref:") || value.startsWith("ref#"))
+        && !(spec.choices || []).includes(value);
+      const refKnown = refOpts.some((o) => o.value === value) || slotOpts.some((o) => o.value === value);
       if (isRef && !refKnown) {
-        // The reference this pointed at was unmarked or its file is gone. Unlike a stale
-        // plain filename, this is not "pick whatever's displayed" — silently swapping in
-        // spec.choices[0] here would persist a plain upload over a reference the user
-        // deliberately chose, the moment the panel next renders, with no report anywhere
-        // (the builder's unsatisfied check never sees it, since by build time the ref:
-        // value would already be gone). Surface it as missing instead, same treatment
-        // Input sources gives a dangling source (see the wire-select "(missing)" option
-        // below) — the builder's own "reference ... is no longer in the media bin" report
-        // is what actually declares this, not a silent default here.
+        // The reference this pointed at was unmarked or its file is gone (a "ref#kind:n"
+        // slot value is always in slotOpts — it offers at least "1" even unmarked — so
+        // this only fires for a direct "ref:<id>" pick, or a slot number higher than what's
+        // currently marked). Unlike a stale plain filename, this is not "pick whatever's
+        // displayed": silently swapping in spec.choices[0] here would persist a plain
+        // upload over a reference the user deliberately chose, the moment the panel next
+        // renders, with no report anywhere (the builder's unsatisfied check never sees it,
+        // since by build time the ref: value would already be gone). Surface it as missing
+        // instead, same treatment Input sources gives a dangling source (see the
+        // wire-select "(missing)" option below) — the builder's own report is what
+        // actually declares this, not a silent default here.
         const o = el("option", null, "(reference missing)"); o.value = value; o.selected = true;
         ctrl.append(o);
-      } else if ((!spec.choices || !spec.choices.length) && !refOpts.length) {
+      } else if ((!spec.choices || !spec.choices.length) && !refOpts.length && !slotOpts.length) {
         ctrl.append(el("option", null, "(none installed)")); ctrl.disabled = true;
       }
       // A saved value that no longer exists (renamed/removed file) leaves nothing
       // selected — the browser then shows the first option without persisting it, so the
       // stale value silently goes to generation. Persist what's displayed. Never applies
-      // to a reference value: handled above instead, without auto-persisting over it.
-      else if (!isRef && value != null && !spec.choices.includes(value) && !refKnown)
-        onChange(spec.choices[0] ?? refOpts[0]?.value);
+      // to a reference value: handled above instead, without auto-persisting over it. And
+      // never falls into slotOpts/refOpts as a substitute default: those are never empty
+      // once spec.ref_kind is set (widgetRefSlotOptions always offers at least "1"), so
+      // reaching for them here would silently convert an ordinary stale plain value into a
+      // live Media Bin dependency the user never picked, the moment the panel opens on a
+      // node with nothing currently installed (spec.choices empty) — exactly the silent
+      // substitution this whole feature exists to avoid, just introduced from the other
+      // direction. A plain value only ever self-heals among plain choices, and only when
+      // there IS one to heal to: spec.choices.length is checked explicitly rather than
+      // relying on spec.choices[0] being truthy, because "no choices installed" must leave
+      // the stale value untouched, not overwrite it with onChange(undefined) — the prior
+      // form of this guard depended on the sibling "(none installed)" branch above always
+      // catching the empty-choices case first, which stopped being true the moment that
+      // branch grew a "&& !slotOpts.length" clause (slotOpts is never empty once
+      // spec.ref_kind is set), silently reopening the exact bug this comment describes.
+      else if (!isRef && value != null && spec.choices && spec.choices.length
+               && !spec.choices.includes(value) && !refKnown)
+        onChange(spec.choices[0]);
       ctrl.onchange = () => onChange(ctrl.value);
     } else if (spec.kind === "boolean") {
       ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!value; ctrl.style.width = "auto";
@@ -999,7 +1050,15 @@
           f.classList.add("linked");
           const ctrl = f.querySelector("input,select"); if (ctrl) ctrl.disabled = true;
           f.append(el("span", "link-tag", "🔗 " + lk.name));
-        } else if (linkMode && !isList && linkPickKindOk(spec.kind, spec.choices)) {
+        // A reference-capable combo (spec.ref_kind — VHS_LoadVideo.video, LoadImage.image,
+        // ...) is never offered for linking: Linked Inputs shares one plain widget VALUE
+        // across members, snapshotted with no ref-sentinel handling on either side (the
+        // link editor's own value control builds a spec with no ref_kind, so a linked
+        // "ref:"/"ref#" value would render there as an ordinary stale combo value and get
+        // silently self-healed to a plain default the next time the Linked Inputs view
+        // renders — wiping the reference across the whole group, unreported). Simplest safe
+        // answer: this kind of field just doesn't link.
+        } else if (linkMode && !isList && !spec.ref_kind && linkPickKindOk(spec.kind, spec.choices)) {
           const chk = el("button", "eye-btn link-pick" + (linkSelHas(slot.id, spec.name) ? " on" : ""), "+");
           chk.type = "button"; chk.title = "Add to link selection";
           chk.onclick = (e) => {

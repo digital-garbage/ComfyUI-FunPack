@@ -595,30 +595,54 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
 
     # 3a. widget-level references: a plain combo/upload field (VHS_LoadVideo's "video",
     # LoadImage's "image", ...) set in the node panel to a Media Bin reference, using the
-    # same "ref:<id>" value Input sources uses for sockets — but landing straight in the
-    # widget instead of wiring one, since WIDGET_REFERENCE_FIELDS entries aren't sockets at
-    # all (see nodes.connection_inputs, which skips them). No "ref#<kind>:<n>" numbered-slot
-    # form here: unlike a socket, nothing in the Editor ever offers or writes one for a
-    # widget, so there is nothing to resolve.
+    # same "ref:<id>" / "ref#<kind>:<n>" values Input sources uses for sockets — but landing
+    # straight in the widget instead of wiring one, since WIDGET_REFERENCE_FIELDS entries
+    # aren't sockets at all (see nodes.connection_inputs, which skips them).
     for s in slots:
         sid = slot_node_id[s["id"]]
         cls = s.get("node_class")
+        field_choices = _widget_choices(slot_def[s["id"]])
         for wname, raw in (s.get("inputs") or {}).items():
-            if not isinstance(raw, str) or not raw.startswith("ref:"):
+            if not isinstance(raw, str) or not (raw.startswith("ref:") or raw.startswith("ref#")):
+                continue
+            # A real installed file always wins over the sentinel reading of the same
+            # string — an unlikely but real collision (a file literally named "ref:x" or
+            # "ref#video:1") must not get silently swapped for whatever the media bin
+            # happens to have marked, just because its name looks like FunPack's own
+            # reference notation.
+            if raw in field_choices.get(wname, []):
                 continue
             want_kind = WIDGET_REFERENCE_FIELDS.get((cls, wname))
             if not want_kind:
                 continue
-            ref = references.get(raw[4:])
-            if not ref or not ref.get("filename"):
-                report["unsatisfied"].append(
-                    f"{cls}.{wname}: reference media '{raw[4:]}' is no longer in the media bin.")
-                continue
-            ref_kind = ref.get("kind") or "image"
-            if ref_kind != want_kind:
-                report["unsatisfied"].append(
-                    f"{cls}.{wname}: its reference is a {ref_kind}, but this field only takes a {want_kind}.")
-                continue
+            if raw.startswith("ref:"):
+                ref = references.get(raw[4:])
+                if not ref or not ref.get("filename"):
+                    report["unsatisfied"].append(
+                        f"{cls}.{wname}: reference media '{raw[4:]}' is no longer in the media bin.")
+                    continue
+                ref_kind = ref.get("kind") or "image"
+                if ref_kind != want_kind:
+                    report["unsatisfied"].append(
+                        f"{cls}.{wname}: its reference is a {ref_kind}, but this field only takes a {want_kind}.")
+                    continue
+            else:
+                # "ref#<kind>:<n>" — the Nth marked reference of that kind, whichever file
+                # that currently is. An empty slot is a normal, expected state here (nothing
+                # marked yet, or fewer than N marked) — same tone builder's socket-side
+                # "none marked, left unconnected" takes, not an error: the widget simply
+                # keeps whatever the node's own default already resolved it to above.
+                kind, _, num = raw[4:].partition(":")
+                if kind != want_kind or not num.isdigit():
+                    report["unsatisfied"].append(
+                        f"{cls}.{wname}: '{raw}' is not a {want_kind} reference slot.")
+                    continue
+                ref = _reference_by_slot(kind, int(num))
+                if not ref or not ref.get("filename"):
+                    report["wired"].append(
+                        f"Reference {want_kind} {num} -> {sid}.{wname}: none marked, "
+                        "left at the node's default")
+                    continue
             graph[sid]["inputs"][wname] = ref["filename"]
             report["wired"].append(f"Reference {want_kind} -> {sid}.{wname}")
 
