@@ -609,7 +609,7 @@
       const m = bin.find((x) => x.id === id);
       if (!m || (m.kind || "image") !== refKind) return;
       const n = window.References.referenceNumber(marks, bin, id);
-      out.push({ value: `ref:${id}`, label: `R${n} · ${m.name}` });
+      out.push({ value: `ref:${id}`, label: `R${n} · ${m.name}`, filename: m.filename });
     });
     return out;
   }
@@ -627,7 +627,16 @@
         refOpts.forEach((o) => { const opt = el("option", null, o.label); opt.value = o.value; if (o.value === value) opt.selected = true; og.append(opt); });
         ctrl.append(og);
       }
-      (spec.choices || []).forEach((c) => { const o = el("option", null, String(c)); o.value = c; if (c === value) o.selected = true; ctrl.append(o); });
+      // A Media Bin reference's file lives right in ComfyUI's own input folder (so the node
+      // itself can load it), which means it ALSO shows up here under its raw on-disk name —
+      // the same clip, twice, once as "R1 · clip.mp4" above and once as an unreadable
+      // "funpack_movie_<id>.mp4" below. The second copy is pure noise, never worth picking
+      // over the friendly one, so it's dropped rather than left to confuse the choice.
+      const refFilenames = new Set(refOpts.map((o) => o.filename).filter(Boolean));
+      (spec.choices || []).forEach((c) => {
+        if (refFilenames.has(c) && c !== value) return;
+        const o = el("option", null, String(c)); o.value = c; if (c === value) o.selected = true; ctrl.append(o);
+      });
       // Gated on spec.ref_kind, not just the "ref:" prefix: only the fields FunPack itself
       // knows are reference-capable (WIDGET_REFERENCE_FIELDS, nodes.py) should ever be read
       // as a sentinel. An ordinary combo can have a real installed file that happens to be
