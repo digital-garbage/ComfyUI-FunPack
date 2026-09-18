@@ -628,12 +628,33 @@
         ctrl.append(og);
       }
       (spec.choices || []).forEach((c) => { const o = el("option", null, String(c)); o.value = c; if (c === value) o.selected = true; ctrl.append(o); });
-      if ((!spec.choices || !spec.choices.length) && !refOpts.length) { ctrl.append(el("option", null, "(none installed)")); ctrl.disabled = true; }
-      // A saved value that no longer exists (renamed/removed file, or an unmarked
-      // reference) leaves nothing selected — the browser then shows the first option
-      // without persisting it, so the stale value silently goes to generation. Persist
-      // what's displayed.
-      else if (value != null && !spec.choices.includes(value) && !refOpts.some((o) => o.value === value))
+      // Gated on spec.ref_kind, not just the "ref:" prefix: only the fields FunPack itself
+      // knows are reference-capable (WIDGET_REFERENCE_FIELDS, nodes.py) should ever be read
+      // as a sentinel. An ordinary combo can have a real installed file that happens to be
+      // named "ref:whatever" — treating that as a dangling reference would flag a working
+      // file as missing and, on the builder side, log a false "no longer in the media bin".
+      const isRef = !!spec.ref_kind && typeof value === "string" && value.startsWith("ref:");
+      const refKnown = refOpts.some((o) => o.value === value);
+      if (isRef && !refKnown) {
+        // The reference this pointed at was unmarked or its file is gone. Unlike a stale
+        // plain filename, this is not "pick whatever's displayed" — silently swapping in
+        // spec.choices[0] here would persist a plain upload over a reference the user
+        // deliberately chose, the moment the panel next renders, with no report anywhere
+        // (the builder's unsatisfied check never sees it, since by build time the ref:
+        // value would already be gone). Surface it as missing instead, same treatment
+        // Input sources gives a dangling source (see the wire-select "(missing)" option
+        // below) — the builder's own "reference ... is no longer in the media bin" report
+        // is what actually declares this, not a silent default here.
+        const o = el("option", null, "(reference missing)"); o.value = value; o.selected = true;
+        ctrl.append(o);
+      } else if ((!spec.choices || !spec.choices.length) && !refOpts.length) {
+        ctrl.append(el("option", null, "(none installed)")); ctrl.disabled = true;
+      }
+      // A saved value that no longer exists (renamed/removed file) leaves nothing
+      // selected — the browser then shows the first option without persisting it, so the
+      // stale value silently goes to generation. Persist what's displayed. Never applies
+      // to a reference value: handled above instead, without auto-persisting over it.
+      else if (!isRef && value != null && !spec.choices.includes(value) && !refKnown)
         onChange(spec.choices[0] ?? refOpts[0]?.value);
       ctrl.onchange = () => onChange(ctrl.value);
     } else if (spec.kind === "boolean") {

@@ -1095,7 +1095,11 @@ def test_a_widget_reference_of_the_wrong_kind_is_not_wired():
                           "filename": "funpack_movie_m1.png"})
     graph, report = builder.build(VIDEO_OI, models, params)
     assert graph["slot_lv"]["inputs"]["video"] != "funpack_movie_m1.png"
-    assert any("VHS_LoadVideo.video" in u for u in report["unsatisfied"])
+    # Distinct from "gone from the media bin" below — the reference is right there, just
+    # the wrong kind for this field. A user hunting for a missing file over a kind mismatch
+    # is chasing the wrong problem.
+    assert any("VHS_LoadVideo.video" in u and "only takes a video" in u
+               for u in report["unsatisfied"])
 
 
 def test_a_widget_reference_that_is_gone_reports_instead_of_silently_defaulting():
@@ -1104,7 +1108,8 @@ def test_a_widget_reference_that_is_gone_reports_instead_of_silently_defaulting(
     ]}
     graph, report = builder.build(VIDEO_OI, models, _ref_params())
     assert graph["slot_lv"]["inputs"]["video"] == "a.mp4"  # falls back to the node's own default
-    assert any("VHS_LoadVideo.video" in u for u in report["unsatisfied"])
+    assert any("VHS_LoadVideo.video" in u and "no longer in the media bin" in u
+               for u in report["unsatisfied"])
 
 
 def test_a_plain_widget_value_that_is_not_a_reference_is_left_alone():

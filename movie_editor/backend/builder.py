@@ -595,29 +595,32 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
 
     # 3a. widget-level references: a plain combo/upload field (VHS_LoadVideo's "video",
     # LoadImage's "image", ...) set in the node panel to a Media Bin reference, using the
-    # same "ref:<id>" / "ref#<kind>:<n>" values as Input sources — but landing straight in
-    # the widget instead of wiring a socket, since WIDGET_REFERENCE_FIELDS entries aren't
-    # sockets at all (see nodes.connection_inputs, which skips them).
+    # same "ref:<id>" value Input sources uses for sockets — but landing straight in the
+    # widget instead of wiring one, since WIDGET_REFERENCE_FIELDS entries aren't sockets at
+    # all (see nodes.connection_inputs, which skips them). No "ref#<kind>:<n>" numbered-slot
+    # form here: unlike a socket, nothing in the Editor ever offers or writes one for a
+    # widget, so there is nothing to resolve.
     for s in slots:
         sid = slot_node_id[s["id"]]
         cls = s.get("node_class")
         for wname, raw in (s.get("inputs") or {}).items():
-            if not isinstance(raw, str) or not (raw.startswith("ref:") or raw.startswith("ref#")):
+            if not isinstance(raw, str) or not raw.startswith("ref:"):
                 continue
             want_kind = WIDGET_REFERENCE_FIELDS.get((cls, wname))
             if not want_kind:
                 continue
-            if raw.startswith("ref:"):
-                ref = references.get(raw[4:])
-            else:
-                kind, _, num = raw[4:].partition(":")
-                ref = _reference_by_slot(kind, int(num)) if kind == want_kind and num.isdigit() else None
-            if ref and ref.get("filename") and (ref.get("kind") or "image") == want_kind:
-                graph[sid]["inputs"][wname] = ref["filename"]
-                report["wired"].append(f"Reference {want_kind} -> {sid}.{wname}")
-            else:
+            ref = references.get(raw[4:])
+            if not ref or not ref.get("filename"):
                 report["unsatisfied"].append(
-                    f"{cls}.{wname}: reference '{raw}' is no longer in the media bin.")
+                    f"{cls}.{wname}: reference media '{raw[4:]}' is no longer in the media bin.")
+                continue
+            ref_kind = ref.get("kind") or "image"
+            if ref_kind != want_kind:
+                report["unsatisfied"].append(
+                    f"{cls}.{wname}: its reference is a {ref_kind}, but this field only takes a {want_kind}.")
+                continue
+            graph[sid]["inputs"][wname] = ref["filename"]
+            report["wired"].append(f"Reference {want_kind} -> {sid}.{wname}")
 
     def _reference_link(ref_id: str, want_type: Optional[str], where: str):
         ref = references.get(ref_id)
