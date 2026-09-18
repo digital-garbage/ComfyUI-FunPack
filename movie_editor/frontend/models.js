@@ -595,6 +595,25 @@
     return wrap;
   }
 
+  // Marked Media Bin references of exactly `refKind` ("image"/"audio"/"video"), as options
+  // for a widget-level reference field (spec.ref_kind) — e.g. VHS_LoadVideo's "video" combo.
+  // Kept a strict kind match (not typeAccepts cross-kind, like referenceSources() uses for
+  // real sockets): a widget takes the reference's filename verbatim, with no loader in
+  // between to bridge a video into an image-only field the way a real IMAGE socket can.
+  function widgetRefOptions(refKind) {
+    const st = window.Store?.get() || {};
+    const marks = st.project?.references || [];
+    const bin = st.mediaBin || [];
+    const out = [];
+    marks.forEach((id) => {
+      const m = bin.find((x) => x.id === id);
+      if (!m || (m.kind || "image") !== refKind) return;
+      const n = window.References.referenceNumber(marks, bin, id);
+      out.push({ value: `ref:${id}`, label: `R${n} · ${m.name}` });
+    });
+    return out;
+  }
+
   function widgetField(spec, value, onChange) {
     if (spec.kind === "list") return listField(spec, value, onChange);
     const wrap = el("label", "field");
@@ -602,12 +621,20 @@
     let ctrl;
     if (spec.kind === "combo") {
       ctrl = el("select");
+      const refOpts = spec.ref_kind ? widgetRefOptions(spec.ref_kind) : [];
+      if (refOpts.length) {
+        const og = el("optgroup"); og.label = `Media Bin reference (${spec.ref_kind})`;
+        refOpts.forEach((o) => { const opt = el("option", null, o.label); opt.value = o.value; if (o.value === value) opt.selected = true; og.append(opt); });
+        ctrl.append(og);
+      }
       (spec.choices || []).forEach((c) => { const o = el("option", null, String(c)); o.value = c; if (c === value) o.selected = true; ctrl.append(o); });
-      if (!spec.choices || !spec.choices.length) { ctrl.append(el("option", null, "(none installed)")); ctrl.disabled = true; }
-      // A saved value that no longer exists (renamed/removed file) leaves nothing
-      // selected — the browser then shows the first option without persisting it,
-      // so the stale value silently goes to generation. Persist what's displayed.
-      else if (value != null && !spec.choices.includes(value)) onChange(spec.choices[0]);
+      if ((!spec.choices || !spec.choices.length) && !refOpts.length) { ctrl.append(el("option", null, "(none installed)")); ctrl.disabled = true; }
+      // A saved value that no longer exists (renamed/removed file, or an unmarked
+      // reference) leaves nothing selected — the browser then shows the first option
+      // without persisting it, so the stale value silently goes to generation. Persist
+      // what's displayed.
+      else if (value != null && !spec.choices.includes(value) && !refOpts.some((o) => o.value === value))
+        onChange(spec.choices[0] ?? refOpts[0]?.value);
       ctrl.onchange = () => onChange(ctrl.value);
     } else if (spec.kind === "boolean") {
       ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!value; ctrl.style.width = "auto";

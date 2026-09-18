@@ -339,7 +339,20 @@ def node_outputs(node_def: dict) -> list[dict]:
     return out
 
 
-def widget_inputs(node_def: dict) -> list[dict]:
+# Widget-typed inputs that take a Media Bin reference's filename directly: a plain
+# combo/upload field (VHS_LoadVideo's "video", LoadImage's "image", ...), not a wireable
+# socket, so the Editor's node panel offers marked references of this kind alongside the
+# node's own installed choices. Keyed by (class, field name) since a plain string combo
+# carries no type info of its own to key off of.
+WIDGET_REFERENCE_FIELDS: dict[tuple[str, str], str] = {
+    ("LoadImage", "image"): "image",
+    ("LoadAudio", "audio"): "audio",
+    ("LoadVideo", "file"): "video",
+    ("VHS_LoadVideo", "video"): "video",
+}
+
+
+def widget_inputs(node_def: dict, cls: str | None = None) -> list[dict]:
     """User-facing widgets for a node: combos (with options) and primitive fields.
     Skips graph-connection inputs (MODEL/CLIP/IMAGE/...) and forceInput sockets."""
     out = []
@@ -354,6 +367,9 @@ def widget_inputs(node_def: dict) -> list[dict]:
             if opts.get("forceInput"):
                 continue
             field = {"name": name, "required": group == "required", "options": opts}
+            ref_kind = WIDGET_REFERENCE_FIELDS.get((cls, name))
+            if ref_kind:
+                field["ref_kind"] = ref_kind
             # A widget the node itself calls advanced: real, tweakable, and validated at
             # its default, so the panel folds it away rather than putting five of them
             # between the user and the file picker.
@@ -408,7 +424,7 @@ def candidates(object_info: dict, role_key: str) -> list[dict]:
                 "class": cls,
                 "display_name": node_def.get("display_name", cls),
                 "category": node_def.get("category", ""),
-                "inputs": widget_inputs(node_def),
+                "inputs": widget_inputs(node_def, cls),
                 "outputs": node_outputs(node_def),
                 "connection_inputs": connection_inputs(node_def),
             })
@@ -442,7 +458,7 @@ def describe_node(object_info: dict, cls: str) -> dict | None:
         "class": cls,
         "display_name": nd.get("display_name", cls),
         "category": nd.get("category", ""),
-        "inputs": widget_inputs(nd),
+        "inputs": widget_inputs(nd, cls),
         "outputs": node_outputs(nd),
         "connection_inputs": connection_inputs(nd),
     }

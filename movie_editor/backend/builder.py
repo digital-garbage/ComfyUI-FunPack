@@ -26,8 +26,8 @@ from typing import Any, Optional
 
 from . import config
 from . import pipeline_wiring
-from .nodes import (WIDGET_PRIMITIVES, connection_inputs, node_outputs, type_accepts,
-                    widget_type_of, _combo_default, _combo_choices)
+from .nodes import (WIDGET_PRIMITIVES, WIDGET_REFERENCE_FIELDS, connection_inputs,
+                    node_outputs, type_accepts, widget_type_of, _combo_default, _combo_choices)
 
 # ── fixed core ────────────────────────────────────────────────────────────────
 # logical id -> class_type
@@ -592,6 +592,32 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         same_kind = [r for r in references.values() if (r.get("kind") or "image") == kind]
         same_kind.sort(key=lambda r: int(r.get("index") or 0))
         return same_kind[n - 1] if 1 <= n <= len(same_kind) else None
+
+    # 3a. widget-level references: a plain combo/upload field (VHS_LoadVideo's "video",
+    # LoadImage's "image", ...) set in the node panel to a Media Bin reference, using the
+    # same "ref:<id>" / "ref#<kind>:<n>" values as Input sources — but landing straight in
+    # the widget instead of wiring a socket, since WIDGET_REFERENCE_FIELDS entries aren't
+    # sockets at all (see nodes.connection_inputs, which skips them).
+    for s in slots:
+        sid = slot_node_id[s["id"]]
+        cls = s.get("node_class")
+        for wname, raw in (s.get("inputs") or {}).items():
+            if not isinstance(raw, str) or not (raw.startswith("ref:") or raw.startswith("ref#")):
+                continue
+            want_kind = WIDGET_REFERENCE_FIELDS.get((cls, wname))
+            if not want_kind:
+                continue
+            if raw.startswith("ref:"):
+                ref = references.get(raw[4:])
+            else:
+                kind, _, num = raw[4:].partition(":")
+                ref = _reference_by_slot(kind, int(num)) if kind == want_kind and num.isdigit() else None
+            if ref and ref.get("filename") and (ref.get("kind") or "image") == want_kind:
+                graph[sid]["inputs"][wname] = ref["filename"]
+                report["wired"].append(f"Reference {want_kind} -> {sid}.{wname}")
+            else:
+                report["unsatisfied"].append(
+                    f"{cls}.{wname}: reference '{raw}' is no longer in the media bin.")
 
     def _reference_link(ref_id: str, want_type: Optional[str], where: str):
         ref = references.get(ref_id)

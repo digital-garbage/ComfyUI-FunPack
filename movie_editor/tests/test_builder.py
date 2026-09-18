@@ -1070,6 +1070,51 @@ def test_prevvideo_retrieval_failure_is_declared_not_silent():
                for u in report["unsatisfied"])
 
 
+# ── widget-level references (a manually placed VHS_LoadVideo's "video" combo, not a
+# wireable socket) ──────────────────────────────────────────────────────────────
+
+
+def test_a_reference_set_on_a_widget_combo_resolves_to_its_filename():
+    models = {"slots": [
+        {"id": "lv", "node_class": "VHS_LoadVideo", "inputs": {"video": "ref:m1"}, "wires": {}},
+    ]}
+    params = _ref_params({"id": "m1", "kind": "video", "name": "clip.mp4",
+                          "filename": "funpack_movie_m1.mp4"})
+    graph, report = builder.build(VIDEO_OI, models, params)
+    assert graph["slot_lv"]["inputs"]["video"] == "funpack_movie_m1.mp4"
+    assert any("video" in w.lower() and "slot_lv.video" in w for w in report["wired"])
+
+
+def test_a_widget_reference_of_the_wrong_kind_is_not_wired():
+    """VHS_LoadVideo's "video" field only takes a video reference — an image marked in the
+    bin must not land there just because it happens to be the only reference around."""
+    models = {"slots": [
+        {"id": "lv", "node_class": "VHS_LoadVideo", "inputs": {"video": "ref:m1"}, "wires": {}},
+    ]}
+    params = _ref_params({"id": "m1", "kind": "image", "name": "face.png",
+                          "filename": "funpack_movie_m1.png"})
+    graph, report = builder.build(VIDEO_OI, models, params)
+    assert graph["slot_lv"]["inputs"]["video"] != "funpack_movie_m1.png"
+    assert any("VHS_LoadVideo.video" in u for u in report["unsatisfied"])
+
+
+def test_a_widget_reference_that_is_gone_reports_instead_of_silently_defaulting():
+    models = {"slots": [
+        {"id": "lv", "node_class": "VHS_LoadVideo", "inputs": {"video": "ref:missing"}, "wires": {}},
+    ]}
+    graph, report = builder.build(VIDEO_OI, models, _ref_params())
+    assert graph["slot_lv"]["inputs"]["video"] == "a.mp4"  # falls back to the node's own default
+    assert any("VHS_LoadVideo.video" in u for u in report["unsatisfied"])
+
+
+def test_a_plain_widget_value_that_is_not_a_reference_is_left_alone():
+    models = {"slots": [
+        {"id": "lv", "node_class": "VHS_LoadVideo", "inputs": {"video": "a.mp4"}, "wires": {}},
+    ]}
+    graph, _report = builder.build(VIDEO_OI, models, _ref_params())
+    assert graph["slot_lv"]["inputs"]["video"] == "a.mp4"
+
+
 def test_the_loader_matches_what_the_destination_socket_asks_for():
     """An audio reference feeding an AUDIO socket needs LoadAudio, not LoadImage — the
     loader is chosen by the socket's type, not by guessing from the file."""
