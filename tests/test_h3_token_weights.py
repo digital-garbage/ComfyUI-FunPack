@@ -867,3 +867,9 @@ def test_timed_and_untimed_spans_stack_and_a_window_weight_is_a_boost():
     assert prefix[0, 0, 0, 7] == inside[0, 0, 0, 7] == pytest.approx(math.log(2.0))
     assert inside[0, 0, 0, 4] == pytest.approx(math.log(1.5)) and prefix[0, 0, 0, 4] == 0
     assert outside[0, 0, 0, 4] == tw.MASKED_BIAS
+
+
+def test_a_phrase_may_contain_colons_and_at_signs():
+    clean, spans = tw.parse_timed("(camera: slow push-in, mail@x.com @1-2) (fast:0.5@2-3)")
+    assert clean == "camera: slow push-in, mail@x.com fast"
+    assert spans == [(0, 32, 1.0, 1.0, 2.0), (33, 37, 0.5, 2.0, 3.0)]

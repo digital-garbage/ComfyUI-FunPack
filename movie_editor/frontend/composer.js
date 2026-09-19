@@ -440,7 +440,7 @@
 
   // Timed phrases: `(phrase@t0-t1)` / `(phrase:w@t0-t1)`, seconds from the scene start. Mirrors
   // h3_token_weights._TIMED — the phrase is only allowed to shape the video inside its window.
-  const TIMED_RE = /(?<!\\)\(([^():@]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\)/g;
+  const TIMED_RE = /(?<!\\)\(([^()]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\)/g;
   function updateTimedHint() {
     if (!timedHintEl) return;
     const txt = composeTextarea ? composeTextarea.value : "";

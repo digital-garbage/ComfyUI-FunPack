@@ -67,8 +67,10 @@ def parse(text: str):
 
 
 # (phrase@2.0-3.5) / (phrase:1.5@2.0-3.5): a TIMED phrase. Seconds from the scene start.
+# The phrase may contain `:` and `@` (shortcut replacements do): only a `:number` directly
+# before the `@t0-t1)` tail is a weight. Parentheses inside the phrase are still not allowed.
 _TIMED = re.compile(
-    r"(?<!\\)\(([^():@]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\)")
+    r"(?<!\\)\(([^()]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\)")
 # H3's latent time grid: latent frame k spans FRAME_PER_TOKEN[k % 5] pixel frames at 24 fps.
 FPS = 24
 FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
