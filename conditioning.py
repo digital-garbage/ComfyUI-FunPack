@@ -4456,7 +4456,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 self._v2_tally_encode(purpose, 0.0, cached=True)
                 return cached
         _encode_started = time.perf_counter()
-        # Timed phrases `(walks left@2.0-3.5)` are a sampler instruction, not prompt text.
+        # Timed phrases `[walks left@2.0-3.5]` are a sampler instruction, not prompt text.
         # Stripped for EVERY encoder (Qwen or Gemma would read them as punctuation); only H3
         # can act on them, and the sampler says so when it cannot.
         try:

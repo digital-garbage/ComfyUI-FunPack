@@ -801,13 +801,13 @@ def test_variability_out_of_range_is_clamped_not_inverted(refiner, monkeypatch):
 # --- timed phrases -----------------------------------------------------------------
 
 def test_timed_syntax_is_stripped_and_windows_kept():
-    clean, spans = tw.parse_timed("a man (walks left@1.0-2.5) then (waves:1.5 @ 3-4) (x:1.2)")
+    clean, spans = tw.parse_timed("a man [walks left@1.0-2.5] then [waves:1.5 @ 3-4] (x:1.2)")
     assert clean == "a man walks left then waves (x:1.2)"
     assert spans == [(6, 16, 1.0, 1.0, 2.5), (22, 27, 1.5, 3.0, 4.0)]
 
 
 def test_an_empty_window_is_dropped():
-    assert tw.parse_timed("(walks@2-2)")[1] == []
+    assert tw.parse_timed("[walks@2-2]")[1] == []
 
 
 def test_a_window_maps_to_whole_latent_frames():
@@ -869,7 +869,7 @@ def test_timed_and_untimed_spans_stack_and_a_window_weight_is_a_boost():
     assert outside[0, 0, 0, 4] == tw.MASKED_BIAS
 
 
-def test_a_phrase_may_contain_colons_and_at_signs():
-    clean, spans = tw.parse_timed("(camera: slow push-in, mail@x.com @1-2) (fast:0.5@2-3)")
-    assert clean == "camera: slow push-in, mail@x.com fast"
-    assert spans == [(0, 32, 1.0, 1.0, 2.0), (33, 37, 0.5, 2.0, 3.0)]
+def test_a_phrase_may_contain_parentheses_colons_and_at_signs():
+    clean, spans = tw.parse_timed("[camera: (slow) push-in, mail@x.com @1-2] [fast:0.5@2-3]")
+    assert clean == "camera: (slow) push-in, mail@x.com fast"
+    assert spans == [(0, 34, 1.0, 1.0, 2.0), (35, 39, 0.5, 2.0, 3.0)]

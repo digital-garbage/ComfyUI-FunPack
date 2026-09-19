@@ -256,7 +256,7 @@
   let composeTextarea = null;
   let varsOpen = false;          // Variables panel expanded?
   let varHintEl = null;          // undeclared / cycle hint line under the prompt
-  let timedHintEl = null;        // timed phrases `(walks left@2.0-3.5)` found in the prompt
+  let timedHintEl = null;        // timed phrases `[walks left@2.0-3.5]` found in the prompt
 
   // ── templates bar (above the global prompt) ─────────────────────────────────────
   const TPL_NONE = "__none__";
@@ -438,9 +438,9 @@
     return cycles;
   }
 
-  // Timed phrases: `(phrase@t0-t1)` / `(phrase:w@t0-t1)`, seconds from the scene start. Mirrors
+  // Timed phrases: `[phrase@t0-t1]` / `[phrase:w@t0-t1]`, seconds from the scene start. Mirrors
   // h3_token_weights._TIMED — the phrase is only allowed to shape the video inside its window.
-  const TIMED_RE = /(?<!\\)\(([^()]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\)/g;
+  const TIMED_RE = /(?<!\\)\[([^\[\]]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\]/g;
   function updateTimedHint() {
     if (!timedHintEl) return;
     const txt = composeTextarea ? composeTextarea.value : "";

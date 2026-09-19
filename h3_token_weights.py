@@ -66,11 +66,11 @@ def parse(text: str):
     return "".join(out), spans
 
 
-# (phrase@2.0-3.5) / (phrase:1.5@2.0-3.5): a TIMED phrase. Seconds from the scene start.
-# The phrase may contain `:` and `@` (shortcut replacements do): only a `:number` directly
-# before the `@t0-t1)` tail is a weight. Parentheses inside the phrase are still not allowed.
+# [phrase@2.0-3.5] / [phrase:1.5@2.0-3.5]: a TIMED phrase. Seconds from the scene start.
+# Square brackets so a shortcut replacement's parentheses and colons can sit inside; only a
+# `:number` directly before the `@t0-t1]` tail is a weight.
 _TIMED = re.compile(
-    r"(?<!\\)\(([^()]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\)")
+    r"(?<!\\)\[([^\[\]]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\]")
 # H3's latent time grid: latent frame k spans FRAME_PER_TOKEN[k % 5] pixel frames at 24 fps.
 FPS = 24
 FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
@@ -79,7 +79,7 @@ FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
 def parse_timed(text: str):
     """Strip timed-phrase syntax. -> (clean_text, [(start_char, end_char, weight, t0, t1)]).
 
-    The model must never see `@2.0-3.5`: Qwen would read it as punctuation. Spans index
+    The model must never see `[…@2.0-3.5]`: Qwen would read it as punctuation. Spans index
     into `clean_text` (same contract as `parse`). A window with t1 <= t0 is dropped.
     """
     if not text or "@" not in text:
