@@ -13799,16 +13799,14 @@ class FunPackStudio:
                 # out of the sampler through a denoiser proxy — the same trick ALG uses.
                 # Wrapping keeps the sampler you chose; it does not replace it.
                 _sharp = float(cfg.get("ksampler_sharpness", 0.0) or 0.0)
-                _spatial = float(cfg.get("ksampler_latent_sharpness", 0.0) or 0.0)
-                if _sharp > 0.0 or _spatial > 0.0:
+                if _sharp > 0.0:
                     try:
                         from .samplers import _sharpen_wrap_sampler
                     except ImportError:
                         from samplers import _sharpen_wrap_sampler
                     _wrapped = _sharpen_wrap_sampler(
                         sampler, _sharp,
-                        float(cfg.get("ksampler_sharpen_start_pct", 0.35) or 0.0),
-                        spatial=_spatial)
+                        float(cfg.get("ksampler_sharpen_start_pct", 0.35) or 0.0))
                     if _wrapped is not None:
                         sampler = _wrapped
                     else:
