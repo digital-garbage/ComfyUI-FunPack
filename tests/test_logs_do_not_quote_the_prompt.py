@@ -41,4 +41,4 @@ def test_the_sampler_reports_the_same_way():
     import samplers
     src = inspect.getsource(samplers)
     assert "strongest x{strongest:.2f}" in src
-    assert "token span(s) biased" in src
+    assert "learned span(s)" in src and "timed window(s)" in src
