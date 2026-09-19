@@ -108,6 +108,9 @@
     montageBtn.onclick = () => window.MontageDialog?.open();
     mount.append(montageBtn);
 
+    const ratingBlock = window.Timeline?.ratingBlock(st);
+    if (ratingBlock) mount.append(ratingBlock);
+
     // Settings that are switched on but cannot do anything belong next to Generate,
     // not buried in the pane that switched them on — you would only see it there if
     // you already went looking.

@@ -124,6 +124,21 @@
       pid: st.project?.id,
       sel: st.selectedSceneIds?.length,
       gen: st.gen?.state,
+      // The scene rating button lives in this zone too. It reads the FOCUSED selection
+      // (not just the multi-select count above), which scene has a render, and every
+      // scene's id+rating+type (id/rating for the rating value itself and because a
+      // single-scene project rates without a selection at all, so adding/removing
+      // scenes changes whether the button shows; type because a video clip can't be
+      // rated -- S.isGenerativeScene -- and converting a scene to/from one flips that
+      // without touching its rating). It also reads usesFunpackStudio(), which is
+      // `core` below PLUS project.conditioning_slot, not tracked anywhere else in this
+      // zone. Miss any of these and rating a scene, finishing a render, converting a
+      // scene, rewiring conditioning, or changing focus leaves a stale (or missing)
+      // button next to Auto Montage.
+      ratingSel: st.selectedSceneId,
+      renders: st.sceneRenders,
+      ratings: (st.project?.scenes || []).map((s) => [s.id, s.rating, s.source?.type]),
+      conditioning: st.project?.conditioning_slot,
       // The Best-FaceID warning chip lives in this zone, so everything its message
       // depends on has to be part of the fingerprint — otherwise setting the pin
       // leaves a stale warning sitting next to Generate.
