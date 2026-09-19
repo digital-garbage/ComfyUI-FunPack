@@ -1,6 +1,8 @@
 """H3 attention temperature (_install_h3_attn_temperature): a manual randomizer, NOT tied
-to ratings. Flattens the softmax at named blocks by scaling Q before the dot product.
-Exercised at the install/override level with fake tensors -- no real attention backend."""
+to ratings. Positive strength flattens the softmax at named blocks (more exploratory);
+negative strength sharpens it (commits harder to what the prompt already made confident) --
+both by scaling Q before the dot product, same knob, opposite sign. Exercised at the
+install/override level with fake tensors -- no real attention backend."""
 import sys
 from pathlib import Path
 
@@ -60,11 +62,48 @@ def test_a_positive_strength_with_no_blocks_is_also_a_noop():
     assert node._install_h3_attn_temperature(model, 0.5, "") is model
 
 
+def test_a_negative_strength_with_no_blocks_is_also_a_noop():
+    model = _FakeModel()
+    node = S()
+    assert node._install_h3_attn_temperature(model, -0.5, "") is model
+
+
 def test_scales_q_only_inside_a_named_block():
     node = S()
     patched = node._install_h3_attn_temperature(_FakeModel(), 1.0, "5")  # temperature = 2.0
     q_at_5 = _run_block(patched, 5)
     assert torch.allclose(q_at_5, torch.full((1, 1, 4, 2), 0.5)), "Q should be halved (1/temp)"
+
+
+def test_negative_strength_installs_and_sharpens_instead_of_flattening():
+    """The gate used to be `strength > 0.0`, which silently dropped negative values (the
+    "sharpen toward the prompt instead of away from it" direction) -- must now install and
+    push Q UP (temperature < 1), the opposite direction from the positive-strength case
+    above, not just also install and do the same thing."""
+    node = S()
+    patched = node._install_h3_attn_temperature(_FakeModel(), -0.5, "5")  # temperature = 0.5
+    q_at_5 = _run_block(patched, 5)
+    assert torch.allclose(q_at_5, torch.full((1, 1, 4, 2), 2.0)), "Q should be doubled (1/temp)"
+
+
+def test_nan_strength_is_a_noop_not_a_nan_temperature():
+    """`_strength != 0.0` (needed so negative strength installs) is ALSO True for NaN, and
+    the 1.0/0.05 floor does not catch it -- max(1.0 + nan, 0.05) is nan, not 0.05 -- so this
+    would silently corrupt Q with NaN for every named block if not excluded explicitly."""
+    model = _FakeModel()
+    node = S()
+    assert node._install_h3_attn_temperature(model, float("nan"), "5") is model
+
+
+def test_extreme_negative_strength_is_floored_instead_of_blowing_up():
+    """Bypassing the widget's own min=-0.9 clamp (a direct call, or a future caller) with
+    strength <= -1 would make temperature <= 0 -- dividing Q by zero or by a negative
+    number, not sharpening it. The floor must keep temperature a small positive number."""
+    node = S()
+    patched = node._install_h3_attn_temperature(_FakeModel(), -5.0, "5")
+    q_at_5 = _run_block(patched, 5)
+    assert torch.isfinite(q_at_5).all()
+    assert torch.allclose(q_at_5, torch.full((1, 1, 4, 2), 1.0 / 0.05))
 
 
 def test_no_hook_installed_for_an_unnamed_block():

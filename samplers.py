@@ -2879,8 +2879,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Damps how much video and audio attend to EACH OTHER inside H3's joint self-attention, without touching any hidden state -- for the failure pattern where one comes out clean and the other doesn't. 0 = off (installs nothing, zero cost). This is a RAW softmax logit penalty, not a 0-1 fraction -- there's no way to read H3's actual trained attention-logit scale from here (the checkpoint isn't on this machine), so this can't be pre-calibrated. Try single digits (1-5) first, then 10-20; v1 normalized this to 0-1 against a guessed constant and measured completely flat live, which is why it's raw now. Large enough to fully exclude the other modality likely also kills legitimate AV sync, so search up from a small value.",
                 }),
                 "h3_explore_temperature": ("FLOAT", {
-                    "default": 0.0, "min": 0.0, "max": 3.0, "step": 0.1,
-                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). A randomizer: flattens attention's own softmax at the block(s) below, so the model is less certain how to weigh the tokens it's already conditioned on -- bounded by the prompt (it can't attend to anything not already in context), unlike latent-level noise. 0 = off. NOT rating-driven -- a plain manual dial, same as Repeat block(s); this is deliberately not coupled to REINS or any other learned steering.",
+                    "default": 0.0, "min": -0.9, "max": 3.0, "step": 0.1,
+                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). A randomizer: positive values flatten attention's own softmax at the block(s) below, so the model is less certain how to weigh the tokens it's already conditioned on -- bounded by the prompt (it can't attend to anything not already in context), unlike latent-level noise. Negative values do the opposite -- sharpen attention so it commits harder to what the prompt already put in context, instead of being pulled away from it. 0 = off. NOT rating-driven -- a plain manual dial, same as Repeat block(s); this is deliberately not coupled to REINS or any other learned steering.",
                 }),
                 "h3_explore_temperature_block": ("STRING", {
                     "default": "40-49",
@@ -7245,14 +7245,21 @@ class FunPackLTXAVSceneChainSampler:
 
     def _install_h3_attn_temperature(self, model, strength, block_spec):
         """EXPERIMENTAL, unvalidated (H3 only). A randomizer -- deliberately NOT wired to
-        REINS or any rating data. Flattens attention's own softmax at the named blocks
-        (`strength` > 0 raises the temperature; `1 + strength` is the multiplier) instead of
-        adding noise that isn't gated by the prompt at all (creativity mask, ancestral
-        noise): scaling Q before the dot product only changes how confidently the model
-        weighs the tokens it's already conditioned on, it can't attend to something that was
-        never in context, so variety stays bounded by whatever the prompt put there. Using
+        REINS or any rating data. Changes attention's own softmax at the named blocks
+        (`1 + strength` is the multiplier on temperature) instead of adding noise that
+        isn't gated by the prompt at all (creativity mask, ancestral noise): scaling Q
+        before the dot product only changes how confidently the model weighs the tokens
+        it's already conditioned on, it can't attend to something that was never in
+        context, so the effect stays bounded by whatever the prompt put there. Using
         the same `optimized_attention_override` extension point as h3_av_decouple, chained
         through it (see that method) rather than claiming the slot -- both can run together.
+
+        `strength` > 0 raises the temperature (flattens the softmax -- less certain,
+        more exploratory, pulled away from the prompt's own weighting). `strength` < 0
+        lowers it below 1 (sharpens the softmax -- more certain, commits harder to
+        whatever the prompt already made confident, instead of being pulled away from
+        it). Same knob, both directions: inverting the sign inverts the effect, there is
+        no separate toggle for which direction this is.
 
         Not rating-driven on purpose: we don't yet know what values of THIS knob even do,
         and REINS is already its own hard-to-reason-about mechanism -- coupling one
@@ -7260,18 +7267,25 @@ class FunPackLTXAVSceneChainSampler:
         dial, same as h3_block_repeat.
 
         `strength` 0 or blank installs nothing. `block_spec` -- same syntax as
-        h3_block_repeat/h3_repr_steering_block -- which block(s) get flattened; empty spec
-        also installs nothing (a temperature with nowhere to apply is not a lesser version
-        of this, it's a no-op).
+        h3_block_repeat/h3_repr_steering_block -- which block(s) get the temperature
+        change; empty spec also installs nothing (a temperature with nowhere to apply is
+        not a lesser version of this, it's a no-op).
         """
         try:
             _strength = float(strength or 0.0)
         except (TypeError, ValueError):
             _strength = 0.0
-        _blocks = self._parse_block_spec(block_spec) if _strength > 0.0 else set()
+        # `!= 0.0` (not `> 0.0`) so a negative strength still installs -- but NaN != 0.0 is
+        # ALSO True, and the floor below does not catch it (max(1.0 + nan, 0.05) is nan, not
+        # 0.05), so it needs its own check here rather than relying on the floor.
+        _blocks = (self._parse_block_spec(block_spec)
+                   if _strength != 0.0 and _strength == _strength else set())
         if not _blocks:
             return model
-        _temperature = 1.0 + _strength
+        # min=-0.9 on the widget keeps this comfortably above 0 (a temperature at or
+        # below 0 would divide Q by zero or flip its sign, not sharpen it) -- the floor
+        # is defence in depth for any caller that bypasses the widget's own clamp.
+        _temperature = max(1.0 + _strength, 0.05)
         try:
             patched = model.clone()
             to = patched.model_options.get("transformer_options", {}).copy()
@@ -7318,8 +7332,9 @@ class FunPackLTXAVSceneChainSampler:
 
             to["optimized_attention_override"] = _tag_dit_hook(_override, _inner_attn_override)
             patched.model_options["transformer_options"] = to
-            print(f"[FunPackSceneChain] H3 attention temperature: {_temperature:g}x at "
-                  f"block(s) {sorted(_blocks)}.")
+            _direction = "sharper" if _strength < 0.0 else "flatter"
+            print(f"[FunPackSceneChain] H3 attention temperature: {_temperature:g}x "
+                  f"({_direction}) at block(s) {sorted(_blocks)}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 attention temperature", _e,
