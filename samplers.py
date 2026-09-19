@@ -6943,6 +6943,14 @@ class FunPackLTXAVSceneChainSampler:
                             bump = (direction.to(out.dtype).to(out.device)
                                     * _strength * row_norm.to(out.dtype))
                             safe = torch.isfinite(row_norm) & (row_norm > 0)
+                            # Clone unconditionally (not gated behind the safe/unsafe check --
+                            # that would need the exact host sync this rewrite exists to avoid).
+                            # `out` is NOT provably this hook's own private tensor: a chained
+                            # span_loop passthrough (samplers.py's block-repeat span mode)
+                            # returns args["img"] verbatim with no copy, which can be the H3
+                            # model loop's own live `h` -- mutating it in place would corrupt
+                            # that loop's state for any block this hook shares with span_loop.
+                            out = out.clone()
                             out[mask] = torch.where(safe, rows + bump.to(rows.dtype), rows)
                     return {"img": out}
                 return _tag_dit_hook(_hook, inner)
