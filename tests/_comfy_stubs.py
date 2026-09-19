@@ -162,6 +162,11 @@ def _install_comfy():
     )
     install_module("comfy.lora_convert", convert_lora=lambda lora: lora)
     install_module("comfy.sd")
+    # A plain namespace, like argparse's -- real ComfyUI only carries
+    # disable_comfy_compiler on builds new enough to have the model compiler at all,
+    # so it is deliberately absent here too (see samplers.py's
+    # _compiler_disabled_for_forward_patches, which handles that with hasattr).
+    install_module("comfy.cli_args", args=types.SimpleNamespace())
 
 
 def install_all():

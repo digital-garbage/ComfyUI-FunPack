@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import hashlib
 import math
@@ -7,6 +8,7 @@ import types
 
 import torch
 
+import comfy.cli_args
 import comfy.k_diffusion.sampling as k_diffusion_sampling
 import comfy.model_management
 import comfy.model_sampling
@@ -3788,6 +3790,46 @@ class FunPackLTXAVSceneChainSampler:
             f"ffmpeg with nothing to point at."
         )
 
+    @contextlib.contextmanager
+    def _compiler_disabled_for_forward_patches(self, active):
+        """Comfy's model compiler (aimdo malloc-graph + CUDA graphs) assumes every
+        block-scope forward allocates the same pattern call to call. H3 representation
+        steering while actually injecting (not passive-capture) and block repeat both
+        patch what a block's forward allocates, which crashes it with
+        "aimdo memory compile error" -- confirmed against a real rental log where the
+        identical workflow succeeds with REINS in passive-capture-only mode (no
+        injection branch entered) and fails the moment strength > 0 (injection
+        entered), same crash location and timing both times a hand-written "make every
+        block's allocation uniform" fix was tried first.
+
+        This is a known class of conflict, not specific to REINS: Comfy-Org's own
+        issue tracker has the same "graph breaks" explosion and crash from third-party
+        attention patches (Comfy-Org/ComfyUI#16144, #16342), and their documented fix
+        is the --disable-comfy-compiler launch flag. That flag is read live on every
+        malloc-graph scope (comfy/model_prefetch.py: malloc_graph_enabled), not cached
+        at startup, so toggling it for just this sample_custom call is enough --
+        no launch-command edit needed (useful on hosts with a templated/fixed launch),
+        and every other generation, including REINS passive-capture-only, keeps the
+        compiler's VRAM/speed benefit.
+        """
+        if not active:
+            yield
+            return
+        args = comfy.cli_args.args
+        had_attr = hasattr(args, "disable_comfy_compiler")
+        prior = getattr(args, "disable_comfy_compiler", None)
+        args.disable_comfy_compiler = True
+        try:
+            yield
+        finally:
+            if had_attr:
+                args.disable_comfy_compiler = prior
+            else:
+                try:
+                    del args.disable_comfy_compiler
+                except AttributeError:
+                    pass
+
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
@@ -3868,12 +3910,20 @@ class FunPackLTXAVSceneChainSampler:
         # Block repeat is innermost: it changes what the block DOES, so the probe outside it
         # reports the block's total contribution including the repeat.
         _repeat_blocks = self._parse_block_spec(h3_block_repeat)
+        _block_repeat_installed = False
         if _repeat_blocks:
             _install = (self._install_span_loop if h3_block_repeat_span_loop
                         else self._install_block_repeat)
+            _model_before_repeat = model
             model = _install(model, _repeat_blocks, h3_block_repeat_times,
                              video_only=h3_block_repeat_video_only,
                              last_steps=h3_block_repeat_last_steps)
+            # Both installers return the SAME model object, untouched, when they refuse
+            # (non-contiguous span, no block list on this model, times<1, an internal
+            # exception) -- identity tells install-succeeded from install-refused, which
+            # _repeat_blocks alone cannot: a non-empty spec can still end in "blocks run
+            # once as usual", and the block's forward is genuinely unpatched then.
+            _block_repeat_installed = model is not _model_before_repeat
         # Measurement next, steering last: whatever is installed later chains this probe
         # as its inner call, so the delta it records is the block's OWN, not one that already
         # contains another mechanism's injection.
@@ -3888,15 +3938,22 @@ class FunPackLTXAVSceneChainSampler:
             if _influence_on:
                 model = self._install_block_influence(model, _influence_capture)
         _repr_capture = [{}]
+        _repr_steering_installed = False
         if refinement_key and (h3_repr_steering or h3_repr_steering_passive_capture):
             # Passive capture forces strength to 0 rather than skipping the strength
             # argument -- _install_h3_repr_steering already captures every candidate block
             # unconditionally and only gates INJECTION on strength>0.0, so this reuses that
             # existing behavior exactly instead of adding a second capture-only code path.
+            _model_before_repr = model
             model = self._install_h3_repr_steering(
                 model, refinement_key,
                 h3_repr_steering_strength if h3_repr_steering else 0.0,
                 _repr_capture, steer_block=h3_repr_steering_block)
+            # Same reasoning as block repeat below: the installer hands the SAME model
+            # object back, untouched, if it refuses (an internal exception -- see its
+            # `except Exception` fallback) -- identity is what tells "installed" from
+            # "asked for, but nothing patched" when a non-empty request can still fail.
+            _repr_steering_installed = model is not _model_before_repr
         model = self._install_h3_av_decouple(model, h3_av_decouple)
         model = self._install_h3_attn_temperature(
             model, h3_explore_temperature, h3_explore_temperature_block)
@@ -3930,12 +3987,16 @@ class FunPackLTXAVSceneChainSampler:
                     model, refinement_key, h3_q_steer_strength, _q_steer_capture,
                     steer_block=h3_q_steer_block)
 
+        _repr_injecting = bool(_repr_steering_installed and h3_repr_steering
+                                and float(h3_repr_steering_strength or 0.0) > 0.0)
+        _compiler_conflict = _block_repeat_installed or _repr_injecting
         try:
-            sampled = comfy.sample.sample_custom(
-                model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
-                noise_mask=latent.get("noise_mask"), seed=int(seed),
-                callback=_progress_cb if pbar is not None else None,
-            )
+            with self._compiler_disabled_for_forward_patches(_compiler_conflict):
+                sampled = comfy.sample.sample_custom(
+                    model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
+                    noise_mask=latent.get("noise_mask"), seed=int(seed),
+                    callback=_progress_cb if pbar is not None else None,
+                )
             if _repr_capture[0]:
                 try:
                     from . import h3_repr_steering as _rs

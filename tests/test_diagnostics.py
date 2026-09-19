@@ -75,3 +75,46 @@ def test_a_broken_faulthandler_never_breaks_the_import():
     """This runs at import. A diagnostic that stops FunPack loading is worse than none."""
     note = dg.enable("1", fh=_FH(fail=True), sig=types.SimpleNamespace())
     assert "could not be enabled" in note
+
+
+def _install_fake_aimdo(monkeypatch, lib=None, set_log_debug=None):
+    """comfy_aimdo isn't installed in this test env -- fake just enough of it
+    (comfy_aimdo.control.lib / .set_log_debug) for enable_aimdo_debug_log to import it."""
+    control = types.SimpleNamespace(lib=lib, set_log_debug=set_log_debug or (lambda: None))
+    pkg = types.ModuleType("comfy_aimdo")
+    pkg.control = control
+    monkeypatch.setitem(sys.modules, "comfy_aimdo", pkg)
+    monkeypatch.setitem(sys.modules, "comfy_aimdo.control", control)
+    return control
+
+
+def test_aimdo_debug_log_does_nothing_unless_asked(monkeypatch):
+    _install_fake_aimdo(monkeypatch, lib=object())
+    assert dg.enable_aimdo_debug_log("") is None
+
+
+def test_aimdo_debug_log_raises_the_native_level_when_asked(monkeypatch):
+    calls = []
+    _install_fake_aimdo(monkeypatch, lib=object(), set_log_debug=lambda: calls.append(1))
+    note = dg.enable_aimdo_debug_log("1")
+    assert calls == [1]
+    assert "DEBUG" in note
+
+
+def test_aimdo_debug_log_says_so_when_aimdo_never_loaded(monkeypatch):
+    """lib is None when comfy_aimdo.control.init() found no compatible GPU/driver --
+    nothing to raise, and that should be a clear note, not a silent no-op or a crash."""
+    _install_fake_aimdo(monkeypatch, lib=None)
+    note = dg.enable_aimdo_debug_log("1")
+    assert "not loaded" in note
+
+
+def test_aimdo_debug_log_import_failure_never_breaks_the_import(monkeypatch):
+    """comfy_aimdo genuinely isn't installed on some machines (e.g. this dev box) --
+    that must produce a note, not an exception that stops FunPack from loading.
+    sys.modules[name] = None is the documented way to force ImportError for a name
+    regardless of what's actually installed (this venv genuinely has comfy_aimdo)."""
+    monkeypatch.delitem(sys.modules, "comfy_aimdo.control", raising=False)
+    monkeypatch.setitem(sys.modules, "comfy_aimdo", None)
+    note = dg.enable_aimdo_debug_log("1")
+    assert "could not raise" in note

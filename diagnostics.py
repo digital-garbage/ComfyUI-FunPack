@@ -60,3 +60,45 @@ def enable(value=None, fh=None, sig=None):
         except Exception:  # noqa: BLE001
             pass
     return note
+
+
+AIMDO_ENV_VAR = "FUNPACK_AIMDO_LOG"
+
+
+def enable_aimdo_debug_log(value=None):
+    """Raise comfy_aimdo's own native log level to DEBUG. Off by default: set
+    FUNPACK_AIMDO_LOG=1.
+
+    comfy_aimdo (the dynamic-VRAM block-weight-prefetch allocator ComfyUI core loads,
+    see comfy/model_prefetch.py) is a compiled native library. ComfyUI core sets ITS
+    log level once at startup from ComfyUI's own --verbose flag -- a custom node loads
+    after that and can only raise it further, never lower it, and only when asked.
+    A native allocator failure (e.g. "aimdo memory compile error" from
+    comfy_aimdo/malloc_graph.py) otherwise raises with zero detail about which
+    allocation it choked on; aimdo's own DEBUG logging (routed through Python's
+    `logging` module via its native log callback) is the only way to see that detail.
+    Useful specifically when the launch command is templated/fixed (a hosted rental)
+    and can't have --verbose added to it -- this is an env var instead.
+
+    Also raises the root logger's OWN level to DEBUG: aimdo's callback calls
+    `logging.log(...)`, which Python silently drops below the logger's configured
+    level regardless of how verbose aimdo itself is set to be.
+
+    Never raises: same reasoning as faulthandler above -- a diagnostic that breaks
+    FunPack loading is worse than no diagnostic.
+    """
+    if not wanted(os.environ.get(AIMDO_ENV_VAR) if value is None else value):
+        return None
+    try:
+        import logging
+        logging.getLogger().setLevel(logging.DEBUG)
+        import comfy_aimdo.control as _control
+    except Exception as e:  # noqa: BLE001
+        return f"could not raise aimdo's log level: {e}"
+    if _control.lib is None:
+        return "aimdo is not loaded on this machine (no compatible GPU/driver) -- nothing to raise"
+    try:
+        _control.set_log_debug()
+    except Exception as e:  # noqa: BLE001
+        return f"could not raise aimdo's log level: {e}"
+    return "aimdo native logging set to DEBUG (FUNPACK_AIMDO_LOG=1) -- expect a lot more console output"

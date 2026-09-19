@@ -13,6 +13,13 @@ if __package__:
     except Exception as _e:  # noqa: BLE001
         print(f"[FunPack] could not enable faulthandler: {_e}")
     try:
+        from . import diagnostics as _fp_diagnostics
+        _fp_aimdo_note = _fp_diagnostics.enable_aimdo_debug_log()
+        if _fp_aimdo_note:
+            print(f"[FunPack] {_fp_aimdo_note}")
+    except Exception as _e:  # noqa: BLE001
+        print(f"[FunPack] could not raise aimdo log level: {_e}")
+    try:
         from . import host_memory as _fp_host_memory
         _fp_mem_note = _fp_host_memory.apply()
         if _fp_mem_note:
