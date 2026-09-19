@@ -76,7 +76,10 @@ FPS = 24
 FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
 
 
-_MARKUP = re.compile(_TIMED.pattern + "|" + _WEIGHTED.pattern)
+# [phrase:1.5] - a weight with no window, in brackets so a shortcut replacement's own
+# parentheses cannot break it (the reason timed phrases use brackets at all).
+_BRACKET_WEIGHTED = re.compile(r"(?<!\\)\[([^\[\]@]*?):\s*(-?\d+(?:\.\d+)?)\s*\]")
+_MARKUP = re.compile(_TIMED.pattern + "|" + _WEIGHTED.pattern + "|" + _BRACKET_WEIGHTED.pattern)
 
 
 def parse_markup(text: str):
@@ -98,9 +101,10 @@ def parse_markup(text: str):
             if t1 > t0 and phrase.strip():
                 timed.append((start, start + len(phrase),
                               float(m.group(2)) if m.group(2) else 1.0, t0, t1))
-        else:                                            # (phrase:w)
-            phrase = m.group(5)
-            weighted.append((start, start + len(phrase), float(m.group(6))))
+        else:                                            # (phrase:w) or [phrase:w]
+            phrase = m.group(5) if m.group(5) is not None else m.group(7)
+            weight = m.group(6) if m.group(6) is not None else m.group(8)
+            weighted.append((start, start + len(phrase), float(weight)))
         out.append(phrase)
         pos = m.end()
     out.append(text[pos:])

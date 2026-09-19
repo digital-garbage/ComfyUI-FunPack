@@ -452,8 +452,8 @@
       found.push({ phrase, t0, t1, w: m[2] ? parseFloat(m[2]) : 1, bad: !(t1 > t0) });
     }
     // (phrase:1.5) — a weight with no window. Mirrors h3_token_weights._WEIGHTED.
-    const weighted = [...txt.matchAll(/(?<!\\)\(([^():]*?):\s*(-?\d+(?:\.\d+)?)\s*\)/g)]
-      .map((m) => ({ phrase: m[1].trim(), w: parseFloat(m[2]) })).filter((f) => f.phrase);
+    const weighted = [...txt.matchAll(/(?<!\\)\(([^():]*?):\s*(-?\d+(?:\.\d+)?)\s*\)|(?<!\\)\[([^\[\]@]*?):\s*(-?\d+(?:\.\d+)?)\s*\]/g)]
+      .map((m) => ({ phrase: (m[1] ?? m[3]).trim(), w: parseFloat(m[2] ?? m[4]) })).filter((f) => f.phrase);
     const PC = window.PipelineCaps;
     const h3 = !!(PC && PC.isH3 && PC.isH3(S.get()));
     let msg = "";

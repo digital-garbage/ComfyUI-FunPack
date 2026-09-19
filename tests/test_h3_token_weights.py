@@ -942,3 +942,9 @@ def test_a_typed_weight_alone_is_enough(refiner, monkeypatch):
             "minimax_token_tags": [1] * 8}
     out = refiner._v2_apply_h3_timed_phrases([[torch.zeros(1, 8, 4), meta]], _H3Clip())
     assert out[0][1]["funpack_h3_token_weights"]["spans"] == [(0, 3, 1.5)]
+
+
+def test_a_bracketed_weight_without_a_window_is_a_plain_weight():
+    clean, weighted, timed = tw.parse_markup("a [cat (sitting):1.5] [runs@1-2]")
+    assert clean == "a cat (sitting) runs"
+    assert weighted == [(2, 15, 1.5)] and timed == [(16, 20, 1.0, 1.0, 2.0)]
