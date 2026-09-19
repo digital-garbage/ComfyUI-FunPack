@@ -6910,7 +6910,10 @@ class FunPackLTXAVSceneChainSampler:
             def _make_hook(block, direction):
                 inner = dit_patches.get(("double_block", block))
                 mask_cache = {}
-                zero_dir_cache = {}  # (dtype, device) -> zeros, built once per combo seen
+                dir_t_cache = {}  # (dtype, device) -> the cast direction (or zeros), built
+                # once per combo seen -- real direction and zero-direction blocks must both
+                # cache, or the real one keeps re-allocating a fresh cast every call. See
+                # inside _hook.
 
                 def _hook(args, extra):
                     out = extra["original_block"](args)["img"] if inner is None else \
@@ -6958,15 +6961,21 @@ class FunPackLTXAVSceneChainSampler:
                             # tradeoff, see the 2026-09-19 session.
                             rows = out[mask]
                             row_norm = rows.detach().float().norm(dim=-1).mean()
-                            if direction is not None:
-                                dir_t = direction.to(out.dtype).to(out.device)
-                            else:
-                                key = (out.dtype, out.device)
-                                dir_t = zero_dir_cache.get(key)
-                                if dir_t is None:
-                                    dir_t = torch.zeros(out.shape[-1], dtype=out.dtype,
-                                                        device=out.device)
-                                    zero_dir_cache[key] = dir_t
+                            # Cached by (dtype, device), same as the zero-direction case below
+                            # -- direction is a FIXED value for this block's whole install, so
+                            # re-running .to(out.dtype) every call (a real allocation: direction
+                            # is always float32 from capture(), H3 runs bf16/fp16) would put
+                            # this block back to allocating once more per call than the other
+                            # 49 from the second step onward, reopening the exact per-call
+                            # asymmetry this fix exists to close.
+                            key = (out.dtype, out.device)
+                            dir_t = dir_t_cache.get(key)
+                            if dir_t is None:
+                                dir_t = (direction.to(out.dtype).to(out.device)
+                                         if direction is not None
+                                         else torch.zeros(out.shape[-1], dtype=out.dtype,
+                                                          device=out.device))
+                                dir_t_cache[key] = dir_t
                             # GPU-only guard (no .item()/bool() host sync) -- a host sync here
                             # forces the CPU thread to wait mid-block-loop, perturbing the
                             # async weight-prefetch pipeline's stream-wait timing.
