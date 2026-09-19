@@ -84,7 +84,7 @@
       type: type || "Hybrid Euler 2S", sigmas: "",
       hybrid: defaultHybrid(), distilled: defaultDistilled(),
       ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: KSAMPLER_USER_SIGMAS,
-      ksampler_sharpness: 0.0, ksampler_sharpen_start_pct: 0.35,
+      ksampler_sharpness: 0.0, ksampler_latent_sharpness: 0.0, ksampler_sharpen_start_pct: 0.35,
     };
   }
 
@@ -378,7 +378,13 @@
       hint(container, "The same free unsharp mask FunPack's own samplers have, driven from "
                     + "outside this sampler's loop. Recovers the fine detail that goes missing "
                     + "at low resolution. 0 = off, 0.2-0.4 typical.");
-      if (+cfg.ksampler_sharpness > 0) {
+      row(container, "latent sharpness",
+        numCtrl(cfg.ksampler_latent_sharpness, 0, 2, 0.05, dk + "-kls",
+          (v) => { cfg.ksampler_latent_sharpness = v; saveNow(); }));
+      hint(container, "Sharpens the picture's edges in latent space on the late steps (unsharp "
+                    + "mask on each frame's H/W); the model sees it re-noised next step and can "
+                    + "agree or undo. Audio untouched. 0 = off, try 0.3-0.6. Experimental.");
+      if (+cfg.ksampler_sharpness > 0 || +cfg.ksampler_latent_sharpness > 0) {
         row(container, "sharpen last %",
           numCtrl(cfg.ksampler_sharpen_start_pct, 0, 1, 0.05, dk + "-kqsp",
             (v) => { cfg.ksampler_sharpen_start_pct = v; save(); }));

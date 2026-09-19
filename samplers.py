@@ -590,6 +590,36 @@ def _rescue_denoised(denoised, x, sigma, refinement_key, target, threshold, stre
         return denoised
 
 
+def _apply_spatial_sharpness(denoised, model, amount):
+    """Spatial unsharp on the x0 prediction's VIDEO stream: x + amount * (x - blur3x3(x)).
+
+    `quality_sharpness` sharpens along TIME (this step's guess against the last step's);
+    this one sharpens along H/W, the picture's actual edges. The model sees the sharpened
+    guess re-noised on the next step, so it can agree with or undo it - which is what keeps
+    it from reading as a post filter. Audio is untouched by construction: the packed latent
+    is sliced to the video span and only its H/W axes are filtered. No-op (unchanged
+    tensor) when the span cannot be verified.
+    """
+    if not amount or amount <= 0.0:
+        return denoised
+    span = _video_span(model, denoised)
+    if span is None or len(span[2]) != 5:
+        return denoised
+    off, size, shape = span
+    b, c, t, h, w = (int(v) for v in shape)
+    if h < 3 or w < 3:
+        return denoised
+    flat = denoised[..., off:off + size].reshape(b, c, t, h, w)
+    frames = flat.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+    blurred = torch.nn.functional.avg_pool2d(
+        torch.nn.functional.pad(frames.float(), (1, 1, 1, 1), mode="replicate"), 3, stride=1)
+    sharp = frames.float() + float(amount) * (frames.float() - blurred)
+    out = denoised.clone()
+    out[..., off:off + size] = (sharp.to(denoised.dtype).reshape(b, t, c, h, w)
+                                .permute(0, 2, 1, 3, 4).reshape(*denoised.shape[:-1], size))
+    return out
+
+
 def _apply_quality_sharpness(denoised, prev_denoised, sharpness):
     """E: temporal-average unsharp on the x0 prediction during the quality phase.
 
@@ -1234,11 +1264,12 @@ class _SharpenDenoiser:
     this composes with the ALG proxy in either order.
     """
 
-    _OWN = ("_inner", "_amount", "_thr", "_mask", "_prev", "_mask_done")
+    _OWN = ("_inner", "_amount", "_spatial", "_thr", "_mask", "_prev", "_mask_done")
 
-    def __init__(self, inner, amount, threshold, mask):
+    def __init__(self, inner, amount, threshold, mask, spatial=0.0):
         self._inner = inner
         self._amount = float(amount)
+        self._spatial = float(spatial or 0.0)
         self._thr = float(threshold)
         self._mask = mask
         self._prev = None
@@ -1276,9 +1307,12 @@ class _SharpenDenoiser:
                 self._prev = None
             return denoised
         try:
-            denoised = _video_only(
-                _apply_quality_sharpness(denoised, self._prev, self._amount),
-                denoised, self._mask)
+            if self._amount > 0.0:
+                denoised = _video_only(
+                    _apply_quality_sharpness(denoised, self._prev, self._amount),
+                    denoised, self._mask)
+            if self._spatial > 0.0:
+                denoised = _apply_spatial_sharpness(denoised, self._inner, self._spatial)
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackStudio", "quality sharpness", _e,
                         "this evaluation keeps the unsharpened prediction")
@@ -1295,14 +1329,16 @@ class _SharpenDenoiser:
         self._mask = None
 
 
-def _sharpen_wrap_sampler(sampler, sharpness, start_pct):
-    """A SAMPLER equivalent to `sampler` with quality sharpness applied around its model.
+def _sharpen_wrap_sampler(sampler, sharpness, start_pct, spatial=0.0):
+    """A SAMPLER equivalent to `sampler` with quality sharpness (temporal) and/or latent
+    sharpness (spatial) applied around its model, over the last `start_pct` of the schedule.
 
-    Returns `sampler` unchanged when sharpness is off, and None when the sampler exposes no
+    Returns `sampler` unchanged when both are off, and None when the sampler exposes no
     `sampler_function` to wrap.
     """
     sharpness = max(0.0, min(1.0, float(sharpness or 0.0)))
-    if sharpness <= 0.0:
+    spatial = max(0.0, min(2.0, float(spatial or 0.0)))
+    if sharpness <= 0.0 and spatial <= 0.0:
         return sampler
     fn = getattr(sampler, "sampler_function", None)
     if fn is None:
@@ -1322,12 +1358,15 @@ def _sharpen_wrap_sampler(sampler, sharpness, start_pct):
             return fn(model, x, sigmas, extra_args=extra_args, callback=callback,
                       disable=disable, **options)
         mask = _packed_video_mask(model, x)
-        print(f"[FunPack] quality sharpness {sharpness:.2f} on the last "
+        what = " + ".join(p for p in (
+            f"quality sharpness {sharpness:.2f}" if sharpness > 0 else "",
+            f"latent sharpness {spatial:.2f}" if spatial > 0 else "") if p)
+        print(f"[FunPack] {what} on the last "
               f"{start_pct * 100:.0f}% of the schedule (sigma <= {thr:.4f}) — driven from "
               f"outside {getattr(fn, '__name__', 'the sampler')}'s loop, off the sigma of "
               f"each model call"
               f"{'' if mask is not None else '; single-stream latent, no audio to protect'}")
-        proxy = _SharpenDenoiser(model, sharpness, thr, mask)
+        proxy = _SharpenDenoiser(model, sharpness, thr, mask, spatial=spatial)
         try:
             return fn(proxy, x, sigmas, extra_args=extra_args, callback=callback,
                       disable=disable, **options)

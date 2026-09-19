@@ -208,3 +208,40 @@ def test_studio_keeps_sampling_when_the_sampler_cannot_be_wrapped(monkeypatch, c
     )
     assert sampler == "SAMPLER::euler"
     assert "no sampler_function to wrap" in capsys.readouterr().out
+
+
+# --- latent (spatial) sharpness --------------------------------------------------------
+
+
+def _packed_model(video_shape, audio_shape):
+    """A denoiser carrying comfy's packed-latent stream shapes where _video_span looks."""
+    ls = types.SimpleNamespace(cond=[video_shape, audio_shape])
+    conds = {"positive": [{"model_conds": {"latent_shapes": ls}}]}
+    return types.SimpleNamespace(inner_model=types.SimpleNamespace(conds=conds))
+
+
+def test_latent_sharpness_is_an_unsharp_mask_on_video_frames_and_leaves_audio_alone():
+    torch.manual_seed(0)
+    vshape, ashape = (1, 2, 3, 4, 5), (1, 3, 2, 7)
+    video = torch.randn(vshape)
+    audio = torch.randn(ashape)
+    packed = torch.cat([video.reshape(1, 1, -1), audio.reshape(1, 1, -1)], dim=-1)
+    out = samplers._apply_spatial_sharpness(packed, _packed_model(vshape, ashape), 0.5)
+    n_v = video.numel()
+    assert torch.equal(out[..., n_v:], packed[..., n_v:])                  # audio bit-exact
+    frames = video.permute(0, 2, 1, 3, 4).reshape(-1, 2, 4, 5)
+    blurred = torch.nn.functional.avg_pool2d(
+        torch.nn.functional.pad(frames, (1, 1, 1, 1), mode="replicate"), 3, stride=1)
+    want = (frames + 0.5 * (frames - blurred)).reshape(1, 3, 2, 4, 5).permute(0, 2, 1, 3, 4)
+    assert torch.allclose(out[..., :n_v].reshape(vshape), want, atol=1e-6)
+
+
+def test_latent_sharpness_without_a_verifiable_span_changes_nothing():
+    x = torch.randn(1, 1, 30)
+    assert torch.equal(samplers._apply_spatial_sharpness(x, _Model([x]), 0.5), x)
+
+
+def test_latent_sharpness_alone_still_wraps_and_temporal_alone_still_works():
+    fn = lambda m, x, sig, **k: x  # noqa: E731
+    assert samplers._sharpen_wrap_sampler(_sampler(fn), 0.0, 0.5, spatial=0.4) is not _sampler(fn)
+    assert samplers._sharpen_wrap_sampler(_sampler(fn), 0.0, 0.5, spatial=0.0).sampler_function is fn
