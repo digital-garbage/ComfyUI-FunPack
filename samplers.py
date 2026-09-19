@@ -3807,10 +3807,16 @@ class FunPackLTXAVSceneChainSampler:
         attention patches (Comfy-Org/ComfyUI#16144, #16342), and their documented fix
         is the --disable-comfy-compiler launch flag. That flag is read live on every
         malloc-graph scope (comfy/model_prefetch.py: malloc_graph_enabled), not cached
-        at startup, so toggling it for just this sample_custom call is enough --
-        no launch-command edit needed (useful on hosts with a templated/fixed launch),
-        and every other generation, including REINS passive-capture-only, keeps the
-        compiler's VRAM/speed benefit.
+        at startup, so toggling it for just this sample_custom call is enough -- no
+        launch-command edit needed (useful on hosts with a templated/fixed launch).
+
+        Scoped to exactly this call, on purpose: confirmed on a real rental that the
+        ~20s a REINS-injecting/block-repeat generation now takes to start (running
+        without aimdo's dynamic-VRAM streaming for that one call) does NOT carry over
+        to the next generation once this call ends and the compiler is restored --
+        every OTHER generation this session, including REINS passive-capture-only and
+        every generation before REINS is used at all, keeps the compiler's normal
+        speed. Only the call that genuinely needs it disabled pays the cost.
         """
         if not active:
             yield
