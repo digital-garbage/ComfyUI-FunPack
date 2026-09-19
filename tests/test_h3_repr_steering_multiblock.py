@@ -121,6 +121,37 @@ def test_repeated_calls_reuse_the_cached_direction_tensor(monkeypatch):
         "the zero-direction fallback must be built once and cached, not once per call")
 
 
+def test_repeated_calls_reuse_the_cached_real_direction_tensor(monkeypatch):
+    """The zero-direction test above only exercises the torch.zeros() fallback branch --
+    round 1 of the 2026-09-19 fix found the REAL-direction branch (direction.to(out.dtype)
+    .to(out.device)) re-ran uncached on every call, which a torch.zeros count can't see at
+    all. In this test harness direction.to(float32) would silently no-op (same object, no
+    allocation) if direction were already float32 -- so direction is built as float64 on
+    purpose, guaranteeing every .to(out.dtype) call is a REAL, observable cast, not a
+    coincidental no-op."""
+    direction = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)
+    monkeypatch.setattr(rs, "direction", lambda _k, block=None: (direction, 5, 5))
+
+    calls = []
+    real_to = torch.Tensor.to
+
+    def counting_to(self, *a, **kw):
+        if self is direction:
+            calls.append(1)
+        return real_to(self, *a, **kw)
+
+    monkeypatch.setattr(torch.Tensor, "to", counting_to)
+    node = S()
+    patched = node._install_h3_repr_steering(
+        _FakeModel(), "key", strength=1.0, capture_holder=[{}], steer_block="5")
+    _run_block(patched, 5)
+    after_first_call = len(calls)
+    _run_block(patched, 5)
+    _run_block(patched, 5)
+    assert len(calls) == after_first_call, (
+        "the real-direction cast must be built once and cached, not once per call")
+
+
 def test_strength_zero_does_not_claim_to_be_applying(monkeypatch, capsys):
     """passive_capture (see _sample_chunk) calls this with strength forced to 0.0 while a
     real learned direction may already exist -- the console must not say "applying" when
