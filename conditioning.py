@@ -7845,19 +7845,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 slot["direction"] = tensor_to_serializable(unit.cpu())
                 slot["direction_magnitude"] = magnitude
                 slot["direction_count"] = 1
+                slot["direction_weight"] = 1.0
                 return
             prev = serializable_to_tensor(existing).float().to(unit.device)
             if list(prev.shape) != list(unit.shape):
                 slot["direction"] = tensor_to_serializable(unit.cpu())
                 slot["direction_magnitude"] = magnitude
                 slot["direction_count"] = 1
+                slot["direction_weight"] = 1.0
                 return
-            avg_dir = (prev * count + unit) / float(count + 1)
+            # Recency fade (same constant and reason as h3_repr_steering.RECENCY_DECAY): the
+            # history's vote is multiplied by V2_PATH_OUTCOME_DECAY before the new rating is
+            # added, so twenty early ratings of one style stop outvoting a new one until
+            # out-rated one-for-one. `direction_weight` is the faded vote (saturates at
+            # 1/(1-decay)); `direction_count` stays the integer the >= 3 gates read.
+            weight = float(slot.get("direction_weight", count)) * V2_PATH_OUTCOME_DECAY
+            avg_dir = (prev * weight + unit) / (weight + 1.0)
             avg_dir = avg_dir / avg_dir.norm().clamp_min(1e-8)
-            avg_mag = (float(slot.get("direction_magnitude", 0.0)) * count + magnitude) / float(count + 1)
+            avg_mag = (float(slot.get("direction_magnitude", 0.0)) * weight + magnitude) / (weight + 1.0)
             slot["direction"] = tensor_to_serializable(avg_dir.cpu())
             slot["direction_magnitude"] = float(avg_mag)
             slot["direction_count"] = count + 1
+            slot["direction_weight"] = weight + 1.0
         except Exception:
             pass
 
