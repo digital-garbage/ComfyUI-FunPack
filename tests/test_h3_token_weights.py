@@ -873,3 +873,47 @@ def test_a_phrase_may_contain_parentheses_colons_and_at_signs():
     clean, spans = tw.parse_timed("[camera: (slow) push-in, mail@x.com @1-2] [fast:0.5@2-3]")
     assert clean == "camera: (slow) push-in, mail@x.com fast"
     assert spans == [(0, 34, 1.0, 1.0, 2.0), (35, 39, 0.5, 2.0, 3.0)]
+
+
+# --- timed phrases reach the sampler on both encode paths ----------------------
+
+def _quiet(monkeypatch):
+    import conditioning
+    import minimax_h3
+    monkeypatch.setattr(minimax_h3, "is_h3_clip", lambda c: True)
+    monkeypatch.setattr(conditioning, "_log",
+                        types.SimpleNamespace(failed=lambda *a, **k: None,
+                                              note_on_change=lambda *a, **k: None,
+                                              feature=lambda *a, **k: None), raising=False)
+
+
+def test_studio_encoded_timed_phrases_become_token_windows(refiner, monkeypatch):
+    _quiet(monkeypatch)
+    clean, timed = tw.parse_timed("cat [runs@1-2]")
+    meta = {"funpack_h3_timed": timed, "funpack_h3_timed_text": clean,
+            "minimax_token_tags": [1] * 8}
+    out = refiner._v2_apply_h3_timed_phrases([[torch.zeros(1, 8, 4), meta]], _H3Clip())
+    tag = out[0][1]["funpack_h3_token_weights"]
+    assert tag["prompt_tokens"] == 8 and tag["base"] == 0
+    assert tag["timed"] == [(4, 8, 1.0, 1.0, 2.0)]
+
+
+def test_wired_conditioning_takes_its_windows_from_the_editor(refiner, monkeypatch):
+    """The editor stripped the syntax before the encoding node saw it and hands the windows
+    over as char spans on the text it gave that node."""
+    _quiet(monkeypatch)
+    link = {"prompt": "cat runs", "full_prompt": "cat runs", "timed": [[4, 8, 1.0, 1.0, 2.0]]}
+    # reference block (tag 0) in front, then the 8-token prompt
+    meta = {"funpack_conditioning_owner": "wired", "minimax_token_tags": [0, 0, 0] + [1] * 8}
+    out = refiner._v2_apply_h3_timed_phrases([[torch.zeros(1, 11, 4), meta]], _H3Clip(),
+                                             link_texts=link)
+    tag = out[0][1]["funpack_h3_token_weights"]
+    assert tag["base"] == 3 and tag["timed"] == [(4, 8, 1.0, 1.0, 2.0)]
+
+
+def test_a_wired_conditioning_without_editor_windows_is_left_alone(refiner, monkeypatch):
+    _quiet(monkeypatch)
+    meta = {"funpack_conditioning_owner": "wired", "minimax_token_tags": [1] * 8}
+    out = refiner._v2_apply_h3_timed_phrases([[torch.zeros(1, 8, 4), meta]], _H3Clip(),
+                                             link_texts={"prompt": "cat runs"})
+    assert "funpack_h3_token_weights" not in out[0][1]

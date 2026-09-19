@@ -11961,14 +11961,29 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         return out
 
-    def _v2_apply_h3_timed_phrases(self, conditioning_list, clip):
+    def _v2_apply_h3_timed_phrases(self, conditioning_list, clip, link_texts=None):
         """Locate each scene's timed phrases as token spans for the sampler's attention bias.
 
         `_v2_encode_prompt` stripped the `@t0-t1` syntax and recorded the char spans against
         the clean text it encoded; this maps them onto that text's tokens (offset mapping,
         no re-encode) and stores them next to the rating-learned spans in
         `funpack_h3_token_weights`. Always on: the user typed the window.
+
+        A WIRED conditioning was encoded by another node from the editor's expanded text
+        (`link_texts`): the editor stripped the syntax before that node saw it and hands the
+        windows over as `link_texts["timed"]`, char spans on `link_texts["prompt"]`. The
+        text that was actually encoded is verified against the tensor's own tag run
+        (`choose_encoded_text`), same as phrase emphasis, so the spans land on real tokens.
         """
+        link_timed = (link_texts or {}).get("timed") if isinstance(link_texts, dict) else None
+        if link_timed and isinstance(conditioning_list, list):
+            conditioning_list = [
+                ([e[0], dict(e[1], funpack_h3_timed=[tuple(t) for t in link_timed],
+                             funpack_h3_timed_link=True)]
+                 if isinstance(e, (list, tuple)) and len(e) >= 2 and isinstance(e[1], dict)
+                 and e[1].get("funpack_conditioning_owner") == "wired"
+                 and not e[1].get("funpack_h3_timed") else e)
+                for e in conditioning_list]
         try:
             try:
                 from . import minimax_h3 as _h3
@@ -11990,8 +12005,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 tokenizer = tokenizer or _tw.h3_tokenizer(clip)
                 if tokenizer is None:
                     return conditioning_list
-                text = str(meta.get("funpack_h3_timed_text") or "")
                 cond_len = int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0
+                if meta.pop("funpack_h3_timed_link", False):
+                    text, _n, verified = _tw.choose_encoded_text(
+                        tokenizer, [link_texts.get("full_prompt"), link_texts.get("prompt")],
+                        meta.get("minimax_token_tags"), cond_len)
+                    if text is None:
+                        _log.feature("FunPackStudio", "H3 timed phrases", False,
+                                     "the positive CONDITIONING is wired and neither editor "
+                                     "text tokenizes to the tensor's prompt run, so the "
+                                     "windows cannot be placed.")
+                        out.append(entry)
+                        continue
+                    if verified is not None:
+                        meta.setdefault("funpack_h3_token_weights", {})
+                        tw0 = dict(meta["funpack_h3_token_weights"])
+                        tw0.setdefault("base", int(verified))
+                        meta["funpack_h3_token_weights"] = tw0
+                else:
+                    text = str(meta.get("funpack_h3_timed_text") or "")
                 enc = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
                 offsets = list(enc["offset_mapping"])
                 spans = []
@@ -12269,7 +12301,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                               auto_strength=auto_strength,
                                               variables=variables,
                                               link_texts=link_texts)
-        out = self._v2_apply_h3_timed_phrases(out, clip)
+        out = self._v2_apply_h3_timed_phrases(out, clip, link_texts=link_texts)
         if mode in ("relative", "both"):
             out = _step("relative steering", out, lambda c: self._v2_apply_scene_refinement_keys(
                 c, scene_refinement_keys, refinement_key,

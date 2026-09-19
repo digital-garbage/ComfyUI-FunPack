@@ -100,11 +100,29 @@ def expand_prompt_for_node(text: str, variables=None) -> str:
     Peeks at the shortcut revolver rather than committing it: the run's own expansion inside
     Studio is what advances the no-repeat cycle, and doing it twice would skip a slot.
     """
+    return expand_prompt_with_windows(text, variables)[0]
+
+
+def expand_prompt_with_windows(text: str, variables=None):
+    """`expand_prompt_for_node`, also returning the timed-phrase windows it stripped.
+
+    `[walks left@2.0-3.5]` is an instruction for the sampler, not prompt text: a node that
+    encodes the string itself must never see the brackets, and Studio - which never sees the
+    encoded string - needs the windows handed to it separately, as char spans on the clean
+    text. -> (clean_expanded_text, [(start, end, weight, t0, t1), ...])
+    """
     expanded = expand_prompt_fragment(text)
-    if not expanded or not variables:
-        return expanded
-    resolve_variables = _funpack_attr("templates", "resolve_variables")
-    return resolve_variables(expanded, variables)[0]
+    if expanded and variables:
+        resolve_variables = _funpack_attr("templates", "resolve_variables")
+        expanded = resolve_variables(expanded, variables)[0]
+    if not expanded:
+        return expanded, []
+    try:
+        parse_timed = _funpack_attr("h3_token_weights", "parse_timed")
+        clean, timed = parse_timed(expanded)
+        return clean, [list(t) for t in timed]
+    except Exception:  # noqa: BLE001 - FunPack unreachable: the text goes out as typed
+        return expanded, []
 
 
 def parse_timeline_raw(prompt: str) -> dict:
