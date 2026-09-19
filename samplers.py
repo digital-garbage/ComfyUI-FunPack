@@ -6930,14 +6930,18 @@ class FunPackLTXAVSceneChainSampler:
                 base=int(base) if base is not None else None,
                 timed=timed, latent_t=latent_t, frame_rows=frame_rows)
             patched.model_options["transformer_options"] = to
-            strongest = max((w for _, _, w in spans), default=1.0)
             placed = "modality tags" if base is not None else "conditioning tail"
-            windows = (f", {len(timed)} timed window(s) over {latent_t} latent frames"
-                       if timed else "")
-            print(f"[FunPackStudio] H3 phrase emphasis: {len(spans)} token span(s) biased in "
-                  f"the packed attention stream (strongest x{strongest:.2f}, placed from the "
-                  f"{placed}){windows}. This is an attention mask, so SLA runs DENSE for "
-                  f"this generation.")
+            parts = []
+            if spans:
+                strongest = max(w for _, _, w in spans)
+                parts.append(f"{len(spans)} learned span(s) (strongest x{strongest:.2f})")
+            if timed:
+                boosted = max(w for _, _, w, _t0, _t1 in timed)
+                parts.append(f"{len(timed)} timed window(s) over {latent_t} latent frames"
+                             + (f" (strongest x{boosted:.2f} inside)" if boosted != 1.0 else ""))
+            print(f"[FunPackStudio] H3 phrase emphasis: {' + '.join(parts)}, placed from the "
+                  f"{placed}. This is an attention mask, so SLA runs DENSE for this "
+                  f"generation.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackStudio", "H3 phrase emphasis", _e,
