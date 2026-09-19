@@ -6915,22 +6915,27 @@ class FunPackLTXAVSceneChainSampler:
                     out = extra["original_block"](args)["img"] if inner is None else \
                         inner(args, extra)["img"]
                     seq_len = int(out.shape[0])
-                    mask = mask_cache.get(seq_len, "MISS")
-                    if mask == "MISS":
+                    cached = mask_cache.get(seq_len, "MISS")
+                    if cached == "MISS":
                         mask = _rs.video_mask_from_mod_segments(
                             args.get("mod_segments"), seq_len, out.device)
-                        mask_cache[seq_len] = mask
+                        # Real .any(), not "mask is not None implies non-empty" --
+                        # _mask_from_mod_segments' scalar branch sets found=True without
+                        # checking the segment has nonzero length, so that implication isn't
+                        # actually enforced. Decided ONCE per unique seq_len (same cost class
+                        # av_decouple already pays for its own has_v/has_a/has_other), not
+                        # per block/step -- see project_reward_model_rework memory.
+                        has_rows = bool(mask.any()) if mask is not None else False
+                        cached = (mask, has_rows)
+                        mask_cache[seq_len] = cached
+                    mask, has_rows = cached
                     if mask is not None:
                         # Captured BEFORE injection, deliberately -- a steered block is the
                         # only kind where capturing the post-injection state would make the
                         # logged descriptor depend on that run's own strength setting instead
                         # of reflecting the network's natural behavior. A block that never
                         # injects (direction is None here) is unaffected by this ordering.
-                        # has_rows=True: video_mask_from_mod_segments (above) only ever
-                        # returns non-None when it found at least one True row -- passing
-                        # that along skips capture()'s own .any() re-check, which would
-                        # otherwise be a second host sync on every block, every step.
-                        desc = _rs.capture(out, mask, has_rows=True)
+                        desc = _rs.capture(out, mask, has_rows=has_rows)
                         if desc is not None:
                             capture_holder[0][block] = desc
                         if direction is not None and _strength > 0.0:
@@ -7341,23 +7346,27 @@ class FunPackLTXAVSceneChainSampler:
                     return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
                                 **kwargs)
                 seq_len = q.shape[-2]
-                vmask = _mask_cache.get(seq_len, "MISS")
-                if vmask == "MISS":
+                cached = _mask_cache.get(seq_len, "MISS")
+                if cached == "MISS":
                     vmask = _rs.video_mask_from_mod_segments(
                         _seg_holder["mod_segments"], seq_len, q.device)
-                    _mask_cache[seq_len] = vmask
+                    # Real .any(), decided ONCE per unique seq_len, not per attention call --
+                    # "vmask is not None implies non-empty" is NOT actually enforced by
+                    # video_mask_from_mod_segments' scalar branch (a zero-length segment can
+                    # set found=True with nothing marked), so this can't be skipped. Same
+                    # cost class av_decouple already pays for has_v/has_a/has_other -- see
+                    # h3_repr_steering's mask_cache and project_reward_model_rework memory.
+                    has_rows = bool(vmask.any()) if vmask is not None else False
+                    cached = (vmask, has_rows)
+                    _mask_cache[seq_len] = cached
+                vmask, has_rows = cached
                 if vmask is None:
-                    # No .any() re-check: video_mask_from_mod_segments only ever returns
-                    # non-None when it found at least one True row -- re-verifying with
-                    # .any() would force a needless host sync on every steered block, every
-                    # attention call, every step (see h3_repr_steering.capture()'s has_rows
-                    # param and project_reward_model_rework memory).
                     return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
                                 **kwargs)
                 # (B=1, H, S, D) -> (S, H*D) for the masked rows, so h3_repr_steering.capture()
                 # sees the same shape it already expects from a hidden state.
                 q_flat = q[0].permute(1, 0, 2).reshape(seq_len, -1)
-                desc = _rs.capture(q_flat, vmask, has_rows=True)
+                desc = _rs.capture(q_flat, vmask, has_rows=has_rows)
                 if desc is not None:
                     # Captured BEFORE injection, same reasoning as h3_repr_steering: a steered
                     # block's descriptor must reflect the network's natural Q, not this run's
