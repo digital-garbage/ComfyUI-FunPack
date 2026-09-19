@@ -108,12 +108,14 @@ def test_shared_content_cancels_regardless_of_weight_magnitude():
     assert torch.allclose(direction, torch.tensor([1.0, 0.0]), atol=1e-3)
 
 
-def test_a_weak_positive_counts_the_same_as_a_strong_one():
+def test_a_weak_positive_counts_the_same_as_a_strong_one(monkeypatch):
     """Binary, not weighted: a barely-positive rating (0.2) and a strongly-positive one (1.0)
     both just mean "liked" and pull equally -- unlike the magnitude-weighted version this
     replaced, which would have let the strong one dominate. Two DIFFERENT positive signals
     (x from the strong rows, y from the weak ones) pooled into one "liked" mean split the
-    direction evenly between them instead of leaning toward the stronger one."""
+    direction evenly between them instead of leaning toward the stronger one.
+    Recency fade off: this checks magnitude, and the weak rows happen to be the newer ones."""
+    monkeypatch.setattr(rs, "RECENCY_DECAY", 1.0)
     for _ in range(rs.MIN_PER_GROUP):
         rs.save_pending("k", _pend(torch.tensor([0.0, 0.0])))
         rs.commit("k", -0.9)
@@ -283,3 +285,30 @@ def test_the_back_loaded_tail_is_resolved_one_block_at_a_time():
     so the tail is where a push has the most to act on -- it is covered individually rather
     than on the coarse grid the quiet early half used to use."""
     assert set(range(40, 50)) <= set(rs.CANDIDATE_BLOCKS)
+
+
+def test_newer_ratings_outvote_older_ones():
+    """Twenty early ratings of style X used to pin the direction until X had been out-rated
+    one-for-one. With the fade, a handful of recent Y ratings win."""
+    for _ in range(rs.MIN_PER_GROUP):
+        rs.save_pending("k", _pend(torch.tensor([0.0, -5.0])))
+        rs.commit("k", -1.0)
+    for _ in range(20):                                   # old liked style: +x
+        rs.save_pending("k", _pend(torch.tensor([5.0, 0.0])))
+        rs.commit("k", 1.0)
+    for _ in range(10):                                   # new liked style: +y (half-life ~7)
+        rs.save_pending("k", _pend(torch.tensor([0.0, 5.0])))
+        rs.commit("k", 1.0)
+    direction, n_pos, _ = rs.direction("k")
+    assert n_pos == 30
+    assert direction[1] > direction[0] > 0          # y leads, x still a background vote
+
+
+def test_the_fade_is_per_rating_not_per_group():
+    """A disliked rating in between ages the liked rows before it too."""
+    rs.save_pending("k", _pend(torch.tensor([1.0, 0.0]))); rs.commit("k", 1.0)
+    rs.save_pending("k", _pend(torch.tensor([0.0, 1.0]))); rs.commit("k", 1.0)
+    for _ in range(rs.MIN_PER_GROUP):
+        rs.save_pending("k", _pend(torch.tensor([-1.0, -1.0]))); rs.commit("k", -1.0)
+    direction, _, _ = rs.direction("k")
+    assert direction[1] > direction[0]               # the later liked row weighs more

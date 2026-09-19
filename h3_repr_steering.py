@@ -52,6 +52,12 @@ DEFAULT_BLOCK = 25
 # a time (whichever `steer_block` names).
 CANDIDATE_BLOCKS = list(range(50))
 
+# Each rating's vote shrinks by this factor for every rating that came after it (read-time,
+# nothing stored changes). Same constant as Studio's V2_PATH_OUTCOME_DECAY so the two forget
+# at the same speed: half the vote sits in the last ~7 ratings. Without it a plain mean let
+# twenty early ratings of one style outvote the new style until it had been out-rated
+# one-for-one (the "first videos stick" observation, 2026-09-07).
+RECENCY_DECAY = 0.9
 MIN_PER_GROUP = 2  # need 2+ POSITIVE-weight and 2+ NEGATIVE-weight rows. Was 3 (parity with
 # absolute/taste steering's floor, not derived from anything specific to this mechanism).
 # 1 would mean the "direction" is literally one liked descriptor minus one disliked one --
@@ -306,8 +312,9 @@ def direction(refinement_key, block=None, kind="repr_steer"):
     side is under MIN_PER_GROUP. One Awful and one Perfect is not a direction, it is two
     points -- doesn't matter how many barely-positive rows sit between them.
 
-    Plain mean(liked) - mean(disliked), liked/disliked by weight SIGN only -- not weighted by
-    magnitude. Weighting by magnitude (a 9/10 pulling harder than a 6/10) is the statistically
+    Recency-weighted mean(liked) - mean(disliked): row i of n carries RECENCY_DECAY**(n-1-i),
+    so the newest row votes 1.0 and older rows fade. Liked/disliked by weight SIGN only --
+    not weighted by magnitude. Weighting by magnitude (a 9/10 pulling harder than a 6/10) is the statistically
     better estimator, but only once there is enough data for a weakly-rated row's noise to
     average out; at the handful of ratings this actually runs on, a mediocre "6" still gets a
     vote and dilutes the direction with an ambiguous case instead of being excluded by it. A
@@ -325,12 +332,21 @@ def direction(refinement_key, block=None, kind="repr_steer"):
     rows = [r for r in data["rows"]
             if isinstance(r, dict) and "weight" in r and isinstance(r.get("desc"), dict)
             and block in r["desc"]]
-    liked = [r["desc"][block] for r in rows if r["weight"] > 0]
-    disliked = [r["desc"][block] for r in rows if r["weight"] < 0]
+    # Age counts every recorded rating, liked or not: the decay is "per rating since".
+    aged = [(r["desc"][block], r["weight"], RECENCY_DECAY ** (len(rows) - 1 - i))
+            for i, r in enumerate(rows)]
+    liked = [(d, a) for d, w, a in aged if w > 0]
+    disliked = [(d, a) for d, w, a in aged if w < 0]
     n_pos, n_neg = len(liked), len(disliked)
     if n_pos < MIN_PER_GROUP or n_neg < MIN_PER_GROUP:
         return None, n_pos, n_neg
-    diff = torch.stack(liked).mean(dim=0) - torch.stack(disliked).mean(dim=0)
+
+    def _wmean(group):
+        ds = torch.stack([d for d, _ in group]).float()
+        a = torch.tensor([a for _, a in group], dtype=ds.dtype, device=ds.device)
+        return (ds * a.view(-1, *([1] * (ds.dim() - 1)))).sum(dim=0) / a.sum()
+
+    diff = _wmean(liked) - _wmean(disliked)
     norm = diff.norm()
     if not torch.isfinite(norm) or norm <= 1e-8:
         return None, n_pos, n_neg
