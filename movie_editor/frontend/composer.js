@@ -451,16 +451,23 @@
       if (!phrase) continue;
       found.push({ phrase, t0, t1, w: m[2] ? parseFloat(m[2]) : 1, bad: !(t1 > t0) });
     }
+    // (phrase:1.5) — a weight with no window. Mirrors h3_token_weights._WEIGHTED.
+    const weighted = [...txt.matchAll(/(?<!\\)\(([^():]*?):\s*(-?\d+(?:\.\d+)?)\s*\)/g)]
+      .map((m) => ({ phrase: m[1].trim(), w: parseFloat(m[2]) })).filter((f) => f.phrase);
     const PC = window.PipelineCaps;
     const h3 = !!(PC && PC.isH3 && PC.isH3(S.get()));
     let msg = "";
     let warn = false;
-    if (found.length) {
+    if (found.length || weighted.length) {
       const bad = found.filter((f) => f.bad);
-      if (!h3) { msg = "⏱ Timed phrases are MiniMax H3 only — the words stay, the times are dropped."; warn = true; }
+      if (!h3) { msg = "⏱ Timed and weighted phrases are MiniMax H3 only — the words stay, the markup is dropped."; warn = true; }
       else if (bad.length) { msg = `⚠ "${bad[0].phrase}" ends before it starts (${bad[0].t0}-${bad[0].t1}s) — window ignored.`; warn = true; }
-      else msg = "⏱ " + found.map((f) => `${f.phrase} ${f.t0}-${f.t1}s${f.w !== 1 ? ` ×${f.w}` : ""}`).join(" · ")
-        + " — only shapes the picture inside its window; keep the subject outside the brackets.";
+      else {
+        const parts = found.map((f) => `${f.phrase} ${f.t0}-${f.t1}s${f.w !== 1 ? ` ×${f.w}` : ""}`)
+          .concat(weighted.map((f) => `${f.phrase} ×${f.w}`));
+        msg = "⏱ " + parts.join(" · ")
+          + (found.length ? " — a window only shapes the picture inside it; keep the subject outside the brackets." : "");
+      }
     }
     timedHintEl.textContent = msg;
     timedHintEl.classList.toggle("compose-var-warn", warn);

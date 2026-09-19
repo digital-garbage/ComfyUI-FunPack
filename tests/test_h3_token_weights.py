@@ -802,8 +802,15 @@ def test_variability_out_of_range_is_clamped_not_inverted(refiner, monkeypatch):
 
 def test_timed_syntax_is_stripped_and_windows_kept():
     clean, spans = tw.parse_timed("a man [walks left@1.0-2.5] then [waves:1.5 @ 3-4] (x:1.2)")
-    assert clean == "a man walks left then waves (x:1.2)"
+    assert clean == "a man walks left then waves x"
     assert spans == [(6, 16, 1.0, 1.0, 2.5), (22, 27, 1.5, 3.0, 4.0)]
+
+
+def test_both_markups_are_parsed_in_one_pass_on_one_clean_text():
+    clean, weighted, timed = tw.parse_markup("a (cat:1.5) [runs@1-2] (dog:0.5)")
+    assert clean == "a cat runs dog"
+    assert weighted == [(2, 5, 1.5), (11, 14, 0.5)]
+    assert timed == [(6, 10, 1.0, 1.0, 2.0)]
 
 
 def test_an_empty_window_is_dropped():
@@ -917,3 +924,21 @@ def test_a_wired_conditioning_without_editor_windows_is_left_alone(refiner, monk
     out = refiner._v2_apply_h3_timed_phrases([[torch.zeros(1, 8, 4), meta]], _H3Clip(),
                                              link_texts={"prompt": "cat runs"})
     assert "funpack_h3_token_weights" not in out[0][1]
+
+
+def test_typed_weights_reach_the_sampler_next_to_the_windows(refiner, monkeypatch):
+    _quiet(monkeypatch)
+    clean, weighted, timed = tw.parse_markup("(cat:2) [runs@1-2]")
+    meta = {"funpack_h3_timed": timed, "funpack_h3_weighted": weighted,
+            "funpack_h3_timed_text": clean, "minimax_token_tags": [1] * 8}
+    out = refiner._v2_apply_h3_timed_phrases([[torch.zeros(1, 8, 4), meta]], _H3Clip())
+    tag = out[0][1]["funpack_h3_token_weights"]
+    assert tag["spans"] == [(0, 3, 2.0)] and tag["timed"] == [(4, 8, 1.0, 1.0, 2.0)]
+
+
+def test_a_typed_weight_alone_is_enough(refiner, monkeypatch):
+    _quiet(monkeypatch)
+    meta = {"funpack_h3_weighted": [(0, 3, 1.5)], "funpack_h3_timed_text": "cat runs",
+            "minimax_token_tags": [1] * 8}
+    out = refiner._v2_apply_h3_timed_phrases([[torch.zeros(1, 8, 4), meta]], _H3Clip())
+    assert out[0][1]["funpack_h3_token_weights"]["spans"] == [(0, 3, 1.5)]

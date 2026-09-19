@@ -76,27 +76,42 @@ FPS = 24
 FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
 
 
-def parse_timed(text: str):
-    """Strip timed-phrase syntax. -> (clean_text, [(start_char, end_char, weight, t0, t1)]).
+_MARKUP = re.compile(_TIMED.pattern + "|" + _WEIGHTED.pattern)
 
-    The model must never see `[…@2.0-3.5]`: Qwen would read it as punctuation. Spans index
-    into `clean_text` (same contract as `parse`). A window with t1 <= t0 is dropped.
+
+def parse_markup(text: str):
+    """Strip BOTH prompt markups in one left-to-right pass.
+
+    -> (clean_text, weighted [(start, end, weight)], timed [(start, end, weight, t0, t1)]).
+    One pass, so both span lists index the same clean text; stripping them one after the
+    other would leave the first list's offsets pointing into a string that no longer exists.
     """
-    if not text or "@" not in text:
-        return text, []
-    out, spans, pos = [], [], 0
-    for m in _TIMED.finditer(text):
+    if not text or ("(" not in text and "[" not in text):
+        return text, [], []
+    out, weighted, timed, pos = [], [], [], 0
+    for m in _MARKUP.finditer(text):
         out.append(text[pos:m.start()])
-        phrase = m.group(1)
         start = sum(len(p) for p in out)
+        if m.group(1) is not None:                       # [phrase(:w)?@t0-t1]
+            phrase = m.group(1)
+            t0, t1 = float(m.group(3)), float(m.group(4))
+            if t1 > t0 and phrase.strip():
+                timed.append((start, start + len(phrase),
+                              float(m.group(2)) if m.group(2) else 1.0, t0, t1))
+        else:                                            # (phrase:w)
+            phrase = m.group(5)
+            weighted.append((start, start + len(phrase), float(m.group(6))))
         out.append(phrase)
-        t0, t1 = float(m.group(3)), float(m.group(4))
-        if t1 > t0 and phrase.strip():
-            spans.append((start, start + len(phrase),
-                          float(m.group(2)) if m.group(2) else 1.0, t0, t1))
         pos = m.end()
     out.append(text[pos:])
-    return "".join(out), spans
+    return "".join(out), weighted, timed
+
+
+def parse_timed(text: str):
+    """`parse_markup` for callers that only want the windows; the clean text has BOTH
+    markups removed (the model must never see either)."""
+    clean, _weighted, timed = parse_markup(text)
+    return clean, timed
 
 
 def video_row_window(latent_t: int, frame_rows: int, t0: float, t1: float):

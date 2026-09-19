@@ -4463,7 +4463,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             from . import h3_token_weights as _tw
         except ImportError:
             import h3_token_weights as _tw
-        prompt_text, timed_spans = _tw.parse_timed(prompt_text)
+        prompt_text, weighted_spans, timed_spans = _tw.parse_markup(prompt_text)
         try:
             if h3 and ref_items:
                 # ref2va takes over the presentation: a first-frame anchor and free-floating
@@ -4495,14 +4495,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 print("[FunPackStudio] Vision encoding returned invalid conditioning")
             return None, {"pooled_output": None}, "encode returned invalid conditioning"
         vision_tag = " +vision" if use_vision else ""
-        if timed_spans:
+        if timed_spans or weighted_spans:
             meta = dict(meta)
             meta["funpack_h3_timed"] = timed_spans
+            meta["funpack_h3_weighted"] = weighted_spans
             meta["funpack_h3_timed_text"] = prompt_text
             if not h3:
                 _log.note_on_change("studio:timed_phrases", "FunPackStudio",
-                                    f"{len(timed_spans)} timed phrase(s) stripped from the "
-                                    f"prompt: timing is MiniMax H3 only, the words stay.")
+                                    f"{len(timed_spans)} timed / {len(weighted_spans)} weighted "
+                                    f"phrase(s) stripped from the prompt: the markup is MiniMax "
+                                    f"H3 only, the words stay.")
         if resolved_refs:
             # The resolved order travels with the conditioning: the sampler must encode these
             # exact references, in this exact order, or "<Picture 2>" points at the wrong one.
@@ -11985,13 +11987,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         (`choose_encoded_text`), same as phrase emphasis, so the spans land on real tokens.
         """
         link_timed = (link_texts or {}).get("timed") if isinstance(link_texts, dict) else None
-        if link_timed and isinstance(conditioning_list, list):
+        link_weighted = (link_texts or {}).get("weighted") if isinstance(link_texts, dict) else None
+        if (link_timed or link_weighted) and isinstance(conditioning_list, list):
             conditioning_list = [
-                ([e[0], dict(e[1], funpack_h3_timed=[tuple(t) for t in link_timed],
+                ([e[0], dict(e[1], funpack_h3_timed=[tuple(t) for t in (link_timed or [])],
+                             funpack_h3_weighted=[tuple(t) for t in (link_weighted or [])],
                              funpack_h3_timed_link=True)]
                  if isinstance(e, (list, tuple)) and len(e) >= 2 and isinstance(e[1], dict)
                  and e[1].get("funpack_conditioning_owner") == "wired"
-                 and not e[1].get("funpack_h3_timed") else e)
+                 and not (e[1].get("funpack_h3_timed") or e[1].get("funpack_h3_weighted")) else e)
                 for e in conditioning_list]
         try:
             try:
@@ -12004,10 +12008,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 return conditioning_list
             tokenizer = None
             out = []
-            placed = 0
+            placed = typed_n = 0
             for entry in conditioning_list or []:
                 if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
-                        and isinstance(entry[1], dict) and entry[1].get("funpack_h3_timed")):
+                        and isinstance(entry[1], dict)
+                        and (entry[1].get("funpack_h3_timed") or entry[1].get("funpack_h3_weighted"))):
                     out.append(entry)
                     continue
                 cond, meta = entry[0], dict(entry[1])
@@ -12036,14 +12041,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 enc = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
                 offsets = list(enc["offset_mapping"])
                 spans = []
-                for a, b, w, t0, t1 in meta["funpack_h3_timed"]:
+                for a, b, w, t0, t1 in meta.get("funpack_h3_timed") or []:
                     toks = _tw.token_spans_from_offsets(offsets, [(a, b, w)])
                     if toks:
                         spans.append((toks[0][0], toks[0][1], float(w), float(t0), float(t1)))
+                # Typed `(phrase:w)` weights join the rating-learned spans: same bias, same
+                # cap. A typed weight is the user's call, so it is not scaled by evidence.
+                typed = _tw.token_spans_from_offsets(
+                    offsets, [(a, b, w) for a, b, w in meta.get("funpack_h3_weighted") or []])
                 prompt_tokens = len(offsets)
-                if spans and prompt_tokens and cond_len:
+                if (spans or typed) and prompt_tokens and cond_len:
                     tw = dict(meta.get("funpack_h3_token_weights") or {})
-                    tw.setdefault("spans", [])
+                    tw["spans"] = list(tw.get("spans") or []) + [tuple(t) for t in typed]
                     tw["prompt_tokens"] = prompt_tokens
                     if "base" not in tw:
                         _t, _n, verified = _tw.choose_encoded_text(
@@ -12052,12 +12061,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             meta.get("minimax_token_tags"), cond_len, prompt_tokens)
                         if base is not None:
                             tw["base"] = int(base)
-                    tw["timed"] = spans
+                    if spans:
+                        tw["timed"] = spans
                     meta["funpack_h3_token_weights"] = tw
                     placed += len(spans)
+                    typed_n += len(typed)
                 out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
-            if placed:
-                print(f"[FunPackStudio] H3 timed phrases: {placed} window(s) tagged for the sampler.")
+            if placed or typed_n:
+                print(f"[FunPackStudio] H3 prompt markup: {placed} timed window(s), "
+                      f"{typed_n} weighted phrase(s) tagged for the sampler.")
             return out
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackStudio", "H3 timed phrases", _e,

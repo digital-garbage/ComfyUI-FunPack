@@ -744,7 +744,7 @@ def _expanded_link_texts(target: Project, prompt: str) -> dict[str, str]:
     def ex(text):
         return bridge.expand_prompt_for_node(text, variables)
 
-    body, timed = bridge.expand_prompt_with_windows(prompt, variables)
+    body, timed, weighted = bridge.expand_prompt_with_windows(prompt, variables)
     postfix = ex(effective_postfix(target))
     return {
         "prompt": body,
@@ -755,6 +755,7 @@ def _expanded_link_texts(target: Project, prompt: str) -> dict[str, str]:
         # Timed phrases stripped from `prompt`, as char spans on it. `full_prompt` starts with
         # `prompt`, so the same spans hold there.
         "timed": timed,
+        "weighted": weighted,
     }
 
 

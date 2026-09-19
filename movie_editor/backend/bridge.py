@@ -109,20 +109,20 @@ def expand_prompt_with_windows(text: str, variables=None):
     `[walks left@2.0-3.5]` is an instruction for the sampler, not prompt text: a node that
     encodes the string itself must never see the brackets, and Studio - which never sees the
     encoded string - needs the windows handed to it separately, as char spans on the clean
-    text. -> (clean_expanded_text, [(start, end, weight, t0, t1), ...])
+    text. -> (clean_expanded_text, timed [(start, end, weight, t0, t1)], weighted [(start, end, weight)])
     """
     expanded = expand_prompt_fragment(text)
     if expanded and variables:
         resolve_variables = _funpack_attr("templates", "resolve_variables")
         expanded = resolve_variables(expanded, variables)[0]
     if not expanded:
-        return expanded, []
+        return expanded, [], []
     try:
-        parse_timed = _funpack_attr("h3_token_weights", "parse_timed")
-        clean, timed = parse_timed(expanded)
-        return clean, [list(t) for t in timed]
+        parse_markup = _funpack_attr("h3_token_weights", "parse_markup")
+        clean, weighted, timed = parse_markup(expanded)
+        return clean, [list(t) for t in timed], [list(t) for t in weighted]
     except Exception:  # noqa: BLE001 - FunPack unreachable: the text goes out as typed
-        return expanded, []
+        return expanded, [], []
 
 
 def parse_timeline_raw(prompt: str) -> dict:
