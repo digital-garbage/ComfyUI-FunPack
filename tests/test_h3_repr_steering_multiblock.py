@@ -88,6 +88,39 @@ def test_empty_steer_block_falls_back_to_default_block():
     assert ("double_block", rs.DEFAULT_BLOCK) in dit
 
 
+def test_repeated_calls_reuse_the_cached_direction_tensor(monkeypatch):
+    """Every candidate block now clones+injects unconditionally whenever strength>0 (a
+    zero direction stands in for blocks with no learned direction yet), so aimdo's
+    per-pass malloc graph sees the same allocation shape at every block -- see the
+    2026-09-19 session. That only holds if the (real-or-zero) direction tensor is built
+    ONCE per (dtype, device) and reused on every later call, not rebuilt every step --
+    rebuilding it every call would itself become a per-call allocation the steered
+    block pays and the others don't. torch.zeros is the observable allocation here
+    (unlike .to() on an already-matching tensor, which can be a silent no-op)."""
+    monkeypatch.setattr(rs, "direction", lambda _k, block=None: (None, 1, 0))
+    node = S()
+    patched = node._install_h3_repr_steering(
+        _FakeModel(), "key", strength=1.0, capture_holder=[{}], steer_block="5")
+
+    calls = []
+    real_zeros = torch.zeros
+
+    def counting_zeros(*a, **kw):
+        calls.append(1)
+        return real_zeros(*a, **kw)
+
+    monkeypatch.setattr(torch, "zeros", counting_zeros)
+    _run_block(patched, 5)
+    # video_mask_from_mod_segments also calls torch.zeros once, on its own first-call
+    # mask-cache miss -- unrelated to dir_t_cache, so only the count AFTER the first
+    # call (once both caches are warm) is the thing this test is actually checking.
+    after_first_call = len(calls)
+    _run_block(patched, 5)
+    _run_block(patched, 5)
+    assert len(calls) == after_first_call, (
+        "the zero-direction fallback must be built once and cached, not once per call")
+
+
 def test_strength_zero_does_not_claim_to_be_applying(monkeypatch, capsys):
     """passive_capture (see _sample_chunk) calls this with strength forced to 0.0 while a
     real learned direction may already exist -- the console must not say "applying" when
