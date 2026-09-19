@@ -6910,6 +6910,7 @@ class FunPackLTXAVSceneChainSampler:
             def _make_hook(block, direction):
                 inner = dit_patches.get(("double_block", block))
                 mask_cache = {}
+                zero_dir_cache = {}  # (dtype, device) -> zeros, built once per combo seen
 
                 def _hook(args, extra):
                     out = extra["original_block"](args)["img"] if inner is None else \
@@ -6938,22 +6939,39 @@ class FunPackLTXAVSceneChainSampler:
                         desc = _rs.capture(out, mask, has_rows=has_rows)
                         if desc is not None:
                             capture_holder[0][block] = desc
-                        if direction is not None and _strength > 0.0:
+                        if _strength > 0.0:
+                            # Runs on EVERY candidate block whenever REINS is steering
+                            # anywhere, not just the block(s) that actually have a learned
+                            # direction -- gating this on `direction is not None` made only
+                            # 1 of 50 blocks clone+index+inject per step while the other 49
+                            # did nothing, and comfy_aimdo's per-forward-pass malloc graph
+                            # (scope="block", comfy/model_prefetch.py) records ONE allocation
+                            # sequence across all 50 block-scope entries in a pass and breaks
+                            # ("aimdo memory compile error") the moment that sequence isn't
+                            # uniform block to block -- confirmed failing before step 1 even
+                            # starts, so it's a within-pass shape mismatch, not a cross-step
+                            # one. A block with no learned direction gets a zero vector
+                            # instead, so the math is a genuine no-op (bump=0) but the
+                            # allocation shape (index, clone, where) is identical every time.
+                            # Real cost: 50 full clones of the block's hidden state per step
+                            # instead of ~1, whenever REINS is active at all -- deliberate
+                            # tradeoff, see the 2026-09-19 session.
                             rows = out[mask]
                             row_norm = rows.detach().float().norm(dim=-1).mean()
-                            # GPU-only guard (no .item()/bool() host sync): a host sync here
-                            # forces the CPU thread to wait mid-block-loop, which throws off
-                            # the async weight-prefetch pipeline's own stream-wait timing
-                            # (comfy_aimdo/model_prefetch.py) enough to segfault on a
-                            # VRAM-constrained dynamic-offload run -- see project_reward_model
-                            # -rework memory. torch.where no-ops the update when row_norm is
-                            # 0/NaN/inf instead of skipping it, at the cost of the multiply
-                            # always running -- cheaper than a stall that can crash the run.
-                            bump = (direction.to(out.dtype).to(out.device)
-                                    * _strength * row_norm.to(out.dtype))
+                            if direction is not None:
+                                dir_t = direction.to(out.dtype).to(out.device)
+                            else:
+                                key = (out.dtype, out.device)
+                                dir_t = zero_dir_cache.get(key)
+                                if dir_t is None:
+                                    dir_t = torch.zeros(out.shape[-1], dtype=out.dtype,
+                                                        device=out.device)
+                                    zero_dir_cache[key] = dir_t
+                            # GPU-only guard (no .item()/bool() host sync) -- a host sync here
+                            # forces the CPU thread to wait mid-block-loop, perturbing the
+                            # async weight-prefetch pipeline's stream-wait timing.
+                            bump = dir_t * _strength * row_norm.to(out.dtype)
                             safe = torch.isfinite(row_norm) & (row_norm > 0)
-                            # Clone unconditionally (not gated behind the safe/unsafe check --
-                            # that would need the exact host sync this rewrite exists to avoid).
                             # `out` is NOT provably this hook's own private tensor: a chained
                             # span_loop passthrough (samplers.py's block-repeat span mode)
                             # returns args["img"] verbatim with no copy, which can be the H3
