@@ -120,7 +120,13 @@ def capture(hidden_state, video_mask):
     size needs adaptive_avg_pool1d for."""
     if video_mask is None or not bool(video_mask.any()):
         return None
-    return hidden_state[video_mask].detach().float().mean(dim=0)
+    # .cpu() immediately -- these accumulate across all 50 CANDIDATE_BLOCKS, every
+    # denoising step, and otherwise sit on the GPU for the rest of the run competing
+    # for VRAM headroom with the block-weight prefetch pipeline (comfy_aimdo). See
+    # project_reward_model_rework memory: that pressure was implicated in a silent
+    # segfault under dynamic VRAM offload. The descriptor only ever gets saved to
+    # disk (torch.save) or diffed against another CPU tensor -- never used on-GPU.
+    return hidden_state[video_mask].detach().float().mean(dim=0).cpu()
 
 
 # --- persistence -------------------------------------------------------------------------

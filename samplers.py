@@ -6932,10 +6932,18 @@ class FunPackLTXAVSceneChainSampler:
                         if direction is not None and _strength > 0.0:
                             rows = out[mask]
                             row_norm = rows.detach().float().norm(dim=-1).mean()
-                            if torch.isfinite(row_norm) and row_norm > 0:
-                                out = out.clone()
-                                out[mask] = rows + (direction.to(out.dtype).to(out.device)
-                                                    * _strength * row_norm).to(rows.dtype)
+                            # GPU-only guard (no .item()/bool() host sync): a host sync here
+                            # forces the CPU thread to wait mid-block-loop, which throws off
+                            # the async weight-prefetch pipeline's own stream-wait timing
+                            # (comfy_aimdo/model_prefetch.py) enough to segfault on a
+                            # VRAM-constrained dynamic-offload run -- see project_reward_model
+                            # -rework memory. torch.where no-ops the update when row_norm is
+                            # 0/NaN/inf instead of skipping it, at the cost of the multiply
+                            # always running -- cheaper than a stall that can crash the run.
+                            bump = (direction.to(out.dtype).to(out.device)
+                                    * _strength * row_norm.to(out.dtype))
+                            safe = torch.isfinite(row_norm) & (row_norm > 0)
+                            out[mask] = torch.where(safe, rows + bump.to(rows.dtype), rows)
                     return {"img": out}
                 return _tag_dit_hook(_hook, inner)
 
@@ -7062,10 +7070,20 @@ class FunPackLTXAVSceneChainSampler:
                 seq_len = q.shape[-2]
                 cached = _mask_cache.get(seq_len)
                 if cached is None:
-                    cached = (_rs.video_mask_from_mod_segments(seg, seq_len, q.device),
-                              _rs.audio_mask_from_mod_segments(seg, seq_len, q.device))
+                    _v = _rs.video_mask_from_mod_segments(seg, seq_len, q.device)
+                    _a = _rs.audio_mask_from_mod_segments(seg, seq_len, q.device)
+                    # .any() decided ONCE per unique seq_len (one host sync, typically
+                    # once for the whole generation) instead of on every attention call,
+                    # every block, every step -- see h3_repr_steering's capture() fix and
+                    # project_reward_model_rework memory for why a host sync in this loop
+                    # risks a silent segfault under comfy_aimdo's dynamic-VRAM prefetch.
+                    _other = ~(_v | _a) if (_v is not None and _a is not None) else None
+                    cached = (_v, _a, _other,
+                              bool(_v.any()) if _v is not None else False,
+                              bool(_a.any()) if _a is not None else False,
+                              bool(_other.any()) if _other is not None else False)
                     _mask_cache[seq_len] = cached
-                vmask, amask = cached
+                vmask, amask, other, has_v, has_a, has_other = cached
                 if vmask is None or amask is None or k.shape[-2] != seq_len:
                     # Captured mod_segments but couldn't turn it into rows to bias -- the
                     # penalty is silently NOT applying this generation. Loud once, not once
@@ -7079,7 +7097,6 @@ class FunPackLTXAVSceneChainSampler:
                               f"generation is running the ORDINARY joint attention. The "
                               f"penalty is not being applied; this is not saturation.")
                     return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape, **kwargs)
-                other = ~(vmask | amask)
                 # `strength` IS the raw softmax logit penalty, not a normalized 0-1 fraction --
                 # there's no local way to know H3's actual trained attention-logit scale (the
                 # checkpoint isn't on this machine, see the method docstring), so a 0-1 dial
@@ -7094,19 +7111,19 @@ class FunPackLTXAVSceneChainSampler:
                           f"seq_len={seq_len}. (Printed once per generation, not per block.)")
                 out = torch.empty(q.shape[0], seq_len, heads * q.shape[-1],
                                   dtype=q.dtype, device=q.device)
-                if amask.any():
+                if has_a:
                     bias = torch.zeros(seq_len, dtype=q.dtype, device=q.device)
                     bias[vmask] = bias_val
                     out[:, amask, :] = _next(func, q[:, :, amask, :], k, v, heads,
                                              mask=bias.view(1, 1, 1, seq_len),
                                              skip_reshape=skip_reshape, **kwargs)
-                if vmask.any():
+                if has_v:
                     bias = torch.zeros(seq_len, dtype=q.dtype, device=q.device)
                     bias[amask] = bias_val
                     out[:, vmask, :] = _next(func, q[:, :, vmask, :], k, v, heads,
                                              mask=bias.view(1, 1, 1, seq_len),
                                              skip_reshape=skip_reshape, **kwargs)
-                if other.any():
+                if has_other:
                     out[:, other, :] = _next(func, q[:, :, other, :], k, v, heads,
                                              mask=None, skip_reshape=skip_reshape, **kwargs)
                 return out
@@ -7359,10 +7376,14 @@ class FunPackLTXAVSceneChainSampler:
                                     **kwargs)
                     rows = q[:, :, vmask, :]
                     row_norm = rows.detach().float().norm(dim=-1).mean()
-                    if torch.isfinite(row_norm) and row_norm > 0:
-                        dir_per_head = direction.to(q.dtype).to(q.device).view(heads, 1, head_dim)
-                        q = q.clone()
-                        q[:, :, vmask, :] = rows + dir_per_head * _strength * row_norm
+                    # GPU-only guard (no .item()/bool() host sync) -- same fix as
+                    # h3_repr_steering's hook, see that one for why a host sync here can
+                    # segfault under comfy_aimdo's dynamic-VRAM block prefetch.
+                    dir_per_head = direction.to(q.dtype).to(q.device).view(heads, 1, head_dim)
+                    bump = dir_per_head * _strength * row_norm.to(q.dtype)
+                    safe = torch.isfinite(row_norm) & (row_norm > 0)
+                    q = q.clone()
+                    q[:, :, vmask, :] = torch.where(safe, rows + bump, rows)
                 return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
                             **kwargs)
 
