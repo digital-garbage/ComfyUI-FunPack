@@ -159,7 +159,12 @@
 
   function hold(reason) {
     holds.add(String(reason || "hold"));
-    if (installedIntent && installedZone) {
+    // A hold KEEPS the timeline open; it does not open it. The rating picker also opens
+    // from the action bar with the timeline shut, and popping the timeline up under a
+    // picker nobody opened it from is a surprise, not a hold. Pending counts as open: the
+    // pointer is in the zone and the beat is about to fire anyway.
+    if (installedIntent && installedZone
+        && (installedIntent.isOpen || installedIntent.isPending)) {
       installedIntent.now();
       installedZone.classList.add(OPEN_CLASS);
     }
@@ -254,8 +259,6 @@
       onClose: () => zone.classList.remove(OPEN_CLASS),
       held: isHeld,
     });
-    // A hold taken while the timeline is shut has to open it, not merely keep it open: the
-    // rating picker can be reached from the strip's own row.
     installedIntent = intent;
     installedZone = zone;
     const openIf = (e) => {

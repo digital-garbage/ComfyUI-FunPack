@@ -271,3 +271,35 @@ test("no timeline in the document blocks nothing", () => {
     assert.equal(P.isVisible({ getElementById: () => null }), true);
   });
 });
+
+// --- a hold does not OPEN a shut timeline -----------------------------------------
+
+function fakeZoneDoc() {
+  const classes = new Set();
+  const zone = {
+    classList: {
+      add: (c) => classes.add(c), remove: (c) => classes.delete(c),
+      contains: (c) => classes.has(c), toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)),
+    },
+    querySelector: () => null,
+    addEventListener() {}, removeEventListener() {},
+  };
+  const body = { parentNode: { insertBefore() {} } };
+  const doc = {
+    getElementById: (id) => (id === "timeline-zone" ? zone : id === "timeline-body" ? body : null),
+    createElement: () => ({}),
+    addEventListener() {}, removeEventListener() {},
+  };
+  return { doc, classes };
+}
+
+test("a hold taken while the timeline is shut leaves it shut", () => {
+  // The rating picker opens from the action bar too; a hold keeps, it does not open.
+  const { doc, classes } = fakeZoneDoc();
+  const off = P.install(doc);
+  try {
+    P.hold("rating-picker");
+    assert.equal(classes.has("peek-open"), false);
+    assert.equal(P.release("rating-picker"), 0);
+  } finally { off(); }
+});
