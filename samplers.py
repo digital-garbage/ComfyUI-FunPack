@@ -3908,7 +3908,7 @@ class FunPackLTXAVSceneChainSampler:
         # the toggles above which only work on Distilled Flow), so install/remove here rather
         # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
         _ba_handles = self._install_bounded_attention(model, latent, positive) if bounded_attention_enabled else []
-        model = self._install_h3_token_weights(model, positive)
+        model = self._install_h3_token_weights(model, positive, latent)
         # Per-modality AdaLN gain. Sampler-side and self-contained: it reads no refinement
         # key, no rating and no Studio state, so it works on a graph with the Refiner absent
         # entirely. 1.0 on all three does not even clone the model.
@@ -6872,7 +6872,7 @@ class FunPackLTXAVSceneChainSampler:
             print(f"[FunPackSceneChain] {note}")
         return patched
 
-    def _install_h3_token_weights(self, model, positive):
+    def _install_h3_token_weights(self, model, positive, latent=None):
         """Apply the rating-derived phrase emphasis Studio tagged onto the conditioning.
 
         Returns `model` untouched when there is no tag, which is every non-H3 run and every
@@ -6892,9 +6892,26 @@ class FunPackLTXAVSceneChainSampler:
             if not isinstance(meta, dict):
                 return model
             spans = meta.get("spans") or []
+            timed = meta.get("timed") or []
             prompt_tokens = int(meta.get("prompt_tokens") or 0)
-            if not spans or prompt_tokens <= 0:
+            if not (spans or timed) or prompt_tokens <= 0:
                 return model
+            latent_t = frame_rows = 0
+            if timed:
+                # Window rows are addressed from the target video's latent grid: T frames of
+                # (H/2)*(W/2) rows each (2x2 patch), always the last segment of the sequence.
+                try:
+                    video = self._latent_tensors(latent)[0]
+                    latent_t = int(video.shape[2])
+                    frame_rows = (int(video.shape[3]) // 2) * (int(video.shape[4]) // 2)
+                except Exception:  # noqa: BLE001
+                    latent_t = frame_rows = 0
+                if latent_t <= 0 or frame_rows <= 0:
+                    _log.failed("FunPackStudio", "H3 timed phrases", "no video latent grid",
+                                "the @t0-t1 windows are NOT being applied; the words still are")
+                    timed = []
+                    if not spans:
+                        return model
             cond = positive[0][0]
             cond_len = int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0
             if cond_len <= 0:
@@ -6910,14 +6927,17 @@ class FunPackLTXAVSceneChainSampler:
             base = meta.get("base")
             to["optimized_attention_override"] = _tw.make_override(
                 spans, prompt_tokens, cond_len, inner=inner,
-                base=int(base) if base is not None else None)
+                base=int(base) if base is not None else None,
+                timed=timed, latent_t=latent_t, frame_rows=frame_rows)
             patched.model_options["transformer_options"] = to
             strongest = max((w for _, _, w in spans), default=1.0)
             placed = "modality tags" if base is not None else "conditioning tail"
+            windows = (f", {len(timed)} timed window(s) over {latent_t} latent frames"
+                       if timed else "")
             print(f"[FunPackStudio] H3 phrase emphasis: {len(spans)} token span(s) biased in "
                   f"the packed attention stream (strongest x{strongest:.2f}, placed from the "
-                  f"{placed}). This is an attention mask, so SLA runs DENSE for this "
-                  f"generation.")
+                  f"{placed}){windows}. This is an attention mask, so SLA runs DENSE for "
+                  f"this generation.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackStudio", "H3 phrase emphasis", _e,

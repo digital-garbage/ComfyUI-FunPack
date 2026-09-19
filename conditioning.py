@@ -4456,6 +4456,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 self._v2_tally_encode(purpose, 0.0, cached=True)
                 return cached
         _encode_started = time.perf_counter()
+        # Timed phrases `(walks left@2.0-3.5)` are a sampler instruction, not prompt text.
+        # Stripped for EVERY encoder (Qwen or Gemma would read them as punctuation); only H3
+        # can act on them, and the sampler says so when it cannot.
+        try:
+            from . import h3_token_weights as _tw
+        except ImportError:
+            import h3_token_weights as _tw
+        prompt_text, timed_spans = _tw.parse_timed(prompt_text)
         try:
             if h3 and ref_items:
                 # ref2va takes over the presentation: a first-frame anchor and free-floating
@@ -4487,6 +4495,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 print("[FunPackStudio] Vision encoding returned invalid conditioning")
             return None, {"pooled_output": None}, "encode returned invalid conditioning"
         vision_tag = " +vision" if use_vision else ""
+        if timed_spans:
+            meta = dict(meta)
+            meta["funpack_h3_timed"] = timed_spans
+            meta["funpack_h3_timed_text"] = prompt_text
+            if not h3:
+                _log.note_on_change("studio:timed_phrases", "FunPackStudio",
+                                    f"{len(timed_spans)} timed phrase(s) stripped from the "
+                                    f"prompt: timing is MiniMax H3 only, the words stay.")
         if resolved_refs:
             # The resolved order travels with the conditioning: the sampler must encode these
             # exact references, in this exact order, or "<Picture 2>" points at the wrong one.
@@ -4700,7 +4716,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             scene_meta["funpack_scene_index"] = scene_index
             scene_meta["funpack_scene_count"] = scene_count
             scene_meta["funpack_scene_text"] = scene_text
-            scene_meta["funpack_encode_text"] = encode_text
+            scene_meta["funpack_encode_text"] = scene_meta.get("funpack_h3_timed_text", encode_text)
             scene_meta = self._v2_stash_reference_rows(cond, scene_meta)
             effect = scene_effects[scene_index] if scene_index < len(scene_effects) else None
             if effect and effect != "none":
@@ -11945,6 +11961,68 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         return out
 
+    def _v2_apply_h3_timed_phrases(self, conditioning_list, clip):
+        """Locate each scene's timed phrases as token spans for the sampler's attention bias.
+
+        `_v2_encode_prompt` stripped the `@t0-t1` syntax and recorded the char spans against
+        the clean text it encoded; this maps them onto that text's tokens (offset mapping,
+        no re-encode) and stores them next to the rating-learned spans in
+        `funpack_h3_token_weights`. Always on: the user typed the window.
+        """
+        try:
+            try:
+                from . import minimax_h3 as _h3
+                from . import h3_token_weights as _tw
+            except ImportError:
+                import minimax_h3 as _h3
+                import h3_token_weights as _tw
+            if clip is None or not _h3.is_h3_clip(clip):
+                return conditioning_list
+            tokenizer = None
+            out = []
+            placed = 0
+            for entry in conditioning_list or []:
+                if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
+                        and isinstance(entry[1], dict) and entry[1].get("funpack_h3_timed")):
+                    out.append(entry)
+                    continue
+                cond, meta = entry[0], dict(entry[1])
+                tokenizer = tokenizer or _tw.h3_tokenizer(clip)
+                if tokenizer is None:
+                    return conditioning_list
+                text = str(meta.get("funpack_h3_timed_text") or "")
+                cond_len = int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0
+                enc = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+                offsets = list(enc["offset_mapping"])
+                spans = []
+                for a, b, w, t0, t1 in meta["funpack_h3_timed"]:
+                    toks = _tw.token_spans_from_offsets(offsets, [(a, b, w)])
+                    if toks:
+                        spans.append((toks[0][0], toks[0][1], float(w), float(t0), float(t1)))
+                prompt_tokens = len(offsets)
+                if spans and prompt_tokens and cond_len:
+                    tw = dict(meta.get("funpack_h3_token_weights") or {})
+                    tw.setdefault("spans", [])
+                    tw["prompt_tokens"] = prompt_tokens
+                    if "base" not in tw:
+                        _t, _n, verified = _tw.choose_encoded_text(
+                            tokenizer, [text], meta.get("minimax_token_tags"), cond_len)
+                        base = verified if verified is not None else _tw.prompt_base(
+                            meta.get("minimax_token_tags"), cond_len, prompt_tokens)
+                        if base is not None:
+                            tw["base"] = int(base)
+                    tw["timed"] = spans
+                    meta["funpack_h3_token_weights"] = tw
+                    placed += len(spans)
+                out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+            if placed:
+                print(f"[FunPackStudio] H3 timed phrases: {placed} window(s) tagged for the sampler.")
+            return out
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackStudio", "H3 timed phrases", _e,
+                        "the @t0-t1 windows are NOT being applied; the words still are")
+            return conditioning_list
+
     def _v2_apply_h3_token_weights(self, conditioning_list, clip, phrase_memory=None,
                                    axis_feedback=None, fallback_text="", enabled=False,
                                    auto_strength=None, variability=0.0, variables=None,
@@ -12191,6 +12269,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                               auto_strength=auto_strength,
                                               variables=variables,
                                               link_texts=link_texts)
+        out = self._v2_apply_h3_timed_phrases(out, clip)
         if mode in ("relative", "both"):
             out = _step("relative steering", out, lambda c: self._v2_apply_scene_refinement_keys(
                 c, scene_refinement_keys, refinement_key,

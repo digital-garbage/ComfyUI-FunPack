@@ -66,6 +66,58 @@ def parse(text: str):
     return "".join(out), spans
 
 
+# (phrase@2.0-3.5) / (phrase:1.5@2.0-3.5): a TIMED phrase. Seconds from the scene start.
+_TIMED = re.compile(
+    r"(?<!\\)\(([^():@]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\)")
+# H3's latent time grid: latent frame k spans FRAME_PER_TOKEN[k % 5] pixel frames at 24 fps.
+FPS = 24
+FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
+
+
+def parse_timed(text: str):
+    """Strip timed-phrase syntax. -> (clean_text, [(start_char, end_char, weight, t0, t1)]).
+
+    The model must never see `@2.0-3.5`: Qwen would read it as punctuation. Spans index
+    into `clean_text` (same contract as `parse`). A window with t1 <= t0 is dropped.
+    """
+    if not text or "@" not in text:
+        return text, []
+    out, spans, pos = [], [], 0
+    for m in _TIMED.finditer(text):
+        out.append(text[pos:m.start()])
+        phrase = m.group(1)
+        start = sum(len(p) for p in out)
+        out.append(phrase)
+        t0, t1 = float(m.group(3)), float(m.group(4))
+        if t1 > t0 and phrase.strip():
+            spans.append((start, start + len(phrase),
+                          float(m.group(2)) if m.group(2) else 1.0, t0, t1))
+        pos = m.end()
+    out.append(text[pos:])
+    return "".join(out), spans
+
+
+def video_row_window(latent_t: int, frame_rows: int, t0: float, t1: float):
+    """Seconds -> [row_start, row_end) inside the target video segment, or None.
+
+    Latent frame k covers pixel frames [cum[k], cum[k+1]); a window covers every latent
+    frame it touches. Rows are frame-major, `frame_rows` per latent frame.
+    """
+    if latent_t <= 0 or frame_rows <= 0:
+        return None
+    cum = [0]
+    for k in range(latent_t):
+        cum.append(cum[-1] + FRAME_PER_TOKEN[k % 5])
+    f0, f1 = int(round(t0 * FPS)), int(round(t1 * FPS))
+    if f1 <= f0 or f0 >= cum[-1]:
+        return None
+    k0 = max(k for k in range(latent_t) if cum[k] <= f0)
+    k1 = min(latent_t, max(k for k in range(latent_t) if cum[k] < f1) + 1)
+    if k1 <= k0:
+        return None
+    return k0 * frame_rows, k1 * frame_rows
+
+
 def token_spans(tokenizer, clean_text: str, char_spans):
     """Map character spans to token index ranges. -> [(start_tok, end_tok, weight), ...].
 
@@ -136,23 +188,73 @@ def build_bias(spans, prompt_tokens: int, cond_len: int, seq_len: int, device, d
 
 
 def make_override(spans, prompt_tokens: int, cond_len: int, inner=None, on_apply=None,
-                  base: Optional[int] = None):
+                  base: Optional[int] = None, timed=None, latent_t: int = 0,
+                  frame_rows: int = 0):
     """An `optimized_attention_override` that adds the bias, then delegates.
 
     `inner` is the override this one displaces (SLA's, or the mask-safe one) so installing
     weighting never silently discards the backend the user chose. The bias is cached per
     (sequence length, device, dtype) — it is the same tensor on every call and every block.
+
+    `timed` = [(start_tok, end_tok, weight, t0, t1)] phrases that apply to a time window
+    of the target video only. A key bias is broadcast over every query, so a per-window
+    bias needs the queries split: softmax is per query row, so attending the video rows in
+    chunks (one per distinct window region) with a chunk-specific key bias is EXACT, and
+    costs only extra kernel launches. Inside its window a phrase gets `log(weight)`;
+    outside it the phrase is masked from the video rows (H3-World's single-egress rule:
+    an action span only influences its own interval). Text, cond/ref and audio rows keep
+    the untimed bias, so audio never sees a window.
     """
     cache: dict = {}
+    timed = list(timed or [])
+
+    def _plan(seq_len, device, dtype):
+        base_bias = build_bias(spans, prompt_tokens, cond_len, seq_len, device, dtype, base=base)
+        if not timed:
+            return base_bias
+        import torch
+        n_video = latent_t * frame_rows
+        video_start = seq_len - n_video
+        if n_video <= 0 or video_start < cond_len:
+            return base_bias
+        origin = cond_len - prompt_tokens if base is None else base
+        keyed = []
+        for start, end, weight, t0, t1 in timed:
+            lo, hi = origin + max(0, start), origin + min(prompt_tokens, end)
+            win = video_row_window(latent_t, frame_rows, t0, t1)
+            if hi <= lo or hi > cond_len or win is None:
+                continue
+            keyed.append((lo, hi, bias_value(weight), video_start + win[0], video_start + win[1]))
+        if not keyed:
+            return base_bias
+        edges = {0, video_start, seq_len}
+        for _lo, _hi, _b, r0, r1 in keyed:
+            edges.update((r0, r1))
+        edges = sorted(e for e in edges if 0 <= e <= seq_len)
+        chunks = []
+        for a, b in zip(edges, edges[1:]):
+            if b <= a:
+                continue
+            bias = (base_bias.clone() if base_bias is not None
+                    else torch.zeros(1, 1, 1, seq_len, device=device, dtype=dtype))
+            if a >= video_start:
+                for lo, hi, b_in, r0, r1 in keyed:
+                    if r0 <= a and b <= r1:
+                        bias[..., lo:hi] += b_in
+                    else:
+                        bias[..., lo:hi] = MASKED_BIAS
+            chunks.append((a, b, bias))
+        return chunks
 
     def override(func, q, k, v, heads, mask=None, attn_precision=None,
                  skip_reshape=False, skip_output_reshape=False, **kwargs):
-        def run(m):
+        def run(m, qq=None):
+            qq = q if qq is None else qq
             if inner is not None:
-                return inner(func, q, k, v, heads, mask=m, attn_precision=attn_precision,
+                return inner(func, qq, k, v, heads, mask=m, attn_precision=attn_precision,
                              skip_reshape=skip_reshape,
                              skip_output_reshape=skip_output_reshape, **kwargs)
-            return func(q, k, v, heads, mask=m, attn_precision=attn_precision,
+            return func(qq, k, v, heads, mask=m, attn_precision=attn_precision,
                         skip_reshape=skip_reshape,
                         skip_output_reshape=skip_output_reshape, **kwargs)
 
@@ -166,14 +268,21 @@ def make_override(spans, prompt_tokens: int, cond_len: int, inner=None, on_apply
                 return run(mask)
             key = (seq_len, k.device, k.dtype)
             if key not in cache:
-                cache[key] = build_bias(spans, prompt_tokens, cond_len, seq_len,
-                                        k.device, k.dtype, base=base)
+                cache[key] = _plan(seq_len, k.device, k.dtype)
                 if on_apply is not None and cache[key] is not None:
                     on_apply(seq_len)
-            bias = cache[key]
-            if bias is None:
+            plan = cache[key]
+            if plan is None:
                 return run(mask)
-            return run(bias if mask is None else mask + bias)
+            if not isinstance(plan, list):
+                return run(plan if mask is None else mask + plan)
+            import torch
+            outs = []
+            for a, b, bias in plan:
+                outs.append(run(bias if mask is None else mask + bias,
+                                q[:, :, a:b].contiguous()))
+            # [B, S, H*D] unless the caller kept heads split ([B, H, S, D]).
+            return torch.cat(outs, dim=2 if outs[0].ndim == 4 else 1)
         except Exception:  # noqa: BLE001 — weighting must never cost the step
             return run(mask)
 

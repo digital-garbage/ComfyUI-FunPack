@@ -796,3 +796,74 @@ def test_variability_out_of_range_is_clamped_not_inverted(refiner, monkeypatch):
     over = _apply(refiner, monkeypatch, meta, memory, variability=2.0)
     assert over is None  # 1.0 - 2.0 clamped to 0.0 by max(0.0, ...) -> same as variability=1.0
     assert full["spans"][0][2] > 1.0
+
+
+# --- timed phrases -----------------------------------------------------------------
+
+def test_timed_syntax_is_stripped_and_windows_kept():
+    clean, spans = tw.parse_timed("a man (walks left@1.0-2.5) then (waves:1.5 @ 3-4) (x:1.2)")
+    assert clean == "a man walks left then waves (x:1.2)"
+    assert spans == [(6, 16, 1.0, 1.0, 2.5), (22, 27, 1.5, 3.0, 4.0)]
+
+
+def test_an_empty_window_is_dropped():
+    assert tw.parse_timed("(walks@2-2)")[1] == []
+
+
+def test_a_window_maps_to_whole_latent_frames():
+    # latent_t=27 <-> 90 pixel frames: frame k spans FRAME_PER_TOKEN[k % 5] pixels.
+    # 1.0s = pixel 24 sits in latent frame 7 (pixels 22-25); 2.5s = pixel 60 ends frame 17.
+    assert tw.video_row_window(27, 4, 1.0, 2.5) == (7 * 4, 18 * 4)
+    assert tw.video_row_window(27, 4, 0.0, 99.0) == (0, 27 * 4)
+    assert tw.video_row_window(27, 4, 10.0, 11.0) is None
+
+
+def _softmax_attention(q, k, v, heads, mask=None, **kw):
+    s = q @ k.transpose(-1, -2)
+    if mask is not None:
+        s = s + mask
+    return s.softmax(-1) @ v
+
+
+def test_the_chunked_override_equals_a_full_per_query_bias():
+    """Splitting queries at window edges must be EXACT, and only video rows see windows."""
+    torch.manual_seed(0)
+    cond_len, prompt_tokens, latent_t, frame_rows = 9, 5, 4, 3
+    audio = 6
+    seq = cond_len + audio + latent_t * frame_rows
+    q, k, v = (torch.randn(1, 2, seq, 8) for _ in range(3))
+    # prompt tokens 0-2 = "walks", allowed only in latent frame 1 (pixels 1-4 -> 0.05-0.2s)
+    ov = tw.make_override([], prompt_tokens, cond_len, timed=[(0, 2, 1.0, 0.05, 0.2)],
+                          latent_t=latent_t, frame_rows=frame_rows)
+    out = ov(_softmax_attention, q, k, v, 2, skip_reshape=True, skip_output_reshape=True)
+
+    full = torch.zeros(1, 1, seq, seq)
+    video_start = cond_len + audio
+    lo, hi = cond_len - prompt_tokens, cond_len - prompt_tokens + 2
+    for r in range(video_start, seq):
+        frame = (r - video_start) // frame_rows
+        if frame != 1:
+            full[0, 0, r, lo:hi] = tw.MASKED_BIAS
+    want = _softmax_attention(q, k, v, 2, mask=full)
+    assert torch.allclose(out, want, atol=1e-6)
+
+
+def test_timed_and_untimed_spans_stack_and_a_window_weight_is_a_boost():
+    seen = []
+
+    def func(q, k, v, heads, mask=None, **kw):
+        seen.append((q.shape[2], mask.clone()))
+        return q
+
+    cond_len, prompt_tokens, latent_t, frame_rows = 9, 5, 2, 2
+    seq = cond_len + latent_t * frame_rows
+    ov = tw.make_override([(3, 5, 2.0)], prompt_tokens, cond_len,
+                          timed=[(0, 2, 1.5, 0.0, 0.03)], latent_t=latent_t, frame_rows=frame_rows)
+    ov(func, _q(seq), _q(seq), _q(seq), 2, skip_reshape=True)
+    # prefix chunk, frame 0 (inside), frame 1 (outside)
+    assert [n for n, _ in seen] == [cond_len, frame_rows, frame_rows]
+    prefix, inside, outside = (m for _, m in seen)
+    # prompt starts at row 4: untimed (3,5) -> rows 7-8, timed (0,2) -> rows 4-5
+    assert prefix[0, 0, 0, 7] == inside[0, 0, 0, 7] == pytest.approx(math.log(2.0))
+    assert inside[0, 0, 0, 4] == pytest.approx(math.log(1.5)) and prefix[0, 0, 0, 4] == 0
+    assert outside[0, 0, 0, 4] == tw.MASKED_BIAS

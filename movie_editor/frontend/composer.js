@@ -211,6 +211,8 @@
     wrap.append(ta);
     wrap.append(el("div", "insp-hint",
       "Edits apply automatically and stay in sync with the timeline's per-scene prompts. Shortcuts expand at generation time."));
+    timedHintEl = el("div", "insp-hint compose-var-hint");
+    wrap.append(timedHintEl);
     composeTextarea = ta;
     if (window.ShortcutAutocomplete) window.ShortcutAutocomplete.attach(ta);
     if (st.project && window.ShortcutSuggest) titleRow.append(window.ShortcutSuggest.bulb(ta));
@@ -254,6 +256,7 @@
   let composeTextarea = null;
   let varsOpen = false;          // Variables panel expanded?
   let varHintEl = null;          // undeclared / cycle hint line under the prompt
+  let timedHintEl = null;        // timed phrases `(walks left@2.0-3.5)` found in the prompt
 
   // ── templates bar (above the global prompt) ─────────────────────────────────────
   const TPL_NONE = "__none__";
@@ -435,8 +438,38 @@
     return cycles;
   }
 
+  // Timed phrases: `(phrase@t0-t1)` / `(phrase:w@t0-t1)`, seconds from the scene start. Mirrors
+  // h3_token_weights._TIMED — the phrase is only allowed to shape the video inside its window.
+  const TIMED_RE = /(?<!\\)\(([^():@]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\)/g;
+  function updateTimedHint() {
+    if (!timedHintEl) return;
+    const txt = composeTextarea ? composeTextarea.value : "";
+    const found = [];
+    for (const m of txt.matchAll(TIMED_RE)) {
+      const t0 = parseFloat(m[3]), t1 = parseFloat(m[4]);
+      const phrase = m[1].trim();
+      if (!phrase) continue;
+      found.push({ phrase, t0, t1, w: m[2] ? parseFloat(m[2]) : 1, bad: !(t1 > t0) });
+    }
+    const PC = window.PipelineCaps;
+    const h3 = !!(PC && PC.isH3 && PC.isH3(S.get()));
+    let msg = "";
+    let warn = false;
+    if (found.length) {
+      const bad = found.filter((f) => f.bad);
+      if (!h3) { msg = "⏱ Timed phrases are MiniMax H3 only — the words stay, the times are dropped."; warn = true; }
+      else if (bad.length) { msg = `⚠ "${bad[0].phrase}" ends before it starts (${bad[0].t0}-${bad[0].t1}s) — window ignored.`; warn = true; }
+      else msg = "⏱ " + found.map((f) => `${f.phrase} ${f.t0}-${f.t1}s${f.w !== 1 ? ` ×${f.w}` : ""}`).join(" · ")
+        + " — only shapes the picture inside its window; keep the subject outside the brackets.";
+    }
+    timedHintEl.textContent = msg;
+    timedHintEl.classList.toggle("compose-var-warn", warn);
+    timedHintEl.style.display = msg ? "" : "none";
+  }
+
   // Live hint under the prompt: cycle warning takes priority, else list $vars used but not declared.
   function updateVarHint() {
+    updateTimedHint();
     if (!varHintEl) return;
     const declared = new Set((S.projectVariables() || [])
       .map((v) => String((v && v.name) || "").replace(/^\$+/, "").trim()).filter(Boolean));
