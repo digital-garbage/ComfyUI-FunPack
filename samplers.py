@@ -6926,7 +6926,11 @@ class FunPackLTXAVSceneChainSampler:
                         # logged descriptor depend on that run's own strength setting instead
                         # of reflecting the network's natural behavior. A block that never
                         # injects (direction is None here) is unaffected by this ordering.
-                        desc = _rs.capture(out, mask)
+                        # has_rows=True: video_mask_from_mod_segments (above) only ever
+                        # returns non-None when it found at least one True row -- passing
+                        # that along skips capture()'s own .any() re-check, which would
+                        # otherwise be a second host sync on every block, every step.
+                        desc = _rs.capture(out, mask, has_rows=True)
                         if desc is not None:
                             capture_holder[0][block] = desc
                         if direction is not None and _strength > 0.0:
@@ -7342,13 +7346,18 @@ class FunPackLTXAVSceneChainSampler:
                     vmask = _rs.video_mask_from_mod_segments(
                         _seg_holder["mod_segments"], seq_len, q.device)
                     _mask_cache[seq_len] = vmask
-                if vmask is None or not bool(vmask.any()):
+                if vmask is None:
+                    # No .any() re-check: video_mask_from_mod_segments only ever returns
+                    # non-None when it found at least one True row -- re-verifying with
+                    # .any() would force a needless host sync on every steered block, every
+                    # attention call, every step (see h3_repr_steering.capture()'s has_rows
+                    # param and project_reward_model_rework memory).
                     return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
                                 **kwargs)
                 # (B=1, H, S, D) -> (S, H*D) for the masked rows, so h3_repr_steering.capture()
                 # sees the same shape it already expects from a hidden state.
                 q_flat = q[0].permute(1, 0, 2).reshape(seq_len, -1)
-                desc = _rs.capture(q_flat, vmask)
+                desc = _rs.capture(q_flat, vmask, has_rows=True)
                 if desc is not None:
                     # Captured BEFORE injection, same reasoning as h3_repr_steering: a steered
                     # block's descriptor must reflect the network's natural Q, not this run's

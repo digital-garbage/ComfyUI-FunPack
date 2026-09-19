@@ -112,21 +112,28 @@ def audio_mask_from_mod_segments(mod_segments, seq_len, device):
     return _mask_from_mod_segments(mod_segments, seq_len, device, 2)
 
 
-def capture(hidden_state, video_mask):
+def capture(hidden_state, video_mask, has_rows=None):
     """[seq_len, hidden] + a video-row mask -> a [hidden] descriptor, or None.
 
     Mean over rows, nothing more -- hidden_size is architecturally fixed (H3 is one width
     throughout), so there is no varying dimension to pool away the way a latent's spatial
-    size needs adaptive_avg_pool1d for."""
-    if video_mask is None or not bool(video_mask.any()):
+    size needs adaptive_avg_pool1d for.
+
+    `has_rows`: pass True/False when the caller already knows (from a mask it cached and
+    already ran .any() on ONCE per seq_len, e.g. h3_repr_steering's/h3_q_steering's own
+    hooks) whether `video_mask` has at least one True row -- this skips re-deriving it here
+    with a SECOND host sync (bool() of a CUDA tensor) on every one of the 50 candidate
+    blocks, every step, which is exactly the kind of stall this hot path needs to avoid (see
+    project_reward_model_rework memory: implicated in a silent segfault under comfy_aimdo's
+    dynamic-VRAM block prefetch). Leave it None (the default, used by direct/test callers
+    with no cache of their own) to get the fully self-contained, host-synced check."""
+    if video_mask is None:
         return None
-    # .cpu() immediately -- these accumulate across all 50 CANDIDATE_BLOCKS, every
-    # denoising step, and otherwise sit on the GPU for the rest of the run competing
-    # for VRAM headroom with the block-weight prefetch pipeline (comfy_aimdo). See
-    # project_reward_model_rework memory: that pressure was implicated in a silent
-    # segfault under dynamic VRAM offload. The descriptor only ever gets saved to
-    # disk (torch.save) or diffed against another CPU tensor -- never used on-GPU.
-    return hidden_state[video_mask].detach().float().mean(dim=0).cpu()
+    if has_rows is None:
+        has_rows = bool(video_mask.any())
+    if not has_rows:
+        return None
+    return hidden_state[video_mask].detach().float().mean(dim=0)
 
 
 # --- persistence -------------------------------------------------------------------------
