@@ -2337,6 +2337,36 @@ if web is not None and PromptServer is not None:
             "mean_novelty": prof["mean_novelty"],
         }
 
+    # ── Phrase probe (H3, measurement only) ──────────────────────────────────
+    def _phrase_probe_module():
+        try:
+            import phrase_probe as pp
+        except ImportError:
+            from .. import phrase_probe as pp  # type: ignore
+        return pp
+
+    def _phrase_probe_state():
+        pp = _phrase_probe_module()
+        latest = pp.load_latest()
+        return {"enabled": pp.collection_enabled(), "latest": latest,
+                "peaks": pp.peaks(latest, top=5) if latest else []}
+
+    @routes.get(UI_PREFIX + "/api/phrase_probe")
+    async def _phrase_probe_status(_req):
+        try:
+            return web.json_response(_phrase_probe_state())
+        except Exception as e:
+            return web.json_response({"enabled": False, "latest": None, "peaks": [], "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/phrase_probe")
+    async def _phrase_probe_toggle(req):
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        _phrase_probe_module().set_collection_enabled(bool(body.get("enabled")))
+        return web.json_response(_phrase_probe_state())
+
     @routes.get(UI_PREFIX + "/api/block_influence")
     async def _block_influence_status(req):
         key = str(req.rel_url.query.get("key") or "default").strip() or "default"

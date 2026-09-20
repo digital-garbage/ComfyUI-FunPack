@@ -223,6 +223,8 @@
 
     // Block-influence probe (Settings ▸ Learning) — per-KEY data, but the collection
     // switch itself is global, like the trajectory probe's.
+    phraseProbeStatus: () => j("GET", API("/phrase_probe")),
+    phraseProbeSetEnabled: (enabled) => j("POST", API("/phrase_probe"), { enabled: !!enabled }),
     blockInfluenceStatus: (key) => j("GET", API("/block_influence") + `?key=${encodeURIComponent(key || "default")}`),
     blockInfluenceSetEnabled: (key, enabled) => j("POST", API("/block_influence"), { key: key || "default", enabled: !!enabled }),
     blockInfluenceClear: (key) => j("POST", API("/block_influence/clear"), { key: key || "default" }),

@@ -3993,6 +3993,9 @@ class FunPackLTXAVSceneChainSampler:
                     model, refinement_key, h3_q_steer_strength, _q_steer_capture,
                     steer_block=h3_q_steer_block)
 
+        _phrase_probe = self._install_phrase_probe(model, positive, latent)
+        if _phrase_probe is not None:
+            model = _phrase_probe[0]
         _repr_injecting = bool(_repr_steering_installed and h3_repr_steering
                                 and float(h3_repr_steering_strength or 0.0) > 0.0)
         _compiler_conflict = _block_repeat_installed or _repr_injecting
@@ -4003,6 +4006,19 @@ class FunPackLTXAVSceneChainSampler:
                     noise_mask=latent.get("noise_mask"), seed=int(seed),
                     callback=_progress_cb if pbar is not None else None,
                 )
+            if _phrase_probe is not None:
+                self._report_phrase_probe(_phrase_probe[1])
+                # The masked probe passes ran through every capture hook too, so this
+                # run's REINS / query-steering / block-influence captures are polluted
+                # with phrase-masked forwards. Dropped rather than banked: a probe run is
+                # for looking, not for learning.
+                if _repr_capture[0] or _q_steer_capture[0] or _influence_capture[0]:
+                    print("[FunPackSceneChain] H3 phrase probe: REINS / query-steering / "
+                          "block-influence captures from this run are discarded (the masked "
+                          "passes went through them).")
+                _repr_capture[0] = {}
+                _q_steer_capture[0] = {}
+                _influence_capture[0] = {}
             if _repr_capture[0]:
                 try:
                     from . import h3_repr_steering as _rs
@@ -7957,6 +7973,92 @@ class FunPackLTXAVSceneChainSampler:
             _log.failed("FunPackSceneChain", "H3 block influence probe", _e,
                         "not measuring this run")
             return model
+
+    def _install_phrase_probe(self, model, positive, latent):
+        """MEASUREMENT ONLY (H3, opt-in from Settings). See phrase_probe.py.
+
+        For every bracketed phrase on this scene's conditioning: where the video tokens READ
+        it (attention share per block, free) and where masking it CHANGES the stream (one
+        extra forward per phrase per model call). Installed outermost -- the override must
+        see the same q/k the backend gets, and the model wrapper must own the whole call.
+        Returns (patched_model, state) or None when there is nothing to probe. Anonymous:
+        phrases are numbered in prompt order; no text is recorded anywhere.
+        """
+        try:
+            try:
+                from . import phrase_probe as _pp
+                from . import h3_repr_steering as _rs
+            except ImportError:
+                import phrase_probe as _pp
+                import h3_repr_steering as _rs
+            if not _pp.collection_enabled():
+                return None
+            meta = None
+            if isinstance(positive, list) and positive and isinstance(positive[0], (list, tuple)) \
+                    and len(positive[0]) >= 2 and isinstance(positive[0][1], dict):
+                meta = positive[0][1].get("funpack_h3_token_weights")
+            if not isinstance(meta, dict):
+                return None
+            cond = positive[0][0]
+            cond_len = int(cond.shape[1]) if hasattr(cond, "shape") and cond.dim() >= 2 else 0
+            prompt_tokens = int(meta.get("prompt_tokens") or 0)
+            if cond_len <= 0 or prompt_tokens <= 0:
+                return None
+            base = meta.get("base")
+            base = int(base) if base is not None else cond_len - prompt_tokens
+            spans = [(a, b) for a, b, *_rest in list(meta.get("spans") or []) + list(meta.get("timed") or [])]
+            phrases = sorted({(base + a, base + b) for a, b in spans if b > a and base + b <= cond_len})
+            if not phrases:
+                return None
+            video = self._latent_tensors(latent)[0]
+            n_video = int(video.shape[2]) * (int(video.shape[3]) // 2) * (int(video.shape[4]) // 2)
+            state = _pp.ProbeState(phrases, cond_len, n_video)
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            inner = to.get("optimized_attention_override")
+            to["optimized_attention_override"] = _tag_dit_hook(
+                _pp.make_attention_override(state, inner), inner)
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+            for b in range(50):
+                prev = dit_patches.get(("double_block", b))
+                dit_patches[("double_block", b)] = _tag_dit_hook(
+                    _pp.make_block_hook(state, b, prev, _rs.video_mask_from_mod_segments), prev)
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+            patched.model_options["transformer_options"] = to
+            old_wrapper = patched.model_options.get("model_function_wrapper")
+            patched.model_options["model_function_wrapper"] = _tag_scene_wrapper(
+                _pp.make_model_wrapper(state, old_wrapper), old_wrapper)
+            print(f"[FunPackSceneChain] H3 phrase probe: {len(phrases)} bracketed phrase(s) -- "
+                  f"reading map is free, response map costs {len(phrases)} extra forward(s) "
+                  f"per model call this run.")
+            return patched, state
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 phrase probe", _e, "not measuring this run")
+            return None
+
+    def _report_phrase_probe(self, state):
+        try:
+            try:
+                from . import phrase_probe as _pp
+            except ImportError:
+                import phrase_probe as _pp
+            res = _pp.result(state)
+            path = _pp.save(res)
+            for p in _pp.peaks(res, top=3):
+                rt = ", ".join(f"b{b} {v * 100:.1f}%" for b, v in p["read_top"])
+                gt = ", ".join(f"b{b} +{v:.3f}" for b, v in p["response_growth_top"])
+                fin = p["response_final"]
+                print(f"[FunPackSceneChain] H3 phrase probe: phrase {p['phrase']} "
+                      f"({p['tokens']} tokens) -- read most at {rt or 'n/a'}; response grows "
+                      f"most at {gt or 'n/a'}"
+                      f"{f'; final {fin:.3f}' if fin is not None else ''}")
+            if path:
+                print(f"[FunPackSceneChain] H3 phrase probe: full maps in Settings > "
+                      f"Refinement & Taste ({path}).")
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 phrase probe", _e, "the maps were not saved")
 
     def _install_bounded_attention(self, model, latent, positive):
         """EXPERIMENTAL (arXiv:2403.16990-inspired, see [[project_bounded_attention]]): mask the

@@ -2860,3 +2860,8 @@ body.tour-mode { overflow: hidden; }
 .sp-macro-val, .ov-range-val, .pin-slot-pos,
 .zone-head-right, .project-row .pj-meta,
 input[type=number] { font-variant-numeric: tabular-nums; }
+
+/* phrase probe skyline: one cell per block */
+.sw-bars { display: flex; align-items: flex-end; gap: 1px; height: 48px; padding: 4px 0; }
+.sw-bar { flex: 1 1 0; min-height: 1px; background: var(--accent); opacity: 0.7; }
+.sw-bar:hover { opacity: 1; }

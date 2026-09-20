@@ -626,6 +626,89 @@
     return tbl;
   }
 
+  // ── Phrase probe ───────────────────────────────────────────────────────
+  // For each bracketed phrase in the prompt: where the picture READS it (attention share
+  // per block) and where masking it CHANGES the picture (per block). Phrases are numbered
+  // in prompt order — no text is recorded anywhere.
+  let ppState = null, ppError = "";
+
+  function ppBar(values, fmt) {
+    // A 50-cell strip: one cell per block, height = value / max. Reads as a skyline.
+    const wrap = el("div", "sw-bars");
+    const vals = values.map((v) => (v == null ? 0 : v));
+    const max = Math.max(1e-9, ...vals);
+    vals.forEach((v, i) => {
+      const cell = el("div", "sw-bar");
+      cell.style.height = `${Math.round((v / max) * 100)}%`;
+      cell.title = `block ${i}: ${fmt(v)}`;
+      wrap.append(cell);
+    });
+    return wrap;
+  }
+
+  function phraseProbeRows() {
+    const box = el("div", "sw-stack");
+    const paint = () => {
+      clear(box);
+      const rows = el("div", "sw-rows");
+      const row = el("div", "sw-row");
+      const main = el("div", "sw-row-main");
+      main.append(el("div", "sw-row-title", "Probe bracketed phrases"));
+      main.append(el("div", "sw-row-hint",
+        "Off by default. On the next H3 generation, every [phrase:1] / [phrase@t0-t1] in the "
+        + "prompt is probed: where the picture reads it, and where hiding it changes the "
+        + "picture. Costs one extra model pass per phrase per step, so use it for a look, "
+        + "not for every run. That run's ratings are not learned from."));
+      row.append(main);
+      const lbl = el("label", "chk es-toggle");
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = !!(ppState && ppState.enabled);
+      cb.onchange = async () => {
+        ppError = "";
+        try { ppState = await window.MovieEditorAPI.phraseProbeSetEnabled(cb.checked); }
+        catch (e) { ppError = String(e.message || e); }
+        paint();
+      };
+      lbl.append(cb, el("span", null, ""));
+      row.append(lbl);
+      rows.append(row);
+      const latest = ppState && ppState.latest;
+      rows.append(infoRow("Last probe", latest ? `${latest.when} · ${latest.phrases.length} phrase(s) · ${latest.model_calls} model call(s)` : "none yet", latest ? true : null));
+      rows.append(actionRow("Refresh", "", "Refresh", async () => {
+        try { ppState = await window.MovieEditorAPI.phraseProbeStatus(); } catch (e) { ppError = String(e.message || e); }
+        paint();
+      }));
+      box.append(rows);
+      if (ppError) box.append(el("div", "sw-hint", ppError));
+      if (!latest) return;
+      const blocks = latest.blocks || [];
+      const byBlock = (arr) => { const out = new Array(50).fill(null); blocks.forEach((b, i) => { out[b] = arr[i]; }); return out; };
+      latest.phrases.forEach((p, i) => {
+        const pk = (ppState.peaks || [])[i] || {};
+        box.append(el("div", "sw-rows-label", `Phrase ${p.phrase} (${p.tokens} token${p.tokens === 1 ? "" : "s"})`));
+        const t = el("div", "sw-rows");
+        t.append(infoRow("Read — attention share per block (0-49)", "", null));
+        t.append(ppBar(byBlock(p.read), (v) => `${(v * 100).toFixed(2)}%`));
+        t.append(infoRow("Read most at", (pk.read_top || []).map(([b, v]) => `b${b} ${(v * 100).toFixed(1)}%`).join(" · ") || "—", null));
+        t.append(infoRow("Response — change when hidden, per block (cumulative)", "", null));
+        t.append(ppBar(byBlock(p.response), (v) => v.toFixed(3)));
+        t.append(infoRow("Response grows most at", (pk.response_growth_top || []).map(([b, v]) => `b${b} +${v.toFixed(3)}`).join(" · ") || "—", null));
+        if (pk.response_final != null) t.append(infoRow("Final response", pk.response_final.toFixed(3), null));
+        box.append(t);
+      });
+      box.append(el("div", "sw-hint",
+        "Read = the picture looks at the phrase there. Response = the picture actually changes "
+        + "there when the phrase is hidden (includes everything upstream, so watch where it "
+        + "GROWS). A phrase worth addressing shows both peaks in the same band."));
+    };
+    paint();
+    if (window.MovieEditorAPI) {
+      window.MovieEditorAPI.phraseProbeStatus().then((s) => { ppState = s; paint(); }).catch(() => {});
+    }
+    return box;
+  }
+
   function blockInfluenceRows(key) {
     const box = el("div", "sw-stack");
     const paint = () => {
@@ -969,6 +1052,9 @@
 
         wrap.append(el("div", "sw-rows-label", "Block influence (measurement only)"));
         wrap.append(blockInfluenceRows(st.project?.refinement_key || "default"));
+
+        wrap.append(el("div", "sw-rows-label", "Phrase probe (H3, measurement only)"));
+        wrap.append(phraseProbeRows());
 
         wrap.append(el("div", "sw-rows-label",
           "Detail check — did a change sharpen the picture, or just alter it?"));
