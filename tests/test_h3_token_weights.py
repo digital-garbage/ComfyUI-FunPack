@@ -1060,3 +1060,69 @@ def test_a_non_h3_clip_is_left_alone(refiner, monkeypatch):
     meta = {"funpack_h3_blended": [(0, 3, "x")], "funpack_h3_timed_text": "cat runs"}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
     assert out[0][0] is cond
+
+
+# --- adversarial-review fixes: a colon in the alt phrase, double-apply, partial failure ----
+
+def test_a_colon_in_the_alt_phrase_does_not_become_a_blend():
+    """[cat|dog:1.5] used to parse as a blend whose alt phrase was the literal string
+    "dog:1.5" -- colon and digit intact -- which then reached the real text encoder
+    unstripped on re-encode (there is no bracket left around it once substituted into the
+    sentence for a second parse_markup pass to catch). Excluding ':' and '@' from the alt
+    phrase's character class means this now falls through to the plain bracket-weight
+    syntax instead of silently leaking markup into the model."""
+    clean, weighted, timed, blended = tw.parse_markup("a [cat|dog:1.5] man")
+    assert blended == []
+    assert weighted == [(2, 9, 1.5)]
+    assert clean == "a cat|dog man"
+
+
+def test_applying_the_blend_twice_does_not_compound(refiner, monkeypatch):
+    """Every other H3 conditioning stage here only writes metadata, so re-running it is
+    harmless. This one mutates the tensor, so the tag must not survive being consumed --
+    otherwise a second pass would measure the ALREADY-shifted span as `mean_a` and shift it
+    again past the intended one-time strength."""
+    _quiet(monkeypatch)
+    text = "a cat sits on a mat"
+    cond = torch.zeros(1, len(text), 4)
+    cond[:, 6:10, :] = 1.0
+    meta = {"funpack_h3_blended": [(6, 10, "stands")], "funpack_h3_timed_text": text,
+            "minimax_token_tags": [1] * len(text)}
+    once = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
+    twice = refiner._v2_apply_h3_phrase_blend(once, _H3Clip())
+    assert torch.equal(once[0][0], twice[0][0])
+    assert "funpack_h3_blended" not in once[0][1]
+
+
+def test_applying_a_wired_blend_twice_with_the_same_link_texts_does_not_compound(refiner, monkeypatch):
+    """The Studio-tagged case above is protected by the pop alone, because nothing re-adds
+    `funpack_h3_blended` afterward. A WIRED entry is different: the top-of-function block
+    re-injects that tag on every call whenever it is absent -- which is exactly the state
+    the pop leaves an already-blended entry in -- so a second call with the SAME link_texts
+    would re-tag and re-blend it without a separate, never-popped 'already handled'
+    marker."""
+    _quiet(monkeypatch)
+    link = {"prompt": "cat runs", "full_prompt": "cat runs", "blended": [[4, 8, "stands"]]}
+    cond = torch.zeros(1, 11, 4)
+    cond[:, 7:11, :] = 1.0
+    meta = {"funpack_conditioning_owner": "wired", "minimax_token_tags": [0, 0, 0] + [1] * 8}
+    once = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip(), link_texts=link)
+    twice = refiner._v2_apply_h3_phrase_blend(once, _H3Clip(), link_texts=link)
+    assert torch.equal(once[0][0], twice[0][0])
+    assert torch.allclose(once[0][0][:, 7:11, :], torch.full((1, 4, 4), 3.0))
+
+
+def test_one_failed_span_is_reported_not_swallowed(refiner, monkeypatch, capsys):
+    """Two blend spans in one prompt, one of which cannot be located (its char span points
+    past the end of the tokenized text) -- the surviving span still applies, and the
+    console line says something did NOT land rather than only counting what did."""
+    _quiet(monkeypatch)
+    text = "a cat sits on a mat"
+    cond = torch.zeros(1, len(text), 4)
+    cond[:, 6:10, :] = 1.0
+    meta = {"funpack_h3_blended": [(6, 10, "stands"), (100, 104, "nowhere")],
+            "funpack_h3_timed_text": text, "minimax_token_tags": [1] * len(text)}
+    out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
+    assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 3.0))
+    printed = capsys.readouterr().out
+    assert "1 phrase(s)" in printed and "1 could not be placed" in printed

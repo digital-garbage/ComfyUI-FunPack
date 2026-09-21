@@ -12319,19 +12319,43 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                              funpack_h3_blend_link=True)]
                  if isinstance(e, (list, tuple)) and len(e) >= 2 and isinstance(e[1], dict)
                  and e[1].get("funpack_conditioning_owner") == "wired"
-                 and not e[1].get("funpack_h3_blended") else e)
+                 # Gated on BOTH: `funpack_h3_blended` alone is not enough, because the main
+                 # loop below POPS it once consumed -- an already-blended wired entry fed
+                 # back through this function (same link_texts) would look untagged again
+                 # and get re-tagged and re-blended, compounding past the intended one-time
+                 # shift. `funpack_h3_blend_applied` is a separate, never-popped marker set
+                 # on every entry this function has ever looked at, blended or not.
+                 and not (e[1].get("funpack_h3_blended") or e[1].get("funpack_h3_blend_applied"))
+                 else e)
                 for e in conditioning_list]
 
         import torch
         out = []
         blended_n = 0
+        skipped_n = 0
         for entry in conditioning_list or []:
             if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
                     and isinstance(entry[1], dict) and entry[1].get("funpack_h3_blended")):
                 out.append(entry)
                 continue
             cond, meta = entry[0], dict(entry[1])
-            spans = meta.get("funpack_h3_blended") or []
+            # Popped, not just read: this stage MUTATES the tensor in place (every other H3
+            # stage here only writes metadata for the sampler to read later, which is
+            # harmless to recompute). Leaving the tag behind would mean a second pass over
+            # the same entry re-measures `mean_a` from the ALREADY-shifted tensor and shifts
+            # it again, compounding past the intended one-time strength. The pop alone only
+            # protects a Studio-tagged entry, though -- a WIRED entry gets `funpack_h3_blended`
+            # re-injected by the top-of-function block above whenever the tag is absent, so
+            # this also sets a marker that block checks for and never pops, closing that path.
+            # Set unconditionally, including on a span that ends up unplaceable below: this is
+            # "attempted once, never retried" by design, not "succeeded once" -- a wired entry
+            # whose text momentarily failed to verify does not get a second chance on a later
+            # call even if `link_texts` would now resolve correctly. Deliberate tradeoff, not a
+            # gap: nothing in this graph re-invokes this function on the same entry after a
+            # `link_texts` correction (`_v2_finalize_conditioning` runs once per node execution
+            # and never mutates its input in place), so there is no live path that needs a retry.
+            meta["funpack_h3_blend_applied"] = True
+            spans = meta.pop("funpack_h3_blended", None) or []
             if not spans or not hasattr(cond, "shape") or cond.dim() < 2:
                 out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
                 continue
@@ -12369,15 +12393,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 for start, end, alt_phrase in spans:
                     toks = _tw.token_spans_from_offsets(offsets, [(start, end, 1.0)])
                     if not toks:
+                        skipped_n += 1
                         continue
                     a0, a1, _w = toks[0]
                     lo, hi = base + a0, base + a1
                     if hi <= lo or hi > cond_len:
+                        skipped_n += 1
                         continue
                     alt_text = text[:start] + alt_phrase + text[end:]
                     alt_encoded = clip.encode_from_tokens_scheduled(clip.tokenize(alt_text))
                     alt_cond, alt_meta = self._v2_extract_conditioning(alt_encoded)
                     if not isinstance(alt_cond, torch.Tensor) or alt_cond.dim() < 2:
+                        skipped_n += 1
                         continue
                     alt_cond_len = int(alt_cond.shape[1])
                     alt_enc = tokenizer(alt_text, add_special_tokens=False,
@@ -12387,14 +12414,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     alt_base = _tw.prompt_base(alt_meta.get("minimax_token_tags"),
                                                alt_cond_len, alt_prompt_tokens)
                     if alt_base is None:
+                        skipped_n += 1
                         continue
                     b_toks = _tw.token_spans_from_offsets(
                         alt_offsets, [(start, start + len(alt_phrase), 1.0)])
                     if not b_toks:
+                        skipped_n += 1
                         continue
                     b0, b1, _w2 = b_toks[0]
                     blo, bhi = alt_base + b0, alt_base + b1
                     if bhi <= blo or bhi > alt_cond_len:
+                        skipped_n += 1
                         continue
                     mean_a = new_cond[:, lo:hi, :].mean(dim=1, keepdim=True)
                     mean_b = alt_cond[:, blo:bhi, :].mean(dim=1, keepdim=True).to(
@@ -12409,9 +12439,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 _log.failed("FunPackStudio", "H3 phrase blend", _e,
                             "the [a|b] blend is NOT applied; phrase A stays as typed")
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
-        if blended_n:
+        if blended_n or skipped_n:
+            skip_note = f", {skipped_n} could not be placed" if skipped_n else ""
             print(f"[FunPackStudio] H3 phrase blend: {blended_n} phrase(s) pulled toward an "
-                  f"alternate (unvalidated — judge the result by eye).")
+                  f"alternate{skip_note} (unvalidated — judge the result by eye).")
         return out
 
     def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
