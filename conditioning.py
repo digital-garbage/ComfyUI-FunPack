@@ -12264,7 +12264,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return out
 
     def _v2_apply_h3_phrase_blend(self, conditioning_list, clip, link_texts=None):
-        """`[phraseA|phraseB]` — pull phraseA's rows toward phraseB's, in place.
+        """`[phraseA|phraseB(:strength)?]` — pull phraseA's rows toward phraseB's, in place.
+
+        `strength` defaults to `h3_token_weights.BLEND_STRENGTH_DEFAULT` (0.5) when omitted;
+        each span carries its own value (parsed per-blend, not a single run-wide setting),
+        since a half-strength pull still reads as mostly phraseA — the rest of the sentence
+        (style, postfix, grammar around the phrase) is 100% built around phraseA's words
+        regardless of how far the mean shift moves, so getting phraseB's influence to show
+        up at all in the video can need pushing well past 0.5.
 
         phraseA is what `_v2_encode_prompt` already put in the prompt (see
         `funpack_h3_blended` in `_v2_encode_prompt`); prefix, postfix and every other word
@@ -12390,7 +12397,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     continue
                 new_cond = cond.clone()
                 done = 0
-                for start, end, alt_phrase in spans:
+                for start, end, alt_phrase, strength in spans:
                     toks = _tw.token_spans_from_offsets(offsets, [(start, end, 1.0)])
                     if not toks:
                         skipped_n += 1
@@ -12430,7 +12437,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     mean_b = alt_cond[:, blo:bhi, :].mean(dim=1, keepdim=True).to(
                         dtype=new_cond.dtype, device=new_cond.device)
                     new_cond[:, lo:hi, :] = new_cond[:, lo:hi, :] \
-                        + _tw.BLEND_STRENGTH_DEFAULT * (mean_b - mean_a)
+                        + float(strength) * (mean_b - mean_a)
                     done += 1
                 if done:
                     cond = new_cond

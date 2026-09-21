@@ -827,16 +827,36 @@ def test_a_blended_phrase_is_parsed_and_phrase_a_stays_in_the_clean_text():
     assert clean == "a cat sits on a mat"
     assert weighted == []
     assert timed == []
-    assert blended == [(6, 10, "stands")]
+    assert blended == [(6, 10, "stands", tw.BLEND_STRENGTH_DEFAULT)]
 
 
 def test_a_blend_alongside_a_weight_and_a_window_in_one_pass():
     clean, weighted, timed, blended = tw.parse_markup(
         "a cat [sits|stands] then [runs@1-2] (fast:1.5)")
     assert clean == "a cat sits then runs fast"
-    assert blended == [(6, 10, "stands")]
+    assert blended == [(6, 10, "stands", tw.BLEND_STRENGTH_DEFAULT)]
     assert timed == [(16, 20, 1.0, 1.0, 2.0)]
     assert weighted == [(21, 25, 1.5)]
+
+
+def test_a_blend_strength_suffix_overrides_the_default():
+    clean, weighted, timed, blended = tw.parse_markup("a cat [sits|stands:0.8] man")
+    assert clean == "a cat sits man"
+    assert blended == [(6, 10, "stands", 0.8)]
+
+
+def test_a_leading_dot_strength_is_a_number_not_literal_text():
+    """`:.8`, `:5.` and a negative leading-dot -- the natural shorthand for typing a decimal
+    -- must parse as numbers here, same as everywhere else a weight/strength is written in
+    this file. `-?\\d+(?:\\.\\d+)?` alone silently rejects a bare leading dot, which falls
+    through to the alt phrase being read as literal text (":.8" stays in the sentence) with
+    no error and no log line -- exactly reproducing the "my strength override did nothing"
+    complaint this syntax exists to fix. Shared `_NUM` fixes this for every weight-style
+    markup in the file, not just blend."""
+    assert tw.parse_markup("a [cat|dog:.8] man")[3] == [(2, 5, "dog", 0.8)]
+    assert tw.parse_markup("a [cat|dog:5.] man")[3] == [(2, 5, "dog", 5.0)]
+    assert tw.parse_markup("a [cat|dog:-.5] man")[3] == [(2, 5, "dog", -0.5)]
+    assert tw.parse_markup("a (cat:.8) man")[1] == [(2, 5, 0.8)]
 
 
 def test_an_empty_alternate_phrase_is_not_a_blend():
@@ -990,13 +1010,27 @@ def test_the_blended_span_is_shifted_by_half_the_mean_difference(refiner, monkey
     text = "a cat sits on a mat"           # "sits" is chars [6:10]
     cond = torch.zeros(1, len(text), 4)
     cond[:, 6:10, :] = 1.0
-    meta = {"funpack_h3_blended": [(6, 10, "stands")], "funpack_h3_timed_text": text,
+    meta = {"funpack_h3_blended": [(6, 10, "stands", 0.5)], "funpack_h3_timed_text": text,
             "minimax_token_tags": [1] * len(text)}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
     result = out[0][0]
     assert torch.allclose(result[:, 6:10, :], torch.full((1, 4, 4), 3.0))
     assert torch.allclose(result[:, :6, :], torch.zeros(1, 6, 4))
     assert torch.allclose(result[:, 10:, :], torch.zeros(1, len(text) - 10, 4))
+
+
+def test_a_higher_blend_strength_shifts_further_toward_the_alternate(refiner, monkeypatch):
+    """Same setup as above, but strength 0.8 instead of the 0.5 default: span should land at
+    1.0 + 0.8*(5.0-1.0) = 4.2 — this is what the user asked for after reporting phraseA
+    dominating visually at the default strength."""
+    _quiet(monkeypatch)
+    text = "a cat sits on a mat"
+    cond = torch.zeros(1, len(text), 4)
+    cond[:, 6:10, :] = 1.0
+    meta = {"funpack_h3_blended": [(6, 10, "stands", 0.8)], "funpack_h3_timed_text": text,
+            "minimax_token_tags": [1] * len(text)}
+    out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
+    assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 4.2))
 
 
 def test_an_untagged_entry_is_left_completely_alone(refiner, monkeypatch):
@@ -1014,7 +1048,7 @@ def test_wired_conditioning_blends_from_the_editors_link_texts(refiner, monkeypa
     phrases. `choose_encoded_text` verifies "cat runs" against the tensor's own tag run
     (3 reference tokens + 8 text tokens) before trusting it."""
     _quiet(monkeypatch)
-    link = {"prompt": "cat runs", "full_prompt": "cat runs", "blended": [[4, 8, "stands"]]}
+    link = {"prompt": "cat runs", "full_prompt": "cat runs", "blended": [[4, 8, "stands", 0.5]]}
     cond = torch.zeros(1, 11, 4)
     cond[:, 7:11, :] = 1.0                      # "runs" sits after the 3-token ref block
     meta = {"funpack_conditioning_owner": "wired", "minimax_token_tags": [0, 0, 0] + [1] * 8}
@@ -1036,7 +1070,7 @@ def test_wired_conditioning_is_skipped_not_silently_dropped_when_nothing_matches
                                               feature=lambda *a, **k: logged.append(a)),
                         raising=False)
     link = {"prompt": "totally different text", "full_prompt": "totally different text",
-            "blended": [[4, 8, "stands"]]}
+            "blended": [[4, 8, "stands", 0.5]]}
     cond = torch.zeros(1, 11, 4)
     cond[:, 7:11, :] = 1.0
     meta = {"funpack_conditioning_owner": "wired", "minimax_token_tags": [0, 0, 0] + [1] * 8}
@@ -1057,25 +1091,25 @@ def test_a_non_h3_clip_is_left_alone(refiner, monkeypatch):
     import minimax_h3
     monkeypatch.setattr(minimax_h3, "is_h3_clip", lambda c: False)
     cond = torch.zeros(1, 8, 4)
-    meta = {"funpack_h3_blended": [(0, 3, "x")], "funpack_h3_timed_text": "cat runs"}
+    meta = {"funpack_h3_blended": [(0, 3, "x", 0.5)], "funpack_h3_timed_text": "cat runs"}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
     assert out[0][0] is cond
 
 
 # --- adversarial-review fixes: a colon in the alt phrase, double-apply, partial failure ----
 
-def test_an_alt_phrase_shaped_like_a_weight_is_accepted_as_literal_text():
-    """[cat|dog:1.5] is a blend whose alt phrase is the literal string "dog:1.5" -- colon
-    and digit intact. It is NOT stripped before its separate re-encode (there is no bracket
-    left around it once substituted into the sentence), so Qwen reads it as literal
-    punctuation in that phrase's own sentence -- a quality footnote, not a leak, and the
-    same trade-off `[cat (sitting):1.5]` already gets elsewhere in this file (kept as
-    literal pass-through text, not re-parsed). Blacklisting "looks like a weight" was tried
-    and abandoned: it also caught ordinary colons in prose with nothing to do with weights,
-    and a DIFFERENT shape (`dog:5@2`, an em-dash instead of a hyphen) always found a way
-    through anyway -- see git history on this test for the two reverted attempts."""
+def test_a_trailing_colon_number_on_the_alt_phrase_is_now_a_strength_override():
+    """[cat|dog:1.5] used to keep "dog:1.5" as literal alt-phrase text (colon and digit both
+    just part of the phrase, a deliberate accepted quality trade-off -- see
+    feedback_dont_blacklist_by_shape). Per-blend strength syntax repurposes exactly this
+    shape on purpose: a colon immediately followed by a number and the closing bracket is
+    now read as `strength`, not literal text, same as `(phrase:weight)` elsewhere in this
+    file. Only a colon in that exact tail position triggers it -- `dog:5@2` below is NOT a
+    valid number-then-bracket tail, so it stays literal, and an ordinary colon anywhere else
+    in either phrase (`test_an_ordinary_colon_in_either_phrase_is_a_perfectly_fine_blend`)
+    is untouched."""
     clean, weighted, timed, blended = tw.parse_markup("a [cat|dog:1.5] man")
-    assert blended == [(2, 5, "dog:1.5")]
+    assert blended == [(2, 5, "dog", 1.5)]
     assert clean == "a cat man"
 
 
@@ -1098,13 +1132,13 @@ def test_an_ordinary_colon_in_either_phrase_is_a_perfectly_fine_blend():
     the construct just never matched. A colon that isn't sitting at the very end next to a
     bare number is ordinary prompt text and must be allowed through untouched."""
     clean, weighted, timed, blended = tw.parse_markup("a [wide shot: walks|runs fast] man")
-    assert blended == [(2, 18, "runs fast")]
+    assert blended == [(2, 18, "runs fast", tw.BLEND_STRENGTH_DEFAULT)]
     assert clean == "a wide shot: walks man"
 
 
 def test_an_ordinary_at_sign_in_either_phrase_is_a_perfectly_fine_blend():
     clean, weighted, timed, blended = tw.parse_markup("a [call me@work|call me@home] man")
-    assert blended == [(2, 14, "call me@home")]
+    assert blended == [(2, 14, "call me@home", tw.BLEND_STRENGTH_DEFAULT)]
     assert clean == "a call me@work man"
 
 
@@ -1128,7 +1162,7 @@ def test_a_malformed_time_window_shaped_alt_phrase_is_still_a_blend(alt):
     test_an_alt_phrase_shaped_like_a_weight_is_accepted_as_literal_text for why blocking
     by shape was tried and abandoned rather than fixed further."""
     clean, weighted, timed, blended = tw.parse_markup(f"a [cat|{alt}] man")
-    assert blended == [(2, 5, alt)]
+    assert blended == [(2, 5, alt, tw.BLEND_STRENGTH_DEFAULT)]
     assert clean == "a cat man"
 
 
@@ -1141,7 +1175,7 @@ def test_applying_the_blend_twice_does_not_compound(refiner, monkeypatch):
     text = "a cat sits on a mat"
     cond = torch.zeros(1, len(text), 4)
     cond[:, 6:10, :] = 1.0
-    meta = {"funpack_h3_blended": [(6, 10, "stands")], "funpack_h3_timed_text": text,
+    meta = {"funpack_h3_blended": [(6, 10, "stands", 0.5)], "funpack_h3_timed_text": text,
             "minimax_token_tags": [1] * len(text)}
     once = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
     twice = refiner._v2_apply_h3_phrase_blend(once, _H3Clip())
@@ -1157,7 +1191,7 @@ def test_applying_a_wired_blend_twice_with_the_same_link_texts_does_not_compound
     would re-tag and re-blend it without a separate, never-popped 'already handled'
     marker."""
     _quiet(monkeypatch)
-    link = {"prompt": "cat runs", "full_prompt": "cat runs", "blended": [[4, 8, "stands"]]}
+    link = {"prompt": "cat runs", "full_prompt": "cat runs", "blended": [[4, 8, "stands", 0.5]]}
     cond = torch.zeros(1, 11, 4)
     cond[:, 7:11, :] = 1.0
     meta = {"funpack_conditioning_owner": "wired", "minimax_token_tags": [0, 0, 0] + [1] * 8}
@@ -1175,7 +1209,7 @@ def test_one_failed_span_is_reported_not_swallowed(refiner, monkeypatch, capsys)
     text = "a cat sits on a mat"
     cond = torch.zeros(1, len(text), 4)
     cond[:, 6:10, :] = 1.0
-    meta = {"funpack_h3_blended": [(6, 10, "stands"), (100, 104, "nowhere")],
+    meta = {"funpack_h3_blended": [(6, 10, "stands", 0.5), (100, 104, "nowhere", 0.5)],
             "funpack_h3_timed_text": text, "minimax_token_tags": [1] * len(text)}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
     assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 3.0))

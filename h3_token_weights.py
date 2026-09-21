@@ -24,8 +24,14 @@ import math
 import re
 from typing import Optional
 
+# A signed number a weight/strength may be written as, including a leading-dot shorthand
+# (".8") that `-?\d+(?:\.\d+)?` alone would silently refuse -- refused text falls through to
+# being read as literal phrase content instead of a weight, with nothing to say the number
+# was never applied.
+_NUM = r"-?(?:\d+\.\d*|\.\d+|\d+)"
+
 # (phrase:1.3) / (phrase:-0.4). Escaped \( is left alone so a literal bracket still works.
-_WEIGHTED = re.compile(r"(?<!\\)\(([^():]*?):\s*(-?\d+(?:\.\d+)?)\s*\)")
+_WEIGHTED = re.compile(r"(?<!\\)\(([^():]*?):\s*(" + _NUM + r")\s*\)")
 
 # Below this a weight is treated as "remove entirely" rather than log(0) = -inf, which
 # produces NaN the moment a query attends to nothing else.
@@ -70,7 +76,7 @@ def parse(text: str):
 # Square brackets so a shortcut replacement's parentheses and colons can sit inside; only a
 # `:number` directly before the `@t0-t1]` tail is a weight.
 _TIMED = re.compile(
-    r"(?<!\\)\[([^\[\]]*?)(?::\s*(-?\d+(?:\.\d+)?))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\]")
+    r"(?<!\\)\[([^\[\]]*?)(?::\s*(" + _NUM + r"))?\s*@\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\]")
 # H3's latent time grid: latent frame k spans FRAME_PER_TOKEN[k % 5] pixel frames at 24 fps.
 FPS = 24
 FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
@@ -78,7 +84,7 @@ FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
 
 # [phrase:1.5] - a weight with no window, in brackets so a shortcut replacement's own
 # parentheses cannot break it (the reason timed phrases use brackets at all).
-_BRACKET_WEIGHTED = re.compile(r"(?<!\\)\[([^\[\]@]*?):\s*(-?\d+(?:\.\d+)?)\s*\]")
+_BRACKET_WEIGHTED = re.compile(r"(?<!\\)\[([^\[\]@]*?):\s*(" + _NUM + r")\s*\]")
 
 # [phraseA|phraseB]: BLEND. phraseA stays in the prompt Studio encodes (prefix/postfix and
 # every other phrase are exactly what was typed); phraseB is a second sentence re-encoded
@@ -104,9 +110,20 @@ _BRACKET_WEIGHTED = re.compile(r"(?<!\\)\[([^\[\]@]*?):\s*(-?\d+(?:\.\d+)?)\s*\]
 # always found a way through anyway (`dog:5@2`, `dog@1—2` with an em dash, `@` followed by
 # an unrelated dash many words later). Blacklisting a look is not a fixable boundary; not
 # blacklisting at all is consistent with how the rest of this file already treats it.
-_BLENDED = re.compile(r"(?<!\\)\[([^\[\]|]+)\|([^\[\]|]+)\]")
-# Default blend amount: half the distance from phraseA's average hidden state toward
-# phraseB's. Not exposed as a Studio dial yet — one number, changeable here, not a UI knob.
+#
+# An OPTIONAL `:strength` on phraseB overrides `BLEND_STRENGTH_DEFAULT` for that one blend
+# — `[cat|dog:0.8]`. This deliberately claims the same trailing "colon then a bare number"
+# shape that would otherwise be ambiguous with literal phraseB text, the same way
+# `_BRACKET_WEIGHTED` already claims that shape for its own phrase. Non-greedy so an
+# ordinary internal colon ("shot: walks") is still just text — only a colon-number
+# immediately before the closing `]` is read as a strength override.
+_BLENDED = re.compile(r"(?<!\\)\[([^\[\]|]+)\|([^\[\]|]+?)(?::\s*(" + _NUM + r"))?\]")
+# Default blend amount when no `:strength` is given: half the distance from phraseA's
+# average hidden state toward phraseB's. Applies as a bare fraction, same scale as a typed
+# strength (0 = no shift, 1 = fully phraseB's mean, room to overshoot past 1 if asked). Not
+# clamped: 0 is a legitimate no-op, and a negative value pushes phraseA's rows AWAY from
+# phraseB's mean instead of toward it. Deliberately left open, not validated -- same policy
+# as every other weight/strength value in this file.
 BLEND_STRENGTH_DEFAULT = 0.5
 
 _MARKUP = re.compile(_TIMED.pattern + "|" + _BLENDED.pattern + "|" + _WEIGHTED.pattern
@@ -117,7 +134,7 @@ def parse_markup(text: str):
     """Strip ALL THREE prompt markups in one left-to-right pass.
 
     -> (clean_text, weighted [(start, end, weight)], timed [(start, end, weight, t0, t1)],
-        blended [(start, end, alt_phrase)]).
+        blended [(start, end, alt_phrase, strength)]).
     One pass, so every span list indexes the same clean text; stripping them one after the
     other would leave the first list's offsets pointing into a string that no longer exists.
     """
@@ -133,13 +150,14 @@ def parse_markup(text: str):
             if t1 > t0 and phrase.strip():
                 timed.append((start, start + len(phrase),
                               float(m.group(2)) if m.group(2) else 1.0, t0, t1))
-        elif m.group(5) is not None:                      # [phraseA|phraseB]
+        elif m.group(5) is not None:                      # [phraseA|phraseB(:strength)?]
             phrase, alt = m.group(5), m.group(6)
+            strength = float(m.group(7)) if m.group(7) is not None else BLEND_STRENGTH_DEFAULT
             if phrase.strip() and alt.strip():
-                blended.append((start, start + len(phrase), alt.strip()))
+                blended.append((start, start + len(phrase), alt.strip(), strength))
         else:                                            # (phrase:w) or [phrase:w]
-            phrase = m.group(7) if m.group(7) is not None else m.group(9)
-            weight = m.group(8) if m.group(8) is not None else m.group(10)
+            phrase = m.group(8) if m.group(8) is not None else m.group(10)
+            weight = m.group(9) if m.group(9) is not None else m.group(11)
             weighted.append((start, start + len(phrase), float(weight)))
         out.append(phrase)
         pos = m.end()

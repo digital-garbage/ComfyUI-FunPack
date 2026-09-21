@@ -112,7 +112,7 @@ def expand_prompt_with_windows(text: str, variables=None):
     which never sees the encoded string when a wired node owns the prompt - needs them
     handed over separately, as char spans on the clean text.
     -> (clean_expanded_text, timed [(start, end, weight, t0, t1)],
-        weighted [(start, end, weight)], blended [(start, end, alt_phrase)])
+        weighted [(start, end, weight)], blended [(start, end, alt_phrase, strength)])
     """
     expanded = expand_prompt_fragment(text)
     if expanded and variables:
