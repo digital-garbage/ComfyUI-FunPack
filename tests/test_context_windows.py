@@ -197,6 +197,53 @@ def test_remove_restores_a_pre_existing_foreign_handler(monkeypatch):
     assert model.model_options["context_handler"] is foreign
 
 
+def test_a_failed_wrapper_registration_rolls_back_the_context_handler_key(monkeypatch):
+    """context_handler is set BEFORE create_prepare_sampling_wrapper/
+    create_sampler_sample_wrapper run -- core's own calc_cond_batch only checks whether
+    that KEY is present, not whether the wrappers it implies were actually registered
+    (comfy/samplers.py routes through handler.execute() the moment the key exists). If
+    either wrapper-creation call raises, a stray context_handler left behind would
+    silently re-enable windowing, with a handler no PREPARE_SAMPLING wrapper backs, for
+    every later scene and render on this shared model -- exactly the leak class
+    [[project_hook_leak_bug]]/[[project_dit_patch_leak]]/[[project_scene_wrapper_leak]]
+    already document. Install must roll the key back itself when this happens, not
+    leave it to a caller who has no closure to undo it with (no remove_fn is returned
+    on failure)."""
+    model, calls = _install_fake_core(monkeypatch)
+    import comfy.context_windows as cw
+
+    def _boom(model):
+        raise RuntimeError("core wrapper registration exploded")
+
+    cw.create_prepare_sampling_wrapper = _boom
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    remove, latent_len, reason = _install(s, model)
+    assert remove is None and latent_len is None
+    assert "core wrapper registration exploded" in reason
+    # The leak this guards against: context_handler must NOT still be present after a
+    # failed install, regardless of what raised.
+    assert "context_handler" not in model.model_options
+
+
+def test_a_failed_second_wrapper_registration_also_rolls_back(monkeypatch):
+    """Same as above but the failure is in the SECOND call (create_sampler_sample_wrapper,
+    only reached when freenoise is on) -- the first call already succeeded and must not
+    leave a half-registered handler behind either."""
+    model, calls = _install_fake_core(monkeypatch)
+    import comfy.context_windows as cw
+
+    def _boom(model):
+        raise RuntimeError("sampler-sample wrapper exploded")
+
+    cw.create_sampler_sample_wrapper = _boom
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    remove, latent_len, reason = _install(s, model, freenoise=True)
+    assert remove is None and latent_len is None
+    assert "sampler-sample wrapper exploded" in reason
+    assert "context_handler" not in model.model_options
+    assert calls["prepare"] == 1  # the first call DID run, and still got rolled back
+
+
 def test_scene_latent_frame_count_reads_the_video_stream():
     s = samplers.FunPackLTXAVSceneChainSampler()
     chunk = {"samples": torch.zeros(1, 128, 23, 8, 8)}

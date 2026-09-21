@@ -3089,6 +3089,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "Keep banking REINS' liked-minus-disliked history at every candidate block even while h3_repr_steering itself is OFF -- every rating still trains it, nothing is ever added back into the video. Off by default: turning REINS off has always also stopped it from learning, and this flips that only when you explicitly ask for it. Turn this on to build up rating history before committing to steering for real, or to compare 'REINS off' against 'REINS on' without losing ratings made during the off half. Has no effect when h3_repr_steering is already on (that already captures unconditionally).",
                 }),
+                "explore_first_step": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: branch-then-commit at the FIRST step only. Runs explore_first_step_candidates different seeds through one throwaway step each (no full second/third/etc generation), scores each candidate's step-1 prediction with the output-space value function (same one output_guidance/trajectory_guidance train — needs its own 10+ rated generations), and commits to the ONE seed that scores best for the real, full-schedule run that follows. Motivated by the trajectory probe's own finding: the early half of a schedule carries almost as much rateable signal as the late half, but nothing else here acts on it before now (output_guidance/trajectory_guidance only steer a single trajectory, they don't choose between different ones). This is a SELECTION, not a steering gradient — cheap because only the branching step itself repeats (default 3 candidates ≈ 2 extra step-equivalents added to the whole schedule, not a 2-3x generation). Requires refinement_key_input; silently does nothing (same seed, same run) until the value function is ready.",
+                }),
+                "explore_first_step_candidates": ("INT", {
+                    "default": 3, "min": 2, "max": 8, "step": 1,
+                    "tooltip": "How many seeds to try at the first step before committing. Cost is roughly (N-1) extra single-step forward passes added to the whole schedule — 3 on a 35-step run is about 6% overhead, 8 is about 20%. No effect when explore_first_step is off.",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -4833,6 +4841,119 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
+    def _select_best_seed(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
+                          n_candidates, value_fn):
+        """Explore-then-commit at step 1: score `n_candidates` seeds on ONE throwaway step
+        each, keep whichever seed's step-1 prediction the trained output-space value
+        function (LatentValueFunction) rates highest, then let the caller run the REAL
+        full-schedule pass from that single winning seed. One committed trajectory for the
+        whole run — the branching is confined to a single extra step per candidate, not the
+        whole generation.
+
+        Motivated by the trajectory probe's own finding (trajectory_probe.py): the early
+        half of the schedule carries almost as much rateable signal as the late half
+        (88-89%, underpowered alone but directionally unanimous), yet nothing in this
+        sampler acts on it before now — `output_guidance`'s steering gate opens only in the
+        LAST half (`_make_steer_ramp`). This does not steer a gradient into the early half;
+        it picks which of several already-different starting noises to commit to, using the
+        same trained scorer, at the one point (the very first step) where different noise
+        still means different overall motion.
+
+        Deliberately bypasses `_sample_chunk`: that method installs REINS/Q-steer/
+        block-repeat captures and the phrase probe as a side effect of merely running, and
+        a throwaway candidate step must not bank into any of those (same contamination
+        `_sample_chunk` already guards against for its own masked phrase-probe passes —
+        see the discard block right after its `sample_custom` call). This calls
+        `comfy.sample.sample_custom` directly with a 2-element sigma slice (exactly one
+        step) and a private observer wrapper that is installed and stripped around each
+        candidate alone, so no other mechanism on the model ever sees these calls.
+
+        The CALLER, not this method, is responsible for making sure `model.model_options
+        ["model_function_wrapper"]` is temporarily reset to the scene's pre-guidance
+        baseline for the duration of this call — see the call site in `sample()`, which
+        swaps in `_scene_base_wrapper` before calling this and restores the fully-stacked
+        wrapper immediately after, before the real run. Candidates must be scored on the
+        RAW model, not one steered by embed_guidance/score_slider/dynashift/output_guidance/
+        trajectory_guidance, and a live trajectory-probe recorder in particular dedups by
+        (scene, pass, sigma) — a throwaway candidate call at the real schedule's own first
+        sigma would otherwise win that race and get banked as the scene's real step-1
+        measurement. `positive`/`negative` themselves are passed in already fully
+        finalized (after embed_guidance's ascent and identity-transfer's token append), so
+        candidates are scored against exactly the conditioning the real run will use.
+
+        Returns `seed` UNCHANGED — not a fallback value, the literal seed the caller
+        already has — whenever the value function isn't ready, `sigmas` can't provide a
+        one-step slice, or every candidate's own throwaway call fails. This is a real
+        limit (no trained scorer yet, or too short a schedule to branch), not a defect, so
+        it stays silent the same way every other "nothing to steer with yet" path in this
+        file does — the caller proceeds exactly as if this were never called."""
+        if value_fn is None or not value_fn.is_ready() or int(n_candidates) < 2:
+            return seed
+        if not isinstance(sigmas, torch.Tensor) or sigmas.numel() < 2:
+            return seed
+        try:
+            probe_latent = self._clone_latent(latent)
+        except Exception:
+            return seed
+        samples = probe_latent["samples"]
+        probe_sigmas = sigmas[:2]
+        old_wrapper = model.model_options.get("model_function_wrapper")
+        scored = []
+        for i in range(int(n_candidates)):
+            cand_seed = int(seed) + i * 999983
+            captured = [None]
+
+            def _call(apply_fn, a, _prev=old_wrapper):
+                if _prev is not None:
+                    return _prev(apply_fn, a)
+                return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
+
+            def _observe_wrapper(apply_fn, args, _cap=captured, _call=_call):
+                denoised = _call(apply_fn, args)
+                if _cap[0] is None:
+                    try:
+                        span = _video_span(model, denoised)
+                        target = (denoised[..., span[0]:span[0] + span[1]]
+                                 if span is not None else denoised)
+                        _cap[0] = target.detach().clone()
+                    except Exception:
+                        pass
+                return denoised
+
+            try:
+                model.model_options["model_function_wrapper"] = _tag_scene_wrapper(
+                    _observe_wrapper, old_wrapper)
+                cand_noise = comfy.sample.prepare_noise(samples, cand_seed)
+                comfy.sample.sample_custom(
+                    model, cand_noise, float(cfg), sampler, probe_sigmas, positive, negative,
+                    samples, noise_mask=probe_latent.get("noise_mask"), seed=cand_seed,
+                    callback=None,
+                )
+            except Exception as e:
+                print(f"[FunPackSceneChain] explore_first_step: candidate {i} failed "
+                      f"({e}), skipped")
+                continue
+            finally:
+                # Restored unconditionally, success or failure -- a throwaway candidate
+                # must never leave its observer installed for the real run that follows.
+                model.model_options["model_function_wrapper"] = old_wrapper
+            if captured[0] is None:
+                continue
+            try:
+                with torch.inference_mode(False), torch.no_grad():
+                    score = float(value_fn.forward(
+                        value_fn.compress(captured[0].float())).item())
+            except Exception:
+                continue
+            scored.append((score, cand_seed))
+        if not scored:
+            return seed
+        scored.sort(key=lambda t: t[0], reverse=True)
+        best_score, best_seed = scored[0]
+        print(f"[FunPackSceneChain] explore_first_step: {len(scored)}/{n_candidates} "
+              f"candidate(s) scored, winner seed={best_seed} (score={best_score:.4f})")
+        return best_seed
+
     def _save_output_value_snapshot(self, refinement_key, denoised, video_mask):
         """End-of-run: pool the final x0_hat (video-only, audio excluded — same convention as
         embed_guidance/velocity-bias) down to a small vector and persist it so the NEXT rating
@@ -6458,10 +6579,18 @@ class FunPackLTXAVSceneChainSampler:
 
         _tag_funpack_hook(_hook)
         handles = []
-        for blk in blocks:
-            sub = getattr(blk, "video_to_audio_attn", None)
-            if sub is not None:
-                handles.append(sub.register_forward_hook(_hook))
+        try:
+            for blk in blocks:
+                sub = getattr(blk, "video_to_audio_attn", None)
+                if sub is not None:
+                    handles.append(sub.register_forward_hook(_hook))
+        except Exception:
+            # A failure partway through must not strand hooks already attached to earlier
+            # blocks with no reference left to remove them by -- roll back what succeeded
+            # so far before propagating, same reasoning as _install_context_windows's own
+            # rollback (see [[project_hook_leak_bug]]).
+            self._remove_v2a_scale(handles)
+            raise
         return handles
 
     def _remove_v2a_scale(self, handles):
@@ -6583,15 +6712,28 @@ class FunPackLTXAVSceneChainSampler:
         prev = model.model_options.get("context_handler")
         had_prev = "context_handler" in model.model_options
         model.model_options["context_handler"] = handler
-        _cw.create_prepare_sampling_wrapper(model)
-        if freenoise:
-            _cw.create_sampler_sample_wrapper(model)
 
-        def _remove():
+        def _rollback():
+            # Undo the context_handler key by itself -- called when the wrapper-creation
+            # calls below raise, so a failed install never leaves core's calc_cond_batch
+            # routing through a handler whose PREPARE_SAMPLING/SAMPLER_SAMPLE wrappers
+            # were never actually registered (comfy.samplers only checks the KEY's
+            # presence, not whether those wrappers exist — see [[project_hook_leak_bug]]).
             if had_prev:
                 model.model_options["context_handler"] = prev
             else:
                 model.model_options.pop("context_handler", None)
+
+        try:
+            _cw.create_prepare_sampling_wrapper(model)
+            if freenoise:
+                _cw.create_sampler_sample_wrapper(model)
+        except Exception as exc:
+            _rollback()
+            return None, None, f"failed to register core's context-window wrappers ({exc})"
+
+        def _remove():
+            _rollback()
             for wrapper_type, key in (
                 (_pe.WrappersMP.PREPARE_SAMPLING, self._CTX_WRAPPER_KEYS[0]),
                 (_pe.WrappersMP.SAMPLER_SAMPLE, self._CTX_WRAPPER_KEYS[1]),
@@ -8344,6 +8486,7 @@ class FunPackLTXAVSceneChainSampler:
                second_pass_sampler=None,
                h3_video_detail=1.0,
                audio_vae=None, h3_keyframes=None,
+               explore_first_step=False, explore_first_step_candidates=3,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -8727,6 +8870,19 @@ class FunPackLTXAVSceneChainSampler:
             else:
                 print(f"[FunPackSceneChain] output_guidance: active ({_output_value_fn.n_trained} samples), "
                       f"strength={output_guidance_strength}")
+
+        # Same trained value function, different consumer: explore_first_step SELECTS
+        # between candidate seeds rather than steering a gradient, so it loads its own
+        # reference to it independent of output_guidance's toggle (reuses the already-loaded
+        # instance when both are on, to avoid loading the same file twice).
+        _explore_value_fn = _output_value_fn
+        if explore_first_step and refinement_key_input and _explore_value_fn is None:
+            _explore_value_fn = self._load_output_value_function(refinement_key_input)
+        if explore_first_step and not refinement_key_input:
+            print("[FunPackSceneChain] explore_first_step: requires refinement_key_input — disabled")
+        elif explore_first_step and _explore_value_fn is None:
+            print("[FunPackSceneChain] explore_first_step: value function not ready yet "
+                  "(needs 10+ rated generations to reach MIN_SAMPLES)")
 
         # Per-bucket value functions for trajectory_guidance. Separate from the one above
         # because they answer a different question: that one asks "is this a good finish",
@@ -9195,7 +9351,20 @@ class FunPackLTXAVSceneChainSampler:
                 # for this scene's denoise. Only when audio memory is on and the scale differs
                 # from native (1.0).
                 if joyai_audio_memory and audio_tail > 0:
-                    _v2a_handles = self._install_v2a_scale(model, v2a_grad_scale)
+                    try:
+                        _v2a_handles = self._install_v2a_scale(model, v2a_grad_scale)
+                    except Exception as _e:
+                        # Sibling mechanisms (context_windows/identity_overlap) report a
+                        # failed install as a falsy result, never a raise -- this call
+                        # didn't used to raise either (its own loop had no try/except until
+                        # a hardening pass added one so a mid-loop failure could roll back
+                        # hooks already attached), so keep that same declared-limit
+                        # contract here rather than letting one scene's hook failure abort
+                        # the whole run.
+                        _v2a_handles = []
+                        print(f"[FunPackSceneChain] v2a_grad_scale: install failed ({_e}) "
+                              f"— this scene will run WITHOUT it.")
+                        run_mechanisms.append(f"v2a_grad_scale(SKIPPED: {_e})")
                     if _v2a_handles:
                         run_mechanisms.append(f"v2a_grad_scale({v2a_grad_scale})")
                 if identity_transfer_enabled and identity_ref_filename:
@@ -9297,6 +9466,119 @@ class FunPackLTXAVSceneChainSampler:
                                 if scene_count > 1 else "")
                 self._set_phase(f"{_scene_label}{' · ' if _scene_label else ''}"
                                 f"{'pass 1 of 2' if _sp_b is not None else 'sampling'}")
+                if explore_first_step and _explore_value_fn is not None:
+                    # Score candidates against the model exactly as it is BEFORE this
+                    # scene's own guidance stack goes on. Most of that stack (score_slider/
+                    # dynashift/output_guidance/trajectory_guidance/temporal styles/the
+                    # trajectory-probe recorder) lives entirely in the model_function_wrapper
+                    # chain, so resetting that key to _scene_base_wrapper is enough for those.
+                    # context_windows, v2a_grad_scale, and identity_overlap do NOT: they patch
+                    # model_options["context_handler"], raw torch forward hooks, and
+                    # diffusion_model methods directly, none of which that reset touches, so
+                    # they are torn down and reinstalled around this call the same way the
+                    # scene's own finally block does at the end of sampling. Everything here
+                    # is reversible and idempotent by construction (same discipline as the
+                    # scene teardown below), so a mid-call exception still leaves the real run
+                    # with its guidance stack intact — the outer finally reinstalls unconditionally.
+                    # scene_positive/scene_negative are already fully finalized above
+                    # (embed_guidance ascent, identity tokens), so candidates score against
+                    # exactly what the real run will use.
+                    _cur_wrapper_for_scene = model.model_options.get("model_function_wrapper")
+                    _had_ctx_for_explore = _ctx_remove is not None
+                    _had_v2a_for_explore = bool(_v2a_handles)
+                    _had_identity_overlap_for_explore = bool(_identity_overlap_handle)
+                    if _had_ctx_for_explore:
+                        _ctx_remove()
+                    if _had_v2a_for_explore:
+                        self._remove_v2a_scale(_v2a_handles)
+                    if _had_identity_overlap_for_explore:
+                        self._strip_identity_overlap(_identity_overlap_handle)
+                    model.model_options["model_function_wrapper"] = _scene_base_wrapper
+                    try:
+                        _explored_seed = self._select_best_seed(
+                            model, sampler, sigmas, scene_seed, cfg, scene_positive,
+                            scene_negative, chunk, n_candidates=explore_first_step_candidates,
+                            value_fn=_explore_value_fn)
+                    finally:
+                        model.model_options["model_function_wrapper"] = _cur_wrapper_for_scene
+                        # Reinstalling is the SAME call that already succeeded once for this
+                        # scene moments ago, so a raise here is not expected — but this runs
+                        # inside a finally, and the feature's own contract is "silent no-op on
+                        # failure, never worse than the real run missing a mechanism it should
+                        # have had, never a crash". Catch and log rather than letting a
+                        # reinstall failure escape the whole per-scene try as an uncaught error.
+                        # Each of the three mechanisms below already appended a
+                        # SUCCESS-shaped entry to run_mechanisms when it first installed for
+                        # this scene, earlier in this same iteration. A reinstall failure
+                        # here must REPLACE that entry, not sit alongside it — the report
+                        # would otherwise tell the user the mechanism both ran and didn't
+                        # for the same scene. Drop any earlier entry for a mechanism before
+                        # appending its SKIPPED note.
+                        def _replace_mechanism_note(prefix, skipped_note):
+                            run_mechanisms[:] = [m for m in run_mechanisms
+                                                 if not m.startswith(prefix)]
+                            run_mechanisms.append(skipped_note)
+
+                        if _had_ctx_for_explore:
+                            try:
+                                _ctx_remove, _, _ = self._install_context_windows(
+                                    model, context_window_length, context_window_overlap,
+                                    context_window_schedule, context_window_fuse,
+                                    context_window_freenoise, context_window_retain_first)
+                            except Exception as _e:
+                                _ctx_remove = None
+                                _ctx_reinstall_msg = (
+                                    f"explore_first_step: failed to reinstall context_windows "
+                                    f"after candidate scoring ({_e}) — this scene will run "
+                                    f"WITHOUT context windows.")
+                                print(f"[FunPackSceneChain] {_ctx_reinstall_msg}")
+                                _replace_mechanism_note(
+                                    "context_windows", f"context_windows(SKIPPED: {_e})")
+                            else:
+                                if _ctx_remove is None:
+                                    _ctx_reinstall_msg = (
+                                        "explore_first_step: failed to reinstall "
+                                        "context_windows after candidate scoring — this "
+                                        "scene will run WITHOUT context windows.")
+                                    print(f"[FunPackSceneChain] {_ctx_reinstall_msg}")
+                                    _replace_mechanism_note(
+                                        "context_windows",
+                                        "context_windows(SKIPPED: failed to reinstall "
+                                        "after explore_first_step candidate scoring)")
+                        if _had_v2a_for_explore:
+                            try:
+                                _v2a_handles = self._install_v2a_scale(model, v2a_grad_scale)
+                            except Exception as _e:
+                                _v2a_handles = []
+                                print(f"[FunPackSceneChain] explore_first_step: failed to "
+                                      f"reinstall v2a_grad_scale after candidate scoring "
+                                      f"({_e}) — this scene will run WITHOUT it.")
+                                _replace_mechanism_note(
+                                    "v2a_grad_scale", f"v2a_grad_scale(SKIPPED: {_e})")
+                        if _had_identity_overlap_for_explore:
+                            try:
+                                _identity_overlap_handle = self._install_identity_overlap(
+                                    model, _id_ref_latent, _id_seg_value)
+                            except Exception as _e:
+                                _identity_overlap_handle = None
+                                print(f"[FunPackSceneChain] explore_first_step: failed to "
+                                      f"reinstall identity_overlap after candidate scoring "
+                                      f"({_e}) — this scene will run WITHOUT it.")
+                                _replace_mechanism_note(
+                                    "identity_transfer_overlap",
+                                    f"identity_transfer_overlap(SKIPPED: {_e})")
+                    if _explored_seed != scene_seed:
+                        run_mechanisms.append(
+                            f"explore_first_step(n={explore_first_step_candidates},"
+                            f"winner={_explored_seed})")
+                        scene_seed = _explored_seed
+                    else:
+                        # The original seed won on its own merits — still ran N-1 extra
+                        # throwaway steps and consulted the scorer, so say so; otherwise
+                        # this is indistinguishable in the run report from never running.
+                        run_mechanisms.append(
+                            f"explore_first_step(n={explore_first_step_candidates},"
+                            f"winner=original seed)")
                 if _traj_recorder is not None:
                     _traj_recorder.begin_pass(sigmas, index=0)
                 _full = self._sample_chunk(

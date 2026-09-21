@@ -1,4 +1,5 @@
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -158,6 +159,44 @@ def scene_cond(index):
         torch.ones(1, 2, 3) * float(index + 1),
         {"funpack_scene_text": f"scene {index + 1}"},
     )
+
+
+def test_install_v2a_scale_rolls_back_hooks_already_attached_when_a_later_one_fails():
+    """register_forward_hook is called once per transformer block; if one raises partway
+    through the loop, the hooks already attached to EARLIER blocks must not be stranded --
+    the local `handles` list holding the only references able to remove them would
+    otherwise never reach the caller (the loop itself raises out of _install_v2a_scale).
+    Each live hook multiplies that block's video_to_audio_attn output by `scale`
+    indefinitely, on a model this scene never actually owns exclusively."""
+    node = FunPackLTXAVSceneChainSampler()
+    removed = []
+
+    class _Sub:
+        def __init__(self, index, boom=False):
+            self.index = index
+            self.boom = boom
+
+        def register_forward_hook(self, hook):
+            if self.boom:
+                raise RuntimeError(f"block {self.index} refused the hook")
+            handle = types.SimpleNamespace(remove=lambda: removed.append(self.index))
+            return handle
+
+    class _Block:
+        def __init__(self, sub):
+            self.video_to_audio_attn = sub
+
+    blocks = [_Block(_Sub(0)), _Block(_Sub(1)), _Block(_Sub(2, boom=True)), _Block(_Sub(3))]
+    model = types.SimpleNamespace(model=types.SimpleNamespace(
+        diffusion_model=types.SimpleNamespace(transformer_blocks=blocks)))
+
+    with pytest.raises(RuntimeError, match="block 2 refused the hook"):
+        node._install_v2a_scale(model, 1.5)
+
+    # Blocks 0 and 1's hooks were attached before block 2 raised -- both must have been
+    # rolled back, not left live with no reference to remove them by. Block 3 is never
+    # reached because the loop already raised.
+    assert removed == [0, 1]
 
 
 def test_scene_chain_detects_scene_count_and_increments_seed():
@@ -797,3 +836,505 @@ def test_second_pass_says_which_pass_is_running(live_stubs):
 def test_phase_label_drops_the_scene_number_on_a_single_scene_run(live_stubs):
     _second_pass_run(scene_count=1)
     assert [c["phase"] for c in sample_calls] == ["pass 1 of 2", "pass 2 of 2"]
+
+
+def test_explore_first_step_candidates_never_reach_the_scenes_own_guidance_wrapper(monkeypatch):
+    """explore_first_step's candidate calls must be scored on the model exactly as it was
+    BEFORE this scene's own guidance stack goes on, never on a wrapper installed for the
+    real run (context_windows / embed_guidance / score_slider / dynashift /
+    output_guidance / trajectory_guidance / the trajectory-probe recorder / temporal
+    styles / v2a / identity_overlap). A first version of this feature called
+    _select_best_seed right before _sample_chunk with no reset, so candidates were
+    silently scored on post-guidance predictions, and a live trajectory-probe recorder
+    would have banked a discarded candidate's step-1 prediction as the scene's real one
+    (its dedup-by-sigma keeps only the first call it sees at a given sigma).
+
+    A prior version of this test only checked `model.model_options[...] is not sentinel`
+    at the top of each sample_custom call -- but _select_best_seed ALWAYS installs its own
+    fresh `_observe_wrapper` closure there (never the raw sentinel object), so that
+    assertion passed identically whether the underlying old_wrapper it chains to was None
+    or the sentinel. This version instead makes the sentinel itself count its own
+    invocations, so it can tell whether a candidate's call chain actually reached it."""
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+
+    sentinel_calls = []
+
+    def _sentinel(apply_fn, args):
+        sentinel_calls.append(1)
+        return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+    def fake_install_context_windows(self, model, length, overlap, schedule, fuse,
+                                     freenoise, retain_first):
+        model.model_options["model_function_wrapper"] = _sentinel
+        return (lambda: model.model_options.pop("model_function_wrapper", None), 10**9, None)
+
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_install_context_windows",
+                        fake_install_context_windows, raising=True)
+
+    class _ReadyValueFn:
+        def is_ready(self):
+            return True
+
+        def compress(self, x):
+            return x
+
+        def forward(self, x):
+            return x.mean()
+
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_load_output_value_function",
+                        lambda self, key: _ReadyValueFn(), raising=True)
+
+    sentinel_calls_at = []
+
+    def recording_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative,
+                                latent_image, noise_mask=None, callback=None,
+                                disable_pbar=False, seed=None):
+        wrapper = model.model_options.get("model_function_wrapper")
+        if wrapper is not None:
+            # Mirrors what a real comfy.sample.sample_custom does: invoke whatever
+            # wrapper is currently installed, so a chain down to `_sentinel` (if any)
+            # actually fires instead of sitting unexercised.
+            wrapper(lambda x, t, **c: latent_image,
+                    {"input": noise, "timestep": torch.tensor([1.0]), "c": {}})
+        sentinel_calls_at.append(len(sentinel_calls))
+        return fake_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative,
+                                  latent_image, noise_mask=noise_mask, callback=callback,
+                                  disable_pbar=disable_pbar, seed=seed)
+
+    monkeypatch.setattr(sys.modules["comfy.sample"], "sample_custom",
+                        recording_sample_custom, raising=False)
+
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    node.sample(
+        model=FakeModel(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=negative,
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=10,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.5,
+        max_scenes=8,
+        context_windows=True,
+        refinement_key_input="testkey",
+        explore_first_step=True,
+        explore_first_step_candidates=2,
+    )
+
+    # 2 throwaway candidate calls from _select_best_seed, then 1 real _sample_chunk call
+    # for this single scene.
+    assert len(sentinel_calls_at) == 3
+    # Neither candidate call's chain ever reached the temporal-wrapper sentinel -- if the
+    # ordering bug reappeared (candidates scored on the fully-stacked wrapper with no
+    # reset), sentinel_calls would already be nonzero by the second snapshot.
+    assert sentinel_calls_at[0] == 0
+    assert sentinel_calls_at[1] == 0
+    # The real run's call DOES reach the sentinel -- proving the wrapper chain really is
+    # installed for the committed run, so the two zeros above are meaningful and not an
+    # artifact of the sentinel never firing at all in this test.
+    assert sentinel_calls_at[2] == 1
+
+
+def _explore_first_step_ready_value_fn_patch(monkeypatch):
+    class _ReadyValueFn:
+        def is_ready(self):
+            return True
+
+        def compress(self, x):
+            return x
+
+        def forward(self, x):
+            return x.mean()
+
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_load_output_value_function",
+                        lambda self, key: _ReadyValueFn(), raising=True)
+
+
+def test_explore_first_step_candidates_are_isolated_from_context_windows(monkeypatch):
+    """A round-3 review found that resetting model_options["model_function_wrapper"]
+    (the fix proven by the test above) only isolates candidates from the mechanisms that
+    live in THAT chain -- context_windows patches model_options["context_handler"]
+    directly, which that reset never touches. It must be torn down before candidate
+    scoring and reinstalled before the real run, exactly like the scene's own
+    final-teardown finally block does. See the two tests below for v2a_grad_scale and
+    identity_overlap, the other two non-wrapper-chain mechanisms round 3 flagged --
+    each needs a mutually exclusive gate (custom guides vs. JoyAI memory) to fire for
+    real, so they're kept as separate scenes rather than forced into one."""
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+
+    install_calls = []
+    remove_calls = []
+
+    def fake_install_context_windows(self, model, length, overlap, schedule, fuse,
+                                     freenoise, retain_first):
+        install_calls.append("context_windows")
+        model.model_options["context_handler"] = "sentinel-handler"
+
+        def _remove():
+            remove_calls.append("context_windows")
+            model.model_options.pop("context_handler", None)
+
+        return _remove, 10**9, None
+
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_install_context_windows",
+                        fake_install_context_windows, raising=True)
+    _explore_first_step_ready_value_fn_patch(monkeypatch)
+
+    context_handler_during_candidates = []
+
+    def recording_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative,
+                                latent_image, noise_mask=None, callback=None,
+                                disable_pbar=False, seed=None):
+        context_handler_during_candidates.append(model.model_options.get("context_handler"))
+        return fake_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative,
+                                  latent_image, noise_mask=noise_mask, callback=callback,
+                                  disable_pbar=disable_pbar, seed=seed)
+
+    monkeypatch.setattr(sys.modules["comfy.sample"], "sample_custom",
+                        recording_sample_custom, raising=False)
+
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    node.sample(
+        model=FakeModel(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=negative,
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=10,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.5,
+        max_scenes=8,
+        context_windows=True,
+        refinement_key_input="testkey",
+        explore_first_step=True,
+        explore_first_step_candidates=2,
+    )
+
+    # 2 candidate calls, then 1 real _sample_chunk call.
+    assert len(context_handler_during_candidates) == 3
+    # Neither candidate call saw the context_handler -- it was stripped before scoring.
+    assert context_handler_during_candidates[0] is None
+    assert context_handler_during_candidates[1] is None
+    # The real run's call DOES see it -- proving it was reinstalled before the committed
+    # run, not just torn down and left off.
+    assert context_handler_during_candidates[2] == "sentinel-handler"
+    # Installed once for the scene, torn down for candidate scoring, reinstalled for the
+    # real run, then torn down again at scene teardown: install x2, remove x2.
+    assert install_calls == ["context_windows", "context_windows"]
+    assert remove_calls == ["context_windows", "context_windows"]
+
+
+def test_explore_first_step_reinstall_failure_replaces_not_duplicates_the_run_report_entry(monkeypatch):
+    """A round-6 review found that a failed reinstall appended a SKIPPED note to
+    run_mechanisms WITHOUT removing the SUCCESS-shaped entry context_windows' original
+    install already added earlier in the same scene -- the run report would then tell the
+    user the mechanism both ran and didn't for the same scene. The fix strips any earlier
+    entry for that mechanism before appending the SKIPPED one; this proves exactly one
+    context_windows entry survives, and that it's the SKIPPED one."""
+    import json
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+
+    install_attempt = []
+
+    def fake_install_context_windows(self, model, length, overlap, schedule, fuse,
+                                     freenoise, retain_first):
+        install_attempt.append(1)
+        if len(install_attempt) == 1:
+            model.model_options["context_handler"] = "sentinel-handler"
+
+            def _remove():
+                model.model_options.pop("context_handler", None)
+
+            return _remove, 10**9, None
+        # The reinstall (second call, made by explore_first_step after candidate
+        # scoring) fails -- this is the state round 6 found was mis-reported.
+        raise RuntimeError("reinstall boom")
+
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_install_context_windows",
+                        fake_install_context_windows, raising=True)
+    _explore_first_step_ready_value_fn_patch(monkeypatch)
+
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    *_rest, boundaries_json = node.sample(
+        model=FakeModel(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=negative,
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=10,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.5,
+        max_scenes=8,
+        context_windows=True,
+        refinement_key_input="testkey",
+        explore_first_step=True,
+        explore_first_step_candidates=2,
+    )
+
+    mechs = json.loads(boundaries_json)["scenes"][0]["mechanisms"]
+    ctx_entries = [m for m in mechs if m.startswith("context_windows")]
+    # Exactly one context_windows entry survives -- the success-shaped one from the
+    # original install must have been replaced, not left alongside the failure note.
+    assert len(ctx_entries) == 1
+    assert "SKIPPED" in ctx_entries[0]
+    assert "reinstall boom" in ctx_entries[0]
+
+
+def test_explore_first_step_candidates_are_isolated_from_v2a_grad_scale(monkeypatch):
+    """v2a_grad_scale installs raw torch forward hooks directly on submodules -- not the
+    model_function_wrapper chain the earlier test's reset covers. Real _install_v2a_scale
+    needs a real model.model.diffusion_model.transformer_blocks, which FakeModel doesn't
+    have, so it's faked the same way context_windows is faked above. joyai_audio_memory's
+    own gate lives ONLY in the continuation-scene branch (there's nothing to remember
+    before scene 1 finishes), so this needs two scenes -- scene 1 never touches v2a at
+    all, scene 2 does."""
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    model = FakeModel()  # _remove_v2a_scale takes no `model` argument in the real
+                         # signature, so the removal fake below must close over this
+                         # instance directly, matching the one passed to node.sample().
+
+    install_calls = []
+    remove_calls = []
+
+    def fake_install_v2a_scale(self, model, scale):
+        install_calls.append("v2a")
+        model.model_options["_v2a_sentinel"] = True
+        return ["v2a-handle"]
+
+    def fake_remove_v2a_scale(self, handles):
+        if handles:
+            remove_calls.append("v2a")
+            model.model_options.pop("_v2a_sentinel", None)
+
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_install_v2a_scale",
+                        fake_install_v2a_scale, raising=True)
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_remove_v2a_scale",
+                        fake_remove_v2a_scale, raising=True)
+    # audio_tail is computed from a real JoyAI memory bank this test has no reason to
+    # build -- force it just enough to make the real call site's `if joyai_audio_memory
+    # and audio_tail > 0:` gate fire.
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_append_joyai_audio_memory",
+                        lambda self, chunk, audio_frames: (chunk, 5), raising=True)
+    _explore_first_step_ready_value_fn_patch(monkeypatch)
+
+    v2a_sentinel_during_candidates = []
+
+    def recording_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative,
+                                latent_image, noise_mask=None, callback=None,
+                                disable_pbar=False, seed=None):
+        v2a_sentinel_during_candidates.append(model.model_options.get("_v2a_sentinel"))
+        return fake_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative,
+                                  latent_image, noise_mask=noise_mask, callback=callback,
+                                  disable_pbar=disable_pbar, seed=seed)
+
+    monkeypatch.setattr(sys.modules["comfy.sample"], "sample_custom",
+                        recording_sample_custom, raising=False)
+
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0), scene_cond(1)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    node.sample(
+        model=model,
+        vae=FakeVAE(),
+        positive=positive,
+        negative=negative,
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=10,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.5,
+        max_scenes=8,
+        joyai_memory=True,
+        joyai_memory_size=4,
+        joyai_audio_memory=True,
+        v2a_grad_scale=1.5,
+        refinement_key_input="testkey",
+        explore_first_step=True,
+        explore_first_step_candidates=2,
+    )
+
+    # Scene 1 (first scene) has nothing to remember yet -- v2a never installs, so its 3
+    # calls (2 candidates + 1 real) all see no sentinel. Scene 2 is a continuation scene,
+    # where the gate fires: its 3 calls are the ones that matter for this test.
+    assert len(v2a_sentinel_during_candidates) == 6
+    assert v2a_sentinel_during_candidates[:3] == [None, None, None]
+    scene2 = v2a_sentinel_during_candidates[3:]
+    assert scene2[0] is None
+    assert scene2[1] is None
+    assert scene2[2] is True
+    assert install_calls == ["v2a", "v2a"]
+    assert remove_calls == ["v2a", "v2a"]
+
+
+def test_v2a_install_failure_at_the_original_call_site_degrades_the_scene_not_the_render(monkeypatch):
+    """A round-6 review found that hardening _install_v2a_scale's hook-attachment loop
+    (so a mid-loop failure rolls back and re-raises, rather than silently returning
+    whatever it managed) turned the ORIGINAL (non-explore) call site at the top of the
+    scene into a new, previously-impossible crash path: before that hardening, this loop
+    never raised at all, so this call site never needed a guard. Sibling mechanisms
+    (context_windows, identity_overlap) already report a failed install as a falsy
+    result, never a raise -- v2a's original install must follow the same declared-limit
+    contract: log it, note it in the run report, and let the scene run without it,
+    rather than aborting the whole render over one scene's hook failure."""
+    import json
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+
+    def fake_install_v2a_scale(self, model, scale):
+        raise RuntimeError("hook registration boom")
+
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_install_v2a_scale",
+                        fake_install_v2a_scale, raising=True)
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_append_joyai_audio_memory",
+                        lambda self, chunk, audio_frames: (chunk, 5), raising=True)
+
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0), scene_cond(1)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    # Must not raise -- the whole point of the fix.
+    *_rest, boundaries_json = node.sample(
+        model=FakeModel(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=negative,
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=10,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.5,
+        max_scenes=8,
+        joyai_memory=True,
+        joyai_memory_size=4,
+        joyai_audio_memory=True,
+        v2a_grad_scale=1.5,
+    )
+
+    mechs = json.loads(boundaries_json)["scenes"][1]["mechanisms"]
+    v2a_entries = [m for m in mechs if m.startswith("v2a_grad_scale")]
+    assert len(v2a_entries) == 1
+    assert "SKIPPED" in v2a_entries[0]
+    assert "hook registration boom" in v2a_entries[0]
+
+
+def test_explore_first_step_candidates_are_isolated_from_identity_overlap(monkeypatch):
+    """identity_overlap monkeypatches diffusion_model methods directly -- not the
+    model_function_wrapper chain. Real _install_identity_overlap needs a real
+    model.model.diffusion_model to patch, which FakeModel doesn't have, so it's faked the
+    same way context_windows/v2a are faked above. identity_ref_filename is a LOCAL
+    variable inside sample(), only ever set (for the first scene) by
+    _apply_configured_guides when a custom guide stack is present -- faked here along
+    with the funpack_scene_guides JSON parse that feeds it, rather than hand-building
+    real guide JSON."""
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    model = FakeModel()  # _strip_identity_overlap takes no `model` argument in the real
+                         # signature, so the removal fake below must close over this
+                         # instance directly, matching the one passed to node.sample().
+
+    install_calls = []
+    remove_calls = []
+
+    def fake_install_identity_overlap(self, model, ref_latent, seg_value):
+        install_calls.append("identity_overlap")
+        model.model_options["_identity_overlap_sentinel"] = True
+        return "identity-overlap-handle"
+
+    def fake_strip_identity_overlap(self, handle):
+        if handle:
+            remove_calls.append("identity_overlap")
+            model.model_options.pop("_identity_overlap_sentinel", None)
+
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_install_identity_overlap",
+                        fake_install_identity_overlap, raising=True)
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_strip_identity_overlap",
+                        fake_strip_identity_overlap, raising=True)
+    # _resolve_identity_overlap normally encodes a real image via VAE; fake it to return
+    # a truthy ref_latent so the real call site's `if _id_ref_latent is not None:` gate
+    # fires. pos_tokens=None skips the (separately tested) ArcFace token-append branch.
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_resolve_identity_overlap",
+                        lambda self, *a, **k: (torch.zeros(1, 2, 3), 2.0, None, None),
+                        raising=True)
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_parse_scene_guides",
+                        lambda self, raw: {"scenes": [{"identity_pin": "fake.png"}]},
+                        raising=True)
+    monkeypatch.setattr(
+        FunPackLTXAVSceneChainSampler, "_apply_configured_guides",
+        lambda self, chunk, scene_index, custom_guides, latent_template, scene_outputs,
+               scene_media_by_ref, scene_positive, scene_negative, vae,
+               identity_transfer_enabled=False: (
+            chunk, scene_positive, scene_negative, 0, 0, "fake.png"),
+        raising=True)
+    _explore_first_step_ready_value_fn_patch(monkeypatch)
+
+    identity_sentinel_during_candidates = []
+
+    def recording_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative,
+                                latent_image, noise_mask=None, callback=None,
+                                disable_pbar=False, seed=None):
+        identity_sentinel_during_candidates.append(
+            model.model_options.get("_identity_overlap_sentinel"))
+        return fake_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative,
+                                  latent_image, noise_mask=noise_mask, callback=callback,
+                                  disable_pbar=disable_pbar, seed=seed)
+
+    monkeypatch.setattr(sys.modules["comfy.sample"], "sample_custom",
+                        recording_sample_custom, raising=False)
+
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    node.sample(
+        model=model,
+        vae=FakeVAE(),
+        positive=positive,
+        negative=negative,
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=10,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.5,
+        max_scenes=8,
+        identity_transfer_enabled=True,
+        funpack_scene_guides="ignored-because-_parse_scene_guides-is-faked",
+        refinement_key_input="testkey",
+        explore_first_step=True,
+        explore_first_step_candidates=2,
+    )
+
+    assert len(identity_sentinel_during_candidates) == 3
+    assert identity_sentinel_during_candidates[0] is None
+    assert identity_sentinel_during_candidates[1] is None
+    assert identity_sentinel_during_candidates[2] is True
+    assert install_calls == ["identity_overlap", "identity_overlap"]
+    assert remove_calls == ["identity_overlap", "identity_overlap"]
