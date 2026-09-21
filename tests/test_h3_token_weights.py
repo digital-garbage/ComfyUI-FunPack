@@ -1002,10 +1002,18 @@ def test_a_bracketed_weight_without_a_window_is_a_plain_weight():
 
 # --- phrase blend: mean-vector shift, not a per-token blend --------------------------
 
-def test_the_blended_span_is_shifted_by_half_the_mean_difference(refiner, monkeypatch):
-    """cond's span is all 1.0; the fake clip's re-encode of the alternate phrase is all 5.0.
-    Default strength is 0.5, so the span should land at 1.0 + 0.5*(5.0-1.0) = 3.0 — and
-    nowhere else in the tensor should move."""
+def test_every_prompt_row_shifts_not_just_the_phrases_own_span(refiner, monkeypatch):
+    """The first shipped version only shifted the phrase's own 1-4 rows and showed no visible
+    effect on a real generation even at strength 1.5 -- because Qwen's rows are CONTEXTUAL,
+    so every OTHER word in "a cat sits on a mat" still silently carries "sits" too, not just
+    the verb's own row. This version shifts the WHOLE prompt range toward the mean of the
+    alt sentence's OWN whole prompt range, so a phrase outside the marked span still moves.
+    Both halves of the sentence (rows [0:6) before "sits", rows [10:20) after) start at 0.0
+    and the marked span [6:10) starts at 1.0 -- the fake clip re-encodes any text to a
+    uniform 5.0, so mean_a = mean of the real cond (0.2, mixing 16 zero rows and 4 one
+    rows), mean_b = 5.0 uniformly, and EVERY row (in and out of the marked span) shifts by
+    the same 0.5*(5.0-0.2) = +2.4 -- landing the marked span at 1.0+2.4=3.4 and everything
+    else at 0.0+2.4=2.4, not at the untouched 0.0 the phrase-scoped version left it at."""
     _quiet(monkeypatch)
     text = "a cat sits on a mat"           # "sits" is chars [6:10]
     cond = torch.zeros(1, len(text), 4)
@@ -1014,15 +1022,14 @@ def test_the_blended_span_is_shifted_by_half_the_mean_difference(refiner, monkey
             "minimax_token_tags": [1] * len(text)}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
     result = out[0][0]
-    assert torch.allclose(result[:, 6:10, :], torch.full((1, 4, 4), 3.0))
-    assert torch.allclose(result[:, :6, :], torch.zeros(1, 6, 4))
-    assert torch.allclose(result[:, 10:, :], torch.zeros(1, len(text) - 10, 4))
+    assert torch.allclose(result[:, 6:10, :], torch.full((1, 4, 4), 3.3947367668151855))
+    assert torch.allclose(result[:, :6, :], torch.full((1, 6, 4), 2.3947370052337646))
+    assert torch.allclose(result[:, 10:, :], torch.full((1, len(text) - 10, 4), 2.3947367668151855))
 
 
 def test_a_higher_blend_strength_shifts_further_toward_the_alternate(refiner, monkeypatch):
-    """Same setup as above, but strength 0.8 instead of the 0.5 default: span should land at
-    1.0 + 0.8*(5.0-1.0) = 4.2 — this is what the user asked for after reporting phraseA
-    dominating visually at the default strength."""
+    """Same setup as above, but strength 0.8 instead of the 0.5 default: the marked span
+    should land further toward the alt sentence's mean than the 0.5 case above."""
     _quiet(monkeypatch)
     text = "a cat sits on a mat"
     cond = torch.zeros(1, len(text), 4)
@@ -1030,7 +1037,7 @@ def test_a_higher_blend_strength_shifts_further_toward_the_alternate(refiner, mo
     meta = {"funpack_h3_blended": [(6, 10, "stands", 0.8)], "funpack_h3_timed_text": text,
             "minimax_token_tags": [1] * len(text)}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
-    assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 4.2))
+    assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 4.831579208374023))
 
 
 def test_an_untagged_entry_is_left_completely_alone(refiner, monkeypatch):
@@ -1046,7 +1053,10 @@ def test_wired_conditioning_blends_from_the_editors_link_texts(refiner, monkeypa
     `funpack_h3_timed_text` to read. The editor hands the alternate phrase over as
     `link_texts['blended']`, char spans on `link_texts['prompt']`, same mechanism as timed
     phrases. `choose_encoded_text` verifies "cat runs" against the tensor's own tag run
-    (3 reference tokens + 8 text tokens) before trusting it."""
+    (3 reference tokens + 8 text tokens) before trusting it. The shift covers the WHOLE
+    prompt run (rows [3:11), "cat runs") toward the alt sentence's mean, not just "runs"'s
+    own span -- but the 3-token reference block (rows [0:3), tags 0) sits OUTSIDE the
+    prompt range entirely and must stay untouched regardless."""
     _quiet(monkeypatch)
     link = {"prompt": "cat runs", "full_prompt": "cat runs", "blended": [[4, 8, "stands", 0.5]]}
     cond = torch.zeros(1, 11, 4)
@@ -1054,8 +1064,9 @@ def test_wired_conditioning_blends_from_the_editors_link_texts(refiner, monkeypa
     meta = {"funpack_conditioning_owner": "wired", "minimax_token_tags": [0, 0, 0] + [1] * 8}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip(), link_texts=link)
     result = out[0][0]
-    assert torch.allclose(result[:, 7:11, :], torch.full((1, 4, 4), 3.0))
-    assert torch.allclose(result[:, :7, :], torch.zeros(1, 7, 4))
+    assert torch.allclose(result[:, :3, :], torch.zeros(1, 3, 4))     # reference rows untouched
+    assert torch.allclose(result[:, 3:7, :], torch.full((1, 4, 4), 2.25))   # "cat " moved too
+    assert torch.allclose(result[:, 7:11, :], torch.full((1, 4, 4), 3.25))  # "runs"
 
 
 def test_wired_conditioning_is_skipped_not_silently_dropped_when_nothing_matches(refiner, monkeypatch):
@@ -1198,7 +1209,7 @@ def test_applying_a_wired_blend_twice_with_the_same_link_texts_does_not_compound
     once = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip(), link_texts=link)
     twice = refiner._v2_apply_h3_phrase_blend(once, _H3Clip(), link_texts=link)
     assert torch.equal(once[0][0], twice[0][0])
-    assert torch.allclose(once[0][0][:, 7:11, :], torch.full((1, 4, 4), 3.0))
+    assert torch.allclose(once[0][0][:, 7:11, :], torch.full((1, 4, 4), 3.25))
 
 
 def test_one_failed_span_is_reported_not_swallowed(refiner, monkeypatch, capsys):
@@ -1212,6 +1223,24 @@ def test_one_failed_span_is_reported_not_swallowed(refiner, monkeypatch, capsys)
     meta = {"funpack_h3_blended": [(6, 10, "stands", 0.5), (100, 104, "nowhere", 0.5)],
             "funpack_h3_timed_text": text, "minimax_token_tags": [1] * len(text)}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
-    assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 3.0))
+    assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 3.3947367668151855))
     printed = capsys.readouterr().out
     assert "1 phrase(s)" in printed and "1 could not be placed" in printed
+
+
+def test_two_valid_spans_in_one_prompt_are_additive_not_sequential(refiner, monkeypatch):
+    """Both spans' alt phrases re-encode to the SAME uniform 5.0 via the fake clip, so this
+    isolates ONE thing: whether the second span measures its own delta against the ORIGINAL
+    mean (0.0, since `cond` starts at all-zero) or against whatever the FIRST span already
+    left behind. Additive (intended): both deltas are 0.5*(5.0-0.0)=2.5, summed to 5.0
+    everywhere. Sequential/compounding (the bug this guards against): the second span would
+    measure off the first span's already-shifted 2.5, landing at 2.5 + 0.5*(5.0-2.5) = 3.75
+    instead -- silently order-dependent, and weaker than either blend alone deserves."""
+    _quiet(monkeypatch)
+    text = "a cat sits on a mat"
+    cond = torch.zeros(1, len(text), 4)
+    meta = {"funpack_h3_blended": [(6, 10, "stands", 0.5), (14, 15, "x", 0.5)],
+            "funpack_h3_timed_text": text, "minimax_token_tags": [1] * len(text)}
+    out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
+    assert torch.allclose(out[0][0], torch.full((1, len(text), 4), 5.0))
+

@@ -12264,29 +12264,52 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return out
 
     def _v2_apply_h3_phrase_blend(self, conditioning_list, clip, link_texts=None):
-        """`[phraseA|phraseB(:strength)?]` — pull phraseA's rows toward phraseB's, in place.
+        """`[phraseA|phraseB(:strength)?]` — pull the WHOLE prompt toward the phraseB sentence.
 
-        `strength` defaults to `h3_token_weights.BLEND_STRENGTH_DEFAULT` (0.5) when omitted;
-        each span carries its own value (parsed per-blend, not a single run-wide setting),
-        since a half-strength pull still reads as mostly phraseA — the rest of the sentence
-        (style, postfix, grammar around the phrase) is 100% built around phraseA's words
-        regardless of how far the mean shift moves, so getting phraseB's influence to show
-        up at all in the video can need pushing well past 0.5.
+        First shipped version only shifted phraseA's OWN 1-4 token rows and showed no visible
+        effect on real generations even at strength 1.5 (3x default) — confirmed 2026-09-21.
+        Reason: Qwen's conditioning rows are CONTEXTUAL hidden states (row i is "having read
+        this far", not "the vector for this word" — the same fact that rules out scaling a
+        token's embedding for weighting, see h3_token_weights.py). That means the action isn't
+        localized to the verb's own row — EVERY row in "a cat sits on a mat" is colored by
+        knowing the cat sits, the same way every sentence in a paragraph still reads as being
+        about a topic even after one word is struck out. Editing only the verb's row left every
+        other row still contextually pointing at phraseA's action, which the DiT read fine.
+
+        This version shifts EVERY prompt-token row (not just phraseA's own span) toward the
+        MEAN of the alt sentence's own prompt rows, by `strength`. `strength` defaults to
+        `h3_token_weights.BLEND_STRENGTH_DEFAULT` (0.5) when omitted; each span carries its
+        own value (parsed per-blend, not a single run-wide setting).
 
         phraseA is what `_v2_encode_prompt` already put in the prompt (see
         `funpack_h3_blended` in `_v2_encode_prompt`); prefix, postfix and every other word
         are exactly what was typed. This re-encodes the SAME sentence with phraseB swapped
-        in for phraseA, and shifts phraseA's own rows by the difference between the two
-        phrases' MEAN row — not a per-token blend. H3's conditioning rows are Qwen's
-        CONTEXTUAL hidden states (row i is "having read this far", not "the vector for this
-        word" — the same fact that rules out scaling a token's embedding for weighting, see
-        h3_token_weights.py), and phraseA/phraseB tokenize to different lengths in general,
-        so there is no per-position correspondence to blend token-by-token. Only each
-        phrase's own average position in context does.
+        in for phraseA, and shifts every prompt row by the difference between the two
+        sentences' own MEAN row — not a per-token blend, and not scoped to the phrase's own
+        position: phraseA/phraseB tokenize to different lengths in general, so there is no
+        per-position correspondence to blend token-by-token, and (per the reasoning above)
+        the phrase's own token position is not where the action actually lives anyway.
 
-        UNVALIDATED: averaging two contextual hidden states is not the same operation as
-        averaging two static word embeddings. Whether this reads as "both actions" or as a
-        blur between them has not been confirmed on a real generation — try it and see.
+        Attention-bias (the mechanism `h3_token_weights.make_override` uses for phrase
+        weighting/timed phrases, and which DOES demonstrably work on H3) cannot do this job:
+        it only adds a bias to attention LOGITS for tokens already present in the sequence —
+        it can turn an existing phrase's influence up or down, but there is no "runs" token
+        to boost when the prompt says "sits". Injecting different words' content has to
+        happen at the conditioning-tensor level, before the DiT runs at all, which is what
+        this does.
+
+        UNVALIDATED: whole-sentence mean shift is a bigger, blunter edit than the
+        phrase-scoped one it replaces — it also drags every OTHER word's row (style,
+        subject, camera direction) toward the alt sentence's version of them, not just the
+        action's. Whether this reads as "both actions" or overwrites the character/style the
+        rest of the sentence was carrying has not been confirmed on a real generation yet.
+
+        Multiple `[a|b]` spans in ONE prompt are ADDITIVE, not sequential: each span's delta
+        is measured against the SAME original, un-shifted mean (not against a prior span's
+        already-shifted result), then summed into the tensor. Order of the spans in the
+        prompt does not change the outcome. This is a design choice, not an accident — the
+        alternative (each span measuring off whatever the previous one left behind) would
+        make the result depend on which blend happened to run first, for no real benefit.
 
         Costs one extra short text-encode per blended span (Qwen alone, no DiT pass) — not
         the 2x a second full video forward pass would cost. That re-encode goes through
@@ -12396,15 +12419,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
                     continue
                 new_cond = cond.clone()
+                hi_a = base + prompt_tokens
+                # Measured ONCE from the untouched original, not `new_cond`: `base:hi_a` is
+                # the same range for every span in this entry, so if it were re-measured from
+                # `new_cond` after a prior span's shift, a second blend would compute its own
+                # delta against an already-perturbed baseline and compound on top of the
+                # first span's shift instead of contributing its own independent pull. Fixing
+                # the reference point here makes multiple blends in one prompt additive and
+                # order-independent -- each span's delta is exactly `strength * (its own
+                # mean_b - the ORIGINAL mean_a)`, summed into `new_cond`.
+                mean_a = cond[:, base:hi_a, :].mean(dim=1, keepdim=True)
                 done = 0
                 for start, end, alt_phrase, strength in spans:
+                    # The phrase must still resolve to real tokens in THIS sentence -- not
+                    # because the shift is scoped to it (it isn't, see docstring), but as
+                    # confirmation the span is genuine and not a stale/garbled offset.
                     toks = _tw.token_spans_from_offsets(offsets, [(start, end, 1.0)])
-                    if not toks:
-                        skipped_n += 1
-                        continue
-                    a0, a1, _w = toks[0]
-                    lo, hi = base + a0, base + a1
-                    if hi <= lo or hi > cond_len:
+                    if not toks or hi_a > cond_len:
                         skipped_n += 1
                         continue
                     alt_text = text[:start] + alt_phrase + text[end:]
@@ -12416,27 +12447,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     alt_cond_len = int(alt_cond.shape[1])
                     alt_enc = tokenizer(alt_text, add_special_tokens=False,
                                         return_offsets_mapping=True)
-                    alt_offsets = list(alt_enc["offset_mapping"])
-                    alt_prompt_tokens = len(alt_offsets)
+                    alt_prompt_tokens = len(alt_enc["offset_mapping"])
                     alt_base = _tw.prompt_base(alt_meta.get("minimax_token_tags"),
                                                alt_cond_len, alt_prompt_tokens)
-                    if alt_base is None:
+                    if alt_base is None or not alt_prompt_tokens:
                         skipped_n += 1
                         continue
-                    b_toks = _tw.token_spans_from_offsets(
-                        alt_offsets, [(start, start + len(alt_phrase), 1.0)])
-                    if not b_toks:
+                    hi_b = alt_base + alt_prompt_tokens
+                    if hi_b > alt_cond_len:
                         skipped_n += 1
                         continue
-                    b0, b1, _w2 = b_toks[0]
-                    blo, bhi = alt_base + b0, alt_base + b1
-                    if bhi <= blo or bhi > alt_cond_len:
-                        skipped_n += 1
-                        continue
-                    mean_a = new_cond[:, lo:hi, :].mean(dim=1, keepdim=True)
-                    mean_b = alt_cond[:, blo:bhi, :].mean(dim=1, keepdim=True).to(
+                    mean_b = alt_cond[:, alt_base:hi_b, :].mean(dim=1, keepdim=True).to(
                         dtype=new_cond.dtype, device=new_cond.device)
-                    new_cond[:, lo:hi, :] = new_cond[:, lo:hi, :] \
+                    new_cond[:, base:hi_a, :] = new_cond[:, base:hi_a, :] \
                         + float(strength) * (mean_b - mean_a)
                     done += 1
                 if done:
