@@ -88,13 +88,23 @@ _BRACKET_WEIGHTED = re.compile(r"(?<!\\)\[([^\[\]@]*?):\s*(-?\d+(?:\.\d+)?)\s*\]
 # states (the same reason the module docstring above gives for why weighting cannot scale a
 # token's embedding), so two differently-tokenized phrases have no per-position
 # correspondence to blend token-by-token — only their own average position in context does.
-# phraseB excludes `:` and `@` too, not just brackets and `|`: without that, `[cat|dog:1.5]`
-# reads as a blend whose alt phrase is the literal string "dog:1.5" — colon and digit intact
-# — which then goes to the real text encoder unstripped when the alt phrase is re-encoded
-# (there is no enclosing bracket left, once substituted into the sentence, for a second
-# parse_markup pass to catch). Excluding them means that input falls through to
-# `_BRACKET_WEIGHTED` instead (a plain weighted phrase), not a silent leak.
-_BLENDED = re.compile(r"(?<!\\)\[([^\[\]|@:]+)\|([^\[\]|@:]+)\]")
+#
+# Colons, `@`, digits — anything except brackets and the `|` separator itself — are allowed
+# freely in either phrase. `dog:1.5` or `dog@1-2` as an alt phrase is NOT stripped before its
+# separate re-encode (there is no enclosing bracket left, once substituted into the sentence,
+# for a second `parse_markup` pass to catch it), so Qwen reads it as literal punctuation in
+# that phrase's own sentence — exactly the "reaches the encoder as punctuation" outcome the
+# module docstring already describes for `(word:1.2)` failing to weight anything on H3.
+# That is a quality footnote, not a leak: it degrades one phrase's own encoding, the same
+# already-accepted trade-off `[cat (sitting):1.5]` gets elsewhere in this file (parens kept
+# as literal pass-through text, not re-parsed). Earlier attempts to regex-blacklist "looks
+# like leftover markup" shapes here (excluding `:`/`@` outright, then a trailing-weight
+# check, then a trailing-timed-window check) each broke ordinary use of a colon or `@` in
+# natural prose ("wide shot: character walks", "call me@work") while a DIFFERENT shape
+# always found a way through anyway (`dog:5@2`, `dog@1—2` with an em dash, `@` followed by
+# an unrelated dash many words later). Blacklisting a look is not a fixable boundary; not
+# blacklisting at all is consistent with how the rest of this file already treats it.
+_BLENDED = re.compile(r"(?<!\\)\[([^\[\]|]+)\|([^\[\]|]+)\]")
 # Default blend amount: half the distance from phraseA's average hidden state toward
 # phraseB's. Not exposed as a Studio dial yet — one number, changeable here, not a UI knob.
 BLEND_STRENGTH_DEFAULT = 0.5

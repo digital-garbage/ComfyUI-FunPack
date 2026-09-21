@@ -1064,17 +1064,72 @@ def test_a_non_h3_clip_is_left_alone(refiner, monkeypatch):
 
 # --- adversarial-review fixes: a colon in the alt phrase, double-apply, partial failure ----
 
-def test_a_colon_in_the_alt_phrase_does_not_become_a_blend():
-    """[cat|dog:1.5] used to parse as a blend whose alt phrase was the literal string
-    "dog:1.5" -- colon and digit intact -- which then reached the real text encoder
-    unstripped on re-encode (there is no bracket left around it once substituted into the
-    sentence for a second parse_markup pass to catch). Excluding ':' and '@' from the alt
-    phrase's character class means this now falls through to the plain bracket-weight
-    syntax instead of silently leaking markup into the model."""
+def test_an_alt_phrase_shaped_like_a_weight_is_accepted_as_literal_text():
+    """[cat|dog:1.5] is a blend whose alt phrase is the literal string "dog:1.5" -- colon
+    and digit intact. It is NOT stripped before its separate re-encode (there is no bracket
+    left around it once substituted into the sentence), so Qwen reads it as literal
+    punctuation in that phrase's own sentence -- a quality footnote, not a leak, and the
+    same trade-off `[cat (sitting):1.5]` already gets elsewhere in this file (kept as
+    literal pass-through text, not re-parsed). Blacklisting "looks like a weight" was tried
+    and abandoned: it also caught ordinary colons in prose with nothing to do with weights,
+    and a DIFFERENT shape (`dog:5@2`, an em-dash instead of a hyphen) always found a way
+    through anyway -- see git history on this test for the two reverted attempts."""
     clean, weighted, timed, blended = tw.parse_markup("a [cat|dog:1.5] man")
+    assert blended == [(2, 5, "dog:1.5")]
+    assert clean == "a cat man"
+
+
+def test_a_bracket_ending_in_a_time_window_is_read_as_timed_not_blend():
+    """`_TIMED` is tried before `_BLENDED` in `_MARKUP` and its phrase group tolerates a
+    '|', so any bracket ending in a valid `@t0-t1` is always claimed by `_TIMED` first --
+    the literal pipe stays in the clean text as part of that phrase, same pre-existing
+    cross-markup behavior parentheses already get inside a weighted phrase. Not a blend
+    at all, so there is no alt phrase to leak anything through."""
+    clean, weighted, timed, blended = tw.parse_markup("a [cat|dog@1-2] man")
     assert blended == []
-    assert weighted == [(2, 9, 1.5)]
+    assert timed == [(2, 9, 1.0, 1.0, 2.0)]
     assert clean == "a cat|dog man"
+
+
+def test_an_ordinary_colon_in_either_phrase_is_a_perfectly_fine_blend():
+    """The bug the user actually hit: a shortcut expands to something like "wide shot:
+    character walks" and the earlier fix's blanket colon ban silently refused to treat
+    ANY bracket containing it as a blend at all -- with no error, because nothing failed,
+    the construct just never matched. A colon that isn't sitting at the very end next to a
+    bare number is ordinary prompt text and must be allowed through untouched."""
+    clean, weighted, timed, blended = tw.parse_markup("a [wide shot: walks|runs fast] man")
+    assert blended == [(2, 18, "runs fast")]
+    assert clean == "a wide shot: walks man"
+
+
+def test_an_ordinary_at_sign_in_either_phrase_is_a_perfectly_fine_blend():
+    clean, weighted, timed, blended = tw.parse_markup("a [call me@work|call me@home] man")
+    assert blended == [(2, 14, "call me@home")]
+    assert clean == "a call me@work man"
+
+
+@pytest.mark.parametrize("alt", [
+    "dog@-1-2",       # negative t0 -- fails _TIMED's non-negative grammar
+    "dog@1-2-3",      # trailing garbage after a valid-looking range
+    "dog@abc-2",      # non-numeric t0
+    "dog@1-2extra",   # trailing garbage right after a valid range
+    "dog@2-",         # missing t1
+    "dog@-2--1",      # both bounds negative
+    "dog@1-",         # missing t1, no trailing digit at all
+    "dog:5@2",        # colon-weight NOT at the tail, followed by a bare @digit
+    "dog@1—2",   # em dash instead of an ASCII hyphen
+])
+def test_a_malformed_time_window_shaped_alt_phrase_is_still_a_blend(alt):
+    """None of these satisfy `_TIMED`'s strict grammar (non-negative integers, ASCII
+    hyphen, no trailing garbage), so `_TIMED` does not intercept them the way a
+    WELL-FORMED `@t0-t1` tail would. They ARE still accepted as blends -- the alt phrase
+    is literal text like any other, and reaches Qwen as odd-looking punctuation in its own
+    separate re-encode, not as anything that changes behavior. See
+    test_an_alt_phrase_shaped_like_a_weight_is_accepted_as_literal_text for why blocking
+    by shape was tried and abandoned rather than fixed further."""
+    clean, weighted, timed, blended = tw.parse_markup(f"a [cat|{alt}] man")
+    assert blended == [(2, 5, alt)]
+    assert clean == "a cat man"
 
 
 def test_applying_the_blend_twice_does_not_compound(refiner, monkeypatch):
