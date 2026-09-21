@@ -1000,20 +1000,24 @@ def test_a_bracketed_weight_without_a_window_is_a_plain_weight():
     assert weighted == [(2, 15, 1.5)] and timed == [(16, 20, 1.0, 1.0, 2.0)]
 
 
-# --- phrase blend: mean-vector shift, not a per-token blend --------------------------
+# --- phrase blend: position-by-position average of two FULL conditionings ------------
 
-def test_every_prompt_row_shifts_not_just_the_phrases_own_span(refiner, monkeypatch):
-    """The first shipped version only shifted the phrase's own 1-4 rows and showed no visible
-    effect on a real generation even at strength 1.5 -- because Qwen's rows are CONTEXTUAL,
-    so every OTHER word in "a cat sits on a mat" still silently carries "sits" too, not just
-    the verb's own row. This version shifts the WHOLE prompt range toward the mean of the
-    alt sentence's OWN whole prompt range, so a phrase outside the marked span still moves.
-    Both halves of the sentence (rows [0:6) before "sits", rows [10:20) after) start at 0.0
-    and the marked span [6:10) starts at 1.0 -- the fake clip re-encodes any text to a
-    uniform 5.0, so mean_a = mean of the real cond (0.2, mixing 16 zero rows and 4 one
-    rows), mean_b = 5.0 uniformly, and EVERY row (in and out of the marked span) shifts by
-    the same 0.5*(5.0-0.2) = +2.4 -- landing the marked span at 1.0+2.4=3.4 and everything
-    else at 0.0+2.4=2.4, not at the untouched 0.0 the phrase-scoped version left it at."""
+def test_every_prompt_row_averages_with_its_own_position_not_a_shared_mean(refiner, monkeypatch):
+    """Two wrong versions preceded this one, both found wrong against real generations on
+    2026-09-21 (see project_h3_phrase_blend.md): (1) shifting only the phrase's own 1-4 rows
+    was invisible even at strength 1.5, because Qwen's rows are CONTEXTUAL -- every word in
+    "a cat sits on a mat" already carries "sits", not just the verb's row; (2) widening the
+    edit to the whole prompt but still using a single MEAN VECTOR for ConditioningB collapsed
+    an entire second sentence down to one flat direction, added identically to every row
+    regardless of that row's own original content -- a blur, not an average.
+
+    This version keeps ConditioningA's row-6..9 ("sits", starts at 1.0) and row-0..5/10..19
+    (starts at 0.0) each averaging with the SAME POSITION in ConditioningB, not a shared
+    mean: the fake clip returns a uniform 5.0 for ANY text, so ConditioningB's own rows are
+    all 5.0 regardless of position -- but the ORIGINAL value differs per position in
+    ConditioningA, so at strength 0.5 the marked span lands at 1.0+0.5*(5.0-1.0)=3.0 while
+    the rest of the sentence, starting at 0.0, lands at 0.0+0.5*(5.0-0.0)=2.5 -- two
+    DIFFERENT results, not one shared blur like the mean-vector version produced."""
     _quiet(monkeypatch)
     text = "a cat sits on a mat"           # "sits" is chars [6:10]
     cond = torch.zeros(1, len(text), 4)
@@ -1022,14 +1026,15 @@ def test_every_prompt_row_shifts_not_just_the_phrases_own_span(refiner, monkeypa
             "minimax_token_tags": [1] * len(text)}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
     result = out[0][0]
-    assert torch.allclose(result[:, 6:10, :], torch.full((1, 4, 4), 3.3947367668151855))
-    assert torch.allclose(result[:, :6, :], torch.full((1, 6, 4), 2.3947370052337646))
-    assert torch.allclose(result[:, 10:, :], torch.full((1, len(text) - 10, 4), 2.3947367668151855))
+    assert torch.allclose(result[:, 6:10, :], torch.full((1, 4, 4), 3.0))
+    assert torch.allclose(result[:, :6, :], torch.full((1, 6, 4), 2.5))
+    assert torch.allclose(result[:, 10:, :], torch.full((1, len(text) - 10, 4), 2.5))
 
 
 def test_a_higher_blend_strength_shifts_further_toward_the_alternate(refiner, monkeypatch):
     """Same setup as above, but strength 0.8 instead of the 0.5 default: the marked span
-    should land further toward the alt sentence's mean than the 0.5 case above."""
+    should land further toward ConditioningB's own value (5.0) than the 0.5 case above --
+    1.0 + 0.8*(5.0-1.0) = 4.2."""
     _quiet(monkeypatch)
     text = "a cat sits on a mat"
     cond = torch.zeros(1, len(text), 4)
@@ -1037,7 +1042,72 @@ def test_a_higher_blend_strength_shifts_further_toward_the_alternate(refiner, mo
     meta = {"funpack_h3_blended": [(6, 10, "stands", 0.8)], "funpack_h3_timed_text": text,
             "minimax_token_tags": [1] * len(text)}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
-    assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 4.831579208374023))
+    assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 4.2))
+
+
+def test_at_strength_half_the_result_is_exactly_the_plain_average(refiner, monkeypatch):
+    """`strength=0.5` must be EXACTLY `(ConditioningA + ConditioningB) / 2` -- the literal
+    formula this feature was specified as -- not merely close to it. Real, distinct-per-row
+    content (not the uniform fake-clip constant used elsewhere in this file) on both sides,
+    with matching lengths so no resampling is involved, isolates the arithmetic itself."""
+    _quiet(monkeypatch)
+
+    class _DistinctClip(_H3Clip):
+        def encode_from_tokens_scheduled(self, tokens):
+            n = len(tokens)
+            rows = torch.arange(n, dtype=torch.float32).view(1, n, 1).expand(1, n, 4) * 2.0
+            return [(rows.clone(), {"pooled_output": None})]
+
+    text = "abcd"                      # 4 chars -> 4 "tokens" under the fake char tokenizer
+    cond_a = torch.arange(4, dtype=torch.float32).view(1, 4, 1).expand(1, 4, 4).clone()
+    meta = {"funpack_h3_blended": [(0, 4, "wxyz", 0.5)], "funpack_h3_timed_text": text,
+            "minimax_token_tags": [1] * 4}
+    out = refiner._v2_apply_h3_phrase_blend([[cond_a, meta]], _DistinctClip())
+    # ConditioningB (same length, "wxyz") is row i -> 2*i; average with ConditioningA's row
+    # i -> i is exactly (i + 2*i) / 2 = 1.5*i, per position -- not a single shared value.
+    expected = torch.arange(4, dtype=torch.float32).view(1, 4, 1).expand(1, 4, 4) * 1.5
+    assert torch.allclose(out[0][0], expected)
+
+
+def test_a_shorter_alt_phrase_is_resampled_not_misaligned(refiner, monkeypatch):
+    """SHORTCUT1 and SHORTCUT2 tokenize to different lengths in general -- ConditioningA (4
+    rows here) and ConditioningB (its own re-encode, "wxy" -> 3 rows here) must be the SAME
+    length to average position-by-position, so ConditioningB gets resampled onto
+    ConditioningA's own row count.
+
+    Asserts the EXACT resampled-and-averaged values (via `torch.nn.functional.interpolate`
+    computed independently, same call this test's own math mirrors), not just loose bounds --
+    a loose "is it in a plausible range" check would still pass if the interpolate call were
+    silently mis-transposed (e.g. resampling along the hidden dim instead of the token axis),
+    because a shape mismatch from that bug raises inside the method's own broad
+    `except Exception`, which swallows it and returns cond_a COMPLETELY UNMODIFIED -- still
+    the right shape, still within its own original value range, and a bounds-only check
+    cannot tell that apart from a real, correctly-computed blend. Asserting the precise
+    expected numbers means the test fails the moment nothing actually blended."""
+    _quiet(monkeypatch)
+
+    class _DistinctClip(_H3Clip):
+        def encode_from_tokens_scheduled(self, tokens):
+            n = len(tokens)
+            rows = torch.arange(n, dtype=torch.float32).view(1, n, 1).expand(1, n, 4) * 2.0
+            return [(rows.clone(), {"pooled_output": None})]
+
+    text = "abcd"                      # ConditioningA: 4 rows, values [0, 1, 2, 3]
+    cond_a = torch.arange(4, dtype=torch.float32).view(1, 4, 1).expand(1, 4, 4).clone()
+    meta = {"funpack_h3_blended": [(0, 4, "wxy", 0.5)], "funpack_h3_timed_text": text,
+            "minimax_token_tags": [1] * 4}
+    out = refiner._v2_apply_h3_phrase_blend([[cond_a, meta]], _DistinctClip())
+    result = out[0][0]
+    assert result.shape == cond_a.shape
+    # ConditioningB's own un-resampled values are [0, 2, 4] (3 rows); linearly resampled onto
+    # 4 positions (align_corners=False) that becomes [0, 1.25, 2.75, 4]; averaged 50/50 with
+    # ConditioningA's [0, 1, 2, 3] gives [0, 1.125, 2.375, 3.5] -- and this must NOT equal
+    # ConditioningA's own unmodified values, ruling out the "silently reverted, still passes
+    # a bounds check" failure mode described above.
+    expected = torch.tensor([0.0, 1.125, 2.375, 3.5]).view(1, 4, 1).expand(1, 4, 4)
+    assert torch.allclose(result, expected, atol=1e-4)
+    assert not torch.allclose(result, cond_a)
+    assert result.max().item() <= 4.0 + 1e-4
 
 
 def test_an_untagged_entry_is_left_completely_alone(refiner, monkeypatch):
@@ -1065,8 +1135,8 @@ def test_wired_conditioning_blends_from_the_editors_link_texts(refiner, monkeypa
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip(), link_texts=link)
     result = out[0][0]
     assert torch.allclose(result[:, :3, :], torch.zeros(1, 3, 4))     # reference rows untouched
-    assert torch.allclose(result[:, 3:7, :], torch.full((1, 4, 4), 2.25))   # "cat " moved too
-    assert torch.allclose(result[:, 7:11, :], torch.full((1, 4, 4), 3.25))  # "runs"
+    assert torch.allclose(result[:, 3:7, :], torch.full((1, 4, 4), 2.5))   # "cat " moved too
+    assert torch.allclose(result[:, 7:11, :], torch.full((1, 4, 4), 3.0))  # "runs"
 
 
 def test_wired_conditioning_is_skipped_not_silently_dropped_when_nothing_matches(refiner, monkeypatch):
@@ -1209,7 +1279,7 @@ def test_applying_a_wired_blend_twice_with_the_same_link_texts_does_not_compound
     once = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip(), link_texts=link)
     twice = refiner._v2_apply_h3_phrase_blend(once, _H3Clip(), link_texts=link)
     assert torch.equal(once[0][0], twice[0][0])
-    assert torch.allclose(once[0][0][:, 7:11, :], torch.full((1, 4, 4), 3.25))
+    assert torch.allclose(once[0][0][:, 7:11, :], torch.full((1, 4, 4), 3.0))
 
 
 def test_one_failed_span_is_reported_not_swallowed(refiner, monkeypatch, capsys):
@@ -1223,7 +1293,7 @@ def test_one_failed_span_is_reported_not_swallowed(refiner, monkeypatch, capsys)
     meta = {"funpack_h3_blended": [(6, 10, "stands", 0.5), (100, 104, "nowhere", 0.5)],
             "funpack_h3_timed_text": text, "minimax_token_tags": [1] * len(text)}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
-    assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 3.3947367668151855))
+    assert torch.allclose(out[0][0][:, 6:10, :], torch.full((1, 4, 4), 3.0))
     printed = capsys.readouterr().out
     assert "1 phrase(s)" in printed and "1 could not be placed" in printed
 
@@ -1243,4 +1313,34 @@ def test_two_valid_spans_in_one_prompt_are_additive_not_sequential(refiner, monk
             "funpack_h3_timed_text": text, "minimax_token_tags": [1] * len(text)}
     out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
     assert torch.allclose(out[0][0], torch.full((1, len(text), 4), 5.0))
+
+
+def test_two_spans_with_different_alt_lengths_and_strengths_are_independently_resampled(refiner, monkeypatch):
+    """The additive test above uses the uniform-5.0 fake clip, which can't tell a correct
+    per-span resample apart from any other per-span math (a uniform tensor resamples to
+    itself no matter what). This uses distinct, position-sensitive content on both sides,
+    two spans whose alt phrases tokenize to DIFFERENT lengths from each other (7 rows and 5
+    rows, against ConditioningA's own 6), and two different strengths -- so a bug that only
+    shows up when one span's resample leaks into the other's, or when strengths get swapped
+    or shared, has somewhere to appear. Expected values computed independently via the same
+    `torch.nn.functional.interpolate` call the implementation uses, then summed by hand."""
+    _quiet(monkeypatch)
+
+    class _DistinctClip(_H3Clip):
+        def encode_from_tokens_scheduled(self, tokens):
+            n = len(tokens)
+            rows = torch.arange(n, dtype=torch.float32).view(1, n, 1).expand(1, n, 4) * 2.0
+            return [(rows.clone(), {"pooled_output": None})]
+
+    text = "abcdef"                    # ConditioningA: 6 rows, values [0..5]
+    cond_a = torch.arange(6, dtype=torch.float32).view(1, 6, 1).expand(1, 6, 4).clone()
+    meta = {"funpack_h3_blended": [(0, 2, "wxy", 0.5), (3, 6, "pq", 0.25)],
+            "funpack_h3_timed_text": text, "minimax_token_tags": [1] * 6}
+    out = refiner._v2_apply_h3_phrase_blend([[cond_a, meta]], _DistinctClip())
+    # span 1: "ab"->"wxy" makes a 7-row alt text ("wxycdef"), resampled to 6 rows, weighted
+    # 0.5. span 2: "def"->"pq" makes a 5-row alt text ("abcpq"), resampled to 6 rows,
+    # weighted 0.25. Both deltas are measured against the SAME original [0..5] and summed.
+    expected = torch.tensor([0.0833, 1.8750, 3.7083, 5.5417, 7.3750, 9.1667]) \
+        .view(1, 6, 1).expand(1, 6, 4)
+    assert torch.allclose(out[0][0], expected, atol=1e-3)
 

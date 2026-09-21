@@ -12264,52 +12264,66 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return out
 
     def _v2_apply_h3_phrase_blend(self, conditioning_list, clip, link_texts=None):
-        """`[phraseA|phraseB(:strength)?]` — pull the WHOLE prompt toward the phraseB sentence.
+        """`[phraseA|phraseB(:strength)?]` — average two FULL conditionings, position by
+        position: `(1-strength)*ConditioningA + strength*ConditioningB`, row for row.
 
-        First shipped version only shifted phraseA's OWN 1-4 token rows and showed no visible
-        effect on real generations even at strength 1.5 (3x default) — confirmed 2026-09-21.
-        Reason: Qwen's conditioning rows are CONTEXTUAL hidden states (row i is "having read
-        this far", not "the vector for this word" — the same fact that rules out scaling a
-        token's embedding for weighting, see h3_token_weights.py). That means the action isn't
-        localized to the verb's own row — EVERY row in "a cat sits on a mat" is colored by
-        knowing the cat sits, the same way every sentence in a paragraph still reads as being
-        about a topic even after one word is struck out. Editing only the verb's row left every
-        other row still contextually pointing at phraseA's action, which the DiT read fine.
+        This is the design as originally specified: encode `$style SHORTCUT1 $postfix` and
+        `$style SHORTCUT2 $postfix` as two independent full conditionings, then average them
+        elementwise — not stitched (batch>1, two passes), one combined conditioning, one
+        sampling pass. `strength` is the SAME knob as `(A+B)/2`: at strength=0.5 this is
+        exactly that formula, `(1-0.5)*A + 0.5*B = (A+B)/2`; other values move the blend
+        toward one side, same semantics as the `:strength` overrides on `(word:weight)`
+        elsewhere in this file.
 
-        This version shifts EVERY prompt-token row (not just phraseA's own span) toward the
-        MEAN of the alt sentence's own prompt rows, by `strength`. `strength` defaults to
-        `h3_token_weights.BLEND_STRENGTH_DEFAULT` (0.5) when omitted; each span carries its
-        own value (parsed per-blend, not a single run-wide setting).
+        Two prior versions both got the actual math wrong, discovered together with the user
+        against real generations on 2026-09-21 (see project_h3_phrase_blend.md memory for the
+        full history):
+        1. Shifting only phraseA's own 1-4 token rows showed NO visible effect even at
+           strength 1.5 (3x default). Reason: Qwen's rows are CONTEXTUAL hidden states, so
+           every row in "a cat sits on a mat" already carries "sits", not just the verb's own
+           row — editing a couple of rows left the rest of the sentence still fully pointing
+           at phraseA's action.
+        2. Widening the edit to shift the WHOLE prompt range by a single MEAN-VECTOR
+           difference fixed the visibility problem in principle but was still the wrong
+           operation: collapsing phraseB's entire sentence down to one averaged direction
+           throws away everything but its coarse gist — word order, individual word content,
+           all of it. Averaged into every row identically, it reads as one flat nudge, not a
+           second sentence's worth of information.
 
-        phraseA is what `_v2_encode_prompt` already put in the prompt (see
-        `funpack_h3_blended` in `_v2_encode_prompt`); prefix, postfix and every other word
-        are exactly what was typed. This re-encodes the SAME sentence with phraseB swapped
-        in for phraseA, and shifts every prompt row by the difference between the two
-        sentences' own MEAN row — not a per-token blend, and not scoped to the phrase's own
-        position: phraseA/phraseB tokenize to different lengths in general, so there is no
-        per-position correspondence to blend token-by-token, and (per the reasoning above)
-        the phrase's own token position is not where the action actually lives anyway.
+        This version keeps each side's own row-by-row content: `ConditioningB` is resampled
+        (linear interpolation along the token axis) to `ConditioningA`'s own prompt-token
+        count when phraseA/phraseB tokenize to different lengths — the two conditionings must
+        be the same shape to average position-wise, and `$style`/`$postfix` being identical on
+        both sides means most positions already correspond; only the differing middle section
+        needs the resample to line back up. The averaged result keeps `ConditioningA`'s exact
+        original shape (required — nothing downstream may see the token count change, see the
+        `studio:length_changed` check in `_v2_finalize_conditioning`).
+
+        Linear resampling is a SMOOTHING approximation, not real word-for-word alignment, and
+        degrades further the more the two lengths differ: `interpolate` only ever blends the
+        1-2 nearest source rows into each output position, so squeezing a much longer
+        alternate sentence down onto a much shorter one's row count (e.g. 500 rows onto 5)
+        samples a handful of scattered points along it, not a representative summary of the
+        whole thing — most of the longer side's own content is skipped over, not averaged in.
+        Fine for two similarly-sized shortcuts; a bad idea for pairing a one-word shortcut
+        with a paragraph-length one.
 
         Attention-bias (the mechanism `h3_token_weights.make_override` uses for phrase
         weighting/timed phrases, and which DOES demonstrably work on H3) cannot do this job:
         it only adds a bias to attention LOGITS for tokens already present in the sequence —
         it can turn an existing phrase's influence up or down, but there is no "runs" token
-        to boost when the prompt says "sits". Injecting different words' content has to
+        to boost when the prompt says "sits". Injecting a second sentence's content has to
         happen at the conditioning-tensor level, before the DiT runs at all, which is what
         this does.
 
-        UNVALIDATED: whole-sentence mean shift is a bigger, blunter edit than the
-        phrase-scoped one it replaces — it also drags every OTHER word's row (style,
-        subject, camera direction) toward the alt sentence's version of them, not just the
-        action's. Whether this reads as "both actions" or overwrites the character/style the
-        rest of the sentence was carrying has not been confirmed on a real generation yet.
+        UNVALIDATED: whether position-by-position averaging (even with resampling to line up
+        lengths) actually reads as "both actions" rather than a blur or a corrupted middle
+        section has not been confirmed on a real generation yet — try it and see.
 
-        Multiple `[a|b]` spans in ONE prompt are ADDITIVE, not sequential: each span's delta
-        is measured against the SAME original, un-shifted mean (not against a prior span's
-        already-shifted result), then summed into the tensor. Order of the spans in the
-        prompt does not change the outcome. This is a design choice, not an accident — the
-        alternative (each span measuring off whatever the previous one left behind) would
-        make the result depend on which blend happened to run first, for no real benefit.
+        Multiple `[a|b]` spans in ONE prompt are ADDITIVE, not sequential: each span's own
+        delta (`strength * (its own resampled ConditioningB - the ORIGINAL ConditioningA)`)
+        is measured against the SAME original, un-shifted tensor, then summed. Order of the
+        spans in the prompt does not change the outcome.
 
         Costs one extra short text-encode per blended span (Qwen alone, no DiT pass) — not
         the 2x a second full video forward pass would cost. That re-encode goes through
@@ -12427,8 +12441,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 # first span's shift instead of contributing its own independent pull. Fixing
                 # the reference point here makes multiple blends in one prompt additive and
                 # order-independent -- each span's delta is exactly `strength * (its own
-                # mean_b - the ORIGINAL mean_a)`, summed into `new_cond`.
-                mean_a = cond[:, base:hi_a, :].mean(dim=1, keepdim=True)
+                # resampled ConditioningB - the ORIGINAL ConditioningA)`, summed into
+                # `new_cond`.
+                orig_prompt_rows = cond[:, base:hi_a, :]
                 done = 0
                 for start, end, alt_phrase, strength in spans:
                     # The phrase must still resolve to real tokens in THIS sentence -- not
@@ -12457,10 +12472,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     if hi_b > alt_cond_len:
                         skipped_n += 1
                         continue
-                    mean_b = alt_cond[:, alt_base:hi_b, :].mean(dim=1, keepdim=True).to(
+                    alt_rows = alt_cond[:, alt_base:hi_b, :].to(
                         dtype=new_cond.dtype, device=new_cond.device)
+                    if alt_prompt_tokens != prompt_tokens:
+                        # Different shortcuts tokenize to different lengths in general. The
+                        # two sides must be the SAME length to average position-by-position,
+                        # so resample ConditioningB's own row count onto ConditioningA's --
+                        # an approximation (linear interpolation, not real alignment), not an
+                        # exact correspondence between what was originally the SAME word on
+                        # both sides.
+                        alt_rows = torch.nn.functional.interpolate(
+                            alt_rows.transpose(1, 2).to(torch.float32),
+                            size=prompt_tokens, mode="linear", align_corners=False,
+                        ).transpose(1, 2).to(dtype=new_cond.dtype, device=new_cond.device)
                     new_cond[:, base:hi_a, :] = new_cond[:, base:hi_a, :] \
-                        + float(strength) * (mean_b - mean_a)
+                        + float(strength) * (alt_rows - orig_prompt_rows)
                     done += 1
                 if done:
                     cond = new_cond
