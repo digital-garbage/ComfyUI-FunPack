@@ -552,6 +552,14 @@ class _H3Clip:
         self.tokenizer = types.SimpleNamespace(
             qwen3vl_32b=types.SimpleNamespace(tokenizer=_FakeTokenizer()))
 
+    def tokenize(self, text, **kwargs):
+        return text
+
+    def encode_from_tokens_scheduled(self, tokens):
+        # Deterministic stand-in for a real re-encode: every row of the "alternate" phrase's
+        # conditioning is 5.0, so a test can predict the exact mean-vector shift by hand.
+        return [(torch.full((1, len(tokens), 4), 5.0), {"pooled_output": None})]
+
 
 def _apply(refiner, monkeypatch, meta, memory, variables=None, variability=0.0):
     import conditioning
@@ -807,10 +815,32 @@ def test_timed_syntax_is_stripped_and_windows_kept():
 
 
 def test_both_markups_are_parsed_in_one_pass_on_one_clean_text():
-    clean, weighted, timed = tw.parse_markup("a (cat:1.5) [runs@1-2] (dog:0.5)")
+    clean, weighted, timed, blended = tw.parse_markup("a (cat:1.5) [runs@1-2] (dog:0.5)")
     assert clean == "a cat runs dog"
     assert weighted == [(2, 5, 1.5), (11, 14, 0.5)]
     assert timed == [(6, 10, 1.0, 1.0, 2.0)]
+    assert blended == []
+
+
+def test_a_blended_phrase_is_parsed_and_phrase_a_stays_in_the_clean_text():
+    clean, weighted, timed, blended = tw.parse_markup("a cat [sits|stands] on a mat")
+    assert clean == "a cat sits on a mat"
+    assert weighted == []
+    assert timed == []
+    assert blended == [(6, 10, "stands")]
+
+
+def test_a_blend_alongside_a_weight_and_a_window_in_one_pass():
+    clean, weighted, timed, blended = tw.parse_markup(
+        "a cat [sits|stands] then [runs@1-2] (fast:1.5)")
+    assert clean == "a cat sits then runs fast"
+    assert blended == [(6, 10, "stands")]
+    assert timed == [(16, 20, 1.0, 1.0, 2.0)]
+    assert weighted == [(21, 25, 1.5)]
+
+
+def test_an_empty_alternate_phrase_is_not_a_blend():
+    assert tw.parse_markup("a cat [sits|  ]")[3] == []
 
 
 def test_an_empty_window_is_dropped():
@@ -928,7 +958,7 @@ def test_a_wired_conditioning_without_editor_windows_is_left_alone(refiner, monk
 
 def test_typed_weights_reach_the_sampler_next_to_the_windows(refiner, monkeypatch):
     _quiet(monkeypatch)
-    clean, weighted, timed = tw.parse_markup("(cat:2) [runs@1-2]")
+    clean, weighted, timed, _blended = tw.parse_markup("(cat:2) [runs@1-2]")
     meta = {"funpack_h3_timed": timed, "funpack_h3_weighted": weighted,
             "funpack_h3_timed_text": clean, "minimax_token_tags": [1] * 8}
     out = refiner._v2_apply_h3_timed_phrases([[torch.zeros(1, 8, 4), meta]], _H3Clip())
@@ -945,6 +975,88 @@ def test_a_typed_weight_alone_is_enough(refiner, monkeypatch):
 
 
 def test_a_bracketed_weight_without_a_window_is_a_plain_weight():
-    clean, weighted, timed = tw.parse_markup("a [cat (sitting):1.5] [runs@1-2]")
+    clean, weighted, timed, _blended = tw.parse_markup("a [cat (sitting):1.5] [runs@1-2]")
     assert clean == "a cat (sitting) runs"
     assert weighted == [(2, 15, 1.5)] and timed == [(16, 20, 1.0, 1.0, 2.0)]
+
+
+# --- phrase blend: mean-vector shift, not a per-token blend --------------------------
+
+def test_the_blended_span_is_shifted_by_half_the_mean_difference(refiner, monkeypatch):
+    """cond's span is all 1.0; the fake clip's re-encode of the alternate phrase is all 5.0.
+    Default strength is 0.5, so the span should land at 1.0 + 0.5*(5.0-1.0) = 3.0 — and
+    nowhere else in the tensor should move."""
+    _quiet(monkeypatch)
+    text = "a cat sits on a mat"           # "sits" is chars [6:10]
+    cond = torch.zeros(1, len(text), 4)
+    cond[:, 6:10, :] = 1.0
+    meta = {"funpack_h3_blended": [(6, 10, "stands")], "funpack_h3_timed_text": text,
+            "minimax_token_tags": [1] * len(text)}
+    out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
+    result = out[0][0]
+    assert torch.allclose(result[:, 6:10, :], torch.full((1, 4, 4), 3.0))
+    assert torch.allclose(result[:, :6, :], torch.zeros(1, 6, 4))
+    assert torch.allclose(result[:, 10:, :], torch.zeros(1, len(text) - 10, 4))
+
+
+def test_an_untagged_entry_is_left_completely_alone(refiner, monkeypatch):
+    _quiet(monkeypatch)
+    cond = torch.zeros(1, 8, 4)
+    meta = {"minimax_token_tags": [1] * 8}
+    out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
+    assert out[0][0] is cond
+
+
+def test_wired_conditioning_blends_from_the_editors_link_texts(refiner, monkeypatch):
+    """The wire owns the prompt: Studio never encoded it, so there is no
+    `funpack_h3_timed_text` to read. The editor hands the alternate phrase over as
+    `link_texts['blended']`, char spans on `link_texts['prompt']`, same mechanism as timed
+    phrases. `choose_encoded_text` verifies "cat runs" against the tensor's own tag run
+    (3 reference tokens + 8 text tokens) before trusting it."""
+    _quiet(monkeypatch)
+    link = {"prompt": "cat runs", "full_prompt": "cat runs", "blended": [[4, 8, "stands"]]}
+    cond = torch.zeros(1, 11, 4)
+    cond[:, 7:11, :] = 1.0                      # "runs" sits after the 3-token ref block
+    meta = {"funpack_conditioning_owner": "wired", "minimax_token_tags": [0, 0, 0] + [1] * 8}
+    out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip(), link_texts=link)
+    result = out[0][0]
+    assert torch.allclose(result[:, 7:11, :], torch.full((1, 4, 4), 3.0))
+    assert torch.allclose(result[:, :7, :], torch.zeros(1, 7, 4))
+
+
+def test_wired_conditioning_is_skipped_not_silently_dropped_when_nothing_matches(refiner, monkeypatch):
+    """Same wired setup, but neither editor text tokenizes to the tensor's prompt run — the
+    honest result is no blend, logged, not a guess."""
+    _quiet(monkeypatch)
+    logged = []
+    import conditioning
+    monkeypatch.setattr(conditioning, "_log",
+                        types.SimpleNamespace(failed=lambda *a, **k: None,
+                                              note_on_change=lambda *a, **k: None,
+                                              feature=lambda *a, **k: logged.append(a)),
+                        raising=False)
+    link = {"prompt": "totally different text", "full_prompt": "totally different text",
+            "blended": [[4, 8, "stands"]]}
+    cond = torch.zeros(1, 11, 4)
+    cond[:, 7:11, :] = 1.0
+    meta = {"funpack_conditioning_owner": "wired", "minimax_token_tags": [0, 0, 0] + [1] * 8}
+    out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip(), link_texts=link)
+    assert torch.equal(out[0][0], cond)          # untouched
+    assert logged and logged[0][1] == "H3 phrase blend" and logged[0][2] is False
+
+
+def test_a_wired_conditioning_without_editor_blend_spans_is_left_alone(refiner, monkeypatch):
+    _quiet(monkeypatch)
+    cond = torch.zeros(1, 11, 4)
+    meta = {"funpack_conditioning_owner": "wired", "minimax_token_tags": [0, 0, 0] + [1] * 8}
+    out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
+    assert out[0][0] is cond
+
+
+def test_a_non_h3_clip_is_left_alone(refiner, monkeypatch):
+    import minimax_h3
+    monkeypatch.setattr(minimax_h3, "is_h3_clip", lambda c: False)
+    cond = torch.zeros(1, 8, 4)
+    meta = {"funpack_h3_blended": [(0, 3, "x")], "funpack_h3_timed_text": "cat runs"}
+    out = refiner._v2_apply_h3_phrase_blend([[cond, meta]], _H3Clip())
+    assert out[0][0] is cond

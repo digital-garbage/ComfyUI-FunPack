@@ -79,19 +79,35 @@ FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
 # [phrase:1.5] - a weight with no window, in brackets so a shortcut replacement's own
 # parentheses cannot break it (the reason timed phrases use brackets at all).
 _BRACKET_WEIGHTED = re.compile(r"(?<!\\)\[([^\[\]@]*?):\s*(-?\d+(?:\.\d+)?)\s*\]")
-_MARKUP = re.compile(_TIMED.pattern + "|" + _WEIGHTED.pattern + "|" + _BRACKET_WEIGHTED.pattern)
+
+# [phraseA|phraseB]: BLEND. phraseA stays in the prompt Studio encodes (prefix/postfix and
+# every other phrase are exactly what was typed); phraseB is a second sentence re-encoded
+# with phraseA swapped out for it, so its own average hidden state can be pulled toward
+# phraseA's. See `_v2_apply_h3_phrase_blend` (conditioning.py) for why this is a MEAN-VECTOR
+# shift and not a per-token blend: H3's conditioning rows are Qwen's CONTEXTUAL hidden
+# states (the same reason the module docstring above gives for why weighting cannot scale a
+# token's embedding), so two differently-tokenized phrases have no per-position
+# correspondence to blend token-by-token — only their own average position in context does.
+_BLENDED = re.compile(r"(?<!\\)\[([^\[\]|@:]+)\|([^\[\]|]+)\]")
+# Default blend amount: half the distance from phraseA's average hidden state toward
+# phraseB's. Not exposed as a Studio dial yet — one number, changeable here, not a UI knob.
+BLEND_STRENGTH_DEFAULT = 0.5
+
+_MARKUP = re.compile(_TIMED.pattern + "|" + _BLENDED.pattern + "|" + _WEIGHTED.pattern
+                     + "|" + _BRACKET_WEIGHTED.pattern)
 
 
 def parse_markup(text: str):
-    """Strip BOTH prompt markups in one left-to-right pass.
+    """Strip ALL THREE prompt markups in one left-to-right pass.
 
-    -> (clean_text, weighted [(start, end, weight)], timed [(start, end, weight, t0, t1)]).
-    One pass, so both span lists index the same clean text; stripping them one after the
+    -> (clean_text, weighted [(start, end, weight)], timed [(start, end, weight, t0, t1)],
+        blended [(start, end, alt_phrase)]).
+    One pass, so every span list indexes the same clean text; stripping them one after the
     other would leave the first list's offsets pointing into a string that no longer exists.
     """
     if not text or ("(" not in text and "[" not in text):
-        return text, [], []
-    out, weighted, timed, pos = [], [], [], 0
+        return text, [], [], []
+    out, weighted, timed, blended, pos = [], [], [], [], 0
     for m in _MARKUP.finditer(text):
         out.append(text[pos:m.start()])
         start = sum(len(p) for p in out)
@@ -101,20 +117,24 @@ def parse_markup(text: str):
             if t1 > t0 and phrase.strip():
                 timed.append((start, start + len(phrase),
                               float(m.group(2)) if m.group(2) else 1.0, t0, t1))
+        elif m.group(5) is not None:                      # [phraseA|phraseB]
+            phrase, alt = m.group(5), m.group(6)
+            if phrase.strip() and alt.strip():
+                blended.append((start, start + len(phrase), alt.strip()))
         else:                                            # (phrase:w) or [phrase:w]
-            phrase = m.group(5) if m.group(5) is not None else m.group(7)
-            weight = m.group(6) if m.group(6) is not None else m.group(8)
+            phrase = m.group(7) if m.group(7) is not None else m.group(9)
+            weight = m.group(8) if m.group(8) is not None else m.group(10)
             weighted.append((start, start + len(phrase), float(weight)))
         out.append(phrase)
         pos = m.end()
     out.append(text[pos:])
-    return "".join(out), weighted, timed
+    return "".join(out), weighted, timed, blended
 
 
 def parse_timed(text: str):
-    """`parse_markup` for callers that only want the windows; the clean text has BOTH
-    markups removed (the model must never see either)."""
-    clean, _weighted, timed = parse_markup(text)
+    """`parse_markup` for callers that only want the windows; the clean text has ALL
+    markup removed (the model must never see any of it)."""
+    clean, _weighted, timed, _blended = parse_markup(text)
     return clean, timed
 
 

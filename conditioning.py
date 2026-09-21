@@ -4463,7 +4463,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             from . import h3_token_weights as _tw
         except ImportError:
             import h3_token_weights as _tw
-        prompt_text, weighted_spans, timed_spans = _tw.parse_markup(prompt_text)
+        prompt_text, weighted_spans, timed_spans, blended_spans = _tw.parse_markup(prompt_text)
         try:
             if h3 and ref_items:
                 # ref2va takes over the presentation: a first-frame anchor and free-floating
@@ -4495,16 +4495,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 print("[FunPackStudio] Vision encoding returned invalid conditioning")
             return None, {"pooled_output": None}, "encode returned invalid conditioning"
         vision_tag = " +vision" if use_vision else ""
-        if timed_spans or weighted_spans:
+        if timed_spans or weighted_spans or blended_spans:
             meta = dict(meta)
             meta["funpack_h3_timed"] = timed_spans
             meta["funpack_h3_weighted"] = weighted_spans
             meta["funpack_h3_timed_text"] = prompt_text
+            if blended_spans:
+                meta["funpack_h3_blended"] = blended_spans
             if not h3:
                 _log.note_on_change("studio:timed_phrases", "FunPackStudio",
                                     f"{len(timed_spans)} timed / {len(weighted_spans)} weighted "
-                                    f"phrase(s) stripped from the prompt: the markup is MiniMax "
-                                    f"H3 only, the words stay.")
+                                    f"/ {len(blended_spans)} blended phrase(s) stripped from "
+                                    f"the prompt: the markup is MiniMax H3 only, the words stay.")
         if resolved_refs:
             # The resolved order travels with the conditioning: the sampler must encode these
             # exact references, in this exact order, or "<Picture 2>" points at the wrong one.
@@ -12261,6 +12263,157 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   "K/V emphasis has nothing to hook.")
         return out
 
+    def _v2_apply_h3_phrase_blend(self, conditioning_list, clip, link_texts=None):
+        """`[phraseA|phraseB]` — pull phraseA's rows toward phraseB's, in place.
+
+        phraseA is what `_v2_encode_prompt` already put in the prompt (see
+        `funpack_h3_blended` in `_v2_encode_prompt`); prefix, postfix and every other word
+        are exactly what was typed. This re-encodes the SAME sentence with phraseB swapped
+        in for phraseA, and shifts phraseA's own rows by the difference between the two
+        phrases' MEAN row — not a per-token blend. H3's conditioning rows are Qwen's
+        CONTEXTUAL hidden states (row i is "having read this far", not "the vector for this
+        word" — the same fact that rules out scaling a token's embedding for weighting, see
+        h3_token_weights.py), and phraseA/phraseB tokenize to different lengths in general,
+        so there is no per-position correspondence to blend token-by-token. Only each
+        phrase's own average position in context does.
+
+        UNVALIDATED: averaging two contextual hidden states is not the same operation as
+        averaging two static word embeddings. Whether this reads as "both actions" or as a
+        blur between them has not been confirmed on a real generation — try it and see.
+
+        Costs one extra short text-encode per blended span (Qwen alone, no DiT pass) — not
+        the 2x a second full video forward pass would cost. That re-encode goes through
+        Studio's OWN `clip`, which is still needed and still connected even when the
+        positive CONDITIONING itself is wired in from elsewhere.
+
+        A WIRED conditioning was encoded by another node from the editor's expanded text
+        (`link_texts`), same as timed phrases (`_v2_apply_h3_timed_phrases`): the editor
+        strips the syntax before that node sees it and hands the alternate phrases over as
+        `link_texts["blended"]`, char spans on `link_texts["prompt"]`. The text that was
+        actually encoded is verified against the tensor's own tag run
+        (`choose_encoded_text`) so the span lands on real tokens, not guessed ones.
+        """
+        if clip is None or not isinstance(conditioning_list, list):
+            return conditioning_list
+        try:
+            try:
+                from . import minimax_h3 as _h3
+                from . import h3_token_weights as _tw
+            except ImportError:
+                import minimax_h3 as _h3
+                import h3_token_weights as _tw
+            if not _h3.is_h3_clip(clip):
+                return conditioning_list
+            tokenizer = _tw.h3_tokenizer(clip)
+            if tokenizer is None:
+                return conditioning_list
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackStudio", "H3 phrase blend", _e,
+                        "the [a|b] blend is NOT applied; phrase A stays as typed")
+            return conditioning_list
+
+        link_blended = (link_texts or {}).get("blended") if isinstance(link_texts, dict) else None
+        if link_blended and isinstance(conditioning_list, list):
+            conditioning_list = [
+                ([e[0], dict(e[1], funpack_h3_blended=[tuple(t) for t in link_blended],
+                             funpack_h3_blend_link=True)]
+                 if isinstance(e, (list, tuple)) and len(e) >= 2 and isinstance(e[1], dict)
+                 and e[1].get("funpack_conditioning_owner") == "wired"
+                 and not e[1].get("funpack_h3_blended") else e)
+                for e in conditioning_list]
+
+        import torch
+        out = []
+        blended_n = 0
+        for entry in conditioning_list or []:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
+                    and isinstance(entry[1], dict) and entry[1].get("funpack_h3_blended")):
+                out.append(entry)
+                continue
+            cond, meta = entry[0], dict(entry[1])
+            spans = meta.get("funpack_h3_blended") or []
+            if not spans or not hasattr(cond, "shape") or cond.dim() < 2:
+                out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+                continue
+            try:
+                cond_len = int(cond.shape[1])
+                if meta.pop("funpack_h3_blend_link", False):
+                    text, _n, base = _tw.choose_encoded_text(
+                        tokenizer, [(link_texts or {}).get("full_prompt"),
+                                   (link_texts or {}).get("prompt")],
+                        meta.get("minimax_token_tags"), cond_len)
+                    if text is None:
+                        _log.feature(
+                            "FunPackStudio", "H3 phrase blend", False,
+                            "the positive CONDITIONING is wired and neither editor text "
+                            "tokenizes to the tensor's prompt run, so the blend cannot be "
+                            "placed.")
+                        out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+                        continue
+                    enc = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+                    offsets = list(enc["offset_mapping"])
+                else:
+                    text = str(meta.get("funpack_h3_timed_text") or "")
+                    if not text:
+                        out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+                        continue
+                    enc = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+                    offsets = list(enc["offset_mapping"])
+                    base = _tw.prompt_base(meta.get("minimax_token_tags"), cond_len, len(offsets))
+                prompt_tokens = len(offsets)
+                if base is None or not prompt_tokens or not cond_len:
+                    out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+                    continue
+                new_cond = cond.clone()
+                done = 0
+                for start, end, alt_phrase in spans:
+                    toks = _tw.token_spans_from_offsets(offsets, [(start, end, 1.0)])
+                    if not toks:
+                        continue
+                    a0, a1, _w = toks[0]
+                    lo, hi = base + a0, base + a1
+                    if hi <= lo or hi > cond_len:
+                        continue
+                    alt_text = text[:start] + alt_phrase + text[end:]
+                    alt_encoded = clip.encode_from_tokens_scheduled(clip.tokenize(alt_text))
+                    alt_cond, alt_meta = self._v2_extract_conditioning(alt_encoded)
+                    if not isinstance(alt_cond, torch.Tensor) or alt_cond.dim() < 2:
+                        continue
+                    alt_cond_len = int(alt_cond.shape[1])
+                    alt_enc = tokenizer(alt_text, add_special_tokens=False,
+                                        return_offsets_mapping=True)
+                    alt_offsets = list(alt_enc["offset_mapping"])
+                    alt_prompt_tokens = len(alt_offsets)
+                    alt_base = _tw.prompt_base(alt_meta.get("minimax_token_tags"),
+                                               alt_cond_len, alt_prompt_tokens)
+                    if alt_base is None:
+                        continue
+                    b_toks = _tw.token_spans_from_offsets(
+                        alt_offsets, [(start, start + len(alt_phrase), 1.0)])
+                    if not b_toks:
+                        continue
+                    b0, b1, _w2 = b_toks[0]
+                    blo, bhi = alt_base + b0, alt_base + b1
+                    if bhi <= blo or bhi > alt_cond_len:
+                        continue
+                    mean_a = new_cond[:, lo:hi, :].mean(dim=1, keepdim=True)
+                    mean_b = alt_cond[:, blo:bhi, :].mean(dim=1, keepdim=True).to(
+                        dtype=new_cond.dtype, device=new_cond.device)
+                    new_cond[:, lo:hi, :] = new_cond[:, lo:hi, :] \
+                        + _tw.BLEND_STRENGTH_DEFAULT * (mean_b - mean_a)
+                    done += 1
+                if done:
+                    cond = new_cond
+                    blended_n += done
+            except Exception as _e:  # noqa: BLE001
+                _log.failed("FunPackStudio", "H3 phrase blend", _e,
+                            "the [a|b] blend is NOT applied; phrase A stays as typed")
+            out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+        if blended_n:
+            print(f"[FunPackStudio] H3 phrase blend: {blended_n} phrase(s) pulled toward an "
+                  f"alternate (unvalidated — judge the result by eye).")
+        return out
+
     def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
                                   steer_mode, absolute_strength, spread_cap=None,
                                   temporal_style="natural", temporal_fallback_text="",
@@ -12323,6 +12476,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                               variables=variables,
                                               link_texts=link_texts)
         out = self._v2_apply_h3_timed_phrases(out, clip, link_texts=link_texts)
+        out = self._v2_apply_h3_phrase_blend(out, clip, link_texts=link_texts)
         if mode in ("relative", "both"):
             out = _step("relative steering", out, lambda c: self._v2_apply_scene_refinement_keys(
                 c, scene_refinement_keys, refinement_key,

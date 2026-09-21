@@ -104,25 +104,29 @@ def expand_prompt_for_node(text: str, variables=None) -> str:
 
 
 def expand_prompt_with_windows(text: str, variables=None):
-    """`expand_prompt_for_node`, also returning the timed-phrase windows it stripped.
+    """`expand_prompt_for_node`, also returning the timed-phrase windows and phrase-blend
+    spans it stripped.
 
-    `[walks left@2.0-3.5]` is an instruction for the sampler, not prompt text: a node that
-    encodes the string itself must never see the brackets, and Studio - which never sees the
-    encoded string - needs the windows handed to it separately, as char spans on the clean
-    text. -> (clean_expanded_text, timed [(start, end, weight, t0, t1)], weighted [(start, end, weight)])
+    `[walks left@2.0-3.5]` and `[sits|stands]` are instructions for the sampler, not prompt
+    text: a node that encodes the string itself must never see the brackets, and Studio -
+    which never sees the encoded string when a wired node owns the prompt - needs them
+    handed over separately, as char spans on the clean text.
+    -> (clean_expanded_text, timed [(start, end, weight, t0, t1)],
+        weighted [(start, end, weight)], blended [(start, end, alt_phrase)])
     """
     expanded = expand_prompt_fragment(text)
     if expanded and variables:
         resolve_variables = _funpack_attr("templates", "resolve_variables")
         expanded = resolve_variables(expanded, variables)[0]
     if not expanded:
-        return expanded, [], []
+        return expanded, [], [], []
     try:
         parse_markup = _funpack_attr("h3_token_weights", "parse_markup")
-        clean, weighted, timed = parse_markup(expanded)
-        return clean, [list(t) for t in timed], [list(t) for t in weighted]
+        clean, weighted, timed, blended = parse_markup(expanded)
+        return (clean, [list(t) for t in timed], [list(t) for t in weighted],
+                [list(t) for t in blended])
     except Exception:  # noqa: BLE001 - FunPack unreachable: the text goes out as typed
-        return expanded, [], []
+        return expanded, [], [], []
 
 
 def parse_timeline_raw(prompt: str) -> dict:
