@@ -176,6 +176,10 @@
       projects: st.projects?.length,
       media: st.mediaBin?.length,
       mediaPreview: st.mediaPreviewId,
+      // The upload progress bar/percent live in this zone and change on every XHR
+      // progress tick without touching mediaBin's length -- without this the drop
+      // zone never repaints and looks stale for the whole upload.
+      upload: st.mediaUpload,
       // Continuity pin renders on gallery cards (📌 button state + thumb badge).
       pin: st.project?.continuity_settings?.identity_pin_ref,
       // Reference marks render the same way (R button + numbered badge), and their ORDER
