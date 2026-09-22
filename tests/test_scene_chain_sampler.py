@@ -1338,3 +1338,44 @@ def test_explore_first_step_candidates_are_isolated_from_identity_overlap(monkey
     assert identity_sentinel_during_candidates[2] is True
     assert install_calls == ["identity_overlap", "identity_overlap"]
     assert remove_calls == ["identity_overlap", "identity_overlap"]
+
+
+def test_output_value_snapshot_is_saved_on_h3(monkeypatch):
+    """Regression (2026-09-22): the snapshot feeding the output-space value function used
+    to be saved `if not self._is_h3` -- a leftover from when output_guidance (forced off
+    on H3) was its only consumer. explore_first_step reads the SAME value function and is
+    NOT H3-excluded, so skipping the snapshot there permanently starved it: the console
+    printed "value function not ready yet (needs 10+ rated generations)" forever, no
+    matter how many generations were rated, because MIN_SAMPLES could never be reached
+    with zero snapshots ever written. This proves the snapshot call now fires on H3 too."""
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+
+    import minimax_h3
+    monkeypatch.setattr(minimax_h3, "is_h3_model", lambda model: True, raising=True)
+
+    snapshot_calls = []
+    monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_save_output_value_snapshot",
+                        lambda self, key, snap, mask: snapshot_calls.append(key), raising=True)
+
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    node.sample(
+        model=FakeModel(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=negative,
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=10,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.5,
+        max_scenes=8,
+        refinement_key_input="testkey",
+    )
+
+    assert snapshot_calls == ["testkey"]
