@@ -952,7 +952,7 @@
       if (c === cur) o.selected = true;
       sel.append(o);
     });
-    sel.onchange = () => S.setSamplerInputNow(sel.value);
+    sel.onchange = () => S.setSamplerInputNow("detail_upsampler", sel.value);
     // An upsampler has to take latents the same width as the model's, so on H3 the LTX
     // file is not a fallback and 'auto' deliberately will not fetch it. Promising a
     // download that cannot happen sends people to wait at the console for nothing.
