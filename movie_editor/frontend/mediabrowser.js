@@ -17,6 +17,19 @@
     for (const id of thumbCache.keys()) if (!ids.has(id)) thumbCache.delete(id);
   }
 
+  // Drop-zone upload bar, patched in place on funpack-media-upload-progress (below) instead
+  // of rebuilding — a full render only happens once per file, at the fpMediabrowser fingerprint
+  // in view_bus.js's granularity (see mediaTab). Cleared whenever the zone isn't currently the
+  // "uploading" one, so a stale reference from a since-discarded render never gets written to.
+  let _uploadFillEl = null, _uploadPctEl = null;
+  window.addEventListener("funpack-media-upload-progress", (e) => {
+    if (!_uploadFillEl || !_uploadFillEl.isConnected) return;
+    const up = (e && e.detail) || {};
+    const pct = up.size > 0 ? Math.min(100, Math.round((up.loaded / up.size) * 100)) : null;
+    _uploadFillEl.style.width = (pct == null ? 0 : pct) + "%";
+    if (_uploadPctEl) _uploadPctEl.textContent = pct == null ? "uploading…" : `${pct}%`;
+  });
+
   const mediaSelected = new Set();   // media bin multi-select
   let mediaSelectMode = false;     // when off, click = preview; when on, click = toggle selection
   const MF_KEY = "fp_media_filter";
@@ -473,8 +486,13 @@
       bar.style.width = (pct == null ? 0 : pct) + "%";
       barWrap.append(bar);
       drop.append(barWrap);
-      drop.append(el("div", "pj-meta", pct == null ? "uploading…" : `${pct}%`));
+      const pctEl = el("div", "pj-meta", pct == null ? "uploading…" : `${pct}%`);
+      drop.append(pctEl);
+      // Live-patched by the funpack-media-upload-progress listener above for every tick
+      // within this file — this render only happens once per file (see fpMediabrowser).
+      _uploadFillEl = bar; _uploadPctEl = pctEl;
     } else {
+      _uploadFillEl = null; _uploadPctEl = null;
       drop.append(el("div", "big", "🎞"));
       drop.append(el("div", null, "Drop images, video & audio here"));
       drop.append(el("div", "pj-meta", "or click to browse · drag onto a clip to set its anchor"));

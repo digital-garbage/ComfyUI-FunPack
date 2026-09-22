@@ -211,6 +211,16 @@
     Object.assign(state.gen, patch);
     try { window.dispatchEvent(new CustomEvent("funpack-gen-progress", { detail: state.gen })); } catch (_) {}
   }
+
+  // Same idea as updateGenProgress: XHR upload progress fires many times a second, and a
+  // full notify() would rebuild the whole media bin (thumbnails, project list, any open
+  // <select>) on every tick. Mutate quietly and let mediabrowser.js patch its own bar/percent
+  // in place instead.
+  function updateMediaUploadProgress(patch) {
+    if (!state.mediaUpload) return;
+    Object.assign(state.mediaUpload, patch);
+    try { window.dispatchEvent(new CustomEvent("funpack-media-upload-progress", { detail: state.mediaUpload })); } catch (_) {}
+  }
   function get() { return state; }
 
   function _promptPreviewKey(project) {
@@ -4427,19 +4437,15 @@
   // uploading over a slow connection just looked like nothing was happening.
   async function uploadMedia(files) {
     const list = [...files];
-    let lastNotify = 0;
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
+      // A full notify() here (once per file) is what builds the "uploading" drop zone in the
+      // first place -- see fpMediabrowser in view_bus.js. Progress WITHIN a file goes through
+      // updateMediaUploadProgress instead, which never touches the store's subscribers.
       set({ mediaUpload: { current: i + 1, total: list.length, name: f.name, loaded: 0, size: f.size } });
-      lastNotify = Date.now();
       try {
         await API.uploadMedia(f, (loaded, total) => {
-          state.mediaUpload = { ...state.mediaUpload, loaded, size: total || f.size };
-          // XHR fires this many times a second -- notify() rebuilds the whole media grid,
-          // so this throttles to a still-smooth ~8fps instead of hammering a full re-render
-          // on every tick. The final `loaded === total` (upload done) always gets through.
-          const now = Date.now();
-          if (now - lastNotify >= 120 || loaded >= total) { lastNotify = now; notify(); }
+          updateMediaUploadProgress({ loaded, size: total || f.size });
         });
       } catch (e) { console.error("upload failed", e); }
     }

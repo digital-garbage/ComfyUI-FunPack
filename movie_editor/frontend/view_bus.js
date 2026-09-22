@@ -176,10 +176,15 @@
       projects: st.projects?.length,
       media: st.mediaBin?.length,
       mediaPreview: st.mediaPreviewId,
-      // The upload progress bar/percent live in this zone and change on every XHR
-      // progress tick without touching mediaBin's length -- without this the drop
-      // zone never repaints and looks stale for the whole upload.
-      upload: st.mediaUpload,
+      // Only the file boundary (which file, 1-of-how-many) belongs in the fingerprint --
+      // that's rare enough to justify a full rebuild, which is what creates the "uploading"
+      // drop zone in the first place. `loaded` ticks many times a second and is deliberately
+      // left out: a full rebuild on every tick would tear down and rebuild the whole bin
+      // (thumbs, project list, any open <select> like "Sort by"). See the
+      // funpack-media-upload-progress listener in mediabrowser.js, which patches the drop
+      // zone's bar/percent in place instead, the same way funpack-gen-progress does for the
+      // player's readout.
+      upload: st.mediaUpload ? `${st.mediaUpload.current}/${st.mediaUpload.total}:${st.mediaUpload.name}` : null,
       // Continuity pin renders on gallery cards (📌 button state + thumb badge).
       pin: st.project?.continuity_settings?.identity_pin_ref,
       // Reference marks render the same way (R button + numbered badge), and their ORDER
