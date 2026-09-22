@@ -5037,8 +5037,9 @@ class FunPackLTXAVSceneChainSampler:
                 continue
             try:
                 with torch.inference_mode(False), torch.no_grad():
-                    score = float(value_fn.forward(
-                        value_fn.compress(captured[0].float())).item())
+                    mlp_device = next(value_fn.parameters()).device
+                    compressed = value_fn.compress(captured[0].float()).to(mlp_device)
+                    score = float(value_fn.forward(compressed).item())
             except Exception as e:
                 print(f"[FunPackSceneChain] explore_first_step: candidate {i} failed to "
                       f"score ({e}), skipped")

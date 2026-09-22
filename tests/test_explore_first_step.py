@@ -29,7 +29,10 @@ SEED_OFFSET = 999983  # must match the offset _select_best_seed derives candidat
 
 class _FakeValueFn:
     """Ranks a captured tensor by its own mean -- deterministic, easy to reason about,
-    standing in for the real trained MLP."""
+    standing in for the real trained MLP. Real value functions are nn.Modules living on
+    the CPU (LatentValueFunction.load uses map_location='cpu'); parameters() stands in for
+    that so _select_best_seed's device-placement path (next(value_fn.parameters()).device)
+    has something real to find, exactly like production."""
     def is_ready(self):
         return True
 
@@ -38,6 +41,9 @@ class _FakeValueFn:
 
     def forward(self, x):
         return x.mean()
+
+    def parameters(self):
+        return iter([torch.zeros(1)])
 
 
 class _NotReadyValueFn(_FakeValueFn):

@@ -882,6 +882,9 @@ def test_explore_first_step_candidates_never_reach_the_scenes_own_guidance_wrapp
         def forward(self, x):
             return x.mean()
 
+        def parameters(self):
+            return iter([torch.zeros(1)])
+
     monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_load_output_value_function",
                         lambda self, key: _ReadyValueFn(), raising=True)
 
@@ -952,6 +955,9 @@ def _explore_first_step_ready_value_fn_patch(monkeypatch):
 
         def forward(self, x):
             return x.mean()
+
+        def parameters(self):
+            return iter([torch.zeros(1)])
 
     monkeypatch.setattr(FunPackLTXAVSceneChainSampler, "_load_output_value_function",
                         lambda self, key: _ReadyValueFn(), raising=True)
@@ -1460,6 +1466,67 @@ def test_select_best_seed_reports_a_scoring_exception_per_candidate(monkeypatch,
     out = capsys.readouterr().out
     assert out.count("failed to score") == 2
     assert "0/2 candidate(s) produced a usable score" in out
+
+
+_SECOND_DEVICE = "cuda" if torch.cuda.is_available() else (
+    "mps" if torch.backends.mps.is_available() else None)
+
+
+@pytest.mark.skipif(_SECOND_DEVICE is None,
+                     reason="needs a real second torch device (cuda or mps) to prove a "
+                            "cross-device score doesn't raise")
+def test_select_best_seed_scores_a_candidate_produced_on_a_different_device(monkeypatch, capsys):
+    """Regression (2026-09-22, live on H3 on a CUDA rental): the value function is loaded via
+    LatentValueFunction.load(map_location='cpu') and stays on the CPU, but a candidate's
+    captured prediction lives on whatever device the model ran on (cuda in production; mps
+    substitutes for it on a dev machine with no CUDA device — same class of cross-device bug).
+    _select_best_seed used to call value_fn.compress()/forward() directly on that tensor
+    with no device handling of its own -- every OTHER call site (gradient/ascend/search in
+    value_function.py) moves the input onto next(self.parameters()).device first; this one
+    didn't, and hit 'Expected all tensors to be on the same device' on every real GPU run,
+    silently discarding all n candidates every single time explore_first_step ever became
+    ready (0/N scored, seed unchanged) without ever actually testing the feature. mps
+    substitutes for cuda here since this box has no CUDA device; the failure mode (two
+    real, distinct torch devices) is the same class of bug."""
+    class _RecordingWrapperModel:
+        def __init__(self):
+            self.model_options = {}
+
+    def sample_custom_that_fires_the_wrapper(model, noise, cfg, sampler, sigmas, positive,
+                                             negative, latent_image, noise_mask=None,
+                                             callback=None, disable_pbar=False, seed=None):
+        wrapper = model.model_options.get("model_function_wrapper")
+        # Simulate the model call producing its prediction on the "GPU" (mps here).
+        on_device = latent_image.to(_SECOND_DEVICE)
+        wrapper(lambda x, t, **c: on_device,
+                {"input": noise, "timestep": torch.tensor([1.0]), "c": {}})
+        return latent_image
+
+    monkeypatch.setattr(sys.modules["comfy.sample"], "prepare_noise",
+                        fake_prepare_noise, raising=False)
+    monkeypatch.setattr(sys.modules["comfy.sample"], "sample_custom",
+                        sample_custom_that_fires_the_wrapper, raising=False)
+    node = FunPackLTXAVSceneChainSampler()
+
+    from value_function import LatentValueFunction
+    value_fn = LatentValueFunction(hidden_dim=3)  # stays on the CPU, like a loaded checkpoint
+    value_fn.is_ready = lambda: True  # skip real training -- only the device path is under test
+
+    latent = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    result = node._select_best_seed(
+        model=_RecordingWrapperModel(), sampler=object(), sigmas=torch.tensor([1.0, 0.0]),
+        seed=10, cfg=1.5, positive=positive, negative=negative, latent=latent,
+        n_candidates=2, value_fn=value_fn,
+    )
+
+    out = capsys.readouterr().out
+    assert "2/2 candidate(s) scored" in out, (
+        "both candidates must score successfully across the device boundary -- before the "
+        "fix this raised inside value_fn.forward() and both were silently skipped instead")
+    assert result in (10, 10 + 999983), "winner must be one of the two candidate seeds actually tried"
 
 
 def test_output_value_fn_sample_count_reads_an_under_threshold_file(monkeypatch, tmp_path):
