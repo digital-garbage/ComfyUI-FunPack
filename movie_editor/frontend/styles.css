@@ -754,7 +754,12 @@ input[type=number] { font-family: var(--font-ui); }
   background: var(--ink-0); border: 1px solid var(--accent); border-radius: 4px; color: var(--text);
 }
 .media-card.picked { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
-.media-bin-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.media-bin-actions {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  position: sticky; top: 0; z-index: 4; padding: 4px 0;
+  background: color-mix(in srgb, var(--ink-0) 92%, transparent);
+  backdrop-filter: blur(6px);
+}
 .media-bin-footer { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; align-items: center; }
 .media-bin-controls { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 2px; }
 .media-bin-type { margin: 0; }
