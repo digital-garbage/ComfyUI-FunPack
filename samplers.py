@@ -3125,6 +3125,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.60, "min": 0.0, "max": 1.0, "step": 0.01,
                     "tooltip": "Where it stops, same units as h3_shadow_negative_start_percent. Structure is usually settled well before the end of the schedule, so this typically does not need to reach 1.0. No effect when h3_shadow_negative is off.",
                 }),
+                "h3_shadow_negative_compose": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Allow when REINS/Q-steer are active. Off (default): shadow negative replaces EVERY block's forward outright, which also stops REINS/Q-steer/block-repeat/attn_temperature/av_decouple from capturing or steering on the blocks they use -- ratings made while shadow negative is on will not train them. On: shadow negative skips whichever block(s) those mechanisms already claimed, leaving them free to keep capturing/steering there, and only applies its own push to the rest. Not true mathematical composition -- no single block ever runs both at once, they simply stop overwriting each other. No effect when h3_shadow_negative is off.",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -3890,7 +3894,7 @@ class FunPackLTXAVSceneChainSampler:
                       h3_shadow_negative=False, h3_shadow_negative_video_scale=3.0,
                       h3_shadow_negative_audio_scale=1.0, h3_shadow_negative_tau=2.5,
                       h3_shadow_negative_alpha=0.35, h3_shadow_negative_start_percent=0.0,
-                      h3_shadow_negative_end_percent=0.60,
+                      h3_shadow_negative_end_percent=0.60, h3_shadow_negative_compose=False,
                       refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -4038,7 +4042,7 @@ class FunPackLTXAVSceneChainSampler:
                 model, negative, h3_shadow_negative_video_scale,
                 h3_shadow_negative_audio_scale, h3_shadow_negative_tau,
                 h3_shadow_negative_alpha, h3_shadow_negative_start_percent,
-                h3_shadow_negative_end_percent)
+                h3_shadow_negative_end_percent, compose=h3_shadow_negative_compose)
 
         _phrase_probe = self._install_phrase_probe(model, positive, latent)
         if _phrase_probe is not None:
@@ -7768,7 +7772,7 @@ class FunPackLTXAVSceneChainSampler:
             return model
 
     def _install_h3_shadow_negative(self, model, negative, video_scale, audio_scale,
-                                    tau, alpha, start_percent, end_percent):
+                                    tau, alpha, start_percent, end_percent, compose=False):
         """EXPERIMENTAL, unvalidated (H3 only). Ported from the community "H3 Shadow
         Negative" pack (see h3_shadow_negative.py) -- runs the negative CONDITIONING
         FunPack already threads through the sampler (otherwise dead weight: H3's CFG is
@@ -7778,11 +7782,23 @@ class FunPackLTXAVSceneChainSampler:
         one-time embedding projection -- see samplers.py's own H3 shadow negative
         docstring in h3_shadow_negative.py for the full comparison.
 
-        Does NOT compose with REINS/Q-steer/av_decouple/block-repeat/attn_temperature --
-        it replaces each double_block's forward outright, same as upstream's own stated
-        limitation with block-cache nodes. Installed LAST in _sample_chunk's dit-patch
-        chain so an explicit request for this always wins over the others, matching what
-        the user just turned on rather than a mechanism that happened to install earlier.
+        Does NOT merge math with REINS/Q-steer/av_decouple/block-repeat/attn_temperature
+        on the SAME block -- shadow negative needs to intercept the raw attention output
+        before gate/mlp are applied, a different intervention point than those mechanisms'
+        own "read inner, chain through it" convention, which only ever sees a block's
+        already-finished output. Faithfully blending the two within one block would mean
+        reimplementing every other mechanism at this same granularity.
+
+        `compose=False` (default): replaces each double_block's forward outright, same as
+        upstream's own stated limitation with block-cache nodes -- installed LAST in
+        _sample_chunk's dit-patch chain so an explicit request for this always wins.
+
+        `compose=True`: installs on every block EXCEPT the ones another mechanism already
+        claimed this run -- REINS/Q-steer's named block, block-repeat's span, etc. keep
+        their own block entirely untouched (so they keep capturing/steering there exactly
+        as if shadow negative were off), while shadow negative's NAG push still runs on
+        every other block. Structural coexistence, not mathematical composition: no block
+        ever runs both mechanisms at once, they just no longer fight over which one wins.
         """
         try:
             video_scale = float(video_scale)
@@ -7826,28 +7842,37 @@ class FunPackLTXAVSceneChainSampler:
             to = patched.model_options.get("transformer_options", {}).copy()
             patches_replace = dict(to.get("patches_replace", {}))
             dit_patches = dict(patches_replace.get("dit", {}))
-            _superseded = sorted({b for (kind, b) in dit_patches if kind == "double_block"})
-            if _superseded:
-                print(f"[FunPackSceneChain] H3 shadow negative: supersedes {len(_superseded)} "
+            _claimed = sorted({b for (kind, b) in dit_patches if kind == "double_block"})
+            if _claimed and not compose:
+                print(f"[FunPackSceneChain] H3 shadow negative: supersedes {len(_claimed)} "
                       f"existing block patch(es) (REINS/Q-steer/av_decouple/block-repeat/"
                       f"attn_temperature) for this run -- shadow negative does not compose "
-                      f"with those, it replaces the block outright.")
+                      f"with those, it replaces the block outright. Enable "
+                      f"h3_shadow_negative_compose to leave those blocks alone instead.")
             _lo, _hi = (end_percent, start_percent) if end_percent < start_percent \
                 else (start_percent, end_percent)
             state = _sn.ShadowState(
                 dm=dm, negative_context=negative[0][0].detach(),
                 video_scale=video_scale, audio_scale=audio_scale,
                 tau=tau, alpha=alpha, start_percent=_lo, end_percent=_hi)
+            _skipped = []
             for i, block in enumerate(dm.blocks):
+                if compose and i in _claimed:
+                    _skipped.append(i)
+                    continue
                 dit_patches[("double_block", i)] = _tag_dit_hook(
                     _sn.make_block_hook(block, state, i), None)
             patches_replace["dit"] = dit_patches
             to["patches_replace"] = patches_replace
             patched.model_options["transformer_options"] = to
-            print(f"[FunPackSceneChain] H3 shadow negative: installed on {len(dm.blocks)} "
-                  f"blocks (video_scale={video_scale:g}, audio_scale={audio_scale:g}, "
-                  f"tau={float(tau):g}, alpha={float(alpha):g}, "
-                  f"window={_lo:.2f}-{_hi:.2f}).")
+            _installed = len(dm.blocks) - len(_skipped)
+            _extra = (f" -- left block(s) {', '.join(str(b) for b in _skipped)} untouched "
+                     f"for REINS/Q-steer/av_decouple/block-repeat/attn_temperature to keep "
+                     f"capturing/steering there") if _skipped else ""
+            print(f"[FunPackSceneChain] H3 shadow negative: installed on {_installed}/"
+                  f"{len(dm.blocks)} blocks (video_scale={video_scale:g}, "
+                  f"audio_scale={audio_scale:g}, tau={float(tau):g}, alpha={float(alpha):g}, "
+                  f"window={_lo:.2f}-{_hi:.2f}){_extra}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 shadow negative", _e,
@@ -8616,7 +8641,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_shadow_negative=False, h3_shadow_negative_video_scale=3.0,
                h3_shadow_negative_audio_scale=1.0, h3_shadow_negative_tau=2.5,
                h3_shadow_negative_alpha=0.35, h3_shadow_negative_start_percent=0.0,
-               h3_shadow_negative_end_percent=0.60,
+               h3_shadow_negative_end_percent=0.60, h3_shadow_negative_compose=False,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -9543,6 +9568,7 @@ class FunPackLTXAVSceneChainSampler:
                     h3_shadow_negative_alpha=h3_shadow_negative_alpha,
                     h3_shadow_negative_start_percent=h3_shadow_negative_start_percent,
                     h3_shadow_negative_end_percent=h3_shadow_negative_end_percent,
+                    h3_shadow_negative_compose=h3_shadow_negative_compose,
                     refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene

@@ -164,6 +164,71 @@ def test_a_hooked_block_with_no_mod_segments_falls_through_untouched():
     assert torch.allclose(out["img"], img * 2.0)
 
 
+# --- compose=True: coexist with, rather than supersede, an already-claimed block ----------
+
+
+def test_compose_leaves_an_already_claimed_block_untouched(capsys):
+    """The whole point of compose: REINS' own block keeps its ORIGINAL hook (whatever it
+    was), completely unreplaced, so REINS keeps capturing/steering there."""
+    model = _FakeModel(dm=_FakeDiffusionModel(n_blocks=3))
+    original_reins_hook = lambda args, extra: {"img": args["img"] * 0.0}
+    model.model_options["transformer_options"] = {"patches_replace": {"dit": {
+        ("double_block", 1): original_reins_hook,
+    }}}
+    node = S()
+    patched = node._install_h3_shadow_negative(model, _negative(), 3.0, 1.0, 2.5, 0.35, 0.0, 0.6,
+                                               compose=True)
+    dit = patched.model_options["transformer_options"]["patches_replace"]["dit"]
+    assert dit[("double_block", 1)] is original_reins_hook, "claimed block must be untouched"
+    assert "supersedes" not in capsys.readouterr().out
+
+
+def test_compose_still_hooks_every_unclaimed_block():
+    model = _FakeModel(dm=_FakeDiffusionModel(n_blocks=3))
+    model.model_options["transformer_options"] = {"patches_replace": {"dit": {
+        ("double_block", 1): lambda args, extra: {"img": args["img"]},
+    }}}
+    node = S()
+    patched = node._install_h3_shadow_negative(model, _negative(), 3.0, 1.0, 2.5, 0.35, 0.0, 0.6,
+                                               compose=True)
+    dit = patched.model_options["transformer_options"]["patches_replace"]["dit"]
+    import h3_shadow_negative as sn
+    for i in (0, 2):
+        hook = dit[("double_block", i)]
+        state = next((c.cell_contents for c, name in
+                     zip(hook.__closure__, hook.__code__.co_freevars)
+                     if name == "state" and isinstance(c.cell_contents, sn.ShadowState)), None)
+        assert state is not None, f"block {i} should have been hooked by shadow negative"
+
+
+def test_compose_off_still_supersedes_by_default(capsys):
+    """compose defaults to False, so existing behaviour (and existing tests/workflows) is
+    unchanged unless the new checkbox is explicitly turned on."""
+    model = _FakeModel(dm=_FakeDiffusionModel(n_blocks=2))
+    model.model_options["transformer_options"] = {"patches_replace": {"dit": {
+        ("double_block", 0): lambda args, extra: {"img": args["img"] * 0.0},
+    }}}
+    node = S()
+    patched = node._install_h3_shadow_negative(model, _negative(), 3.0, 1.0, 2.5, 0.35, 0.0, 0.6)
+    out = capsys.readouterr().out
+    assert "supersedes" in out
+    dit = patched.model_options["transformer_options"]["patches_replace"]["dit"]
+    assert dit[("double_block", 0)] is not None
+    img = torch.ones(3, 4)
+    result = dit[("double_block", 0)]({"img": img, "mod_segments": []},
+                                      {"original_block": lambda a: {"img": a["img"]}})
+    assert torch.allclose(result["img"], img), "default is still supersede, not compose"
+
+
+def test_compose_with_nothing_claimed_hooks_everything_like_the_default():
+    model = _FakeModel(dm=_FakeDiffusionModel(n_blocks=4))
+    node = S()
+    patched = node._install_h3_shadow_negative(model, _negative(), 3.0, 1.0, 2.5, 0.35, 0.0, 0.6,
+                                               compose=True)
+    dit = patched.model_options["transformer_options"]["patches_replace"]["dit"]
+    assert {k for k in dit if k[0] == "double_block"} == {("double_block", i) for i in range(4)}
+
+
 if __name__ == "__main__":
     test_both_scales_at_one_is_a_true_noop()
     test_enabled_clones_and_hooks_every_block()

@@ -184,6 +184,7 @@
     "h3_shadow_negative_video_scale", "h3_shadow_negative_audio_scale",
     "h3_shadow_negative_tau", "h3_shadow_negative_alpha",
     "h3_shadow_negative_start_percent", "h3_shadow_negative_end_percent",
+    "h3_shadow_negative_compose",
   ];
 
   // Sub-settings of identity transfer: meaningless wherever the feature itself cannot run,
