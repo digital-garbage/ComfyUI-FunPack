@@ -1066,11 +1066,17 @@
   }
 
   // Protect a text/number/range field being typed into from autosave rebuilds, but let
-  // checkboxes and selects rebuild immediately so their dependent controls (absolute
-  // strength, embed mode/strength, mid-scene strength, …) appear right after the toggle.
+  // checkboxes rebuild immediately so their dependent controls (absolute strength, embed
+  // mode/strength, mid-scene strength, …) appear right after the toggle. A <select> is
+  // protected too, even though it has no typed value to lose: while its native popup is
+  // open the element stays focused, and rebuilding out from under it (any unrelated store
+  // notify — an autosave tick, a poll, another zone's change) destroys the DOM node and the
+  // browser closes the dropdown on its own before the user can pick anything. The 'change'
+  // listener below still applies a select's own edit immediately, so its dependents appear
+  // without waiting on this protection to lift.
   function shouldProtect(a, scope) {
     if (!a || !a.dataset || !a.dataset.k || !scope || !scope.contains(a)) return false;
-    if (a.tagName === "TEXTAREA") return true;
+    if (a.tagName === "TEXTAREA" || a.tagName === "SELECT") return true;
     if (a.tagName !== "INPUT") return false;
     const t = (a.type || "text").toLowerCase();
     return t !== "checkbox" && t !== "radio";
@@ -1122,6 +1128,14 @@
       if (!(t && t.dataset && t.dataset.k)) return;
       _editing = false;
       setTimeout(() => { if (!_editing) render(); }, 60);
+    });
+    // A <select>'s own onchange has already applied the edit to the store by the time this
+    // fires (bubbling runs after the target's handler) — apply it to the pane right away
+    // rather than leaving it protected (see shouldProtect) until the element loses focus,
+    // which a native dropdown may not do on its own for a while.
+    content.addEventListener("change", (e) => {
+      const t = e.target;
+      if (t && t.tagName === "SELECT" && t.dataset && t.dataset.k) { _editing = false; render(); }
     });
 
     unsub = S.subscribe(() => render());
