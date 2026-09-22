@@ -10198,10 +10198,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # value_guidance only controls APPLICATION (ascent below) - a user who runs with it
             # off still builds the VF, so enabling guidance later works immediately.
             #
-            # NOT on H3: nothing there reads either value function (value_guidance is forced
-            # off above; output_guidance is a sampler-side toggle forced off the same way), so
-            # training them is pure waste that only helps a mechanism this session found does
-            # not help — h3_repr_steering has its own commit below, unconditional.
+            # The conditioning-payload value function (below) is NOT trained on H3: it only
+            # feeds embed_guidance/value_guidance/taste_nearest_prompt, all forced off there
+            # (see self._is_h3 override in the sampler) because they were built and calibrated
+            # for LTXAV and have never been shown to do anything useful on H3 -- training it
+            # would be pure waste. The OUTPUT value function just below is a different story:
+            # explore_first_step reads it too (to select between candidate seeds), and that
+            # mechanism is not H3-excluded -- training it only for output_guidance's sake
+            # (also forced off on H3) silently starved explore_first_step of every sample it
+            # needed, permanently printing "not ready yet" no matter how much was rated. So
+            # only the conditioning-payload VF stays H3-gated; the output VF trains on every
+            # family. h3_repr_steering has its own commit below, unconditional either way.
             if (has_previous_run and refinement_key and not learning_profile.get("skip_learning")
                     and self._v2_reward_admissible(learning_profile)):
                 if not _is_h3:
@@ -10212,14 +10219,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     )
                     if n is not None:
                         print(f"[FunPackRefiner] Value function updated — {n} samples")
-                    # output_guidance's value function, trained on the sampler's x0_snapshot from
-                    # the run this rating scores (whole-run granularity — see
-                    # _v2_train_output_value_function for why this sits at the single
-                    # overall-reward call site, not the per-scene ones).
-                    with self._v2_stage("output value function"):
-                        n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
-                    if n_out is not None:
-                        print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
+                # output_guidance's value function, trained on the sampler's x0_snapshot from
+                # the run this rating scores (whole-run granularity — see
+                # _v2_train_output_value_function for why this sits at the single
+                # overall-reward call site, not the per-scene ones). Trained on every family
+                # (see the comment above this block) -- explore_first_step needs it on H3 too.
+                with self._v2_stage("output value function"):
+                    n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
+                if n_out is not None:
+                    print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
                 if _is_h3:
                     try:
                         from . import h3_repr_steering as _rs

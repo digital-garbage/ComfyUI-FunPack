@@ -10224,18 +10224,19 @@ class FunPackLTXAVSceneChainSampler:
         # silently skipped it, so the output value function NEVER received a sample on AV
         # ("not ready yet (needs 10+)" forever). Snapshot the video stream (largest tensor),
         # matching the video-only convention of the in-flight guidance path.
+        # NOT gated on family any more: output_guidance's own APPLICATION is still forced off
+        # on H3 (self._is_h3 override above, untested/uncalibrated there), but explore_first_step
+        # reads this SAME value function to select between candidate seeds and is not
+        # H3-excluded -- skipping the snapshot here starved it permanently (0 samples, forever
+        # "not ready yet" regardless of rating count), the exact bug this comment used to cause
+        # for output_guidance on AV before the nested-tensor fix above.
         if refinement_key_input and isinstance(output, dict):
             _snap = output.get("samples")
             if self._is_nested(_snap):
                 _parts = [t for t in _snap.unbind() if isinstance(t, torch.Tensor) and t.numel() > 0]
                 _snap = max(_parts, key=lambda t: t.numel()) if _parts else None
             if isinstance(_snap, torch.Tensor):
-                if not self._is_h3:
-                    # NOT on H3: this snapshot only feeds output_guidance's value function,
-                    # forced off for H3 (see self._is_h3 override above) — capturing it here
-                    # anyway would just be banking video latents nothing ever reads, the same
-                    # waste the "disable everything unrelated to REINS" pass was for.
-                    self._save_output_value_snapshot(refinement_key_input, _snap, None)
+                self._save_output_value_snapshot(refinement_key_input, _snap, None)
                 # DynaShift pending candidate: same run/rating pairing as the snapshot, but
                 # the RAW video latent (fp16) — the rating decides whether it becomes a
                 # negative-bank entry, a positive-bank entry, or is discarded
