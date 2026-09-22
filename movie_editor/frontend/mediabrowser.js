@@ -107,17 +107,20 @@
   }
 
   function _appendMediaThumb(thumb, m) {
-    const url = API.mediaUrl(m.id);
-    const cached = thumbCache.get(m.id);
-    if (cached && cached.url === url) { thumb.append(cached.node); return; }
-    if (m.kind === "image") {
-      const ph = el("span", "media-icon", "◆");
+    if (m.kind === "image" || m.kind === "video") {
+      // The server now generates and caches a small JPEG per media id (an ffmpeg frame-grab
+      // for video, a Pillow resize for images) instead of this loading the FULL original
+      // file just to show a 56-96px square -- was true even for a 4K photo or clip. A plain
+      // <img> would work now that the source is already small, but this still draws it to a
+      // canvas: a <canvas> isn't natively draggable, so the card's own drag-and-drop handling
+      // just works, instead of needing img.draggable=false to stop the browser's own image
+      // drag from hijacking it.
+      const url = API.mediaThumbUrl(m.id);
+      const cached = thumbCache.get(m.id);
+      if (cached && cached.url === url) { thumb.append(cached.node); return; }
+      const ph = el("span", "media-icon" + (m.kind === "video" ? " media-vid-ph" : ""),
+        m.kind === "video" ? "▶" : "◆");
       thumb.append(ph);
-      // Loaded off-DOM and drawn down to a small canvas instead of appending the <img>
-      // itself -- the img would hold its full-resolution decoded bitmap alive in memory for
-      // as long as the card exists, just to be shown at 56-96px via CSS. The canvas also
-      // sidesteps the old drag hijack this used to need img.draggable=false for: a <canvas>
-      // isn't natively draggable, so the card's own drag handling just works.
       const img = new Image();
       img.onload = () => {
         if (!thumb.isConnected) return;
@@ -132,39 +135,10 @@
           thumbCache.set(m.id, { url, node: canvas });
         } catch (_) {}
       };
+      // On failure (no ffmpeg, corrupt source, unsupported codec) the placeholder icon
+      // above just stays put -- no fallback to the full original file: that was the whole
+      // cost this endpoint exists to avoid, and a broken thumbnail is not worth paying it.
       img.src = url;
-      return;
-    }
-    if (m.kind === "video") {
-      const ph = el("span", "media-icon media-vid-ph", "▶");
-      thumb.append(ph);
-      // Snapshot the first frame to a canvas and release the <video> immediately. A live
-      // <video> per bin item held its network connection open (Chrome stalls media fetches
-      // but keeps the socket) — with ~6 videos in the bin the per-origin connection pool
-      // was exhausted and every editor API call queued behind the thumbnails.
-      const vid = document.createElement("video");
-      vid.muted = true;
-      vid.preload = "metadata";
-      vid.playsInline = true;
-      vid.src = url;
-      const release = () => { try { vid.removeAttribute("src"); vid.load(); } catch (_) {} };
-      vid.onerror = release;
-      vid.onloadeddata = () => {
-        if (thumb.isConnected && !thumb.querySelector("canvas")) {
-          const { w, h } = _thumbScale(vid.videoWidth || 320, vid.videoHeight || 180, THUMB_MAX_DIM);
-          const canvas = document.createElement("canvas");
-          canvas.className = "media-vid-thumb";
-          canvas.width = w;
-          canvas.height = h;
-          try {
-            canvas.getContext("2d").drawImage(vid, 0, 0, w, h);
-            ph.remove();
-            thumb.append(canvas);
-            thumbCache.set(m.id, { url, node: canvas });
-          } catch (_) {}
-        }
-        release();
-      };
       return;
     }
     if (m.kind === "audio") {

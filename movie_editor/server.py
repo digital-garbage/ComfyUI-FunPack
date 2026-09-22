@@ -1764,6 +1764,16 @@ if web is not None and PromptServer is not None:
             raise web.HTTPNotFound()
         return web.Response(body=p.read_bytes(), content_type=media.content_type(req.match_info["mid"]))
 
+    @routes.get(UI_PREFIX + "/api/media/{mid}/thumb")
+    async def _media_thumb(req):
+        p = media.thumb_path_for(req.match_info["mid"])
+        if p is None:
+            raise web.HTTPNotFound()
+        return web.Response(
+            body=p.read_bytes(), content_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
     @routes.delete(UI_PREFIX + "/api/media/{mid}")
     async def _media_delete(req):
         if not media.delete(req.match_info["mid"]):

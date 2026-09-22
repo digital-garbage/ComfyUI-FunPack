@@ -106,6 +106,9 @@
     // media bin
     listMedia: () => j("GET", API("/media")),
     mediaUrl: (id) => API(`/media/${encodeURIComponent(id)}`),
+    // A small server-cached JPEG (generated on first request) instead of the full original
+    // file — for grid thumbnails only, never for actual playback/preview/export.
+    mediaThumbUrl: (id) => API(`/media/${encodeURIComponent(id)}/thumb`),
     deleteMedia: (id) => j("DELETE", API(`/media/${encodeURIComponent(id)}`)),
     renameMedia: (id, name) => j("PATCH", API(`/media/${encodeURIComponent(id)}`), { name }),
     importClipToMediaBin: (clip, name) => j("POST", API("/media/import-clip"), { clip, name: name || null }),
