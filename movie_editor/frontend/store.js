@@ -3016,14 +3016,14 @@
 
   async function _flushSaveForGenerate() {
     await flushGlobalPromptApply();   // distribute any just-typed global prompt into scenes first
-    await flushModelsSave();          // persist exposed-control edits before building the graph
-    await flushSave();
-    if (_localDirty) {
-      throw new Error(
-        "Could not save your latest edits before generate (tunnel may have dropped). "
-        + "Wait for the save indicator to clear, then try again."
-      );
-    }
+    // Model-config and project saves used to be awaited here too -- two separate network
+    // round-trips (flushModelsSave, flushSave/commit) that could each retry for tens of
+    // seconds on a flaky connection (_retryOnTunnel), with Generate doing nothing visible
+    // the whole time. Generate now sends its own project snapshot inline (_generateRun
+    // builds it via _syncEditorStateToProject + API.generate's `project` argument) and the
+    // server persists exactly that payload in the same request -- there is no longer a
+    // separate save for Generate to wait on. The regular autosave/models-save timers keep
+    // running in the true background, unaffected, for edits made between generations.
   }
 
   function _sleep(ms) {
@@ -3641,14 +3641,45 @@
 
   async function _generateRun(sceneIds, onlyScene, prefix, resetSession, extraOverrides) {
     _interrupted = false;
-    _markGenInFlight(sceneIds);
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
       const overrides = [...(_anchorGuideNodeOverrides(sceneIds) || []), ...(extraOverrides || [])];
-      const r = await _retryOnTunnel(
-        () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession, overrides, _prevSceneMedia(onlyScene)),
-        10,
-      );
+      // If an ambient autosave is ALREADY in flight (started before Generate was clicked,
+      // e.g. mid-retry on a flaky connection), let it land first. Generate's own write below
+      // is correct in itself either way -- it always persists exactly what it generates
+      // from -- but without this, that older in-flight write could complete AFTER
+      // Generate's and silently regress the file on disk back to pre-edit state, even
+      // though the generation that just ran used the right data. No wait at all when
+      // nothing is in flight, which is the common case this whole change is for.
+      if (_commitPromise) { try { await _commitPromise; } catch (_) {} }
+      // Snapshot AFTER syncing models/scene_renders/scene_ghosts into state.project (same
+      // prep commit() does before its own save) so this carries exactly what's on screen,
+      // not whatever the last autosave happened to persist.
+      _syncEditorStateToProject();
+      const snapshot = JSON.parse(JSON.stringify(state.project));
+      // Suspend the ambient autosave for the span of this one request. The server's own
+      // handler for this endpoint saves the project TWICE -- once with this snapshot up
+      // front, and again afterward (once ComfyUI has queued the prompt) to record the
+      // resulting prompt/run hash -- both writes to the SAME file. Without this, a NEW
+      // ambient commit() could start and land in the gap between those two server-side
+      // writes and get silently clobbered by the second one, which still only knows about
+      // the snapshot taken here, not whatever landed in between. suspendSave() blocks new
+      // saves from being scheduled/fired for the request's duration; resumeSave() below
+      // both re-enables it and immediately flushes anything the user changed meanwhile.
+      // Marked in-flight right before the actual request, not any earlier -- otherwise a
+      // scene deleted during the _commitPromise wait above would be ghosted (as if an
+      // interrupted real generation) even though no request had actually been sent yet.
+      _markGenInFlight(sceneIds);
+      suspendSave();
+      let r;
+      try {
+        r = await _retryOnTunnel(
+          () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession, overrides, _prevSceneMedia(onlyScene), snapshot),
+          10,
+        );
+      } finally {
+        resumeSave();
+      }
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
       _queueRenderPrompts(sceneIds);
       if (r.validation && state.project) {
@@ -3847,6 +3878,12 @@
 
   async function generate(onlyScene) {
     if (!state.project) return;
+    // Shown BEFORE the await below, not after: without it, clicking Generate produced no
+    // visible change at all until _flushSaveForGenerate/_generateRun got around to their own
+    // first `set()` -- normally near-instant, but on a flaky connection (an ambient autosave
+    // still mid-retry that _generateRun then waits on) that gap could stretch to tens of
+    // seconds with the button looking untouched and un-disabled the whole time.
+    set({ gen: { state: "queuing", promptId: null, media: [], msg: "Preparing to generate…", step: 0, maxStep: 0 } });
     try {
       await _flushSaveForGenerate();
     } catch (e) {
@@ -3866,6 +3903,7 @@
   // session reset applies to the FIRST run only.
   async function generateMontage() {
     if (!state.project) return;
+    set({ gen: { state: "queuing", promptId: null, media: [], msg: "Preparing to generate…", step: 0, maxStep: 0 } });
     try {
       await _flushSaveForGenerate();
     } catch (e) {
@@ -3893,6 +3931,7 @@
       set({ gen: { state: "error", promptId: null, media: [], msg: "No scenes selected." } });
       return;
     }
+    set({ gen: { state: "queuing", promptId: null, media: [], msg: "Preparing to generate…", step: 0, maxStep: 0 } });
     try {
       await _flushSaveForGenerate();
     } catch (e) {

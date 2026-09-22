@@ -1802,8 +1802,33 @@ if web is not None and PromptServer is not None:
     # --- API: generate / status / result ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/generate")
     async def _generate(req):
-        p = _project_or_404(req.match_info["pid"])
+        pid = req.match_info["pid"]
         body = await req.json() if req.can_read_body else {}
+        # The UI sends its current in-memory project inline instead of relying on this
+        # reading whatever was last written to disk -- generate used to force the editor to
+        # wait out a full autosave round-trip (which can retry for tens of seconds on a flaky
+        # connection) before it could even start, and reading a project that may be older
+        # than what's on screen was the reason that wait existed in the first place. This
+        # request persists exactly the payload it generates from, up front. Below (after
+        # queuing with ComfyUI) this SAME project object gets a generation_meta patch and is
+        # saved again -- the editor suspends its own ambient autosave for the whole span of
+        # this request specifically so nothing else can write to this project's file in
+        # between those two saves and get silently overwritten by the second one; that
+        # protection lives client-side (Store._generateRun's suspendSave/resumeSave), not
+        # here. body["project"] is optional for other/older callers of this same endpoint,
+        # which keep the previous disk-read behavior unchanged -- but note that the CLIENT's
+        # save-before-generate guarantee also moved into the caller that builds this payload,
+        # so a caller that omits it is no longer assured its own models/project config was
+        # flushed to disk before this reads it.
+        inline_project = body.get("project")
+        if isinstance(inline_project, dict):
+            existing = _project_or_404(pid)
+            inline_project = dict(inline_project)
+            inline_project["id"] = pid
+            inline_project.setdefault("created_at", existing.created_at)
+            p = projects.save(Project.from_dict(inline_project))
+        else:
+            p = _project_or_404(pid)
         scene_ids = body.get("scene_ids")
         if scene_ids:
             target = _segment(p, scene_ids)
