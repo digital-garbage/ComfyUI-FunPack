@@ -8786,19 +8786,29 @@ class FunPackLTXAVSceneChainSampler:
         self._is_h3 = self._set_stream_axes(model)
         if self._is_h3:
             # H3's rating-driven mechanisms are h3_phrase_emphasis (Studio), h3_repr_steering,
-            # and (2026-09-03, re-enabled) dynashift -- see project_reward_model_rework.md.
-            # Everything else here was built and calibrated for LTXAV and has never been shown
-            # to do anything useful on H3 (output_guidance/trajectory_guidance/score_slider
-            # ride the same last-half gate that was calibrated there, and embed_guidance/
-            # taste_nearest_prompt read the same relative value function that phrase
-            # emphasis's own manipulation check showed produces near-invisible pushes at H3's
-            # real calibration). Forced off HERE, not just hidden in Engine Settings, so a
-            # project saved before this still behaves correctly instead of silently doing
-            # several things nobody asked for. DynaShift is the one exception, reopened
-            # specifically to test its own (unmodified) mechanism plus a new positive-pull
-            # channel on H3 -- unvalidated there like h3_repr_steering, not a claim it works.
-            output_guidance = trajectory_guidance = False
-            embed_guidance = score_slider = taste_nearest_prompt = False
+            # dynashift (re-enabled 2026-09-03), and (re-enabled 2026-09-22) output_guidance/
+            # trajectory_guidance/score_slider -- see project_reward_model_rework.md.
+            #
+            # The last three were originally disabled for a GATE bug, not a measured failure:
+            # they all ride `_make_steer_ramp`'s last-half window, which read sigma as
+            # "position in schedule" and measured 0-of-4 / 0-of-12 real coverage on H3's
+            # shift-based schedules. That gate was rewritten to recover the true position from
+            # the schedule's own base grid (see `_make_steer_ramp`'s docstring) and IS wired
+            # into all three call sites via `ramp_fn=_steer_ramp`. Their correction steps are
+            # also self-normalizing -- a fraction of the live tensor/embedding's own norm
+            # (`_build_output_guidance_wrapper`'s "NORM-CALIBRATED step", score_slider's
+            # `0.15 * cond.norm()`), not a constant tuned for LTXAV's specific scale -- and
+            # trajectory_guidance's own buckets (trajectory_probe.py) were built FOR H3's
+            # schedules from the start, reading real per-run sigma positions rather than an
+            # external formula. Re-enabled to actually test them now that the thing that broke
+            # them is fixed; still unvalidated on real hardware, not a claim they help.
+            #
+            # embed_guidance/taste_nearest_prompt stay OFF: unlike the three above, these read
+            # a DIFFERENT (conditioning-space) value function that phrase emphasis's own
+            # manipulation check directly MEASURED as producing near-invisible pushes at H3's
+            # real calibration (conditioning.py, `_is_h3` branch) -- an actual negative result,
+            # not an untested gate, so there's nothing here that fixing the ramp changes.
+            embed_guidance = taste_nearest_prompt = False
         # Read once per run, consumed by _install_h3_final_layer at each scene's sample call.
         self._h3_video_detail = max(0.0, min(2.0, float(h3_video_detail)))
         # The gate every rating-driven wrapper shares. On H3 it is read off the schedule's

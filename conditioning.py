@@ -10200,15 +10200,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             #
             # The conditioning-payload value function (below) is NOT trained on H3: it only
             # feeds embed_guidance/value_guidance/taste_nearest_prompt, all forced off there
-            # (see self._is_h3 override in the sampler) because they were built and calibrated
-            # for LTXAV and have never been shown to do anything useful on H3 -- training it
-            # would be pure waste. The OUTPUT value function just below is a different story:
-            # explore_first_step reads it too (to select between candidate seeds), and that
-            # mechanism is not H3-excluded -- training it only for output_guidance's sake
-            # (also forced off on H3) silently starved explore_first_step of every sample it
-            # needed, permanently printing "not ready yet" no matter how much was rated. So
-            # only the conditioning-payload VF stays H3-gated; the output VF trains on every
-            # family. h3_repr_steering has its own commit below, unconditional either way.
+            # (see self._is_h3 override in the sampler) because phrase emphasis's own
+            # manipulation check MEASURED near-invisible pushes from it at H3's real
+            # calibration -- training it would be pure waste. The OUTPUT value function just
+            # below is a different story: explore_first_step reads it too (to select between
+            # candidate seeds), and that mechanism is not H3-excluded -- training it only for
+            # output_guidance's sake, back when output_guidance was ALSO unconditionally
+            # forced off on H3, silently starved explore_first_step of every sample it needed,
+            # permanently printing "not ready yet" no matter how much was rated. Fixed by
+            # training the output VF on every family regardless of which of its consumers are
+            # gated. (2026-09-22: output_guidance/trajectory_guidance/score_slider are no
+            # longer forced off on H3 either -- that was a stale gate bug, not a measured
+            # failure like the conditioning-payload VF above -- but this training call was
+            # already unconditional before that change and needs no update.) h3_repr_steering
+            # has its own commit below, unconditional either way.
             if (has_previous_run and refinement_key and not learning_profile.get("skip_learning")
                     and self._v2_reward_admissible(learning_profile)):
                 if not _is_h3:
