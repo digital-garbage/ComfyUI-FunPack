@@ -156,18 +156,20 @@
 
     const cfgWrap = el("div", "sw-stack");
     const cfgHint = el("div", "es-hint",
-      "One config per line, combining either or both with \"|\": reins:strength;block and/or "
-      + "sweep:blocks;seam|noseam;times[;laststeps] — e.g. reins:0.15;49|sweep:40-41;noseam;1;0 "
-      + "or just reins:0.1;49 alone. Whichever half you omit is explicitly OFF for that line, "
-      + "not \"whatever Engine Settings has\". sweep's blocks accept a single number, a range "
-      + "(31-40), or a comma list; times is clamped to 1-4; laststeps confines the repeat to "
-      + "part of the schedule (0/omitted = every step, positive = final N steps, negative = "
-      + "first |N| steps then stop). Unvalidated — results will not match any prior sweep 1:1, "
-      + "see the block-repeat research notes.");
+      "One config per line, combining any of these with \"|\": reins:strength;block, "
+      + "sweep:blocks;seam|noseam;times[;laststeps], and av:penalty — e.g. "
+      + "reins:0.15;49|sweep:40-41;noseam;1;0|av:5 or just reins:0.1;49 alone. Whichever part "
+      + "you omit is explicitly OFF for that line, not \"whatever Engine Settings has\". "
+      + "sweep's blocks accept a single number, a range (31-40), or a comma list; times is "
+      + "clamped to 1-4; laststeps confines the repeat to part of the schedule (0/omitted = "
+      + "every step, positive = final N steps, negative = first |N| steps then stop). av's "
+      + "penalty is the raw attention-logit penalty (h3_av_decouple) that weakens video<->audio "
+      + "cross-attention — not a 0-1 fraction, try single digits first. Unvalidated — results "
+      + "will not match any prior sweep 1:1, see the block-repeat research notes.");
     const cfgArea = document.createElement("textarea");
     cfgArea.className = "sw-textarea";
     cfgArea.rows = 6;
-    cfgArea.placeholder = "reins:0.15;49|sweep:40-41;noseam;1;0\nreins:0.1;49\nsweep:31-40;noseam;1;-3";
+    cfgArea.placeholder = "reins:0.15;49|sweep:40-41;noseam;1;0|av:5\nreins:0.1;49\nsweep:31-40;noseam;1;-3\nav:3";
     cfgArea.value = _configText;
     cfgArea.oninput = () => { _configText = cfgArea.value; };
     const runBtn = el("button", "btn primary tiny", "▶ Run sweep");
