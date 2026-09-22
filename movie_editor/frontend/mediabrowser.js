@@ -92,22 +92,47 @@
     return MEDIA_KIND_META[kind] || MEDIA_KIND_META.other;
   }
 
+  // Long edge of a cached thumbnail bitmap, in px. The grid cell itself never exceeds 240px
+  // (#media-zone .media-grid's --mb-cell clamp) -- this leaves headroom for retina without
+  // caching a full-resolution decode of every image/video forever, which is what a bin of
+  // real photos/4K clips was actually doing before (each `<img>`/video-frame canvas held its
+  // native-resolution bitmap in memory for the rest of the session, per card).
+  const THUMB_MAX_DIM = 320;
+
+  function _thumbScale(srcW, srcH, max) {
+    srcW = Math.max(1, srcW); srcH = Math.max(1, srcH);
+    if (srcW <= max && srcH <= max) return { w: srcW, h: srcH };
+    const scale = max / Math.max(srcW, srcH);
+    return { w: Math.max(1, Math.round(srcW * scale)), h: Math.max(1, Math.round(srcH * scale)) };
+  }
+
   function _appendMediaThumb(thumb, m) {
     const url = API.mediaUrl(m.id);
     const cached = thumbCache.get(m.id);
     if (cached && cached.url === url) { thumb.append(cached.node); return; }
     if (m.kind === "image") {
-      const img = el("img");
+      const ph = el("span", "media-icon", "◆");
+      thumb.append(ph);
+      // Loaded off-DOM and drawn down to a small canvas instead of appending the <img>
+      // itself -- the img would hold its full-resolution decoded bitmap alive in memory for
+      // as long as the card exists, just to be shown at 56-96px via CSS. The canvas also
+      // sidesteps the old drag hijack this used to need img.draggable=false for: a <canvas>
+      // isn't natively draggable, so the card's own drag handling just works.
+      const img = new Image();
+      img.onload = () => {
+        if (!thumb.isConnected) return;
+        try {
+          const { w, h } = _thumbScale(img.naturalWidth, img.naturalHeight, THUMB_MAX_DIM);
+          const canvas = document.createElement("canvas");
+          canvas.className = "media-vid-thumb";
+          canvas.width = w; canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+          ph.remove();
+          thumb.append(canvas);
+          thumbCache.set(m.id, { url, node: canvas });
+        } catch (_) {}
+      };
       img.src = url;
-      img.loading = "lazy";
-      // An <img> is natively draggable, and inside a draggable card it WINS: the browser
-      // starts its own image drag, whose dataTransfer carries a URL instead of our
-      // application/funpack-media id, so every drop target rejects it. It also has to
-      // decode and rasterize the full-size bitmap first, which is why big images felt like
-      // they "resisted" dragging. Opting the image out hands the drag back to the card.
-      img.draggable = false;
-      thumbCache.set(m.id, { url, node: img });
-      thumb.append(img);
       return;
     }
     if (m.kind === "video") {
@@ -126,12 +151,13 @@
       vid.onerror = release;
       vid.onloadeddata = () => {
         if (thumb.isConnected && !thumb.querySelector("canvas")) {
+          const { w, h } = _thumbScale(vid.videoWidth || 320, vid.videoHeight || 180, THUMB_MAX_DIM);
           const canvas = document.createElement("canvas");
           canvas.className = "media-vid-thumb";
-          canvas.width = vid.videoWidth || 320;
-          canvas.height = vid.videoHeight || 180;
+          canvas.width = w;
+          canvas.height = h;
           try {
-            canvas.getContext("2d").drawImage(vid, 0, 0, canvas.width, canvas.height);
+            canvas.getContext("2d").drawImage(vid, 0, 0, w, h);
             ph.remove();
             thumb.append(canvas);
             thumbCache.set(m.id, { url, node: canvas });
