@@ -14,7 +14,20 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, ".")
 import _comfy_stubs  # noqa: E402, F401
-from samplers import FunPackLTXAVSceneChainSampler as S  # noqa: E402
+from samplers import FunPackLTXAVSceneChainSampler as S, _format_block_ranges  # noqa: E402
+
+
+def test_format_block_ranges_compresses_consecutive_runs():
+    assert _format_block_ranges([0, 1, 2, 3, 25, 40, 41, 42]) == "0-3, 25, 40-42"
+
+
+def test_format_block_ranges_handles_empty_and_single():
+    assert _format_block_ranges([]) == ""
+    assert _format_block_ranges([7]) == "7"
+
+
+def test_format_block_ranges_sorts_and_dedupes():
+    assert _format_block_ranges([5, 3, 4, 3]) == "3-5"
 
 
 class _FakeDiffusionModel:
@@ -227,6 +240,38 @@ def test_compose_with_nothing_claimed_hooks_everything_like_the_default():
                                                compose=True)
     dit = patched.model_options["transformer_options"]["patches_replace"]["dit"]
     assert {k for k in dit if k[0] == "double_block"} == {("double_block", i) for i in range(4)}
+
+
+def test_compose_with_every_block_claimed_gets_its_own_clear_no_effect_message(capsys):
+    """REINS claims ALL 50 blocks unconditionally the moment it runs at all (steering OR
+    passive-capture-only) -- not just its named steer block, and NOT gated by strength --
+    for comfy_aimdo allocation-uniformity reasons, so compose mode is left with nothing at
+    all whenever REINS is on in any form. This must read as a standalone "did nothing"
+    headline, not a generic N/50 line buried under a full block-index dump, and it must
+    give the CORRECT remedy: turning strength to 0 does not free anything (round-2 review
+    caught the first version of this message claiming otherwise), only turning REINS fully
+    off does."""
+    model = _FakeModel(dm=_FakeDiffusionModel(n_blocks=3))
+    model.model_options["transformer_options"] = {"patches_replace": {"dit": {
+        ("double_block", i): (lambda args, extra: {"img": args["img"]}) for i in range(3)
+    }}}
+    node = S()
+    patched = node._install_h3_shadow_negative(model, _negative(), 3.0, 1.0, 2.5, 0.35, 0.0, 0.6,
+                                               compose=True)
+    out = capsys.readouterr().out
+    assert "NO EFFECT" in out
+    assert "aimdo" in out
+    assert "strength only gates whether" in out, "must say strength controls injection, not installation"
+    assert "fully OFF" in out and "passive-capture" in out, \
+        "the only real remedy (disable REINS entirely) must be stated, not 'lower strength'"
+    assert "down to passive-capture-only (strength 0)" not in out, \
+        "this was the round-2-caught false remedy -- passive-capture ALSO claims all 50 blocks"
+    dit = patched.model_options["transformer_options"]["patches_replace"]["dit"]
+    assert all(k[0] != "double_block" or dit[k] is not None for k in dit)
+    img = torch.ones(3, 4)
+    result = dit[("double_block", 0)]({"img": img, "mod_segments": []},
+                                      {"original_block": lambda a: {"img": a["img"] * 2.0}})
+    assert torch.allclose(result["img"], img), "original per-block hook must survive untouched"
 
 
 if __name__ == "__main__":

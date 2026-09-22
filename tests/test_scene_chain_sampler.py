@@ -1379,3 +1379,112 @@ def test_output_value_snapshot_is_saved_on_h3(monkeypatch):
     )
 
     assert snapshot_calls == ["testkey"]
+
+
+def test_select_best_seed_reports_when_no_candidate_scores(monkeypatch, capsys):
+    """Regression (2026-09-22): explore_first_step's candidate loop used to `continue`
+    silently both when a candidate produced no usable prediction and when scoring itself
+    raised, then return the unchanged seed with NO console output at all if every
+    candidate failed this way -- indistinguishable from "it ran and picked the original
+    seed" to a user just watching generation timing. fake_sample_custom (below) never
+    invokes the model_function_wrapper, so every candidate here naturally produces no
+    capture -- exactly the silent path this test pins."""
+    monkeypatch.setattr(sys.modules["comfy.sample"], "prepare_noise",
+                        fake_prepare_noise, raising=False)
+    monkeypatch.setattr(sys.modules["comfy.sample"], "sample_custom",
+                        fake_sample_custom, raising=False)
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+
+    class _ReadyValueFn:
+        def is_ready(self):
+            return True
+
+    latent = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    result = node._select_best_seed(
+        model=FakeModel(), sampler=object(), sigmas=torch.tensor([1.0, 0.0]), seed=10,
+        cfg=1.5, positive=positive, negative=negative, latent=latent, n_candidates=2,
+        value_fn=_ReadyValueFn(),
+    )
+
+    assert result == 10, "seed must be unchanged when nothing scored"
+    out = capsys.readouterr().out
+    assert out.count("produced no usable prediction") == 2, "one line per failed candidate"
+    assert "0/2 candidate(s) produced a usable score" in out
+    assert "seed unchanged" in out
+
+
+def test_select_best_seed_reports_a_scoring_exception_per_candidate(monkeypatch, capsys):
+    """The OTHER silent path this same regression covers: a candidate that DOES produce a
+    capture but whose value_fn.forward/.compress call raises must also say so, not just
+    the couldn't-extract-a-prediction case above."""
+    class _RecordingWrapperModel:
+        def __init__(self):
+            self.model_options = {}
+
+    def sample_custom_that_fires_the_wrapper(model, noise, cfg, sampler, sigmas, positive,
+                                             negative, latent_image, noise_mask=None,
+                                             callback=None, disable_pbar=False, seed=None):
+        wrapper = model.model_options.get("model_function_wrapper")
+        wrapper(lambda x, t, **c: latent_image,
+                {"input": noise, "timestep": torch.tensor([1.0]), "c": {}})
+        return latent_image
+
+    monkeypatch.setattr(sys.modules["comfy.sample"], "prepare_noise",
+                        fake_prepare_noise, raising=False)
+    monkeypatch.setattr(sys.modules["comfy.sample"], "sample_custom",
+                        sample_custom_that_fires_the_wrapper, raising=False)
+    node = FunPackLTXAVSceneChainSampler()
+
+    class _BoomValueFn:
+        def is_ready(self):
+            return True
+
+        def compress(self, x):
+            raise RuntimeError("boom")
+
+    latent = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    result = node._select_best_seed(
+        model=_RecordingWrapperModel(), sampler=object(), sigmas=torch.tensor([1.0, 0.0]),
+        seed=10, cfg=1.5, positive=positive, negative=negative, latent=latent,
+        n_candidates=2, value_fn=_BoomValueFn(),
+    )
+
+    assert result == 10
+    out = capsys.readouterr().out
+    assert out.count("failed to score") == 2
+    assert "0/2 candidate(s) produced a usable score" in out
+
+
+def test_output_value_fn_sample_count_reads_an_under_threshold_file(monkeypatch, tmp_path):
+    """Regression (2026-09-22): 'value function not ready yet' used to give no indication
+    of how many rated generations it actually has banked -- the user called this out as
+    "literally blind" on the count. _load_output_value_function collapses an under-
+    threshold value function to None (correctly -- every other caller trusts that as
+    "not safe to steer/select with"), so the count has to come from a SEPARATE read."""
+    import conditioning
+    from value_function import LatentValueFunction
+
+    monkeypatch.setattr(conditioning, "refinement_state_path",
+                        lambda key, mode, prefix="refine", extension="json":
+                            str(tmp_path / f"{key}.{mode}.{extension}"), raising=True)
+
+    node = FunPackLTXAVSceneChainSampler()
+    assert node._output_value_fn_sample_count("testkey") is None, \
+        "no file at all -- never trained, not merely under threshold"
+
+    vf = LatentValueFunction(hidden_dim=LatentValueFunction.DEFAULT_HIDDEN_DIM)
+    for i in range(4):
+        vf.train_on(torch.zeros(LatentValueFunction.DEFAULT_HIDDEN_DIM), float(i))
+    vf.save(str(tmp_path / "testkey.value_fn_x0.pt"))
+
+    assert vf.is_ready() is False, "fixture must actually be under MIN_SAMPLES (10)"
+    assert node._output_value_fn_sample_count("testkey") == 4
+    assert node._load_output_value_function("testkey") is None, \
+        "the gated loader must still treat this as not-ready"

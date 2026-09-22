@@ -971,6 +971,26 @@ def _strip_funpack_scene_wrappers(model):
 _FUNPACK_DIT_HOOK_TAG = "_funpack_dit_hook"
 
 
+def _format_block_ranges(indices):
+    """[0,1,2,3,25,40,41,42] -> "0-3, 25, 40-42" -- a log line naming which blocks a
+    mechanism skipped is only useful if it stays short enough to read; a flat comma list
+    of every index in a 50-block span is exactly the kind of noise that buries the one
+    fact worth seeing (see H3 shadow negative's compose-mode log)."""
+    idx = sorted(set(int(i) for i in indices))
+    if not idx:
+        return ""
+    runs = []
+    start = prev = idx[0]
+    for i in idx[1:]:
+        if i == prev + 1:
+            prev = i
+            continue
+        runs.append((start, prev))
+        start = prev = i
+    runs.append((start, prev))
+    return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in runs)
+
+
 def _tag_dit_hook(hook, prev):
     """Mark a dit-patch hook or optimized_attention_override function (and what it
     chained through) so a later run can identify and unwind one leaked by a previous
@@ -4884,6 +4904,32 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
+    def _output_value_fn_sample_count(self, refinement_key):
+        """How many samples the output-space value function has banked so far, or None if
+        it has never been trained at all. Separate from _load_output_value_function on
+        purpose: that method's None means "not ready to steer/select with" and every call
+        site trusts that gate directly (output_guidance's ascent wrapper in particular has
+        no readiness check of its own) — loosening it to also return an under-threshold vf
+        would silently start applying ascent from a near-empty value function. This is
+        read-only, for the "how many do I have" message (the user was "literally blind" on
+        this exact count before it existed)."""
+        try:
+            try:
+                from .value_function import LatentValueFunction
+                from .conditioning import refinement_state_path
+            except ImportError:
+                from value_function import LatentValueFunction
+                from conditioning import refinement_state_path
+            import os as _os
+            path = refinement_state_path(refinement_key, "value_fn_x0", prefix="refine_v2", extension="pt")
+            if not _os.path.exists(path):
+                return None
+            with torch.inference_mode(False):
+                vf = LatentValueFunction.load(path)
+            return len(vf.buffer_c)
+        except Exception:
+            return None
+
     def _select_best_seed(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                           n_candidates, value_fn):
         """Explore-then-commit at step 1: score `n_candidates` seeds on ONE throwaway step
@@ -4926,10 +4972,14 @@ class FunPackLTXAVSceneChainSampler:
 
         Returns `seed` UNCHANGED — not a fallback value, the literal seed the caller
         already has — whenever the value function isn't ready, `sigmas` can't provide a
-        one-step slice, or every candidate's own throwaway call fails. This is a real
-        limit (no trained scorer yet, or too short a schedule to branch), not a defect, so
-        it stays silent the same way every other "nothing to steer with yet" path in this
-        file does — the caller proceeds exactly as if this were never called."""
+        one-step slice, `latent` can't be cloned, or every candidate's own throwaway call
+        fails. The first three bail BEFORE any compute is spent and stay silent, same as
+        every other "nothing to steer with yet" gate in this file. Once candidates actually
+        ran (real GPU time spent, visible in generation timing), a failure to produce a
+        usable score is reported per-candidate and, if none scored, as one final summary
+        line — silence there would have looked identical to "it worked and picked the
+        original seed," which a user cannot tell apart from "it silently did nothing" by
+        watching the render alone."""
         if value_fn is None or not value_fn.is_ready() or int(n_candidates) < 2:
             return seed
         if not isinstance(sigmas, torch.Tensor) or sigmas.numel() < 2:
@@ -4981,15 +5031,23 @@ class FunPackLTXAVSceneChainSampler:
                 # must never leave its observer installed for the real run that follows.
                 model.model_options["model_function_wrapper"] = old_wrapper
             if captured[0] is None:
+                print(f"[FunPackSceneChain] explore_first_step: candidate {i} produced no "
+                      f"usable prediction (couldn't extract a video slice from this call), "
+                      f"skipped")
                 continue
             try:
                 with torch.inference_mode(False), torch.no_grad():
                     score = float(value_fn.forward(
                         value_fn.compress(captured[0].float())).item())
-            except Exception:
+            except Exception as e:
+                print(f"[FunPackSceneChain] explore_first_step: candidate {i} failed to "
+                      f"score ({e}), skipped")
                 continue
             scored.append((score, cand_seed))
         if not scored:
+            print(f"[FunPackSceneChain] explore_first_step: 0/{n_candidates} candidate(s) "
+                  f"produced a usable score this run -- seed unchanged (original seed used, "
+                  f"same as if this were off).")
             return seed
         scored.sort(key=lambda t: t[0], reverse=True)
         best_score, best_seed = scored[0]
@@ -7794,11 +7852,24 @@ class FunPackLTXAVSceneChainSampler:
         _sample_chunk's dit-patch chain so an explicit request for this always wins.
 
         `compose=True`: installs on every block EXCEPT the ones another mechanism already
-        claimed this run -- REINS/Q-steer's named block, block-repeat's span, etc. keep
-        their own block entirely untouched (so they keep capturing/steering there exactly
-        as if shadow negative were off), while shadow negative's NAG push still runs on
-        every other block. Structural coexistence, not mathematical composition: no block
-        ever runs both mechanisms at once, they just no longer fight over which one wins.
+        claimed this run -- Q-steer's named block, block-repeat's span, etc. keep their own
+        block entirely untouched (so they keep capturing/steering there exactly as if
+        shadow negative were off), while shadow negative's NAG push still runs on every
+        other block. Structural coexistence, not mathematical composition: no block ever
+        runs both mechanisms at once, they just no longer fight over which one wins.
+
+        REINS is the one exception where this genuinely cannot help: `_install_h3_repr_steering`
+        installs a hook on ALL 50 candidate blocks unconditionally, whenever it runs AT ALL
+        (steering OR passive-capture-only) -- not just its named steer block, and NOT gated
+        by strength. Strength only decides whether an installed hook actually injects
+        (comfy's aimdo memory prefetcher needs an identical allocation pattern on every
+        block in the pass whenever it steers anywhere, so the other 49 run a real, if
+        zero-valued, clone/inject too, on purpose, to avoid a crash it once had) -- it never
+        decides whether the hook exists. Dialing strength to 0, or flipping to
+        passive-capture-only, changes nothing here: both still claim all 50 blocks. The
+        ONLY way to free any block for compose is turning REINS off entirely (both
+        h3_repr_steering AND h3_repr_steering_passive_capture), which also means it stops
+        capturing/learning for that run.
         """
         try:
             video_scale = float(video_scale)
@@ -7866,13 +7937,32 @@ class FunPackLTXAVSceneChainSampler:
             to["patches_replace"] = patches_replace
             patched.model_options["transformer_options"] = to
             _installed = len(dm.blocks) - len(_skipped)
-            _extra = (f" -- left block(s) {', '.join(str(b) for b in _skipped)} untouched "
-                     f"for REINS/Q-steer/av_decouple/block-repeat/attn_temperature to keep "
-                     f"capturing/steering there") if _skipped else ""
-            print(f"[FunPackSceneChain] H3 shadow negative: installed on {_installed}/"
-                  f"{len(dm.blocks)} blocks (video_scale={video_scale:g}, "
-                  f"audio_scale={audio_scale:g}, tau={float(tau):g}, alpha={float(alpha):g}, "
-                  f"window={_lo:.2f}-{_hi:.2f}){_extra}.")
+            _params = (f"video_scale={video_scale:g}, audio_scale={audio_scale:g}, "
+                      f"tau={float(tau):g}, alpha={float(alpha):g}, window={_lo:.2f}-{_hi:.2f}")
+            if _skipped and _installed == 0:
+                # Every block was already claimed -- not a partial coexistence, a total
+                # no-op. Its own headline, not folded into the "installed on 0/50" line
+                # buried under a 50-entry index dump: that phrasing technically declared
+                # the limit (0/50 is right there) but a wall of block numbers is exactly
+                # the kind of noise that makes a real "did nothing" read as routine detail.
+                print(f"[FunPackSceneChain] H3 shadow negative: every block "
+                      f"({_format_block_ranges(_skipped)}) is already claimed -- compose mode "
+                      f"left NONE for shadow negative, so it had NO EFFECT this run "
+                      f"({_params}). REINS claims all 50 whenever it runs at ALL (steering "
+                      f"OR passive-capture-only), even though only its own named block learns "
+                      f"from ratings -- strength only gates whether an installed hook injects, "
+                      f"not whether it exists, so dialing strength to 0 frees nothing. The "
+                      f"other 49 run the same no-op clone/inject so comfy's aimdo memory "
+                      f"prefetcher sees a uniform allocation pattern across the whole pass (a "
+                      f"real crash otherwise, not a style choice). The ONLY way to free a "
+                      f"block for compose is turning REINS fully OFF (both the toggle and "
+                      f"passive-capture), which also stops it capturing/learning this run.")
+            else:
+                _extra = (f" -- left block(s) {_format_block_ranges(_skipped)} untouched for "
+                         f"REINS/Q-steer/av_decouple/block-repeat/attn_temperature to keep "
+                         f"capturing/steering there") if _skipped else ""
+                print(f"[FunPackSceneChain] H3 shadow negative: installed on {_installed}/"
+                      f"{len(dm.blocks)} blocks ({_params}){_extra}.")
             return patched
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 shadow negative", _e,
@@ -9020,8 +9110,9 @@ class FunPackLTXAVSceneChainSampler:
         if output_guidance and refinement_key_input:
             _output_value_fn = self._load_output_value_function(refinement_key_input)
             if _output_value_fn is None:
-                print("[FunPackSceneChain] output_guidance: value function not ready yet "
-                      "(needs 10+ rated generations to reach MIN_SAMPLES)")
+                _n = self._output_value_fn_sample_count(refinement_key_input)
+                print(f"[FunPackSceneChain] output_guidance: value function not ready yet "
+                      f"({_n if _n is not None else 0}/10 rated generations so far)")
             else:
                 print(f"[FunPackSceneChain] output_guidance: active ({_output_value_fn.n_trained} samples), "
                       f"strength={output_guidance_strength}")
@@ -9036,8 +9127,9 @@ class FunPackLTXAVSceneChainSampler:
         if explore_first_step and not refinement_key_input:
             print("[FunPackSceneChain] explore_first_step: requires refinement_key_input — disabled")
         elif explore_first_step and _explore_value_fn is None:
-            print("[FunPackSceneChain] explore_first_step: value function not ready yet "
-                  "(needs 10+ rated generations to reach MIN_SAMPLES)")
+            _n = self._output_value_fn_sample_count(refinement_key_input)
+            print(f"[FunPackSceneChain] explore_first_step: value function not ready yet "
+                  f"({_n if _n is not None else 0}/10 rated generations so far)")
 
         # Per-bucket value functions for trajectory_guidance. Separate from the one above
         # because they answer a different question: that one asks "is this a good finish",
