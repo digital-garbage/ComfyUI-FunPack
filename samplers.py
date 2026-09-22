@@ -3097,6 +3097,34 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 3, "min": 2, "max": 8, "step": 1,
                     "tooltip": "How many seeds to try at the first step before committing. Cost is roughly (N-1) extra single-step forward passes added to the whole schedule — 3 on a 35-step run is about 6% overhead, 8 is about 20%. No effect when explore_first_step is off.",
                 }),
+                "h3_shadow_negative": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL, unvalidated (H3 only). Ported from the community \"H3 Shadow Negative\" pack. H3's CFG is fixed at 1.0, so the negative prompt Studio already encodes is otherwise dead weight -- this runs it through the same DiT blocks as a second shadow stream and pushes the real stream's attention output away from it. Does NOT compose with REINS/Q-steer/av_decouple/block-repeat/attn_temperature -- it replaces each block's forward outright and prints which of those it superseded this run, if any. Off does not clone the model.",
+                }),
+                "h3_shadow_negative_video_scale": ("FLOAT", {
+                    "default": 3.0, "min": 1.0, "max": 10.0, "step": 0.1,
+                    "tooltip": "How hard to push the video rows away from the shadow negative. 1.0 = no push (identical to off). No effect when h3_shadow_negative is off.",
+                }),
+                "h3_shadow_negative_audio_scale": ("FLOAT", {
+                    "default": 1.0, "min": 1.0, "max": 10.0, "step": 0.1,
+                    "tooltip": "Same as h3_shadow_negative_video_scale but for the audio rows. 1.0 = no push. No effect when h3_shadow_negative is off.",
+                }),
+                "h3_shadow_negative_tau": ("FLOAT", {
+                    "default": 2.5, "min": 1.0, "max": 8.0, "step": 0.05,
+                    "tooltip": "NAG norm cap -- how far the pushed-away attention output is allowed to grow relative to the original before it gets clamped back down. Higher allows a stronger push before clamping kicks in. No effect when h3_shadow_negative is off.",
+                }),
+                "h3_shadow_negative_alpha": ("FLOAT", {
+                    "default": 0.35, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "How much of the clamped, pushed-away result replaces the original attention output, 0-1. 0 = off (nothing changes even with the toggle on). No effect when h3_shadow_negative is off.",
+                }),
+                "h3_shadow_negative_start_percent": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Where in the denoise schedule the shadow negative starts having any effect, as a fraction of the way through (0 = the very first step). No effect when h3_shadow_negative is off.",
+                }),
+                "h3_shadow_negative_end_percent": ("FLOAT", {
+                    "default": 0.60, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Where it stops, same units as h3_shadow_negative_start_percent. Structure is usually settled well before the end of the schedule, so this typically does not need to reach 1.0. No effect when h3_shadow_negative is off.",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -3859,6 +3887,10 @@ class FunPackLTXAVSceneChainSampler:
                       h3_block_repeat_video_only=False, h3_block_repeat_span_loop=False,
                       h3_block_repeat_last_steps=0,
                       h3_q_steer_strength=0.0, h3_q_steer_block="",
+                      h3_shadow_negative=False, h3_shadow_negative_video_scale=3.0,
+                      h3_shadow_negative_audio_scale=1.0, h3_shadow_negative_tau=2.5,
+                      h3_shadow_negative_alpha=0.35, h3_shadow_negative_start_percent=0.0,
+                      h3_shadow_negative_end_percent=0.60,
                       refinement_key="",):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -4000,6 +4032,13 @@ class FunPackLTXAVSceneChainSampler:
                 model = self._install_h3_q_steering(
                     model, refinement_key, h3_q_steer_strength, _q_steer_capture,
                     steer_block=h3_q_steer_block)
+
+        if self._is_h3 and h3_shadow_negative:
+            model = self._install_h3_shadow_negative(
+                model, negative, h3_shadow_negative_video_scale,
+                h3_shadow_negative_audio_scale, h3_shadow_negative_tau,
+                h3_shadow_negative_alpha, h3_shadow_negative_start_percent,
+                h3_shadow_negative_end_percent)
 
         _phrase_probe = self._install_phrase_probe(model, positive, latent)
         if _phrase_probe is not None:
@@ -7728,6 +7767,93 @@ class FunPackLTXAVSceneChainSampler:
                         "not applied and not capturing this run")
             return model
 
+    def _install_h3_shadow_negative(self, model, negative, video_scale, audio_scale,
+                                    tau, alpha, start_percent, end_percent):
+        """EXPERIMENTAL, unvalidated (H3 only). Ported from the community "H3 Shadow
+        Negative" pack (see h3_shadow_negative.py) -- runs the negative CONDITIONING
+        FunPack already threads through the sampler (otherwise dead weight: H3's CFG is
+        fixed at 1.0, so comfy never evaluates the uncond branch) through the SAME DiT
+        blocks as a second "shadow" stream, and pushes the real stream's attention output
+        away from it, NAG-style. Heavier and more dynamic than [[negative_erase]]'s
+        one-time embedding projection -- see samplers.py's own H3 shadow negative
+        docstring in h3_shadow_negative.py for the full comparison.
+
+        Does NOT compose with REINS/Q-steer/av_decouple/block-repeat/attn_temperature --
+        it replaces each double_block's forward outright, same as upstream's own stated
+        limitation with block-cache nodes. Installed LAST in _sample_chunk's dit-patch
+        chain so an explicit request for this always wins over the others, matching what
+        the user just turned on rather than a mechanism that happened to install earlier.
+        """
+        try:
+            video_scale = float(video_scale)
+            audio_scale = float(audio_scale)
+            tau = float(tau)
+            alpha = float(alpha)
+            start_percent = float(start_percent)
+            end_percent = float(end_percent)
+        except (TypeError, ValueError):
+            return model
+        # NaN/inf fails every ordered comparison, so `video_scale == 1.0` alone does not
+        # catch it (see the same trap called out for h3_av_decouple's strength guard) --
+        # without this, a corrupted knob value installs successfully, prints a bogus
+        # "video_scale=nan" line, and NAG-blends every video/audio row to NaN with no
+        # warning at all, silently overwriting the block-hook's own try/except recovery.
+        if not all(math.isfinite(v) for v in (video_scale, audio_scale, tau, alpha,
+                                              start_percent, end_percent)):
+            print("[FunPackSceneChain] H3 shadow negative: a strength/tau/alpha/percent "
+                  "value is NaN or infinite -- skipped rather than risk corrupting every "
+                  "block downstream.")
+            return model
+        if video_scale == 1.0 and audio_scale == 1.0:
+            return model
+        if (not isinstance(negative, list) or not negative
+                or not isinstance(negative[0][0], torch.Tensor)
+                or negative[0][0].numel() == 0):
+            print("[FunPackSceneChain] H3 shadow negative: no negative conditioning "
+                  "connected -- nothing to guide away from, skipped.")
+            return model
+        try:
+            try:
+                from . import h3_shadow_negative as _sn
+            except ImportError:
+                import h3_shadow_negative as _sn
+            patched = model.clone()
+            dm = patched.get_model_object("diffusion_model")
+            if not hasattr(dm, "blocks") or not hasattr(dm, "hidden_size"):
+                print("[FunPackSceneChain] H3 shadow negative: this model does not expose "
+                      "H3 double_blocks -- skipped.")
+                return model
+            to = patched.model_options.get("transformer_options", {}).copy()
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+            _superseded = sorted({b for (kind, b) in dit_patches if kind == "double_block"})
+            if _superseded:
+                print(f"[FunPackSceneChain] H3 shadow negative: supersedes {len(_superseded)} "
+                      f"existing block patch(es) (REINS/Q-steer/av_decouple/block-repeat/"
+                      f"attn_temperature) for this run -- shadow negative does not compose "
+                      f"with those, it replaces the block outright.")
+            _lo, _hi = (end_percent, start_percent) if end_percent < start_percent \
+                else (start_percent, end_percent)
+            state = _sn.ShadowState(
+                dm=dm, negative_context=negative[0][0].detach(),
+                video_scale=video_scale, audio_scale=audio_scale,
+                tau=tau, alpha=alpha, start_percent=_lo, end_percent=_hi)
+            for i, block in enumerate(dm.blocks):
+                dit_patches[("double_block", i)] = _tag_dit_hook(
+                    _sn.make_block_hook(block, state, i), None)
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+            patched.model_options["transformer_options"] = to
+            print(f"[FunPackSceneChain] H3 shadow negative: installed on {len(dm.blocks)} "
+                  f"blocks (video_scale={video_scale:g}, audio_scale={audio_scale:g}, "
+                  f"tau={float(tau):g}, alpha={float(alpha):g}, "
+                  f"window={_lo:.2f}-{_hi:.2f}).")
+            return patched
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "H3 shadow negative", _e,
+                        "not applied this run")
+            return model
+
     @staticmethod
     def _parse_block_spec(spec, n_blocks=50):
         """"40" | "38-42" | "10,40,44" | "" -> a set of block indices. Anything unparseable
@@ -8487,6 +8613,10 @@ class FunPackLTXAVSceneChainSampler:
                h3_video_detail=1.0,
                audio_vae=None, h3_keyframes=None,
                explore_first_step=False, explore_first_step_candidates=3,
+               h3_shadow_negative=False, h3_shadow_negative_video_scale=3.0,
+               h3_shadow_negative_audio_scale=1.0, h3_shadow_negative_tau=2.5,
+               h3_shadow_negative_alpha=0.35, h3_shadow_negative_start_percent=0.0,
+               h3_shadow_negative_end_percent=0.60,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -9406,6 +9536,13 @@ class FunPackLTXAVSceneChainSampler:
                     h3_block_repeat_last_steps=h3_block_repeat_last_steps,
                     h3_q_steer_strength=h3_q_steer_strength,
                     h3_q_steer_block=h3_q_steer_block,
+                    h3_shadow_negative=h3_shadow_negative,
+                    h3_shadow_negative_video_scale=h3_shadow_negative_video_scale,
+                    h3_shadow_negative_audio_scale=h3_shadow_negative_audio_scale,
+                    h3_shadow_negative_tau=h3_shadow_negative_tau,
+                    h3_shadow_negative_alpha=h3_shadow_negative_alpha,
+                    h3_shadow_negative_start_percent=h3_shadow_negative_start_percent,
+                    h3_shadow_negative_end_percent=h3_shadow_negative_end_percent,
                     refinement_key=refinement_key_input,
                 )
                 # cut_opening_frames: let the real, untouched i2v anchor condition the scene

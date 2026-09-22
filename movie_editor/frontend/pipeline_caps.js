@@ -170,9 +170,21 @@
   // The mirror image of H3_DEAD_SAMPLER_INPUTS: settings that only mean something ON H3.
   // Left on against an LTX pipeline they are just as silently inert, so they get a chip
   // by the same rule — the user should not have to spend a generation to find out.
-  // key -> why it cannot run off H3. Empty for now (Picture detail, the only H3-only
-  // sampler input, was removed) — add an entry here if another H3-only knob needs one.
-  const H3_ONLY_SAMPLER_INPUTS = {};
+  // key -> why it cannot run off H3.
+  const H3_ONLY_SAMPLER_INPUTS = {
+    h3_shadow_negative:
+      "Repels the model's attention output away from a second, negative-text pass through "
+      + "H3's own DiT blocks. LTXAV already evaluates a real negative prompt via CFG, so "
+      + "there is nothing dead here to give a job to — this only exists because H3's CFG "
+      + "is fixed at 1.0.",
+  };
+  // Sub-knobs of h3_shadow_negative: meaningless without the toggle itself, so they
+  // travel with it rather than each needing its own entry above.
+  const H3_ONLY_SUB_INPUTS = [
+    "h3_shadow_negative_video_scale", "h3_shadow_negative_audio_scale",
+    "h3_shadow_negative_tau", "h3_shadow_negative_alpha",
+    "h3_shadow_negative_start_percent", "h3_shadow_negative_end_percent",
+  ];
 
   // Sub-settings of identity transfer: meaningless wherever the feature itself cannot run,
   // so they travel with it rather than each needing its own entry above.
@@ -194,7 +206,7 @@
   // working knob unreachable.
   function familyInertInputs(st) {
     if (!usesChainSampler(st)) return new Set();
-    if (!isH3(st)) return new Set(Object.keys(H3_ONLY_SAMPLER_INPUTS));
+    if (!isH3(st)) return new Set([...Object.keys(H3_ONLY_SAMPLER_INPUTS), ...H3_ONLY_SUB_INPUTS]);
     return new Set([...Object.keys(H3_DEAD_SAMPLER_INPUTS), ...IDENTITY_SUB_INPUTS,
                     ...JOYAI_SUB_INPUTS, ...CONTEXT_SUB_INPUTS, ...ALG_GUIDE_SUB_INPUTS,
                     ...H3_DEAD_VALUE_INPUTS]);
