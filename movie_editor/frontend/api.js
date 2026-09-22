@@ -112,11 +112,28 @@
     deleteMedia: (id) => j("DELETE", API(`/media/${encodeURIComponent(id)}`)),
     renameMedia: (id, name) => j("PATCH", API(`/media/${encodeURIComponent(id)}`), { name }),
     importClipToMediaBin: (clip, name) => j("POST", API("/media/import-clip"), { clip, name: name || null }),
-    async uploadMedia(file) {
-      const fd = new FormData(); fd.append("file", file, file.name);
-      const res = await fetch(API("/media"), { method: "POST", body: fd });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
-      return res.json();
+    // XMLHttpRequest, not fetch: fetch has no cross-browser upload-progress event, and a
+    // multi-MB video/photo upload over a slow or messy connection is exactly the case where
+    // the caller most wants to show something moving instead of a stalled-looking UI.
+    // onProgress(loadedBytes, totalBytes) fires repeatedly during the upload; totalBytes may
+    // be 0 if the browser can't compute it (rare, e.g. a chunked body — never for a plain File).
+    uploadMedia(file, onProgress) {
+      return new Promise((resolve, reject) => {
+        const fd = new FormData(); fd.append("file", file, file.name);
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", API("/media"));
+        if (onProgress) {
+          xhr.upload.onprogress = (e) => onProgress(e.loaded, e.lengthComputable ? e.total : 0);
+        }
+        xhr.onload = () => {
+          let body = {};
+          try { body = JSON.parse(xhr.responseText || "{}"); } catch (_) {}
+          if (xhr.status >= 200 && xhr.status < 300) resolve(body);
+          else reject(new Error(body.detail || xhr.statusText || `HTTP ${xhr.status}`));
+        };
+        xhr.onerror = () => reject(new Error("Network error during upload"));
+        xhr.send(fd);
+      });
     },
 
     // models / node slots

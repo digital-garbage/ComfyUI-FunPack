@@ -646,8 +646,14 @@ input[type=number] { font-family: var(--font-ui); }
   color: var(--faint); font-size: 12px; transition: border-color .15s, background .15s;
 }
 .mediabin.drag { border-color: var(--teal); background: var(--teal-soft); color: var(--teal); }
+.mediabin.uploading { border-style: solid; border-color: var(--accent); color: var(--text); cursor: default; }
 .mediabin .big { font-size: 26px; opacity: .5; margin-bottom: 8px; }
 .mediabin { cursor: pointer; padding: 18px 14px; }
+.media-upload-bar {
+  width: 100%; max-width: 220px; height: 5px; margin: 8px auto 4px;
+  background: var(--ink-2); border-radius: 3px; overflow: hidden;
+}
+.media-upload-bar-fill { height: 100%; background: var(--accent); transition: width .12s linear; }
 .soon { font-family: var(--font-ui); font-size: 10px; letter-spacing: 1px; color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
 
 /* bin tabs (Media / Shortcuts / Transitions) */

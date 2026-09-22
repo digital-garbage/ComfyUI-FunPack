@@ -457,10 +457,28 @@
     const exportId = _exportableMediaId(st, items);
 
     const wrap = el("div", "bin" + (mediaSelectMode ? " media-select-mode" : ""));
-    const drop = el("div", "mediabin");
-    drop.append(el("div", "big", "🎞"));
-    drop.append(el("div", null, "Drop images, video & audio here"));
-    drop.append(el("div", "pj-meta", "or click to browse · drag onto a clip to set its anchor"));
+    const up = st.mediaUpload;
+    const drop = el("div", "mediabin" + (up ? " uploading" : ""));
+    if (up) {
+      // Was silent before: uploadMedia's own loop ran with no visible state at all, so a
+      // batch of photos or one big video over a slow connection just looked like the drop
+      // zone had eaten the files and done nothing.
+      const pct = up.size > 0 ? Math.min(100, Math.round((up.loaded / up.size) * 100)) : null;
+      drop.append(el("div", "big", "⬆"));
+      drop.append(el("div", null, up.total > 1
+        ? `Uploading ${up.current}/${up.total}: ${up.name}`
+        : `Uploading ${up.name}`));
+      const barWrap = el("div", "media-upload-bar");
+      const bar = el("div", "media-upload-bar-fill");
+      bar.style.width = (pct == null ? 0 : pct) + "%";
+      barWrap.append(bar);
+      drop.append(barWrap);
+      drop.append(el("div", "pj-meta", pct == null ? "uploading…" : `${pct}%`));
+    } else {
+      drop.append(el("div", "big", "🎞"));
+      drop.append(el("div", null, "Drop images, video & audio here"));
+      drop.append(el("div", "pj-meta", "or click to browse · drag onto a clip to set its anchor"));
+    }
     const file = el("input"); file.type = "file"; file.accept = "image/*,video/*,audio/*"; file.multiple = true; file.style.display = "none";
     file.onchange = () => { if (file.files.length) S.uploadMedia([...file.files]); file.value = ""; };
     drop.onclick = () => file.click();

@@ -28,6 +28,7 @@
     models: { slots: [] },   // pluggable node config (shared with Models modal)
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
     mediaPreviewId: null,    // transient image preview in the player (not scene assignment)
+    mediaUpload: null,       // in-progress upload: {current,total,name,loaded,size} or null
     shortcuts: [],           // prompt shortcut library
     shortcutCategories: [],  // managed grouping list: [{name, sub_categories:[]}]
     imageTargets: [],        // where an image asset can be wired [{value,label}]
@@ -4421,8 +4422,28 @@
 
   // ── media bin + libraries ─────────────────────────────────────────────────────
   async function loadMedia() { try { state.mediaBin = (await API.listMedia()).media || []; } catch (_) { state.mediaBin = []; } notify(); }
+  // state.mediaUpload: null when idle, else { current, total, name, loaded, size } -- the
+  // drop zone had no way to show this at all before, so a batch of photos/a big video
+  // uploading over a slow connection just looked like nothing was happening.
   async function uploadMedia(files) {
-    for (const f of files) { try { await API.uploadMedia(f); } catch (e) { console.error("upload failed", e); } }
+    const list = [...files];
+    let lastNotify = 0;
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      set({ mediaUpload: { current: i + 1, total: list.length, name: f.name, loaded: 0, size: f.size } });
+      lastNotify = Date.now();
+      try {
+        await API.uploadMedia(f, (loaded, total) => {
+          state.mediaUpload = { ...state.mediaUpload, loaded, size: total || f.size };
+          // XHR fires this many times a second -- notify() rebuilds the whole media grid,
+          // so this throttles to a still-smooth ~8fps instead of hammering a full re-render
+          // on every tick. The final `loaded === total` (upload done) always gets through.
+          const now = Date.now();
+          if (now - lastNotify >= 120 || loaded >= total) { lastNotify = now; notify(); }
+        });
+      } catch (e) { console.error("upload failed", e); }
+    }
+    state.mediaUpload = null;
     await loadMedia();
   }
   async function deleteMedia(id) {
