@@ -2321,3 +2321,11 @@ def test_enhanced_prompt_output_costs_nothing_when_unlinked(tmp_path):
     out, clip = _enhanced_output(tmp_path, prompt_enhance=True)
     assert out is None
     assert not any(t.endswith("a cat, soft light") for t, _ in clip.tokenize_calls)
+
+
+def test_studio_skips_its_own_enhancement_when_told_nothing_reads_it(tmp_path):
+    out, clip = _enhanced_output(tmp_path, prompt_enhance=True, prompt_enhance_scenes=False)
+    assert out is None and clip.generate_kwargs == {}
+    out, clip = _enhanced_output(tmp_path, prompt_enhance=True, prompt_enhance_scenes=False,
+                                 prompt_enhance_output=True)
+    assert out == "a vivid cat on a sunlit sill"

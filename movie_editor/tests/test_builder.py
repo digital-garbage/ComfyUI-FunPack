@@ -1597,3 +1597,19 @@ def test_enhanced_prompt_link_wires_to_studios_output():
     assert oi["FunPackStudio"]["output_name"][builder.STUDIO_ENHANCED_PROMPT_OUT] == "enhanced_prompt"
     rf = json.loads(graph["studio"]["inputs"]["studio_settings"])["refiner"]
     assert rf["prompt_enhance_output"] is True
+
+
+def test_studio_skips_its_own_enhancement_when_nothing_reads_its_conditioning():
+    import json
+    oi = {**OI, "R2V": {"input": {"required": {"prompt": ["STRING", {"default": ""}]}},
+                        "output": ["CONDITIONING"], "output_name": ["CONDITIONING"]}}
+
+    def rf_of(models):
+        graph, _ = builder.build(oi, models, PARAMS)
+        return json.loads(graph["studio"]["inputs"]["studio_settings"]).get("refiner", {})
+
+    assert "prompt_enhance_scenes" not in rf_of({"slots": []})      # default: Studio feeds it
+    bypassed = {"full_control": True,
+                "slots": [{"id": "r2v", "node_class": "R2V", "inputs": {}, "wires": {}}],
+                "core_overrides": {"sampler": {"positive": "out:r2v:CONDITIONING"}}}
+    assert rf_of(bypassed)["prompt_enhance_scenes"] is False

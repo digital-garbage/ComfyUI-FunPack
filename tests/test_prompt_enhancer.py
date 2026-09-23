@@ -345,7 +345,7 @@ def _refine_source():
 
 def test_the_base_prompt_is_not_enhanced_when_the_run_splits():
     src = _refine_source()
-    assert "_enhance_base = prompt_enhance and not split_by_transitions" in src
+    assert "_enhance_base = _enhance_own and not split_by_transitions" in src
 
 
 def test_the_base_enhancement_is_gated_on_that_flag():
@@ -356,7 +356,7 @@ def test_the_base_enhancement_is_gated_on_that_flag():
 
 def test_the_scene_path_is_still_enhanced_when_splitting():
     src = _refine_source()
-    assert "if prompt_enhance and split_scene_texts:" in src
+    assert "if _enhance_own and split_scene_texts:" in src
 
 
 def test_the_skip_is_reported_not_silent():

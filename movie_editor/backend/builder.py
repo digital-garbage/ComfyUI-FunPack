@@ -1052,6 +1052,20 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     _break_cycles(graph, report, protected_edges,
                   _node_labels(slots, slot_node_id, object_info, core=CORE))
 
+    # Nothing reads Studio's own conditioning (e.g. H3's reference-to-video node feeding the
+    # sampler directly): Studio's per-scene prompt enhancement would be thrown away.
+    if "studio" in graph and "sampler" in graph and \
+            not _feeds_from(graph, graph["sampler"]["inputs"].get("positive"), ("studio", 1)):
+        try:
+            _ss_p = json.loads(str(graph["studio"]["inputs"].get("studio_settings") or "{}"))
+        except ValueError:
+            _ss_p = {}
+        if isinstance(_ss_p, dict):
+            _rf_p = _ss_p.get("refiner") if isinstance(_ss_p.get("refiner"), dict) else {}
+            _rf_p["prompt_enhance_scenes"] = False
+            _ss_p["refiner"] = _rf_p
+            graph["studio"]["inputs"]["studio_settings"] = json.dumps(_ss_p)
+
     for msg in pipeline_wiring.validate_models_wiring(models_config):
         report["blocking"].append(msg)
         report["unsatisfied"].append(msg)
@@ -1370,6 +1384,22 @@ def _reaches_upstream(graph, start, goal):
         for v in (graph.get(n, {}).get("inputs", {}) or {}).values():
             if isinstance(v, list) and len(v) == 2 and isinstance(v[0], str) and v[0] in graph:
                 stack.append(v[0])
+    return False
+
+
+def _feeds_from(graph, value, source):
+    """Whether the link `value` is, or is built upstream from, output `source` (node, idx)."""
+    stack, seen = [value], set()
+    while stack:
+        v = stack.pop()
+        if not (isinstance(v, list) and len(v) == 2 and isinstance(v[0], str)):
+            continue
+        if (v[0], v[1]) == tuple(source):
+            return True
+        if v[0] in seen or v[0] not in graph:
+            continue
+        seen.add(v[0])
+        stack.extend((graph[v[0]].get("inputs") or {}).values())
     return False
 
 

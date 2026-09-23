@@ -9920,7 +9920,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   prompt_enhance_temperature=0.7, prompt_enhance_top_p=0.92,
                   prompt_enhance_max_length=400, prompt_enhance_thinking=False,
                   prompt_enhance_image=None, prompt_enhance_sampling=None,
-                  prompt_enhance_output=False,
+                  prompt_enhance_output=False, prompt_enhance_scenes=True,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
@@ -10571,11 +10571,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # When the run splits into scenes, the per-scene conditionings REPLACE this base entry
         # — so enhancing the base too would be a second full generation whose result is then
         # thrown away. One generation per prompt that is actually encoded, never two.
-        _enhance_base = prompt_enhance and not split_by_transitions
+        # Off when nothing reads Studio's own conditioning (the Editor checks the wiring):
+        # rewriting a prompt whose encoding is discarded is a generation for nothing.
+        _enhance_own = prompt_enhance and prompt_enhance_scenes
+        if prompt_enhance and not prompt_enhance_scenes:
+            print("[FunPackVideoRefinerV2] Prompt enhancer: Studio's own prompt skipped — "
+                  "nothing reads its conditioning; only the enhanced_prompt output is written.")
+        _enhance_base = _enhance_own and not split_by_transitions
         # top_k / min_p / penalties / greedy; `seed` 0 = follow the generation seed.
         _enhance_sampling = dict(prompt_enhance_sampling or {})
         _enhance_seed = int(_enhance_sampling.pop("seed", 0) or 0) or seed
-        if prompt_enhance and not _enhance_base:
+        if _enhance_own and not _enhance_base:
             print("[FunPackVideoRefinerV2] Prompt enhancer: base prompt skipped — this run "
                   "splits into scenes and each scene is enhanced instead.")
         if _enhance_base:
@@ -10845,7 +10851,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     # authoritative on count, so rewriting the scenes as a single paragraph
                     # and re-splitting could return a different number of scenes and desync
                     # every clip from its anchor. One call per distinct text, cached.
-                    if prompt_enhance and split_scene_texts:
+                    if _enhance_own and split_scene_texts:
                         _enhanced_texts = []
                         for _i, t in enumerate(split_scene_texts):
                             _after, _st = self._v2_enhance_prompt(
@@ -13845,6 +13851,7 @@ class FunPackStudio:
             h3_phrase_variability=float(rf.get("h3_phrase_variability", 0.0) or 0.0),
             prompt_enhance=bool(rf.get("prompt_enhance", False)),
             prompt_enhance_output=bool(rf.get("prompt_enhance_output", False)),
+            prompt_enhance_scenes=bool(rf.get("prompt_enhance_scenes", True)),
             prompt_enhance_system=str(rf.get("prompt_enhance_system", "") or ""),
             prompt_enhance_temperature=float(rf.get("prompt_enhance_temperature", 0.7)),
             prompt_enhance_top_p=float(rf.get("prompt_enhance_top_p", 0.92)),
