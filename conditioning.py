@@ -8793,35 +8793,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             lines.append(f"  Axis {axis}: {role} | + {pos_str} | - {neg_str}")
         return "\n".join(lines)
 
-    def _v2_find_chat_tokenizer(self, clip):
-        """BFS through CLIP wrapper hierarchy to find a HuggingFace tokenizer
-        that exposes apply_chat_template. Returns None if not found."""
-        seen = set()
-        queue = [clip]
-        attrs = ("tokenizer", "processor", "cond_stage_model", "patcher", "model", "transformer")
-        depth = 0
-        while queue and depth < 5:
-            next_q = []
-            for obj in queue:
-                if obj is None or id(obj) in seen:
-                    continue
-                seen.add(id(obj))
-                try:
-                    if hasattr(obj, "apply_chat_template"):
-                        return obj
-                    for attr in attrs:
-                        child = getattr(obj, attr, None)
-                        if child is not None:
-                            next_q.append(child)
-                    tkns = getattr(obj, "tokenizers", None)
-                    if isinstance(tkns, dict):
-                        next_q.extend(tkns.values())
-                except Exception:
-                    continue
-            queue = next_q
-            depth += 1
-        return None
-
     def _v2_advisor_analysis_prompt(
         self,
         prompt,
@@ -8950,41 +8921,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         max_length = max(int(min_floor), int(max_length or 800))
         _started = time.time()
         try:
-            # Tokenization: three layers in order of preference.
-            # Layer 1: wrapper natively accepts system_prompt kwarg.
-            tokens = None
-            try:
-                tokens = clip.tokenize(str(user_prompt), image=image, min_length=1, thinking=bool(thinking), system_prompt=str(system_prompt))
-            except TypeError:
+            # No ComfyUI tokenizer takes a system prompt: they swallow unknown kwargs, so
+            # passing one drops it silently. Only FunPack's own Advisor LLM honours it.
+            # Everything else gets the instructions as the first paragraph of the user turn,
+            # inside the model's own chat template — which is also what places the image
+            # marker, and how Gemma's official template carries a system prompt anyway.
+            if isinstance(clip, _FunPackAdvisorLLMWrapper):
+                tokens = clip.tokenize(str(user_prompt), system_prompt=str(system_prompt),
+                                       thinking=bool(thinking))
+            else:
+                merged = f"{system_prompt}\n\n{user_prompt}" if str(system_prompt).strip() \
+                    else str(user_prompt)
                 try:
-                    tokens = clip.tokenize(str(user_prompt), image=image, system_prompt=str(system_prompt))
+                    # min_length=1: Gemma pads to 1024 on the left otherwise
+                    tokens = clip.tokenize(merged, image=image, skip_template=False,
+                                           min_length=1, thinking=bool(thinking))
                 except TypeError:
-                    pass
-            if tokens is None:
-                # Layer 2: apply chat template via underlying HuggingFace tokenizer.
-                chat_tokenizer = self._v2_find_chat_tokenizer(clip)
-                advisor_prompt = None
-                if chat_tokenizer is not None:
-                    try:
-                        messages = [
-                            {"role": "system", "content": str(system_prompt)},
-                            {"role": "user", "content": str(user_prompt)},
-                        ]
-                        advisor_prompt = chat_tokenizer.apply_chat_template(
-                            messages, tokenize=False, add_generation_prompt=True
-                        )
-                    except Exception:
-                        pass
-                if advisor_prompt is None:
-                    # Layer 3: flat string with completion anchor.
-                    advisor_prompt = str(system_prompt) + "\n\n" + str(user_prompt) + "\n\nOutput:"
-                try:
-                    tokens = clip.tokenize(advisor_prompt, image=image, min_length=1, thinking=bool(thinking))
-                except TypeError:
-                    try:
-                        tokens = clip.tokenize(advisor_prompt, image=image)
-                    except TypeError:
-                        tokens = clip.tokenize(advisor_prompt)
+                    tokens = clip.tokenize(merged, image=image)
             generate_kwargs = dict(
                 do_sample=bool(do_sample),
                 max_length=max_length,

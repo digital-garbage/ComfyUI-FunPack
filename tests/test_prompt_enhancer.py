@@ -438,3 +438,28 @@ def test_a_fixed_enhancer_seed_overrides_the_run_seed():
     src = _refine_source()
     assert '_enhance_seed = int(_enhance_sampling.pop("seed", 0) or 0) or seed' in src
     assert src.count("seed=_enhance_seed") == 2
+
+
+# ── how the instructions reach the model ─────────────────────────────────────
+
+def test_instructions_ride_in_the_models_own_template(studio):
+    # ComfyUI's Gemma tokenizer swallows unknown kwargs and defaults to skip_template=True,
+    # so a system_prompt kwarg vanished and the raw prompt went in with no chat turn and no
+    # image marker. The model's own template must be asked for, with the instructions in it.
+    clip = FakeClip()
+    studio._v2_enhance_prompt(clip, "a cat", "BE VIVID", image="img")
+    text, kwargs = clip.calls[0]
+    assert text.startswith("BE VIVID") and text.endswith("a cat")
+    assert kwargs["skip_template"] is False and kwargs["min_length"] == 1
+    assert kwargs["image"] == "img"
+    assert "system_prompt" not in kwargs
+
+
+def test_the_funpack_advisor_llm_still_gets_a_real_system_turn(studio):
+    wrapper = C._FunPackAdvisorLLMWrapper.__new__(C._FunPackAdvisorLLMWrapper)
+    seen = {}
+    wrapper.tokenize = lambda text, **kw: seen.update(text=text, **kw) or {}
+    wrapper.generate = lambda tokens, **kw: [1]
+    wrapper.decode = lambda ids, skip_special_tokens=True: "a vivid cat"
+    studio._v2_enhance_prompt(wrapper, "a cat", "BE VIVID")
+    assert seen["text"] == "a cat" and seen["system_prompt"] == "BE VIVID"
