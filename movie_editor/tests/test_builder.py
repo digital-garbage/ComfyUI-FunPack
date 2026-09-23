@@ -1580,3 +1580,20 @@ def test_studio_receives_the_texts_linked_nodes_were_given():
     settings = json.loads(graph["studio"]["inputs"]["studio_settings"])
     assert settings["refiner"]["link_texts"]["prompt"] == "cinematic rain"
     assert settings["refiner"]["link_texts"]["full_prompt"] == "cinematic rain now"
+
+
+def test_enhanced_prompt_link_wires_to_studios_output():
+    import json
+    oi = {**OI, "R2V": {"input": {"required": {"prompt": ["STRING", {"default": ""}]}},
+                        "output": ["CONDITIONING"], "output_name": ["CONDITIONING"]}}
+    oi["FunPackStudio"] = {**OI["FunPackStudio"],
+                           "output": OI["FunPackStudio"]["output"] + ["STRING"],
+                           "output_name": OI["FunPackStudio"]["output_name"] + ["enhanced_prompt"]}
+    models = {"slots": [{"id": "r2v", "node_class": "R2V", "inputs": {}, "wires": {}}],
+              "links": [{"id": "l", "name": "p", "source": "editor", "editor_key": "enhanced_prompt",
+                         "members": [{"slotId": "r2v", "input": "prompt"}]}]}
+    graph, report = builder.build(oi, models, {**PARAMS, "expanded": {"full_prompt": "a cat, soft"}})
+    assert graph["slot_r2v"]["inputs"]["prompt"] == ["studio", builder.STUDIO_ENHANCED_PROMPT_OUT]
+    assert oi["FunPackStudio"]["output_name"][builder.STUDIO_ENHANCED_PROMPT_OUT] == "enhanced_prompt"
+    rf = json.loads(graph["studio"]["inputs"]["studio_settings"])["refiner"]
+    assert rf["prompt_enhance_output"] is True

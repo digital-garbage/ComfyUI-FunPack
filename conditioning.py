@@ -9920,6 +9920,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   prompt_enhance_temperature=0.7, prompt_enhance_top_p=0.92,
                   prompt_enhance_max_length=400, prompt_enhance_thinking=False,
                   prompt_enhance_image=None, prompt_enhance_sampling=None,
+                  prompt_enhance_output=False,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
@@ -10590,6 +10591,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             self._v2_enhanced_prompts.append({
                 "scene": None, "before": _before, "after": prompt_to_encode,
                 "status": _enhance_status, "image": prompt_enhance_image is not None})
+
+        # Studio's `enhanced_prompt` output, for a node encoding on its own (Editor link
+        # "Enhanced prompt, fallback to prompt + postfix"). The same text that link's
+        # fallback sends — expanded prompt + postfix — enhanced once as a whole.
+        self._v2_enhanced_output = None
+        if prompt_enhance_output:
+            _whole = str((_link_texts or {}).get("full_prompt") or "").strip()
+            if prompt_enhance and _whole:
+                _after, _st = self._v2_enhance_prompt(
+                    _enhance_clip, _whole, _enhance_system, cache=_enhance_cache,
+                    seed=_enhance_seed, temperature=prompt_enhance_temperature,
+                    top_p=prompt_enhance_top_p, max_length=prompt_enhance_max_length,
+                    thinking=prompt_enhance_thinking, image=prompt_enhance_image,
+                    **_enhance_sampling)
+                print(f"[FunPackVideoRefinerV2] Enhanced prompt output: {_st}")
+                self._v2_enhanced_prompts.append({
+                    "scene": None, "before": _whole, "after": _after, "status": _st,
+                    "image": prompt_enhance_image is not None})
+                _whole = _after
+            self._v2_enhanced_output = _whole
 
         cond, meta, encode_status, conditioning_owner = self._v2_conditioning_source(
             clip,
@@ -13517,8 +13538,8 @@ class FunPackStudio:
     Advisor LLM, LoRA management, and Conditioning Adjust under one UI."""
 
     CATEGORY = "FunPack"
-    RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "INT", "SAMPLER", "SIGMAS", "SAMPLER", "SIGMAS", "IMAGE", "STRING", "STRING", "STRING", "LATENT")
-    RETURN_NAMES = ("model", "modified_positive", "negative", "seed", "high_pass_sampler", "high_pass_sigmas", "low_pass_sampler", "low_pass_sigmas", "loss_graph", "status", "training_info", "encoded_prompts", "video_latent")
+    RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "INT", "SAMPLER", "SIGMAS", "SAMPLER", "SIGMAS", "IMAGE", "STRING", "STRING", "STRING", "LATENT", "STRING")
+    RETURN_NAMES = ("model", "modified_positive", "negative", "seed", "high_pass_sampler", "high_pass_sigmas", "low_pass_sampler", "low_pass_sigmas", "loss_graph", "status", "training_info", "encoded_prompts", "video_latent", "enhanced_prompt")
     FUNCTION = "run"
     DESCRIPTION = (
         "FunPack Studio - all FunPack refinement tools in one node. "
@@ -13823,6 +13844,7 @@ class FunPackStudio:
             h3_phrase_emphasis=bool(rf.get("h3_phrase_emphasis", False)),
             h3_phrase_variability=float(rf.get("h3_phrase_variability", 0.0) or 0.0),
             prompt_enhance=bool(rf.get("prompt_enhance", False)),
+            prompt_enhance_output=bool(rf.get("prompt_enhance_output", False)),
             prompt_enhance_system=str(rf.get("prompt_enhance_system", "") or ""),
             prompt_enhance_temperature=float(rf.get("prompt_enhance_temperature", 0.7)),
             prompt_enhance_top_p=float(rf.get("prompt_enhance_top_p", 0.92)),
@@ -13928,7 +13950,11 @@ class FunPackStudio:
 
         cond = _h3_reconcile_token_tags(cond, "positive")
         out_negative = _h3_reconcile_token_tags(out_negative, "negative")
-        result = (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts, video_latent)
+        # Enhanced prompt + postfix, or the plain one when nothing enhanced it.
+        _whole = getattr(refiner, "_v2_enhanced_output", None)
+        if _whole is None:
+            _whole = str((rf.get("link_texts") or {}).get("full_prompt") or "")
+        result = (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts, video_latent, _whole)
         enhanced = getattr(refiner, "_v2_enhanced_prompts", None)
         if enhanced:
             # History carries every node's ui output; the Editor's /status reads this key.

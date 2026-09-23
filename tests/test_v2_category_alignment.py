@@ -2295,3 +2295,29 @@ def test_h3_scale_digits_are_valid_combo_choices():
     whatever the default happens to be."""
     for n in range(1, 11):
         assert str(n) in V2_RATING_LABELS
+
+
+def _enhanced_output(tmp_path, **kw):
+    refiner = FunPackVideoRefinerV2()
+    refiner._v2_state_path = lambda refinement_key: str(tmp_path / "state.json")
+    clip = GeneratingClip("a vivid cat on a sunlit sill")
+    refiner.refine_v2("a cat", clip, "Unrated", "enh-out-test",
+                      link_texts={"full_prompt": "a cat, soft light", "prompt": "a cat"}, **kw)
+    return refiner._v2_enhanced_output, clip
+
+
+def test_enhanced_prompt_output_enhances_prompt_plus_postfix(tmp_path):
+    out, clip = _enhanced_output(tmp_path, prompt_enhance=True, prompt_enhance_output=True)
+    assert out == "a vivid cat on a sunlit sill"
+    assert any(t.endswith("a cat, soft light") for t, _ in clip.tokenize_calls)
+
+
+def test_enhanced_prompt_output_falls_back_to_prompt_plus_postfix(tmp_path):
+    out, clip = _enhanced_output(tmp_path, prompt_enhance=False, prompt_enhance_output=True)
+    assert out == "a cat, soft light" and clip.generate_kwargs == {}
+
+
+def test_enhanced_prompt_output_costs_nothing_when_unlinked(tmp_path):
+    out, clip = _enhanced_output(tmp_path, prompt_enhance=True)
+    assert out is None
+    assert not any(t.endswith("a cat, soft light") for t, _ in clip.tokenize_calls)

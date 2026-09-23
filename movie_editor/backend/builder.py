@@ -51,6 +51,9 @@ CORE: dict[str, str] = {
 
 
 # core internal links: core_id -> {input_name: (src_core_id, output_index)}
+# FunPackStudio's `enhanced_prompt` output (last in RETURN_TYPES).
+STUDIO_ENHANCED_PROMPT_OUT = 13
+
 CORE_LINKS: dict[str, dict[str, tuple[str, int]]] = {
     "studio":   {"positive_prompt": ("pos", 0), "negative_prompt": ("neg", 0),
                  "refinement_key_input": ("keyloader", 0)},
@@ -820,6 +823,27 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             # linked inputs — they still receive the raw text and expand it themselves.
             expanded = params.get("expanded") or {}
             val = expanded[key] if key in expanded else params.get(key)
+            # Enhanced prompt: written by Studio's enhancer DURING the run, so it is a link to
+            # Studio's `enhanced_prompt` output, not a value. Studio sends prompt + postfix
+            # through unchanged when the enhancer is off or fails.
+            if key == "enhanced_prompt":
+                if "studio" in graph:
+                    val = ["studio", STUDIO_ENHANCED_PROMPT_OUT]
+                    try:
+                        _ss_l = json.loads(str(graph["studio"]["inputs"].get("studio_settings") or "{}"))
+                    except ValueError:
+                        _ss_l = {}
+                    if not isinstance(_ss_l, dict):
+                        _ss_l = {}
+                    _rf_l = _ss_l.get("refiner") if isinstance(_ss_l.get("refiner"), dict) else {}
+                    _rf_l["prompt_enhance_output"] = True
+                    _ss_l["refiner"] = _rf_l
+                    graph["studio"]["inputs"]["studio_settings"] = json.dumps(_ss_l)
+                else:
+                    val = expanded.get("full_prompt")
+                    report["ignored"].append(
+                        f"Linked input '{link.get('name') or key}': the built-in pipeline is off, "
+                        f"so there is no Studio to enhance — sent prompt + postfix instead.")
             # A latent node driven by "Project · Frames" has to receive the SAME number the
             # sampler is given, or the two disagree about the scene length and the run dies
             # on the mismatch. Same for a fixed-rate family's fps.
@@ -858,10 +882,13 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     f"Linked input '{label}': {graph[sid].get('class_type')} has no widget called "
                     f"'{inp}' — nothing was set. Re-pick it in Models ▸ Linked inputs.")
                 continue
-            graph[sid]["inputs"][inp] = val
+            graph[sid]["inputs"][inp] = list(val) if isinstance(val, list) else val
+            if isinstance(val, list):
+                protected_edges.add((sid, inp))
             applied.append(f"{graph[sid].get('class_type')}.{inp}")
         if applied:
-            report["wired"].append(f"linked '{label}' = {val} -> " + ", ".join(applied))
+            shown = "Studio · enhanced_prompt" if isinstance(val, list) else val
+            report["wired"].append(f"linked '{label}' = {shown} -> " + ", ".join(applied))
 
     port_to_core = _port_index(object_info, core=CORE)
 

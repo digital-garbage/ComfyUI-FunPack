@@ -1941,6 +1941,9 @@
     { key: "anchor", label: "Project · Anchor text (prepended)", kinds: ["string"] },
     { key: "postfix", label: "Project · Postfix (appended)", kinds: ["string"] },
     { key: "full_prompt", label: "Project · Prompt + postfix (what Studio encodes)", kinds: ["string"] },
+    // Written by Studio's enhancer during the run, so the builder wires it to Studio's
+    // enhanced_prompt output rather than pasting a value. Enhancer off → prompt + postfix.
+    { key: "enhanced_prompt", label: "Studio · Enhanced prompt (else prompt + postfix)", kinds: ["string"] },
     { key: "seed", label: "Project · Seed", kinds: ["int", "float"] },
     { key: "frame_rate", label: "Project · FPS", kinds: ["int", "float"] },
     { key: "num_frames_per_scene", label: "Project · Frames", kinds: ["int", "float"] },
@@ -1995,7 +1998,7 @@
 
     if (link.source === "editor") {
       const srcLbl = (EDITOR_SOURCES.find((s) => s.key === link.editor_key) || {}).label || link.editor_key;
-      const isText = ["prompt", "negative_prompt", "anchor", "postfix", "full_prompt"].includes(link.editor_key);
+      const isText = ["prompt", "negative_prompt", "anchor", "postfix", "full_prompt", "enhanced_prompt"].includes(link.editor_key);
       // "the same text Studio would" is only true of full_prompt. Studio appends the postfix
       // to every scene itself, so a node linked to the global prompt encodes strictly less --
       // silently, and the postfix is where audio and style directions usually live.
@@ -2004,6 +2007,9 @@
         note = " Shortcuts and $variables are expanded first";
         if (link.editor_key === "full_prompt") {
           note += ", so the node encodes the same text Studio would.";
+        } else if (link.editor_key === "enhanced_prompt") {
+          note = " Prompt + postfix, rewritten by the enhancer (Composer ▸ Enhance). Enhancer off"
+            + " or failed: prompt + postfix unchanged.";
         } else if (link.editor_key === "prompt") {
           const pj = window.Store?.get().project || {};
           const hasPostfix = pj.postfix_enabled !== false && String(pj.postfix || "").trim();

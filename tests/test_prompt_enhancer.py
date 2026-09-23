@@ -395,7 +395,7 @@ def test_the_image_reaches_the_enhancer():
 
 def test_both_paths_hand_over_the_enhancer_image():
     src = _refine_source()
-    assert src.count("image=prompt_enhance_image") == 2
+    assert src.count("image=prompt_enhance_image") == 3
     assert "thinking=prompt_enhance_thinking, image=source_image" not in src
 
 
@@ -409,7 +409,7 @@ def test_studio_gates_the_image_on_its_own_switch():
 
 def test_every_rewrite_is_reported_for_the_composer():
     src = _refine_source()
-    assert src.count("self._v2_enhanced_prompts.append(") == 2
+    assert src.count("self._v2_enhanced_prompts.append(") == 3
     import inspect
     assert '{"ui": {"funpack_enhanced": enhanced}, "result": result}' in inspect.getsource(C.FunPackStudio.run)
 
@@ -437,7 +437,7 @@ def test_the_repair_advisor_keeps_its_old_sampling(studio):
 def test_a_fixed_enhancer_seed_overrides_the_run_seed():
     src = _refine_source()
     assert '_enhance_seed = int(_enhance_sampling.pop("seed", 0) or 0) or seed' in src
-    assert src.count("seed=_enhance_seed") == 2
+    assert src.count("seed=_enhance_seed") == 3
 
 
 # ── how the instructions reach the model ─────────────────────────────────────
