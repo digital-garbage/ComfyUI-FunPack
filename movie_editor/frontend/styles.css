@@ -1610,6 +1610,14 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .compose-var-hint { margin-top: 4px; }
 .compose-var-hint.compose-var-warn { color: var(--accent); }
 .compose-var-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.compose-var-head { display: flex; gap: 8px; align-items: center; }
+.compose-var-head .compose-var-filter { flex: 1; min-width: 0; }
+.compose-var-head .btn { flex: 0 0 auto; }
+/* Open: prompt and list split the window, and the list scrolls on its own — the prompt
+   never scrolls out of sight while working through a long list. */
+.compose-bin.vars-open .compose-ta { flex: 1 1 0; min-height: 120px; }
+.compose-bin.vars-open .compose-vars { flex: 1 1 0; min-height: 180px; display: flex; flex-direction: column; }
+.compose-bin.vars-open .compose-var-list { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
 .compose-var-row { display: flex; gap: 6px; align-items: flex-start; }
 .compose-var-row > .compose-var-dollar, .compose-var-row > .compose-var-eq,
 .compose-var-row > .btn { margin-top: 5px; }
@@ -1618,6 +1626,8 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .compose-var-row .compose-var-name { flex: 0 0 30%; min-width: 0; }
 /* Value is an auto-growing textarea (JS sets the height) — no resize handle, no scrollbar. */
 .compose-var-row .compose-var-val { flex: 1; min-width: 0; resize: none; overflow: hidden; }
+/* At rest: exactly one unwrapped line, same height as the name field beside it. */
+.compose-var-row .compose-var-val:not(:focus) { white-space: nowrap; height: 30px; }
 .compose-var-row .btn { flex: 0 0 auto; }
 
 /* config validation banner */

@@ -219,6 +219,7 @@
 
     // Variables ($name) — collapsible, same toggle pattern as Settings ▸ Built-in pipeline.
     wrap.append(composeVariables());
+    wrap.classList.toggle("vars-open", varsOpen);
     // Segmented detailing targets — only while the Chain Sampler feature is enabled
     // (Engine ▸ Chain Sampler ▸ Experimental), so prompt-craft and "what gets detailed"
     // live side by side without adding a permanently-visible field.
@@ -364,50 +365,84 @@
     if (!ta.dataset.grown) { ta.dataset.grown = "1"; setTimeout(fit, 0); }
   }
 
+  let varFilter = "";            // Variables filter text (kept across repaints)
+
   function composeVariables() {
     const box = el("div", "compose-vars");
-    const toggle = el("button", "btn ghost tiny composer-var-toggle",
-      (varsOpen ? "▾ " : "▸ ") + "Variables");
+    // Local working copy; committed (persisted) on every edit. Add/remove edit the list in
+    // place — a full repaint would throw the user back to the top of the Composer.
+    const vars = (S.projectVariables() || []).map((v) => ({
+      name: String((v && v.name) || ""), value: String((v && v.value != null) ? v.value : ""),
+    }));
+    const commit = () => S.setProjectVariables(vars);
+
+    const head = el("div", "compose-var-head");
+    const toggle = el("button", "btn ghost tiny composer-var-toggle");
+    const label = () => (varsOpen ? "▾ " : "▸ ") + "Variables" + (vars.length ? ` (${vars.length})` : "");
+    toggle.textContent = label();
     toggle.title = "Project $name variables — substituted into the prompt at generation";
     toggle.onclick = () => { varsOpen = !varsOpen; render(); };
-    box.append(toggle);
+    head.append(toggle);
+    box.append(head);
 
     varHintEl = el("div", "insp-hint compose-var-hint");
     box.append(varHintEl);
 
     if (varsOpen) {
+      const filter = el("input", "lib-in compose-var-filter");
+      filter.type = "search"; filter.placeholder = "Filter"; filter.value = varFilter;
+      const add = el("button", "btn ghost tiny", "＋ Add");
+      add.title = "Add a variable";
+      head.append(filter, add);
+
       const list = el("div", "compose-var-list");
-      // Local working copy; committed (persisted) on every edit, re-rendered only on add/remove.
-      const vars = (S.projectVariables() || []).map((v) => ({
-        name: String((v && v.name) || ""), value: String((v && v.value != null) ? v.value : ""),
-      }));
-      const commit = () => S.setProjectVariables(vars);
-      vars.forEach((v, i) => {
+      const applyFilter = () => {
+        const q = varFilter.trim().toLowerCase();
+        list.querySelectorAll(".compose-var-row").forEach((row) => {
+          row.style.display = !q || row._var.name.toLowerCase().includes(q)
+            || row._var.value.toLowerCase().includes(q) ? "" : "none";
+        });
+      };
+      filter.oninput = () => { varFilter = filter.value; applyFilter(); };
+
+      const mkRow = (v) => {
         const row = el("div", "compose-var-row");
+        row._var = v;
         row.append(el("span", "compose-var-dollar", "$"));
         const nm = el("input", "lib-in compose-var-name");
         nm.value = v.name; nm.placeholder = "name";
         nm.oninput = () => { v.name = nm.value.replace(/^\$+/, ""); commit(); updateVarHint(); };
         row.append(nm);
         row.append(el("span", "compose-var-eq", "="));
-        // Values are usually long phrases, so this grows with its content — a one-line input
-        // makes editing "High quality, high fidelity realistic video, …" a horizontal-
-        // scrolling guessing game.
+        // One line at rest so a long list stays scannable; grows to the full text while
+        // being edited.
         const vv = el("textarea", "lib-in compose-var-val");
         vv.rows = 1;
-        vv.value = v.value; vv.placeholder = "value (may reference $other)";
-        vv.oninput = () => { v.value = vv.value; autoGrowVar(vv); commit(); updateVarHint(); };
+        vv.value = v.value; vv.placeholder = "value (may reference $other)"; vv.title = v.value;
+        vv.oninput = () => { v.value = vv.value; vv.title = vv.value; autoGrowVar(vv); commit(); updateVarHint(); };
+        vv.onfocus = () => autoGrowVar(vv);
+        vv.onblur = () => { vv.style.height = ""; vv.scrollTop = 0; };
         row.append(vv);
-        autoGrowVar(vv);
         const rm = el("button", "btn ghost tiny", "✕");
         rm.title = "Remove variable";
-        rm.onclick = () => { vars.splice(i, 1); commit(); render(); };
+        rm.onclick = () => {
+          vars.splice(vars.indexOf(v), 1);
+          row.remove(); commit(); updateVarHint(); toggle.textContent = label();
+        };
         row.append(rm);
-        list.append(row);
-      });
-      const add = el("button", "btn ghost tiny", "＋ Add variable");
-      add.onclick = () => { vars.push({ name: "", value: "" }); commit(); render(); };
-      list.append(add);
+        return row;
+      };
+      vars.forEach((v) => list.append(mkRow(v)));
+      add.onclick = () => {
+        const v = { name: "", value: "" };
+        vars.push(v); commit();
+        varFilter = ""; filter.value = ""; applyFilter();
+        const row = mkRow(v);
+        list.append(row); toggle.textContent = label();
+        row.scrollIntoView({ block: "nearest" });
+        row.querySelector(".compose-var-name").focus();
+      };
+      applyFilter();
       box.append(list);
     }
     // Defer so composeTextarea is assigned before the first scan.
