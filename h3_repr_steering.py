@@ -85,37 +85,76 @@ def state_path(refinement_key, kind="repr_steer"):
 
 
 def _mask_from_mod_segments(mod_segments, seq_len, device, tag):
-    """Shared by video_mask_from_mod_segments/audio_mask_from_mod_segments -- see those for
-    what `tag` means. Returns None (not an all-False mask) when nothing matched, so callers
-    no-op on a shape this has never seen rather than silently mask everything out."""
+    """Shared by video_mask_from_mod_segments/audio_mask_from_mod_segments.
+
+    The TARGET streams only: upstream packs ``[text | cond/ref | audio | video]`` and emits
+    one mod_segments entry per target stream, so target video is the last entry and target
+    audio the one before it. Matching by modality tag alone is wrong — tag 0 also marks the
+    i2v anchor pin, guide keyframes, reference images/videos and the vision tokens inside the
+    text span, none of which a "video rows" feature may steer or learn from.
+
+    Returns None (not an all-False mask) when the layout cannot be proven — wrong tag at that
+    position, or a sequence it does not fit (the 2-block token refiner's text-only calls) —
+    so callers no-op rather than guess.
+    """
+    segs = list(mod_segments or ())
+    if len(segs) < 2 or tag not in (0, 2):
+        return None
+    a, b, row = segs[-1] if tag == 0 else segs[-2]
+    try:
+        ok = bool(((row % 3) == tag).all()) if torch.is_tensor(row) else int(row) % 3 == tag
+    except Exception:  # noqa: BLE001
+        return None
+    if not ok or not (0 <= a < b <= seq_len):
+        return None
     mask = torch.zeros(seq_len, dtype=torch.bool, device=device)
-    found = False
-    for a, b, row in mod_segments or ():
-        if torch.is_tensor(row):
-            tags = (row % 3) == tag
-            if tags.any():
-                mask[a:b][tags] = True
-                found = True
-        elif int(row) % 3 == tag:
-            mask[a:b] = True
-            found = True
-    return mask if found else None
+    mask[a:b] = True
+    return mask
 
 
 def video_mask_from_mod_segments(mod_segments, seq_len, device):
-    """mod_segments (from the H3 block hook's own args) -> a [seq_len] bool mask, True on
-    VIDEO rows. Each entry is (a, b, row) where row is either a scalar `t_row*3 + tag` or,
-    for masked/multi-timestep rows, a tensor of them -- tag is `row % 3`, and 0 is video by
-    construction (`seg_tag` in model.py: video/cond/ref_img all tag 0). Returns None if
-    nothing matches, which happens on a shape this has never seen -- callers no-op rather
-    than guess."""
+    """mod_segments (from the H3 block hook's own args) -> a [seq_len] bool mask, True on the
+    TARGET video rows (the last segment). None when that cannot be proven."""
     return _mask_from_mod_segments(mod_segments, seq_len, device, 0)
 
 
 def audio_mask_from_mod_segments(mod_segments, seq_len, device):
-    """Same as video_mask_from_mod_segments but for AUDIO rows (tag 2 -- audio/cond_audio/
-    ref_audio in model.py's `seg_tag`)."""
+    """Same as video_mask_from_mod_segments but for the TARGET audio rows (second to last)."""
     return _mask_from_mod_segments(mod_segments, seq_len, device, 2)
+
+
+#: Query steering's store. Its rows are captured BEFORE H3's rotary position encoding; the
+#: old "q_steer" rows were taken after it, mean something else, and must not mix with these.
+Q_STEER_KIND = "q_steer_prerope"
+
+
+def rope_table_rows(rope_freqs, seq_len):
+    """H3's per-row rotation table ``[1, S, 1, half, 2, 2]`` (the block hook's ``rope_freqs``)
+    -> ``[S, half, 2, 2]``, or None when it is not that shape for this sequence."""
+    if not torch.is_tensor(rope_freqs) or rope_freqs.ndim != 6 \
+            or rope_freqs.shape[1] != seq_len or rope_freqs.shape[-2:] != (2, 2):
+        return None
+    return rope_freqs[0, :, 0]
+
+
+def rotate_rows(x, table, inverse=False):
+    """Apply (or undo) H3's split-half rotary encoding to ``x`` ``[..., n, D]``.
+
+    Mirrors comfy_kitchen's ``apply_rope_split_half1`` on the first ``2 * half`` dims — dim
+    ``i`` pairs with ``i + half``, each pair turned by its row's 2x2 matrix — and passes the
+    rest through. The inverse is the transpose, so undoing it is exact.
+    """
+    half = int(table.shape[-3])
+    rot = 2 * half
+    if x.shape[-1] < rot:
+        raise ValueError(f"head dim {x.shape[-1]} < rotary dim {rot}")
+    pairs = x[..., :rot].reshape(*x.shape[:-1], 2, half).movedim(-2, -1).float()
+    mat = table.float()
+    if inverse:
+        mat = mat.transpose(-1, -2)
+    out = (mat @ pairs.unsqueeze(-1)).squeeze(-1)
+    out = out.movedim(-1, -2).reshape(*x.shape[:-1], rot).to(x.dtype)
+    return torch.cat([out, x[..., rot:]], dim=-1)
 
 
 def capture(hidden_state, video_mask, has_rows=None):

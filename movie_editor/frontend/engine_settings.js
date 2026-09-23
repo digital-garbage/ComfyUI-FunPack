@@ -250,6 +250,8 @@
       hint: "How many starting seeds to try before committing. More costs one extra throwaway step each." },
     { name: "decode_noise_scale",    label: "Decode noise scale",    kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01,
       hint: "Adds fine detail and grain back while decoding. 0 is a clean decode, ~0.025 is a gentle restore. Free, and affects the video only — not the latent." },
+    { name: "h3_video_detail",       label: "Video detail (H3)",     kind: "float", default: 1.0,   min: 0, max: 2,   step: 0.05,
+      hint: "Crisper above 1, softer below. Changes the picture only, never the sound. Lightly tested: 1.25 looked sharper on one run." },
     { name: "decode_timestep",       label: "Decode timestep",       kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01,
       hint: "How much freedom the decoder gets while adding that detail. Higher looks more detailed but drifts further from what was actually generated. Only used when Decode noise scale is above 0." },
     { name: "decode_tile_size",      label: "Decode tile size",      kind: "int",   default: 0,     min: 0, max: 4096, step: 64,
@@ -527,7 +529,7 @@
     chain_continuity: ["carry_i2v_guides", "carry_overlap_through_anchor"],
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "explore_first_step", "explore_first_step_candidates", "dynashift", "dynashift_strength", "dynashift_threshold", "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block", "h3_repr_steering_passive_capture", "h3_q_steer_block", "h3_q_steer_strength", "h3_av_decouple"],
-    chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
+    chain_decode: ["h3_video_detail", "decode_noise_scale", "decode_timestep", "decode_tile_size"],
     chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "h3_block_repeat", "h3_block_repeat_span_loop", "h3_block_repeat_video_only", "h3_block_repeat_times", "h3_block_repeat_last_steps", "h3_explore_temperature", "h3_explore_temperature_block", "h3_shadow_negative", "h3_shadow_negative_compose", "h3_shadow_negative_video_scale", "h3_shadow_negative_audio_scale", "h3_shadow_negative_tau", "h3_shadow_negative_alpha", "h3_shadow_negative_start_percent", "h3_shadow_negative_end_percent", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
@@ -648,7 +650,8 @@
       .forEach((f) => renderStudioRefinerBool(gEss, rf, f));
 
     const gAdv = group(pane, EASY() ? "Prompt shaping" : "Refinement");
-    STUDIO_REFINER_ADVANCED.filter((f) => !EASY() || !RATING_GATED_STUDIO.has(f.name))
+    const inertStudio = window.PipelineCaps?.familyInertStudioFields(st) || new Set();
+    STUDIO_REFINER_ADVANCED.filter((f) => (!EASY() || !RATING_GATED_STUDIO.has(f.name)) && !inertStudio.has(f.name))
       .forEach((f) => renderStudioRefinerField(gAdv, rf, f));
 
     // The prompt enhancer lives in the Composer. Simple mode has no Composer, so the same

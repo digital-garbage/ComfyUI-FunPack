@@ -43,7 +43,9 @@ class FakeFinalLayer(torch.nn.Module):
         self.video_out = torch.nn.Linear(HIDDEN, 3, dtype=torch.float32)
         self.audio_out = torch.nn.Linear(HIDDEN, 2, dtype=torch.float32)
 
-    def forward(self, x, t_emb, video_seg, audio_seg):
+    # Upstream's CURRENT signature (PDD support added sigma/sample_sigmas/shifts). The old
+    # 4-argument copy let a wrapper that could not take them pass every test.
+    def forward(self, x, t_emb, video_seg, audio_seg, sigma, sample_sigmas, shifts):
         shift, scale = self.adaln_proj(t_emb)
         va, vb, vrow = video_seg
         aa, ab, arow = audio_seg
@@ -52,9 +54,13 @@ class FakeFinalLayer(torch.nn.Module):
         return self.video_out(hv), self.audio_out(ha)
 
 
+#: sigma, sample_sigmas, shifts — what upstream passes after the two segments
+_PDD_ARGS = (torch.tensor(0.5), None, (3.0, 3.0))
+
+
 def run(module, scale):
     x = torch.arange(6 * HIDDEN, dtype=torch.float32).view(6, HIDDEN) / 10.0
-    args = (x, None, (0, 3, 0), (3, 6, 1))
+    args = (x, None, (3, 6, 0), (0, 3, 1), torch.tensor(0.5), None, (3.0, 3.0))
     base_v, base_a = module(*args)
     got_v, got_a = h3.FinalLayerVideoScale(module, scale)(*args)
     return (base_v, base_a), (got_v, got_a)
@@ -81,7 +87,7 @@ def test_the_scale_multiplies_the_modulation_not_the_output():
     output instead would be a step-size change, which is a different thing entirely."""
     module = FakeFinalLayer()
     x = torch.arange(6 * HIDDEN, dtype=torch.float32).view(6, HIDDEN) / 10.0
-    got_v, _ = h3.FinalLayerVideoScale(module, 2.0)(x, None, (0, 3, 0), (3, 6, 1))
+    got_v, _ = h3.FinalLayerVideoScale(module, 2.0)(x, None, (0, 3, 0), (3, 6, 1), *_PDD_ARGS)
     shift, scale = module.adaln_proj(None)
     want = module.video_out(x[0:3] * ((1.0 + scale[0]) * 2.0) + shift[0])
     assert torch.allclose(got_v, want)
@@ -95,7 +101,7 @@ def test_above_one_reads_the_rows_harder_even_when_the_checkpoint_scale_is_negat
     module.adaln_proj.scale = torch.full((ROWS, HIDDEN), -0.5)   # H3's sign
     x = torch.ones(6, HIDDEN)
     weight = lambda k: (h3.FinalLayerVideoScale(module, k)(
-        x, None, (0, 3, 0), (3, 6, 1))[0] - module.video_out(torch.zeros(3, HIDDEN)
+        x, None, (0, 3, 0), (3, 6, 1), *_PDD_ARGS)[0] - module.video_out(torch.zeros(3, HIDDEN)
                                                              + module.adaln_proj.shift[0]))
     assert weight(1.5).abs().sum() > weight(1.0).abs().sum() > weight(0.5).abs().sum()
 
@@ -104,14 +110,13 @@ def test_the_bias_is_left_alone():
     """Scale is a contrast dial; shift would push every channel off its trained centre."""
     module = FakeFinalLayer()
     x = torch.zeros(6, HIDDEN)             # nothing for the scale to act on
-    got_v, _ = h3.FinalLayerVideoScale(module, 3.0)(x, None, (0, 3, 0), (3, 6, 1))
-    base_v, _ = module(x, None, (0, 3, 0), (3, 6, 1))
+    got_v, _ = h3.FinalLayerVideoScale(module, 3.0)(x, None, (0, 3, 0), (3, 6, 1), *_PDD_ARGS)
+    base_v, _ = module(x, None, (0, 3, 0), (3, 6, 1), *_PDD_ARGS)
     assert torch.allclose(got_v, base_v)   # only the shift survives — unchanged
 
 
 def test_a_final_layer_of_a_shape_we_do_not_know_declines():
-    """Mirroring upstream arithmetic means upstream can move underneath it. Declining is the
-    only safe answer — computing something else would be a silent behaviour change."""
+    """No final norm to scale through: pass straight through rather than guess."""
     class Different(torch.nn.Module):
         def forward(self, x, t_emb, video_seg, audio_seg):
             return x[:1], x[1:2]
@@ -177,3 +182,53 @@ def test_an_unfamiliar_final_layer_declines_before_it_is_installed():
     out, note = h3.apply_final_video_scale(model, 1.4)
     assert out is model and model.patched == {}
     assert "not the shape" in note
+
+
+# ── against the REAL upstream FinalLayer, when this ComfyUI has H3 ──────────
+
+_REAL_CHECK = r"""
+import sys, torch
+sys.path[:0] = [sys.argv[1], sys.argv[2]]
+import comfy.ops
+from comfy.ldm.minimax.model import FinalLayer
+import minimax_h3 as h3
+torch.manual_seed(0)
+hid, vd, ad = 16, 8, 4
+fl = FinalLayer(hid, 12, vd, ad, 1e-6, operations=comfy.ops.disable_weight_init)
+for p in fl.parameters():
+    torch.nn.init.normal_(p, std=0.2)
+x, t = torch.randn(10, hid), torch.randn(2, 12)
+args = (x, t, (6, 10, 1), (2, 6, 0), torch.tensor(0.5), torch.linspace(1, 0, 5), (3.0, 2.0))
+w = h3.FinalLayerVideoScale(fl, 1.4)
+v0, a0 = fl(*args)
+v1, a1 = w(*args)
+assert torch.allclose(a0, a1), "audio changed"
+shift, scale = fl.adaln_proj(t)
+ref = fl.video_out((fl.norm(x[6:10]) * (1 + scale[1]) * 1.4 + shift[1]).float())
+assert torch.allclose(v1, ref, atol=1e-5), "video is not norm*(1+scale)*s+shift"
+assert "forward" not in fl.norm.__dict__, "norm left patched"
+n = 3                                                     # a PDD head bank
+fl.video_out.weight = torch.nn.Parameter(torch.randn(n * vd, hid) * 0.2)
+fl.video_out.bias = torch.nn.Parameter(torch.randn(n * vd) * 0.2)
+fl.audio_out.weight = torch.nn.Parameter(torch.randn(n * ad, hid) * 0.2)
+fl.audio_out.bias = torch.nn.Parameter(torch.randn(n * ad) * 0.2)
+v0, a0 = fl(*args)
+v1, a1 = w(*args)
+assert torch.allclose(a0, a1) and not torch.allclose(v0, v1), "PDD heads"
+print("ok")
+"""
+
+
+def test_the_scale_runs_on_the_real_upstream_final_layer():
+    """Own interpreter: this suite stubs `comfy`. Set COMFYUI_DIR, or keep ComfyUI beside."""
+    import os
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    comfy = Path(os.environ.get("COMFYUI_DIR") or root.parent / "ComfyUI")
+    if not (comfy / "comfy" / "ldm" / "minimax" / "model.py").exists():
+        pytest.skip(f"no ComfyUI with H3 at {comfy}")
+    python = comfy / "venv" / "bin" / "python"
+    result = subprocess.run(
+        [str(python if python.exists() else sys.executable), "-c", _REAL_CHECK,
+         str(comfy), str(root)], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0 and "ok" in result.stdout, result.stderr[-2000:]

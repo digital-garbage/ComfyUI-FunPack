@@ -475,72 +475,29 @@ def checkpoint_mode_note(has_keyframes: bool, has_refs: bool):
     return None
 
 
-# ── interior keyframe pins ────────────────────────────────────────────────────
+# ── keyframe pins: any frame, and region locks ──────────────────────────────
 #
-# A pin is a block of condition rows carrying ONE time coordinate (``cond_t``) on the
-# same spatial grid as the target video, never denoised (``img_update=False``). Upstream
-# ``PackedLayout`` computes that coordinate in two hard-coded branches and raises for
-# anything else:
+# Upstream places a pin at ANY pixel frame itself (``cond_t = cursor + FRAME_RESCALE *
+# resolved_frame_index``, since #15439). FunPack used to patch that in; the patch passed a
+# ``frame_count`` argument upstream then removed, which broke EVERY later H3 layout in the
+# process. Interior pins now need nothing from FunPack.
 #
-#     pixel_index == 0                -> cond_t = text_len
-#     pixel_index == frame_count - 1  -> cond_t = text_len + sum(_video_t_spans(latent_t))
-#                                                 - FRAME_RESCALE
-#
-# Those are not two special cases. They are the two ENDPOINTS of one straight line: the
-# video time axis advances exactly ``FRAME_RESCALE`` per PIXEL frame, so
-#
-#     cond_t = text_len + FRAME_RESCALE * pixel_index
-#
-# reproduces both, exactly, at every clip length — including the irregular
-# ``FRAME_PER_TOKEN = (1, 4, 4, 4, 4)`` latent grouping, because the grouping changes how
-# many pixel frames a LATENT frame covers without changing the per-pixel-frame rate.
-# :func:`_linear_rule_matches_upstream` re-derives that equality from upstream's own
-# constants before anything is patched, so an upstream change to the grid turns this
-# feature off instead of silently mis-placing pins.
-#
-# What this does NOT establish is that the WEIGHTS were trained on interior pins. fl2va
-# saw condition rows at t=0 and t=end and nowhere between. MM-RoPE is continuous in t, so
-# an interior coordinate is representable rather than undefined, and the pin reaches the
-# target through ordinary self-attention with no special-cased path — but "representable"
-# is not "learned". Treat an interior pin as experimental until a run shows the frame
-# actually landing.
-KEYFRAME_T_PER_FRAME = 5.0 / 3.0     # upstream FRAME_RESCALE, re-checked before patching
-
-_INTERIOR_PINS = {"state": None}     # None = not tried, True/False = patch verdict
-_REGION_LOCKS = {"state": None}      # same, for partial-frame pins
+# fl2va was trained on first/last pins only, so a mid-clip pin is representable rather than
+# learned — the sampler still says so when it places one.
+_REGION_LOCKS = {"state": None}      # None = not tried, True/False = patch verdict
 _LAYOUT_PATCH = {"state": None}      # is PackedLayout.__init__ wrapped at all
 
 #: key a keyframe pin carries its keep-mask under (bool tensor over the frame's patch rows)
 REGION_META = "funpack_region"
 
 
-def keyframe_cond_t(text_len, pixel_index):
-    """The packed-sequence time coordinate of a pin at ``pixel_index``."""
-    return float(text_len) + KEYFRAME_T_PER_FRAME * float(int(pixel_index))
+def _video_pins(keyframes):
+    """The pins that own condition VIDEO rows, in row order.
 
-
-def _linear_rule_matches_upstream():
-    """True when :func:`keyframe_cond_t` reproduces upstream's own two branches.
-
-    Checked against ``_video_t_spans`` and ``FRAME_RESCALE`` themselves rather than
-    against remembered numbers, so a changed frame grid is caught here instead of
-    becoming pins placed at the wrong instant.
+    Upstream emits one ``cond`` segment and one ``cond_video_latents`` entry per pin WITH a
+    video latent; an audio-only pin has neither. Refs follow the pins in both.
     """
-    from comfy.ldm.minimax.model import FRAME_PER_TOKEN, FRAME_RESCALE, _video_t_spans
-
-    if abs(float(FRAME_RESCALE) - KEYFRAME_T_PER_FRAME) > 1e-9:
-        return False
-    text_len = 7                                     # any value; it cancels
-    for latent_t in (1, 2, 5, 6, 11, 24, 25, 26):
-        spans = _video_t_spans(latent_t)
-        frame_count = sum(FRAME_PER_TOKEN[k % 5] for k in range(latent_t))
-        first = float(text_len)
-        last = float(text_len) + sum(spans) - FRAME_RESCALE
-        if abs(first - keyframe_cond_t(text_len, 0)) > 1e-9:
-            return False
-        if abs(last - keyframe_cond_t(text_len, frame_count - 1)) > 1e-9:
-            return False
-    return True
+    return [kf for kf in keyframes or () if kf.get("latent") is not None]
 
 
 def _region_keep(region, n_rows):
@@ -629,17 +586,14 @@ def _apply_region_locks(layout, spans, regions):
 
 
 def _install_layout_patch():
-    """Wrap ``PackedLayout.__init__`` once, for both interior pins and region locks.
+    """Wrap ``PackedLayout.__init__`` once, for region locks.
 
-    Deliberately NOT a re-implementation of it. Upstream builds the layout exactly as it
-    always has — with every interior pin declared at index 0, which is always legal — and
-    this corrects the ``t`` column of the resulting condition rows afterwards, then removes
-    the rows a region excludes. Row order, latent placement, ``img_update``, the segment
-    table, refs and audio all stay upstream's, so upstream changes are inherited rather than
-    frozen into a copy here.
+    Deliberately NOT a re-implementation of it: upstream builds the layout exactly as it
+    always has, and this removes the rows a region excludes afterwards. Arguments pass
+    through untouched (``*args, **kwargs``), so an upstream signature change is inherited
+    instead of breaking every layout — which is what the old interior-pin wrapper did.
 
-    A run with no interior pin and no region never enters either rewrite: it calls straight
-    through to the original, so existing behaviour is bit-identical.
+    A run with no region never enters the rewrite, so its layout is upstream's, bit for bit.
     """
     if _LAYOUT_PATCH["state"] is not None:
         return _LAYOUT_PATCH["state"]
@@ -655,58 +609,23 @@ def _install_layout_patch():
 
     original = PackedLayout.__init__
 
-    def __init__(self, text_len, latent_t, latent_h, latent_w, audio_t,
-                 keyframes=None, refs=None, frame_count=None):
-        pins = list(keyframes or ())
-        # Each rewrite is gated on ITS OWN verdict, not on the patch being installed. The
-        # two share this wrapper, so region locks can install it while the interior-pin rule
-        # has been refused — and a refused rule must not then start moving pins.
-        interior = ([kf for kf in pins
-                     if not keyframe_is_endpoint(kf.get("resolved_frame_index"), frame_count)]
-                    if _INTERIOR_PINS["state"] else [])
-        regions = ([kf.get(REGION_META) for kf in pins]
-                   if _REGION_LOCKS["state"] else [None] * len(pins))
-        if not interior and not any(r is not None for r in regions):
-            original(self, text_len, latent_t, latent_h, latent_w, audio_t,
-                     keyframes=keyframes, refs=refs, frame_count=frame_count)
+    def __init__(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        if not _REGION_LOCKS["state"]:
             return
-        # Declared at 0 so upstream's branch accepts them; the coordinate is corrected below.
-        safe = [dict(kf, resolved_frame_index=0) for kf in pins] if interior else keyframes
-        original(self, text_len, latent_t, latent_h, latent_w, audio_t,
-                 keyframes=safe, refs=refs, frame_count=frame_count)
-        # Condition segments are emitted in `keyframes` order, immediately after text.
+        pins = _video_pins(kwargs.get("keyframes"))
+        regions = [kf.get(REGION_META) for kf in pins]
+        if not any(r is not None for r in regions):
+            return
+        # Condition segments are emitted in pin order, immediately after text.
         spans = [(a, b) for a, b, kind in self.segments if kind == "cond"]
-        if interior:
-            for (start, stop), kf in zip(spans, pins):
-                self.position_ids[start:stop, 0] = keyframe_cond_t(
-                    text_len, kf.get("resolved_frame_index", 0))
-        if any(r is not None for r in regions):
-            _apply_region_locks(self, spans, regions)
+        if len(spans) != len(pins):
+            return                     # our accounting disagrees with upstream's: change nothing
+        _apply_region_locks(self, spans, regions)
 
     __init__._funpack_layout = True
-    __init__._funpack_interior_pins = True          # kept: the old marker name
     PackedLayout.__init__ = __init__
     _LAYOUT_PATCH["state"] = True
-    return True
-
-
-def install_interior_keyframes():
-    """Let a keyframe pin sit at any pixel frame, not only the first or the last.
-
-    Returns True when interior pins are available.
-    """
-    if _INTERIOR_PINS["state"] is not None:
-        return _INTERIOR_PINS["state"]
-    if not _install_layout_patch():
-        _INTERIOR_PINS["state"] = False
-        return False
-    if not _linear_rule_matches_upstream():
-        _INTERIOR_PINS["state"] = False
-        print("[FunPack H3] interior keyframe pins DISABLED: this ComfyUI's video time grid "
-              "no longer matches the rule FunPack derives pin coordinates from. Pins stay "
-              "first/last only. (Upstream comfy/ldm/minimax/model.py changed.)")
-        return False
-    _INTERIOR_PINS["state"] = True
     return True
 
 
@@ -718,9 +637,9 @@ def install_region_locks():
     the condition latents. Both go through :func:`_region_keep` with the same mask, so they
     cannot diverge — and if either patch cannot be installed, neither is used.
 
-    EXPERIMENTAL for the same reason interior pins are: fl2va saw whole condition frames, so
-    a partial one is representable (nothing in the layout or the attention requires a cond
-    segment to be a complete frame) without being something the weights have seen.
+    EXPERIMENTAL: fl2va saw whole condition frames, so a partial one is representable
+    (nothing in the layout or the attention requires a cond segment to be a complete frame)
+    without being something the weights have seen.
     """
     if _REGION_LOCKS["state"] is not None:
         return _REGION_LOCKS["state"]
@@ -742,23 +661,22 @@ def install_region_locks():
     def _cond_video_rows(self, payload, device):
         rows = original(self, payload, device)
         try:
-            if rows is None or payload.get("refs"):
-                # With refs present upstream rebuilds cond_video_latents from the REFS, so
-                # the pins no longer line up with the rows. Regions are a pin feature.
+            if rows is None:
                 return rows
-            pins = payload.get("keyframes") or []
-            latents = payload.get("cond_video_latents") or []
-            if len(pins) != len(latents):
-                return rows
+            pins = _video_pins(payload.get("keyframes"))
             if not any(pin.get(REGION_META) is not None for pin in pins):
                 return rows
+            # Pins' latents lead the list; reference latents (if any) follow and are kept whole.
+            latents = payload.get("cond_video_latents") or []
+            if len(latents) < len(pins):
+                return rows
             kept, offset = [], 0
-            for pin, latent in zip(pins, latents):
+            for index, latent in enumerate(latents):
                 b, _c, t, h, w = latent.shape
                 n = b * t * (h // 2) * (w // 2)
                 span = rows[offset:offset + n]
                 offset += n
-                mask = _region_keep(pin.get(REGION_META), n)
+                mask = _region_keep(pins[index].get(REGION_META), n) if index < len(pins) else None
                 kept.append(span if mask is None else span[mask.to(span.device)])
             if offset != rows.shape[0]:
                 # Our row accounting disagrees with upstream's: change nothing rather than
@@ -777,7 +695,7 @@ def install_region_locks():
 
 
 def keyframe_is_endpoint(frame_index, frame_count):
-    """True for the first or last pixel frame — the two pins upstream places unaided."""
+    """True for the first or last pixel frame — the two positions fl2va was trained on."""
     if frame_index is None:
         return False
     idx = int(frame_index)
@@ -787,18 +705,8 @@ def keyframe_is_endpoint(frame_index, frame_count):
 
 
 def keyframe_indices_supported(frame_index, frame_count):
-    """Can a pin be placed at this pixel frame?
-
-    The first and last frames always can. Anything between them needs
-    :func:`install_interior_keyframes`, which is attempted here rather than assumed, so a
-    ComfyUI whose frame grid has moved refuses the pin instead of mis-placing it.
-    """
-    idx = int(frame_index)
-    if idx < 0 or idx > int(frame_count) - 1:
-        return False
-    if keyframe_is_endpoint(idx, frame_count):
-        return True
-    return install_interior_keyframes()
+    """Can a pin be placed at this pixel frame? Any frame inside the clip: upstream places it."""
+    return 0 <= int(frame_index) <= int(frame_count) - 1
 
 
 def encode_keyframe(vae, image, width, height, frame_index, crop="disabled"):
@@ -1335,7 +1243,14 @@ _FINAL_LAYER_PARTS = ("norm", "adaln_proj", "video_out", "audio_out")
 
 
 class FinalLayerVideoScale:
-    """Scales how strongly the final layer reads the accumulated video rows."""
+    """Scales how strongly the final layer reads the accumulated video rows.
+
+    Upstream's own forward does all the work — every argument passes straight through, so
+    its signature (it grew ``sigma, sample_sigmas, shifts`` for PDD heads) and its head
+    branches are inherited, never copied. The one change: while it runs, the final norm's
+    output for the VIDEO slice is multiplied by the scale, which is exactly
+    ``norm(x) * (1 + scale) * s + shift`` on video rows and nothing on audio rows.
+    """
 
     _funpack_wrapper = True
 
@@ -1344,17 +1259,34 @@ class FinalLayerVideoScale:
         self.original = unwrapped_forward(inner)
         self.scale = float(scale)
 
-    def __call__(self, x, t_emb, video_seg, audio_seg):
-        module = self.inner
-        if self.scale == 1.0 or not all(hasattr(module, part) for part in _FINAL_LAYER_PARTS):
-            return self.original(x, t_emb, video_seg, audio_seg)
-        shift, scale = module.adaln_proj(t_emb)
-        va, vb, vrow = video_seg
-        aa, ab, arow = audio_seg
-        hv = (module.norm(x[va:vb]) * ((1.0 + scale[vrow]) * self.scale)
-              + shift[vrow]).to(torch.float32)
-        ha = (module.norm(x[aa:ab]) * (1.0 + scale[arow]) + shift[arow]).to(torch.float32)
-        return module.video_out(hv), module.audio_out(ha)
+    def __call__(self, x, *args, **kwargs):
+        norm = getattr(self.inner, "norm", None)
+        try:
+            va, vb = int(args[1][0]), int(args[1][1])      # video_seg = (start, stop, row)
+        except Exception:                                   # noqa: BLE001
+            va = vb = None
+        if self.scale == 1.0 or norm is None or va is None or vb <= va:
+            return self.original(x, *args, **kwargs)
+        video_ptr, video_rows = x[va:vb].data_ptr(), vb - va
+        gain = self.scale
+        had = "forward" in norm.__dict__
+        prev = norm.__dict__.get("forward")
+        inner_forward = norm.forward
+
+        def forward(inp, *a, **k):
+            out = inner_forward(inp, *a, **k)
+            if inp.data_ptr() == video_ptr and inp.shape[0] == video_rows:
+                out = out * gain
+            return out
+
+        norm.forward = forward
+        try:
+            return self.original(x, *args, **kwargs)
+        finally:
+            if had:
+                norm.forward = prev
+            else:
+                del norm.forward
 
 
 def apply_final_video_scale(model, scale):

@@ -158,10 +158,13 @@ def test_extend_token_tags_keeps_appended_tokens_legal():
     assert h3.token_tags_length(meta) == 12               # input not mutated
 
 
-def test_keyframe_indices_are_first_or_last_only():
+def test_any_frame_inside_the_clip_can_be_pinned():
+    """Upstream places a pin at any pixel frame itself (#15439); only out-of-range refuses."""
     assert h3.keyframe_indices_supported(0, 124)
+    assert h3.keyframe_indices_supported(60, 124)
     assert h3.keyframe_indices_supported(123, 124)
-    assert not h3.keyframe_indices_supported(60, 124)
+    assert not h3.keyframe_indices_supported(124, 124)
+    assert not h3.keyframe_indices_supported(-1, 124)
 
 
 # ── 4. batch size 1 ──────────────────────────────────────────────────────────

@@ -35,19 +35,17 @@ def _spans(n):
 class _FakePackedLayout:
     """Upstream's structure: text, cond rows, audio, video — with every derived field."""
 
+    # Upstream's CURRENT signature (#15439 dropped frame_count). A wrapper that passes an
+    # argument upstream no longer takes must fail here the way it fails on a real run.
     def __init__(self, text_len, latent_t, latent_h, latent_w, audio_t,
-                 keyframes=None, refs=None, frame_count=None):
+                 keyframes=None, refs=None):
         segments, pos = [("text", text_len)], [torch.zeros(text_len, 3, dtype=torch.float64)]
         img_pos, img_update, audio_pos, audio_update = [], [], [], []
         row = text_len
         for index, kf in enumerate(keyframes or ()):
-            pixel_index = kf["resolved_frame_index"]
-            if pixel_index == 0:
-                cond_t = float(text_len)
-            elif frame_count is not None and pixel_index == frame_count - 1:
-                cond_t = float(text_len) + sum(_spans(latent_t)) - FRAME_RESCALE
-            else:
-                raise ValueError("only first/last keyframe anchors are supported")
+            if kf.get("latent") is None:
+                continue                       # audio-only pin: no cond VIDEO rows
+            cond_t = float(text_len) + FRAME_RESCALE * kf["resolved_frame_index"]
             g = torch.zeros(ROWS, 3, dtype=torch.float64)
             g[:, 0] = cond_t
             g[:, 1] = torch.arange(ROWS, dtype=torch.float64)   # identifies each row
@@ -105,7 +103,6 @@ def upstream(monkeypatch):
     mod._video_t_spans = _spans
     for name in ("comfy.ldm.minimax", "comfy.ldm.minimax.model"):
         monkeypatch.setitem(sys.modules, name, mod)
-    monkeypatch.setitem(h3._INTERIOR_PINS, "state", None)
     monkeypatch.setitem(h3._REGION_LOCKS, "state", None)
     monkeypatch.setitem(h3._LAYOUT_PATCH, "state", None)
     return mod
@@ -115,16 +112,15 @@ def _mask(*keep):
     return torch.tensor([bool(k) for k in keep])
 
 
-def _pin(index=0, region=None):
-    pin = {"resolved_frame_index": index, "latent": None}
+def _pin(index=0, region=None, video=True):
+    pin = {"resolved_frame_index": index, "latent": torch.zeros(1) if video else None}
     if region is not None:
         pin[h3.REGION_META] = region
     return pin
 
 
 def _build(mod, keyframes, text_len=4, latent_t=2, audio_t=2):
-    return mod.PackedLayout(text_len, latent_t, 4, 4, audio_t, keyframes=keyframes,
-                            frame_count=sum(FRAME_PER_TOKEN[k % 5] for k in range(latent_t)))
+    return mod.PackedLayout(text_len, latent_t, 4, 4, audio_t, keyframes=keyframes)
 
 
 def _rows(layout, kind):
@@ -264,19 +260,24 @@ def test_two_pins_carry_independent_regions(upstream):
     assert layout.position_ids[spans[1][0]:spans[1][1], 1].tolist() == [4.0, 5.0]
 
 
-def test_a_region_survives_alongside_an_interior_pin(upstream):
-    """The two rewrites share one wrapper and must both land."""
-    assert h3.install_interior_keyframes() is True
+def test_a_region_works_on_a_mid_clip_pin(upstream):
+    """Upstream places mid-clip pins itself; the region rewrite only removes rows."""
     assert h3.install_region_locks() is True
     layout = _build(upstream, [_pin(3, _mask(1, 0, 1, 0, 0, 0))], latent_t=6)
     start = next(a for a, _b, k in layout.segments if k == "cond")
     assert _rows(layout, "cond") == 2
-    assert float(layout.position_ids[start, 0]) == pytest.approx(h3.keyframe_cond_t(4, 3))
+    assert float(layout.position_ids[start, 0]) == pytest.approx(4 + FRAME_RESCALE * 3)
+
+
+def test_an_audio_only_pin_does_not_shift_the_regions(upstream):
+    """An audio-only pin has no cond video rows, so it must not take the next pin's mask."""
+    assert h3.install_region_locks() is True
+    pins = [_pin(0, video=False), _pin(4, _mask(1, 1, 0, 0, 0, 0))]
+    assert _rows(_build(upstream, pins), "cond") == 2
 
 
 def test_regions_stay_off_until_installed(upstream):
-    """Region locks must not ride in on the interior-pin patch."""
-    assert h3.install_interior_keyframes() is True
+    assert h3._install_layout_patch() is True
     layout = _build(upstream, [_pin(0, _mask(1, 0, 0, 0, 0, 0))])
     assert _rows(layout, "cond") == ROWS
 
@@ -328,20 +329,23 @@ def test_each_pin_is_sliced_with_its_own_mask(upstream):
     assert rows[:, 0].tolist() == [1.0, 1.0, 2.0, 2.0, 2.0]
 
 
-def test_references_disable_pin_regions_on_the_rows(upstream):
-    """With refs present upstream rebuilds cond_video_latents from the REFS, so the pins no
-    longer index the rows and slicing by them would cut the wrong content."""
+def test_reference_rows_follow_the_pins_and_stay_whole(upstream):
+    """Upstream appends reference latents AFTER the pins' (model_base.extra_conds). The pin
+    region still applies, the reference is kept whole — and the layout, which drops the
+    same pin rows, still agrees on the count."""
     assert h3.install_region_locks() is True
     model = upstream.MiniMaxH3Model()
-    payload = _payload([_latent(1)], [_pin(0, _mask(1, 0, 0, 0, 0, 0))], refs=[{"kind": "image"}])
-    assert model._cond_video_rows(payload, "cpu").shape[0] == ROWS
+    payload = _payload([_latent(1), _latent(2)], [_pin(0, _mask(1, 0, 0, 0, 0, 0))],
+                       refs=[{"kind": "image"}])
+    rows = model._cond_video_rows(payload, "cpu")
+    assert rows[:, 0].tolist() == [1.0] + [2.0] * ROWS
 
 
-def test_a_pin_count_mismatch_changes_nothing(upstream):
+def test_fewer_latents_than_pins_changes_nothing(upstream):
     assert h3.install_region_locks() is True
     model = upstream.MiniMaxH3Model()
-    payload = _payload([_latent(1), _latent(2)], [_pin(0, _mask(1, 0, 0, 0, 0, 0))])
-    assert model._cond_video_rows(payload, "cpu").shape[0] == 2 * ROWS
+    pins = [_pin(0, _mask(1, 0, 0, 0, 0, 0)), _pin(4, _mask(1, 0, 0, 0, 0, 0))]
+    assert model._cond_video_rows(_payload([_latent(1)], pins), "cpu").shape[0] == ROWS
 
 
 def test_an_empty_payload_stays_empty(upstream):
@@ -357,3 +361,43 @@ def test_installing_twice_does_not_stack_patches(upstream):
     model = upstream.MiniMaxH3Model()
     rows = model._cond_video_rows(_payload([_latent(1)], [_pin(0, _mask(1, 0, 1, 0, 0, 1))]), "cpu")
     assert rows.shape[0] == 3
+
+
+# ── against the REAL upstream, when this ComfyUI has H3 ──────────────────────
+#
+# The fake above is a copy, and a copy drifts: the old one kept `frame_count` after upstream
+# dropped it, so the suite passed while every real H3 layout raised TypeError. This builds
+# upstream's own PackedLayout through the installed patch.
+
+_REAL_CHECK = """
+import sys, torch
+sys.path[:0] = [sys.argv[1], sys.argv[2]]
+import minimax_h3 as h3
+from comfy.ldm.minimax.model import PackedLayout
+assert h3.install_region_locks() is True
+plain = PackedLayout(10, 6, 16, 16, 20)
+pin = {"resolved_frame_index": 9, "latent": torch.zeros(1, 24, 1, 16, 16)}
+pinned = PackedLayout(10, 6, 16, 16, 20, keyframes=[pin])
+region = torch.zeros(64, dtype=torch.bool)
+region[:5] = True
+locked = PackedLayout(10, 6, 16, 16, 20, keyframes=[dict(pin, **{h3.REGION_META: region})])
+assert pinned.seq_len == plain.seq_len + 64, (pinned.seq_len, plain.seq_len)
+assert locked.seq_len == plain.seq_len + 5, (locked.seq_len, plain.seq_len)
+print("ok")
+"""
+
+
+def test_the_patch_builds_real_upstream_layouts():
+    """Runs in its own interpreter: this suite stubs `comfy` for every test, so the real
+    module cannot be imported here. Set COMFYUI_DIR, or keep ComfyUI beside this repo."""
+    import os
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    comfy = Path(os.environ.get("COMFYUI_DIR") or root.parent / "ComfyUI")
+    if not (comfy / "comfy" / "ldm" / "minimax" / "model.py").exists():
+        pytest.skip(f"no ComfyUI with H3 at {comfy}")
+    python = comfy / "venv" / "bin" / "python"
+    result = subprocess.run(
+        [str(python if python.exists() else sys.executable), "-c", _REAL_CHECK,
+         str(comfy), str(root)], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0 and "ok" in result.stdout, result.stderr[-2000:]

@@ -8,6 +8,7 @@ on the PRE-injection Q (same ordering rule h3_repr_steering itself follows)."""
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -27,12 +28,18 @@ class _FakeModel:
         return m
 
 
-# 4 rows: 0 and 2 are video, 1 is text, 3 is audio -- non-contiguous video, same as
-# test_h3_av_decouple's layout.
-_MOD_SEGMENTS = [(0, 1, 0), (1, 2, 1), (2, 3, 0), (3, 4, 2)]
+# Upstream's real order: row 0 text, row 1 target audio, rows 2-3 target video.
+_MOD_SEGMENTS = [(0, 1, 1), (1, 2, 2), (2, 4, 0)]
 
 
-def _run_attention_inside_block(patched, block, attn_fn, mod_segments=_MOD_SEGMENTS, seq_len=4):
+def _no_rotation(seq_len):
+    """A rotation table with zero rotary pairs: every dim passes through, so the arithmetic
+    below stays exact. The real rotation is tested on its own further down."""
+    return torch.zeros(1, seq_len, 1, 0, 2, 2)
+
+
+def _run_attention_inside_block(patched, block, attn_fn, mod_segments=_MOD_SEGMENTS, seq_len=4,
+                                rope=None):
     """The active-block flag _install_h3_q_steering uses is only true WHILE the block's own
     forward is running (attention happens inside it) -- so `attn_fn` (whatever calls the
     optimized_attention_override) must run from inside `original_block`, not after the hook
@@ -45,7 +52,8 @@ def _run_attention_inside_block(patched, block, attn_fn, mod_segments=_MOD_SEGME
         result["out"] = attn_fn()
         return {"img": a["img"]}
 
-    args = {"img": torch.ones(seq_len, 3), "mod_segments": mod_segments}
+    args = {"img": torch.ones(seq_len, 3), "mod_segments": mod_segments,
+            "rope_freqs": _no_rotation(seq_len) if rope is None else rope}
     hook(args, {"original_block": _original_block})
     return result["out"]
 
@@ -53,7 +61,7 @@ def _run_attention_inside_block(patched, block, attn_fn, mod_segments=_MOD_SEGME
 def _install(monkeypatch, direction_vec, strength=1.0, block=0):
     """direction_vec: flat (heads*head_dim,) tensor, or None for 'not enough data yet'."""
     def _fake_direction(refinement_key, block=None, kind="repr_steer"):
-        assert kind == "q_steer"
+        assert kind == _rs.Q_STEER_KIND
         if direction_vec is None:
             return None, 0, 0
         return direction_vec, 5, 5
@@ -71,10 +79,10 @@ def _override_fn(patched):
 def test_capture_and_inject_at_named_block(monkeypatch):
     # heads=2, head_dim=1, values chosen so row_norm and the injected shift are round numbers.
     q = torch.zeros(1, 2, 4, 1)
-    q[0, 0, 0, 0] = 3.0
     q[0, 0, 2, 0] = 3.0
-    q[0, 1, 0, 0] = 1.0
+    q[0, 0, 3, 0] = 3.0
     q[0, 1, 2, 0] = 1.0
+    q[0, 1, 3, 0] = 1.0
     k = torch.zeros(1, 2, 4, 1)
     v = torch.zeros(1, 2, 4, 1)
 
@@ -96,13 +104,13 @@ def test_capture_and_inject_at_named_block(monkeypatch):
     # row_norm = mean(|3|, |3|, |1|, |1|) = 2.0; shift = direction * strength * row_norm =
     # [1, -1] * 1.0 * 2.0 = [+2, -2], applied identically to both masked rows, K/V untouched.
     q_after = calls[0]
-    assert torch.allclose(q_after[0, 0, 0, 0], torch.tensor(5.0))   # 3 + 2
     assert torch.allclose(q_after[0, 0, 2, 0], torch.tensor(5.0))   # 3 + 2
-    assert torch.allclose(q_after[0, 1, 0, 0], torch.tensor(-1.0))  # 1 - 2
+    assert torch.allclose(q_after[0, 0, 3, 0], torch.tensor(5.0))   # 3 + 2
     assert torch.allclose(q_after[0, 1, 2, 0], torch.tensor(-1.0))  # 1 - 2
+    assert torch.allclose(q_after[0, 1, 3, 0], torch.tensor(-1.0))  # 1 - 2
     # Unmasked (text/audio) rows are untouched.
+    assert torch.allclose(q_after[0, :, 0, :], q[0, :, 0, :])
     assert torch.allclose(q_after[0, :, 1, :], q[0, :, 1, :])
-    assert torch.allclose(q_after[0, :, 3, :], q[0, :, 3, :])
 
 
 def test_not_enough_data_captures_without_steering(monkeypatch):
@@ -155,13 +163,13 @@ def test_kind_isolation_uses_real_persistence(monkeypatch, tmp_path):
     # q_steer's own direction at the SAME block index: liked/disliked swapped on axis 2
     # instead, so if the two stores ever shared a file/rows the directions would collide.
     for i in range(3):
-        _rs.save_pending(key, {block: torch.tensor([0.0, 1.0 + i * 0.01])}, kind="q_steer")
-        _rs.commit(key, reward=1.0, kind="q_steer")
-        _rs.save_pending(key, {block: torch.tensor([0.0, -1.0 - i * 0.01])}, kind="q_steer")
-        _rs.commit(key, reward=-1.0, kind="q_steer")
+        _rs.save_pending(key, {block: torch.tensor([0.0, 1.0 + i * 0.01])}, kind=_rs.Q_STEER_KIND)
+        _rs.commit(key, reward=1.0, kind=_rs.Q_STEER_KIND)
+        _rs.save_pending(key, {block: torch.tensor([0.0, -1.0 - i * 0.01])}, kind=_rs.Q_STEER_KIND)
+        _rs.commit(key, reward=-1.0, kind=_rs.Q_STEER_KIND)
 
     repr_dir, r_pos, r_neg = _rs.direction(key, block=block)
-    q_dir, q_pos, q_neg = _rs.direction(key, block=block, kind="q_steer")
+    q_dir, q_pos, q_neg = _rs.direction(key, block=block, kind=_rs.Q_STEER_KIND)
     assert r_pos == 3 and r_neg == 3
     assert q_pos == 3 and q_neg == 3
     # REINS' direction points along axis 1, q_steer's along axis 2 -- if the stores collided
@@ -175,7 +183,7 @@ def test_two_named_blocks_steer_with_independent_directions(monkeypatch):
     directions = {0: torch.tensor([1.0, 0.0]), 1: torch.tensor([0.0, 1.0])}
 
     def _fake_direction(refinement_key, block=None, kind="repr_steer"):
-        assert kind == "q_steer"
+        assert kind == _rs.Q_STEER_KIND
         return directions[block], 5, 5
     monkeypatch.setattr(_rs, "direction", _fake_direction)
     capture_holder = [{}]
@@ -188,7 +196,7 @@ def test_two_named_blocks_steer_with_independent_directions(monkeypatch):
     results = {}
     for block in (0, 1):
         q = torch.zeros(1, 2, 4, 1)
-        q[0, 0, 0, 0] = 5.0  # heads=2, head_dim=1; masked (video) row 0 only for simplicity
+        q[0, 0, 2, 0] = 5.0  # heads=2, head_dim=1; video row 2 only for simplicity
         results[block] = _run_attention_inside_block(
             patched, block=block,
             attn_fn=lambda q=q: _override_fn(patched)(
@@ -196,10 +204,10 @@ def test_two_named_blocks_steer_with_independent_directions(monkeypatch):
 
     # Block 0's direction is [1,0] -> only head 0 shifts; block 1's is [0,1] -> only head 1
     # shifts. If the blocks shared one direction (a wiring bug), both would shift identically.
-    assert results[0][0, 0, 0, 0] != 5.0
-    assert torch.allclose(results[0][0, 1, 0, 0], torch.tensor(0.0))
-    assert torch.allclose(results[1][0, 0, 0, 0], torch.tensor(5.0))
-    assert results[1][0, 1, 0, 0] != 0.0
+    assert results[0][0, 0, 2, 0] != 5.0
+    assert torch.allclose(results[0][0, 1, 2, 0], torch.tensor(0.0))
+    assert torch.allclose(results[1][0, 0, 2, 0], torch.tensor(5.0))
+    assert results[1][0, 1, 2, 0] != 0.0
     assert 0 in capture_holder[0] and 1 in capture_holder[0]
 
 
@@ -309,13 +317,13 @@ def test_captures_natural_q_even_when_temperature_targets_the_same_block(monkeyp
     capture_holder = [{}]
     model = S()._install_h3_q_steering(model, "fake_key", 0.0, capture_holder, steer_block="0")
 
-    # _MOD_SEGMENTS tags BOTH row 0 and row 2 as video -- set both to the SAME value so the
+    # _MOD_SEGMENTS makes rows 2 and 3 the target video -- set both to the SAME value so the
     # captured mean-over-video-rows equals that value exactly, cleanly distinguishing
     # "natural Q" (5.0) from "already temperature-scaled Q" (2.5) -- a single video row set
     # to 5.0 with the other left at 0 would average to 2.5 either way and prove nothing.
     q = torch.zeros(1, 2, 4, 1)
-    q[0, 0, 0, 0] = 5.0
     q[0, 0, 2, 0] = 5.0
+    q[0, 0, 3, 0] = 5.0
 
     def fake_func(q_, k_, v_, heads_, mask=None, skip_reshape=True, **kw):
         return q_.clone()
@@ -328,7 +336,8 @@ def test_captures_natural_q_even_when_temperature_targets_the_same_block(monkeyp
         override(fake_func, q, torch.zeros_like(q), torch.zeros_like(q), 2, skip_reshape=True)
         return {"img": a["img"]}
 
-    hook({"img": torch.ones(4, 3), "mod_segments": _MOD_SEGMENTS}, {"original_block": _original_block})
+    hook({"img": torch.ones(4, 3), "mod_segments": _MOD_SEGMENTS, "rope_freqs": _no_rotation(4)},
+         {"original_block": _original_block})
 
     # If temperature's 2x scaling had already been applied before q_steering saw Q, this
     # would read 2.5, not 5.0.
@@ -337,3 +346,51 @@ def test_captures_natural_q_even_when_temperature_targets_the_same_block(monkeyp
 
 if __name__ == "__main__":
     print("run via pytest -- these tests need the monkeypatch/capsys fixtures")
+
+
+# ── the rotary position encoding ─────────────────────────────────────────────
+
+def _rotation_table(seq_len, half):
+    """A real per-row rotation table in H3's shape [1, S, 1, half, 2, 2]."""
+    ang = torch.arange(seq_len, dtype=torch.float32)[:, None] * (0.3 + torch.arange(half))
+    c, s_ = torch.cos(ang), torch.sin(ang)
+    return torch.stack([c, -s_, s_, c], dim=-1).reshape(1, seq_len, 1, half, 2, 2)
+
+
+def test_rotation_matches_comfy_kitchen():
+    """rotate_rows must be the SAME rotation H3 applies, or 'undo it' undoes something else."""
+    eager = pytest.importorskip("comfy_kitchen.backends.eager.rope")
+    table = _rotation_table(5, 2)
+    x = torch.randn(1, 5, 3, 6)                        # [B, S, H, D], rot dim 4 of 6
+    ref = torch.cat([eager.apply_rope_split_half1(x[..., :4], table), x[..., 4:]], dim=-1)
+    ours = _rs.rotate_rows(x[0].permute(1, 0, 2), table[0, :, 0]).permute(1, 0, 2)
+    assert torch.allclose(ours, ref[0], atol=1e-5)
+    back = _rs.rotate_rows(ours.permute(1, 0, 2), table[0, :, 0], inverse=True)
+    assert torch.allclose(back.permute(1, 0, 2), x[0], atol=1e-5)
+
+
+def test_capture_and_push_live_in_unrotated_space(monkeypatch):
+    """The same natural query at every row must capture as itself, and the push must arrive
+    as the same unrotated vector at every row — not one vector smeared across positions."""
+    heads, dim, half = 1, 4, 2
+    table = _rotation_table(4, half)
+    natural = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    rows = natural.expand(4, dim)[None]                               # [H, S, D]
+    q = _rs.rotate_rows(rows, table[0, :, 0])[None]                   # what H3 hands over
+    direction = torch.tensor([0.0, 1.0, 0.0, 0.0])
+    patched, capture_holder = _install(monkeypatch, direction, strength=1.0)
+    seen = []
+
+    def fake_func(q_, k_, v_, heads_, mask=None, skip_reshape=True, **kw):
+        seen.append(q_.clone())
+        return q_
+
+    _run_attention_inside_block(
+        patched, block=0, rope=table,
+        attn_fn=lambda: _override_fn(patched)(
+            fake_func, q, torch.zeros_like(q), torch.zeros_like(q), heads, skip_reshape=True))
+    assert torch.allclose(capture_holder[0][0], natural, atol=1e-5)
+    unrotated = _rs.rotate_rows(seen[0][0], table[0, :, 0], inverse=True)
+    push = float(natural.norm()) * direction
+    assert torch.allclose(unrotated[:, 2:], (natural + push).expand(2, dim), atol=1e-4)
+    assert torch.allclose(seen[0][0, 0, :2], q[0, 0, :2])              # text/audio untouched

@@ -449,10 +449,17 @@ def _run_rows(video_only, segs):
 
 
 def test_video_only_keeps_the_repeat_for_video_and_reverts_the_rest():
-    # rows 0-1 video (tag 6 % 3 == 0), rows 2-3 audio (tag 8 % 3 == 2)
-    out = _run_rows(True, [(0, 2, 6), (2, 4, 8)])
-    assert torch.equal(out[:2], torch.full((2, 3), 2.0))   # two passes
-    assert torch.equal(out[2:], torch.full((2, 3), 1.0))   # one pass, restored
+    # upstream order: rows 0-1 target audio (tag 8 % 3 == 2), rows 2-3 target video
+    out = _run_rows(True, [(0, 2, 8), (2, 4, 6)])
+    assert torch.equal(out[2:], torch.full((2, 3), 2.0))   # two passes
+    assert torch.equal(out[:2], torch.full((2, 3), 1.0))   # one pass, restored
+
+
+def test_video_only_does_not_repeat_the_anchor_pin():
+    """A tag-0 pin is condition, not the video being made: it gets the single pass."""
+    out = _run_rows(True, [(0, 1, 6), (1, 2, 8), (2, 4, 6)])   # pin, audio, video
+    assert torch.equal(out[:2], torch.full((2, 3), 1.0))
+    assert torch.equal(out[2:], torch.full((2, 3), 2.0))
 
 
 def test_without_video_only_every_row_gets_the_repeat():
@@ -469,10 +476,10 @@ def test_video_only_falls_back_to_repeating_everything_when_no_mask():
 def test_video_only_survives_several_extra_passes():
     dit = _repeat_hook_vo({0}, 3, True)
     out = dit[("double_block", 0)](
-        {"img": torch.zeros(4, 3), "mod_segments": [(0, 2, 6), (2, 4, 8)]},
+        {"img": torch.zeros(4, 3), "mod_segments": [(0, 2, 8), (2, 4, 6)]},
         {"original_block": lambda a: {"img": a["img"] + 1.0}})["img"]
-    assert torch.equal(out[:2], torch.full((2, 3), 4.0))   # 1 + 3 extra
-    assert torch.equal(out[2:], torch.full((2, 3), 1.0))   # still single-pass
+    assert torch.equal(out[2:], torch.full((2, 3), 4.0))   # 1 + 3 extra
+    assert torch.equal(out[:2], torch.full((2, 3), 1.0))   # still single-pass
 
 
 # --- span loop: 31,32..40,31,32..40 rather than 31,31,32,32..40,40 -----------------
@@ -506,7 +513,7 @@ def _drive_span(mdl, lo, hi, segs=None):
     dit = mdl.model_options["transformer_options"]["patches_replace"]["dit"]
     h = torch.zeros(4, 2)
     for i in range(len(mdl.model.diffusion_model.blocks)):
-        args = {"img": h, "t_emb": None, "mod_segments": segs or [(0, 4, 6)],
+        args = {"img": h, "t_emb": None, "mod_segments": segs or [(0, 0, 8), (0, 4, 6)],
                 "rope_freqs": None, "transformer_options": {}}
         if ("double_block", i) in dit:
             h = dit[("double_block", i)](args, {"original_block": None})["img"]
@@ -553,8 +560,8 @@ def test_video_only_gives_text_and_audio_the_span_ONCE_not_zero_times():
     s = samplers.FunPackLTXAVSceneChainSampler()
     src = _SpanModel(n=4)
     patched = s._install_span_loop(src, {1, 2}, times=1, video_only=True)
-    out = _drive_span(patched, 1, 2, segs=[(0, 2, 6), (2, 4, 8)])
+    out = _drive_span(patched, 1, 2, segs=[(0, 2, 8), (2, 4, 6)])
     span_once = 10 ** 1 + 10 ** 2          # the looped blocks
     outside = 10 ** 0 + 10 ** 3            # blocks 0 and 3 run once for every row
-    assert torch.allclose(out[:2], torch.full((2, 2), float(outside + 2 * span_once)))
-    assert torch.allclose(out[2:], torch.full((2, 2), float(outside + span_once)))
+    assert torch.allclose(out[2:], torch.full((2, 2), float(outside + 2 * span_once)))
+    assert torch.allclose(out[:2], torch.full((2, 2), float(outside + span_once)))

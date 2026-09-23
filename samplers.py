@@ -3050,7 +3050,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "alg_anchor": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL: run ALG's i2v anchor blur (arXiv:2506.08456) on WHATEVER sampler is wired — a stock KSampler with any sampler_name, Hybrid Euler 2S, a two-evals-per-step sampler like heun, anything. The blur de-statics an anchored scene by hiding the anchor's high-frequency detail during the near-pure-noise steps, so the model cannot shortcut to a video that just matches the still. It is the same guidance as the FunPack Distilled Flow sampler's own alg_enabled, and this switch drives that one too when Distilled Flow is the wired sampler, so there is one control wherever you are. The swap is decided by the step's sigma alone, which is an argument of every model call, so it does not need to run inside a sampler's loop. No effect on a scene with no i2v anchor.",
+                    "tooltip": "EXPERIMENTAL: run ALG's i2v anchor blur (arXiv:2506.08456) on WHATEVER sampler is wired — a stock KSampler with any sampler_name, Hybrid Euler 2S, a two-evals-per-step sampler like heun, anything. The blur de-statics an anchored scene by hiding the anchor's high-frequency detail during the near-pure-noise steps, so the model cannot shortcut to a video that just matches the still. It is the same guidance as the FunPack Distilled Flow sampler's own alg_enabled, and this switch drives that one too when Distilled Flow is the wired sampler, so there is one control wherever you are. The swap is decided by the step's sigma alone, which is an argument of every model call, so it does not need to run inside a sampler's loop. On MiniMax H3 the anchor is a pinned keyframe, and the pin is what gets blurred. No effect on a scene with no i2v anchor.",
                 }),
                 "alg_anchor_strength": ("FLOAT", {
                     "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
@@ -3968,6 +3968,10 @@ class FunPackLTXAVSceneChainSampler:
                 print("[FunPackSceneChain] ALG is on, but the wired SAMPLER exposes no "
                       "sampler_function to wrap, so the anchor/guide blur cannot be applied "
                       "to it. Sampling continues without it.")
+        # On H3 the i2v anchor is a keyframe PIN (condition rows), not a masked latent frame,
+        # so the latent path above finds nothing to blur there. Same guidance, on the pin.
+        if alg_anchor and self._is_h3:
+            model = self._install_h3_alg_pin(model, alg_anchor_strength, alg_anchor_sigma_threshold)
         # EXPERIMENTAL Bounded Attention: model-level attention hooks (sampler-agnostic, unlike
         # the toggles above which only work on Distilled Flow), so install/remove here rather
         # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
@@ -4104,7 +4108,7 @@ class FunPackLTXAVSceneChainSampler:
                     from . import h3_repr_steering as _rs
                 except ImportError:
                     import h3_repr_steering as _rs
-                _rs.save_pending(refinement_key, _q_steer_capture[0], kind="q_steer")
+                _rs.save_pending(refinement_key, _q_steer_capture[0], kind=_rs.Q_STEER_KIND)
             if _influence_capture[0]:
                 try:
                     from . import block_influence as _bi
@@ -6079,12 +6083,8 @@ class FunPackLTXAVSceneChainSampler:
         condition rows into the sequence itself — they are never denoised and never rendered,
         so there is no latent to append and no tail to crop (the returned tail is 0).
 
-        Stock ``PackedLayout`` places a pin only at the FIRST or LAST pixel frame and raises
-        for anything else. Those two are the endpoints of ONE straight line — the packed
-        sequence's time axis advances at a fixed rate per pixel frame — so
-        ``install_interior_keyframes`` (attempted by ``keyframe_indices_supported``) extends
-        the same rule to the frames between them. When it cannot install, a mid-clip request
-        is refused here, loudly, rather than crashing several seconds into the sample.
+        Upstream ``PackedLayout`` places a pin at any pixel frame (#15439); only a frame
+        outside the clip is refused, here, loudly.
 
         An interior pin is EXPERIMENTAL in a way the endpoints are not: fl2va was trained with
         condition rows at the two ends and nowhere between, so the coordinate is representable
@@ -6099,9 +6099,8 @@ class FunPackLTXAVSceneChainSampler:
         frame_count = max(1, int(self._h3_frame_count))
         at = self._resolve_frame_index(frame_count, int(apply_at))
         if not keyframe_indices_supported(at, frame_count):
-            print(f"[FunPackSceneChain] H3: guide at pixel frame {at} skipped — this ComfyUI "
-                  f"pins only the first (0) or last ({frame_count - 1}) frame. Use a reference "
-                  f"image (ref2va) for mid-clip guidance instead.")
+            print(f"[FunPackSceneChain] H3: guide at pixel frame {at} skipped — outside the "
+                  f"clip (0-{frame_count - 1}).")
             return positive, negative, 0
         if not keyframe_is_endpoint(at, frame_count):
             _log.feature(
@@ -7103,6 +7102,72 @@ class FunPackLTXAVSceneChainSampler:
 
 
 
+    def _install_h3_alg_pin(self, model, strength, threshold):
+        """ALG's anchor blur for H3, where the anchor is the frame-0 keyframe pin.
+
+        While the step's sigma is above `threshold` the pin's latent is swapped for a
+        bilinear down-then-up copy at factor `strength` — the same filter and the same
+        schedule as the latent-frame ALG — so the model cannot shortcut to a still that
+        matches the anchor. Below it, the sharp pin is back. Mid-clip guide pins are left
+        alone: ALG is about the opening frame.
+        """
+        kappa = max(1.0, float(strength))
+        thr = float(threshold)
+        blurred = {}                      # id(pin latent) -> (pin latent, its blurred copy)
+        noted = {"on": False}
+
+        def _blur(z):
+            hit = blurred.get(id(z))
+            if hit is not None and hit[0] is z:
+                return hit[1]
+            b, c, t, h, w = z.shape
+            frames = z.movedim(2, 1).reshape(b * t, c, h, w).float()
+            size = (max(1, round(h / kappa)), max(1, round(w / kappa)))
+            down = torch.nn.functional.interpolate(frames, size=size, mode="bilinear",
+                                                   align_corners=False)
+            up = torch.nn.functional.interpolate(down, size=(h, w), mode="bilinear",
+                                                 align_corners=False)
+            out = up.reshape(b, t, c, h, w).movedim(1, 2).to(z.dtype)
+            blurred[id(z)] = (z, out)
+            return out
+
+        patched = model.clone()
+        old = patched.model_options.get("model_function_wrapper")
+
+        def _call(apply_fn, a):
+            if old is not None:
+                return old(apply_fn, a)
+            return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
+
+        def _wrapper(apply_fn, args):
+            try:
+                c = args.get("c") or {}
+                payload = c.get("minimax_payload")
+                sigma = float(args["timestep"].max())
+                if sigma <= thr or not isinstance(payload, dict):
+                    return _call(apply_fn, args)
+                pins = [kf for kf in payload.get("keyframes") or () if kf.get("latent") is not None]
+                latents = list(payload.get("cond_video_latents") or [])
+                anchors = [i for i, kf in enumerate(pins)
+                           if int(kf.get("resolved_frame_index", -1)) == 0]
+                if not anchors or len(latents) < len(pins):
+                    return _call(apply_fn, args)
+                for i in anchors:           # pin latents lead the list; refs follow
+                    latents[i] = _blur(latents[i])
+                if not noted["on"]:
+                    noted["on"] = True
+                    print(f"[FunPackSceneChain] ALG (H3): anchor pin blurred x{kappa:g} while "
+                          f"sigma > {thr:g}.")
+                new_c = dict(c, minimax_payload=dict(payload, cond_video_latents=latents))
+                return _call(apply_fn, dict(args, c=new_c))
+            except Exception as e:  # noqa: BLE001
+                _log.failed("FunPackSceneChain", "ALG (H3 anchor pin)", e,
+                            "this step runs with the sharp anchor")
+                return _call(apply_fn, args)
+
+        patched.model_options["model_function_wrapper"] = _tag_scene_wrapper(_wrapper, old)
+        return patched
+
     def _install_h3_final_layer(self, model, positive):
         """The video-only detail scale, applied past the model's last attention pass.
 
@@ -7274,12 +7339,8 @@ class FunPackLTXAVSceneChainSampler:
                     if cached == "MISS":
                         mask = _rs.video_mask_from_mod_segments(
                             args.get("mod_segments"), seq_len, out.device)
-                        # Real .any(), not "mask is not None implies non-empty" --
-                        # _mask_from_mod_segments' scalar branch sets found=True without
-                        # checking the segment has nonzero length, so that implication isn't
-                        # actually enforced. Decided ONCE per unique seq_len (same cost class
-                        # av_decouple already pays for its own has_v/has_a/has_other), not
-                        # per block/step -- see project_reward_model_rework memory.
+                        # .any() decided ONCE per unique seq_len (one host sync), not per
+                        # block/step -- see project_reward_model_rework memory.
                         has_rows = bool(mask.any()) if mask is not None else False
                         cached = (mask, has_rows)
                         mask_cache[seq_len] = cached
@@ -7638,7 +7699,8 @@ class FunPackLTXAVSceneChainSampler:
         captured and applied on QUERY vectors going into attention instead of on the block's
         hidden state. Reshapes Q from (heads, head_dim) back into one flat hidden-sized
         vector per video row so it can reuse h3_repr_steering.capture()/direction() verbatim.
-        The learned direction lives under its own kind="q_steer" sidecar file -- entirely
+        The learned direction lives under its own Q_STEER_KIND sidecar file (captured in
+        unrotated space -- see _override) -- entirely
         separate from h3_repr_steering's hidden-state directions, same refinement_key -- a
         block index means a different vector space in each store, so nothing here reads or
         writes the other's rows.
@@ -7679,7 +7741,7 @@ class FunPackLTXAVSceneChainSampler:
             _counts = {}
             for _sb in sorted(steer_blocks):
                 direction, n_liked, n_disliked = _rs.direction(refinement_key, block=_sb,
-                                                                kind="q_steer")
+                                                                kind=_rs.Q_STEER_KIND)
                 directions[_sb] = direction
                 _counts[_sb] = (n_liked, n_disliked)
                 if direction is None:
@@ -7697,12 +7759,14 @@ class FunPackLTXAVSceneChainSampler:
             _active_block = {"cur": None}
             _warned_batch = {"on": False}
             _warned_shape = set()
+            _warned_rope = {"on": False}
 
             def _make_hook(block):
                 inner = dit_patches.get(("double_block", block))
 
                 def _hook(args, extra):
                     _seg_holder["mod_segments"] = args.get("mod_segments")
+                    _seg_holder["rope"] = args.get("rope_freqs")
                     _active_block["cur"] = block
                     try:
                         return (extra["original_block"](args) if inner is None
@@ -7743,12 +7807,8 @@ class FunPackLTXAVSceneChainSampler:
                 if cached == "MISS":
                     vmask = _rs.video_mask_from_mod_segments(
                         _seg_holder["mod_segments"], seq_len, q.device)
-                    # Real .any(), decided ONCE per unique seq_len, not per attention call --
-                    # "vmask is not None implies non-empty" is NOT actually enforced by
-                    # video_mask_from_mod_segments' scalar branch (a zero-length segment can
-                    # set found=True with nothing marked), so this can't be skipped. Same
-                    # cost class av_decouple already pays for has_v/has_a/has_other -- see
-                    # h3_repr_steering's mask_cache and project_reward_model_rework memory.
+                    # .any() decided ONCE per unique seq_len (one host sync), not per call --
+                    # see project_reward_model_rework memory.
                     has_rows = bool(vmask.any()) if vmask is not None else False
                     cached = (vmask, has_rows)
                     _mask_cache[seq_len] = cached
@@ -7756,34 +7816,37 @@ class FunPackLTXAVSceneChainSampler:
                 if vmask is None:
                     return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
                                 **kwargs)
-                # (B=1, H, S, D) -> (S, H*D) for the masked rows, so h3_repr_steering.capture()
-                # sees the same shape it already expects from a hidden state.
-                q_flat = q[0].permute(1, 0, 2).reshape(seq_len, -1)
-                desc = _rs.capture(q_flat, vmask, has_rows=has_rows)
-                if desc is not None:
-                    # Captured BEFORE injection, same reasoning as h3_repr_steering: a steered
-                    # block's descriptor must reflect the network's natural Q, not this run's
-                    # own strength setting.
-                    capture_holder[0][block] = desc
+                # Q arrives AFTER H3's rotary position encoding, which turns 96 of each head's
+                # 128 dims by a per-row angle. A mean over rotated rows mostly cancels in those
+                # dims, and one constant vector added to rotated rows points somewhere different
+                # at every position — steering by WHERE, not WHAT. So both happen in
+                # unrotated space: undo the rotation to capture, and rotate the push per row.
+                table = _rs.rope_table_rows(_seg_holder.get("rope"), seq_len)
+                if table is None or not has_rows:
+                    if table is None and not _warned_rope["on"]:
+                        _warned_rope["on"] = True
+                        print("[FunPackSceneChain] H3 query steering: no rotary table for this "
+                              "sequence -- not capturing or steering this generation.")
+                    return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
+                                **kwargs)
+                table_v = table[vmask]
+                rows = q[0][:, vmask, :]                                   # [H, n, D]
+                natural = _rs.rotate_rows(rows, table_v, inverse=True)
+                # Captured BEFORE injection, same reasoning as h3_repr_steering: a steered
+                # block's descriptor must reflect the network's natural Q, not this run's
+                # own strength setting.
+                capture_holder[0][block] = (natural.detach().permute(1, 0, 2)
+                                            .reshape(natural.shape[1], -1).float().mean(dim=0))
                 direction = directions.get(block)
                 if direction is not None and _strength > 0.0:
                     head_dim = q.shape[-1]
                     # Checks TOTAL element count only, not the heads/head_dim split -- a
                     # direction's flat vector carries no record of its original split, so a
-                    # coincidental same-total, different-split mismatch (e.g. 8x16 vs 4x32,
-                    # both 128) would pass this check and reshape onto the wrong head
-                    # boundaries instead of being caught. Narrow scenario (a model swap that
-                    # changes head count without changing hidden size, on a reused
-                    # refinement_key) -- catching it would mean storing heads/head_dim
-                    # alongside every captured descriptor, which touches the persistence
-                    # format h3_repr_steering.direction() shares with REINS itself, so left
-                    # unhandled rather than risking that for a case this narrow.
+                    # coincidental same-total, different-split mismatch would pass this check.
+                    # Narrow scenario (a model swap that changes head count without changing
+                    # hidden size, on a reused refinement_key), left unhandled rather than
+                    # changing the persistence format REINS shares.
                     if direction.numel() != heads * head_dim:
-                        # A direction banked under a different TOTAL size (model swap, a
-                        # different H3 variant on the same refinement_key) cannot be reshaped
-                        # onto this run's Q at all -- .view() would hard-crash the generation
-                        # instead of degrading, exactly what this file's other experimental
-                        # knobs (batch>1 above, av_decouple's shape check) avoid.
                         if block not in _warned_shape:
                             _warned_shape.add(block)
                             print(f"[FunPackSceneChain] H3 query steering: block {block}'s "
@@ -7793,16 +7856,17 @@ class FunPackLTXAVSceneChainSampler:
                                   f"captured. Not applying it this run (still capturing).")
                         return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
                                     **kwargs)
-                    rows = q[:, :, vmask, :]
+                    # Rotation preserves length, so the natural rows' norm is the rotated one.
                     row_norm = rows.detach().float().norm(dim=-1).mean()
                     # GPU-only guard (no .item()/bool() host sync) -- same fix as
                     # h3_repr_steering's hook, see that one for why a host sync here can
                     # segfault under comfy_aimdo's dynamic-VRAM block prefetch.
                     dir_per_head = direction.to(q.dtype).to(q.device).view(heads, 1, head_dim)
-                    bump = dir_per_head * _strength * row_norm.to(q.dtype)
+                    bump = (dir_per_head * _strength * row_norm.to(q.dtype)).expand_as(rows)
+                    bump = _rs.rotate_rows(bump, table_v)                  # per-row rotation
                     safe = torch.isfinite(row_norm) & (row_norm > 0)
                     q = q.clone()
-                    q[:, :, vmask, :] = torch.where(safe, rows + bump, rows)
+                    q[:, :, vmask, :] = torch.where(safe, rows + bump, rows).unsqueeze(0)
                 return _next(func, q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
                             **kwargs)
 
@@ -9510,7 +9574,10 @@ class FunPackLTXAVSceneChainSampler:
                 # frames stay pinned: the wrapper rolls only the content region in front of
                 # the guide tail (counted from keyframe_idxs / the audio mask), so guides
                 # keep informing the whole cycle without ever being dragged into it.
-                if self._scene_temporal_loop(scene_cond):
+                # Not on H3: its anchor is a pin held at frame 0 outside the latent, so rolling
+                # the latent under it would drag the anchor around the cycle. Temporal styles
+                # are hidden on H3; this only stops a stored "auto" from reaching it.
+                if self._scene_temporal_loop(scene_cond) and not self._is_h3:
                     try:
                         from .ltx_enhancements import make_loop_temporal_wrapper
                     except ImportError:

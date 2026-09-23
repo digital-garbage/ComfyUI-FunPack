@@ -28,7 +28,7 @@ def _run_block(patched, block, seq_len=4):
     dit = patched.model_options["transformer_options"]["patches_replace"]["dit"]
     hook = dit[("double_block", block)]
     img = torch.ones(seq_len, 3)
-    args = {"img": img, "mod_segments": [(0, seq_len, 0)]}  # all rows tagged video
+    args = {"img": img, "mod_segments": [(0, 0, 2), (0, seq_len, 0)]}  # empty audio, all video
     extra = {"original_block": lambda a: {"img": a["img"]}}
     return hook(args, extra)["img"]
 

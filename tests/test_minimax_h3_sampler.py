@@ -241,18 +241,16 @@ def test_a_last_frame_guide_is_accepted():
     assert pos[0][1]["minimax_visual_cond_noise_aug"] == pytest.approx(0.8)
 
 
-def test_a_mid_clip_guide_is_refused_rather_than_crashing_the_sample(capsys):
-    """PackedLayout raises for anything but first/last — better to say so up front."""
+def test_a_mid_clip_guide_is_pinned_where_it_was_asked(capsys):
+    """Upstream places a pin at any frame (#15439), so a mid-clip guide is placed, not refused."""
     node = h3_node(frame_count=124)
     positive = [[torch.zeros(1, 12, 5120), {}]]
     pos, _neg, tail = node._append_h3_keyframe(
         torch.ones(1, 24, 1, 48, 84), apply_at=60, strength=1.0,
         positive=positive, negative=[])
     assert tail == 0
-    assert pos is positive                              # conditioning untouched
-    assert "minimax_keyframes" not in positive[0][1]
-    out = capsys.readouterr().out
-    assert "first (0) or last (123)" in out
+    pins = pos[0][1]["minimax_keyframes"]
+    assert [p["resolved_frame_index"] for p in pins] == [60]
 
 
 def test_ltx_guides_still_take_the_ltx_path():
@@ -945,3 +943,48 @@ def test_a_degenerate_schedule_falls_back_instead_of_dividing_by_zero():
     ramp = _make_steer_ramp(torch.tensor([1.0]), h3=True)
     assert ramp(0.25) == pytest.approx(0.5)      # legacy gate
     assert _make_steer_ramp(None, h3=True)(0.0) == pytest.approx(1.0)
+
+
+# ── ALG on the anchor pin ────────────────────────────────────────────────────
+
+class _Patcher:
+    def __init__(self):
+        self.model_options = {}
+
+    def clone(self):
+        c = _Patcher()
+        c.model_options = dict(self.model_options)
+        return c
+
+
+def _alg_call(sigma):
+    anchor = torch.randn(1, 4, 1, 8, 8)
+    guide = torch.randn(1, 4, 1, 8, 8)
+    ref = torch.randn(1, 4, 1, 8, 8)
+    payload = {"keyframes": [{"resolved_frame_index": 0, "latent": anchor},
+                             {"resolved_frame_index": 60, "latent": guide}],
+               "cond_video_latents": [anchor, guide, ref]}
+    model = h3_node()._install_h3_alg_pin(_Patcher(), 2.0, 0.9)
+    seen = {}
+
+    def apply(x, t, **c):
+        seen.update(c["minimax_payload"])
+        return x
+
+    model.model_options["model_function_wrapper"](
+        apply, {"input": torch.zeros(1), "timestep": torch.tensor([sigma]),
+                "c": {"minimax_payload": payload}})
+    return seen["cond_video_latents"], (anchor, guide, ref), payload
+
+
+def test_alg_blurs_only_the_frame0_pin_above_the_threshold():
+    got, (anchor, guide, ref), payload = _alg_call(0.95)
+    assert not torch.equal(got[0], anchor)
+    assert torch.allclose(got[0].mean(), anchor.mean(), atol=0.5)
+    assert got[1] is guide and got[2] is ref
+    assert payload["cond_video_latents"][0] is anchor      # caller's payload untouched
+
+
+def test_alg_leaves_the_pin_sharp_below_the_threshold():
+    got, (anchor, _, _), _ = _alg_call(0.5)
+    assert got[0] is anchor

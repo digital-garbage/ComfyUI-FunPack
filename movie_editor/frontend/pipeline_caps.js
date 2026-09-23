@@ -135,7 +135,7 @@
     alg_blur_guides:
       "This blurs the trailing GUIDE frames appended to the latent. On H3 a guide is a "
       + "condition row rather than an appended frame, so that tail is always empty. "
-      + "(alg_anchor is NOT hidden — a continuation scene does carry real latent frames.)",
+      + "(alg_anchor is NOT hidden — on H3 it blurs the frame-0 anchor pin instead.)",
     joyai_memory:
       "JoyAI-Echo is a LoRA-driven technique: the base weights were never trained to read the "
       + "injected memory frames as memory, the LoRA is what teaches that, and no JoyAI-Echo "
@@ -177,6 +177,9 @@
       + "H3's own DiT blocks. LTXAV already evaluates a real negative prompt via CFG, so "
       + "there is nothing dead here to give a job to — this only exists because H3's CFG "
       + "is fixed at 1.0.",
+    h3_video_detail:
+      "Scales H3's own final layer, which reads video and audio on separate rows. LTX has no "
+      + "layer of that shape, so the sampler has nothing to scale.",
   };
   // Sub-knobs of h3_shadow_negative: meaningless without the toggle itself, so they
   // travel with it rather than each needing its own entry above.
@@ -213,6 +216,35 @@
                     ...H3_DEAD_VALUE_INPUTS]);
   }
 
+  // Studio refiner fields the loaded model cannot use, hidden the same way. temporal_style
+  // lies about LTX's frame_rate RoPE input; H3 takes no frame_rate, and its one non-RoPE
+  // style (loop) is refused by the sampler on H3.
+  function familyInertStudioFields(st) {
+    return isH3(st) ? new Set(["temporal_style"]) : new Set();
+  }
+
+  // Shadow negative without compose replaces every block's forward, so these block-level
+  // features stop running while it is on. Both stay visible (each works alone), so the
+  // conflict is what needs saying.
+  function shadowNegativeIssue(st) {
+    const si = (st && st.project && st.project.sampler_inputs) || {};
+    if (!isH3(st) || !si.h3_shadow_negative || si.h3_shadow_negative_compose) return null;
+    const blocked = [
+      [si.h3_repr_steering || si.h3_repr_steering_passive_capture, "REINS"],
+      [String(si.h3_q_steer_block || "").trim(), "query steering"],
+      [Number(si.h3_explore_temperature) > 0, "randomizer"],
+      [String(si.h3_block_repeat || "").trim(), "block repeat"],
+      [Number(si.h3_av_decouple) > 0, "AV decoupling"],
+    ].filter(([on]) => on).map(([, name]) => name);
+    if (!blocked.length) return null;
+    return {
+      short: "Shadow negative switches off " + blocked.join(", "),
+      detail: "Shadow negative replaces every block it runs on, so " + blocked.join(", ")
+        + " will not run this generation, and ratings will not train them. Turn on "
+        + "\"Allow when REINS/Q-steer are active\" to run both.",
+    };
+  }
+
   // Returns [{short, detail}] for settings that are ON but cannot do anything on H3.
   function h3InertSettings(st) {
     const p = st && st.project;
@@ -224,6 +256,8 @@
     const out = [];
     const fps = frameRateIssue(st);
     if (fps) out.push(fps);
+    const shadow = shadowNegativeIssue(st);
+    if (shadow) out.push(shadow);
     return out;
   }
 
@@ -353,6 +387,8 @@
     caps,
     modelFamily,
     isH3,
+    familyInertStudioFields,
+    shadowNegativeIssue,
     frameGrid,
     snapFramesTo,
     frameInputSpec,

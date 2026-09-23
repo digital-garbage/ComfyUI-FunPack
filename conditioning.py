@@ -10267,7 +10267,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     # see h3_repr_steering.py / _install_h3_q_steering. Loud on every outcome,
                     # same as REINS just above (REINS is NOT silent on no_pending/no_key --
                     # an earlier version of this comment claimed it was, which was wrong).
-                    _rs_q_outcome = _rs.commit(refinement_key, _rs_reward, kind="q_steer")
+                    _rs_q_outcome = _rs.commit(refinement_key, _rs_reward, kind=_rs.Q_STEER_KIND)
                     _rs_q_note = {
                         "recorded": "recorded",
                         "no_pending": "NOT recorded — no captured generation was waiting "

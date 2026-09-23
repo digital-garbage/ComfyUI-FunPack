@@ -202,7 +202,7 @@ def test_hook_records_the_relative_delta_on_video_rows():
     src[:, 0] = 3.0                       # ||video rows|| = 6.0 over 4 rows
     out = src.clone()
     out[:, 1] = 3.0                       # delta has the same norm as the input
-    res = _call(dit[("double_block", 0)], src, out, [(0, 4, 6)])  # tag 6 % 3 == 0 -> video
+    res = _call(dit[("double_block", 0)], src, out, [(0, 0, 8), (0, 4, 6)])  # tag 6 % 3 == 0 -> video
     assert torch.equal(res["img"], out)   # measurement must not modify the stream
     recorded = _ratio(capture[0][0])
     assert recorded == pytest.approx(1.0, rel=1e-4)
@@ -216,7 +216,7 @@ def test_hook_averages_across_steps():
     for scale in (1.0, 3.0):              # two "steps" with different deltas
         out = src.clone()
         out[:, 1] = scale
-        _call(dit[("double_block", 0)], src, out, [(0, 4, 6)])
+        _call(dit[("double_block", 0)], src, out, [(0, 0, 8), (0, 4, 6)])
     assert _ratio(capture[0][0]) == pytest.approx(2.0, rel=1e-4)
 
 
@@ -227,8 +227,8 @@ def test_text_and_audio_rows_are_not_measured():
     src = torch.zeros(4, 8)
     src[:, 0] = 1.0
     out = src.clone()
-    out[2:, 1] = 50.0                     # rows 2-3 are text below
-    _call(dit[("double_block", 0)], src, out, [(0, 2, 6), (2, 4, 7)])
+    out[:2, 1] = 50.0                     # rows 0-1: text, and a tag-0 anchor pin
+    _call(dit[("double_block", 0)], src, out, [(0, 1, 7), (1, 2, 6), (2, 2, 8), (2, 4, 6)])
     recorded = _ratio(capture[0][0])
     assert recorded == pytest.approx(0.0, abs=1e-6)
 
@@ -249,7 +249,7 @@ def test_each_block_accumulates_separately():
     for block, scale in ((0, 1.0), (2, 4.0)):
         out = src.clone()
         out[:, 1] = scale
-        _call(dit[("double_block", block)], src, out, [(0, 4, 6)])
+        _call(dit[("double_block", block)], src, out, [(0, 0, 8), (0, 4, 6)])
     assert set(capture[0]) == {0, 2}      # block 1 was never called
     assert _ratio(capture[0][0]) == pytest.approx(1.0, rel=1e-4)
     assert _ratio(capture[0][2]) == pytest.approx(4.0, rel=1e-4)
@@ -264,7 +264,7 @@ def test_row_subsampling_bounds_the_reduction():
     src[:, 0] = 1.0
     out = src.clone()
     out[:, 1] = 2.0
-    _call(dit[("double_block", 0)], src, out, [(0, n, 6)])
+    _call(dit[("double_block", 0)], src, out, [(0, 0, 8), (0, n, 6)])
     assert _ratio(capture[0][0]) == pytest.approx(2.0, rel=1e-3)
 
 
@@ -289,7 +289,7 @@ def test_an_existing_patch_at_the_same_block_is_chained_not_replaced():
     hook = patched.model_options["transformer_options"]["patches_replace"]["dit"][
         ("double_block", 0)]
     src = torch.ones(4, 8)
-    res = _call(hook, src, src, [(0, 4, 6)])
+    res = _call(hook, src, src, [(0, 0, 8), (0, 4, 6)])
     assert calls == [True]                     # inner ran
     assert torch.equal(res["img"], src * 2)    # and its output is what propagates
 
@@ -414,7 +414,7 @@ def _install2(capture, n_blocks=4, max_rows=512):
 
 def _push(dit, block, src, delta_vec, segs=None):
     out = src + delta_vec
-    return _call(dit[("double_block", block)], src, out, segs or [(0, 4, 6)])
+    return _call(dit[("double_block", block)], src, out, segs or [(0, 0, 8), (0, 4, 6)])
 
 
 def test_hook_records_orthogonal_deltas_as_zero_novelty():
@@ -493,7 +493,7 @@ def test_a_block_that_writes_in_place_is_still_measured():
         args["img"][:, 1] += 2.0        # writes into the caller's tensor, returns it
         return {"img": args["img"]}
 
-    res = dit[("double_block", 0)]({"img": src, "mod_segments": [(0, 4, 6)]},
+    res = dit[("double_block", 0)]({"img": src, "mod_segments": [(0, 0, 8), (0, 4, 6)]},
                                    {"original_block": in_place})
     recorded = _ratio(capture[0][0])
     assert recorded == pytest.approx(2.0, rel=1e-4)   # |delta| = 2*|before|
@@ -507,7 +507,7 @@ def test_a_block_returning_a_new_tensor_is_unaffected_by_the_fix():
     src[:, 0] = 1.0
     out = src.clone()
     out[:, 1] = 3.0
-    _call(dit[("double_block", 0)], src, out, [(0, 4, 6)])
+    _call(dit[("double_block", 0)], src, out, [(0, 0, 8), (0, 4, 6)])
     assert _ratio(capture[0][0]) == pytest.approx(3.0, rel=1e-4)
 
 

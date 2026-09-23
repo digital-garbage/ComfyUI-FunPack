@@ -20,22 +20,37 @@ def _pend(v, block=None):
 
 # --- video_mask_from_mod_segments -------------------------------------------
 
-def test_scalar_rows_tag_video_by_mod_3():
-    # row = t_row*3 + tag; tag 0 = video, 1 = text, 2 = audio (seg_tag in model.py)
-    mod_segments = [(0, 4, 6), (4, 10, 7), (10, 14, 8)]  # video, text, audio
-    mask = rs.video_mask_from_mod_segments(mod_segments, seq_len=14, device="cpu")
-    assert mask.tolist() == [True] * 4 + [False] * 10
+# Upstream's real order: text (split into tag runs — a reference picture's vision pads are
+# tag 0 INSIDE the text span), cond/ref rows (tag 0), then target audio, then target video.
+_REAL = [(0, 2, 7), (2, 4, 6), (4, 5, 7), (5, 8, 6), (8, 10, 8), (10, 14, 6)]
+#         text      vision pads text     anchor pin  target audio target video
 
 
-def test_tensor_rows_use_the_same_mod_3_rule():
-    rows = torch.tensor([6, 7, 6, 8])  # video, text, video, audio
-    mod_segments = [(0, 4, rows)]
-    mask = rs.video_mask_from_mod_segments(mod_segments, seq_len=4, device="cpu")
-    assert mask.tolist() == [True, False, True, False]
+def test_only_the_target_video_is_video():
+    """The anchor pin, the reference's vision pads and every other tag-0 row are NOT the
+    video being generated — a 'video rows' feature must not steer or learn from them."""
+    mask = rs.video_mask_from_mod_segments(_REAL, seq_len=14, device="cpu")
+    assert mask.tolist() == [False] * 10 + [True] * 4
+
+
+def test_only_the_target_audio_is_audio():
+    mask = rs.audio_mask_from_mod_segments(_REAL, seq_len=14, device="cpu")
+    assert mask.tolist() == [False] * 8 + [True] * 2 + [False] * 4
+
+
+def test_per_row_timesteps_on_the_target_still_count():
+    """A partial denoise mask turns the target's row into a per-token tensor."""
+    segs = _REAL[:-1] + [(10, 14, torch.tensor([6, 3, 6, 0]))]
+    assert rs.video_mask_from_mod_segments(segs, 14, "cpu").tolist() == [False] * 10 + [True] * 4
+
+
+def test_a_sequence_the_layout_does_not_fit_is_refused():
+    """The token refiner's text-only calls: the target segment lies past this sequence."""
+    assert rs.video_mask_from_mod_segments(_REAL, seq_len=6, device="cpu") is None
 
 
 def test_no_video_segment_returns_none_rather_than_an_empty_mask():
-    mod_segments = [(0, 4, 7), (4, 8, 8)]  # text, audio only
+    mod_segments = [(0, 4, 7), (4, 8, 8)]  # text, audio last: not upstream's layout
     assert rs.video_mask_from_mod_segments(mod_segments, seq_len=8, device="cpu") is None
 
 

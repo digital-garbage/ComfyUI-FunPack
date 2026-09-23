@@ -131,3 +131,18 @@ test("LTX keeps everything H3 cannot run", () => {
     assert.ok(!inert.has(k), `${k} must remain reachable on LTX`);
   }
 });
+
+test("temporal style is hidden on H3 only", () => {
+  assert.ok(PC.familyInertStudioFields(h3).has("temporal_style"));
+  assert.strictEqual(PC.familyInertStudioFields(ltx).size, 0);
+});
+
+test("shadow negative without compose names what it switches off", () => {
+  const st = (si) => ({ models: { model_family: "minimax_h3", chain_sampler: true },
+                        project: { sampler_inputs: si } });
+  const on = { h3_shadow_negative: true, h3_repr_steering: true, h3_av_decouple: 0.3 };
+  const hit = PC.shadowNegativeIssue(st(on));
+  assert.ok(hit && /REINS/.test(hit.short) && /AV decoupling/.test(hit.short));
+  assert.strictEqual(PC.shadowNegativeIssue(st({ ...on, h3_shadow_negative_compose: true })), null);
+  assert.strictEqual(PC.shadowNegativeIssue(st({ h3_shadow_negative: true })), null);
+});

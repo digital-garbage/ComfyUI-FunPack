@@ -23,15 +23,16 @@ class _FakeModel:
         return m
 
 
-# rows: 0-1 video, 2 text, 3-4 audio, 5 video -- exercises a modality repeating
-# non-contiguously, same as a real packed layout can produce.
-_MOD_SEGMENTS = [(0, 2, 0), (2, 3, 1), (3, 5, 2), (5, 6, 0)]
-_VIDEO_IDX = [0, 1, 5]
-_AUDIO_IDX = [3, 4]
-_OTHER_IDX = [2]
+# Upstream's real order: text, a tag-0 anchor pin, then target audio, then target video.
+# The pin is NOT target video, so it rides the ordinary pass with the text.
+_MOD_SEGMENTS = [(0, 1, 1), (1, 2, 0), (2, 5, 2), (5, 9, 0)]
+_VIDEO_IDX = [5, 6, 7, 8]
+_AUDIO_IDX = [2, 3, 4]
+_OTHER_IDX = [0, 1]
+_SEQ = 9
 
 
-def _fire_capture_hook(patched, seq_len=6, mod_segments=_MOD_SEGMENTS):
+def _fire_capture_hook(patched, seq_len=_SEQ, mod_segments=_MOD_SEGMENTS):
     """Runs block 0's hook once, the way the real DiT forward loop would, so the override
     has a mod_segments layout to work with."""
     dit = patched.model_options["transformer_options"]["patches_replace"]["dit"]
@@ -42,7 +43,7 @@ def _fire_capture_hook(patched, seq_len=6, mod_segments=_MOD_SEGMENTS):
     hook(args, extra)
 
 
-def _qkv(seq_len=6, heads=1, head_dim=2):
+def _qkv(seq_len=_SEQ, heads=1, head_dim=2):
     q = torch.arange(seq_len * head_dim, dtype=torch.float32).view(1, heads, seq_len, head_dim).clone()
     k = torch.ones(1, heads, seq_len, head_dim) * 2.0
     v = torch.zeros(1, heads, seq_len, head_dim)
@@ -116,7 +117,7 @@ def test_splits_into_three_groups_with_a_bias_penalizing_the_other_modality():
     _fire_capture_hook(patched)
     override = patched.model_options["transformer_options"]["optimized_attention_override"]
     calls = []
-    q, k, v = _qkv(seq_len=6, heads=1, head_dim=2)
+    q, k, v = _qkv(seq_len=_SEQ, heads=1, head_dim=2)
     out = override(_fake_func_factory(calls), q, k, v, heads=1, mask=None, skip_reshape=True)
 
     assert len(calls) == 3, "video-query, audio-query and other-query passes"
@@ -158,10 +159,10 @@ def test_chains_through_an_already_installed_block0_hook():
     model.model_options["transformer_options"] = to
     patched = node._install_h3_av_decouple(model, 0.5)
     dit = patched.model_options["transformer_options"]["patches_replace"]["dit"]
-    img = torch.ones(6, 3)
+    img = torch.ones(_SEQ, 3)
     out = dit[("double_block", 0)]({"img": img, "mod_segments": _MOD_SEGMENTS},
                                    {"original_block": lambda a: {"img": a["img"]}})
-    assert torch.allclose(out["img"], torch.zeros(6, 3)), "existing hook's effect must survive"
+    assert torch.allclose(out["img"], torch.zeros(_SEQ, 3)), "existing hook's effect must survive"
 
     override = patched.model_options["transformer_options"]["optimized_attention_override"]
     calls = []
