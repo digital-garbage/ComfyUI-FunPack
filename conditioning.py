@@ -8968,19 +8968,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return "", f"{label}: generation failed: {error}"
 
     @staticmethod
-    def _v2_enhancer_sources(shortcut_keys=None, reference_paths=None):
+    def _v2_enhancer_sources(shortcut_keys=None, reference_paths=None, variables=None):
         """Load what Composer ▸ Enhance picked, once per run, as groups of entries — the
         picked shortcuts as one group, then one group per file. A file is a SillyTavern
         lorebook (`entries`) or a FunPack shortcuts file (`shortcuts`: the library itself or
         an exported pack). Entry: {block, words, keys, constant}. Missing shortcuts and
         unreadable files are skipped and said so."""
         try:
-            from .templates import load_shortcut_db, normalize_shortcut_db
+            from .templates import load_shortcut_db, normalize_shortcut_db, resolve_variables
         except ImportError:
-            from templates import load_shortcut_db, normalize_shortcut_db
+            from templates import load_shortcut_db, normalize_shortcut_db, resolve_variables
 
         def sc_entry(sc):
-            reps = [str(r) for r in (sc.get("replacements") or []) if str(r).strip()]
+            # `$name` resolves after shortcuts expand, so the prompt holds the resolved text:
+            # resolve it here too, or content with a variable can never be recognised.
+            reps = [resolve_variables(str(r), variables)[0] if variables else str(r)
+                    for r in (sc.get("replacements") or []) if str(r).strip()]
             lines = [f"[Shortcut] {sc.get('name', '')}"]
             lines += reps if len(reps) == 1 else [f"Variant {i + 1}: {r}" for i, r in enumerate(reps)]
             # triggers are already expanded away, so the content counts as a mention too
@@ -9015,6 +9018,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             groups.append([{"block": f"[Lore] {e.get('comment') or e.get('name') or 'entry'}\n"
                                      f"{str(e['content']).strip()}",
                             "keys": e.get("keys", e.get("key", [])),
+                            # SillyTavern's default is whole words; an entry may opt out
+                            "whole": e.get("matchWholeWords") is not False,
                             "constant": bool(e.get("constant"))} for e in entries])
         return [g for g in groups if g]
 
@@ -9025,12 +9030,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         what the prompt does not name). Shortcuts are mentioned by name, trigger or content;
         lore entries by their keywords, constant entries joining any match."""
         low = str(text or "").lower()
-        lore = FunPackLorebookEnhancer()
+
+        def said(word, whole=True, lore=False):
+            word = str(word).strip()
+            if not word:
+                return False
+            if lore and len(word) > 2 and word.startswith("/") and word.endswith("/"):   # regex key
+                try:
+                    return re.search(word[1:-1], text or "", re.IGNORECASE) is not None
+                except re.error:
+                    return False
+            if not whole:
+                return word.lower() in low
+            # whole words only: "rain" is not in "train", "sea" is not in "season"
+            return re.search(r"(?<!\w)" + re.escape(word.lower()) + r"(?!\w)", low) is not None
 
         def mentioned(e):
             if "keys" in e:
-                return lore._match_keys(e["keys"], low)
-            return any(str(w).strip() and str(w).strip().lower() in low for w in e["words"])
+                keys = e["keys"]
+                if isinstance(keys, str):
+                    keys = keys.split(",")
+                return any(said(k, e.get("whole", True), lore=True) for k in keys or [])
+            return any(said(w) for w in e["words"])
 
         blocks = []
         for group in sources or []:
@@ -10649,7 +10670,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # Reference the user picked in Composer ▸ Enhance (shortcuts, lorebooks): loaded once
         # per run, matched against each prompt, appended after it.
         _enhance_sources = self._v2_enhancer_sources(
-            prompt_enhance_shortcuts, prompt_enhance_lorebooks) if prompt_enhance else []
+            prompt_enhance_shortcuts, prompt_enhance_lorebooks,
+            _prompt_variables) if prompt_enhance else []
         # When the run splits into scenes, the per-scene conditionings REPLACE this base entry
         # — so enhancing the base too would be a second full generation whose result is then
         # thrown away. One generation per prompt that is actually encoded, never two.

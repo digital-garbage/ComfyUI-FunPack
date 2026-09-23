@@ -524,3 +524,32 @@ def test_a_shortcuts_file_is_a_source_of_its_own(tmp_path, monkeypatch):
     src = C.FunPackVideoRefinerV2._v2_enhancer_sources([], [str(pack)])
     ref = C.FunPackVideoRefinerV2._v2_enhancer_reference("a street", src)
     assert "[Shortcut] Neon\npink neon glow" in ref and "low fog" not in ref   # disabled stays out
+
+
+def test_shortcut_content_with_a_variable_is_recognised(monkeypatch):
+    import templates
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: {"shortcuts": {
+        "o": {"name": "Outfit", "replacements": ["wearing $dress and boots"], "triggers": ["/outfit"]},
+        "r": {"name": "Rain", "replacements": ["heavy rain"], "triggers": ["/rain"]}}})
+    src = C.FunPackVideoRefinerV2._v2_enhancer_sources(["o", "r"], [], [{"name": "dress", "value": "a green dress"}])
+    ref = C.FunPackVideoRefinerV2._v2_enhancer_reference("she is wearing a green dress and boots", src)
+    assert "[Shortcut] Outfit\nwearing a green dress and boots" in ref and "heavy rain" not in ref
+
+
+def test_names_and_keywords_match_whole_words_only(tmp_path, monkeypatch):
+    import json as _json
+    import templates
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: {"shortcuts": {
+        "r": {"name": "Rain", "replacements": ["heavy rain"], "triggers": ["/rain"]},
+        "m": {"name": "Mira", "replacements": ["red coat"], "triggers": ["/mira"]}}})
+    lb = tmp_path / "lore.json"
+    lb.write_text(_json.dumps({"entries": [
+        {"comment": "Sea", "content": "grey sea", "keys": ["sea"]},
+        {"comment": "Port", "content": "old port", "keys": ["port"], "matchWholeWords": False},
+        {"comment": "Tower", "content": "black tower", "keys": ["/tow(er|ers)/"]}]}))
+    src = C.FunPackVideoRefinerV2._v2_enhancer_sources(["r", "m"], [str(lb)])
+    ref = C.FunPackVideoRefinerV2._v2_enhancer_reference("Mira takes the train in autumn season to the airport towers", src)
+    assert "[Shortcut] Mira" in ref and "heavy rain" not in ref        # "train" is not "rain"
+    assert "grey sea" not in ref                                      # "season" is not "sea"
+    assert "old port" in ref                                          # entry opted out of whole words
+    assert "black tower" in ref                                       # regex key
