@@ -687,3 +687,12 @@ def test_the_ports_endpoint_answers_for_the_project_not_the_global_default(monke
     assert pipeline_wiring.family_of(nodes.load_models()) == "ltxav"
     # No pid — an app with no project open — still answers with the global default.
     assert pipeline_wiring.family_of(_project_models(None)) == "ltxav"
+
+
+def test_enhanced_prompts_are_read_from_any_node_in_history():
+    entry = {"outputs": {
+        "7": {"funpack_enhanced": [{"scene": 0, "before": "a", "after": "b"}, "junk"]},
+        "9": {"gifs": [{"filename": "x.mp4"}]},
+    }}
+    assert srv._enhanced_from_history(entry) == [{"scene": 0, "before": "a", "after": "b"}]
+    assert srv._enhanced_from_history({}) == []

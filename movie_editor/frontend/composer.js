@@ -929,8 +929,180 @@
     return wrap;
   }
 
+  // ── enhance (LLM prompt enhancer) ───────────────────────────────────────────────
+  // Studio rewrites each prompt through a language model right before it is encoded — after
+  // shortcuts and $variables, so the model reads exactly what would otherwise be used. The
+  // settings are Studio's refiner settings; the last run's rewrite comes back from the run's
+  // history (Store.enhanced). Also mounted in Engine settings for Simple mode (no Composer).
+  const ENH_DEFAULTS = {
+    prompt_enhance: false, prompt_enhance_system: "", prompt_enhance_max_length: 400,
+    prompt_enhance_temperature: 0.7, prompt_enhance_top_p: 0.92, prompt_enhance_top_k: 50,
+    prompt_enhance_min_p: 0.05, prompt_enhance_repetition_penalty: 1.3,
+    prompt_enhance_presence_penalty: 0, prompt_enhance_seed: 0, prompt_enhance_greedy: false,
+    prompt_enhance_thinking: false, prompt_enhance_use_image: true,
+  };
+  // `sampled`: only read while sampling. Greedy returns the single likeliest word before
+  // ComfyUI looks at any of them, so they disappear rather than sit there doing nothing.
+  const ENH_GROUPS = [
+    { title: "Behaviour", knobs: [
+      { name: "prompt_enhance_use_image", label: "Show it Studio's image", kind: "bool",
+        hint: "Hands it the picture connected to Studio's source_image, if there is one. Only helps a model that can see." },
+      { name: "prompt_enhance_thinking", label: "Think first", kind: "bool",
+        hint: "Reasons before answering, if the model can. Slower; the reasoning is removed." },
+      { name: "prompt_enhance_max_length", label: "Max tokens", kind: "int", min: 32, max: 4096, step: 32,
+        hint: "Most it may write. Longer is richer and slower." },
+    ] },
+    { title: "Sampling", knobs: [
+      { name: "prompt_enhance_greedy", label: "Same wording every time", kind: "bool",
+        hint: "Greedy: always picks the likeliest next word. Repeatable, but plainer." },
+      { name: "prompt_enhance_temperature", label: "Temperature", kind: "range", min: 0.01, max: 2, step: 0.01, sampled: true,
+        hint: "Low stays close to your wording, high invents more." },
+      { name: "prompt_enhance_top_p", label: "Top-p", kind: "range", min: 0, max: 1, step: 0.01, sampled: true,
+        hint: "Keeps only the likeliest words that add up to this share. Lower is safer." },
+      { name: "prompt_enhance_top_k", label: "Top-k", kind: "int", min: 1, max: 500, step: 1, sampled: true,
+        hint: "Picks from at most this many candidate words. Lower is safer." },
+      { name: "prompt_enhance_min_p", label: "Min-p", kind: "range", min: 0, max: 1, step: 0.01, sampled: true,
+        hint: "Drops words less than this fraction as likely as the best one." },
+      { name: "prompt_enhance_repetition_penalty", label: "Repetition penalty", kind: "range", min: 1, max: 2, step: 0.01, sampled: true,
+        hint: "Discourages reusing words already written. 1 is off." },
+      { name: "prompt_enhance_presence_penalty", label: "Presence penalty", kind: "range", min: 0, max: 2, step: 0.01, sampled: true,
+        hint: "A flat push away from any word already used. 0 is off." },
+      { name: "prompt_enhance_seed", label: "Seed", kind: "int", min: 0, max: 2147483647, step: 1, sampled: true,
+        hint: "0 follows the video's seed. Any other number keeps the rewrite fixed while the video re-rolls." },
+    ] },
+  ];
+
+  function enhanceKnobRow(f, value, patch) {
+    const row = el("div", "sw-row enh-row");
+    const main = el("div", "sw-row-main");
+    main.append(el("div", "sw-row-title", f.label), el("div", "sw-row-hint", f.hint));
+    row.append(main);
+    const ctrl = el("input");
+    ctrl.dataset.k = "rf-" + f.name;
+    if (f.kind === "bool") {
+      ctrl.type = "checkbox"; ctrl.className = "enh-switch"; ctrl.checked = !!value;
+      ctrl.onchange = () => patch({ [f.name]: ctrl.checked }, true);
+      row.append(ctrl);
+      return row;
+    }
+    ctrl.type = f.kind === "range" ? "range" : "number";
+    ctrl.className = f.kind === "range" ? "enh-range" : "lib-in enh-num";
+    ctrl.min = String(f.min); ctrl.max = String(f.max); ctrl.step = String(f.step);
+    ctrl.value = String(value);
+    const out = el("span", "enh-val", f.kind === "range" ? Number(value).toFixed(2) : "");
+    ctrl.oninput = () => {
+      const n = parseFloat(ctrl.value);
+      if (!Number.isFinite(n)) return;
+      if (f.kind === "range") out.textContent = n.toFixed(2);
+      patch({ [f.name]: f.kind === "int" ? Math.round(n) : n }, false);
+    };
+    row.append(ctrl);
+    if (f.kind === "range") row.append(out);
+    return row;
+  }
+
+  function enhanceResultCard(it) {
+    const card = el("div", "enh-card");
+    const before = String(it.before || "").trim();
+    const after = String(it.after || "").trim();
+    const changed = !!after && after !== before;
+    const head = el("div", "enh-card-head");
+    head.append(el("span", "enh-card-title", it.scene == null ? "Prompt" : `Scene ${it.scene + 1}`));
+    if (it.image) head.append(el("span", "enh-chip", "image sent"));
+    if (!changed) head.append(el("span", "enh-chip enh-chip-warn", "unchanged"));
+    const copy = el("button", "btn ghost tiny enh-copy", "Copy");
+    copy.type = "button";
+    copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(after); copy.textContent = "Copied"; }
+      catch (_) { copy.textContent = "Copy failed"; }
+      setTimeout(() => { copy.textContent = "Copy"; }, 1400);
+    };
+    head.append(copy);
+    card.append(head, el("div", "enh-after", after || before));
+    if (changed) {
+      const det = el("details", "enh-before");
+      det.append(el("summary", null, "What went in"), el("div", "enh-before-text", before));
+      card.append(det);
+    }
+    if (it.status) card.append(el("div", "enh-status", String(it.status)));
+    return card;
+  }
+
+  function enhanceTab(st) {
+    const wrap = el("div", "bin enh-bin");
+    const SS = window.StudioSettings;
+    if (!st.project || !SS) {
+      wrap.append(el("div", "insp-hint", "Open a project to set up the prompt enhancer."));
+      return wrap;
+    }
+    const { rf } = SS.read(st.project);
+    const val = (k) => (rf[k] != null ? rf[k] : ENH_DEFAULTS[k]);
+    const on = !!val("prompt_enhance");
+
+    const hero = el("div", "enh-hero" + (on ? " on" : ""));
+    const top = el("label", "enh-hero-top");
+    const titles = el("div", "enh-hero-titles");
+    titles.append(el("div", "enh-hero-title", "Prompt enhancer"),
+      el("div", "enh-hero-sub", "A language model rewrites your prompt into a richer one right before the video is made."));
+    const sw = el("input", "enh-switch"); sw.type = "checkbox"; sw.checked = on;
+    sw.dataset.k = "rf-prompt_enhance";
+    sw.onchange = () => SS.patchRefiner({ prompt_enhance: sw.checked }, true);
+    top.append(titles, sw);
+    const flow = el("div", "enh-flow");
+    ["Your prompt", "Shortcuts", "$variables", "Enhancer", "Video"].forEach((step, i) => {
+      if (i) flow.append(el("span", "enh-flow-arrow", "›"));
+      flow.append(el("span", "enh-flow-step" + (step === "Enhancer" ? " is-enh" : ""), step));
+    });
+    hero.append(top, flow);
+    if (on) {
+      hero.append(el("div", "enh-hero-note",
+        "Needs a model that can write text, connected to Studio's advisor_clip (or its clip). Each scene is rewritten on its own."));
+    }
+    wrap.append(hero);
+
+    if (on) {
+      const instHead = el("div", "enh-section-head");
+      instHead.append(el("div", "sw-rows-label", "Instructions"));
+      if (String(val("prompt_enhance_system") || "").trim()) {
+        const reset = el("button", "btn ghost tiny", "Use built-in");
+        reset.type = "button";
+        reset.title = "Clear your instructions and go back to FunPack's own";
+        reset.onclick = () => { SS.patchRefiner({ prompt_enhance_system: "" }, true); repaintAll(); };
+        instHead.append(reset);
+      }
+      wrap.append(instHead);
+      const ta = el("textarea", "lib-in enh-system"); ta.rows = 6;
+      ta.dataset.k = "rf-prompt_enhance_system";
+      ta.value = String(val("prompt_enhance_system") || "");
+      ta.placeholder = "Empty uses FunPack's built-in instructions: add detail and a soundscape, never invent characters, camera moves or speech.";
+      ta.oninput = () => SS.patchRefiner({ prompt_enhance_system: ta.value }, false);
+      ta.onchange = () => SS.patchRefiner({ prompt_enhance_system: ta.value }, true);
+      wrap.append(ta);
+
+      const greedy = !!val("prompt_enhance_greedy");
+      ENH_GROUPS.forEach((g) => {
+        wrap.append(el("div", "sw-rows-label", g.title));
+        const rows = el("div", "sw-rows");
+        g.knobs.filter((f) => !(greedy && f.sampled))
+          .forEach((f) => rows.append(enhanceKnobRow(f, val(f.name), SS.patchRefiner)));
+        wrap.append(rows);
+      });
+    }
+
+    wrap.append(el("div", "sw-rows-label", "Last run"));
+    const items = (st.enhanced && st.enhanced.items) || [];
+    if (!items.length) {
+      wrap.append(el("div", "enh-empty", on
+        ? "Nothing yet. Generate, and the rewritten prompt shows up here next to what went in."
+        : "Turn the enhancer on and generate. Its rewrite shows up here."));
+    } else {
+      items.forEach((it) => wrap.append(enhanceResultCard(it)));
+    }
+    return wrap;
+  }
+
   // ── window + tabs ────────────────────────────────────────────────────────────────
-  const TABS = ["Compose", "Shortcuts", "Splits", "Files"];
+  const TABS = ["Compose", "Enhance", "Shortcuts", "Splits", "Files"];
   function render() {
     if (!win) return;
     const st = S.get();
@@ -942,6 +1114,7 @@
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
       b.title = name === "Splits" ? "Split markers (generation prompt)"
         : name === "Compose" ? "Global prompt — the whole montage"
+          : name === "Enhance" ? "Let a language model rewrite the prompt before generating"
           : name === "Files" ? "FunPack files on disk — audit & purge" : name;
       b.onclick = () => {
         if (tab === name) return;
@@ -955,6 +1128,7 @@
     const scroll = el("div", "composer-scroll");
     scroll.append(
       tab === "Compose" ? composeTab(st)
+        : tab === "Enhance" ? enhanceTab(st)
         : tab === "Shortcuts" ? shortcutsTab(st)
           : tab === "Splits" ? splitMarkersTab(st)
             : filesTab(),
@@ -986,7 +1160,7 @@
   // The setup wizard shows Shortcuts and Splits as full screens of its own, so the flow
   // stays one continuous surface instead of spawning a floating Composer over it. Same
   // builders, same editors, same store — only the container differs.
-  const PANE_BUILDERS = { shortcuts: shortcutsTab, splits: splitMarkersTab };
+  const PANE_BUILDERS = { shortcuts: shortcutsTab, splits: splitMarkersTab, enhance: enhanceTab };
   const _panes = new Set();   // { kind, host }
 
   function mountPane(kind, host) {
@@ -999,9 +1173,31 @@
   }
 
   function paintPane(entry) {
+    // A host whose container re-rendered without unmounting (Engine settings rebuilds its
+    // whole pane) is gone for good — drop it rather than paint into a detached node.
+    if (!entry.host.isConnected) { _panes.delete(entry); return; }
     clear(entry.host);
     entry.host.append(PANE_BUILDERS[entry.kind](S.get()));
   }
+
+  // A repaint replaces every field, so never do it under the caret: wait until focus leaves.
+  function typingIn(root) {
+    const a = document.activeElement;
+    if (!root || !a || !root.contains(a)) return false;
+    if (a.tagName === "TEXTAREA") return true;
+    return a.tagName === "INPUT" && !/^(checkbox|radio|button)$/i.test(a.type || "text");
+  }
+  let _repaintDeferred = false;
+  function repaintAll() {
+    const hosts = [isOpen() ? win.body : null, ...[..._panes].map((e) => e.host)];
+    if (hosts.some(typingIn)) { _repaintDeferred = true; return; }
+    _repaintDeferred = false;
+    if (isOpen()) render();
+    _panes.forEach(paintPane);
+  }
+  document.addEventListener("focusout", () => {
+    if (_repaintDeferred) setTimeout(() => { if (_repaintDeferred) repaintAll(); }, 0);
+  });
 
   let lastFp = null;
   S.subscribe((st) => {
@@ -1015,11 +1211,17 @@
       // fingerprinted — typing goes through quiet patches and the field itself is
       // the source of those edits.
       sd: !!(st.project?.sampler_inputs?.segmented_detailing),
+      // Enhance tab: the switches that show/hide rows, and which run's rewrite is shown.
+      // Typed values stay out: a repaint per keystroke would fight the caret.
+      en: !!(st.project && window.StudioSettings?.read(st.project).rf.prompt_enhance),
+      eg: !!(st.project && window.StudioSettings?.read(st.project).rf.prompt_enhance_greedy),
+      eh: st.enhanced?.promptId || null,
     });
-    if (fp === lastFp) return;
+    // A deferred repaint also flushes on the next notify: focusout never fires when focus
+    // moves while the window itself is in the background.
+    if (fp === lastFp) { if (_repaintDeferred) repaintAll(); return; }
     lastFp = fp;
-    if (isOpen()) render();
-    _panes.forEach(paintPane);
+    repaintAll();
   });
 
   // Keep the Compose textarea in sync with timeline-driven global-prompt changes,

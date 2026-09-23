@@ -33,6 +33,9 @@
     shortcutCategories: [],  // managed grouping list: [{name, sub_categories:[]}]
     imageTargets: [],        // where an image asset can be wired [{value,label}]
     ratingLabels: [],        // FunPack Studio V2 rating options
+    // What the prompt enhancer wrote on the last run: {promptId, items:[{scene,before,after,
+    // status,image}]} or null. A readout for the Composer's Enhance tab; never read back.
+    enhanced: null,
   };
 
   // ── editor settings ─────────────────────────────────────────────────────────
@@ -821,6 +824,7 @@
     state.selectedAudioTrackId = null;
     _selectionAnchorId = first;
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
+    state.enhanced = null;
     state.sceneRenders = JSON.parse(JSON.stringify(state.project.scene_renders || {}));
     state.sceneGhosts = JSON.parse(JSON.stringify(state.project.scene_ghosts || []));
     _ensureTimelineOrder();
@@ -3497,6 +3501,10 @@
         try {
           const s = await API.status(state.project.id, promptId);
           transientStreak = 0;
+          // Studio runs before sampling, so a run that fails later still carries this.
+          if (s.enhanced && state.enhanced?.promptId !== promptId) {
+            set({ enhanced: { promptId, items: s.enhanced } });
+          }
           if (s.state === "error") {
             _clearGenTimers();
             const msg = s.error ? `ComfyUI error: ${s.error}` : "Generation failed inside ComfyUI — check the ComfyUI terminal for details.";

@@ -2064,6 +2064,60 @@ body.tour-mode { overflow: hidden; }
 .lib-cat-tag { margin-left: 8px; padding: 1px 7px; border-radius: 10px; background: var(--teal-soft); color: var(--teal);
   font-family: var(--font-ui); font-size: 9px; letter-spacing: .5px; text-transform: uppercase; vertical-align: middle; }
 
+/* Composer ▸ Enhance (LLM prompt enhancer) */
+.enh-bin { display: flex; flex-direction: column; gap: 6px; }
+.enh-hero { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--ink-2);
+  transition: border-color .2s ease, box-shadow .2s ease; }
+.enh-hero.on { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal-soft) inset; }
+.enh-hero-top { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+.enh-hero-titles { flex: 1; min-width: 0; }
+.enh-hero-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.enh-hero-sub { margin-top: 2px; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.enh-hero-note { margin-top: 10px; font-size: 11px; line-height: 1.45; color: var(--faint); }
+.enh-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 10px; }
+.enh-flow-step { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); font-size: 10px;
+  color: var(--muted); white-space: nowrap; }
+.enh-flow-step.is-enh { border-color: var(--teal); color: var(--teal); background: var(--teal-soft); }
+.enh-flow-arrow { font-size: 11px; color: var(--faint); }
+.enh-hero:not(.on) .enh-flow-step.is-enh { border-style: dashed; background: transparent; opacity: .7; }
+
+/* iOS-style switch, used for every on/off in this tab */
+/* min-height/padding/border reset: the global input rule (30px tall, padded) would stretch it */
+.enh-switch { appearance: none; -webkit-appearance: none; flex: 0 0 auto; width: 30px; height: 18px; margin: 0;
+  min-height: 0; padding: 0; border: 0;
+  border-radius: 9px; background: color-mix(in srgb, var(--faint) 55%, transparent); position: relative; cursor: pointer;
+  transition: background .15s ease; }
+.enh-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--text); transition: transform .15s ease; }
+.enh-switch:checked { background: var(--teal); }
+.enh-switch:checked::after { transform: translateX(12px); background: var(--on-teal); }
+.enh-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.enh-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+.enh-section-head .btn { margin-bottom: 3px; }
+.enh-system { width: 100%; min-height: 96px; resize: vertical; font-family: var(--font-ui); font-size: 12px; line-height: 1.5; }
+.enh-row .sw-row-main { min-width: 0; }
+.enh-range { flex: 0 1 120px; min-width: 70px; accent-color: var(--teal); }
+.enh-val { flex: 0 0 34px; text-align: right; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.enh-num { flex: 0 0 76px; width: 76px; }
+
+.enh-empty { padding: 16px 12px; border: 1px dashed var(--line); border-radius: 10px; text-align: center;
+  font-size: 12px; line-height: 1.5; color: var(--faint); }
+.enh-card { border: 1px solid var(--line); border-radius: 10px; background: var(--ink-2); padding: 10px 12px; }
+.enh-card + .enh-card { margin-top: 2px; }
+.enh-card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.enh-card-title { font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--teal); }
+.enh-chip { padding: 1px 7px; border-radius: 10px; font-size: 10px; color: var(--muted); border: 1px solid var(--line); }
+.enh-chip-warn { color: var(--warn); border-color: var(--warn); }
+.enh-copy { margin-left: auto; }
+.enh-after { font-size: 12.5px; line-height: 1.55; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.enh-before { margin-top: 8px; }
+.enh-before summary { font-size: 11px; color: var(--muted); cursor: pointer; }
+.enh-before-text { margin-top: 4px; padding-left: 8px; border-left: 2px solid var(--line); font-size: 12px; line-height: 1.5;
+  color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.enh-status { margin-top: 8px; font-size: 10.5px; line-height: 1.4; color: var(--faint); }
+.eng-enhance-host { margin-top: 16px; }
+
 /* ＋ Add ▾ split-button dropdown (Shortcuts / Splits toolbars) */
 .composer-add { position: relative; flex-shrink: 0; }
 .composer-add-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 10; min-width: 150px;

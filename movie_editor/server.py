@@ -89,6 +89,14 @@ def _media_from_history(hist_entry: dict) -> list[dict]:
     return out
 
 
+def _enhanced_from_history(hist_entry: dict) -> list:
+    """What Studio's prompt enhancer wrote this run (its `funpack_enhanced` ui output)."""
+    out: list = []
+    for node_out in (hist_entry.get("outputs") or {}).values():
+        out.extend(x for x in (node_out.get("funpack_enhanced") or []) if isinstance(x, dict))
+    return out
+
+
 def _scene_layout_from_history(hist_entry: dict, fps: float) -> Optional[list]:
     from .backend.chain_layout import layout_from_history_entry
     return layout_from_history_entry(hist_entry, fps)
@@ -2053,6 +2061,9 @@ if web is not None and PromptServer is not None:
             }
             if scene_layout:
                 payload["scene_layout"] = scene_layout
+            enhanced = _enhanced_from_history(entry)
+            if enhanced:
+                payload["enhanced"] = enhanced
             return web.json_response(payload)
         try:
             running = await bridge.is_running(prompt_id)

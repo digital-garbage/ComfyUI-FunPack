@@ -119,25 +119,6 @@
     { name: "h3_phrase_variability", label: "Phrase emphasis variability", kind: "float", default: 0.0, min: 0.0, max: 1.0, step: 0.05,
       dependsOn: "h3_phrase_emphasis", dependsVals: [true],
       hint: "0 = only what the rating has cemented gets extra attention, nothing else. 1 = that emphasis is switched off entirely, so untrained phrasing and actions compete on equal footing and can bleed into the scene — including ones you have rated against before. Same bias channel as the toggle above, just scaled down." },
-    { name: "prompt_enhance", label: "Enhance the prompt with an LLM", kind: "bool", default: false,
-      hint: "Before anything is generated, the fully expanded prompt is rewritten by a language model and the result is what the video is made from. Needs a text encoder that can GENERATE text wired into the Studio node's advisor_clip (or a FunPack Advisor LLM node); without one it says so and leaves the prompt alone.",
-      detail: "Runs after shortcuts and $variables resolve, before encoding — so the model is handed exactly the text that would otherwise have been used, and nothing downstream needs to know it happened. On a multi-scene timeline each scene is enhanced separately: the scene list is authoritative on count, and rewriting them as one paragraph could come back with a different number of scenes. One generation per distinct scene text, so a long timeline costs real time." },
-    { name: "prompt_enhance_system", label: "Enhancer instructions", kind: "textarea", rows: 10, default: "",
-      dependsOn: "prompt_enhance", dependsVals: [true],
-      placeholder: "Leave empty to use the built-in instructions.",
-      hint: "The system prompt the enhancer runs under. Empty uses FunPack's built-in one, which expands detail and adds a soundscape without inventing characters, camera moves or speech." },
-    { name: "prompt_enhance_max_length", label: "Enhancer length limit", kind: "int", default: 400, min: 32, max: 4096, step: 32,
-      dependsOn: "prompt_enhance", dependsVals: [true],
-      hint: "Maximum tokens the enhancer may write. Higher allows a richer prompt and costs more time." },
-    { name: "prompt_enhance_temperature", label: "Enhancer temperature", kind: "float", default: 0.7, min: 0.01, max: 2.0, step: 0.05,
-      dependsOn: "prompt_enhance", dependsVals: [true],
-      hint: "How freely the enhancer writes. Lower sticks closer to your wording, higher invents more detail." },
-    { name: "prompt_enhance_top_p", label: "Enhancer top-p", kind: "float", default: 0.92, min: 0.0, max: 1.0, step: 0.01,
-      dependsOn: "prompt_enhance", dependsVals: [true],
-      hint: "Nucleus sampling cutoff for the enhancer. Lower is more predictable wording." },
-    { name: "prompt_enhance_thinking", label: "Enhancer thinking mode", kind: "bool", default: false,
-      dependsOn: "prompt_enhance", dependsVals: [true],
-      hint: "Let the model reason before answering, if it supports it. Slower, and the reasoning is stripped from the result." },
   ];
 
   function parseStudioSettings(p) {
@@ -213,17 +194,6 @@
     } else if (f.kind === "combo") {
       ctrl = el("select"); ctrl.dataset.k = "rf-" + f.name;
       (f.choices || []).forEach((c) => { const o = new Option(c, c); if (c === val) o.selected = true; ctrl.append(o); });
-      ctrl.onchange = () => persistStudioRefiner({ [f.name]: ctrl.value }, true);
-    } else if (f.kind === "textarea") {
-      // A system prompt is paragraphs, not a value. Quiet while typing (no repaint under the
-      // caret, same rule the sampler's text knobs follow), committed on blur.
-      ctrl = el("textarea"); ctrl.dataset.k = "rf-" + f.name;
-      ctrl.rows = f.rows || 8;
-      ctrl.value = val != null ? String(val) : "";
-      if (f.placeholder) ctrl.placeholder = f.placeholder;
-      ctrl.style.width = "100%";
-      ctrl.style.resize = "vertical";
-      ctrl.style.fontFamily = "inherit";
       ctrl.onchange = () => persistStudioRefiner({ [f.name]: ctrl.value }, true);
     } else {
       ctrl = el("input"); ctrl.type = "number";
@@ -680,6 +650,14 @@
     const gAdv = group(pane, EASY() ? "Prompt shaping" : "Refinement");
     STUDIO_REFINER_ADVANCED.filter((f) => !EASY() || !RATING_GATED_STUDIO.has(f.name))
       .forEach((f) => renderStudioRefinerField(gAdv, rf, f));
+
+    // The prompt enhancer lives in the Composer. Simple mode has no Composer, so the same
+    // pane is mounted here instead; it unmounts itself once this render replaces it.
+    if (EASY() && window.Composer) {
+      const host = el("div", "eng-enhance-host");
+      pane.append(host);
+      window.Composer.mountPane("enhance", host);
+    }
 
     if (EASY()) {
       pane.append(hintEl(
@@ -1166,6 +1144,9 @@
       return { kind: "section", id: "engine", sub: view, label: `Engine ▸ ${label}` };
     },
   });
+
+  // Studio's refiner settings, for the Composer's Enhance tab — one reader, one writer.
+  window.StudioSettings = { read: parseStudioSettings, patchRefiner: persistStudioRefiner };
 
   window.EngineSettingsModal = {
     open: () => window.SettingsWindow.open("engine"),

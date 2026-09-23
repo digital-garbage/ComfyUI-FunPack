@@ -8936,7 +8936,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_generate_advisor_text(self, clip, system_prompt, user_prompt, seed=None, image=None,
                                   thinking=True, max_length=800, temperature=0.7, top_p=0.92,
                                   top_k=50, repetition_penalty=1.3, min_floor=128,
-                                  label="Advisor"):
+                                  label="Advisor", min_p=0.05, presence_penalty=0.0,
+                                  do_sample=True):
         """Generate text through a CLIP that exposes ComfyUI's generate/decode pair.
 
         The sampling parameters default to exactly what the repair advisor has always used, so
@@ -8985,15 +8986,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     except TypeError:
                         tokens = clip.tokenize(advisor_prompt)
             generate_kwargs = dict(
-                do_sample=True,
+                do_sample=bool(do_sample),
                 max_length=max_length,
                 temperature=float(temperature),
                 top_k=int(top_k),
                 top_p=float(top_p),
-                min_p=0.05,
+                min_p=float(min_p),
                 repetition_penalty=float(repetition_penalty),
                 no_repeat_ngram_size=5,
-                presence_penalty=0.0,
+                presence_penalty=float(presence_penalty),
                 seed=seed if seed else None,
             )
             try:
@@ -9017,7 +9018,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     #: repeats an anchor line across scenes, and each call is a full LLM generation
     def _v2_enhance_prompt(self, clip, text, system_prompt, cache=None, seed=None,
                            temperature=0.7, top_p=0.92, max_length=400, thinking=False,
-                           image=None):
+                           image=None, top_k=50, min_p=0.05, repetition_penalty=1.3,
+                           presence_penalty=0.0, do_sample=True):
         """Rewrite one prompt through the advisor LLM, BEFORE it is encoded.
 
         This is not the repair advisor. That one is triggered by a rating and fixes a named
@@ -9037,7 +9039,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         raw, status = self._v2_generate_advisor_text(
             clip, system_prompt, original, seed=seed, image=image, thinking=bool(thinking),
             max_length=max_length, temperature=temperature, top_p=top_p,
-            min_floor=32, label="Prompt enhancer",
+            min_floor=32, label="Prompt enhancer", top_k=top_k, min_p=min_p,
+            repetition_penalty=repetition_penalty, presence_penalty=presence_penalty,
+            do_sample=do_sample,
         )
         enhanced, overran = self._v2_trim_runaway_prompt(
             self._v2_clean_enhanced_prompt(raw), max_length=max_length)
@@ -9962,6 +9966,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   prompt_enhance=False, prompt_enhance_system="",
                   prompt_enhance_temperature=0.7, prompt_enhance_top_p=0.92,
                   prompt_enhance_max_length=400, prompt_enhance_thinking=False,
+                  prompt_enhance_image=None, prompt_enhance_sampling=None,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
@@ -10604,23 +10609,34 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # `advisor_clip` if one is wired, the generation CLIP otherwise.
         _enhance_cache = {}
         _enhance_status = ""
+        # What the enhancer wrote, per encoded prompt — Studio hands it to the Editor as a
+        # node ui output so the Composer can show before/after. A readout, never read back.
+        self._v2_enhanced_prompts = []
         _enhance_clip = advisor_clip          # already falls back to `clip` at the top
         _enhance_system = str(prompt_enhance_system or "").strip() or V2_PROMPT_ENHANCER_SYSTEM_PROMPT
         # When the run splits into scenes, the per-scene conditionings REPLACE this base entry
         # — so enhancing the base too would be a second full generation whose result is then
         # thrown away. One generation per prompt that is actually encoded, never two.
         _enhance_base = prompt_enhance and not split_by_transitions
+        # top_k / min_p / penalties / greedy; `seed` 0 = follow the generation seed.
+        _enhance_sampling = dict(prompt_enhance_sampling or {})
+        _enhance_seed = int(_enhance_sampling.pop("seed", 0) or 0) or seed
         if prompt_enhance and not _enhance_base:
             print("[FunPackVideoRefinerV2] Prompt enhancer: base prompt skipped — this run "
                   "splits into scenes and each scene is enhanced instead.")
         if _enhance_base:
+            _before = prompt_to_encode
             prompt_to_encode, _enhance_status = self._v2_enhance_prompt(
                 _enhance_clip, prompt_to_encode, _enhance_system, cache=_enhance_cache,
-                seed=seed, temperature=prompt_enhance_temperature,
+                seed=_enhance_seed, temperature=prompt_enhance_temperature,
                 top_p=prompt_enhance_top_p, max_length=prompt_enhance_max_length,
-                thinking=prompt_enhance_thinking, image=source_image,
+                thinking=prompt_enhance_thinking, image=prompt_enhance_image,
+                **_enhance_sampling,
             )
             print(f"[FunPackVideoRefinerV2] {_enhance_status}")
+            self._v2_enhanced_prompts.append({
+                "scene": None, "before": _before, "after": prompt_to_encode,
+                "status": _enhance_status, "image": prompt_enhance_image is not None})
 
         cond, meta, encode_status, conditioning_owner = self._v2_conditioning_source(
             clip,
@@ -10856,15 +10872,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     # and re-splitting could return a different number of scenes and desync
                     # every clip from its anchor. One call per distinct text, cached.
                     if prompt_enhance and split_scene_texts:
-                        split_scene_texts = [
-                            self._v2_enhance_prompt(
+                        _enhanced_texts = []
+                        for _i, t in enumerate(split_scene_texts):
+                            _after, _st = self._v2_enhance_prompt(
                                 _enhance_clip, t, _enhance_system, cache=_enhance_cache,
-                                seed=seed, temperature=prompt_enhance_temperature,
+                                seed=_enhance_seed, temperature=prompt_enhance_temperature,
                                 top_p=prompt_enhance_top_p,
                                 max_length=prompt_enhance_max_length,
-                                thinking=prompt_enhance_thinking)[0]
-                            for t in split_scene_texts
-                        ]
+                                thinking=prompt_enhance_thinking, image=prompt_enhance_image,
+                                **_enhance_sampling)
+                            print(f"[FunPackVideoRefinerV2] Scene {_i + 1}: {_st}")
+                            self._v2_enhanced_prompts.append({
+                                "scene": _i, "before": t, "after": _after, "status": _st,
+                                "image": prompt_enhance_image is not None})
+                            _enhanced_texts.append(_after)
+                        split_scene_texts = _enhanced_texts
                     scene_refinement_keys = [set(s.get("keys") or set()) for s in canon_scenes]
                     current_scene_seeds = self._v2_scene_seed_values(seed, len(split_scene_texts), _scene_seeds)
                     current_scene_seed_source = (
@@ -13853,6 +13875,17 @@ class FunPackStudio:
             prompt_enhance_top_p=float(rf.get("prompt_enhance_top_p", 0.92)),
             prompt_enhance_max_length=int(rf.get("prompt_enhance_max_length", 400)),
             prompt_enhance_thinking=bool(rf.get("prompt_enhance_thinking", False)),
+            # Its own switch, not vision_conditioning's: showing the enhancer the picture is
+            # a different decision from writing the picture into the conditioning.
+            prompt_enhance_image=source_image if rf.get("prompt_enhance_use_image", True) else None,
+            prompt_enhance_sampling={
+                "top_k": int(rf.get("prompt_enhance_top_k", 50)),
+                "min_p": float(rf.get("prompt_enhance_min_p", 0.05)),
+                "repetition_penalty": float(rf.get("prompt_enhance_repetition_penalty", 1.3)),
+                "presence_penalty": float(rf.get("prompt_enhance_presence_penalty", 0.0)),
+                "do_sample": not bool(rf.get("prompt_enhance_greedy", False)),
+                "seed": int(rf.get("prompt_enhance_seed", 0) or 0),
+            },
             clip_vision_output=clip_vision_output,
             source_image=source_image if vision_conditioning else None,
             model=model,
@@ -13942,7 +13975,12 @@ class FunPackStudio:
 
         cond = _h3_reconcile_token_tags(cond, "positive")
         out_negative = _h3_reconcile_token_tags(out_negative, "negative")
-        return (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts, video_latent)
+        result = (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts, video_latent)
+        enhanced = getattr(refiner, "_v2_enhanced_prompts", None)
+        if enhanced:
+            # History carries every node's ui output; the Editor's /status reads this key.
+            return {"ui": {"funpack_enhanced": enhanced}, "result": result}
+        return result
 
     @staticmethod
     def _parse_sigmas(text):

@@ -378,3 +378,63 @@ def test_the_enhancer_never_inherits_the_advisors_thinking_default(studio):
     clip = FakeClip()
     studio._v2_enhance_prompt(clip, "a cat", "sys")
     assert clip.calls[0][1].get("thinking") is False
+
+
+# ── the Studio image reaches the enhancer on BOTH paths ─────────────────────
+#
+# The Editor forces the per-scene path, which used to call the enhancer with no image at all —
+# so only a single-prompt run could ever show it the picture.
+
+def test_the_image_reaches_the_enhancer():
+    clip = FakeClip()
+    image = object()
+    studio = C.FunPackVideoRefinerV2.__new__(C.FunPackVideoRefinerV2)
+    studio._v2_enhance_prompt(clip, "a cat", "sys", image=image)
+    assert clip.calls[0][1].get("image") is image
+
+
+def test_both_paths_hand_over_the_enhancer_image():
+    src = _refine_source()
+    assert src.count("image=prompt_enhance_image") == 2
+    assert "thinking=prompt_enhance_thinking, image=source_image" not in src
+
+
+def test_studio_gates_the_image_on_its_own_switch():
+    """Not on vision_conditioning: showing the enhancer the picture is a separate choice."""
+    import inspect
+    src = inspect.getsource(C.FunPackStudio.run)
+    assert ('prompt_enhance_image=source_image if rf.get("prompt_enhance_use_image", True) '
+            'else None') in src
+
+
+def test_every_rewrite_is_reported_for_the_composer():
+    src = _refine_source()
+    assert src.count("self._v2_enhanced_prompts.append(") == 2
+    import inspect
+    assert '{"ui": {"funpack_enhanced": enhanced}, "result": result}' in inspect.getsource(C.FunPackStudio.run)
+
+
+# ── every sampling knob in the Composer reaches clip.generate ───────────────
+
+def test_the_sampling_settings_reach_the_generator(studio):
+    clip = FakeClip()
+    studio._v2_enhance_prompt(clip, "a cat", "sys", seed=7, temperature=0.4, top_p=0.8,
+                              top_k=12, min_p=0.1, repetition_penalty=1.1,
+                              presence_penalty=0.5, do_sample=False)
+    g = clip.last_generate
+    assert (g["temperature"], g["top_p"], g["top_k"], g["min_p"]) == (0.4, 0.8, 12, 0.1)
+    assert (g["repetition_penalty"], g["presence_penalty"], g["do_sample"], g["seed"]) == (1.1, 0.5, False, 7)
+
+
+def test_the_repair_advisor_keeps_its_old_sampling(studio):
+    """New knobs are the enhancer's; the advisor's defaults must not move."""
+    clip = FakeClip()
+    studio._v2_generate_advisor_text(clip, "sys", "a cat")
+    g = clip.last_generate
+    assert (g["min_p"], g["presence_penalty"], g["do_sample"], g["top_k"]) == (0.05, 0.0, True, 50)
+
+
+def test_a_fixed_enhancer_seed_overrides_the_run_seed():
+    src = _refine_source()
+    assert '_enhance_seed = int(_enhance_sampling.pop("seed", 0) or 0) or seed' in src
+    assert src.count("seed=_enhance_seed") == 2
