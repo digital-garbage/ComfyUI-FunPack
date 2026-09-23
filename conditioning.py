@@ -10668,9 +10668,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   "splits into scenes and each scene is enhanced instead.")
         if _enhance_base:
             _before = prompt_to_encode
+            _ref = self._v2_enhancer_reference(prompt_to_encode, _enhance_sources)
             prompt_to_encode, _enhance_status = self._v2_enhance_prompt(
                 _enhance_clip, prompt_to_encode, _enhance_system, cache=_enhance_cache,
-                reference=self._v2_enhancer_reference(prompt_to_encode, _enhance_sources),
+                reference=_ref,
                 seed=_enhance_seed, temperature=prompt_enhance_temperature,
                 top_p=prompt_enhance_top_p, max_length=prompt_enhance_max_length,
                 thinking=prompt_enhance_thinking, image=prompt_enhance_image,
@@ -10679,7 +10680,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             print(f"[FunPackVideoRefinerV2] {_enhance_status}")
             self._v2_enhanced_prompts.append({
                 "scene": None, "before": _before, "after": prompt_to_encode,
-                "status": _enhance_status, "image": prompt_enhance_image is not None})
+                "status": _enhance_status, "image": prompt_enhance_image is not None,
+                "reference": _ref.strip()})
 
         # Studio's `enhanced_prompt` output, for a node encoding on its own (Editor link
         # "Enhanced prompt, fallback to prompt + postfix"). The same text that link's
@@ -10688,9 +10690,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if prompt_enhance_output:
             _whole = str((_link_texts or {}).get("full_prompt") or "").strip()
             if prompt_enhance and _whole:
+                _ref = self._v2_enhancer_reference(_whole, _enhance_sources)
                 _after, _st = self._v2_enhance_prompt(
                     _enhance_clip, _whole, _enhance_system, cache=_enhance_cache,
-                    reference=self._v2_enhancer_reference(_whole, _enhance_sources),
+                    reference=_ref,
                     seed=_enhance_seed, temperature=prompt_enhance_temperature,
                     top_p=prompt_enhance_top_p, max_length=prompt_enhance_max_length,
                     thinking=prompt_enhance_thinking, image=prompt_enhance_image,
@@ -10698,7 +10701,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 print(f"[FunPackVideoRefinerV2] Enhanced prompt output: {_st}")
                 self._v2_enhanced_prompts.append({
                     "scene": None, "before": _whole, "after": _after, "status": _st,
-                    "image": prompt_enhance_image is not None})
+                    "image": prompt_enhance_image is not None, "reference": _ref.strip()})
                 _whole = _after
             self._v2_enhanced_output = _whole
 
@@ -10938,9 +10941,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     if _enhance_own and split_scene_texts:
                         _enhanced_texts = []
                         for _i, t in enumerate(split_scene_texts):
+                            _ref = self._v2_enhancer_reference(t, _enhance_sources)
                             _after, _st = self._v2_enhance_prompt(
                                 _enhance_clip, t, _enhance_system, cache=_enhance_cache,
-                                reference=self._v2_enhancer_reference(t, _enhance_sources),
+                                reference=_ref,
                                 seed=_enhance_seed, temperature=prompt_enhance_temperature,
                                 top_p=prompt_enhance_top_p,
                                 max_length=prompt_enhance_max_length,
@@ -10949,7 +10953,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             print(f"[FunPackVideoRefinerV2] Scene {_i + 1}: {_st}")
                             self._v2_enhanced_prompts.append({
                                 "scene": _i, "before": t, "after": _after, "status": _st,
-                                "image": prompt_enhance_image is not None})
+                                "image": prompt_enhance_image is not None,
+                                "reference": _ref.strip()})
                             _enhanced_texts.append(_after)
                         split_scene_texts = _enhanced_texts
                     scene_refinement_keys = [set(s.get("keys") or set()) for s in canon_scenes]

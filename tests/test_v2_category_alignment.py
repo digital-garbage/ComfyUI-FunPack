@@ -2329,3 +2329,16 @@ def test_studio_skips_its_own_enhancement_when_told_nothing_reads_it(tmp_path):
     out, clip = _enhanced_output(tmp_path, prompt_enhance=True, prompt_enhance_scenes=False,
                                  prompt_enhance_output=True)
     assert out == "a vivid cat on a sunlit sill"
+
+
+def test_last_run_readout_shows_the_reference_that_was_sent(tmp_path, monkeypatch):
+    import templates
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: {"shortcuts": {
+        "k1": {"name": "Mira", "replacements": ["red coat"], "triggers": ["/mira"]}}})
+    refiner = FunPackVideoRefinerV2()
+    refiner._v2_state_path = lambda refinement_key: str(tmp_path / "state.json")
+    refiner.refine_v2("a cat", GeneratingClip("a vivid cat"), "Unrated", "ref-readout",
+                      link_texts={"full_prompt": "a cat"}, prompt_enhance=True,
+                      prompt_enhance_output=True, prompt_enhance_shortcuts=["k1"])
+    item = refiner._v2_enhanced_prompts[-1]
+    assert item["before"] == "a cat" and item["reference"].count("[Shortcut] Mira\nred coat") == 1

@@ -2133,6 +2133,7 @@ body.tour-mode { overflow: hidden; }
 .enh-before summary { font-size: 11px; color: var(--muted); cursor: pointer; }
 .enh-before-text { margin-top: 4px; padding-left: 8px; border-left: 2px solid var(--line); font-size: 12px; line-height: 1.5;
   color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.enh-ref-sent { max-height: 260px; overflow-y: auto; }
 .enh-status { margin-top: 8px; font-size: 10.5px; line-height: 1.4; color: var(--faint); }
 .eng-enhance-host { margin-top: 16px; }
 

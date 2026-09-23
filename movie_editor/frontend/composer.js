@@ -1060,6 +1060,15 @@
       det.append(el("summary", null, "What went in"), el("div", "enh-before-text", before));
       card.append(det);
     }
+    // What was appended after the prompt (Enhance ▸ Reference) — the model read it too.
+    const ref = String(it.reference || "").trim();
+    if (ref) {
+      const n = (ref.match(/^\[(Shortcut|Lore)\] /gm) || []).length;
+      const det = el("details", "enh-before");
+      det.append(el("summary", null, `Reference sent (${n} ${n === 1 ? "entry" : "entries"})`),
+        el("div", "enh-before-text enh-ref-sent", ref));
+      card.append(det);
+    }
     if (it.status) card.append(el("div", "enh-status", String(it.status)));
     return card;
   }
