@@ -1071,7 +1071,7 @@
     const box = el("div", "enh-ref");
     box.append(el("div", "sw-rows-label", "Reference"));
     box.append(el("div", "insp-hint",
-      "Added after your prompt for the model to draw on, as name + content. What your prompt mentions is sent; when it mentions nothing from a lorebook (or from these shortcuts), all of it is."));
+      "Added after your prompt for the model to draw on, as name + content. Pick shortcuts one by one, or add a whole file: a lorebook or a shortcuts file. What your prompt mentions is sent; when it mentions nothing from a file (or from the picked shortcuts), all of it is."));
 
     const keys = (val("prompt_enhance_shortcuts") || []).map(String);
     const byKey = new Map((st.shortcuts || []).map((sc) => [String(sc.key), sc]));
@@ -1107,8 +1107,9 @@
     });
     box.append(lbList);
     const lbRow = el("div", "enh-ref-add");
-    const lbIn = el("input", "lib-in"); lbIn.placeholder = "Lorebook JSON path on the ComfyUI machine";
-    const lbAdd = el("button", "btn ghost tiny", "＋ Lorebook"); lbAdd.type = "button";
+    const lbIn = el("input", "lib-in"); lbIn.placeholder = "Lorebook or shortcuts JSON path on the ComfyUI machine";
+    lbIn.title = "A SillyTavern lorebook, or a FunPack shortcuts file — your whole library is user/default/FunPack/shortcuts.json";
+    const lbAdd = el("button", "btn ghost tiny", "＋ File"); lbAdd.type = "button";
     const addLb = () => {
       const p = lbIn.value.trim();
       if (!p || paths.includes(p)) return;

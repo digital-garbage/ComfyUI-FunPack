@@ -8968,67 +8968,76 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return "", f"{label}: generation failed: {error}"
 
     @staticmethod
-    def _v2_enhancer_sources(shortcut_keys=None, lorebook_paths=None):
-        """Load what Composer ▸ Enhance picked, once per run: (shortcuts, [(path, entries)]).
-        A missing shortcut or unreadable file is skipped and said so."""
-        shortcuts = []
+    def _v2_enhancer_sources(shortcut_keys=None, reference_paths=None):
+        """Load what Composer ▸ Enhance picked, once per run, as groups of entries — the
+        picked shortcuts as one group, then one group per file. A file is a SillyTavern
+        lorebook (`entries`) or a FunPack shortcuts file (`shortcuts`: the library itself or
+        an exported pack). Entry: {block, words, keys, constant}. Missing shortcuts and
+        unreadable files are skipped and said so."""
+        try:
+            from .templates import load_shortcut_db, normalize_shortcut_db
+        except ImportError:
+            from templates import load_shortcut_db, normalize_shortcut_db
+
+        def sc_entry(sc):
+            reps = [str(r) for r in (sc.get("replacements") or []) if str(r).strip()]
+            lines = [f"[Shortcut] {sc.get('name', '')}"]
+            lines += reps if len(reps) == 1 else [f"Variant {i + 1}: {r}" for i, r in enumerate(reps)]
+            # triggers are already expanded away, so the content counts as a mention too
+            return {"block": "\n".join(lines),
+                    "words": [sc.get("name", "")] + list(sc.get("triggers") or []) + reps}
+
+        groups = []
         keys = [str(k) for k in (shortcut_keys or []) if str(k).strip()]
         if keys:
-            try:
-                from .templates import load_shortcut_db
-            except ImportError:
-                from templates import load_shortcut_db
             db = (load_shortcut_db() or {}).get("shortcuts", {})
-            shortcuts = [db[k] for k in keys if isinstance(db.get(k), dict)]
-        books = []
-        for path in (str(p).strip() for p in (lorebook_paths or [])):
+            groups.append([sc_entry(db[k]) for k in keys if isinstance(db.get(k), dict)])
+        for path in (str(p).strip() for p in (reference_paths or [])):
             if not path:
                 continue
             try:
                 with open(path, "r", encoding="utf-8") as fh:
-                    entries = json.load(fh).get("entries", [])
-            except (OSError, ValueError, AttributeError) as e:
-                print(f"[FunPackVideoRefinerV2] Prompt enhancer: lorebook {path} skipped — {e}")
+                    data = json.load(fh)
+                if not isinstance(data, dict):
+                    raise ValueError("not a lorebook or shortcuts file")
+            except (OSError, ValueError) as e:
+                print(f"[FunPackVideoRefinerV2] Prompt enhancer: reference {path} skipped — {e}")
                 continue
+            if "shortcuts" in data:
+                shortcuts = normalize_shortcut_db(data).get("shortcuts", {}).values()
+                groups.append([sc_entry(sc) for sc in shortcuts if sc.get("enabled", True)])
+                continue
+            entries = data.get("entries", [])
             if isinstance(entries, dict):
                 entries = list(entries.values())
             entries = sorted((e for e in entries if isinstance(e, dict) and str(e.get("content") or "").strip()),
                              key=lambda e: e.get("insertion_order", e.get("order", 0)))
-            books.append((path, entries))
-        return shortcuts, books
+            groups.append([{"block": f"[Lore] {e.get('comment') or e.get('name') or 'entry'}\n"
+                                     f"{str(e['content']).strip()}",
+                            "keys": e.get("keys", e.get("key", [])),
+                            "constant": bool(e.get("constant"))} for e in entries])
+        return [g for g in groups if g]
 
     @staticmethod
     def _v2_enhancer_reference(text, sources):
-        """Reference appended after the prompt the enhancer rewrites. Per source — the picked
-        shortcuts as one, each lorebook file on its own — the entries the prompt mentions, or
-        the whole source when it mentions none (the model may need what the prompt does not
-        name). A shortcut is mentioned by its name, a trigger, or its content (already
-        expanded into the text); a lore entry by its keywords, constant entries joining any match."""
-        shortcuts, books = sources or ([], [])
+        """Reference appended after the prompt the enhancer rewrites. Per group: the entries
+        the prompt mentions, or the whole group when it mentions none (the model may need
+        what the prompt does not name). Shortcuts are mentioned by name, trigger or content;
+        lore entries by their keywords, constant entries joining any match."""
         low = str(text or "").lower()
-        blocks = []
-
-        def said(words):
-            return any(str(w).strip() and str(w).strip().lower() in low for w in words)
-
-        def sc_block(sc):
-            reps = [r for r in (sc.get("replacements") or []) if str(r).strip()]
-            lines = [f"[Shortcut] {sc.get('name', '')}"]
-            lines += reps if len(reps) == 1 else [f"Variant {i + 1}: {r}" for i, r in enumerate(reps)]
-            return "\n".join(lines)
-
-        hit = [sc for sc in shortcuts
-               if said([sc.get("name", "")] + list(sc.get("triggers") or []) + list(sc.get("replacements") or []))]
-        blocks += [sc_block(sc) for sc in (hit or shortcuts)]
-
         lore = FunPackLorebookEnhancer()
-        for _path, entries in books:
-            # constants ride along with a match, but never count as one on their own
-            hit = [e for e in entries if lore._match_keys(e.get("keys", e.get("key", [])), low)]
+
+        def mentioned(e):
+            if "keys" in e:
+                return lore._match_keys(e["keys"], low)
+            return any(str(w).strip() and str(w).strip().lower() in low for w in e["words"])
+
+        blocks = []
+        for group in sources or []:
+            hit = [e for e in group if mentioned(e)]
             if hit:
-                hit = [e for e in entries if e.get("constant") or e in hit]
-            blocks += [f"[Lore] {e.get('comment') or e.get('name') or 'entry'}\n{str(e['content']).strip()}"
-                       for e in (hit or entries)]
+                hit = [e for e in group if e.get("constant") or e in hit]
+            blocks += [e["block"] for e in (hit or group)]
         if not blocks:
             return ""
         return ("\n\nReference entries. Use an entry only where the prompt calls for it, "
@@ -10640,7 +10649,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # Reference the user picked in Composer ▸ Enhance (shortcuts, lorebooks): loaded once
         # per run, matched against each prompt, appended after it.
         _enhance_sources = self._v2_enhancer_sources(
-            prompt_enhance_shortcuts, prompt_enhance_lorebooks) if prompt_enhance else ([], [])
+            prompt_enhance_shortcuts, prompt_enhance_lorebooks) if prompt_enhance else []
         # When the run splits into scenes, the per-scene conditionings REPLACE this base entry
         # — so enhancing the base too would be a second full generation whose result is then
         # thrown away. One generation per prompt that is actually encoded, never two.

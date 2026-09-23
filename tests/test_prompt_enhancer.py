@@ -510,4 +510,17 @@ def test_reference_goes_after_the_prompt_and_not_into_the_readout(studio):
 
 
 def test_reference_is_empty_when_nothing_is_picked():
-    assert C.FunPackVideoRefinerV2._v2_enhancer_reference("a cat", ([], [])) == ""
+    assert C.FunPackVideoRefinerV2._v2_enhancer_reference("a cat", []) == ""
+
+
+def test_a_shortcuts_file_is_a_source_of_its_own(tmp_path, monkeypatch):
+    import json as _json
+    import templates
+    pack = tmp_path / "pack.json"
+    pack.write_text(_json.dumps({"shortcuts": {
+        "a": {"name": "Neon", "triggers": ["/neon"], "replacements": ["pink neon glow"]},
+        "b": {"name": "Fog", "triggers": ["/fog"], "replacements": ["low fog"], "enabled": False}}}))
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: {"shortcuts": {}})
+    src = C.FunPackVideoRefinerV2._v2_enhancer_sources([], [str(pack)])
+    ref = C.FunPackVideoRefinerV2._v2_enhancer_reference("a street", src)
+    assert "[Shortcut] Neon\npink neon glow" in ref and "low fog" not in ref   # disabled stays out
