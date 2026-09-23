@@ -489,6 +489,21 @@
     row1.append(fpsField);
     body.append(row1);
 
+    // Shot length in seconds, live while typing. H3 plays at its own fixed rate whatever
+    // the FPS field says, so that rate is the one that decides how long a shot runs.
+    const lengthHint = el("div", "insp-hint");
+    const showLength = () => {
+      const frames = parseInt(framesField.querySelector("input")?.value || "0", 10);
+      const fps = (grid && grid.fps) || parseFloat(fpsField.querySelector("input")?.value || "0");
+      lengthHint.textContent = frames > 0 && fps > 0
+        ? `≈ ${(frames / fps).toFixed(2)} s per shot` + (grid && grid.fps ? ` (at H3's ${grid.fps} fps)` : "")
+        : "";
+    };
+    [framesField, fpsField].forEach((f) => f.querySelector("input")?.addEventListener("input", showLength));
+    framesField.querySelector("input")?.addEventListener("change", showLength);
+    showLength();
+    body.append(lengthHint);
+
     // Editing Frames resets a shot the timeline gave its own length — the field used to look
     // live while reaching nothing. Custom is the exception, so it is the only one worth a
     // warning: it is also the only one that can still silently disagree with this number.
