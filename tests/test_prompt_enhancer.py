@@ -463,3 +463,51 @@ def test_the_funpack_advisor_llm_still_gets_a_real_system_turn(studio):
     wrapper.decode = lambda ids, skip_special_tokens=True: "a vivid cat"
     studio._v2_enhance_prompt(wrapper, "a cat", "BE VIVID")
     assert seen["text"] == "a cat" and seen["system_prompt"] == "BE VIVID"
+
+
+# ── reference: shortcuts + whole lorebooks, appended after the prompt ────────
+
+def _sources(tmp_path, monkeypatch):
+    import json as _json
+    import templates
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: {"shortcuts": {
+        "k1": {"name": "Mira", "replacements": ["red coat, silver hair"], "triggers": ["/mira"]},
+        "k2": {"name": "Rain", "replacements": ["heavy rain"], "triggers": ["/rain"]}}})
+    lb = tmp_path / "lore.json"
+    lb.write_text(_json.dumps({"entries": {
+        "0": {"comment": "Castle", "content": "black stone towers", "keys": ["castle"], "order": 2},
+        "1": {"comment": "Sea", "content": "grey winter sea", "keys": ["sea"], "order": 1},
+        "2": {"comment": "Tone", "content": "melancholy", "keys": [], "constant": True, "order": 3}}}))
+    return C.FunPackVideoRefinerV2._v2_enhancer_sources(
+        ["k1", "k2", "gone"], [str(lb), str(tmp_path / "nope.json")])
+
+
+def test_reference_sends_only_what_the_prompt_mentions(tmp_path, monkeypatch):
+    ref = C.FunPackVideoRefinerV2._v2_enhancer_reference(
+        "Mira walks to the castle", _sources(tmp_path, monkeypatch))
+    assert "[Shortcut] Mira\nred coat, silver hair" in ref and "heavy rain" not in ref
+    assert "black stone towers" in ref and "grey winter sea" not in ref
+    assert "melancholy" in ref                      # constant joins a match
+
+
+def test_expanded_shortcut_content_counts_as_a_mention(tmp_path, monkeypatch):
+    ref = C.FunPackVideoRefinerV2._v2_enhancer_reference(
+        "a woman in a red coat, silver hair", _sources(tmp_path, monkeypatch))
+    assert "[Shortcut] Mira" in ref and "heavy rain" not in ref
+
+
+def test_no_mention_sends_the_whole_source(tmp_path, monkeypatch):
+    ref = C.FunPackVideoRefinerV2._v2_enhancer_reference("a dog", _sources(tmp_path, monkeypatch))
+    assert "[Shortcut] Mira" in ref and "[Shortcut] Rain" in ref
+    assert ref.index("grey winter sea") < ref.index("black stone towers") < ref.index("melancholy")
+
+
+def test_reference_goes_after_the_prompt_and_not_into_the_readout(studio):
+    clip = FakeClip("a vivid cat")
+    out, _ = studio._v2_enhance_prompt(clip, "a cat", "SYS", reference="\n\nREF")
+    assert clip.calls[0][0].endswith("a cat\n\nREF") and out == "a vivid cat"
+    assert studio._v2_enhance_prompt(FakeClip(fail=True), "a cat", "SYS", reference="\n\nREF")[0] == "a cat"
+
+
+def test_reference_is_empty_when_nothing_is_picked():
+    assert C.FunPackVideoRefinerV2._v2_enhancer_reference("a cat", ([], [])) == ""

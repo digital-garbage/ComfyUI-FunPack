@@ -2075,6 +2075,14 @@ body.tour-mode { overflow: hidden; }
   font-family: var(--font-ui); font-size: 9px; letter-spacing: .5px; text-transform: uppercase; vertical-align: middle; }
 
 /* Composer ▸ Enhance (LLM prompt enhancer) */
+.enh-ref { display: flex; flex-direction: column; gap: 6px; }
+.enh-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.enh-ref-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 9px; border-radius: 10px;
+  background: var(--teal-soft); color: var(--teal); font-size: 11px; max-width: 100%; }
+.enh-ref-chip.missing { opacity: .55; text-decoration: line-through; }
+.enh-ref-x { border: 0; background: none; color: inherit; cursor: pointer; padding: 0 4px; min-height: 0; font-size: 10px; }
+.enh-ref-add { display: flex; gap: 6px; }
+.enh-ref-add .lib-in { flex: 1; min-width: 0; }
 .enh-bin { display: flex; flex-direction: column; gap: 6px; }
 .enh-hero { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--ink-2);
   transition: border-color .2s ease, box-shadow .2s ease; }

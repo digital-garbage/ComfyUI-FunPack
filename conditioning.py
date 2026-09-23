@@ -8967,12 +8967,80 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception as error:
             return "", f"{label}: generation failed: {error}"
 
+    @staticmethod
+    def _v2_enhancer_sources(shortcut_keys=None, lorebook_paths=None):
+        """Load what Composer ▸ Enhance picked, once per run: (shortcuts, [(path, entries)]).
+        A missing shortcut or unreadable file is skipped and said so."""
+        shortcuts = []
+        keys = [str(k) for k in (shortcut_keys or []) if str(k).strip()]
+        if keys:
+            try:
+                from .templates import load_shortcut_db
+            except ImportError:
+                from templates import load_shortcut_db
+            db = (load_shortcut_db() or {}).get("shortcuts", {})
+            shortcuts = [db[k] for k in keys if isinstance(db.get(k), dict)]
+        books = []
+        for path in (str(p).strip() for p in (lorebook_paths or [])):
+            if not path:
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    entries = json.load(fh).get("entries", [])
+            except (OSError, ValueError, AttributeError) as e:
+                print(f"[FunPackVideoRefinerV2] Prompt enhancer: lorebook {path} skipped — {e}")
+                continue
+            if isinstance(entries, dict):
+                entries = list(entries.values())
+            entries = sorted((e for e in entries if isinstance(e, dict) and str(e.get("content") or "").strip()),
+                             key=lambda e: e.get("insertion_order", e.get("order", 0)))
+            books.append((path, entries))
+        return shortcuts, books
+
+    @staticmethod
+    def _v2_enhancer_reference(text, sources):
+        """Reference appended after the prompt the enhancer rewrites. Per source — the picked
+        shortcuts as one, each lorebook file on its own — the entries the prompt mentions, or
+        the whole source when it mentions none (the model may need what the prompt does not
+        name). A shortcut is mentioned by its name, a trigger, or its content (already
+        expanded into the text); a lore entry by its keywords, constant entries joining any match."""
+        shortcuts, books = sources or ([], [])
+        low = str(text or "").lower()
+        blocks = []
+
+        def said(words):
+            return any(str(w).strip() and str(w).strip().lower() in low for w in words)
+
+        def sc_block(sc):
+            reps = [r for r in (sc.get("replacements") or []) if str(r).strip()]
+            lines = [f"[Shortcut] {sc.get('name', '')}"]
+            lines += reps if len(reps) == 1 else [f"Variant {i + 1}: {r}" for i, r in enumerate(reps)]
+            return "\n".join(lines)
+
+        hit = [sc for sc in shortcuts
+               if said([sc.get("name", "")] + list(sc.get("triggers") or []) + list(sc.get("replacements") or []))]
+        blocks += [sc_block(sc) for sc in (hit or shortcuts)]
+
+        lore = FunPackLorebookEnhancer()
+        for _path, entries in books:
+            # constants ride along with a match, but never count as one on their own
+            hit = [e for e in entries if lore._match_keys(e.get("keys", e.get("key", [])), low)]
+            if hit:
+                hit = [e for e in entries if e.get("constant") or e in hit]
+            blocks += [f"[Lore] {e.get('comment') or e.get('name') or 'entry'}\n{str(e['content']).strip()}"
+                       for e in (hit or entries)]
+        if not blocks:
+            return ""
+        return ("\n\nReference entries. Use an entry only where the prompt calls for it, "
+                "working it in in your own words; ignore entries it does not need.\n\n"
+                + "\n\n".join(blocks))
+
     #: one enhancement per distinct (system, text) within a run — a multi-scene chain often
     #: repeats an anchor line across scenes, and each call is a full LLM generation
     def _v2_enhance_prompt(self, clip, text, system_prompt, cache=None, seed=None,
                            temperature=0.7, top_p=0.92, max_length=400, thinking=False,
                            image=None, top_k=50, min_p=0.05, repetition_penalty=1.3,
-                           presence_penalty=0.0, do_sample=True):
+                           presence_penalty=0.0, do_sample=True, reference=""):
         """Rewrite one prompt through the advisor LLM, BEFORE it is encoded.
 
         This is not the repair advisor. That one is triggered by a rating and fixes a named
@@ -8986,11 +9054,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         original = str(text or "").strip()
         if not original:
             return text, "Prompt enhancer: skipped; prompt empty."
-        key = (str(system_prompt), original)
+        key = (str(system_prompt), original, str(reference or ""))
         if cache is not None and key in cache:
             return cache[key], "Prompt enhancer: reused."
         raw, status = self._v2_generate_advisor_text(
-            clip, system_prompt, original, seed=seed, image=image, thinking=bool(thinking),
+            clip, system_prompt, original + str(reference or ""), seed=seed, image=image, thinking=bool(thinking),
             max_length=max_length, temperature=temperature, top_p=top_p,
             min_floor=32, label="Prompt enhancer", top_k=top_k, min_p=min_p,
             repetition_penalty=repetition_penalty, presence_penalty=presence_penalty,
@@ -9921,6 +9989,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   prompt_enhance_max_length=400, prompt_enhance_thinking=False,
                   prompt_enhance_image=None, prompt_enhance_sampling=None,
                   prompt_enhance_output=False, prompt_enhance_scenes=True,
+                  prompt_enhance_shortcuts=None, prompt_enhance_lorebooks=None,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
@@ -10568,6 +10637,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         self._v2_enhanced_prompts = []
         _enhance_clip = advisor_clip          # already falls back to `clip` at the top
         _enhance_system = str(prompt_enhance_system or "").strip() or V2_PROMPT_ENHANCER_SYSTEM_PROMPT
+        # Reference the user picked in Composer ▸ Enhance (shortcuts, lorebooks): loaded once
+        # per run, matched against each prompt, appended after it.
+        _enhance_sources = self._v2_enhancer_sources(
+            prompt_enhance_shortcuts, prompt_enhance_lorebooks) if prompt_enhance else ([], [])
         # When the run splits into scenes, the per-scene conditionings REPLACE this base entry
         # — so enhancing the base too would be a second full generation whose result is then
         # thrown away. One generation per prompt that is actually encoded, never two.
@@ -10588,6 +10661,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             _before = prompt_to_encode
             prompt_to_encode, _enhance_status = self._v2_enhance_prompt(
                 _enhance_clip, prompt_to_encode, _enhance_system, cache=_enhance_cache,
+                reference=self._v2_enhancer_reference(prompt_to_encode, _enhance_sources),
                 seed=_enhance_seed, temperature=prompt_enhance_temperature,
                 top_p=prompt_enhance_top_p, max_length=prompt_enhance_max_length,
                 thinking=prompt_enhance_thinking, image=prompt_enhance_image,
@@ -10607,6 +10681,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if prompt_enhance and _whole:
                 _after, _st = self._v2_enhance_prompt(
                     _enhance_clip, _whole, _enhance_system, cache=_enhance_cache,
+                    reference=self._v2_enhancer_reference(_whole, _enhance_sources),
                     seed=_enhance_seed, temperature=prompt_enhance_temperature,
                     top_p=prompt_enhance_top_p, max_length=prompt_enhance_max_length,
                     thinking=prompt_enhance_thinking, image=prompt_enhance_image,
@@ -10856,6 +10931,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         for _i, t in enumerate(split_scene_texts):
                             _after, _st = self._v2_enhance_prompt(
                                 _enhance_clip, t, _enhance_system, cache=_enhance_cache,
+                                reference=self._v2_enhancer_reference(t, _enhance_sources),
                                 seed=_enhance_seed, temperature=prompt_enhance_temperature,
                                 top_p=prompt_enhance_top_p,
                                 max_length=prompt_enhance_max_length,
@@ -13852,6 +13928,8 @@ class FunPackStudio:
             prompt_enhance=bool(rf.get("prompt_enhance", False)),
             prompt_enhance_output=bool(rf.get("prompt_enhance_output", False)),
             prompt_enhance_scenes=bool(rf.get("prompt_enhance_scenes", True)),
+            prompt_enhance_shortcuts=rf.get("prompt_enhance_shortcuts") or [],
+            prompt_enhance_lorebooks=rf.get("prompt_enhance_lorebooks") or [],
             prompt_enhance_system=str(rf.get("prompt_enhance_system", "") or ""),
             prompt_enhance_temperature=float(rf.get("prompt_enhance_temperature", 0.7)),
             prompt_enhance_top_p=float(rf.get("prompt_enhance_top_p", 0.92)),

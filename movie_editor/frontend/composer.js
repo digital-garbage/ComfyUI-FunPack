@@ -595,7 +595,7 @@
       const box = el("div", "sc-picker");
       function pickShortcut(sc) {
         const trig = (sc.triggers || [])[0] || sc.name;
-        if (trig) onPick(trig);
+        if (trig) onPick(trig, sc);
         close();
       }
       function shortcutRow(sc) {
@@ -975,6 +975,7 @@
     prompt_enhance_min_p: 0.05, prompt_enhance_repetition_penalty: 1.3,
     prompt_enhance_presence_penalty: 0, prompt_enhance_seed: 0, prompt_enhance_greedy: false,
     prompt_enhance_thinking: false, prompt_enhance_use_image: true,
+    prompt_enhance_shortcuts: [], prompt_enhance_lorebooks: [],
   };
   // `sampled`: only read while sampling. Greedy returns the single likeliest word before
   // ComfyUI looks at any of them, so they disappear rather than sit there doing nothing.
@@ -1063,6 +1064,63 @@
     return card;
   }
 
+  // Reference material for the model, like a lorebook: picked shortcuts and lorebook entries
+  // (name + content) appended after the prompt it rewrites — the mentioned ones, else all.
+  function enhanceReference(st, val) {
+    const SS = window.StudioSettings;
+    const box = el("div", "enh-ref");
+    box.append(el("div", "sw-rows-label", "Reference"));
+    box.append(el("div", "insp-hint",
+      "Added after your prompt for the model to draw on, as name + content. What your prompt mentions is sent; when it mentions nothing from a lorebook (or from these shortcuts), all of it is."));
+
+    const keys = (val("prompt_enhance_shortcuts") || []).map(String);
+    const byKey = new Map((st.shortcuts || []).map((sc) => [String(sc.key), sc]));
+    const scRow = el("div", "enh-chips");
+    keys.forEach((k) => {
+      const sc = byKey.get(k);
+      const chip = el("span", "enh-ref-chip" + (sc ? "" : " missing"), sc ? sc.name : "deleted shortcut");
+      chip.title = sc ? (sc.replacements || []).join("\n\n") : "No longer in the shortcut library — skipped.";
+      const x = el("button", "enh-ref-x", "✕"); x.type = "button"; x.title = "Remove";
+      x.onclick = () => { SS.patchRefiner({ prompt_enhance_shortcuts: keys.filter((q) => q !== k) }, true); repaintAll(); };
+      chip.append(x);
+      scRow.append(chip);
+    });
+    const addSc = el("button", "btn ghost tiny", "＋ Shortcut");
+    addSc.type = "button";
+    addSc.onclick = () => openShortcutPicker((_trig, sc) => {
+      const k = sc && String(sc.key);
+      if (!k || keys.includes(k)) return;
+      SS.patchRefiner({ prompt_enhance_shortcuts: keys.concat(k) }, true); repaintAll();
+    });
+    scRow.append(addSc);
+    box.append(scRow);
+
+    const paths = (val("prompt_enhance_lorebooks") || []).map(String);
+    const lbList = el("div", "enh-chips");
+    paths.forEach((p) => {
+      const chip = el("span", "enh-ref-chip", p.split(/[\\/]/).pop());
+      chip.title = p;
+      const x = el("button", "enh-ref-x", "✕"); x.type = "button"; x.title = "Remove";
+      x.onclick = () => { SS.patchRefiner({ prompt_enhance_lorebooks: paths.filter((q) => q !== p) }, true); repaintAll(); };
+      chip.append(x);
+      lbList.append(chip);
+    });
+    box.append(lbList);
+    const lbRow = el("div", "enh-ref-add");
+    const lbIn = el("input", "lib-in"); lbIn.placeholder = "Lorebook JSON path on the ComfyUI machine";
+    const lbAdd = el("button", "btn ghost tiny", "＋ Lorebook"); lbAdd.type = "button";
+    const addLb = () => {
+      const p = lbIn.value.trim();
+      if (!p || paths.includes(p)) return;
+      SS.patchRefiner({ prompt_enhance_lorebooks: paths.concat(p) }, true); repaintAll();
+    };
+    lbAdd.onclick = addLb;
+    lbIn.onkeydown = (e) => { if (e.key === "Enter") addLb(); };
+    lbRow.append(lbIn, lbAdd);
+    box.append(lbRow);
+    return box;
+  }
+
   function enhanceTab(st) {
     const wrap = el("div", "bin enh-bin");
     const SS = window.StudioSettings;
@@ -1113,6 +1171,7 @@
       ta.oninput = () => SS.patchRefiner({ prompt_enhance_system: ta.value }, false);
       ta.onchange = () => SS.patchRefiner({ prompt_enhance_system: ta.value }, true);
       wrap.append(ta);
+      wrap.append(enhanceReference(st, val));
 
       const greedy = !!val("prompt_enhance_greedy");
       ENH_GROUPS.forEach((g) => {
@@ -1251,6 +1310,8 @@
       en: !!(st.project && window.StudioSettings?.read(st.project).rf.prompt_enhance),
       eg: !!(st.project && window.StudioSettings?.read(st.project).rf.prompt_enhance_greedy),
       eh: st.enhanced?.promptId || null,
+      er: st.project ? JSON.stringify([window.StudioSettings?.read(st.project).rf.prompt_enhance_shortcuts,
+        window.StudioSettings?.read(st.project).rf.prompt_enhance_lorebooks]) : null,
     });
     // A deferred repaint also flushes on the next notify: focusout never fires when focus
     // moves while the window itself is in the background.

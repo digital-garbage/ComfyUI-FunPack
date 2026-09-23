@@ -190,6 +190,8 @@ _OWNED_EXTRA = {
     "prompt_enhance_presence_penalty": ("prompt_enhance", ('true',)),
     "prompt_enhance_seed": ("prompt_enhance", ('true',)),
     "prompt_enhance_greedy": ("prompt_enhance", ('true',)),
+    "prompt_enhance_shortcuts": ("prompt_enhance", ('true',)),
+    "prompt_enhance_lorebooks": ("prompt_enhance", ('true',)),
 }
 
 _OWNED_BY = {
@@ -343,6 +345,8 @@ _EDITOR_DEFAULTS = {
     "prompt_enhance_presence_penalty": 0.0,
     "prompt_enhance_seed": 0,
     "prompt_enhance_greedy": False,
+    "prompt_enhance_shortcuts": [],
+    "prompt_enhance_lorebooks": [],
     "reference_injection": False,
     "score_slider": False,
     "score_slider_strength": 1.0,
