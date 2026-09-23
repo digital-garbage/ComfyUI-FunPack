@@ -553,3 +553,18 @@ def test_names_and_keywords_match_whole_words_only(tmp_path, monkeypatch):
     assert "grey sea" not in ref                                      # "season" is not "sea"
     assert "old port" in ref                                          # entry opted out of whole words
     assert "black tower" in ref                                       # regex key
+
+
+def test_a_word_from_inside_a_shortcut_finds_it_even_when_another_matches(tmp_path):
+    import json as _json
+    pack = tmp_path / "library.json"
+    pack.write_text(_json.dumps({"shortcuts": {
+        "a": {"name": "Mira", "triggers": ["/mira"], "replacements": ["woman in a crimson trench coat"]},
+        "b": {"name": "Night", "triggers": ["/night"], "replacements": ["moonlit street"]},
+        "c": {"name": "Rain", "triggers": ["/rain"], "replacements": ["heavy rain"]}}}))
+    src = C.FunPackVideoRefinerV2._v2_enhancer_sources([], [str(pack)])
+    ref = C.FunPackVideoRefinerV2._v2_enhancer_reference("a figure in a trench coat at night", src)
+    assert "[Shortcut] Mira" in ref and "[Shortcut] Night" in ref      # "trench" + name "night"
+    assert "heavy rain" not in ref
+    # filler words never count: "with the" alone mentions nothing, so the whole file goes
+    assert "heavy rain" in C.FunPackVideoRefinerV2._v2_enhancer_reference("with the", src)

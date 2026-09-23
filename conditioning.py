@@ -3659,6 +3659,24 @@ Rules:
 #: The prompt enhancer's default instructions. Separate from the repair advisor above: that
 #: one is triggered by a rating and fixes a named fault, this one runs on every generation and
 #: only elaborates. Kept short so a user editing it can actually read it.
+# Filler that says nothing about which shortcut a prompt means. Without this, every shortcut
+# containing "the" or "with" would match every prompt.
+_ENHANCER_STOPWORDS = frozenset("""
+the and with from into onto over under for but not are was were been being has have had
+its his her hers their theirs them they she him you your yours our ours this that these
+those there here then than very just only also some any all each every both few more most
+other such own same too can will would could should may might must does did doing done
+while when where which who whom whose what why how about above after again against
+before below between during out off once further through until upon via per
+""".split())
+
+
+def _enhancer_vocab(text):
+    """Meaningful words (letters only, 3+ long, not filler) of `text`, lowercased."""
+    return {w for w in re.findall(r"[^\W\d_]{3,}", str(text or "").lower())
+            if w not in _ENHANCER_STOPWORDS}
+
+
 V2_PROMPT_ENHANCER_SYSTEM_PROMPT = """You expand short video prompts into detailed ones for a text-to-video model.
 
 Rules:
@@ -8988,7 +9006,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             lines += reps if len(reps) == 1 else [f"Variant {i + 1}: {r}" for i, r in enumerate(reps)]
             # triggers are already expanded away, so the content counts as a mention too
             return {"block": "\n".join(lines),
-                    "words": [sc.get("name", "")] + list(sc.get("triggers") or []) + reps}
+                    "words": [sc.get("name", "")] + list(sc.get("triggers") or []) + reps,
+                    # any meaningful word of its name or content, typed in the prompt, counts
+                    "vocab": _enhancer_vocab(" ".join([str(sc.get("name", ""))] + reps))}
 
         groups = []
         keys = [str(k) for k in (shortcut_keys or []) if str(k).strip()]
@@ -9027,7 +9047,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_enhancer_reference(text, sources):
         """Reference appended after the prompt the enhancer rewrites. Per group: the entries
         the prompt mentions, or the whole group when it mentions none (the model may need
-        what the prompt does not name). Shortcuts are mentioned by name, trigger or content;
+        what the prompt does not name). Shortcuts are mentioned by name, trigger, content, or
+        any meaningful word of their name or content;
         lore entries by their keywords, constant entries joining any match."""
         low = str(text or "").lower()
 
@@ -9045,7 +9066,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # whole words only: "rain" is not in "train", "sea" is not in "season"
             return re.search(r"(?<!\w)" + re.escape(word.lower()) + r"(?!\w)", low) is not None
 
+        typed = _enhancer_vocab(low)
+
         def mentioned(e):
+            if e.get("vocab") and typed & e["vocab"]:
+                return True
             if "keys" in e:
                 keys = e["keys"]
                 if isinstance(keys, str):
