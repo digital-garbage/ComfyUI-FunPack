@@ -984,7 +984,7 @@
       { name: "prompt_enhance_use_image", label: "Show it Studio's image", kind: "bool",
         hint: "Hands it the picture connected to Studio's source_image, if there is one. Only helps a model that can see." },
       { name: "prompt_enhance_thinking", label: "Think first", kind: "bool",
-        hint: "Reasons before answering, if the model can. Slower; the reasoning is removed." },
+        hint: "Reasons before answering, if the model can (Qwen3, Gemma 4; not Gemma 3). Slower. The reasoning shows under Last run and never goes into the prompt." },
       { name: "prompt_enhance_max_length", label: "Max tokens", kind: "int", min: 32, max: 4096, step: 32,
         hint: "Most it may write. Longer is richer and slower." },
     ] },
@@ -1058,6 +1058,14 @@
     if (changed) {
       const det = el("details", "enh-before");
       det.append(el("summary", null, "What went in"), el("div", "enh-before-text", before));
+      card.append(det);
+    }
+    // The model's reasoning before it answered ("Think first"); never part of the prompt.
+    const thought = String(it.thinking || "").trim();
+    if (thought) {
+      const det = el("details", "enh-before");
+      det.append(el("summary", null, "Model's thinking"),
+        el("div", "enh-before-text enh-ref-sent", thought));
       card.append(det);
     }
     // What was appended after the prompt (Enhance ▸ Reference) — the model read it too.

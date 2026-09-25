@@ -568,3 +568,31 @@ def test_a_word_from_inside_a_shortcut_finds_it_even_when_another_matches(tmp_pa
     assert "heavy rain" not in ref
     # filler words never count: "with the" alone mentions nothing, so the whole file goes
     assert "heavy rain" in C.FunPackVideoRefinerV2._v2_enhancer_reference("with the", src)
+
+
+# ── the model's thinking reaches the readout, never the prompt ───────────────
+
+def test_thinking_is_kept_for_the_readout_and_out_of_the_prompt(studio):
+    clip = FakeClip("<think>She wants mood, so add rain.</think>A cat in the rain.")
+    out, _ = studio._v2_enhance_prompt(clip, "a cat", "SYS", thinking=True)
+    assert out == "A cat in the rain."
+    assert studio._v2_last_thinking == "She wants mood, so add rain."
+
+
+def test_thinking_opened_by_the_template_is_still_found(studio):
+    clip = FakeClip("Mood first.\n</think>\nA cat.")
+    out, _ = studio._v2_enhance_prompt(clip, "a cat", "SYS", thinking=True)
+    assert out == "A cat." and studio._v2_last_thinking == "Mood first."
+
+
+def test_no_thinking_means_an_empty_readout(studio):
+    studio._v2_enhance_prompt(FakeClip("A cat."), "a cat", "SYS")
+    assert studio._v2_last_thinking == ""
+
+
+def test_the_advisor_llm_wrapper_hands_over_its_stripped_reasoning():
+    w = C._FunPackAdvisorLLMWrapper.__new__(C._FunPackAdvisorLLMWrapper)
+    w._tokenizer = types.SimpleNamespace(decode=lambda ids, skip_special_tokens=False:
+                                         "<think>plan it</think>A dog.<|im_end|>")
+    text = w.decode({"output_ids": [[1, 2, 3]], "prompt_length": 0})
+    assert text == "A dog." and w.last_thinking == "plan it"

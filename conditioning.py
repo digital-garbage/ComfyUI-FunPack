@@ -9104,14 +9104,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         resolve — the model is handed exactly the text that would otherwise have been encoded.
 
         Returns (text, status). On any failure the ORIGINAL text is returned: a generation
-        that did not happen must not silently empty the prompt.
+        that did not happen must not silently empty the prompt. What the model reasoned
+        before answering, if it did, is left on `self._v2_last_thinking` for the readout.
         """
+        self._v2_last_thinking = ""
         original = str(text or "").strip()
         if not original:
             return text, "Prompt enhancer: skipped; prompt empty."
         key = (str(system_prompt), original, str(reference or ""))
         if cache is not None and key in cache:
+            self._v2_last_thinking = cache.get(("thinking",) + key, "")
             return cache[key], "Prompt enhancer: reused."
+        if isinstance(clip, _FunPackAdvisorLLMWrapper):
+            clip.last_thinking = ""           # a failed call must not show the last one's
         raw, status = self._v2_generate_advisor_text(
             clip, system_prompt, original + str(reference or ""), seed=seed, image=image, thinking=bool(thinking),
             max_length=max_length, temperature=temperature, top_p=top_p,
@@ -9119,6 +9124,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             repetition_penalty=repetition_penalty, presence_penalty=presence_penalty,
             do_sample=do_sample,
         )
+        self._v2_last_thinking = self._v2_extract_thinking(raw) or str(getattr(clip, "last_thinking", "") or "")
         enhanced, overran = self._v2_trim_runaway_prompt(
             self._v2_clean_enhanced_prompt(raw), max_length=max_length)
         if overran:
@@ -9129,6 +9135,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                               else "Prompt enhancer: model returned nothing; prompt unchanged.")
         if cache is not None:
             cache[key] = enhanced
+            cache[("thinking",) + key] = self._v2_last_thinking
         # `status` carries where it ran, how long it took and whether the model stopped on its
         # own — all invisible from the text alone, and all of it is what a slow or runaway run
         # needs in order to be diagnosed instead of guessed at.
@@ -9201,6 +9208,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if cut > cap // 4:                     # a sentence end late enough to be worth using
             return head[:cut + 1].strip(), True
         return head.rsplit(" ", 1)[0].strip(), True
+
+    @staticmethod
+    def _v2_extract_thinking(raw):
+        """The reasoning a thinking model wrote before its answer: `<think>…</think>` (Qwen3,
+        and Gemma 4 once ComfyUI decodes its thought channel), or everything before a lone
+        `</think>` when the template opened the block itself. "" when there is none."""
+        text = str(raw or "")
+        parts = re.findall(r"(?is)<think>(.*?)(?:</think>|$)", text)
+        if not parts and "</think>" in text.lower():
+            parts = [re.split(r"(?i)</think>", text, maxsplit=1)[0]]
+        return "\n\n".join(p.strip() for p in parts if p.strip())
 
     @staticmethod
     def _v2_clean_enhanced_prompt(raw):
@@ -10728,7 +10746,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             self._v2_enhanced_prompts.append({
                 "scene": None, "before": _before, "after": prompt_to_encode,
                 "status": _enhance_status, "image": prompt_enhance_image is not None,
-                "reference": _ref.strip()})
+                "reference": _ref.strip(), "thinking": self._v2_last_thinking})
 
         # Studio's `enhanced_prompt` output, for a node encoding on its own (Editor link
         # "Enhanced prompt, fallback to prompt + postfix"). The same text that link's
@@ -10748,7 +10766,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 print(f"[FunPackVideoRefinerV2] Enhanced prompt output: {_st}")
                 self._v2_enhanced_prompts.append({
                     "scene": None, "before": _whole, "after": _after, "status": _st,
-                    "image": prompt_enhance_image is not None, "reference": _ref.strip()})
+                    "image": prompt_enhance_image is not None, "reference": _ref.strip(),
+                    "thinking": self._v2_last_thinking})
                 _whole = _after
             self._v2_enhanced_output = _whole
 
@@ -11001,7 +11020,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             self._v2_enhanced_prompts.append({
                                 "scene": _i, "before": t, "after": _after, "status": _st,
                                 "image": prompt_enhance_image is not None,
-                                "reference": _ref.strip()})
+                                "reference": _ref.strip(), "thinking": self._v2_last_thinking})
                             _enhanced_texts.append(_after)
                         split_scene_texts = _enhanced_texts
                     scene_refinement_keys = [set(s.get("keys") or set()) for s in canon_scenes]
@@ -13122,6 +13141,9 @@ class _FunPackAdvisorLLMWrapper:
         # IDs - with skip_special_tokens=True they vanish silently and the raw
         # reasoning content bleeds into the output as if it were the response.
         text = self._tokenizer.decode(new_tokens, skip_special_tokens=False)
+        # Kept for the prompt enhancer's readout; the returned text stays reasoning-free.
+        self.last_thinking = "\n\n".join(
+            m.strip() for m in re.findall(r"(?is)<think>(.*?)(?:</think>|$)", text) if m.strip())
         # Strip complete thinking blocks first, then any truncated one (no closing tag).
         text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
         text = re.sub(r"<think>[\s\S]*", "", text, flags=re.IGNORECASE)
