@@ -984,7 +984,7 @@
       { name: "prompt_enhance_use_image", label: "Show it Studio's image", kind: "bool",
         hint: "Hands it the picture connected to Studio's source_image, if there is one. Only helps a model that can see." },
       { name: "prompt_enhance_thinking", label: "Think first", kind: "bool",
-        hint: "Reasons before answering, if the model can (Qwen3, Gemma 4; not Gemma 3). Slower. The reasoning shows under Last run and never goes into the prompt." },
+        hint: "Reasons before answering, if the model can (Qwen3, Qwen3.5, Gemma 4; not Gemma 3). Slower. The reasoning shows under Last run and never goes into the prompt." },
       { name: "prompt_enhance_max_length", label: "Max tokens", kind: "int", min: 32, max: 4096, step: 32,
         hint: "Most it may write. Longer is richer and slower." },
     ] },
