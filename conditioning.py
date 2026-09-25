@@ -9209,6 +9209,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return head[:cut + 1].strip(), True
         return head.rsplit(" ", 1)[0].strip(), True
 
+    def _v2_note_enhanced(self, item):
+        """Record one rewrite for the node's ui output AND publish it live, so the Editor
+        can show it while the video is still rendering (and the user can stop a bad one)."""
+        self._v2_enhanced_prompts.append(item)
+        try:
+            from . import run_phase as _rp
+        except ImportError:
+            import run_phase as _rp
+        _rp.publish_enhanced(item)
+
     @staticmethod
     def _v2_extract_thinking(raw):
         """The reasoning a thinking model wrote before its answer: `<think>…</think>` (Qwen3,
@@ -10708,6 +10718,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # What the enhancer wrote, per encoded prompt — Studio hands it to the Editor as a
         # node ui output so the Composer can show before/after. A readout, never read back.
         self._v2_enhanced_prompts = []
+        if prompt_enhance:
+            try:
+                from . import run_phase as _rp
+            except ImportError:
+                import run_phase as _rp
+            _rp.reset_enhanced()
         _enhance_clip = advisor_clip          # already falls back to `clip` at the top
         _enhance_system = str(prompt_enhance_system or "").strip() or V2_PROMPT_ENHANCER_SYSTEM_PROMPT
         # Reference the user picked in Composer ▸ Enhance (shortcuts, lorebooks): loaded once
@@ -10743,7 +10759,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 **_enhance_sampling,
             )
             print(f"[FunPackVideoRefinerV2] {_enhance_status}")
-            self._v2_enhanced_prompts.append({
+            self._v2_note_enhanced({
                 "scene": None, "before": _before, "after": prompt_to_encode,
                 "status": _enhance_status, "image": prompt_enhance_image is not None,
                 "reference": _ref.strip(), "thinking": self._v2_last_thinking})
@@ -10764,7 +10780,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     thinking=prompt_enhance_thinking, image=prompt_enhance_image,
                     **_enhance_sampling)
                 print(f"[FunPackVideoRefinerV2] Enhanced prompt output: {_st}")
-                self._v2_enhanced_prompts.append({
+                self._v2_note_enhanced({
                     "scene": None, "before": _whole, "after": _after, "status": _st,
                     "image": prompt_enhance_image is not None, "reference": _ref.strip(),
                     "thinking": self._v2_last_thinking})
@@ -11017,7 +11033,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                 thinking=prompt_enhance_thinking, image=prompt_enhance_image,
                                 **_enhance_sampling)
                             print(f"[FunPackVideoRefinerV2] Scene {_i + 1}: {_st}")
-                            self._v2_enhanced_prompts.append({
+                            self._v2_note_enhanced({
                                 "scene": _i, "before": t, "after": _after, "status": _st,
                                 "image": prompt_enhance_image is not None,
                                 "reference": _ref.strip(), "thinking": self._v2_last_thinking})

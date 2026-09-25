@@ -62,3 +62,30 @@ def test_the_bridge_reads_the_same_sys_key_without_importing_this_module():
     # ...and the poll must not have grown an import back.
     poll = src.split("def current_progress(")[1].split("\ndef ")[0]
     assert "import_module" not in poll and "_funpack_attr" not in poll
+
+
+# ── live prompt-enhancer readout ─────────────────────────────────────────────
+
+def _on_run(monkeypatch, run_id):
+    import server
+    monkeypatch.setattr(server.PromptServer, "instance",
+                        type("S", (), {"last_prompt_id": run_id})(), raising=False)
+
+
+def test_rewrites_are_published_live_and_tagged_with_their_run(monkeypatch):
+    other = _second_import()
+    _on_run(monkeypatch, "run-1")
+    run_phase.reset_enhanced()
+    run_phase.publish_enhanced({"scene": 0, "after": "A"})
+    other.publish_enhanced({"scene": 1, "after": "B"})      # the other import path adds to it
+    live = sys._funpack_run_phase["enhanced"]
+    assert live["prompt_id"] == "run-1" and [i["after"] for i in live["items"]] == ["A", "B"]
+
+
+def test_a_new_run_never_carries_the_last_runs_rewrite(monkeypatch):
+    _on_run(monkeypatch, "run-1")
+    run_phase.publish_enhanced({"after": "old"})
+    _on_run(monkeypatch, "run-2")
+    run_phase.publish_enhanced({"after": "new"})
+    live = sys._funpack_run_phase["enhanced"]
+    assert live["prompt_id"] == "run-2" and [i["after"] for i in live["items"]] == ["new"]

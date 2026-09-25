@@ -62,3 +62,40 @@ def current() -> dict:
         return {"label": st["label"], "seq": st["seq"]}
     except Exception:  # noqa: BLE001
         return {"label": "", "seq": 0}
+
+
+# ── live prompt-enhancer readout ─────────────────────────────────────────────
+# Studio rewrites prompts BEFORE sampling, but ComfyUI's history only exists once the whole
+# run ends — so a bad rewrite used to surface after the GPU had already spent the render on
+# it. Studio publishes each rewrite here the moment it has it; the Editor's progress poll
+# shows it straight away, tagged with the run it belongs to so a new run never shows the
+# previous one's text. Same rules as the phase label: best-effort, never read back.
+
+def _run_id():
+    try:
+        from server import PromptServer
+        return str(getattr(PromptServer.instance, "last_prompt_id", "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def reset_enhanced() -> None:
+    """A new Studio run begins: nothing enhanced yet for this run."""
+    try:
+        _state()["enhanced"] = {"prompt_id": _run_id(), "items": []}
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def publish_enhanced(item: dict) -> None:
+    """One rewrite, as soon as the model returns it."""
+    try:
+        st = _state()
+        cur = st.get("enhanced")
+        run = _run_id()
+        if not isinstance(cur, dict) or cur.get("prompt_id") != run:
+            cur = {"prompt_id": run, "items": []}
+        cur = {"prompt_id": run, "items": list(cur["items"]) + [dict(item)]}
+        st["enhanced"] = cur
+    except Exception:  # noqa: BLE001
+        pass

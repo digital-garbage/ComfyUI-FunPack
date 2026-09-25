@@ -143,3 +143,15 @@ def test_only_the_tail_of_a_huge_log_is_read(logfile):
     logfile.write_text("\n".join(f"line {i}" for i in range(200_000)) + "\n")
     out = bridge.recent_log(5)
     assert len(out) == 5 and out[-1] == "line 199999"
+
+
+def test_progress_carries_the_live_enhanced_rewrite(monkeypatch):
+    import sys as _sys
+    from movie_editor.backend import bridge
+    monkeypatch.setattr(bridge, "_install_progress_hook", lambda: None)
+    monkeypatch.setattr(_sys, "_funpack_run_phase", {"label": "", "seq": 1, "enhanced": {
+        "prompt_id": "p1", "items": [{"after": "A cat in the rain."}]}}, raising=False)
+    got = bridge.current_progress()["enhanced"]
+    assert got == {"prompt_id": "p1", "items": [{"after": "A cat in the rain."}]}
+    monkeypatch.setattr(_sys, "_funpack_run_phase", {"label": "", "seq": 1}, raising=False)
+    assert bridge.current_progress()["enhanced"] is None

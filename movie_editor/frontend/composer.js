@@ -1201,7 +1201,13 @@
       });
     }
 
-    wrap.append(el("div", "sw-rows-label", "Last run"));
+    const live = !!(st.enhanced && st.enhanced.live)
+      && ["queuing", "running", "pending"].includes(st.gen?.state);
+    wrap.append(el("div", "sw-rows-label", live ? "This run — rendering now" : "Last run"));
+    if (live) {
+      wrap.append(el("div", "enh-hero-note",
+        "The video is still rendering from this prompt. Not what you wanted? Stop the generation now, before it spends the GPU."));
+    }
     const items = (st.enhanced && st.enhanced.items) || [];
     if (!items.length) {
       wrap.append(el("div", "enh-empty", on
@@ -1327,7 +1333,8 @@
       // Typed values stay out: a repaint per keystroke would fight the caret.
       en: !!(st.project && window.StudioSettings?.read(st.project).rf.prompt_enhance),
       eg: !!(st.project && window.StudioSettings?.read(st.project).rf.prompt_enhance_greedy),
-      eh: st.enhanced?.promptId || null,
+      eh: st.enhanced ? `${st.enhanced.promptId}:${(st.enhanced.items || []).length}:${!!st.enhanced.live}` : null,
+      gs: st.gen?.state || null,
       er: st.project ? JSON.stringify([window.StudioSettings?.read(st.project).rf.prompt_enhance_shortcuts,
         window.StudioSettings?.read(st.project).rf.prompt_enhance_lorebooks]) : null,
     });

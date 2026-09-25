@@ -3480,6 +3480,14 @@
         if (_interrupted) return;
         try {
           const pr = await API.progress();
+          // The enhancer's rewrite, live — it happens before sampling, so it can be read (and
+          // a bad one stopped) long before the render ends. Only this run's, never the last.
+          const live = pr && pr.enhanced;
+          if (live && live.prompt_id === promptId
+              && (state.enhanced?.promptId !== promptId
+                || (state.enhanced.items || []).length !== live.items.length)) {
+            set({ enhanced: { promptId, items: live.items, live: true } });
+          }
           if (pr && pr.max > 0) {
             const phase = pr.label ? `  ·  ${pr.label}` : "";
             updateGenProgress({
@@ -3502,7 +3510,7 @@
           const s = await API.status(state.project.id, promptId);
           transientStreak = 0;
           // Studio runs before sampling, so a run that fails later still carries this.
-          if (s.enhanced && state.enhanced?.promptId !== promptId) {
+          if (s.enhanced && (state.enhanced?.promptId !== promptId || state.enhanced?.live)) {
             set({ enhanced: { promptId, items: s.enhanced } });
           }
           if (s.state === "error") {

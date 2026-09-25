@@ -811,6 +811,7 @@ def current_progress() -> dict:
     """
     _install_progress_hook()
     label = ""
+    enhanced = None
     try:
         # Read run_phase's state straight off `sys` — deliberately NO import on this path.
         # The editor polls this every 700ms DURING sampling, on ComfyUI's event loop, so it
@@ -820,9 +821,16 @@ def current_progress() -> dict:
         _phase = getattr(sys, "_funpack_run_phase", None)
         if isinstance(_phase, dict):
             label = str(_phase.get("label") or "")
+            # Prompt-enhancer rewrites as they happen (run_phase.publish_enhanced), tagged
+            # with their run; the client shows them only for the run it is waiting on.
+            _enh = _phase.get("enhanced")
+            if isinstance(_enh, dict) and _enh.get("items"):
+                enhanced = {"prompt_id": str(_enh.get("prompt_id") or ""),
+                            "items": list(_enh["items"])}
     except Exception:  # noqa: BLE001 — a readout must never break the progress poll
         pass
-    return {"value": _progress["value"], "max": _progress["max"], "label": label}
+    return {"value": _progress["value"], "max": _progress["max"], "label": label,
+            "enhanced": enhanced}
 
 
 async def is_running(prompt_id: str) -> bool:

@@ -2342,3 +2342,16 @@ def test_last_run_readout_shows_the_reference_that_was_sent(tmp_path, monkeypatc
                       prompt_enhance_output=True, prompt_enhance_shortcuts=["k1"])
     item = refiner._v2_enhanced_prompts[-1]
     assert item["before"] == "a cat" and item["reference"].count("[Shortcut] Mira\nred coat") == 1
+
+
+def test_each_rewrite_is_published_live_before_the_run_ends(tmp_path):
+    import run_phase
+    refiner = FunPackVideoRefinerV2()
+    refiner._v2_state_path = lambda refinement_key: str(tmp_path / "state.json")
+    refiner.refine_v2("a cat", GeneratingClip("a vivid cat"), "Unrated", "live-enh",
+                      link_texts={"full_prompt": "a cat"}, prompt_enhance=True,
+                      prompt_enhance_output=True)
+    live = run_phase._state().get("enhanced") or {}
+    # Studio's own prompt and its enhanced_prompt output: both published, same as the readout
+    assert [i["after"] for i in live.get("items", [])] == [i["after"] for i in refiner._v2_enhanced_prompts]
+    assert live["items"] and all(i["after"] == "a vivid cat" for i in live["items"])

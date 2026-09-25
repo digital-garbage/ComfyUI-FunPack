@@ -409,7 +409,7 @@ def test_studio_gates_the_image_on_its_own_switch():
 
 def test_every_rewrite_is_reported_for_the_composer():
     src = _refine_source()
-    assert src.count("self._v2_enhanced_prompts.append(") == 3
+    assert src.count("self._v2_note_enhanced(") == 3
     import inspect
     assert '{"ui": {"funpack_enhanced": enhanced}, "result": result}' in inspect.getsource(C.FunPackStudio.run)
 
