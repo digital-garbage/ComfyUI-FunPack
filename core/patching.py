@@ -61,6 +61,15 @@ def strip(patcher, prefix: str) -> int:
     options = getattr(patcher, "model_options", None)
     if isinstance(options, dict):
         removed += _strip_options(options, prefix)
+
+    # add_object_patch entries (a module attribute swapped at load time) are
+    # keyed by attribute path, so a clone carries ours forward too; without this
+    # a feature switched OFF kept its patch on a model that went round again.
+    objects = getattr(patcher, "object_patches", None)
+    if isinstance(objects, dict):
+        for name in [n for n, v in objects.items() if _ours(v, prefix)]:
+            objects.pop(name, None)
+            removed += 1
     return removed
 
 
