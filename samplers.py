@@ -8190,7 +8190,10 @@ class FunPackLTXAVSceneChainSampler:
                         h = dit[_i](h, args["t_emb"], args["mod_segments"], args["rope_freqs"],
                                     transformer_options=args.get("transformer_options"))
                     return {"img": h}
-                before = h if _video_only else None
+                # A COPY: H3 blocks add their residual into the input tensor in place
+                # (_mod_gate's addcmul_), so a reference would be overwritten by the span's
+                # first pass and "video only" would re-run text/audio from repeated rows.
+                before = h.clone() if _video_only else None
                 for _pass in range(_times + 1):
                     for _i in range(lo, hi + 1):
                         h = dit[_i](h, args["t_emb"], args["mod_segments"], args["rope_freqs"],
@@ -8290,7 +8293,10 @@ class FunPackLTXAVSceneChainSampler:
                     out = run(args)
                     if not self._in_last_steps(args, _last_steps):
                         return {"img": out}
-                    first = out if _video_only else None
+                    # A COPY: the next pass runs the block on `out`, and H3 blocks add their
+                    # residual into the input in place, so a reference would be the REPEATED
+                    # result by the time text/audio rows are restored from it.
+                    first = out.clone() if _video_only else None
                     for _ in range(_times):
                         # A fresh args dict each pass: the block reads "img" from it, and
                         # mutating the caller's dict would leak the intermediate state back

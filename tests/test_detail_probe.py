@@ -263,6 +263,65 @@ def test_an_existing_patch_at_the_same_block_is_repeated_not_dropped():
     assert float(out["img"]) == 2.0
 
 
+# --- video_only against a block that writes IN PLACE, the way H3's do --------------
+#
+# H3's DiT blocks add their residual into the input tensor (_mod_gate uses addcmul_). A
+# block that returned a fresh tensor hid the bug: holding a REFERENCE to the single-pass
+# result was fine until the next pass wrote into it, and then text/audio rows were
+# "restored" from the repeated stream. Rows 0-1 are audio, rows 2-3 target video.
+
+_SEGS = [(0, 2, 2), (2, 4, 0)]          # (start, stop, mod row): audio tag 2, video tag 0
+
+
+def _in_place_block(args):
+    img = args["img"]
+    img.add_(1.0)
+    return {"img": img}
+
+
+def test_video_only_repeat_keeps_audio_single_pass_with_an_in_place_block():
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    patched = s._install_block_repeat(_Model(), {0}, 1, video_only=True)
+    hook = patched.model_options["transformer_options"]["patches_replace"]["dit"][
+        ("double_block", 0)]
+    out = hook({"img": torch.zeros(4, 2), "mod_segments": _SEGS},
+               {"original_block": _in_place_block})["img"]
+    assert torch.equal(out[:2], torch.ones(2, 2)), "audio rows got the repeat"
+    assert torch.equal(out[2:], torch.full((2, 2), 2.0)), "video rows lost the repeat"
+
+
+class _InPlaceBlock:
+    def __call__(self, h, t_emb, mod_segments, rope_freqs, transformer_options=None):
+        return h.add_(1.0)
+
+
+def _span_model(n):
+    m = _Model()
+    m.model = types.SimpleNamespace(
+        diffusion_model=types.SimpleNamespace(blocks=[_InPlaceBlock() for _ in range(n)]))
+    clone = m.clone
+
+    def cloned():
+        c = clone()
+        c.model = m.model
+        return c
+
+    m.clone = cloned
+    return m
+
+
+def test_video_only_span_loop_keeps_audio_single_pass_with_in_place_blocks():
+    s = samplers.FunPackLTXAVSceneChainSampler()
+    patched = s._install_span_loop(_span_model(2), {0, 1}, 1, video_only=True)
+    head = patched.model_options["transformer_options"]["patches_replace"]["dit"][
+        ("double_block", 0)]
+    out = head({"img": torch.zeros(4, 2), "t_emb": None, "mod_segments": _SEGS,
+                "rope_freqs": None, "transformer_options": {}}, {})["img"]
+    # The span is two blocks: one run adds 2, the loop runs it twice and adds 4.
+    assert torch.equal(out[:2], torch.full((2, 2), 2.0)), "audio rows got the loop"
+    assert torch.equal(out[2:], torch.full((2, 2), 4.0)), "video rows lost the loop"
+
+
 # --- the seed is what separates "invalid comparison" from "real result" -----------
 #
 # A low `structure` means the low-frequency picture moved. That is EITHER two different
