@@ -58,13 +58,13 @@ def test_late_guidance_banks_the_final_picture_and_steers_only_late(tiny_h3, mon
     x0 = _x0()
     wrap, outer = _load(tiny_h3, "output_guidance")
     for o in outer:
-        o(lambda: wrap(lambda *a, **k: x0, x0, None, transformer_options=_to(3)))
+        o(lambda: wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(3)))
     assert store.rate("run-1", "liked")["recorded"] == ["x0_final"]
 
     _teach("x0_final", ["final"])
     wrap, outer = _load(tiny_h3, "output_guidance")
     _start(outer)
-    assert wrap(lambda *a, **k: x0, x0, None, transformer_options=_to(1)) is x0
-    late = wrap(lambda *a, **k: x0, x0, None, transformer_options=_to(3))
+    assert wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(1)) is x0
+    late = wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(3))
     assert not torch.allclose(late.tensors[0], x0.tensors[0])
     assert late.tensors[1] is x0.tensors[1]

@@ -33,6 +33,7 @@ from .anchor import rescale_pins as _rescale_pins
 from .latent_upscaler import load_upscaler as _load_upscaler
 from . import prompt_layout as _prompt_layout
 from .rows import target_rows as _target_rows
+from .rows import text_rows as _text_rows
 from .rope import query_rotation as _query_rotation
 from .streams import video_stream as _video_stream
 
@@ -195,4 +196,5 @@ PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect,
             "prompt_rows": _prompt_layout.prompt_rows,
             "video_time_rows": _prompt_layout.video_time_rows,
             "query_rotation": _query_rotation,
-            "video_stream": _video_stream}
+            "video_stream": _video_stream,
+            "text_rows": _text_rows}

@@ -186,7 +186,8 @@ def install(patcher, values, key):
 
     def apply_model(executor, x, t, *args, **kwargs):
         out = executor(x, t, *args, **kwargs)
-        to = kwargs.get("transformer_options")
+        named = streams.model_args(args, kwargs)
+        to = named.get("transformer_options")
         split = streams.video_of(out)
         if split is None:
             _say("off this run: could not find the picture in this model's latent")
@@ -194,13 +195,13 @@ def install(patcher, values, key):
         video, rebuild = split
         if dit_hooks.last_step(to):
             captured["latent"] = video[0].detach().half()
-            cond = _pooled(kwargs.get("c_crossattn"))
+            cond = _pooled(named.get("c_crossattn"))
             if cond is not None:
                 captured["cond"] = cond
         amount = strength * dit_hooks.late_half(to)
         if amount <= 0.0:
             return out
-        shifted = shift(video, live["bank"], amount, threshold, kwargs.get("c_crossattn"))
+        shifted = shift(video, live["bank"], amount, threshold, named.get("c_crossattn"))
         return out if shifted is None else rebuild(shifted)
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)

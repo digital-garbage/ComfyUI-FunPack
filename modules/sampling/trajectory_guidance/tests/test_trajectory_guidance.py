@@ -60,7 +60,7 @@ def test_early_guidance_steers_in_the_first_quarter_and_banks_every_quarter(tiny
     wrap, outer = _load(tiny_h3, "trajectory_guidance")
 
     def run():
-        return [wrap(lambda *a, **k: x0, x0, None, transformer_options=_to(i)) for i in range(4)]
+        return [wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(i)) for i in range(4)]
 
     results = {}
     for o in outer:

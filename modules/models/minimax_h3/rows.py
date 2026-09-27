@@ -33,3 +33,14 @@ def target_rows(mod_segments, seq_len, device, stream):
     mask = torch.zeros(seq_len, dtype=torch.bool, device=device)
     mask[a:b] = True
     return mask
+
+
+def text_rows(model_kwargs, length):
+    """[length] bool mask of the WORD rows in the text conditioning the model is
+    called with, or None when it can't be told. H3's text span carries picture
+    tokens too (reference images, tag 0); words are tag 1."""
+    payload = (model_kwargs or {}).get("minimax_payload")
+    tags = payload.get("text_token_tags") if isinstance(payload, dict) else None
+    if tags is None or not hasattr(tags, "view") or tags.numel() != length:
+        return None
+    return tags.view(-1) == 1

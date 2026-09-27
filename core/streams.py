@@ -14,3 +14,20 @@ def video_of(x):
     if getattr(x, "dim", None) and not getattr(x, "is_nested", False) and x.dim() == 5:
         return x, lambda video: video
     return None
+
+
+MODEL_ARGS = ("c_concat", "c_crossattn", "control", "transformer_options")
+
+
+def model_args(args, kwargs) -> dict:
+    """An APPLY_MODEL wrapper's call, by name.
+
+    ComfyUI hands c_concat, c_crossattn, control and transformer_options on
+    POSITIONALLY (model_base.apply_model), and the model's extra conds by name.
+    Reading `kwargs.get("transformer_options")` alone finds nothing on a real
+    run -- a step gate built on it never opens, silently. A wrapper that calls
+    on with changed values may pass everything by name; this reads both shapes.
+    """
+    named = dict(zip(MODEL_ARGS, args))
+    named.update(kwargs)
+    return named

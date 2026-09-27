@@ -71,7 +71,7 @@ def test_it_banks_the_last_step_and_steers_once_rated(tiny_h3, monkeypatch):
         monkeypatch.setattr(store, "current_prompt_id", lambda i=i: f"run-{i}")
         wrap, outer, status = load()
         for o in outer:
-            o(lambda: wrap(lambda *a, **k: x0, x0, None, transformer_options=_to(3)))
+            o(lambda: wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(3)))
         assert store.rate(f"run-{i}", rating)["recorded"] == ["dynashift"]
 
     wrap, outer, _status = load()
@@ -80,8 +80,8 @@ def test_it_banks_the_last_step_and_steers_once_rated(tiny_h3, monkeypatch):
     for o in outer:
         o(lambda: None)                                     # a run starts: the bank is read
     assert any("2 disliked, 0 liked banked" in e["message"] for e in log.history())
-    early = wrap(lambda *a, **k: x0, x0, None, transformer_options=_to(1))
+    early = wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(1))
     assert early is x0                                      # first half: untouched
-    late = wrap(lambda *a, **k: x0, x0, None, transformer_options=_to(3))
+    late = wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(3))
     assert not torch.allclose(late.tensors[0], bad)
     assert late.tensors[1] is audio                          # sound untouched
