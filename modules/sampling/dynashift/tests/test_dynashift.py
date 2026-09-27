@@ -21,7 +21,7 @@ def _to(index, steps=4):
 
 
 def test_the_gate_opens_over_the_last_half_only():
-    from modules.sampling.dynashift import gate
+    from core.dit_hooks import late_half as gate
     assert [gate(_to(i)) for i in range(4)] == [0.0, 0.0, 0.0, 0.5]
     assert gate({}) == 0.0
 

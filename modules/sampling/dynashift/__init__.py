@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 from comfy.patcher_extension import WrappersMP
 
-from ..._core import dit_hooks, log, registry
+from ..._core import dit_hooks, log, registry, streams
 
 ID = "dynashift"
 TITLE = "DynaShift"
@@ -67,15 +67,6 @@ def _say(message):
     log.once(f"{ID}:{message}", log.ALERT, "FunPack DynaShift", message)
 
 
-def _video_of(x):
-    split = registry.current().ask("video_stream", x)
-    if split is not None:
-        return split
-    if torch.is_tensor(x) and x.dim() == 5:
-        return x, lambda video: video
-    return None
-
-
 def _pooled(cond):
     if not torch.is_tensor(cond):
         return None
@@ -92,17 +83,6 @@ def _frames(latent):
 
 def _fingerprint(frames):
     return F.normalize(F.adaptive_avg_pool1d(frames.unsqueeze(1), _DESC).squeeze(1), dim=-1)
-
-
-def gate(transformer_options):
-    """0 over the first half of the steps, rising to 1 at the last: the late-
-    step gate every learning feature shares, by step position so it holds on
-    any schedule (v4's sigma-based one was 0 of 12 steps on H3)."""
-    where = dit_hooks.current_step(transformer_options)
-    if where is None:
-        return 0.0
-    index, total = where
-    return max(0.0, 2.0 * index / max(1, total) - 1.0)
 
 
 class Bank:
@@ -207,7 +187,7 @@ def install(patcher, values, key):
     def apply_model(executor, x, t, *args, **kwargs):
         out = executor(x, t, *args, **kwargs)
         to = kwargs.get("transformer_options")
-        split = _video_of(out)
+        split = streams.video_of(out)
         if split is None:
             _say("off this run: could not find the picture in this model's latent")
             return out
@@ -217,7 +197,7 @@ def install(patcher, values, key):
             cond = _pooled(kwargs.get("c_crossattn"))
             if cond is not None:
                 captured["cond"] = cond
-        amount = strength * gate(to)
+        amount = strength * dit_hooks.late_half(to)
         if amount <= 0.0:
             return out
         shifted = shift(video, live["bank"], amount, threshold, kwargs.get("c_crossattn"))

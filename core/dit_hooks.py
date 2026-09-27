@@ -174,6 +174,18 @@ def last_step(transformer_options) -> bool:
     return where is None or where[0] >= where[1] - 1
 
 
+def late_half(transformer_options) -> float:
+    """0 over the first half of the steps, rising to 1 at the last: the gate
+    every learning feature that steers late shares. By step POSITION, so it
+    holds on any schedule -- v4's sigma-based gate was open on 0 of 12 steps
+    of H3's default schedule, silently. 0 when the step cannot be told."""
+    where = current_step(transformer_options)
+    if where is None:
+        return 0.0
+    index, total = where
+    return max(0.0, 2.0 * index / max(1, total) - 1.0)
+
+
 def row_span(mask):
     """A [S] bool mask of ONE contiguous run -> (start, stop), or None.
 
