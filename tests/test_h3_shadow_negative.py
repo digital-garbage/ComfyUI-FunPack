@@ -141,3 +141,42 @@ def test_empty_negative_context_yields_nothing():
                            audio_scale=1.0, tau=2.5, alpha=0.35, start_percent=0.0,
                            end_percent=0.6)
     assert sn._prepare_negative(state, torch.zeros(1, 4), {}) is None
+
+
+# --- 2026-09-27: the fix for "never ran" --------------------------------------------
+# The prompt length used to be read from transformer_options["c_crossattn"], which ComfyUI
+# never sets, so every block ran the stock forward. Proven against a real tiny H3 forward
+# outside this (stubbed) suite; these pin the pieces the fix rests on.
+
+def test_a_per_token_mod_row_is_accepted_not_int_cast():
+    rows = torch.tensor([3, 6, 9])            # all tag 0 (video), per-token strengths
+    assert sn._tag_is(rows, 0) and not sn._tag_is(rows, 2)
+    assert sn._tag_is(5, 2) and not sn._tag_is(5, 0)
+
+
+def test_the_user_prompt_run_is_found_when_rows_are_tensors():
+    segs = [(0, 3, 1), (3, 5, torch.tensor([0, 0])), (5, 9, 1), (9, 12, 2)]
+    runs, user = sn._presentation_plan(segs, 9)
+    assert user == (5, 9, 1) and len(runs) == 3
+
+
+def test_progress_comes_from_the_schedule_core_publishes():
+    to = {"sample_sigmas": torch.tensor([1.0, 0.7, 0.3, 0.0]), "sigmas": torch.tensor([0.3])}
+    assert sn.step_progress(to) == 1.0
+    to["sigmas"] = torch.tensor([1.0])
+    assert sn.step_progress(to) == 0.0
+    assert sn.step_progress({}) is None
+
+
+def test_without_a_recorded_prompt_length_it_bypasses_and_says_so(capsys):
+    state = sn.ShadowState(dm=None, negative_context=torch.randn(1, 3, 16), video_scale=3.0,
+                           audio_scale=1.0, tau=2.5, alpha=1.0, start_percent=0.0,
+                           end_percent=1.0)
+    ran = []
+    hook = sn.make_block_hook(object(), state, 1)
+    args = {"img": torch.zeros(4, 16), "t_emb": None,
+            "mod_segments": [(0, 1, 1), (1, 2, 2), (2, 4, 0)], "rope_freqs": None,
+            "transformer_options": {}}
+    hook(args, {"original_block": lambda a: ran.append(1) or {"img": a["img"]}})
+    assert ran == [1]
+    assert "prompt length was not seen" in capsys.readouterr().out

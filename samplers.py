@@ -7991,6 +7991,24 @@ class FunPackLTXAVSceneChainSampler:
                 dm=dm, negative_context=negative[0][0].detach(),
                 video_scale=video_scale, audio_scale=audio_scale,
                 tau=tau, alpha=alpha, start_percent=_lo, end_percent=_hi)
+
+            # The positive prompt's length is only visible here, on the model call's own
+            # conditioning -- core never copies it into transformer_options. Recorded per
+            # call, and the shadow stream reset per call, so each denoise evaluation starts
+            # the negative fresh at block 0 whatever blocks are hooked.
+            _old_wrapper = patched.model_options.get("model_function_wrapper")
+
+            def _shadow_wrapper(apply_fn, args):
+                ctx = (args.get("c") or {}).get("c_crossattn")
+                state.text_len = (int(ctx.shape[1]) if isinstance(ctx, torch.Tensor)
+                                  and ctx.ndim >= 3 else None)
+                state.neg_h = None
+                if _old_wrapper is not None:
+                    return _old_wrapper(apply_fn, args)
+                return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+            patched.model_options["model_function_wrapper"] = _tag_scene_wrapper(
+                _shadow_wrapper, _old_wrapper)
             _skipped = []
             for i, block in enumerate(dm.blocks):
                 if compose and i in _claimed:

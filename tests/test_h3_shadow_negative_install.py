@@ -278,3 +278,31 @@ if __name__ == "__main__":
     test_both_scales_at_one_is_a_true_noop()
     test_enabled_clones_and_hooks_every_block()
     print("ok (run via pytest for the rest)")
+
+
+def test_the_model_wrapper_records_the_prompt_length_and_chains_the_old_one():
+    """The prompt length is only visible on the model call's conditioning, so the installer
+    puts a wrapper there; it must chain whatever wrapper was already installed."""
+    import h3_shadow_negative as sn
+    model = _FakeModel()
+    seen = []
+    model.model_options["model_function_wrapper"] = lambda fn, a: seen.append("old") or "out"
+    patched = S()._install_h3_shadow_negative(model, _negative(), 3.0, 1.0, 2.5, 0.35, 0.0, 0.6)
+    wrapper = patched.model_options["model_function_wrapper"]
+    captured = {}
+    orig_forward = sn._shadow_forward
+
+    def spy(state, block, args, extra):
+        captured["len"] = state.text_len
+        return extra["original_block"](args)
+
+    sn._shadow_forward = spy
+    try:
+        out = wrapper(None, {"input": None, "timestep": None,
+                             "c": {"c_crossattn": torch.zeros(1, 7, 16)}})
+        hook = patched.model_options["transformer_options"]["patches_replace"]["dit"][("double_block", 0)]
+        hook({"img": torch.zeros(2, 16)}, {"original_block": lambda a: {"img": a["img"]}})
+    finally:
+        sn._shadow_forward = orig_forward
+    assert out == "out" and seen == ["old"]
+    assert captured["len"] == 7

@@ -83,7 +83,7 @@ class ShadowState:
     same fact), rebuilt fresh from `negative_context` on first use afterwards.
     """
     __slots__ = ("dm", "negative_context", "video_scale", "audio_scale", "tau", "alpha",
-                 "start_percent", "end_percent", "neg_h", "pos_text_len",
+                 "start_percent", "end_percent", "neg_h", "pos_text_len", "text_len",
                  "warned_layout", "warned_fallback", "hard_disabled")
 
     def __init__(self, dm, negative_context, video_scale, audio_scale, tau, alpha,
@@ -98,6 +98,12 @@ class ShadowState:
         self.end_percent = float(end_percent)
         self.neg_h = None
         self.pos_text_len = None
+        # The POSITIVE prompt's token count for the model call in progress. Set by the
+        # model_function_wrapper _install_h3_shadow_negative puts on the model, which is the
+        # one place the conditioning tensor is visible -- ComfyUI never copies it into
+        # transformer_options, so reading it from there (as this first shipped) found None on
+        # every block and the whole feature silently ran the stock forward.
+        self.text_len = None
         self.warned_layout = False
         self.warned_fallback = False
         self.hard_disabled = False
@@ -116,6 +122,25 @@ def _prepare_negative(state, x, transformer_options):
         neg = state.dm.condition_proj(neg)
         neg = state.dm.token_refiner(neg, transformer_options=transformer_options)
     return neg
+
+
+def _tag_is(row, tag):
+    """A mod row is an int, or -- once a pinned frame or mask gives rows their own strength
+    (any i2v scene) -- a per-token LongTensor. int() on that tensor raised, which disabled
+    shadow negative for the rest of the run on every i2v scene."""
+    if isinstance(row, torch.Tensor):
+        return bool(((row % 3) == tag).all())
+    return int(row) % 3 == tag
+
+
+def step_progress(transformer_options):
+    """0 at the first denoise step, 1 at the last, from the schedule core puts in
+    transformer_options (sample_sigmas + this call's sigmas). None if unresolvable."""
+    to = transformer_options or {}
+    sched, cur = to.get("sample_sigmas"), to.get("sigmas")
+    if not isinstance(sched, torch.Tensor) or cur is None:
+        return None
+    return sigma_progress(cur, sched)
 
 
 def _mod_one(h, shift, scale, row):
@@ -142,7 +167,7 @@ def _presentation_plan(mod_segments, pos_text_len):
         if b > pos_text_len:
             return None, None
         runs.append(seg)
-    text_runs = [r for r in runs if (r[2] % 3) == 1]
+    text_runs = [r for r in runs if _tag_is(r[2], 1)]
     if not runs or not text_runs:
         return None, None
     return runs, text_runs[-1]
@@ -183,7 +208,7 @@ def _build_shadow_attention_input(state, block, neg_h, h_pos, rope, presentation
     h_parts, r_parts, cursor = [], [], 0
     neg_a = neg_b = None
     for a, b, row in presentation_runs:
-        if (a, b, row) == user_run:
+        if (a, b) == tuple(user_run[:2]):
             neg_a, neg_b = cursor, cursor + neg_norm.shape[0]
             h_parts.append(neg_norm)
             r_parts.append(neg_rope)
@@ -233,26 +258,26 @@ def _shadow_forward(state, block, args, extra_options):
     rope = args["rope_freqs"]
     to = args["transformer_options"]
 
-    sigmas = to.get("sample_sigmas", to.get("sigmas"))
-    progress = sigma_progress(args.get("timestep", to.get("timestep")), sigmas)
+    progress = step_progress(to)
     active = state.alpha > 0 and (state.video_scale != 1.0 or state.audio_scale != 1.0)
     if progress is not None:
         active = active and state.start_percent <= progress <= state.end_percent
     if not active or len(mod_segments) < 3:
         return extra_options["original_block"](args)
 
-    state.pos_text_len = int(x.shape[0])  # placeholder, corrected below once c_crossattn known
-    cross_attn = to.get("c_crossattn")
-    pos_text_len = (int(cross_attn.shape[1])
-                    if isinstance(cross_attn, torch.Tensor) and cross_attn.ndim >= 3
-                    else None)
+    pos_text_len = state.text_len
     if pos_text_len is None:
+        if not state.warned_layout:
+            state.warned_layout = True
+            print("[FunPackSceneChain] H3 shadow negative: the prompt length was not seen for "
+                  "this model call (the wrapper that records it is missing) -- bypassing "
+                  "shadow guidance.")
         return extra_options["original_block"](args)
     state.pos_text_len = pos_text_len
 
     audio_a, audio_b, audio_row = mod_segments[-2]
     video_a, video_b, video_row = mod_segments[-1]
-    if (int(audio_row) % 3) != 2 or (int(video_row) % 3) != 0 or audio_b != video_a \
+    if not _tag_is(audio_row, 2) or not _tag_is(video_row, 0) or audio_b != video_a \
             or video_b != x.shape[0]:
         if not state.warned_layout:
             state.warned_layout = True
