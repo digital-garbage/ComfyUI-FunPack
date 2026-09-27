@@ -171,6 +171,8 @@ def install(patcher, values, key):
             dit_hooks.add_block_hook(patcher, key, i, repeat)
         what = f"blocks {','.join(map(str, blocks))} run {times + 1}x each"
 
+    # Replaces what the hooked blocks allocate: see dit_hooks.without_compiler.
+    dit_hooks.without_compiler(patcher, key)
     if video_only:
         what += ", video only"
     if steps:

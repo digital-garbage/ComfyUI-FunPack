@@ -153,6 +153,8 @@ def install(patcher, values, key):
     for i, block in enumerate(dm.blocks):
         dit_hooks.add_block_hook(patcher, key, i, make(block))
 
+    # Replaces what the hooked blocks allocate: see dit_hooks.without_compiler.
+    dit_hooks.without_compiler(patcher, key)
     note = f"picture {video_scale:g}, sound {audio_scale:g}, steps {start:.2f}-{end:.2f}"
     if taken:
         note += (f"; leaves block(s) {','.join(map(str, taken))} to the feature already there"

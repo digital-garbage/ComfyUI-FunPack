@@ -183,3 +183,39 @@ def target_rows(mod_segments, seq_len, device, stream):
         if mask is not None:
             return mask
     return None
+
+
+def without_compiler(patcher, key: str) -> None:
+    """Run this model's sampling with ComfyUI's model compiler off.
+
+    The compiler (aimdo malloc-graph) records what each block allocates and
+    assumes it never changes. A hook that REPLACES a block's forward with one
+    allocating differently -- a repeated block, a second attention stream --
+    crashes it with "aimdo memory compile error" (v4, on rentals: block repeat,
+    REINS injection, shadow negative). Comfy-Org's own fix is
+    --disable-comfy-compiler; it is read live on every scope, so switching it
+    for the one sampling call is enough and the next run keeps the compiler.
+
+    Attached to the MODEL as an OUTER_SAMPLE wrapper, so it holds for any
+    sampler, not only FunPack's.
+    """
+    from comfy.patcher_extension import WrappersMP
+
+    def outer(executor, *args, **kwargs):
+        import comfy.cli_args
+        cli = comfy.cli_args.args
+        had = hasattr(cli, "disable_comfy_compiler")
+        prior = getattr(cli, "disable_comfy_compiler", None)
+        cli.disable_comfy_compiler = True
+        try:
+            return executor(*args, **kwargs)
+        finally:
+            if had:
+                cli.disable_comfy_compiler = prior
+            else:
+                try:
+                    del cli.disable_comfy_compiler
+                except AttributeError:
+                    pass
+
+    patcher.add_wrapper_with_key(WrappersMP.OUTER_SAMPLE, key, outer)

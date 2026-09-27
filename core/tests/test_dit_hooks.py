@@ -100,3 +100,29 @@ def test_parse_blocks_reports_what_it_ignores(spec, expect, problems):
     from core import dit_hooks
     got, said = dit_hooks.parse_blocks(spec, 4)
     assert got == expect and len(said) == problems
+
+
+def test_without_compiler_switches_it_off_for_the_sample_and_back(tiny_h3):
+    import comfy.cli_args
+    from comfy.patcher_extension import WrappersMP
+    from core import dit_hooks
+    p = tiny_h3.patcher.clone()
+    dit_hooks.without_compiler(p, "funpack.x")
+    (outer,), = p.wrappers[WrappersMP.OUTER_SAMPLE].values()
+    had = hasattr(comfy.cli_args.args, "disable_comfy_compiler")
+    prior = getattr(comfy.cli_args.args, "disable_comfy_compiler", None)
+    seen = outer(lambda: comfy.cli_args.args.disable_comfy_compiler)
+    assert seen is True
+    assert hasattr(comfy.cli_args.args, "disable_comfy_compiler") == had
+    assert getattr(comfy.cli_args.args, "disable_comfy_compiler", None) == prior
+
+
+@pytest.mark.parametrize("module,settings", [
+    ("block_repeat", {"enabled": True, "blocks": "1"}),
+    ("shadow_negative", {"enabled": True}),
+])
+def test_block_replacing_modules_turn_the_compiler_off(tiny_h3, module, settings):
+    from comfy.patcher_extension import WrappersMP
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    patched, _ = FunPackLoadModifiers.execute(tiny_h3.patcher, {module: settings}).result
+    assert patched.wrappers.get(WrappersMP.OUTER_SAMPLE), f"{module} left the compiler on"
