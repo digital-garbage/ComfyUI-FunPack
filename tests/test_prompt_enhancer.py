@@ -605,14 +605,44 @@ def test_no_chat_adds_nothing():
     assert C.FunPackVideoRefinerV2._v2_enhancer_chat([{"rewrites": {"whole": "x"}, "comment": "  "}]) == ""
 
 
-def test_the_chat_carries_each_rewrite_then_its_comment_in_order():
+def test_the_chat_shows_the_latest_rewrite_and_every_comment_in_order():
     chat = [{"rewrites": {"whole": "a red fox runs"}, "comment": "make it night"},
             {"rewrites": {}, "comment": "and add snow"},
             {"rewrites": {"whole": "a red fox runs at night"}, "comment": "colder light"}]
     text = C.FunPackVideoRefinerV2._v2_enhancer_chat(chat)
-    order = ["a red fox runs", "make it night", "and add snow", "a red fox runs at night", "colder light"]
+    assert "a red fox runs at night" in text and "a red fox runs\n" not in text
+    order = ["make it night", "and add snow", "colder light"]
     assert [text.index(p) for p in order] == sorted(text.index(p) for p in order)
-    assert text.count("Your earlier rewrite") == 2          # the comment-only round adds none
+    assert text.index("YOUR LATEST REWRITE") < text.index("USER FEEDBACK")
+
+
+def test_a_chat_run_labels_the_parts_and_tells_the_model_it_is_revising(studio):
+    clip = FakeClip()
+    chat = C.FunPackVideoRefinerV2._v2_enhancer_chat(
+        [{"rewrites": {"whole": "a fox at dusk"}, "comment": "make it night"}])
+    studio._v2_enhance_prompt(clip, "a fox", "my rules", chat=chat)
+    sent = str(clip.calls[0])
+    assert "ORIGINAL PROMPT:\\na fox" in sent or "ORIGINAL PROMPT:\na fox" in sent
+    assert "REVISION" in sent and "my rules" in sent and "make it night" in sent
+
+
+def test_no_chat_leaves_the_message_as_it_was(studio):
+    clip = FakeClip()
+    studio._v2_enhance_prompt(clip, "a fox", "my rules")
+    assert "ORIGINAL PROMPT" not in str(clip.calls[0]) and "REVISION" not in str(clip.calls[0])
+
+
+def test_an_echoed_conversation_is_cut_from_the_answer(studio):
+    """What a model did live: repeated its rewrite, then the feedback, as one prompt."""
+    echo = ("A fox pads through a moonlit field. USER FEEDBACK (oldest first): - make it night. "
+            "Generate a new prompt.")
+    out, _ = studio._v2_enhance_prompt(FakeClip(reply=echo), "a fox", "sys",
+                                       chat="\n\nUSER FEEDBACK (oldest first):\n- make it night")
+    assert out == "A fox pads through a moonlit field."
+    labelled = "YOUR LATEST REWRITE: A fox at night, snow falling."
+    out, _ = studio._v2_enhance_prompt(FakeClip(reply=labelled), "a fox", "sys",
+                                       chat="\n\nUSER FEEDBACK (oldest first):\n- snow")
+    assert out == "A fox at night, snow falling."
 
 
 def test_each_scene_sees_its_own_earlier_rewrite():
@@ -628,7 +658,7 @@ def test_the_chat_reaches_the_model_and_a_new_comment_regenerates(studio):
     clip = FakeClip()
     cache = {}
     studio._v2_enhance_prompt(clip, "a cat", "sys", cache=cache)
-    studio._v2_enhance_prompt(clip, "a cat", "sys", cache=cache, chat="\n\nThe user's comment:\nbigger")
+    studio._v2_enhance_prompt(clip, "a cat", "sys", cache=cache, chat="\n\nUSER FEEDBACK (oldest first):\n- bigger")
     assert len(clip.calls) == 2, "a comment must not be answered from the no-chat cache"
     assert "bigger" in str(clip.calls[1])
 
