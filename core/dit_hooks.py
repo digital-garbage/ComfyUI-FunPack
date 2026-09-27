@@ -65,10 +65,13 @@ def add_block_hook(patcher, key: str, index: int, hook) -> None:
     inner = dit.get(slot)
 
     def below(extra):
+        # `funpack_below` tells a hook that REPLACES the block (rather than
+        # calling original_block) that doing so would skip someone's hook.
         if inner is None:
-            return extra
+            return {**extra, "funpack_below": False}
         original = extra["original_block"]
-        return {**extra, "original_block": lambda a: inner(a, {**extra, "original_block": original})}
+        return {**extra, "funpack_below": True,
+                "original_block": lambda a: inner(a, {**extra, "original_block": original})}
 
     def neutral(args, extra):
         return below(extra)["original_block"](args)

@@ -88,19 +88,32 @@ class TinyH3:
         self.audio = torch.randn(1, 32, 2, 3)
         self.context = torch.randn(1, 5, 48)
 
-    def run(self, patcher=None, sigma=0.5, sigmas=None, negative=None):
+    def run(self, patcher=None, sigma=0.5, sigmas=None, denoise_mask=None):
         """One denoise call through `patcher`'s transformer_options, as the
         sampler would make it. Returns (video, audio)."""
         import torch
         patcher = patcher or self.patcher
+        import comfy.patcher_extension as ext
         to = dict(patcher.model_options.get("transformer_options", {}))
+        # What prepare_model_patcher does before sampling: the patcher's wrappers
+        # join transformer_options, where H3's forward looks for them.
+        to["wrappers"] = ext.copy_nested_dicts(to.get("wrappers", {}))
+        ext.merge_nested_dicts(to["wrappers"], patcher.wrappers, copy_dict1=False)
         sched = sigmas if sigmas is not None else torch.tensor([1.0, sigma, 0.0])
         to.setdefault("sample_sigmas", sched)
         to["sigmas"] = torch.tensor([sigma])
         dm = patcher.model.diffusion_model
         with torch.inference_mode():
             return dm([self.video, self.audio], torch.tensor([sigma * 1000.0]),
-                      self.context, transformer_options=to)
+                      self.context, transformer_options=to, denoise_mask=denoise_mask)
+
+    def pinned_first_frame(self):
+        """An i2v-style mask: latent frame 0 kept, the rest generated. Gives the
+        video rows their own per-token mod rows, the shape v4 choked on."""
+        import torch
+        mask = torch.ones(1, 1, *self.video.shape[2:])
+        mask[:, :, 0] = 0.0
+        return mask
 
 
 @pytest.fixture
