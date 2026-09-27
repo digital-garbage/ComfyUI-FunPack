@@ -54,6 +54,8 @@ FROZEN = {
     "FunPackLoadModifiers": ["model", "settings"],
     "FunPackLatentUpscalerLoader": ["upscaler_name"],
     "FunPackCutOpening": ["images", "frames", "fps", "audio"],
+    "FunPackPromptMarkup": ["text"],
+    "FunPackApplyPromptMarkup": ["model", "clip", "positive", "latent", "markup"],
     "FunPackLatentResample": ["latent", "upscaler", "operation", "scale", "positive", "negative"],
     "FunPackModifierSettings": ["settings"],
     "FunPackDecode": ["samples", "vae", "model", "audio_vae"],

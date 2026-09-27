@@ -31,6 +31,7 @@ from .pipeline import presets as _pipeline_presets
 from .anchor import anchor_pin as _anchor_pin
 from .anchor import rescale_pins as _rescale_pins
 from .latent_upscaler import load_upscaler as _load_upscaler
+from . import prompt_layout as _prompt_layout
 from .rows import target_rows as _target_rows
 
 has_block = _traits.has_block
@@ -187,4 +188,7 @@ TRAITS = traits
 PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect,
             "pipeline_presets": _pipeline_presets, "probe_traits": probe_traits,
             "target_rows": _target_rows, "anchor_pin": _anchor_pin,
-            "latent_upscaler": _load_upscaler, "rescale_conditioning": _rescale_pins}
+            "latent_upscaler": _load_upscaler, "rescale_conditioning": _rescale_pins,
+            "text_tokenizer": _prompt_layout.text_tokenizer,
+            "prompt_rows": _prompt_layout.prompt_rows,
+            "video_time_rows": _prompt_layout.video_time_rows}

@@ -79,12 +79,14 @@ def h3_reference_to_video():
             "invert_crop": "disabled",
             "bboxes": ""}},
 
+        {"id": "markup", "group": "Preparation", "node": "FunPackPromptMarkup",
+         "roles": [{"at": "generation.prompt", "input": "text", "label": "Prompt"}],
+         "inputs": {"text": ""}},
         {"id": "r2v", "group": "Preparation", "node": "MiniMaxH3ReferenceToVideo",
-         "roles": [{"at": "generation.prompt", "input": "prompt", "label": "Prompt"},
-                   {"at": "project.video", "input": "length", "label": "Length"}],
+         "roles": [{"at": "project.video", "input": "length", "label": "Length"}],
          "inputs": {
              "clip": ["clip", 0], "vae": ["vae", 0], "audio_vae": ["audio_vae", 0],
-             "prompt": "", "width": ["image_transform", 4], "height": ["image_transform", 5],
+             "prompt": ["markup", 0], "width": ["image_transform", 4], "height": ["image_transform", 5],
              "length": 124, "ref_image_size": "match"}},
         {"id": "negative", "group": "Preparation", "node": "CLIPTextEncode",
          # H3 samples at CFG 1, where a negative prompt does nothing -- wired
@@ -95,13 +97,17 @@ def h3_reference_to_video():
         {"id": "modifiers", "group": "Preparation", "node": "FunPackLoadModifiers", "inputs": {
             "model": ["shift", 0], "settings": ["settings", 0]}},
 
+        {"id": "markup_apply", "group": "Preparation", "node": "FunPackApplyPromptMarkup",
+         "inputs": {"model": ["modifiers", 0], "clip": ["clip", 0], "positive": ["r2v", 0],
+                    "latent": ["r2v", 1], "markup": ["markup", 1]}},
+
         {"id": "sampler", "group": "Sampling", "node": "FunPackSampler",
          "roles": [{"at": "generation.sampling", "input": "steps", "label": "Steps"},
                    {"at": "generation.sampling", "input": "sampler_name", "label": "Sampler"},
                    {"at": "generation.sampling", "input": "scheduler", "label": "Scheduler"}],
          "inputs": {
-             "model": ["modifiers", 0], "positive": ["r2v", 0], "negative": ["negative", 0],
-             "latent": ["r2v", 1], "settings": ["settings", 0],
+             "model": ["markup_apply", 0], "positive": ["markup_apply", 1],
+             "negative": ["negative", 0], "latent": ["r2v", 1], "settings": ["settings", 0],
              "seed": 0, "steps": 20, "cfg": 1.0,
              "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0}},
 
@@ -158,12 +164,12 @@ def h3_reference_to_video_second_pass():
         {"id": "resample", "group": "Second pass", "node": "FunPackLatentResample",
          "inputs": {"latent": ["sampler", 0], "upscaler": ["upscaler", 0],
                     "operation": "sharpen", "scale": 2.0,
-                    "positive": ["r2v", 0], "negative": ["negative", 0]}},
+                    "positive": ["markup_apply", 1], "negative": ["negative", 0]}},
         {"id": "pass2_sigmas", "group": "Second pass", "node": "ManualSigmas",
          "inputs": {"sigmas": "0.4, 0.3, 0.2, 0.1, 0.0"}},
         {"id": "pass2", "group": "Second pass", "node": "FunPackSampler",
          "inputs": {
-             "model": ["modifiers", 0], "positive": ["resample", 1],
+             "model": ["markup_apply", 0], "positive": ["resample", 1],
              "negative": ["resample", 2], "latent": ["resample", 0],
              "settings": ["settings", 0], "sigmas": ["pass2_sigmas", 0],
              "seed": 0, "steps": 4, "cfg": 1.0,
