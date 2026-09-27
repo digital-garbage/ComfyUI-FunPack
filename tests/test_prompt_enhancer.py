@@ -596,3 +596,44 @@ def test_the_advisor_llm_wrapper_hands_over_its_stripped_reasoning():
                                          "<think>plan it</think>A dog.<|im_end|>")
     text = w.decode({"output_ids": [[1, 2, 3]], "prompt_length": 0})
     assert text == "A dog." and w.last_thinking == "plan it"
+
+
+# ── chat: the next run reads its earlier rewrite and the user's comments ─────
+
+def test_no_chat_adds_nothing():
+    assert C.FunPackVideoRefinerV2._v2_enhancer_chat([]) == ""
+    assert C.FunPackVideoRefinerV2._v2_enhancer_chat([{"rewrites": {"whole": "x"}, "comment": "  "}]) == ""
+
+
+def test_the_chat_carries_each_rewrite_then_its_comment_in_order():
+    chat = [{"rewrites": {"whole": "a red fox runs"}, "comment": "make it night"},
+            {"rewrites": {}, "comment": "and add snow"},
+            {"rewrites": {"whole": "a red fox runs at night"}, "comment": "colder light"}]
+    text = C.FunPackVideoRefinerV2._v2_enhancer_chat(chat)
+    order = ["a red fox runs", "make it night", "and add snow", "a red fox runs at night", "colder light"]
+    assert [text.index(p) for p in order] == sorted(text.index(p) for p in order)
+    assert text.count("Your earlier rewrite") == 2          # the comment-only round adds none
+
+
+def test_each_scene_sees_its_own_earlier_rewrite():
+    chat = [{"rewrites": {"0": "scene one text", "1": "scene two text"}, "comment": "brighter"}]
+    second = C.FunPackVideoRefinerV2._v2_enhancer_chat(chat, 1)
+    assert "scene two text" in second and "scene one text" not in second
+    # One rewrite on record (a single-prompt run) serves whatever asks.
+    assert "only" in C.FunPackVideoRefinerV2._v2_enhancer_chat(
+        [{"rewrites": {"whole": "only"}, "comment": "c"}], 3)
+
+
+def test_the_chat_reaches_the_model_and_a_new_comment_regenerates(studio):
+    clip = FakeClip()
+    cache = {}
+    studio._v2_enhance_prompt(clip, "a cat", "sys", cache=cache)
+    studio._v2_enhance_prompt(clip, "a cat", "sys", cache=cache, chat="\n\nThe user's comment:\nbigger")
+    assert len(clip.calls) == 2, "a comment must not be answered from the no-chat cache"
+    assert "bigger" in str(clip.calls[1])
+
+
+def test_every_enhancement_path_passes_the_chat():
+    import inspect
+    src = inspect.getsource(C.FunPackVideoRefinerV2.refine_v2)
+    assert src.count("chat=self._v2_enhancer_chat(prompt_enhance_chat") == 3

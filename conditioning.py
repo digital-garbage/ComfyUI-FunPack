@@ -9092,10 +9092,38 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
     #: one enhancement per distinct (system, text) within a run — a multi-scene chain often
     #: repeats an anchor line across scenes, and each call is a full LLM generation
+    @staticmethod
+    def _v2_enhancer_chat(chat, scene=None):
+        """Composer ▸ Enhance chat, as text for the model: its earlier rewrites of THIS
+        prompt and the user's comments on them, oldest first. "" when there is none.
+
+        `chat` is a list of rounds {"rewrites": {"whole" | "<scene index>": text}, "comment"}.
+        A round's rewrite is the one the user was looking at when they commented; a round
+        with no rewrite for this prompt (a second comment before the next run) carries the
+        comment alone.
+        """
+        rounds = [r for r in (chat or []) if isinstance(r, dict)
+                  and str(r.get("comment") or "").strip()]
+        if not rounds:
+            return ""
+        key = "whole" if scene is None else str(scene)
+        lines = []
+        for r in rounds:
+            rewrites = r.get("rewrites") if isinstance(r.get("rewrites"), dict) else {}
+            prev = rewrites.get(key)
+            if prev is None and len(rewrites) == 1:
+                prev = next(iter(rewrites.values()))
+            if str(prev or "").strip():
+                lines.append("Your earlier rewrite:\n" + str(prev).strip())
+            lines.append("The user's comment:\n" + str(r["comment"]).strip())
+        return ("\n\n--- Conversation so far ---\n" + "\n\n".join(lines)
+                + "\n\nWrite a new rewrite of the prompt above that follows every comment. "
+                  "Output only the prompt.")
+
     def _v2_enhance_prompt(self, clip, text, system_prompt, cache=None, seed=None,
                            temperature=0.7, top_p=0.92, max_length=400, thinking=False,
                            image=None, top_k=50, min_p=0.05, repetition_penalty=1.3,
-                           presence_penalty=0.0, do_sample=True, reference=""):
+                           presence_penalty=0.0, do_sample=True, reference="", chat=""):
         """Rewrite one prompt through the advisor LLM, BEFORE it is encoded.
 
         This is not the repair advisor. That one is triggered by a rating and fixes a named
@@ -9111,14 +9139,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         original = str(text or "").strip()
         if not original:
             return text, "Prompt enhancer: skipped; prompt empty."
-        key = (str(system_prompt), original, str(reference or ""))
+        key = (str(system_prompt), original, str(reference or ""), str(chat or ""))
         if cache is not None and key in cache:
             self._v2_last_thinking = cache.get(("thinking",) + key, "")
             return cache[key], "Prompt enhancer: reused."
         if isinstance(clip, _FunPackAdvisorLLMWrapper):
             clip.last_thinking = ""           # a failed call must not show the last one's
         raw, status = self._v2_generate_advisor_text(
-            clip, system_prompt, original + str(reference or ""), seed=seed, image=image, thinking=bool(thinking),
+            clip, system_prompt, original + str(reference or "") + str(chat or ""), seed=seed, image=image, thinking=bool(thinking),
             max_length=max_length, temperature=temperature, top_p=top_p,
             min_floor=32, label="Prompt enhancer", top_k=top_k, min_p=min_p,
             repetition_penalty=repetition_penalty, presence_penalty=presence_penalty,
@@ -10073,6 +10101,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   prompt_enhance_image=None, prompt_enhance_sampling=None,
                   prompt_enhance_output=False, prompt_enhance_scenes=True,
                   prompt_enhance_shortcuts=None, prompt_enhance_lorebooks=None,
+                  prompt_enhance_chat=None,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
@@ -10752,7 +10781,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             _ref = self._v2_enhancer_reference(prompt_to_encode, _enhance_sources)
             prompt_to_encode, _enhance_status = self._v2_enhance_prompt(
                 _enhance_clip, prompt_to_encode, _enhance_system, cache=_enhance_cache,
-                reference=_ref,
+                reference=_ref, chat=self._v2_enhancer_chat(prompt_enhance_chat),
                 seed=_enhance_seed, temperature=prompt_enhance_temperature,
                 top_p=prompt_enhance_top_p, max_length=prompt_enhance_max_length,
                 thinking=prompt_enhance_thinking, image=prompt_enhance_image,
@@ -10774,7 +10803,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 _ref = self._v2_enhancer_reference(_whole, _enhance_sources)
                 _after, _st = self._v2_enhance_prompt(
                     _enhance_clip, _whole, _enhance_system, cache=_enhance_cache,
-                    reference=_ref,
+                    reference=_ref, chat=self._v2_enhancer_chat(prompt_enhance_chat),
                     seed=_enhance_seed, temperature=prompt_enhance_temperature,
                     top_p=prompt_enhance_top_p, max_length=prompt_enhance_max_length,
                     thinking=prompt_enhance_thinking, image=prompt_enhance_image,
@@ -11027,6 +11056,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             _after, _st = self._v2_enhance_prompt(
                                 _enhance_clip, t, _enhance_system, cache=_enhance_cache,
                                 reference=_ref,
+                                chat=self._v2_enhancer_chat(prompt_enhance_chat, _i),
                                 seed=_enhance_seed, temperature=prompt_enhance_temperature,
                                 top_p=prompt_enhance_top_p,
                                 max_length=prompt_enhance_max_length,
@@ -14029,6 +14059,7 @@ class FunPackStudio:
             prompt_enhance_scenes=bool(rf.get("prompt_enhance_scenes", True)),
             prompt_enhance_shortcuts=rf.get("prompt_enhance_shortcuts") or [],
             prompt_enhance_lorebooks=rf.get("prompt_enhance_lorebooks") or [],
+            prompt_enhance_chat=rf.get("prompt_enhance_chat") or [],
             prompt_enhance_system=str(rf.get("prompt_enhance_system", "") or ""),
             prompt_enhance_temperature=float(rf.get("prompt_enhance_temperature", 0.7)),
             prompt_enhance_top_p=float(rf.get("prompt_enhance_top_p", 0.92)),

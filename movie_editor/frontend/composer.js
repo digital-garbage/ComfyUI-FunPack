@@ -975,7 +975,7 @@
     prompt_enhance_min_p: 0.05, prompt_enhance_repetition_penalty: 1.3,
     prompt_enhance_presence_penalty: 0, prompt_enhance_seed: 0, prompt_enhance_greedy: false,
     prompt_enhance_thinking: false, prompt_enhance_use_image: true,
-    prompt_enhance_shortcuts: [], prompt_enhance_lorebooks: [],
+    prompt_enhance_shortcuts: [], prompt_enhance_lorebooks: [], prompt_enhance_chat: [],
   };
   // `sampled`: only read while sampling. Greedy returns the single likeliest word before
   // ComfyUI looks at any of them, so they disappear rather than sit there doing nothing.
@@ -1139,6 +1139,78 @@
     return box;
   }
 
+  // Chat: comment on the rewrite and the NEXT run's enhancer reads its own earlier
+  // rewrite(s) plus every comment since the last reset (rf prompt_enhance_chat, saved with
+  // the project). A round = {rewrites: {"whole" | "<scene>": text}, comment}.
+  let enhChatDraft = "";
+  function enhanceChat(st, val) {
+    const SS = window.StudioSettings;
+    const rounds = Array.isArray(val("prompt_enhance_chat")) ? val("prompt_enhance_chat") : [];
+    const box = el("div", "enh-chat");
+    const head = el("div", "enh-section-head");
+    head.append(el("div", "sw-rows-label", "Chat"));
+    if (rounds.length) {
+      const reset = el("button", "btn ghost tiny", "Reset");
+      reset.type = "button";
+      reset.title = "Forget this conversation. The next run rewrites from your prompt alone.";
+      reset.onclick = () => { SS.patchRefiner({ prompt_enhance_chat: [] }, true); repaintAll(); };
+      head.append(reset);
+    }
+    box.append(head);
+    box.append(el("div", "insp-hint",
+      "Tell it what to change. On the next Generate it reads its last rewrite and all your comments since Reset, and rewrites again."));
+    const thread = el("div", "enh-chat-thread");
+    rounds.forEach((r) => {
+      const rewrites = Object.entries(r.rewrites || {});
+      rewrites.forEach(([k, text]) => {
+        const b = el("div", "enh-bubble enh-bubble-model");
+        b.append(el("div", "enh-bubble-who", k === "whole" ? "Enhancer" : `Enhancer · Scene ${Number(k) + 1}`),
+          el("div", "enh-bubble-text", String(text || "")));
+        thread.append(b);
+      });
+      const u = el("div", "enh-bubble enh-bubble-user");
+      u.append(el("div", "enh-bubble-who", "You"), el("div", "enh-bubble-text", String(r.comment || "")));
+      thread.append(u);
+    });
+    if (rounds.length) {
+      box.append(thread);
+      requestAnimationFrame(() => { thread.scrollTop = thread.scrollHeight; });   // newest in view
+    }
+
+    const ta = el("textarea", "lib-in enh-chat-in"); ta.rows = 3;
+    ta.placeholder = "e.g. keep the red coat, make the lighting colder, drop the rain";
+    ta.value = enhChatDraft;
+    ta.oninput = () => { enhChatDraft = ta.value; };
+    const send = el("button", "btn tiny", "Send");
+    send.type = "button";
+    const submit = () => {
+      const comment = ta.value.trim();
+      if (!comment) return;
+      // The rewrite(s) the user is replying to: the last run's. Not repeated when the
+      // previous comment already carried the same ones (two comments, no run between).
+      const rewrites = {};
+      ((st.enhanced && st.enhanced.items) || []).forEach((it) => {
+        const after = String(it.after || "").trim();
+        if (after) rewrites[it.scene == null ? "whole" : String(it.scene)] = after;
+      });
+      const shown = rounds.map((r) => JSON.stringify(r.rewrites || {}));
+      const same = shown.includes(JSON.stringify(rewrites));
+      enhChatDraft = "";
+      ta.value = "";
+      ta.blur();          // a focused field defers the repaint; the new bubble must show now
+      SS.patchRefiner({ prompt_enhance_chat: rounds.concat({ rewrites: same ? {} : rewrites, comment }) }, true);
+      repaintAll();
+      // A repaint rebuilds the tab from the top; stay where the conversation is.
+      document.querySelector(".enh-chat-row")?.scrollIntoView({ block: "nearest" });
+    };
+    send.onclick = submit;
+    ta.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } };
+    const row = el("div", "enh-chat-row");
+    row.append(ta, send);
+    box.append(row);
+    return box;
+  }
+
   function enhanceTab(st) {
     const wrap = el("div", "bin enh-bin");
     const SS = window.StudioSettings;
@@ -1216,6 +1288,7 @@
     } else {
       items.forEach((it) => wrap.append(enhanceResultCard(it)));
     }
+    if (on) wrap.append(enhanceChat(st, val));
     return wrap;
   }
 
@@ -1335,6 +1408,7 @@
       eg: !!(st.project && window.StudioSettings?.read(st.project).rf.prompt_enhance_greedy),
       eh: st.enhanced ? `${st.enhanced.promptId}:${(st.enhanced.items || []).length}:${!!st.enhanced.live}` : null,
       gs: st.gen?.state || null,
+      ec: st.project ? JSON.stringify(window.StudioSettings?.read(st.project).rf.prompt_enhance_chat || []).length : 0,
       er: st.project ? JSON.stringify([window.StudioSettings?.read(st.project).rf.prompt_enhance_shortcuts,
         window.StudioSettings?.read(st.project).rf.prompt_enhance_lorebooks]) : null,
     });

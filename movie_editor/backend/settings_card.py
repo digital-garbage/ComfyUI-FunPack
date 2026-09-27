@@ -192,6 +192,7 @@ _OWNED_EXTRA = {
     "prompt_enhance_greedy": ("prompt_enhance", ('true',)),
     "prompt_enhance_shortcuts": ("prompt_enhance", ('true',)),
     "prompt_enhance_lorebooks": ("prompt_enhance", ('true',)),
+    "prompt_enhance_chat": ("prompt_enhance", ('true',)),
 }
 
 _OWNED_BY = {
@@ -347,6 +348,7 @@ _EDITOR_DEFAULTS = {
     "prompt_enhance_greedy": False,
     "prompt_enhance_shortcuts": [],
     "prompt_enhance_lorebooks": [],
+    "prompt_enhance_chat": [],
     "reference_injection": False,
     "score_slider": False,
     "score_slider_strength": 1.0,

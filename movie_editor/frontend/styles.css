@@ -2136,6 +2136,15 @@ body.tour-mode { overflow: hidden; }
 .enh-ref-sent { max-height: 260px; overflow-y: auto; }
 .enh-status { margin-top: 8px; font-size: 10.5px; line-height: 1.4; color: var(--faint); }
 .eng-enhance-host { margin-top: 16px; }
+.enh-chat { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.enh-chat-thread { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.enh-bubble { max-width: 88%; padding: 7px 10px; border-radius: 10px; border: 1px solid var(--line); }
+.enh-bubble-model { align-self: flex-start; background: var(--ink-2); }
+.enh-bubble-user { align-self: flex-end; border-color: var(--teal); }
+.enh-bubble-who { font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+.enh-bubble-text { font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.enh-chat-row { display: flex; gap: 6px; align-items: flex-end; }
+.enh-chat-in { flex: 1; min-width: 0; resize: vertical; font-family: var(--font-ui); font-size: 12px; line-height: 1.5; }
 
 /* ＋ Add ▾ split-button dropdown (Shortcuts / Splits toolbars) */
 .composer-add { position: relative; flex-shrink: 0; }
