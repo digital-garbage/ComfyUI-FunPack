@@ -2142,6 +2142,7 @@ body.tour-mode { overflow: hidden; }
 .enh-bubble-model { align-self: flex-start; background: var(--ink-2); }
 .enh-bubble-user { align-self: flex-end; border-color: var(--teal); }
 .enh-bubble-latest { border-style: dashed; }
+.enh-bubble-wait .enh-bubble-text { color: var(--muted); font-style: italic; }
 .enh-chat .btn:disabled { opacity: 0.42; pointer-events: none; cursor: default; }
 .enh-bubble-who { font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
 .enh-bubble-text { font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }

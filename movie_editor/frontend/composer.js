@@ -1195,6 +1195,17 @@
         thread.append(b);
       });
     }
+    // The last word is yours: say when the reply comes, or two comments with no answer
+    // read as a broken chat (the model only answers inside a generation).
+    else if (rounds.length) {
+      const running = ["queuing", "running", "pending"].includes(st.gen?.state);
+      const w = el("div", "enh-bubble enh-bubble-model enh-bubble-latest enh-bubble-wait");
+      w.append(el("div", "enh-bubble-who", "Enhancer"),
+        el("div", "enh-bubble-text", running
+          ? "Writing its reply now, inside this generation."
+          : "Replies when you press Generate — to everything since its last rewrite."));
+      thread.append(w);
+    }
     if (thread.childNodes.length) {
       box.append(thread);
       requestAnimationFrame(() => { thread.scrollTop = thread.scrollHeight; });   // newest in view
