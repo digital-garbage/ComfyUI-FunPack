@@ -311,3 +311,38 @@ def test_a_modifier_that_breaks_while_installing_is_not_called_absent(patcher, m
     # test where the modifier was never chosen and nothing was logged at all.
     assert any("failed while installing itself" in m for m in said), said
     assert not any("did not load" in m for m in said), said
+
+
+def test_a_wrapper_never_reruns_the_sampling_it_wraps():
+    """A wrapper's executor IS the rest of the run. Falling back to it after it
+    already ran would sample the whole clip twice; an error raised by it (an
+    OOM, the next module) is not this module's and must not be swallowed."""
+    from core import patching
+
+    calls = []
+
+    def executor(x):
+        calls.append(x)
+        return x * 2
+
+    def fails_after(ex, x):
+        out = ex(x)
+        raise ValueError("bookkeeping broke")
+
+    dropped = patching.Dropped()
+    guarded = patching.guard_wrapper(fails_after, "funpack.x", dropped)
+    assert guarded(executor, 3) == 6 and calls == [3]
+    assert "funpack.x" in dropped
+
+    def oom(x):
+        raise RuntimeError("CUDA out of memory")
+
+    dropped = patching.Dropped()
+    passthrough = patching.guard_wrapper(lambda ex, x: ex(x), "funpack.y", dropped)
+    with pytest.raises(RuntimeError, match="out of memory"):
+        passthrough(oom, 1)
+    assert "funpack.y" not in dropped
+
+    calls.clear()
+    before = patching.guard_wrapper(lambda ex, x: 1 / 0, "funpack.z", patching.Dropped())
+    assert before(executor, 4) == 8 and calls == [4]

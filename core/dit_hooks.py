@@ -167,6 +167,29 @@ def current_step(transformer_options):
     return int(hit[0]), int(sched.shape[0]) - 1
 
 
+def last_step(transformer_options) -> bool:
+    """Whether this denoise call is the schedule's final step -- True when that
+    cannot be told, so a capture taken "on the last step" still happens."""
+    where = current_step(transformer_options)
+    return where is None or where[0] >= where[1] - 1
+
+
+def row_span(mask):
+    """A [S] bool mask of ONE contiguous run -> (start, stop), or None.
+
+    Slicing a span is a view; indexing with a mask copies every row, which on
+    a 37k-token video is hundreds of MB per call. One host sync, so callers
+    cache the answer per sequence length.
+    """
+    if mask is None:
+        return None
+    hit = mask.nonzero()
+    if not len(hit):
+        return None
+    lo, hi = int(hit[0]), int(hit[-1]) + 1
+    return (lo, hi) if hi - lo == len(hit) else None
+
+
 def target_rows(mod_segments, seq_len, device, stream):
     """[seq_len] bool mask of the model's TARGET `stream` ("video" | "audio")
     rows, or None when no model module can prove it for this call.

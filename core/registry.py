@@ -46,6 +46,18 @@ class Registry:
                 found.append((spec, fn))
         return found
 
+    def ask(self, capability: str, *args, **kwargs):
+        """The first provider's non-None answer, or None. A provider that raises
+        is skipped: one broken module must not take the question down with it."""
+        for _spec, fn in self.providers(capability):
+            try:
+                answer = fn(*args, **kwargs)
+            except Exception:                    # noqa: BLE001
+                continue
+            if answer is not None:
+                return answer
+        return None
+
     def add(self, spec: ModuleSpec) -> None:
         if spec.id in self.specs:
             # Two modules answering to one id means one wins by import order,

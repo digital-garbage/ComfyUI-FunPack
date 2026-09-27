@@ -107,6 +107,32 @@ class TinyH3:
             return dm([self.video, self.audio], torch.tensor([sigma * 1000.0]),
                       self.context, transformer_options=to, denoise_mask=denoise_mask)
 
+    def sample(self, patcher=None, guider=None, **run):
+        """`run`, inside the patcher's OUTER_SAMPLE wrappers -- how a whole
+        sampling call wraps the forward. `guider` is the executor's class_obj."""
+        from comfy.patcher_extension import WrappersMP
+        patcher = patcher or self.patcher
+        result = {}
+
+        class _Executor:
+            class_obj = guider
+
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __call__(self, *a, **k):
+                return self.inner()
+
+        def call():
+            result["out"] = self.run(patcher, **run)
+            return result["out"]
+
+        for ws in patcher.wrappers.get(WrappersMP.OUTER_SAMPLE, {}).values():
+            for w in ws:
+                call = (lambda w, inner: (lambda: w(_Executor(inner))))(w, call)
+        call()
+        return result["out"]
+
     def pinned_first_frame(self):
         """An i2v-style mask: latent frame 0 kept, the rest generated. Gives the
         video rows their own per-token mod rows, the shape v4 choked on."""

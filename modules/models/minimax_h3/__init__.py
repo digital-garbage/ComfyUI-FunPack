@@ -33,6 +33,7 @@ from .anchor import rescale_pins as _rescale_pins
 from .latent_upscaler import load_upscaler as _load_upscaler
 from . import prompt_layout as _prompt_layout
 from .rows import target_rows as _target_rows
+from .rope import query_rotation as _query_rotation
 
 has_block = _traits.has_block
 
@@ -191,4 +192,5 @@ PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect,
             "latent_upscaler": _load_upscaler, "rescale_conditioning": _rescale_pins,
             "text_tokenizer": _prompt_layout.text_tokenizer,
             "prompt_rows": _prompt_layout.prompt_rows,
-            "video_time_rows": _prompt_layout.video_time_rows}
+            "video_time_rows": _prompt_layout.video_time_rows,
+            "query_rotation": _query_rotation}

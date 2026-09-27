@@ -173,6 +173,64 @@ def guard(fn, key: str, neutral, dropped: Dropped):
     return guarded
 
 
+class _Executor:
+    """ComfyUI's wrapper executor, seen through a glass: calls and attributes pass
+    through, and what the call raised or returned is remembered."""
+
+    def __init__(self, executor):
+        self._executor = executor
+        self.raised = None
+        self.done = False
+        self.result = None
+
+    def __call__(self, *args, **kwargs):
+        try:
+            self.result = self._executor(*args, **kwargs)
+        except BaseException as exc:
+            self.raised = exc
+            raise
+        self.done = True
+        return self.result
+
+    def __getattr__(self, name):
+        return getattr(self._executor, name)
+
+
+def guard_wrapper(fn, key: str, dropped: Dropped):
+    """`guard` for `wrapper(executor, *args)` hooks, which the generic one gets
+    wrong twice: the executor IS the rest of the run, so
+
+    * what the executor raises (an interrupt, an OOM, the next module's bug) is
+      not this module's failure -- it passes through untouched, and
+    * once the executor has run, falling back to it would run the whole thing
+      AGAIN -- a wrapper that fails afterwards returns what already ran.
+    """
+    import traceback
+
+    def guarded(executor, *args, **kwargs):
+        if key in dropped:
+            return executor(*args, **kwargs)
+        seen = _Executor(executor)
+        try:
+            return fn(seen, *args, **kwargs)
+        except Exception as exc:                 # noqa: BLE001
+            if exc is seen.raised:
+                raise
+            if dropped.record(key, exc):
+                from . import log
+                log.warning(
+                    key,
+                    "failed during sampling and is now OFF for the rest of this run; "
+                    "the run continues without it\n"
+                    + "".join(traceback.format_exception(exc)).rstrip())
+            return seen.result if seen.done else executor(*args, **kwargs)
+
+    marker = getattr(fn, TAG, None)
+    if marker is not None:
+        guarded.__dict__[TAG] = marker
+    return guarded
+
+
 # The neutral result for each hook ComfyUI offers, by the method that installs
 # it. Core knows ComfyUI's own shapes here -- not FunPack's features -- because
 # "what this hook returns when it does nothing" is a fact about ComfyUI.
@@ -233,7 +291,9 @@ class GuardedPatcher:
         def install(*args, **kwargs):
             args = list(args)
             if len(args) > index and callable(args[index]):
-                args[index] = guard(args[index], self._key, neutral, self._dropped)
+                args[index] = (guard_wrapper(args[index], self._key, self._dropped)
+                               if name == "add_wrapper_with_key"
+                               else guard(args[index], self._key, neutral, self._dropped))
             return target(*args, **kwargs)
 
         return install
