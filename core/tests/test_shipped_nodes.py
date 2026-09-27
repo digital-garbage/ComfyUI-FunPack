@@ -49,9 +49,11 @@ FROZEN = {
     ],
     "FunPackSampler": [
         "model", "positive", "negative", "latent", "seed", "steps", "cfg",
-        "sampler_name", "scheduler", "denoise", "settings",
+        "sampler_name", "scheduler", "denoise", "settings", "sigmas",
     ],
     "FunPackLoadModifiers": ["model", "settings"],
+    "FunPackLatentUpscalerLoader": ["upscaler_name"],
+    "FunPackLatentResample": ["latent", "upscaler", "operation", "scale", "positive", "negative"],
     "FunPackModifierSettings": ["settings"],
     "FunPackDecode": ["samples", "vae", "model", "audio_vae"],
     "FunPackEmptyLatent": ["model", "width", "height", "length", "batch_size"],
