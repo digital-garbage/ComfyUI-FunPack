@@ -34,6 +34,7 @@ from .latent_upscaler import load_upscaler as _load_upscaler
 from . import prompt_layout as _prompt_layout
 from .rows import target_rows as _target_rows
 from .rope import query_rotation as _query_rotation
+from .streams import video_stream as _video_stream
 
 has_block = _traits.has_block
 
@@ -193,4 +194,5 @@ PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect,
             "text_tokenizer": _prompt_layout.text_tokenizer,
             "prompt_rows": _prompt_layout.prompt_rows,
             "video_time_rows": _prompt_layout.video_time_rows,
-            "query_rotation": _query_rotation}
+            "query_rotation": _query_rotation,
+            "video_stream": _video_stream}
