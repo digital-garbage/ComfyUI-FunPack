@@ -297,6 +297,10 @@
     }).toString(),
     previewSegmentUrl: unsupportedUrl,
 
+    // --- taste keys: modules/system/taste --------------------------------------
+    rateTaste: (prompt_id, rating) => j("POST", API("/api/m/taste/rate"), { prompt_id, rating }),
+    tasteKeys: () => j("GET", API("/api/m/taste/keys")),
+
     // --- refinement keys / absolute taste store (c) -- not built in v5 -------
     refinementKeys: () => unsupported("refinement keys are not built in v5 yet"),
     importRefinementKey: () => unsupported("refinement keys are not built in v5 yet"),

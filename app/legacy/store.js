@@ -3428,7 +3428,9 @@
       const renderPrompt = _queuedRenderPrompts[id] || _snapshotRenderPrompt(id);
       delete _queuedRenderPrompts[id];
       const realDur = _planDurationSec(sc); // freeze the length this render was actually made at
-      state.sceneRenders[id] = { media: primary, inSec, renderPrompt, durationSec: realDur };
+      // promptId: which ComfyUI run made it, so rating it can teach the taste key
+      // from THAT run's capture and nothing else.
+      state.sceneRenders[id] = { media: primary, inSec, renderPrompt, durationSec: realDur, promptId: opts?.promptId || null };
       recordedSceneIds.push(id);
       const root = genUnitRoot(genUnitId(sc));
       if (root && root.rating) { root.rating = ""; clearedRating = true; }
@@ -3582,7 +3584,7 @@
       } else if (phase === "done") {
         const mediaList = [...(images || []), ...(audio || [])]
           .map((f) => ({ ...f, kind: _kindForFilename(f.filename) }));
-        if (mediaList.length && _genRunSceneIds.length) _recordSegment(mediaList, _genRunSceneIds, {});
+        if (mediaList.length && _genRunSceneIds.length) _recordSegment(mediaList, _genRunSceneIds, { promptId });
         set({
           gen: {
             state: "done", promptId, media: mediaList,
@@ -4916,6 +4918,12 @@
     setSceneRating: (id, v) => {
       patchScene(id, { rating: v || "" });
       if (window.Timeline?.syncClipRatings) window.Timeline.syncClipRatings(get());
+      const promptId = state.sceneRenders[id]?.promptId;
+      if (promptId) {
+        API.rateTaste(promptId, v || null).then((r) => {
+          if (r?.why) set({ notice: `Taste key not taught: ${r.why}.` });
+        }).catch(() => {});                       // no taste module: rating stays a label
+      }
     },
     resetStudioSession,
   };
