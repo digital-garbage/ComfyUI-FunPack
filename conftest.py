@@ -145,3 +145,16 @@ class TinyH3:
 @pytest.fixture
 def tiny_h3(comfyui):
     return TinyH3()
+
+
+def packed_av(video, audio):
+    """[video, audio] exactly as H3's model call hands them back: comfy's
+    `_apply_model` packs the pair flat with `pack_latents`, and the shapes that
+    undo it travel with the call as `latent_shapes`. -> (x, latent_shapes)."""
+    import comfy.utils
+    return comfy.utils.pack_latents([video, audio])
+
+
+def unpacked(x, latent_shapes):
+    import comfy.utils
+    return comfy.utils.unpack_latents(x, latent_shapes)

@@ -42,9 +42,9 @@ def _teach(kind, names):
 
 
 def _x0():
-    from comfy.nested_tensor import NestedTensor
+    from conftest import packed_av
     torch.manual_seed(3)
-    return NestedTensor([torch.randn(1, 4, 3, 8, 8), torch.randn(1, 8, 5)])
+    return packed_av(torch.randn(1, 4, 3, 8, 8), torch.randn(1, 8, 5))
 
 
 def _start(outer):
@@ -56,17 +56,18 @@ def test_early_guidance_steers_in_the_first_quarter_and_banks_every_quarter(tiny
     from modules.system.taste import store
     _teach("x0_quarters", ["q0", "q1", "q2", "q3"])
     monkeypatch.setattr(store, "current_prompt_id", lambda: "run-2")
-    x0 = _x0()
+    x0, shapes = _x0()
     wrap, outer = _load(tiny_h3, "trajectory_guidance")
 
     def run():
-        return [wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(i)) for i in range(4)]
+        return [wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(i), latent_shapes=shapes) for i in range(4)]
 
     results = {}
     for o in outer:
         o(lambda: results.setdefault("steps", run()))
     first = results["steps"][0]
-    assert not torch.allclose(first.tensors[0], x0.tensors[0])
+    assert not torch.allclose(first[..., :4 * 3 * 8 * 8], x0[..., :4 * 3 * 8 * 8])
+    assert torch.equal(first[..., 4 * 3 * 8 * 8:], x0[..., 4 * 3 * 8 * 8:])
     pending = torch.load(store.ROOT / "fox" / "x0_quarters.pending.pt")["rows"]
     assert sorted(pending) == ["q0", "q1", "q2", "q3"]
 

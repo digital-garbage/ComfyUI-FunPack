@@ -51,7 +51,6 @@ def test_nothing_banked_at_this_resolution_changes_nothing():
 
 
 def test_it_banks_the_last_step_and_steers_once_rated(tiny_h3, monkeypatch):
-    from comfy.nested_tensor import NestedTensor
     from comfy.patcher_extension import WrappersMP
     from modules.sampling.modifiers.nodes import FunPackLoadModifiers
     from modules.system.taste import store
@@ -66,12 +65,13 @@ def test_it_banks_the_last_step_and_steers_once_rated(tiny_h3, monkeypatch):
     torch.manual_seed(1)
     bad = torch.randn(1, 4, 3, 8, 8)
     audio = torch.randn(1, 8, 5)
-    x0 = NestedTensor([bad, audio])
+    from conftest import packed_av, unpacked
+    x0, shapes = packed_av(bad, audio)
     for i, rating in enumerate(["disliked", "disliked"]):
         monkeypatch.setattr(store, "current_prompt_id", lambda i=i: f"run-{i}")
         wrap, outer, status = load()
         for o in outer:
-            o(lambda: wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(3)))
+            o(lambda: wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(3), latent_shapes=shapes))
         assert store.rate(f"run-{i}", rating)["recorded"] == ["dynashift"]
 
     wrap, outer, _status = load()
@@ -80,8 +80,8 @@ def test_it_banks_the_last_step_and_steers_once_rated(tiny_h3, monkeypatch):
     for o in outer:
         o(lambda: None)                                     # a run starts: the bank is read
     assert any("2 disliked, 0 liked banked" in e["message"] for e in log.history())
-    early = wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(1))
+    early = wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(1), latent_shapes=shapes)
     assert early is x0                                      # first half: untouched
-    late = wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(3))
-    assert not torch.allclose(late.tensors[0], bad)
-    assert late.tensors[1] is audio                          # sound untouched
+    late = wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(3), latent_shapes=shapes)
+    assert not torch.allclose(unpacked(late, shapes)[0], bad)
+    assert torch.equal(unpacked(late, shapes)[1], audio)     # sound untouched

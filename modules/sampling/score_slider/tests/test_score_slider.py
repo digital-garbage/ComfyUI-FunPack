@@ -44,7 +44,7 @@ def test_similar_prompts_pick_their_own_direction():
 
 
 def test_late_steps_combine_three_passes_on_the_picture_words_only(tiny_h3):
-    from comfy.nested_tensor import NestedTensor
+    from conftest import packed_av, unpacked
     from comfy.patcher_extension import WrappersMP
     from modules.sampling.modifiers.nodes import FunPackLoadModifiers
     from modules.system.taste import store
@@ -68,19 +68,20 @@ def test_late_steps_combine_three_passes_on_the_picture_words_only(tiny_h3):
 
     def executor(x, t, c_concat=None, c_crossattn=None, control=None, transformer_options=None, **kw):
         seen.append(c_crossattn.clone())
-        return NestedTensor([torch.full((1, 2, 1, 2, 2), float(c_crossattn[0, :, 0].sum())), audio])
+        return packed_av(torch.full((1, 2, 1, 2, 2), float(c_crossattn[0, :, 0].sum())), audio)[0]
 
     c = torch.ones(1, 4, dim)
     tags = torch.tensor([1, 1, 0, 1])                  # row 2: a reference image's token
     x0 = executor(None, None, c_crossattn=c)
+    shapes = packed_av(torch.zeros(1, 2, 1, 2, 2), audio)[1]
     seen.clear()
-    early = wrap(executor, x0, None, None, c, None, _to(0), minimax_payload={"text_token_tags": tags})
-    assert len(seen) == 1 and torch.equal(early.tensors[0], x0.tensors[0])
+    early = wrap(executor, x0, None, None, c, None, _to(0), minimax_payload={"text_token_tags": tags}, latent_shapes=shapes)
+    assert len(seen) == 1 and torch.equal(early, x0)
 
     seen.clear()
-    late = wrap(executor, x0, None, None, c, None, _to(3), minimax_payload={"text_token_tags": tags})
+    late = wrap(executor, x0, None, None, c, None, _to(3), minimax_payload={"text_token_tags": tags}, latent_shapes=shapes)
     assert len(seen) == 3
     plus = seen[1]
     assert torch.equal(plus[0, 2], c[0, 2]) and not torch.equal(plus[0, 0], c[0, 0])
-    assert not torch.equal(late.tensors[0], x0.tensors[0])
-    assert late.tensors[1] is audio
+    assert not torch.equal(unpacked(late, shapes)[0], unpacked(x0, shapes)[0])
+    assert torch.equal(unpacked(late, shapes)[1], audio)

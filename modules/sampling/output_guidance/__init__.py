@@ -74,7 +74,7 @@ def install(patcher, values, key):
         out = executor(x, t, *args, **kwargs)
         named = streams.model_args(args, kwargs)
         to = named.get("transformer_options")
-        split = streams.video_of(out)
+        split = streams.video_of(out, named)
         if split is None:
             _say("off this run: could not find the picture in this model's latent")
             return out

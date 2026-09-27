@@ -120,12 +120,12 @@ def install(patcher, values, key):
             return base
         size = torch.linalg.vector_norm(c[:, words], dim=-1, dtype=torch.float32).mean()
         step = (d.to(c.device) * STEP * size).to(c.dtype) * words.view(1, -1, 1)
-        split = streams.video_of(base)
+        split = streams.video_of(base, named)
         if split is None:
             _say("off this run: could not find the picture in this model's latent")
             return base
-        plus = streams.video_of(executor(x, t, **{**named, "c_crossattn": c + step}))
-        minus = streams.video_of(executor(x, t, **{**named, "c_crossattn": c - step}))
+        plus = streams.video_of(executor(x, t, **{**named, "c_crossattn": c + step}), named)
+        minus = streams.video_of(executor(x, t, **{**named, "c_crossattn": c - step}), named)
         video, rebuild = split
         return rebuild(video + (plus[0] - minus[0]) * amount)
 

@@ -80,7 +80,7 @@ def install(patcher, values, key):
         out = executor(x, t, *args, **kwargs)
         named = streams.model_args(args, kwargs)
         q = quarter(named.get("transformer_options"))
-        split = streams.video_of(out)
+        split = streams.video_of(out, named)
         if q is None or split is None:
             _say("off this run: could not place this step on the schedule or find the picture")
             return out
