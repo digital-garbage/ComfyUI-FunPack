@@ -150,14 +150,15 @@ def install(patcher, values, key):
                 # inherit a blurred one.
                 model_k.latent_image = latent_image
 
-        import comfy.samplers
-        replacement = comfy.samplers.KSAMPLER(
-            alg_sampler_function,
-            extra_options=getattr(sampler, "extra_options", {}),
-            inpaint_options=getattr(sampler, "inpaint_options", {}),
-        )
-        return replacement.sample(model_wrap, sigmas, extra_args, callback, noise,
-                                  latent_image, denoise_mask, disable_pbar)
+        # Swapped on the sampler for this call and passed ON, not run by a
+        # replacement sampler: a replacement would skip every SAMPLER_SAMPLE
+        # wrapper inside this one (the seed search, anything later).
+        sampler.sampler_function = alg_sampler_function
+        try:
+            return executor(model_wrap, sigmas, extra_args, callback, noise,
+                            latent_image, denoise_mask, disable_pbar)
+        finally:
+            sampler.sampler_function = inner_fn
 
     patcher.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, key, wrapper)
     return f"loosening the starting image (amount {strength}, until sigma {threshold})"

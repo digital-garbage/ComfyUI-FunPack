@@ -109,7 +109,8 @@ def install(patcher, values, key):
             words = torch.ones(c.shape[1], dtype=torch.bool, device=c.device)
         words = words.to(c.device)
         pooled = c[0][words].float().mean(0).detach()
-        captured[NAME] = pooled
+        if not dit_hooks.probing(named.get("transformer_options")):
+            captured[NAME] = pooled
         if "dir" not in live:
             live["dir"], how = direction(taste.rows(KIND), pooled, similar)
             log.once(f"{ID}:state", log.INFO, "FunPack Taste slider", f"key {taste.key!r}: {how}")

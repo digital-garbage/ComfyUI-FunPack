@@ -167,9 +167,22 @@ def current_step(transformer_options):
     return int(hit[0]), int(sched.shape[0]) - 1
 
 
+PROBE = "funpack_probe"
+
+
+def probing(transformer_options) -> bool:
+    """A throwaway model call (a candidate scored and discarded, e.g. the
+    first-step seed search). Nothing may be learned from one: a feature that
+    captures from it banks a step the clip never took."""
+    return bool((transformer_options or {}).get(PROBE))
+
+
 def last_step(transformer_options) -> bool:
     """Whether this denoise call is the schedule's final step -- True when that
-    cannot be told, so a capture taken "on the last step" still happens."""
+    cannot be told, so a capture taken "on the last step" still happens. Never
+    during a probe."""
+    if probing(transformer_options):
+        return False
     where = current_step(transformer_options)
     return where is None or where[0] >= where[1] - 1
 

@@ -57,6 +57,10 @@ class _Executor:
         self.fell_back = False
 
     def __call__(self, *args, **kwargs):
+        if self._fallback == "sample":
+            # The end of a real chain: the sampler's own sample(), with whatever
+            # sampler_function the wrappers above left on it.
+            return self.class_obj.sample(*args, **kwargs)
         self.fell_back = True
         return self._fallback
 
@@ -111,7 +115,7 @@ def test_the_anchor_the_denoiser_sees_changes_with_sigma():
 
     wrapper, _note, _kind, _mp = _install_alg()
     real = comfy.samplers.KSAMPLER(sampler_function)
-    executor = _Executor(real, fallback="unused")
+    executor = _Executor(real, fallback="sample")
 
     wrapper(executor, _Guider(), torch.tensor([0.9, 0.2]), {}, None,
             torch.zeros_like(sharp), sharp, torch.ones_like(sharp), True)
@@ -138,7 +142,7 @@ def test_the_real_denoiser_is_left_holding_the_sharp_anchor():
         return x
 
     wrapper, _n, _k, _mp = _install_alg()
-    wrapper(_Executor(comfy.samplers.KSAMPLER(sampler_function), "unused"),
+    wrapper(_Executor(comfy.samplers.KSAMPLER(sampler_function), "sample"),
             _Guider(), torch.tensor([0.9]), {}, None,
             torch.zeros_like(sharp), sharp, torch.ones_like(sharp), True)
 
@@ -160,7 +164,7 @@ def test_a_sampler_error_still_restores_the_sharp_anchor():
 
     wrapper, _n, _k, _mp = _install_alg()
     with pytest.raises(RuntimeError, match="interrupted"):
-        wrapper(_Executor(comfy.samplers.KSAMPLER(sampler_function), "unused"),
+        wrapper(_Executor(comfy.samplers.KSAMPLER(sampler_function), "sample"),
                 _Guider(), torch.tensor([0.9]), {}, None,
                 torch.zeros_like(sharp), sharp, torch.ones_like(sharp), True)
 
@@ -202,3 +206,32 @@ def test_an_image_latent_stands_aside_rather_than_reshaping_a_guess():
                   torch.ones_like(image_latent), True)
 
     assert out == "untouched" and executor.fell_back
+
+
+def test_alg_passes_the_call_on_and_leaves_the_sampler_as_it_found_it():
+    """A replacement sampler would skip every SAMPLER_SAMPLE wrapper beneath ALG
+    (the seed search). And the sampler object is shared across runs: the swap
+    must not outlive this call."""
+    import torch
+    import comfy.samplers
+
+    sharp = torch.randn(1, 3, 4, 16, 16)
+    ran = []
+
+    def sampler_function(model_k, x, sigmas, **kwargs):
+        ran.append(True)
+        return x
+
+    real = comfy.samplers.KSAMPLER(sampler_function)
+    below = []
+
+    class _Beneath(_Executor):
+        def __call__(self, *args, **kwargs):
+            below.append(True)                  # a wrapper installed after ALG
+            return self.class_obj.sample(*args, **kwargs)
+
+    wrapper, _n, _k, _mp = _install_alg()
+    wrapper(_Beneath(real, None), _Guider(), torch.tensor([0.9]), {}, None,
+            torch.zeros_like(sharp), sharp, torch.ones_like(sharp), True)
+    assert below and ran
+    assert real.sampler_function is sampler_function

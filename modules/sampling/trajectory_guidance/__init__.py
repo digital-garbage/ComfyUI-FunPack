@@ -79,6 +79,8 @@ def install(patcher, values, key):
     def apply_model(executor, x, t, *args, **kwargs):
         out = executor(x, t, *args, **kwargs)
         named = streams.model_args(args, kwargs)
+        if dit_hooks.probing(named.get("transformer_options")):
+            return out                           # a discarded candidate: learn and steer nothing
         q = quarter(named.get("transformer_options"))
         split = streams.video_of(out, named)
         if q is None or split is None:
