@@ -189,8 +189,20 @@ def install(patcher, values, key):
         return None
     strength = float(values.get("strength", 0.3))
     threshold = float(values.get("threshold", 0.6))
-    bank = Bank(taste.rows(KIND))
-    captured = taste.collect(patcher, key, KIND, keep=4 * BANK)
+    live = {"bank": Bank([])}
+
+    def fresh():
+        bank = live["bank"] = Bank(taste.rows(KIND))
+        if not bank.negatives:
+            summary = "learning: nothing disliked banked yet"
+        else:
+            pull = ("pulling toward liked" if len(bank.positives) >= MIN_FOR_PULL
+                    and len(bank.negatives) >= MIN_FOR_PULL
+                    else "no pull yet (needs 2 liked + 2 disliked)")
+            summary = f"{len(bank.negatives)} disliked, {len(bank.positives)} liked banked; {pull}"
+        log.once(f"{ID}:state", log.INFO, "FunPack DynaShift", f"key {taste.key!r}: {summary}")
+
+    captured = taste.collect(patcher, key, KIND, keep=4 * BANK, fresh=fresh)
 
     def apply_model(executor, x, t, *args, **kwargs):
         out = executor(x, t, *args, **kwargs)
@@ -208,18 +220,14 @@ def install(patcher, values, key):
         amount = strength * gate(to)
         if amount <= 0.0:
             return out
-        shifted = shift(video, bank, amount, threshold, kwargs.get("c_crossattn"))
+        shifted = shift(video, live["bank"], amount, threshold, kwargs.get("c_crossattn"))
         return out if shifted is None else rebuild(shifted)
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)
     if strength <= 0.0:
         return "strength 0: learning only"
-    if not bank.negatives:
-        return "learning: nothing disliked banked yet"
-    pull = ("with pull toward liked" if len(bank.positives) >= MIN_FOR_PULL
-            and len(bank.negatives) >= MIN_FOR_PULL else "no pull yet (needs 2 liked + 2 disliked)")
-    return (f"{len(bank.negatives)} disliked, {len(bank.positives)} liked banked; "
-            f"strength {strength:g}, threshold {threshold:g}, last half of steps; {pull}")
+    return (f"strength {strength:g}, threshold {threshold:g}, last half of steps; "
+            "banks every run, steers once something is disliked (read fresh every run)")
 
 
 PROVIDES = {"modifier": install}

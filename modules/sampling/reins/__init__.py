@@ -65,15 +65,15 @@ def install(patcher, values, key):
         _say(f"ignored {problem}")
     strength = float(values.get("strength", 0.0))
 
-    directions, waiting = {}, []
-    for b in steer:
-        d, liked, disliked = taste.direction(KIND, b)
-        if d is None:
-            waiting.append(f"{b} ({liked}/{disliked})")
-        else:
-            directions[b] = (d, liked, disliked)
+    live = {"dirs": {}}
+    cast = {}
 
-    captured = taste.collect(patcher, key, KIND)
+    def fresh():
+        live["dirs"], summary = taste.directions(KIND, steer, strength)
+        cast.clear()
+        log.once(f"{ID}:state", log.INFO, "FunPack Taste steering", summary)
+
+    captured = taste.collect(patcher, key, KIND, fresh=fresh)
     spans = {}
 
     def video_span(args, out):
@@ -83,9 +83,7 @@ def install(patcher, values, key):
                 args.get("mod_segments"), seq, out.device, "video"))
         return spans[seq]
 
-    def make(block, direction):
-        cast = {}
-
+    def make(block):
         def hook(args, extra):
             out = extra["original_block"](args)["img"]
             span = video_span(args, out)
@@ -94,37 +92,31 @@ def install(patcher, values, key):
             rows = out[span[0]:span[1]]
             if dit_hooks.last_step(args.get("transformer_options")):
                 captured[block] = rows.mean(0, dtype=torch.float32).detach()
-            if direction is not None and strength > 0.0:
-                if direction.numel() != out.shape[-1]:
-                    _say(f"block {block}'s learned direction is from a different model; "
-                         "learning only there")
-                    return {"img": out}
-                d = cast.get(out.dtype)
-                if d is None:
-                    d = cast[out.dtype] = direction.to(device=out.device, dtype=out.dtype)
-                norm = torch.linalg.vector_norm(rows, dim=-1, dtype=torch.float32).mean()
-                # No host sync: a bad norm makes the push zero instead of a branch.
-                scale = torch.where(torch.isfinite(norm) & (norm > 0), norm * strength,
-                                    torch.zeros_like(norm))
-                rows += d * scale.to(out.dtype)
+            direction = live["dirs"].get(block)
+            if direction is None or strength <= 0.0:
+                return {"img": out}
+            if direction.numel() != out.shape[-1]:
+                _say(f"block {block}'s learned direction is from a different model; "
+                     "learning only there")
+                return {"img": out}
+            d = cast.get((block, out.dtype))
+            if d is None:
+                d = cast[(block, out.dtype)] = direction.to(device=out.device, dtype=out.dtype)
+            norm = torch.linalg.vector_norm(rows, dim=-1, dtype=torch.float32).mean()
+            # No host sync: a bad norm makes the push zero instead of a branch.
+            scale = torch.where(torch.isfinite(norm) & (norm > 0), norm * strength,
+                                torch.zeros_like(norm))
+            rows += d * scale.to(out.dtype)
             return {"img": out}
         return hook
 
     for b in range(n):
-        d = directions.get(b)
-        dit_hooks.add_block_hook(patcher, key, b, make(b, None if d is None else d[0]))
+        dit_hooks.add_block_hook(patcher, key, b, make(b))
 
     # Changes what the hooked blocks allocate: see dit_hooks.without_compiler.
     dit_hooks.without_compiler(patcher, key)
-    parts = []
-    if directions and strength > 0.0:
-        parts.append("steering " + ", ".join(f"{b} ({l}/{dl})" for b, (_d, l, dl) in directions.items())
-                     + f" at {strength:g}")
-    elif directions:
-        parts.append("strength 0: learning only")
-    if waiting:
-        parts.append(f"learning, needs 2 liked + 2 disliked at {', '.join(waiting)}")
-    return "; ".join(parts) or "learning at every block"
+    return (f"learning at every block; steers {','.join(map(str, steer))} at {strength:g} "
+            "once each has 2 liked + 2 disliked (read fresh every run)")
 
 
 PROVIDES = {"modifier": install}

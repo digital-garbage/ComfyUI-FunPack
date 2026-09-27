@@ -66,15 +66,13 @@ def install(patcher, values, key):
         _say(f"ignored {problem}")
     strength = float(values.get("strength", 0.0))
 
-    directions, waiting = {}, []
-    for b in steer:
-        d, liked, disliked = taste.direction(KIND, b)
-        if d is None:
-            waiting.append(f"{b} ({liked}/{disliked})")
-        else:
-            directions[b] = (d, liked, disliked)
+    live = {"dirs": {}}
 
-    captured = taste.collect(patcher, key, KIND)
+    def fresh():
+        live["dirs"], summary = taste.directions(KIND, steer, strength)
+        log.once(f"{ID}:state", log.INFO, "FunPack Taste attention", summary)
+
+    captured = taste.collect(patcher, key, KIND, fresh=fresh)
     layout = {}                                  # seq_len -> (lo, hi, rotate) | None
 
     def scoped(block):
@@ -113,10 +111,9 @@ def install(patcher, values, key):
         if dit_hooks.last_step(to):
             natural = rotate(rows, slice(lo, hi), inverse=True)
             captured[block] = natural.transpose(0, 1).reshape(count, -1).mean(0, dtype=torch.float32)
-        hit = directions.get(block)
-        if hit is None or strength <= 0.0:
+        direction = live["dirs"].get(block)
+        if direction is None or strength <= 0.0:
             return func(q, k, v, *args, **kwargs)
-        direction = hit[0]
         if direction.numel() != heads * dim:
             _say(f"block {block}'s learned direction is from a different model; learning only there")
             return func(q, k, v, *args, **kwargs)
@@ -132,15 +129,8 @@ def install(patcher, values, key):
     dit_hooks.add_attention_override(patcher, key, override)
     # Changes what the hooked blocks allocate: see dit_hooks.without_compiler.
     dit_hooks.without_compiler(patcher, key)
-    parts = []
-    if directions and strength > 0.0:
-        parts.append("steering " + ", ".join(f"{b} ({l}/{dl})" for b, (_d, l, dl) in directions.items())
-                     + f" at {strength:g}")
-    elif directions:
-        parts.append("strength 0: learning only")
-    if waiting:
-        parts.append(f"learning, needs 2 liked + 2 disliked at {', '.join(waiting)}")
-    return "; ".join(parts) or "learning at every block"
+    return (f"learning at every block; steers {','.join(map(str, steer))} at {strength:g} "
+            "once each has 2 liked + 2 disliked (read fresh every run)")
 
 
 PROVIDES = {"modifier": install}

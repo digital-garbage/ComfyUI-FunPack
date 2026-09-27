@@ -39,7 +39,7 @@ def test_no_taste_key_means_off(tiny_h3):
 def test_the_last_step_is_captured_at_every_block_and_a_rating_records_it(tiny_h3):
     from modules.system.taste import store
     patched, status = _load(tiny_h3, blocks="3")
-    assert "learning, needs 2 liked + 2 disliked at 3 (0/0)" in status
+    assert "steers 3 at 0.01 once each has 2 liked + 2 disliked" in status
     sched = torch.tensor([1.0, 0.5, 0.0])
     tiny_h3.sample(patched, sigma=1.0, sigmas=sched)        # not the last step
     assert not (store.ROOT / "fox" / "reins.pending.pt").exists()
@@ -57,13 +57,27 @@ def test_a_learned_direction_moves_the_picture_and_never_the_sound(tiny_h3):
     liked[0] = 1.0
     _teach(3, liked, -liked)
     base = tiny_h3.run()
-    patched, status = _load(tiny_h3, blocks="3", strength=0.5)
-    assert "steering 3 (2/2) at 0.5" in status
+    patched, _status = _load(tiny_h3, blocks="3", strength=0.5)
+    from core import log
+    log.new_run()
     video, audio = tiny_h3.sample(patched)
+    assert any("steering 3 (2/2) at 0.5" in e["message"] for e in log.history())
     assert not torch.allclose(video, base[0])
     # Block 3 is the last: only its picture rows were pushed, so sound is exact.
     assert torch.equal(audio, base[1])
 
-    quiet, status = _load(tiny_h3, blocks="3", strength=0.0)
-    assert "learning only" in status
+    quiet, _status = _load(tiny_h3, blocks="3", strength=0.0)
     assert torch.equal(tiny_h3.sample(quiet)[0], base[0])
+
+
+def test_a_rating_after_the_node_ran_is_used_by_the_next_run(tiny_h3):
+    """ComfyUI caches the modifier node, so the same patched model is sampled
+    again after a new rating. The new direction must reach that next run."""
+    hidden = tiny_h3.patcher.model.diffusion_model.blocks[0].attn.out_proj.weight.shape[0]
+    base = tiny_h3.run()
+    patched, _ = _load(tiny_h3, blocks="3", strength=0.5)
+    assert torch.equal(tiny_h3.sample(patched)[0], base[0])  # nothing learned yet
+    liked = torch.zeros(hidden)
+    liked[1] = 1.0
+    _teach(3, liked, -liked)
+    assert not torch.allclose(tiny_h3.sample(patched)[0], base[0])

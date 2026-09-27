@@ -74,8 +74,12 @@ def test_it_banks_the_last_step_and_steers_once_rated(tiny_h3, monkeypatch):
             o(lambda: wrap(lambda *a, **k: x0, x0, None, transformer_options=_to(3)))
         assert store.rate(f"run-{i}", rating)["recorded"] == ["dynashift"]
 
-    wrap, _outer, status = load()
-    assert "2 disliked, 0 liked banked" in status
+    wrap, outer, _status = load()
+    from core import log
+    log.new_run()
+    for o in outer:
+        o(lambda: None)                                     # a run starts: the bank is read
+    assert any("2 disliked, 0 liked banked" in e["message"] for e in log.history())
     early = wrap(lambda *a, **k: x0, x0, None, transformer_options=_to(1))
     assert early is x0                                      # first half: untouched
     late = wrap(lambda *a, **k: x0, x0, None, transformer_options=_to(3))

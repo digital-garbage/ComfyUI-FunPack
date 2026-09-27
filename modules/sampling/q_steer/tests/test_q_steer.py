@@ -40,7 +40,7 @@ def test_the_rotation_matches_the_models_own_and_undoes_exactly():
 def test_captures_every_block_on_the_last_step(tiny_h3):
     from modules.system.taste import store
     patched, status = _load(tiny_h3, blocks="3")
-    assert "q_steer: learning" in status
+    assert "q_steer: learning at every block" in status
     tiny_h3.sample(patched)
     pending = torch.load(store.ROOT / "fox" / "q_steer.pending.pt")["rows"]
     attn = tiny_h3.patcher.model.diffusion_model.blocks[0].attn
@@ -57,8 +57,7 @@ def test_a_learned_direction_moves_the_picture_and_never_the_sound(tiny_h3):
         store.capture("fox", "q_steer", {3: vec}, prompt_id=f"t{i}")
         store.rate(f"t{i}", rating)
     base = tiny_h3.run()
-    patched, status = _load(tiny_h3, blocks="3", strength=1.0)
-    assert "steering 3 (2/2) at 1" in status
+    patched, _status = _load(tiny_h3, blocks="3", strength=1.0)
     video, audio = tiny_h3.sample(patched)
     assert not torch.allclose(video, base[0])
     assert torch.equal(audio, base[1])                       # only picture queries moved
