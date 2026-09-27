@@ -74,8 +74,16 @@ def _strip_options(options: dict, prefix: str) -> int:
                 removed += len(value) - len(keep)
                 options[name] = keep
         elif callable(value) and _ours(value, prefix):
-            options.pop(name, None)
-            removed += 1
+            # A chained hook remembers what it wrapped (dit_hooks.PREV): put that
+            # back rather than dropping it, or stripping ours deletes someone
+            # else's hook along with it.
+            while callable(value) and _ours(value, prefix):
+                value = getattr(value, "_funpack_prev", None)
+                removed += 1
+            if value is None:
+                options.pop(name, None)
+            else:
+                options[name] = value
         elif isinstance(value, dict):
             removed += _strip_options(value, prefix)
     return removed
@@ -220,6 +228,15 @@ class GuardedPatcher:
             return target(*args, **kwargs)
 
         return install
+
+    def guarded(self, fn, neutral):
+        """`fn` guarded like any hook installed through this patcher, for hooks
+        that go in through a slot rather than a `set_model_*` method (block
+        replacements, the attention override). `neutral` has the hook's own
+        signature and returns what the call would have without it."""
+        if not self._guarding:
+            return fn
+        return guard(fn, self._key, neutral, self._dropped)
 
     def __setattr__(self, name, value):
         setattr(self._patcher, name, value)

@@ -28,6 +28,7 @@ from comfy_extras.nodes_minimax_h3 import temporal_shape
 
 from ..._core import traits as _traits
 from .pipeline import presets as _pipeline_presets
+from .rows import target_rows as _target_rows
 
 has_block = _traits.has_block
 
@@ -105,7 +106,7 @@ def probe_traits(keys) -> list:
         return []
     from comfy.latent_formats import MiniMaxH3AV
 
-    found = ["audio_stream"]
+    found = ["audio_stream", "dit_block_hooks"]
     rank = _traits.LATENT_RANK.get(MiniMaxH3AV.latent_dimensions)
     if rank:
         found.append(rank)
@@ -118,7 +119,10 @@ def traits(model):
     """What core cannot read off the model for itself."""
     if not is_h3(model):
         return ()
-    found = ["audio_stream"]
+    # dit_block_hooks: its forward honours patches_replace["dit"][("double_block",
+    # i)] and routes every attention call through optimized_attention, which is
+    # what core/dit_hooks.py hooks.
+    found = ["audio_stream", "dit_block_hooks"]
     if has_block(model, ADALN_CLASS):
         found.append("adaln_modalities")
     return found
@@ -178,4 +182,5 @@ def empty_latent(model, width, height, length, batch_size=1):
 
 TRAITS = traits
 PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect,
-            "pipeline_presets": _pipeline_presets, "probe_traits": probe_traits}
+            "pipeline_presets": _pipeline_presets, "probe_traits": probe_traits,
+            "target_rows": _target_rows}
