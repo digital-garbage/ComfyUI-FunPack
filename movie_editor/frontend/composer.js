@@ -1077,6 +1077,13 @@
         el("div", "enh-before-text enh-ref-sent", ref));
       card.append(det);
     }
+    // The Chat tab's conversation exactly as the model received it (empty = none sent).
+    const chat = String(it.chat || "").trim();
+    if (chat) {
+      const det = el("details", "enh-before");
+      det.append(el("summary", null, "Chat sent"), el("div", "enh-before-text enh-ref-sent", chat));
+      card.append(det);
+    }
     if (it.status) card.append(el("div", "enh-status", String(it.status)));
     return card;
   }

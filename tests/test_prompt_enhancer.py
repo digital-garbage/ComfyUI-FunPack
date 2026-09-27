@@ -637,3 +637,10 @@ def test_every_enhancement_path_passes_the_chat():
     import inspect
     src = inspect.getsource(C.FunPackVideoRefinerV2.refine_v2)
     assert src.count("chat=self._v2_enhancer_chat(prompt_enhance_chat") == 3
+
+
+def test_every_readout_says_what_chat_the_model_was_sent():
+    """Last run ▸ "Chat sent" is how a user checks what the model actually read."""
+    import inspect
+    src = inspect.getsource(C.FunPackVideoRefinerV2.refine_v2)
+    assert src.count('"chat": ') == 3

@@ -10787,11 +10787,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 thinking=prompt_enhance_thinking, image=prompt_enhance_image,
                 **_enhance_sampling,
             )
+            _chat_sent = self._v2_enhancer_chat(prompt_enhance_chat)
             print(f"[FunPackVideoRefinerV2] {_enhance_status}")
             self._v2_note_enhanced({
                 "scene": None, "before": _before, "after": prompt_to_encode,
                 "status": _enhance_status, "image": prompt_enhance_image is not None,
-                "reference": _ref.strip(), "thinking": self._v2_last_thinking})
+                "reference": _ref.strip(), "chat": _chat_sent.strip(),
+                "thinking": self._v2_last_thinking})
 
         # Studio's `enhanced_prompt` output, for a node encoding on its own (Editor link
         # "Enhanced prompt, fallback to prompt + postfix"). The same text that link's
@@ -10812,6 +10814,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 self._v2_note_enhanced({
                     "scene": None, "before": _whole, "after": _after, "status": _st,
                     "image": prompt_enhance_image is not None, "reference": _ref.strip(),
+                    "chat": self._v2_enhancer_chat(prompt_enhance_chat).strip(),
                     "thinking": self._v2_last_thinking})
                 _whole = _after
             self._v2_enhanced_output = _whole
@@ -11066,7 +11069,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             self._v2_note_enhanced({
                                 "scene": _i, "before": t, "after": _after, "status": _st,
                                 "image": prompt_enhance_image is not None,
-                                "reference": _ref.strip(), "thinking": self._v2_last_thinking})
+                                "reference": _ref.strip(),
+                                "chat": self._v2_enhancer_chat(prompt_enhance_chat, _i).strip(),
+                                "thinking": self._v2_last_thinking})
                             _enhanced_texts.append(_after)
                         split_scene_texts = _enhanced_texts
                     scene_refinement_keys = [set(s.get("keys") or set()) for s in canon_scenes]
