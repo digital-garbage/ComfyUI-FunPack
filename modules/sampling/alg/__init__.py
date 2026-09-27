@@ -13,6 +13,11 @@ of its own. It attaches to the MODEL, so it applies to whatever sampler is wired
 H3" -- it needs a latent with a time axis and a pinned anchor, and any model with
 both gets it, including ones nobody here has heard of.
 
+Where a model keeps its anchor OUTSIDE the latent -- H3 pins the opening
+keyframe in its conditioning payload -- the model module offers `anchor_pin`,
+and the same blur is applied to that pin's latent at every model call whose
+sigma is above the threshold. ALG never learns the payload's layout.
+
 KNOWN ASSUMPTION: the anchor is latent frame 0. That is true of every i2v setup
 this can currently be wired into, and it is what v4 assumed. It is NOT true in
 general -- H3 can pin a keyframe at any frame -- so if an interior-pin mechanism
@@ -31,8 +36,8 @@ that layout later.
 
 from comfy.patcher_extension import WrappersMP
 
-from ..._core import log
-from .blur import AnchorSwap, blur_frames
+from ..._core import log, registry
+from .blur import AnchorSwap, blur_frames, use_blurred
 
 ID = "alg"
 TITLE = "Anchor de-staticking"
@@ -76,25 +81,62 @@ def install(patcher, values, key):
 
     strength = float(values.get("strength", 4.0))
     threshold = float(values.get("until_sigma", 0.6))
+    run = {"pin": False}
+
+    # A pinned anchor that lives outside the latent (see the module docstring).
+    pin_blurs = {}
+
+    def blur_pin(z):
+        hit = pin_blurs.get(id(z))
+        if hit is None or hit[0] is not z:
+            hit = (z, blur_frames(z, strength, frame_indices=range(z.shape[2]))
+                   if getattr(z, "ndim", 0) == 5 else None)
+            pin_blurs[id(z)] = hit
+        return hit[1]
+
+    pin_providers = [fn for _spec, fn in registry.current().providers("anchor_pin")]
+
+    def apply_model(executor, x, t, *args, **kwargs):
+        if pin_providers and use_blurred(t, threshold):
+            for provider in pin_providers:
+                swapped = provider(kwargs, blur_pin)
+                if swapped is not None:
+                    run["pin"] = True
+                    kwargs = swapped
+                    break
+        return executor(x, t, *args, **kwargs)
+
+    if pin_providers:
+        patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)
+
+    def unless_pinned(result, message):
+        if not run["pin"]:
+            _once(message)
+        return result
 
     def wrapper(executor, model_wrap, sigmas, extra_args, callback, noise,
                 latent_image=None, denoise_mask=None, disable_pbar=False):
         sampler = getattr(executor, "class_obj", None)
         inner_fn = getattr(sampler, "sampler_function", None)
+        run["pin"] = False
+        pin_blurs.clear()
 
         # No anchor pinned means nothing to de-static; a sampler that is not
-        # KSAMPLER-shaped has no loop to stand between.
+        # KSAMPLER-shaped has no loop to stand between. Said AFTER the run, so
+        # an anchor pinned outside the latent is not reported as missing.
         if inner_fn is None or latent_image is None or denoise_mask is None:
-            _once("off this run: there is no pinned anchor to loosen")
-            return executor(model_wrap, sigmas, extra_args, callback, noise,
-                            latent_image, denoise_mask, disable_pbar)
+            return unless_pinned(
+                executor(model_wrap, sigmas, extra_args, callback, noise,
+                         latent_image, denoise_mask, disable_pbar),
+                "off this run: there is no pinned anchor to loosen")
 
         blurred = blur_frames(latent_image, strength, frame_indices=(0,))
         if blurred is None:
-            _once("off this run: this model's anchor is not a plain video latent, "
-                  "and reshaping it would be guesswork")
-            return executor(model_wrap, sigmas, extra_args, callback, noise,
-                            latent_image, denoise_mask, disable_pbar)
+            return unless_pinned(
+                executor(model_wrap, sigmas, extra_args, callback, noise,
+                         latent_image, denoise_mask, disable_pbar),
+                "off this run: this model's anchor is not a plain video latent, "
+                "and reshaping it would be guesswork")
 
         def alg_sampler_function(model_k, x, step_sigmas, extra_args=None,
                                  callback=None, disable=None, **options):

@@ -28,6 +28,7 @@ from comfy_extras.nodes_minimax_h3 import temporal_shape
 
 from ..._core import traits as _traits
 from .pipeline import presets as _pipeline_presets
+from .anchor import anchor_pin as _anchor_pin
 from .rows import target_rows as _target_rows
 
 has_block = _traits.has_block
@@ -183,4 +184,4 @@ def empty_latent(model, width, height, length, batch_size=1):
 TRAITS = traits
 PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect,
             "pipeline_presets": _pipeline_presets, "probe_traits": probe_traits,
-            "target_rows": _target_rows}
+            "target_rows": _target_rows, "anchor_pin": _anchor_pin}
