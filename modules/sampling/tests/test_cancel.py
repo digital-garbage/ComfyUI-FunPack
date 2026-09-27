@@ -169,7 +169,9 @@ def test_alg_puts_the_sharp_anchor_back_when_a_run_is_cancelled():
     class Executor:
         class_obj = comfy.samplers.KSAMPLER(sampler_function)
         def __call__(self, *a, **k):
-            raise AssertionError("should not fall back")
+            # The end of a real chain: the sampler's own sample(), running the
+            # sampler_function ALG swapped in for this call.
+            return self.class_obj.sample(*a, **k)
 
     with pytest.raises(InterruptProcessingException):
         captured["wrapper"](Executor(), Guider(), torch.tensor([0.9]), {}, None,
