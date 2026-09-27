@@ -28,3 +28,38 @@ def anchor_pin(kwargs, transform):
             return None
         latents[i] = swapped
     return {**kwargs, "minimax_payload": {**payload, "cond_video_latents": latents}}
+
+
+def rescale_pins(conditioning, height, width):
+    """Conditioning with every keyframe pin's latent resized to (height, width),
+    and how many were resized. None when nothing here is H3's.
+
+    A pin is packed as condition ROWS, so its token count belongs to the grid it
+    was encoded on: after an upscale between passes the model refuses it outright
+    (v4 hit "value tensor of shape [168, 96] cannot be broadcast to [672, 96]").
+    Dropping it would un-pin the anchor for pass 2, which is exactly what a
+    second pass must not do, so it is resized. Bicubic, not the upscaler: a pin
+    has to keep its structure, not gain invented detail.
+    """
+    import torch.nn.functional as F
+
+    out, changed, ours = [], 0, False
+    for entry in conditioning or ():
+        meta = entry[1] if isinstance(entry, (list, tuple)) and len(entry) == 2 else None
+        if not (isinstance(meta, dict) and meta.get("minimax_keyframes")):
+            out.append(entry)
+            continue
+        ours = True
+        pins = []
+        for pin in meta["minimax_keyframes"]:
+            latent = pin.get("latent")
+            if getattr(latent, "ndim", 0) == 5 and tuple(latent.shape[-2:]) != (height, width):
+                b, c, t = latent.shape[:3]
+                frames = latent.movedim(2, 1).reshape(b * t, c, *latent.shape[-2:])
+                resized = F.interpolate(frames.float(), size=(height, width), mode="bicubic",
+                                        align_corners=False).to(latent.dtype)
+                latent = resized.reshape(b, t, c, height, width).movedim(1, 2)
+                changed += 1
+            pins.append({**pin, "latent": latent})
+        out.append([entry[0], {**meta, "minimax_keyframes": pins}])
+    return (out, changed) if ours else None

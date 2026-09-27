@@ -70,6 +70,11 @@ class FunPackSampler(io.ComfyNode):
                                optional=True,
                                tooltip="Below 1 starts partway through the schedule."),
                 io.Custom("FUNPACK_SETTINGS").Input("settings", optional=True),
+                io.Sigmas.Input("sigmas", optional=True,
+                                tooltip="A schedule to run exactly as written. When wired, "
+                                        "steps, scheduler and denoise are not used. For a "
+                                        "second pass its first value is the strength: 0.4 "
+                                        "polishes, 0.8 reworks the shot."),
             ],
             outputs=[
                 io.Latent.Output(display_name="latent"),
@@ -80,7 +85,7 @@ class FunPackSampler(io.ComfyNode):
     @classmethod
     def execute(cls, model, positive, negative, latent, seed: int, steps: int, cfg: float,
                 sampler_name: str, scheduler: str, denoise: float = 1.0,
-                settings=None) -> io.NodeOutput:
+                settings=None, sigmas=None) -> io.NodeOutput:
         if settings is not None and not isinstance(settings, dict):
             raise RuntimeError(
                 f"FunPack Sampler: settings must be an object keyed by module id, "
@@ -110,7 +115,15 @@ class FunPackSampler(io.ComfyNode):
             latent.get("downscale_ratio_spacial"), latent.get("downscale_ratio_temporal"))
         latent["samples"] = samples_in
 
-        sigmas = cls._sigmas(model, scheduler, steps, denoise)
+        wired = sigmas is not None
+        if wired:
+            if sigmas.numel() < 2:
+                raise RuntimeError("FunPack Sampler: the wired schedule needs at least two "
+                                   "values (a start and an end).")
+            if bool((sigmas[1:] > sigmas[:-1]).any()):
+                raise RuntimeError("FunPack Sampler: the wired schedule must run high to low.")
+        else:
+            sigmas = cls._sigmas(model, scheduler, steps, denoise)
         sampler = comfy.samplers.sampler_object(sampler_name)
 
         chain, notes = cls._chain(model, settings, dropped)
@@ -152,7 +165,8 @@ class FunPackSampler(io.ComfyNode):
         out.pop("downscale_ratio_temporal", None)
         out["samples"] = samples
 
-        headline = (f"{run}: {sampler_name} / {scheduler}, {len(sigmas) - 1} step(s), "
+        schedule = f"wired schedule from {float(sigmas[0]):.3g}" if wired else scheduler
+        headline = (f"{run}: {sampler_name} / {schedule}, {len(sigmas) - 1} step(s), "
                     f"cfg {cfg}")
         log.info("FunPack Sampler", headline)
         return io.NodeOutput(out, "\n".join([headline, *notes]))

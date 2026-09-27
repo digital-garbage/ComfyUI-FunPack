@@ -101,6 +101,67 @@ def test_zero_denoise_asks_for_nothing(comfyui):
     assert len(FunPackSampler._sigmas(Model(), "normal", 10, 0.0)) == 0
 
 
+def _run_capturing_sigmas(monkeypatch, **kwargs):
+    """execute() with the guider replaced, returning the schedule it was given."""
+    import comfy.sample
+    import comfy.samplers
+    import latent_preview
+    import torch
+    from modules.sampling.sampler import nodes
+
+    seen = {}
+
+    class Guider:
+        def __init__(self, model):
+            pass
+
+        def set_conds(self, *a):
+            pass
+
+        def set_cfg(self, *a):
+            pass
+
+        def sample(self, noise, latent, sampler, sigmas, **kw):
+            seen["sigmas"] = sigmas
+            return latent
+
+    monkeypatch.setattr(comfy.samplers, "CFGGuider", Guider)
+    monkeypatch.setattr(comfy.sample, "fix_empty_latent_channels", lambda m, x, *a: x)
+    monkeypatch.setattr(latent_preview, "prepare_callback", lambda *a: None)
+    monkeypatch.setattr(nodes.FunPackSampler, "_sigmas",
+                        classmethod(lambda cls, *a: torch.linspace(1.0, 0.0, 5)))
+
+    class Model:
+        pass
+
+    args = dict(model=Model(), positive=[], negative=[],
+                latent={"samples": torch.zeros(1, 4, 8, 8)}, seed=0, steps=4, cfg=1.0,
+                sampler_name="euler", scheduler="normal")
+    args.update(kwargs)
+    status = nodes.FunPackSampler.execute(**args).result[1]
+    return seen["sigmas"], status
+
+
+def test_a_wired_schedule_runs_exactly_as_written(registry, monkeypatch):
+    import torch
+    wired = torch.tensor([0.4, 0.2, 0.05, 0.0])
+    got, status = _run_capturing_sigmas(monkeypatch, sigmas=wired, denoise=0.1, steps=30)
+    assert got is wired, "steps/denoise reshaped a schedule meant to run as written"
+    assert "wired schedule from 0.4, 3 step(s)" in status
+
+
+def test_without_a_wired_schedule_steps_and_scheduler_decide(registry, monkeypatch):
+    got, status = _run_capturing_sigmas(monkeypatch)
+    assert len(got) == 5 and "euler / normal" in status
+
+
+@pytest.mark.parametrize("bad,why", [([0.5], "at least two"), ([0.2, 0.5, 0.0], "high to low")])
+def test_a_malformed_wired_schedule_is_refused(registry, monkeypatch, bad, why):
+    import torch
+    with pytest.raises(RuntimeError, match=why):
+        _run_capturing_sigmas(monkeypatch, sigmas=torch.tensor(bad))
+
+
 # --- hosting modifiers -----------------------------------------------------
 
 def test_a_modifier_sees_every_step_through_one_call_site(registry, comfyui):

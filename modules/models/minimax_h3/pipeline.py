@@ -136,10 +136,46 @@ def h3_reference_to_video():
     return slots
 
 
+def h3_reference_to_video_second_pass():
+    """The same pipeline, then a second pass: resample between passes (sharpen
+    by default) and a second sampler running a typed schedule as written.
+
+    The typed schedule's FIRST value is the strength (0.4 polishes, 0.8 reworks
+    the shot). The one here is a neutral starting point, not a validated one --
+    v4's good second passes came from a schedule the user typed in.
+    """
+    slots = h3_reference_to_video()
+    for slot in slots:
+        if slot["id"] == "decode":
+            slot["inputs"]["samples"] = ["pass2", 0]
+    at = next(i for i, s in enumerate(slots) if s["id"] == "decode")
+    slots[at:at] = [
+        {"id": "upscaler", "group": "Second pass", "node": "FunPackLatentUpscalerLoader",
+         "inputs": {}},
+        {"id": "resample", "group": "Second pass", "node": "FunPackLatentResample",
+         "inputs": {"latent": ["sampler", 0], "upscaler": ["upscaler", 0],
+                    "operation": "sharpen", "scale": 2.0,
+                    "positive": ["r2v", 0], "negative": ["negative", 0]}},
+        {"id": "pass2_sigmas", "group": "Second pass", "node": "ManualSigmas",
+         "inputs": {"sigmas": "0.4, 0.3, 0.2, 0.1, 0.0"}},
+        {"id": "pass2", "group": "Second pass", "node": "FunPackSampler",
+         "inputs": {
+             "model": ["modifiers", 0], "positive": ["resample", 1],
+             "negative": ["resample", 2], "latent": ["resample", 0],
+             "settings": ["settings", 0], "sigmas": ["pass2_sigmas", 0],
+             "seed": 0, "steps": 4, "cfg": 1.0,
+             "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0}},
+    ]
+    return slots
+
+
 def presets():
     return [{"id": "minimax_h3_reference_to_video",
              "title": "MiniMax H3 · Reference to Video",
-             "slots": h3_reference_to_video()}]
+             "slots": h3_reference_to_video()},
+            {"id": "minimax_h3_reference_to_video_second_pass",
+             "title": "MiniMax H3 · Reference to Video + second pass",
+             "slots": h3_reference_to_video_second_pass()}]
 
 
 PROVIDES = {"pipeline_presets": presets}

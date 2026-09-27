@@ -33,9 +33,9 @@ def registered(comfyui):
 def test_the_preset_is_offered(registered):
     from modules.models.minimax_h3.pipeline import presets
     offered = presets()
-    assert len(offered) == 1
-    assert offered[0]["id"] == "minimax_h3_reference_to_video"
-    assert offered[0]["slots"]
+    assert [p["id"] for p in offered] == [
+        "minimax_h3_reference_to_video", "minimax_h3_reference_to_video_second_pass"]
+    assert all(p["slots"] for p in offered)
 
 
 def test_the_route_serves_it(registered):
@@ -139,3 +139,19 @@ def test_no_reference_slot_is_pre_wired_into_r2v():
     slots = h3_reference_to_video()
     r2v = next(s for s in slots if s["id"] == "r2v")
     assert not any(k.startswith("ref_images") for k in (r2v.get("inputs") or {}))
+
+
+def test_the_second_pass_preset_builds_clean_and_decodes_pass_two(registered):
+    from core import graph
+
+    if "ImageTransformKJ" not in registered.NODE_CLASS_MAPPINGS:
+        pytest.skip("ComfyUI-KJNodes is not installed on this machine")
+
+    from modules.models.minimax_h3.pipeline import h3_reference_to_video_second_pass
+
+    slots = h3_reference_to_video_second_pass()
+    _prompt, problems = graph.build(slots)
+    unset = ("needs 'model_name'", "needs 'clip_name", "needs 'vae_name'", "needs 'upscaler_name'")
+    assert [p for p in problems if not any(m in p for m in unset)] == []
+    decode = next(s for s in slots if s["id"] == "decode")
+    assert decode["inputs"]["samples"] == ["pass2", 0]
