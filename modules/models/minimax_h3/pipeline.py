@@ -108,8 +108,11 @@ def h3_reference_to_video():
         {"id": "decode", "group": "Render", "node": "FunPackDecode", "inputs": {
             "samples": ["sampler", 0], "vae": ["vae", 0], "model": ["shift", 0],
             "audio_vae": ["audio_vae", 0]}},
+        {"id": "cut", "group": "Render", "node": "FunPackCutOpening",
+         "roles": [{"at": "project.video", "input": "frames", "label": "Cut opening frames"}],
+         "inputs": {"images": ["decode", 0], "audio": ["decode", 1], "frames": 0, "fps": 24.0}},
         {"id": "video", "group": "Render", "node": "CreateVideo", "inputs": {
-            "images": ["decode", 0], "fps": 24.0, "audio": ["decode", 1]}},
+            "images": ["cut", 0], "fps": 24.0, "audio": ["cut", 1]}},
         {"id": "save", "group": "Render", "node": "SaveVideo", "inputs": {
             "video": ["video", 0], "filename_prefix": "FunPack",
             "format": "auto"}},
