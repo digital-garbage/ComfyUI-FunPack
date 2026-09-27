@@ -2141,6 +2141,8 @@ body.tour-mode { overflow: hidden; }
 .enh-bubble { max-width: 88%; padding: 7px 10px; border-radius: 10px; border: 1px solid var(--line); }
 .enh-bubble-model { align-self: flex-start; background: var(--ink-2); }
 .enh-bubble-user { align-self: flex-end; border-color: var(--teal); }
+.enh-bubble-latest { border-style: dashed; }
+.enh-chat .btn:disabled { opacity: 0.42; pointer-events: none; cursor: default; }
 .enh-bubble-who { font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
 .enh-bubble-text { font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .enh-chat-row { display: flex; gap: 6px; align-items: flex-end; }

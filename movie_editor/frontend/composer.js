@@ -1149,13 +1149,14 @@
     const box = el("div", "enh-chat");
     const head = el("div", "enh-section-head");
     head.append(el("div", "sw-rows-label", "Chat"));
-    if (rounds.length) {
-      const reset = el("button", "btn ghost tiny", "Reset");
-      reset.type = "button";
-      reset.title = "Forget this conversation. The next run rewrites from your prompt alone.";
-      reset.onclick = () => { SS.patchRefiner({ prompt_enhance_chat: [] }, true); repaintAll(); };
-      head.append(reset);
-    }
+    const reset = el("button", "btn ghost tiny", "Reset");
+    reset.type = "button";
+    reset.disabled = !rounds.length;
+    reset.title = rounds.length
+      ? "Forget this conversation. The next run rewrites from your prompt alone."
+      : "Nothing to reset yet.";
+    reset.onclick = () => { SS.patchRefiner({ prompt_enhance_chat: [] }, true); repaintAll(); };
+    head.append(reset);
     box.append(head);
     box.append(el("div", "insp-hint",
       "Tell it what to change. On the next Generate it reads its last rewrite and all your comments since Reset, and rewrites again."));
@@ -1172,7 +1173,22 @@
       u.append(el("div", "enh-bubble-who", "You"), el("div", "enh-bubble-text", String(r.comment || "")));
       thread.append(u);
     });
-    if (rounds.length) {
+    // The latest run's rewrite, not yet commented on: what the next comment replies to.
+    const latest = {};
+    ((st.enhanced && st.enhanced.items) || []).forEach((it) => {
+      const after = String(it.after || "").trim();
+      if (after) latest[it.scene == null ? "whole" : String(it.scene)] = after;
+    });
+    const seen = rounds.map((r) => JSON.stringify(r.rewrites || {}));
+    if (Object.keys(latest).length && !seen.includes(JSON.stringify(latest))) {
+      Object.entries(latest).forEach(([k, text]) => {
+        const b = el("div", "enh-bubble enh-bubble-model enh-bubble-latest");
+        b.append(el("div", "enh-bubble-who", (k === "whole" ? "Enhancer" : `Enhancer · Scene ${Number(k) + 1}`) + " · last run"),
+          el("div", "enh-bubble-text", text));
+        thread.append(b);
+      });
+    }
+    if (thread.childNodes.length) {
       box.append(thread);
       requestAnimationFrame(() => { thread.scrollTop = thread.scrollHeight; });   // newest in view
     }
@@ -1211,7 +1227,7 @@
     return box;
   }
 
-  function enhanceTab(st) {
+  function enhanceTab(st, withChat = false) {
     const wrap = el("div", "bin enh-bin");
     const SS = window.StudioSettings;
     if (!st.project || !SS) {
@@ -1288,12 +1304,30 @@
     } else {
       items.forEach((it) => wrap.append(enhanceResultCard(it)));
     }
-    if (on) wrap.append(enhanceChat(st, val));
+    if (on && withChat) wrap.append(enhanceChat(st, val));
+    return wrap;
+  }
+
+  // Chat gets its own Composer tab; Simple mode (no Composer) keeps it inside the Enhance pane.
+  function chatTab(st) {
+    const wrap = el("div", "bin enh-bin");
+    const SS = window.StudioSettings;
+    if (!st.project || !SS) {
+      wrap.append(el("div", "insp-hint", "Open a project to chat with the prompt enhancer."));
+      return wrap;
+    }
+    const { rf } = SS.read(st.project);
+    const val = (k) => (rf[k] != null ? rf[k] : ENH_DEFAULTS[k]);
+    if (!val("prompt_enhance")) {
+      wrap.append(el("div", "enh-hero-note",
+        "The prompt enhancer is off, so nothing reads this chat. Turn it on in the Enhance tab."));
+    }
+    wrap.append(enhanceChat(st, val));
     return wrap;
   }
 
   // ── window + tabs ────────────────────────────────────────────────────────────────
-  const TABS = ["Compose", "Enhance", "Shortcuts", "Splits", "Files"];
+  const TABS = ["Compose", "Enhance", "Chat", "Shortcuts", "Splits", "Files"];
   function render() {
     if (!win) return;
     const st = S.get();
@@ -1306,6 +1340,7 @@
       b.title = name === "Splits" ? "Split markers (generation prompt)"
         : name === "Compose" ? "Global prompt — the whole montage"
           : name === "Enhance" ? "Let a language model rewrite the prompt before generating"
+          : name === "Chat" ? "Tell the prompt enhancer what to change in its rewrite"
           : name === "Files" ? "FunPack files on disk — audit & purge" : name;
       b.onclick = () => {
         if (tab === name) return;
@@ -1320,6 +1355,7 @@
     scroll.append(
       tab === "Compose" ? composeTab(st)
         : tab === "Enhance" ? enhanceTab(st)
+        : tab === "Chat" ? chatTab(st)
         : tab === "Shortcuts" ? shortcutsTab(st)
           : tab === "Splits" ? splitMarkersTab(st)
             : filesTab(),
@@ -1351,7 +1387,7 @@
   // The setup wizard shows Shortcuts and Splits as full screens of its own, so the flow
   // stays one continuous surface instead of spawning a floating Composer over it. Same
   // builders, same editors, same store — only the container differs.
-  const PANE_BUILDERS = { shortcuts: shortcutsTab, splits: splitMarkersTab, enhance: enhanceTab };
+  const PANE_BUILDERS = { shortcuts: shortcutsTab, splits: splitMarkersTab, enhance: (st) => enhanceTab(st, true) };
   const _panes = new Set();   // { kind, host }
 
   function mountPane(kind, host) {
