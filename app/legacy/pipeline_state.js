@@ -10,8 +10,55 @@
 (function () {
   const API = window.MovieEditorAPI;
 
+  // Loader nodes core knows how to point /api/probe at, and which of their
+  // inputs names the file. Mirrors the same map api.js's probeFamily() is
+  // meant to be fed from -- nothing else in this app currently resolves
+  // "the file the pipeline's model loader points at" from raw slots.
+  const MODEL_FILE_INPUT = {
+    FunPackCheckpointLoader: "ckpt_name",
+    FunPackDiffusionModelLoader: "model_name",
+  };
+
+  function currentModelFile(pipelineSlots) {
+    const slot = (pipelineSlots || []).find((s) => MODEL_FILE_INPUT[s.node] && s.inputs);
+    return slot ? slot.inputs[MODEL_FILE_INPUT[slot.node]] || null : null;
+  }
+
+  // Which traits the pipeline's chosen model has, or null when that is not
+  // knowable (no loader slot, no file chosen, or the probe found nothing).
+  // null must reach API.modules() as "do not filter" rather than as an
+  // empty list -- /api/modules?traits= with an empty traits set hides every
+  // module that requires ANY trait at all, for every model this cheap,
+  // load-free probe has no opinion about yet (this cheap path only knows
+  // MiniMax H3's own traits today -- see modules/models/minimax_h3).
+  async function probeModelTraits(pipelineSlots) {
+    const filename = currentModelFile(pipelineSlots);
+    if (!filename) return null;
+    try {
+      const data = await API.probeFamily(filename);
+      return data.detected ? (data.traits || []) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   let modulesById = {};
   let slots = null;           // null = never loaded this session; loaded exactly once
+  // The model file `modulesById` was last filtered for. A save() whose slots
+  // still name the same file has nothing new to learn -- re-probing on every
+  // unrelated edit (a prompt, a slider) would mean one extra round trip per
+  // keystroke-driven save for no reason.
+  let lastProbedFile = null;
+
+  async function refreshManifest() {
+    const file = currentModelFile(slots);
+    if (file === lastProbedFile) return;
+    lastProbedFile = file;
+    const traits = await probeModelTraits(slots);
+    const manifest = await API.modules(traits ? traits.join(",") : undefined);
+    modulesById = {};
+    (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
+  }
   let incomplete = [];
   let refused = [];
   let queueable = false;
@@ -62,13 +109,16 @@
     loading = true; loadError = null;
     loadPromise = (async () => {
       try {
-        const [manifest, pipe] = await Promise.all([API.modules(), API.pipeline()]);
-        modulesById = {};
-        (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
+        // Sequential, not Promise.all: which modules are even compatible
+        // depends on which model the pipeline's loader slot names, so the
+        // manifest fetch has to know that before it can ask -- refreshManifest()
+        // reads `slots`, so it has to be set first.
+        const pipe = await API.pipeline();
         slots = pipe.slots || [];
         incomplete = pipe.incomplete || [];
         refused = pipe.refused || [];
         queueable = !!pipe.queueable;
+        await refreshManifest();
       } catch (e) {
         loadError = e && e.message ? e.message : String(e);
       }
@@ -129,6 +179,17 @@
         refused = (res && res.refused) || [];
         queueable = !!(res && res.queueable);
         saveNotes = (res && res.notes) || [];
+        // A no-op for the common case (same file as last time) -- see
+        // refreshManifest()'s own guard. Only a Models & Pipeline edit that
+        // actually changes the loader's file does a second round trip here.
+        // Its own try/catch: a failure here is not "could not save" -- the
+        // edit above already landed -- so it must not overwrite saveNotes
+        // with a message about the wrong failure.
+        try {
+          await refreshManifest();
+        } catch (e) {
+          console.warn(`[FunPack] could not refresh modules for the new model: ${e && e.message ? e.message : e}`);
+        }
       } catch (e) {
         saveNotes = [`Could not save: ${e && e.message ? e.message : e}`];
       }

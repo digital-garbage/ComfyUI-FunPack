@@ -86,6 +86,34 @@ def detect(keys) -> bool:
                for prefix in _PREFIXES)
 
 
+def probe_traits(keys) -> list:
+    """What `traits()` would say for a loaded H3 model, read before anything
+    loads.
+
+    Sourced from H3's own model_config class, never from a checkpoint
+    instance -- `latent_dimensions` and `temporal_downscale_ratio` are fixed
+    on the class, so nothing a load would tell us here isn't already true of
+    every H3 file. Lets the UI hide LTX-only settings the moment a file is
+    picked in the pipeline window, not only once something is generated.
+
+    Deliberately narrower than `traits()`: `adaln_modalities` depends on
+    which blocks an actual loaded module tree contains (full-form vs.
+    curve-form checkpoints), which the header alone cannot answer, so it is
+    left for the real load.
+    """
+    if not detect(keys):
+        return []
+    from comfy.latent_formats import MiniMaxH3AV
+
+    found = ["audio_stream"]
+    rank = _traits.LATENT_RANK.get(MiniMaxH3AV.latent_dimensions)
+    if rank:
+        found.append(rank)
+    if getattr(MiniMaxH3AV, "temporal_downscale_ratio", 1) not in (None, 1):
+        found.append("temporal_compression")
+    return found
+
+
 def traits(model):
     """What core cannot read off the model for itself."""
     if not is_h3(model):
@@ -150,4 +178,4 @@ def empty_latent(model, width, height, length, batch_size=1):
 
 TRAITS = traits
 PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect,
-            "pipeline_presets": _pipeline_presets}
+            "pipeline_presets": _pipeline_presets, "probe_traits": probe_traits}

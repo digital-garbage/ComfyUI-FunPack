@@ -79,24 +79,28 @@ def resolve_diffusion_model(filename: str) -> Optional[Path]:
 def detect(path: Path, registry=None) -> dict:
     """Inspect one checkpoint file.
 
-    Returns ``{"module", "title", "detected", "reason"}``. `module` is the id
-    of whichever model module claimed it, or None -- and None is a real
-    answer, not a failure to try hard enough: it means this install has no
-    module that recognises the file, and the caller should say so rather
+    Returns ``{"module", "title", "detected", "reason", "traits"}``. `module`
+    is the id of whichever model module claimed it, or None -- and None is a
+    real answer, not a failure to try hard enough: it means this install has
+    no module that recognises the file, and the caller should say so rather
     than guess a family. `reason` is plain text for a person, always
-    populated.
+    populated. `traits` is only ever populated when `detected` is true --
+    an undetected file says nothing about what it is, so it must not narrow
+    what the UI shows via `/api/modules?traits=`; the caller should treat
+    `detected: false` as "do not filter", not as "filter to nothing".
     """
     p = Path(path)
     if not p.is_file():
         return {"module": None, "title": None, "detected": False,
-                "reason": f"{p.name}: file not found"}
+                "reason": f"{p.name}: file not found", "traits": []}
     if p.suffix.lower() != ".safetensors":
         return {"module": None, "title": None, "detected": False,
-                "reason": f"{p.name}: only .safetensors can be inspected without loading it"}
+                "reason": f"{p.name}: only .safetensors can be inspected without loading it",
+                "traits": []}
     keys = read_safetensors_keys(p)
     if keys is None:
         return {"module": None, "title": None, "detected": False,
-                "reason": f"{p.name}: not a readable safetensors header"}
+                "reason": f"{p.name}: not a readable safetensors header", "traits": []}
 
     keyset = set(keys)
     reg = registry or registry_mod.current()
@@ -108,7 +112,16 @@ def detect(path: Path, registry=None) -> dict:
             log.failed(f"{spec.id}.detect", exc)
             continue
         if matched:
+            traits: list = []
+            probe_traits = spec.provides.get("probe_traits")
+            if probe_traits is not None:
+                try:
+                    traits = list(probe_traits(keyset))
+                except Exception as exc:                # noqa: BLE001
+                    from . import log
+                    log.failed(f"{spec.id}.probe_traits", exc)
             return {"module": spec.id, "title": spec.title, "detected": True,
-                    "reason": f"{p.name}: {spec.title}"}
+                    "reason": f"{p.name}: {spec.title}", "traits": traits}
     return {"module": None, "title": None, "detected": False,
-            "reason": f"{p.name}: no installed model module recognises this file"}
+            "reason": f"{p.name}: no installed model module recognises this file",
+            "traits": []}

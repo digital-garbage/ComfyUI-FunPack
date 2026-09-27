@@ -32,6 +32,40 @@ import { wireReferences } from "./shell/reference_wiring.js";
 
 const root = document.querySelector("#app");
 
+// Loader nodes core knows how to point `/api/probe` at, and which of their
+// inputs names the file. Core never names a model, but the app already has
+// to name these two loaders elsewhere (widgets.js's "ckpt" combo) to draw
+// their panels, so naming them again here to find "the chosen file" is not
+// a new coupling.
+const MODEL_FILE_INPUT = {
+  FunPackCheckpointLoader: "ckpt_name",
+  FunPackDiffusionModelLoader: "model_name",
+};
+
+/**
+ * Which traits the pipeline's chosen model has, or null when that is not
+ * knowable yet (no loader slot, no file chosen, or the probe could not
+ * place it). `null` must reach fetchManifest() as "do not filter" rather
+ * than as an empty list -- an empty list would hide every module that
+ * requires ANY trait at all, for every model this cheap, load-free probe
+ * simply has no opinion about yet ([[project_v5_slot_inputs_gap]]-shaped
+ * mistake: partial knowledge is not the same as "no traits").
+ */
+async function probeModelTraits(slots) {
+  const slot = (slots || []).find((s) => MODEL_FILE_INPUT[s.node] && s.inputs);
+  if (!slot) return null;
+  const filename = slot.inputs[MODEL_FILE_INPUT[slot.node]];
+  if (!filename) return null;
+  try {
+    const res = await fetch(`/funpack/api/probe?file=${encodeURIComponent(filename)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.detected ? (data.traits || []) : null;
+  } catch {
+    return null;
+  }
+}
+
 async function start() {
   const id = clientId();
   const run = createRun({ clientId: id, connect });
@@ -268,6 +302,10 @@ async function start() {
           describe, check, search, presets, ...ctx,
           onApply: (next) => {
             slots = next;
+            // A saved edit may have changed which file the model loader
+            // points at (or added/removed the loader entirely) -- re-probe
+            // rather than assume the traits computed at boot still hold.
+            probeModelTraits(next).then(remountFor);
             // The boxes on the main window are for inputs of THESE slots. A slot
             // that was removed takes its box with it, and a value saved in the
             // window is what its box now shows -- otherwise the two windows hold
@@ -504,9 +542,20 @@ async function start() {
     project.flush();
   });
 
+  // Read once, ahead of the manifest, purely to name the chosen model before
+  // anything mounts -- separate from the `load()` call below that reads the
+  // pipeline's inputs for the prompt boxes, since that one runs after mount
+  // (a region has to exist first) and this one has to run before it.
+  let initialTraits = null;
+  try {
+    initialTraits = await probeModelTraits((await load()).slots);
+  } catch (err) {
+    console.warn(`[FunPack] could not read the pipeline's model before mounting: ${err.message}`);
+  }
+
   let manifest;
   try {
-    manifest = await fetchManifest();
+    manifest = await fetchManifest(initialTraits);
   } catch (err) {
     // The one failure the user must see: with no manifest there is no app, so
     // silence here would be an empty window with no explanation.
@@ -518,7 +567,33 @@ async function start() {
     return;
   }
 
-  const { mounted, hidden } = await mountAll(manifest);
+  let { mounted, hidden } = await mountAll(manifest);
+
+  /**
+   * Re-fetch the manifest for a newly-chosen model and swap the mounted
+   * panels for it. `mounted`'s own `destroy()` (panels.js) is what makes
+   * this safe to call more than once -- a stale listener from the old set
+   * of panels is exactly what dropping the teardown would leave behind.
+   */
+  async function remountFor(traits) {
+    let fresh;
+    try {
+      fresh = await fetchManifest(traits);
+    } catch (err) {
+      console.warn(`[FunPack] could not refresh modules for the new model: ${err.message}`);
+      return;
+    }
+    for (const m of mounted) m.destroy();
+    manifest = fresh;
+    ({ mounted, hidden } = await mountAll(manifest));
+    settle();
+    showGroups();
+    if (window.FunPack) {
+      window.FunPack.manifest = manifest;
+      window.FunPack.hidden = hidden;
+      window.FunPack.mounted = mounted.map((m) => m.id);
+    }
+  }
 
   // After the modules, because a region has to exist before anything can be put
   // in it, and a module may be sharing the region a role names.

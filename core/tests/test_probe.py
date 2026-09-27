@@ -83,7 +83,8 @@ def test_a_file_no_module_recognises_says_so_rather_than_guessing(tmp_path):
     _write_safetensors(p, ["some.unrelated.weight"])
     out = probe.detect(p, registry=_registry(("m", "M", {"video_patch_proj.weight"})))
     assert out == {"module": None, "title": None, "detected": False,
-                   "reason": f"{p.name}: no installed model module recognises this file"}
+                   "reason": f"{p.name}: no installed model module recognises this file",
+                   "traits": []}
 
 
 def test_a_file_a_module_recognises_names_that_module(tmp_path):
@@ -95,6 +96,52 @@ def test_a_file_a_module_recognises_names_that_module(tmp_path):
     assert out["title"] == "MiniMax H3"
     assert out["detected"] is True
     assert "MiniMax H3" in out["reason"]
+
+
+# --- traits, only ever alongside a real detection ---------------------------
+
+def test_an_undetected_file_carries_no_traits(tmp_path):
+    """`detected: false` must mean "the caller should not filter", never
+    "filter to nothing" -- an empty list here is that contract, checked
+    explicitly so it cannot regress into `None` (which reads the same to a
+    human but not to `/api/modules?traits=`)."""
+    p = tmp_path / "m.safetensors"
+    _write_safetensors(p, ["some.unrelated.weight"])
+    out = probe.detect(p, registry=_registry(("m", "M", {"video_patch_proj.weight"})))
+    assert out["traits"] == []
+
+
+def test_a_matched_module_with_no_probe_traits_provider_still_gets_a_list(tmp_path):
+    p = tmp_path / "m.safetensors"
+    _write_safetensors(p, ["shared.weight"])
+    out = probe.detect(p, registry=_registry(("m", "M", {"shared.weight"})))
+    assert out["traits"] == []
+
+
+def test_a_matched_modules_probe_traits_are_carried_through(tmp_path):
+    p = tmp_path / "m.safetensors"
+    _write_safetensors(p, ["shared.weight"])
+    reg = Registry()
+    reg.add(ModuleSpec(id="m", title="M", mount="",
+                       provides={"detect": lambda keys: "shared.weight" in keys,
+                                 "probe_traits": lambda keys: ["audio_stream", "temporal_latent"]}))
+    out = probe.detect(p, registry=reg)
+    assert out["traits"] == ["audio_stream", "temporal_latent"]
+
+
+def test_a_probe_traits_that_raises_is_skipped_not_fatal(tmp_path):
+    p = tmp_path / "m.safetensors"
+    _write_safetensors(p, ["shared.weight"])
+    def explodes(_keys):
+        raise RuntimeError("boom")
+    reg = Registry()
+    reg.add(ModuleSpec(id="m", title="M", mount="",
+                       provides={"detect": lambda keys: "shared.weight" in keys,
+                                 "probe_traits": explodes}))
+    out = probe.detect(p, registry=reg)
+    assert out["module"] == "m"
+    assert out["detected"] is True
+    assert out["traits"] == []
 
 
 def test_a_missing_file_is_not_found_not_undetected(tmp_path):
