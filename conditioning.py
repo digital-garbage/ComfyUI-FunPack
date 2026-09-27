@@ -9149,12 +9149,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         before answering, if it did, is left on `self._v2_last_thinking` for the readout.
         """
         self._v2_last_thinking = ""
+        self._v2_last_sent = ""                  # chat runs: the whole message, for the readout
         original = str(text or "").strip()
         if not original:
             return text, "Prompt enhancer: skipped; prompt empty."
         key = (str(system_prompt), original, str(reference or ""), str(chat or ""))
         if cache is not None and key in cache:
             self._v2_last_thinking = cache.get(("thinking",) + key, "")
+            self._v2_last_sent = cache.get(("sent",) + key, "")
             return cache[key], "Prompt enhancer: reused."
         if isinstance(clip, _FunPackAdvisorLLMWrapper):
             clip.last_thinking = ""           # a failed call must not show the last one's
@@ -9164,6 +9166,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # simply appended, a model rewrote it as more prompt text and echoed it back.
             system_prompt = str(system_prompt) + "\n\n" + V2_PROMPT_ENHANCER_CHAT_SYSTEM
             user_turn = "ORIGINAL PROMPT:\n" + user_turn + str(chat)
+            self._v2_last_sent = f"SYSTEM:\n{system_prompt}\n\nMESSAGE:\n{user_turn}"
         raw, status = self._v2_generate_advisor_text(
             clip, system_prompt, user_turn, seed=seed, image=image, thinking=bool(thinking),
             max_length=max_length, temperature=temperature, top_p=top_p,
@@ -9185,6 +9188,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if cache is not None:
             cache[key] = enhanced
             cache[("thinking",) + key] = self._v2_last_thinking
+            cache[("sent",) + key] = self._v2_last_sent
         # `status` carries where it ran, how long it took and whether the model stopped on its
         # own — all invisible from the text alone, and all of it is what a slow or runaway run
         # needs in order to be diagnosed instead of guessed at.
@@ -10818,12 +10822,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 thinking=prompt_enhance_thinking, image=prompt_enhance_image,
                 **_enhance_sampling,
             )
-            _chat_sent = self._v2_enhancer_chat(prompt_enhance_chat)
             print(f"[FunPackVideoRefinerV2] {_enhance_status}")
             self._v2_note_enhanced({
                 "scene": None, "before": _before, "after": prompt_to_encode,
                 "status": _enhance_status, "image": prompt_enhance_image is not None,
-                "reference": _ref.strip(), "chat": _chat_sent.strip(),
+                "reference": _ref.strip(), "chat": self._v2_last_sent,
                 "thinking": self._v2_last_thinking})
 
         # Studio's `enhanced_prompt` output, for a node encoding on its own (Editor link
@@ -10845,7 +10848,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 self._v2_note_enhanced({
                     "scene": None, "before": _whole, "after": _after, "status": _st,
                     "image": prompt_enhance_image is not None, "reference": _ref.strip(),
-                    "chat": self._v2_enhancer_chat(prompt_enhance_chat).strip(),
+                    "chat": self._v2_last_sent,
                     "thinking": self._v2_last_thinking})
                 _whole = _after
             self._v2_enhanced_output = _whole
@@ -11101,7 +11104,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                 "scene": _i, "before": t, "after": _after, "status": _st,
                                 "image": prompt_enhance_image is not None,
                                 "reference": _ref.strip(),
-                                "chat": self._v2_enhancer_chat(prompt_enhance_chat, _i).strip(),
+                                "chat": self._v2_last_sent,
                                 "thinking": self._v2_last_thinking})
                             _enhanced_texts.append(_after)
                         split_scene_texts = _enhanced_texts

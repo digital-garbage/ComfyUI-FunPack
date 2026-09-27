@@ -1077,11 +1077,12 @@
         el("div", "enh-before-text enh-ref-sent", ref));
       card.append(det);
     }
-    // The Chat tab's conversation exactly as the model received it (empty = none sent).
+    // Chat runs: the whole message exactly as the model received it, system instructions
+    // included, so what it was told can be checked rather than assumed.
     const chat = String(it.chat || "").trim();
     if (chat) {
       const det = el("details", "enh-before");
-      det.append(el("summary", null, "Chat sent"), el("div", "enh-before-text enh-ref-sent", chat));
+      det.append(el("summary", null, "Sent to the model (chat)"), el("div", "enh-before-text enh-ref-sent", chat));
       card.append(det);
     }
     if (it.status) card.append(el("div", "enh-status", String(it.status)));

@@ -674,3 +674,17 @@ def test_every_readout_says_what_chat_the_model_was_sent():
     import inspect
     src = inspect.getsource(C.FunPackVideoRefinerV2.refine_v2)
     assert src.count('"chat": ') == 3
+
+
+def test_a_chat_run_records_the_whole_message_for_the_readout(studio):
+    chat = C.FunPackVideoRefinerV2._v2_enhancer_chat([{"rewrites": {"whole": "a fox at dusk"},
+                                                        "comment": "make it night"}])
+    cache = {}
+    studio._v2_enhance_prompt(FakeClip(), "a fox", "my rules", chat=chat, cache=cache)
+    sent = studio._v2_last_sent
+    for part in ("SYSTEM:", "my rules", "REVISION", "MESSAGE:", "ORIGINAL PROMPT:", "a fox at dusk", "make it night"):
+        assert part in sent, part
+    studio._v2_enhance_prompt(FakeClip(), "a fox", "my rules", chat=chat, cache=cache)
+    assert studio._v2_last_sent == sent                    # a reused answer reports the same
+    studio._v2_enhance_prompt(FakeClip(), "a fox", "my rules")
+    assert studio._v2_last_sent == ""
