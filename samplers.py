@@ -3854,8 +3854,8 @@ class FunPackLTXAVSceneChainSampler:
     def _compiler_disabled_for_forward_patches(self, active):
         """Comfy's model compiler (aimdo malloc-graph + CUDA graphs) assumes every
         block-scope forward allocates the same pattern call to call. H3 representation
-        steering while actually injecting (not passive-capture) and block repeat both
-        patch what a block's forward allocates, which crashes it with
+        steering while actually injecting (not passive-capture), block repeat and shadow
+        negative all patch what a block's forward allocates, which crashes it with
         "aimdo memory compile error" -- confirmed against a real rental log where the
         identical workflow succeeds with REINS in passive-capture-only mode (no
         injection branch entered) and fails the moment strength > 0 (injection
@@ -4061,19 +4061,29 @@ class FunPackLTXAVSceneChainSampler:
                     model, refinement_key, h3_q_steer_strength, _q_steer_capture,
                     steer_block=h3_q_steer_block)
 
+        _shadow_installed = False
         if self._is_h3 and h3_shadow_negative:
+            _model_before_shadow = model
             model = self._install_h3_shadow_negative(
                 model, negative, h3_shadow_negative_video_scale,
                 h3_shadow_negative_audio_scale, h3_shadow_negative_tau,
                 h3_shadow_negative_alpha, h3_shadow_negative_start_percent,
                 h3_shadow_negative_end_percent, compose=h3_shadow_negative_compose)
+            # Same identity test as block repeat: the installer returns the SAME model when
+            # it declines (no negative, both scales 1.0, non-finite knob).
+            _shadow_installed = model is not _model_before_shadow
 
         _phrase_probe = self._install_phrase_probe(model, positive, latent)
         if _phrase_probe is not None:
             model = _phrase_probe[0]
         _repr_injecting = bool(_repr_steering_installed and h3_repr_steering
                                 and float(h3_repr_steering_strength or 0.0) > 0.0)
-        _compiler_conflict = _block_repeat_installed or _repr_injecting
+        # Shadow negative replaces every hooked block's forward with its own two-stream one
+        # (a second attention pass, extra clones), so its allocation pattern differs from
+        # the stock block's -- the same "aimdo memory compile error" block repeat and REINS
+        # injection hit. It never tripped this before 2026-09-27 only because, until then,
+        # it silently never ran.
+        _compiler_conflict = _block_repeat_installed or _repr_injecting or _shadow_installed
         try:
             with self._compiler_disabled_for_forward_patches(_compiler_conflict):
                 sampled = comfy.sample.sample_custom(

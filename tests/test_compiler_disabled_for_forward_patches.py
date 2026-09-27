@@ -33,7 +33,8 @@ class _FakeModel:
         return m
 
 
-def _run_chunk_with(monkeypatch, seen, refinement_key="fake_key", model=None, **kw):
+def _run_chunk_with(monkeypatch, seen, refinement_key="fake_key", model=None, negative=None,
+                    is_h3=False, **kw):
     """Stubs sample_custom to record whether disable_comfy_compiler was set DURING the
     call, then _sample_chunk runs for real so the gating logic (h3_repr_steering /
     h3_repr_steering_strength / h3_block_repeat) executes exactly as it would in
@@ -48,9 +49,11 @@ def _run_chunk_with(monkeypatch, seen, refinement_key="fake_key", model=None, **
     monkeypatch.setattr(sys.modules["comfy.sample"], "sample_custom", _fake_sample_custom)
     latent = {"samples": torch.zeros(1, 2, 2, 2, 2)}
     sampler = type("F", (), {"extra_options": {}, "sampler_function": None})()
-    S()._sample_chunk(model if model is not None else object(), sampler,
-                      torch.tensor([1.0, 0.0]), 0, 1.0, [], [], latent,
-                      refinement_key=refinement_key, **kw)
+    node = S()
+    node._is_h3 = is_h3
+    node._sample_chunk(model if model is not None else object(), sampler,
+                       torch.tensor([1.0, 0.0]), 0, 1.0, [], negative or [], latent,
+                       refinement_key=refinement_key, **kw)
 
 
 def test_reins_actively_injecting_disables_the_compiler(monkeypatch):
@@ -166,3 +169,43 @@ def test_crash_survives_the_sample_call_and_still_restores(monkeypatch):
     except RuntimeError:
         pass
     assert not hasattr(comfy.cli_args.args, "disable_comfy_compiler")
+
+
+class _FakeH3Model(_FakeModel):
+    """Enough for _install_h3_shadow_negative to really install (it needs the diffusion
+    model's blocks and hidden size), so the compiler test cannot pass on a declined one."""
+    def __init__(self):
+        super().__init__()
+        self._dm = types.SimpleNamespace(blocks=[object(), object()], hidden_size=16)
+
+    def clone(self):
+        m = _FakeH3Model()
+        m.model_options = dict(self.model_options)
+        m._dm = self._dm
+        return m
+
+    def get_model_object(self, name):
+        return self._dm
+
+
+_SHADOW = dict(h3_shadow_negative=True, h3_shadow_negative_video_scale=3.0,
+               h3_shadow_negative_audio_scale=1.0, h3_shadow_negative_tau=2.5,
+               h3_shadow_negative_alpha=0.35, h3_shadow_negative_start_percent=0.0,
+               h3_shadow_negative_end_percent=0.6)
+
+
+def test_shadow_negative_disables_the_compiler(monkeypatch):
+    """It replaces every block's forward with a two-stream one: the same aimdo compile
+    error, first seen on a rental 2026-09-27 -- the day it started actually running."""
+    seen = []
+    _run_chunk_with(monkeypatch, seen, model=_FakeH3Model(), is_h3=True,
+                    negative=[(torch.randn(1, 3, 16), {})], **_SHADOW)
+    assert seen == [True]
+    assert not hasattr(comfy.cli_args.args, "disable_comfy_compiler")
+
+
+def test_shadow_negative_that_declines_leaves_the_compiler_alone(monkeypatch):
+    """No negative prompt: nothing is installed, so nothing conflicts."""
+    seen = []
+    _run_chunk_with(monkeypatch, seen, model=_FakeH3Model(), is_h3=True, **_SHADOW)
+    assert seen == ["MISSING"]
