@@ -205,3 +205,14 @@ def test_one_rating_is_one_row_and_skips_are_counted(monkeypatch, tmp_path):
     assert len(mem.used) == 1 and mem.skipped == 1
     mem.save_pending()
     assert sm.commit("k", 1.0) == 1
+
+
+def test_reusing_a_shot_with_its_own_seed_keeps_normal_strength(monkeypatch, tmp_path):
+    """Same seed as the liked shot: the two layouts are one pattern, and a plain blend
+    would stack it (1.41x at amount 0.7)."""
+    _store(monkeypatch, tmp_path)
+    noise = torch.randn(1, 24, 7, 24, 36, generator=torch.Generator().manual_seed(5))
+    mem = sm.ShotMemory("k", "manual", 0.7, rng=random.Random(0))
+    mem.plans[(None, 24)] = ({"id": 1, "coarse": sm.coarse_of(noise).half()}, 0.7)
+    out = mem.shape(noise.clone(), torch.zeros_like(noise), None)
+    assert abs(float(sm.coarse_of(out).std()) - 1.0) < 0.02

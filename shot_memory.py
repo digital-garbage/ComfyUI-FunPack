@@ -225,6 +225,10 @@ class ShotMemory:
         coarse = own
         if parent is not None:
             coarse = amount * _fit(parent["coarse"], *own.shape[-2:]) + math.sqrt(1.0 - amount ** 2) * own
+            # Unit variance only holds when the two layouts are unrelated. Rerunning the
+            # liked shot's own seed makes them the same pattern, and the blend stacks it
+            # (1.41x at amount 0.7): back to a normal-strength layout, per channel.
+            coarse = coarse / coarse.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
             video = with_coarse(video, coarse)
         if record and not self.used:
             self.used.append({
