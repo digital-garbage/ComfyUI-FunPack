@@ -141,3 +141,53 @@ def test_h3_late_branch_runs_no_weak_copy_on_the_last_step():
     # The last input carried step 2's push (w * (normal - weak) = 0.5 * 4 = 2 per value).
     assert torch.allclose(out, torch.full_like(x, 21.0 + (1.0 - 0.8) * 2.0))
     assert stats["guided"] == 3
+
+
+def test_h3_a_second_call_in_the_same_step_gets_only_the_last_steps_push():
+    """A split batch or hook group makes two calls in one step: neither may see a push made
+    during that same step, and both get the previous step's."""
+    model = _Model()
+    _node(True)._build_tsr_wrapper(model, 0.9)
+    wrapper = model.model_options["model_function_wrapper"]
+    xs = []
+
+    def apply_fn(inp, t, **c):
+        xs.append(inp.clone())
+        return 0.5 * inp
+
+    def call(i, x):
+        s = SCHEDULE[i]
+        to = {"sample_sigmas": SCHEDULE, "sigmas": s.reshape(1)}
+        return wrapper(apply_fn, {"input": x, "timestep": s.reshape(1),
+                                  "c": {"transformer_options": to}, "cond_or_uncond": [0]})
+
+    x = torch.randn(1, 2, 3, 4, 4, generator=torch.Generator().manual_seed(2))
+    den = call(1, x)
+    push = tsr.rescale_x0(x, den, float(SCHEDULE[1]), 0.9) - den
+    a, b = torch.randn_like(x), torch.randn_like(x)
+    call(2, a)
+    call(2, b)
+    lift = (1.0 - float(SCHEDULE[2])) * push
+    assert torch.allclose(xs[1], a + lift, atol=1e-6)
+    assert torch.allclose(xs[2], b + lift, atol=1e-6)
+    x3 = torch.randn_like(x)
+    call(3, x3)
+    assert not torch.allclose(xs[3], x3)                 # step 2's push reaches step 3
+
+
+def test_h3_a_size_change_is_said_not_silent(capsys):
+    import funpack_log
+    funpack_log.begin_run()
+    model = _Model()
+    _node(True)._build_tsr_wrapper(model, 0.9)
+    wrapper = model.model_options["model_function_wrapper"]
+
+    def call(i, x):
+        s = SCHEDULE[i]
+        to = {"sample_sigmas": SCHEDULE, "sigmas": s.reshape(1)}
+        return wrapper(lambda inp, t, **c: 0.5 * inp, {"input": x, "timestep": s.reshape(1),
+                                                         "c": {"transformer_options": to}})
+
+    call(1, torch.randn(1, 2, 3, 4, 4))
+    call(2, torch.randn(1, 2, 3, 4, 8))
+    assert "latent size changed" in capsys.readouterr().out

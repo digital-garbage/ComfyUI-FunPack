@@ -887,7 +887,10 @@ class _InputSteer:
 
     def __init__(self, enabled, what):
         self.enabled, self.what = bool(enabled), what
-        self._held = {}         # context window -> {"seen": step, "step": step, "delta"}
+        # (context window, cond/uncond rows) -> {"seen": step, "prev": (step, push),
+        # "cur": (step, push)}. A push made during step i is only usable from step i+1 on,
+        # so a second call inside step i (a split batch, a hook group) never gets it.
+        self._held = {}
 
     def _where(self, args):
         c = args.get("c") if isinstance(args.get("c"), dict) else {}
@@ -899,7 +902,8 @@ class _InputSteer:
                         "calls between schedule steps are not steered")
             return None
         win = to.get("context_window")
-        key = tuple(win.index_list) if win is not None and hasattr(win, "index_list") else None
+        key = (tuple(win.index_list) if win is not None and hasattr(win, "index_list") else None,
+               tuple(int(v) for v in (args.get("cond_or_uncond") or ())))
         return i, n, key, to["sample_sigmas"]
 
     def feed(self, args):
@@ -917,8 +921,15 @@ class _InputSteer:
             self._held.pop(key, None)
             return args
         held["seen"] = i
-        x, d = args["input"], held["delta"]
-        if held["step"] not in (i - 1, i) or tuple(d.shape) != tuple(x.shape):
+        if held["cur"] is not None and held["cur"][0] < i:
+            held["prev"], held["cur"] = held["cur"], None
+        if held["prev"] is None or held["prev"][0] != i - 1:
+            return args                 # the last step made no push
+        x, d = args["input"], held["prev"][1]
+        if tuple(d.shape) != tuple(x.shape):
+            _log.failed("FunPackSceneChain", f"{self.what} (latent size changed)",
+                        f"{tuple(d.shape)} -> {tuple(x.shape)}",
+                        "that step went unsteered")
             return args
         sigma = float(args["timestep"].max())
         return dict(args, input=x + (1.0 - sigma) * d.to(x.device, x.dtype))
@@ -948,7 +959,9 @@ class _InputSteer:
         if where is None:
             return denoised
         i, _n, key, _sched = where
-        self._held[key] = {"seen": i, "step": i, "delta": (steered - denoised).detach()}
+        held = self._held.setdefault(key, {"seen": i, "prev": None, "cur": None})
+        held["seen"] = max(held["seen"], i)
+        held["cur"] = (i, (steered - denoised).detach())
         return denoised
 
 
