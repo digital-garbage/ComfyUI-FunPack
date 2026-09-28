@@ -126,6 +126,7 @@ SIMPLE_MODE_SAMPLER_OFF: dict[str, Any] = {
     "shot_memory": "off",
     "tsr": "off",
     "late_guidance": "off",
+    "stas": "off",
 }
 
 # Studio refiner keys, same rule.

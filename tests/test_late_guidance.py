@@ -109,19 +109,36 @@ def test_video_span_only_the_picture_is_guided(monkeypatch):
     assert torch.allclose(out[..., 5:], torch.full((1, 1, 3), 21.0))   # sound: normal pass
 
 
+def test_negative_prompt_calls_are_not_guided():
+    """CFG above 1: the negative call runs once, plain; the prompt call is still guided."""
+    import samplers
+    net = _Blocks()
+    patched = samplers.FunPackLTXAVSceneChainSampler()._install_late_branch(_Model(net), 3, 0.5)
+    wrapper = patched.model_options["model_function_wrapper"]
+    x = torch.zeros(1, 2, 1, 2, 2)
+    c = {"transformer_options": patched.model_options["transformer_options"]}
+    neg = wrapper(_apply(net), {"input": x, "timestep": torch.tensor([0.5]), "c": c,
+                                "cond_or_uncond": [1]})
+    assert net.calls == [0, 1, 2, 3, 4, 5] and torch.allclose(neg, torch.full_like(x, 21.0))
+    pos = wrapper(_apply(net), {"input": x, "timestep": torch.tensor([0.5]), "c": c,
+                                "cond_or_uncond": [0]})
+    assert torch.allclose(pos, torch.full_like(x, 23.0))
+
+
 def test_strength_learns_from_ratings(monkeypatch, tmp_path):
-    monkeypatch.setattr(lg, "_path", lambda key: str(tmp_path / f"{key}.late.json"))
+    d = lg.DIAL
+    monkeypatch.setattr(d, "path", lambda key: str(tmp_path / f"{key}.late.json"))
     rng = random.Random(1)
     for _ in range(30):
-        w, _note = lg.choose_w("k", "learned", rng=rng)
-        lg.save_pending("k", w)
-        lg.commit("k", 1.0 if w > 0.8 else -1.0)
-    assert lg.learned_w(lg._read("k")["history"]) > 0.8
-    assert lg.commit("k", 1.0) is None                      # nothing pending
-    lg.save_pending("k", 0.3)
-    assert lg.commit("k", 0.0) is None                      # neutral: teaches nothing
-    lg.save_pending("k", 0.3)
-    lg.clear_pending("k")                                   # a run with it off
-    assert lg.commit("k", -1.0) is None
-    assert lg.choose_w("k", "off")[0] == 0.0
-    assert lg.choose_w("", "learned")[0] == 0.0             # no key: off
+        w, _note = d.choose("k", "learned", 0.5, rng=rng)
+        d.save_pending("k", w)
+        d.commit("k", 1.0 if w > 0.8 else -1.0)
+    assert d.learned(d.read("k")["history"]) > 0.8
+    assert d.commit("k", 1.0) is None                       # nothing pending
+    d.save_pending("k", 0.3)
+    assert d.commit("k", 0.0) is None                       # neutral: teaches nothing
+    d.save_pending("k", 0.3)
+    d.clear_pending("k")                                    # a run with it off
+    assert d.commit("k", -1.0) is None
+    assert d.choose("k", "off", 0.5)[0] is None
+    assert d.choose("", "learned", 0.5)[0] is None          # no key: off

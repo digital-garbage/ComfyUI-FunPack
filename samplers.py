@@ -22,11 +22,13 @@ try:
     from . import shot_memory as _shot_memory
     from . import tsr as _tsr
     from . import late_guidance as _late
+    from . import stas as _stas
 except ImportError:  # flat import when ComfyUI loads the pack as a top-level module
     import funpack_log as _log
     import shot_memory as _shot_memory
     import tsr as _tsr
     import late_guidance as _late
+    import stas as _stas
 
 
 MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
@@ -849,6 +851,22 @@ def _video_span(model, x):
         return sum(sizes[:video_idx]), sizes[video_idx], tuple(shapes[video_idx])
     except Exception:
         return None
+
+
+def _step_position(args):
+    """(step index, step count) of the block call `args` belongs to. Core puts the whole
+    schedule in transformer_options["sample_sigmas"] and this step's sigma in ["sigmas"];
+    raises when either is missing or the sigma is not on the schedule."""
+    to = args.get("transformer_options") or {}
+    sched, cur = to.get("sample_sigmas"), to.get("sigmas")
+    if sched is None or cur is None:
+        raise KeyError("sample_sigmas/sigmas")
+    cur = cur.reshape(-1)[0].to(sched.dtype)
+    hit = torch.nonzero(torch.isclose(sched, cur, rtol=1e-4))
+    if not len(hit):
+        raise ValueError("current sigma is not on the schedule")
+    # sigmas holds N+1 values for N steps (the trailing 0 is never a denoise call).
+    return int(hit[0]), int(sched.shape[0]) - 1
 
 
 # Set in transformer_options for late-branch guidance's weak pass. Capture hooks skip it:
@@ -3202,6 +3220,18 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 43, "min": 1, "max": 49,
                     "tooltip": "The block the weak copy skips; every block before it is shared. Higher = cheaper and subtler.",
                 }),
+                "stas": (list(_stas.MODES), {
+                    "default": "off",
+                    "tooltip": "EXPERIMENTAL, H3 only (STAS, arXiv 2603.17825). Over the first 40% of steps, sets the few huge 'massive activation' channels on the first frame and frame edges to alpha x their peak at one block. Aimed at steadier motion; may calm subtle motion. No extra model call. learned = alpha learned from ratings; manual = fixed below.",
+                }),
+                "stas_alpha": ("FLOAT", {
+                    "default": 2.0, "min": 0.5, "max": 4.0, "step": 0.1,
+                    "tooltip": "manual mode only. The paper used 1.2-2.5.",
+                }),
+                "stas_block": ("INT", {
+                    "default": 15, "min": 0, "max": 49,
+                    "tooltip": "The block whose output is steered. The paper's best was ~30% deep (block 9 of 30).",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -4128,6 +4158,13 @@ class FunPackLTXAVSceneChainSampler:
             # it declines (no negative, both scales 1.0, non-finite knob).
             _shadow_installed = model is not _model_before_shadow
 
+        _stas_installed, _stas_report = False, None
+        if self._is_h3 and getattr(self, "_stas_alpha", None) is not None:
+            _model_before_stas = model
+            model, _stas_report = self._install_stas(model, self._stas_block,
+                                                     self._stas_alpha, samples)
+            _stas_installed = model is not _model_before_stas
+
         # Outermost of the block hooks: its weak pass must be able to skip every hook on the
         # shared blocks, and run the tail exactly as the normal pass does.
         _late_installed = False
@@ -4148,7 +4185,7 @@ class FunPackLTXAVSceneChainSampler:
         # it silently never ran.
         # Late-branch guidance's weak pass skips blocks, so its allocations differ too.
         _compiler_conflict = (_block_repeat_installed or _repr_injecting or _shadow_installed
-                              or _late_installed)
+                              or _late_installed or _stas_installed)
         try:
             with self._compiler_disabled_for_forward_patches(_compiler_conflict):
                 sampled = comfy.sample.sample_custom(
@@ -4156,6 +4193,8 @@ class FunPackLTXAVSceneChainSampler:
                     noise_mask=latent.get("noise_mask"), seed=int(seed),
                     callback=_progress_cb if pbar is not None else None,
                 )
+            if _stas_report is not None:
+                print(f"[FunPackSceneChain] STAS: {_stas_report()}")
             if _phrase_probe is not None:
                 self._report_phrase_probe(_phrase_probe[1])
                 # The masked probe passes ran through every capture hook too, so this
@@ -8213,17 +8252,7 @@ class FunPackLTXAVSceneChainSampler:
         if n == 0:
             return True
         try:
-            to = args.get("transformer_options") or {}
-            sched, cur = to.get("sample_sigmas"), to.get("sigmas")
-            if sched is None or cur is None:
-                raise KeyError("sample_sigmas/sigmas")
-            cur = cur.reshape(-1)[0].to(sched.dtype)
-            hit = torch.nonzero(torch.isclose(sched, cur, rtol=1e-4))
-            if not len(hit):
-                raise ValueError("current sigma is not on the schedule")
-            # sigmas holds N+1 values for N steps (the trailing 0 is never a denoise call).
-            total = int(sched.shape[0]) - 1
-            step_index = int(hit[0])
+            step_index, total = _step_position(args)
             return step_index >= total - n if n > 0 else step_index < -n
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "H3 block repeat step window", _e,
@@ -8443,6 +8472,96 @@ class FunPackLTXAVSceneChainSampler:
             _log.failed("FunPackSceneChain", "H3 block repeat", _e, "blocks run once as usual")
             return model
 
+    def _install_stas(self, model, block, alpha, samples):
+        """STAS (stas.py), H3: steer the massive-activation channels of one block's output,
+        on the video rows of the first frame and each frame's edges, over the first steps.
+        -> (model, report fn | None). The model comes back untouched when it cannot install."""
+        try:
+            try:
+                from . import h3_repr_steering as _rs
+            except ImportError:
+                import h3_repr_steering as _rs
+            net = getattr(getattr(model, "model", None), "diffusion_model", None)
+            blocks = getattr(net, "blocks", None)
+            if blocks is None or not 0 <= int(block) < len(blocks):
+                _log.failed("FunPackSceneChain", "STAS", f"block {block} is not a block of this model",
+                            "the run goes on without it")
+                return model, None
+            video = samples.unbind()[0] if getattr(samples, "is_nested", False) else samples
+            _pt, ph, pw = tuple(getattr(net, "patch_size", (1, 2, 2)))
+            per_frame = -(-int(video.shape[-2]) // ph) * -(-int(video.shape[-1]) // pw)
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+            inner = dit_patches.get(("double_block", int(block)))
+            _alpha = float(alpha)
+            cache, stats = {}, {"steered": 0, "empty": 0, "dims": None, "why": None}
+
+            def _stas_hook(args, extra):
+                out = extra["original_block"](args)["img"] if inner is None else \
+                    inner(args, extra)["img"]
+                try:
+                    try:
+                        index, total = _step_position(args)
+                    except Exception as _e:  # noqa: BLE001
+                        stats["why"] = f"no step schedule to read ({_e}), nothing steered"
+                        return {"img": out}
+                    if index >= _stas.first_steps(total):
+                        return {"img": out}
+                    seq_len = int(out.shape[0])
+                    span = cache.get(seq_len)
+                    if span is None:
+                        mask = _rs.video_mask_from_mod_segments(
+                            args.get("mod_segments"), seq_len, out.device)
+                        idx = mask.nonzero().flatten() if mask is not None else None
+                        span = "none"
+                        if idx is not None and idx.numel():
+                            a, n = int(idx[0]), int(idx.numel())
+                            if int(idx[-1]) - a + 1 == n and n % per_frame == 0:
+                                span = (a, n, _stas.target_rows(n // per_frame, per_frame))
+                        cache[seq_len] = span
+                    if span == "none":
+                        stats["why"] = ("picture rows not found as whole frames in this "
+                                        "sequence, nothing steered")
+                        return {"img": out}
+                    a, n, rows = span
+                    video_rows = out[a:a + n]                  # a view: steered in place
+                    dims, peaks, ratios = _stas.ma_dims(video_rows)
+                    if not dims.numel():
+                        stats["empty"] += 1
+                        return {"img": out}
+                    _stas.steer(video_rows, rows, dims, peaks, _alpha)
+                    stats["steered"] += 1
+                    if stats["dims"] is None:
+                        stats["dims"] = ", ".join(f"{int(d)} ({float(r):.0f}x)"
+                                                  for d, r in zip(dims, ratios))
+                except Exception as _e:  # noqa: BLE001
+                    stats["why"] = f"failed ({_e}), block left as it was"
+                return {"img": out}
+
+            dit_patches[("double_block", int(block))] = _tag_dit_hook(_stas_hook, inner)
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+            patched.model_options["transformer_options"] = to
+
+            def _report():
+                if stats["steered"]:
+                    line = (f"alpha {_alpha:.2f} at block {block}: steered {stats['steered']} "
+                            f"call(s), channels {stats['dims']}")
+                    if stats["empty"]:
+                        line += f"; {stats['empty']} call(s) had no massive channel"
+                    return line
+                return (stats["why"] or f"no channel at block {block} is over "
+                        f"{_stas.MA_RATIO:.0f}x the mean, nothing steered -- try another block")
+
+            print(f"[FunPackSceneChain] STAS: alpha {_alpha:.2f} at block {block}, first "
+                  f"{_stas.EARLY_FRACTION:.0%} of steps, frame 0 + frame edges, picture only.")
+            return patched, _report
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "STAS", _e, "the run goes on without it")
+            return model, None
+
     def _install_late_branch(self, model, branch, w, n_blocks=50):
         """Late-branch guidance (late_guidance.py), H3.
 
@@ -8500,9 +8619,14 @@ class FunPackLTXAVSceneChainSampler:
             old_wrapper = patched.model_options.get("model_function_wrapper")
             _w = float(w)
 
-            def _guided(apply_fn):
+            def _guided(apply_fn, cond_only):
                 def _apply(x, t, **c):
                     normal = apply_fn(x, t, **c)
+                    if not cond_only:
+                        # A negative-prompt call (CFG above 1): guidance is for the picture
+                        # the prompt asks for, and a weak copy here would double the cost.
+                        saved.pop("h", None)
+                        return normal
                     if "h" not in saved:
                         return normal
                     weak_to = dict(c.get("transformer_options") or {})
@@ -8524,7 +8648,8 @@ class FunPackLTXAVSceneChainSampler:
 
             def _late_wrapper(apply_fn, args):
                 # Innermost: every other wrapper sees one guided prediction, not two calls.
-                guided = _guided(apply_fn)
+                cond_only = all(int(i) == 0 for i in (args.get("cond_or_uncond") or [0]))
+                guided = _guided(apply_fn, cond_only)
                 if old_wrapper is not None:
                     return old_wrapper(guided, args)
                 return guided(args["input"], args["timestep"], **args.get("c", {}))
@@ -9035,6 +9160,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_shadow_negative_end_percent=0.60, h3_shadow_negative_compose=False,
                shot_memory="off", shot_memory_amount=0.7, tsr="off", tsr_k=1.0,
                late_guidance="off", late_guidance_strength=0.5, late_guidance_block=43,
+               stas="off", stas_alpha=2.0, stas_block=15,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -9269,12 +9395,12 @@ class FunPackLTXAVSceneChainSampler:
         # tagged 'funpack_batch_variant'. That marker is the only trigger — the sampler has no
         # batch-count input. Sample one chain per packed entry, persist each for rating in Studio.
         if self._split_batch_variants(positive) is not None:
-            if shot_memory != "off" or tsr != "off" or late_guidance != "off":
+            if shot_memory != "off" or tsr != "off" or late_guidance != "off" or stas != "off":
                 # Batch training changes one thing at a time; these would change the
                 # noise / the prediction on every variant too.
-                print("[FunPackSceneChain] shot memory / decisiveness / late-branch guidance "
-                      "are off during batch training -- it varies one setting at a time, and "
-                      "these would vary more")
+                print("[FunPackSceneChain] shot memory / decisiveness / late-branch guidance / "
+                      "STAS are off during batch training -- it varies one setting at a time, "
+                      "and these would vary more")
             return self._run_batch_training(
                 model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed,
@@ -9455,10 +9581,13 @@ class FunPackLTXAVSceneChainSampler:
         self._shot_memory = None
         self._tsr_k = 1.0
         self._late_w, self._late_block = 0.0, int(late_guidance_block)
-        if shot_memory != "off" or tsr == "learned" or late_guidance == "learned":
+        self._stas_alpha, self._stas_block = None, int(stas_block)
+        if (shot_memory != "off" or tsr == "learned" or late_guidance == "learned"
+                or stas == "learned"):
             if not refinement_key_input:
                 print("[FunPackSceneChain] shot memory / learned decisiveness / learned "
-                      "late-branch guidance: needs refinement_key_input -- off this run")
+                      "late-branch guidance / learned STAS: needs refinement_key_input -- "
+                      "off this run")
         if shot_memory != "off" and refinement_key_input:
             self._shot_memory = _shot_memory.ShotMemory(
                 refinement_key_input, shot_memory, shot_memory_amount)
@@ -9470,10 +9599,19 @@ class FunPackLTXAVSceneChainSampler:
             if not self._is_h3:
                 print("[FunPackSceneChain] late-branch guidance: H3 only -- off this run")
             else:
-                self._late_w, _late_note = _late.choose_w(
+                _w, _late_note = _late.DIAL.choose(
                     refinement_key_input, late_guidance, late_guidance_strength)
+                self._late_w = max(0.0, _w or 0.0)
                 if _late_note:
                     print(f"[FunPackSceneChain] late-branch guidance: {_late_note}")
+        if stas != "off":
+            if not self._is_h3:
+                print("[FunPackSceneChain] STAS: H3 only -- off this run")
+            else:
+                self._stas_alpha, _stas_note = _stas.DIAL.choose(
+                    refinement_key_input, stas, stas_alpha)
+                if _stas_note:
+                    print(f"[FunPackSceneChain] STAS alpha: {_stas_note}")
 
         # Per-bucket value functions for trajectory_guidance. Separate from the one above
         # because they answer a different question: that one asks "is this a good finish",
@@ -10729,9 +10867,13 @@ class FunPackLTXAVSceneChainSampler:
             else:
                 _tsr.clear_pending(refinement_key_input)
             if late_guidance == "learned" and self._is_h3:
-                _late.save_pending(refinement_key_input, self._late_w)
+                _late.DIAL.save_pending(refinement_key_input, self._late_w)
             else:
-                _late.clear_pending(refinement_key_input)
+                _late.DIAL.clear_pending(refinement_key_input)
+            if stas == "learned" and self._stas_alpha is not None:
+                _stas.DIAL.save_pending(refinement_key_input, self._stas_alpha)
+            else:
+                _stas.DIAL.clear_pending(refinement_key_input)
 
         # Trajectory probe: same run/rating pairing as the two above — the rating that scores
         # THIS run appends these per-bucket descriptors to the measurement log.

@@ -25,6 +25,7 @@
     "dynashift", "dynashift_strength", "dynashift_threshold",
     "shot_memory", "shot_memory_amount", "tsr", "tsr_k",
     "late_guidance", "late_guidance_strength", "late_guidance_block",
+    "stas", "stas_alpha", "stas_block",
     "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block",
   ]);
   const RATING_GATED_STUDIO = new Set(["reference_injection", "value_guidance", "steer_mode", "absolute_strength"]);
@@ -327,6 +328,13 @@
       hint: "How hard to push away from the weak copy. 0 = off." },
     { name: "late_guidance_block", label: "Late-branch block", kind: "int", default: 43, min: 1, max: 49, dependsOn: "late_guidance", dependsVals: ["learned", "manual"],
       hint: "The block the weak copy skips. Higher = cheaper and subtler." },
+    { name: "stas", label: "STAS: steadier motion (H3, experimental)", kind: "combo", choices: ["off", "learned", "manual"], default: "off",
+      hint: "Strengthens the model's own frame-edge signals over the first steps. Aimed at steadier motion. Learned: ratings set the strength.",
+      detail: "Massive-activation steering (arXiv 2603.17825). A few channels carry huge values on the first frame and each frame's edges; this sets them to alpha times their peak at one block, over the first 40% of steps. No extra model call. Tested on Wan and CogVideoX, untested on H3; may calm subtle motion. The run log says which channels it found, or that it found none at that block. Learned needs a refinement key." },
+    { name: "stas_alpha", label: "STAS strength", kind: "float", default: 2.0, min: 0.5, max: 4.0, step: 0.1, dependsOn: "stas", dependsValue: "manual",
+      hint: "Paper range 1.2-2.5." },
+    { name: "stas_block", label: "STAS block", kind: "int", default: 15, min: 0, max: 49, dependsOn: "stas", dependsVals: ["learned", "manual"],
+      hint: "The block whose output is steered. The paper's best was ~30% deep." },
     { name: "h3_repr_steering",      label: "REINS (representation steering, H3, experimental)", kind: "bool", default: false,
       hint: "EXPERIMENTAL, unvalidated, H3 only. Reaches inside the model instead of around it: captures each steered block's video-row hidden state every generation, and once a block has 3+ liked and 3+ disliked runs of its OWN, adds that block's mean liked-minus-disliked difference back into its own output on every later run. No architectural ceiling like the attention-bias mechanisms have — push the strength too far and coherence can break with no warning." },
     { name: "h3_repr_steering_strength", label: "REINS strength", kind: "float", default: 0.05, min: 0.0, max: 2.0, step: 0.01, dependsOn: "h3_repr_steering",
@@ -550,7 +558,7 @@
   const CHAIN_VIEW_KNOBS = {
     chain_continuity: ["carry_i2v_guides", "carry_overlap_through_anchor"],
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
-    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "explore_first_step", "explore_first_step_candidates", "dynashift", "dynashift_strength", "dynashift_threshold", "shot_memory", "shot_memory_amount", "tsr", "tsr_k", "late_guidance", "late_guidance_strength", "late_guidance_block", "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block", "h3_repr_steering_passive_capture", "h3_q_steer_block", "h3_q_steer_strength", "h3_av_decouple"],
+    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "explore_first_step", "explore_first_step_candidates", "dynashift", "dynashift_strength", "dynashift_threshold", "shot_memory", "shot_memory_amount", "tsr", "tsr_k", "late_guidance", "late_guidance_strength", "late_guidance_block", "stas", "stas_alpha", "stas_block", "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block", "h3_repr_steering_passive_capture", "h3_q_steer_block", "h3_q_steer_strength", "h3_av_decouple"],
     chain_decode: ["h3_video_detail", "decode_noise_scale", "decode_timestep", "decode_tile_size"],
     chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "h3_block_repeat", "h3_block_repeat_span_loop", "h3_block_repeat_video_only", "h3_block_repeat_times", "h3_block_repeat_last_steps", "h3_explore_temperature", "h3_explore_temperature_block", "h3_shadow_negative", "h3_shadow_negative_compose", "h3_shadow_negative_video_scale", "h3_shadow_negative_audio_scale", "h3_shadow_negative_tau", "h3_shadow_negative_alpha", "h3_shadow_negative_start_percent", "h3_shadow_negative_end_percent", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };

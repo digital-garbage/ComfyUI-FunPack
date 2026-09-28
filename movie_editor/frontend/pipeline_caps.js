@@ -180,6 +180,9 @@
     late_guidance:
       "Skips one of H3's own DiT blocks in a weak copy of each step. LTX runs a real CFG "
       + "negative, and its blocks are hooked differently.",
+    stas:
+      "Steers H3's own block outputs by their packed frame layout; LTX's blocks are hooked "
+      + "differently.",
     h3_video_detail:
       "Scales H3's own final layer, which reads video and audio on separate rows. LTX has no "
       + "layer of that shape, so the sampler has nothing to scale.",
@@ -191,7 +194,7 @@
     "h3_shadow_negative_tau", "h3_shadow_negative_alpha",
     "h3_shadow_negative_start_percent", "h3_shadow_negative_end_percent",
     "h3_shadow_negative_compose",
-    "late_guidance_strength", "late_guidance_block",
+    "late_guidance_strength", "late_guidance_block", "stas_alpha", "stas_block",
   ];
 
   // Sub-settings of identity transfer: meaningless wherever the feature itself cannot run,

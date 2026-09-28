@@ -10507,21 +10507,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                               else float(learning_profile.get("reward", 0.0) or 0.0))
                 try:
                     try:
-                        from . import shot_memory as _sm, tsr as _tsr_mod, late_guidance as _lg
+                        from . import shot_memory as _sm, tsr as _tsr_mod, late_guidance as _lg, stas as _st
                     except ImportError:
-                        import shot_memory as _sm, tsr as _tsr_mod, late_guidance as _lg
+                        import shot_memory as _sm, tsr as _tsr_mod, late_guidance as _lg, stas as _st
                     _n = _sm.commit(refinement_key, _sm_reward)
                     if _n is not None:
                         print(f"[FunPackRefiner] shot memory: {_n} rated shot(s) on this key")
                     _n = _tsr_mod.commit(refinement_key, _sm_reward)
                     if _n is not None:
                         print(f"[FunPackRefiner] decisiveness: {_n} rating(s) on this key")
-                    _n = _lg.commit(refinement_key, _sm_reward)
+                    _n = _lg.DIAL.commit(refinement_key, _sm_reward)
                     if _n is not None:
                         print(f"[FunPackRefiner] late-branch guidance: {_n} rating(s) on this key")
+                    _n = _st.DIAL.commit(refinement_key, _sm_reward)
+                    if _n is not None:
+                        print(f"[FunPackRefiner] STAS: {_n} rating(s) on this key")
                 except Exception as _e:
-                    print(f"[FunPackRefiner] shot memory / decisiveness / late-branch guidance "
-                          f"intake failed: {_e}")
+                    print(f"[FunPackRefiner] shot memory / decisiveness / late-branch guidance / "
+                          f"STAS intake failed: {_e}")
             # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
             # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
             # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure
