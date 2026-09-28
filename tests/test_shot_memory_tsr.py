@@ -227,3 +227,18 @@ def test_a_frame_too_small_for_a_layout_is_left_alone_and_said(monkeypatch, tmp_
     out = mem.shape(noise, torch.zeros_like(noise), None, record=True)
     assert torch.equal(out, noise) and not torch.isnan(out).any()
     assert any("left alone" in n for n in mem.notes)
+
+
+def test_a_two_cell_grid_never_makes_the_noise_stronger(monkeypatch, tmp_path):
+    """2x2 cells: 4 values per channel, so their measured spread is often low by chance."""
+    _store(monkeypatch, tmp_path)
+    worst = plain = 0.0
+    for i in range(300):
+        torch.manual_seed(i)
+        mem = sm.ShotMemory("k", "manual", 0.95, rng=random.Random(i))
+        mem.plans[(None, 24)] = ({"id": 1, "coarse": torch.randn(24, 2, 2).half()}, 0.95)
+        noise = torch.randn(1, 24, 3, 8, 8)
+        out = mem.shape(noise, torch.zeros_like(noise), None, record=True)
+        plain = max(plain, float(sm.coarse_of(noise).abs().max()))
+        worst = max(worst, float(sm.coarse_of(out).abs().max()))
+    assert worst < 1.2 * plain
