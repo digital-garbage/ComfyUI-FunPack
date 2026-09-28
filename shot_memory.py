@@ -84,7 +84,7 @@ def coarse_of(video):
         return None
     _b, c, t, H, W = video.shape
     h, w = H // CELL, W // CELL
-    if h < 1 or w < 1:
+    if h < 2 or w < 2:          # a layout needs cells to compare; one cell has no spread
         return None
     blocks = video[0, :, :, :h * CELL, :w * CELL].float().reshape(c, t, h, CELL, w, CELL)
     return blocks.mean(dim=(1, 3, 5)) * math.sqrt(t * CELL * CELL)
@@ -219,6 +219,9 @@ class ShotMemory:
             return noise
         own = coarse_of(video)
         if own is None:
+            note = f"frame under {2 * CELL}x{2 * CELL} latent px (two layout cells a side), left alone"
+            if note not in self.notes:
+                self.notes.append(note)
             return noise
         cond = pooled(cond)
         parent, amount = self._plan(cond, int(own.shape[0]))

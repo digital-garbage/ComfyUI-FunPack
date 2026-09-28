@@ -216,3 +216,14 @@ def test_reusing_a_shot_with_its_own_seed_keeps_normal_strength(monkeypatch, tmp
     mem.plans[(None, 24)] = ({"id": 1, "coarse": sm.coarse_of(noise).half()}, 0.7)
     out = mem.shape(noise.clone(), torch.zeros_like(noise), None)
     assert abs(float(sm.coarse_of(out).std()) - 1.0) < 0.02
+
+
+def test_a_frame_too_small_for_a_layout_is_left_alone_and_said(monkeypatch, tmp_path):
+    """64x64 px on H3 is one 64px cell: nothing to rescale (the std of one value is NaN)."""
+    _store(monkeypatch, tmp_path)
+    mem = sm.ShotMemory("k", "manual", 0.7, rng=random.Random(0))
+    mem.plans[(None, 24)] = ({"id": 1, "coarse": torch.randn(24, 1, 1).half()}, 0.7)
+    noise = torch.randn(1, 24, 7, 4, 4)
+    out = mem.shape(noise, torch.zeros_like(noise), None, record=True)
+    assert torch.equal(out, noise) and not torch.isnan(out).any()
+    assert any("left alone" in n for n in mem.notes)
