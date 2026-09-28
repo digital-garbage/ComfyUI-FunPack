@@ -191,3 +191,13 @@ def test_h3_a_size_change_is_said_not_silent(capsys):
     call(1, torch.randn(1, 2, 3, 4, 4))
     call(2, torch.randn(1, 2, 3, 4, 8))
     assert "latent size changed" in capsys.readouterr().out
+
+
+def test_h3_a_one_step_schedule_says_it_does_nothing(capsys):
+    import funpack_log
+    funpack_log.begin_run()
+    model = _Model()
+    _node(True)._build_tsr_wrapper(model, 0.5)
+    _euler(model.model_options["model_function_wrapper"], torch.randn(1, 2, 3, 4, 4),
+           schedule=torch.tensor([1.0, 0.0]))
+    assert "1-step schedule" in capsys.readouterr().out

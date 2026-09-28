@@ -939,6 +939,11 @@ class _InputSteer:
         if not self.enabled:
             return False
         where = self._where(args)
+        if where is not None and where[1] <= 1:
+            _log.note_once("FunPackSceneChain",
+                           f"{self.what}: a 1-step schedule has no step before the output "
+                           f"to carry an edit into, so it does nothing this run",
+                           key=f"input steer 1 step:{self.what}")
         return where is not None and where[0] >= where[1] - 1
 
     def gate_sigma(self, args, sigma):
