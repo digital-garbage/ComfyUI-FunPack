@@ -24,6 +24,7 @@
     "trajectory_guidance", "trajectory_guidance_strength",
     "dynashift", "dynashift_strength", "dynashift_threshold",
     "shot_memory", "shot_memory_amount", "tsr", "tsr_k",
+    "late_guidance", "late_guidance_strength", "late_guidance_block",
     "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block",
   ]);
   const RATING_GATED_STUDIO = new Set(["reference_injection", "value_guidance", "steer_mode", "absolute_strength"]);
@@ -319,6 +320,13 @@
       detail: "Temporal Score Rescaling (arXiv 2510.01184): scales the noise part of each step's picture prediction. It fades out near pure noise, so the first steps are left alone. Picture only, no extra model call. Learned needs a refinement key." },
     { name: "tsr_k", label: "Decisiveness", kind: "float", default: 1.0, min: 0.5, max: 2.0, step: 0.01, dependsOn: "tsr", dependsValue: "manual",
       hint: "1.0 = off." },
+    { name: "late_guidance", label: "Late-branch guidance (H3, experimental)", kind: "combo", choices: ["off", "learned", "manual"], default: "off",
+      hint: "Each step also makes a weaker picture and steers away from it. Learned: ratings set the strength.",
+      detail: "Skip guidance (STG) made cheap for CFG 1: the weak copy skips one late block and shares every block before it, so at block 43 it costs about 15% per step instead of a second full pass. Picture only; sound keeps the normal pass. Untested on H3. Learned needs a refinement key." },
+    { name: "late_guidance_strength", label: "Late-branch strength", kind: "float", default: 0.5, min: 0.0, max: 2.0, step: 0.05, dependsOn: "late_guidance", dependsValue: "manual",
+      hint: "How hard to push away from the weak copy. 0 = off." },
+    { name: "late_guidance_block", label: "Late-branch block", kind: "int", default: 43, min: 1, max: 49, dependsOn: "late_guidance", dependsVals: ["learned", "manual"],
+      hint: "The block the weak copy skips. Higher = cheaper and subtler." },
     { name: "h3_repr_steering",      label: "REINS (representation steering, H3, experimental)", kind: "bool", default: false,
       hint: "EXPERIMENTAL, unvalidated, H3 only. Reaches inside the model instead of around it: captures each steered block's video-row hidden state every generation, and once a block has 3+ liked and 3+ disliked runs of its OWN, adds that block's mean liked-minus-disliked difference back into its own output on every later run. No architectural ceiling like the attention-bias mechanisms have — push the strength too far and coherence can break with no warning." },
     { name: "h3_repr_steering_strength", label: "REINS strength", kind: "float", default: 0.05, min: 0.0, max: 2.0, step: 0.01, dependsOn: "h3_repr_steering",
@@ -451,7 +459,10 @@
     if (st && window.PipelineCaps?.familyInertInputs(st).has(k.name)) return false;
     // dependsOn/dependsValue: single condition (dependsValue absent = plain truthy
     // gate, as every existing boolean dependsOn already relies on).
-    if (k.dependsOn && !_depSatisfied(k.dependsOn, k.dependsValue, si)) return false;
+    if (k.dependsOn && !k.dependsVals && !_depSatisfied(k.dependsOn, k.dependsValue, si)) return false;
+    // dependsVals: any one of several values (a combo whose "off" is a truthy string).
+    if (k.dependsOn && k.dependsVals
+        && !k.dependsVals.some((v) => _depSatisfied(k.dependsOn, v, si))) return false;
     // deps: an AND'd list, for knobs gated by more than one condition (e.g. the
     // feature toggle AND a mode combo equaling a specific option) — dependsOn
     // alone can't express two conditions without one silently overriding the other.
@@ -539,7 +550,7 @@
   const CHAIN_VIEW_KNOBS = {
     chain_continuity: ["carry_i2v_guides", "carry_overlap_through_anchor"],
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
-    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "explore_first_step", "explore_first_step_candidates", "dynashift", "dynashift_strength", "dynashift_threshold", "shot_memory", "shot_memory_amount", "tsr", "tsr_k", "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block", "h3_repr_steering_passive_capture", "h3_q_steer_block", "h3_q_steer_strength", "h3_av_decouple"],
+    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "explore_first_step", "explore_first_step_candidates", "dynashift", "dynashift_strength", "dynashift_threshold", "shot_memory", "shot_memory_amount", "tsr", "tsr_k", "late_guidance", "late_guidance_strength", "late_guidance_block", "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block", "h3_repr_steering_passive_capture", "h3_q_steer_block", "h3_q_steer_strength", "h3_av_decouple"],
     chain_decode: ["h3_video_detail", "decode_noise_scale", "decode_timestep", "decode_tile_size"],
     chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "h3_block_repeat", "h3_block_repeat_span_loop", "h3_block_repeat_video_only", "h3_block_repeat_times", "h3_block_repeat_last_steps", "h3_explore_temperature", "h3_explore_temperature_block", "h3_shadow_negative", "h3_shadow_negative_compose", "h3_shadow_negative_video_scale", "h3_shadow_negative_audio_scale", "h3_shadow_negative_tau", "h3_shadow_negative_alpha", "h3_shadow_negative_start_percent", "h3_shadow_negative_end_percent", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };

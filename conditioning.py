@@ -10500,24 +10500,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         consume_pending(refinement_key, False)
                 except Exception as _e:
                     print(f"[FunPackRefiner] DynaShift intake failed: {_e}")
-            # Shot memory + decisiveness: the rating's sign scores the previous run's shots
-            # and k. Wrong-* ratings are skipped: the words were off, not the shot.
+            # Shot memory, decisiveness, late-branch guidance: the rating's sign scores the
+            # previous run's shots, k and strength. Wrong-* ratings are skipped: the words were off, not the shot.
             if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
                 _sm_reward = (0.0 if learning_profile.get("skip_value_function")
                               else float(learning_profile.get("reward", 0.0) or 0.0))
                 try:
                     try:
-                        from . import shot_memory as _sm, tsr as _tsr_mod
+                        from . import shot_memory as _sm, tsr as _tsr_mod, late_guidance as _lg
                     except ImportError:
-                        import shot_memory as _sm, tsr as _tsr_mod
+                        import shot_memory as _sm, tsr as _tsr_mod, late_guidance as _lg
                     _n = _sm.commit(refinement_key, _sm_reward)
                     if _n is not None:
                         print(f"[FunPackRefiner] shot memory: {_n} rated shot(s) on this key")
                     _n = _tsr_mod.commit(refinement_key, _sm_reward)
                     if _n is not None:
                         print(f"[FunPackRefiner] decisiveness: {_n} rating(s) on this key")
+                    _n = _lg.commit(refinement_key, _sm_reward)
+                    if _n is not None:
+                        print(f"[FunPackRefiner] late-branch guidance: {_n} rating(s) on this key")
                 except Exception as _e:
-                    print(f"[FunPackRefiner] shot memory / decisiveness intake failed: {_e}")
+                    print(f"[FunPackRefiner] shot memory / decisiveness / late-branch guidance "
+                          f"intake failed: {_e}")
             # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
             # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
             # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure

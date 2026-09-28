@@ -177,6 +177,9 @@
       + "H3's own DiT blocks. LTXAV already evaluates a real negative prompt via CFG, so "
       + "there is nothing dead here to give a job to — this only exists because H3's CFG "
       + "is fixed at 1.0.",
+    late_guidance:
+      "Skips one of H3's own DiT blocks in a weak copy of each step. LTX runs a real CFG "
+      + "negative, and its blocks are hooked differently.",
     h3_video_detail:
       "Scales H3's own final layer, which reads video and audio on separate rows. LTX has no "
       + "layer of that shape, so the sampler has nothing to scale.",
@@ -188,6 +191,7 @@
     "h3_shadow_negative_tau", "h3_shadow_negative_alpha",
     "h3_shadow_negative_start_percent", "h3_shadow_negative_end_percent",
     "h3_shadow_negative_compose",
+    "late_guidance_strength", "late_guidance_block",
   ];
 
   // Sub-settings of identity transfer: meaningless wherever the feature itself cannot run,

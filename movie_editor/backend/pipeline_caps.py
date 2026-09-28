@@ -125,6 +125,7 @@ SIMPLE_MODE_SAMPLER_OFF: dict[str, Any] = {
     "dynashift": False,
     "shot_memory": "off",
     "tsr": "off",
+    "late_guidance": "off",
 }
 
 # Studio refiner keys, same rule.

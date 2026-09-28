@@ -9,6 +9,8 @@
   No extra model call; sound untouched.
 - **Decisiveness** (experimental, Temporal Score Rescaling): above 1 commits harder, below 1
   varies more. Learned from ratings or set by hand. Picture only, no extra model call.
+- **Late-branch guidance** (experimental, H3): each step also makes a weaker picture (one
+  late block skipped) and steers away from it. ~15% cost at block 43. Learned or manual.
 - **Coloured logs**: red errors, orange warnings, green successes, in the terminal (FunPack's
   lines; `FUNPACK_LOG_COLOR=1/0` forces) and in the Editor's Log panel. The panel now also
   shows ComfyUI's own logging output, node crashes included.

@@ -21,10 +21,12 @@ try:
     from . import funpack_log as _log
     from . import shot_memory as _shot_memory
     from . import tsr as _tsr
+    from . import late_guidance as _late
 except ImportError:  # flat import when ComfyUI loads the pack as a top-level module
     import funpack_log as _log
     import shot_memory as _shot_memory
     import tsr as _tsr
+    import late_guidance as _late
 
 
 MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
@@ -847,6 +849,16 @@ def _video_span(model, x):
         return sum(sizes[:video_idx]), sizes[video_idx], tuple(shapes[video_idx])
     except Exception:
         return None
+
+
+# Set in transformer_options for late-branch guidance's weak pass. Capture hooks skip it:
+# a deliberately weakened forward is not the network's behaviour to learn from.
+WEAK_BRANCH_FLAG = "funpack_weak_branch"
+
+
+def _in_weak_branch(args):
+    to = args.get("transformer_options") if isinstance(args, dict) else None
+    return bool(isinstance(to, dict) and to.get(WEAK_BRANCH_FLAG))
 
 
 def _raw_cond(positive):
@@ -3178,6 +3190,18 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 1.0, "min": 0.5, "max": 2.0, "step": 0.01,
                     "tooltip": "manual mode only. 1.0 = off.",
                 }),
+                "late_guidance": (list(_late.MODES), {
+                    "default": "off",
+                    "tooltip": "EXPERIMENTAL, H3 only. Each step also makes a weaker picture (one late block skipped) and pushes away from it. Both share the blocks before the branch, so it costs ~15% at block 43. learned = strength learned from ratings; manual = fixed below. Picture only.",
+                }),
+                "late_guidance_strength": ("FLOAT", {
+                    "default": 0.5, "min": 0.0, "max": 2.0, "step": 0.05,
+                    "tooltip": "manual mode only. 0 = off.",
+                }),
+                "late_guidance_block": ("INT", {
+                    "default": 43, "min": 1, "max": 49,
+                    "tooltip": "The block the weak copy skips; every block before it is shared. Higher = cheaper and subtler.",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -4104,6 +4128,14 @@ class FunPackLTXAVSceneChainSampler:
             # it declines (no negative, both scales 1.0, non-finite knob).
             _shadow_installed = model is not _model_before_shadow
 
+        # Outermost of the block hooks: its weak pass must be able to skip every hook on the
+        # shared blocks, and run the tail exactly as the normal pass does.
+        _late_installed = False
+        if self._is_h3 and getattr(self, "_late_w", 0.0) > 0.0:
+            _model_before_late = model
+            model = self._install_late_branch(model, self._late_block, self._late_w)
+            _late_installed = model is not _model_before_late
+
         _phrase_probe = self._install_phrase_probe(model, positive, latent)
         if _phrase_probe is not None:
             model = _phrase_probe[0]
@@ -4114,7 +4146,9 @@ class FunPackLTXAVSceneChainSampler:
         # the stock block's -- the same "aimdo memory compile error" block repeat and REINS
         # injection hit. It never tripped this before 2026-09-27 only because, until then,
         # it silently never ran.
-        _compiler_conflict = _block_repeat_installed or _repr_injecting or _shadow_installed
+        # Late-branch guidance's weak pass skips blocks, so its allocations differ too.
+        _compiler_conflict = (_block_repeat_installed or _repr_injecting or _shadow_installed
+                              or _late_installed)
         try:
             with self._compiler_disabled_for_forward_patches(_compiler_conflict):
                 sampled = comfy.sample.sample_custom(
@@ -7427,7 +7461,7 @@ class FunPackLTXAVSceneChainSampler:
                         # of reflecting the network's natural behavior. A block that never
                         # injects (direction is None here) is unaffected by this ordering.
                         desc = _rs.capture(out, mask, has_rows=has_rows)
-                        if desc is not None:
+                        if desc is not None and not _in_weak_branch(args):
                             capture_holder[0][block] = desc
                         if _strength > 0.0:
                             # Runs on EVERY candidate block whenever REINS is steering
@@ -7842,6 +7876,7 @@ class FunPackLTXAVSceneChainSampler:
                 def _hook(args, extra):
                     _seg_holder["mod_segments"] = args.get("mod_segments")
                     _seg_holder["rope"] = args.get("rope_freqs")
+                    _seg_holder["weak"] = _in_weak_branch(args)
                     _active_block["cur"] = block
                     try:
                         return (extra["original_block"](args) if inner is None
@@ -7910,8 +7945,9 @@ class FunPackLTXAVSceneChainSampler:
                 # Captured BEFORE injection, same reasoning as h3_repr_steering: a steered
                 # block's descriptor must reflect the network's natural Q, not this run's
                 # own strength setting.
-                capture_holder[0][block] = (natural.detach().permute(1, 0, 2)
-                                            .reshape(natural.shape[1], -1).float().mean(dim=0))
+                if not _seg_holder.get("weak"):
+                    capture_holder[0][block] = (natural.detach().permute(1, 0, 2)
+                                                .reshape(natural.shape[1], -1).float().mean(dim=0))
                 direction = directions.get(block)
                 if direction is not None and _strength > 0.0:
                     head_dim = q.shape[-1]
@@ -8407,6 +8443,103 @@ class FunPackLTXAVSceneChainSampler:
             _log.failed("FunPackSceneChain", "H3 block repeat", _e, "blocks run once as usual")
             return model
 
+    def _install_late_branch(self, model, branch, w, n_blocks=50):
+        """Late-branch guidance (late_guidance.py), H3.
+
+        Every step runs the model twice. The normal pass saves the stream as it enters block
+        `branch`. The weak pass skips blocks 0..branch-1 (their result is that saved stream),
+        skips `branch` itself, and runs the tail as usual. The picture is then pushed away
+        from the weak prediction; sound keeps the normal one.
+
+        The weak pass is flagged in transformer_options (WEAK_BRANCH_FLAG) so capture hooks
+        (REINS, query steering, the influence probe) do not learn from it. Returns the model
+        untouched, and says so, when it cannot install."""
+        try:
+            branch = int(branch)
+            dit = getattr(getattr(getattr(model, "model", None), "diffusion_model", None),
+                          "blocks", None)
+            if dit is None or not 0 < branch < len(dit):
+                _log.failed("FunPackSceneChain", "late-branch guidance",
+                            f"block {branch} is not a block of this model",
+                            "the run goes on without it")
+                return model
+            patched = model.clone()
+            to = patched.model_options.get("transformer_options", {}).copy()
+            patches_replace = dict(to.get("patches_replace", {}))
+            dit_patches = dict(patches_replace.get("dit", {}))
+            saved = {}
+
+            def _make_shared(block):
+                inner = dit_patches.get(("double_block", block))
+
+                def _shared(args, extra):
+                    if _in_weak_branch(args):
+                        return {"img": args["img"]}      # the saved stream replaces this
+                    return extra["original_block"](args) if inner is None else inner(args, extra)
+                return _tag_dit_hook(_shared, inner)
+
+            def _make_branch(block):
+                inner = dit_patches.get(("double_block", block))
+
+                def _branch(args, extra):
+                    if _in_weak_branch(args):
+                        # A copy: the tail adds its residuals into its input in place.
+                        return {"img": saved["h"].clone()}
+                    # Saved BEFORE the block runs, which writes into its input in place.
+                    saved["h"] = args["img"].clone()
+                    return extra["original_block"](args) if inner is None else inner(args, extra)
+                return _tag_dit_hook(_branch, inner)
+
+            for _b in range(branch):
+                dit_patches[("double_block", _b)] = _make_shared(_b)
+            dit_patches[("double_block", branch)] = _make_branch(branch)
+            patches_replace["dit"] = dit_patches
+            to["patches_replace"] = patches_replace
+            patched.model_options["transformer_options"] = to
+
+            old_wrapper = patched.model_options.get("model_function_wrapper")
+            _w = float(w)
+
+            def _guided(apply_fn):
+                def _apply(x, t, **c):
+                    normal = apply_fn(x, t, **c)
+                    if "h" not in saved:
+                        return normal
+                    weak_to = dict(c.get("transformer_options") or {})
+                    weak_to[WEAK_BRANCH_FLAG] = True
+                    try:
+                        weak = apply_fn(x, t, **{**c, "transformer_options": weak_to})
+                    finally:
+                        saved.pop("h", None)
+                    span = _video_span(patched, normal)
+                    if span is None:
+                        # A plain 5-D latent is picture only; an unreadable packed one is
+                        # left alone rather than guessed at.
+                        return _late.mix(normal, weak, _w) if normal.dim() == 5 else normal
+                    off, sz, _shape = span
+                    video = _late.mix(normal[..., off:off + sz], weak[..., off:off + sz], _w)
+                    return torch.cat([normal[..., :off], video.to(normal.dtype),
+                                      normal[..., off + sz:]], dim=-1)
+                return _apply
+
+            def _late_wrapper(apply_fn, args):
+                # Innermost: every other wrapper sees one guided prediction, not two calls.
+                guided = _guided(apply_fn)
+                if old_wrapper is not None:
+                    return old_wrapper(guided, args)
+                return guided(args["input"], args["timestep"], **args.get("c", {}))
+
+            patched.model_options["model_function_wrapper"] = _tag_scene_wrapper(
+                _late_wrapper, old_wrapper)
+            print(f"[FunPackSceneChain] late-branch guidance: strength {_w:.2f}, weak copy "
+                  f"skips block {branch} and shares 0-{branch - 1} "
+                  f"(~{100.0 * (len(dit) - branch) / len(dit):.0f}% extra per step), picture only.")
+            return patched
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "late-branch guidance", _e,
+                        "the run goes on without it")
+            return model
+
     def _install_block_influence(self, model, capture_holder, n_blocks=50, max_rows=512):
         """MEASUREMENT ONLY (H3). See block_influence.py.
 
@@ -8455,6 +8588,10 @@ class FunPackLTXAVSceneChainSampler:
                 mask_cache = {}
 
                 def _probe(args, extra):
+                    if _in_weak_branch(args):
+                        # Late-branch guidance's weak pass: not this block's own work.
+                        return (extra["original_block"](args) if inner is None
+                                else inner(args, extra))
                     src = args.get("img")
                     # The "before" rows MUST be read before the block runs. A block that
                     # writes its residual in place leaves `src` already holding the post-block
@@ -8897,6 +9034,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_shadow_negative_alpha=0.35, h3_shadow_negative_start_percent=0.0,
                h3_shadow_negative_end_percent=0.60, h3_shadow_negative_compose=False,
                shot_memory="off", shot_memory_amount=0.7, tsr="off", tsr_k=1.0,
+               late_guidance="off", late_guidance_strength=0.5, late_guidance_block=43,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -9131,11 +9269,12 @@ class FunPackLTXAVSceneChainSampler:
         # tagged 'funpack_batch_variant'. That marker is the only trigger — the sampler has no
         # batch-count input. Sample one chain per packed entry, persist each for rating in Studio.
         if self._split_batch_variants(positive) is not None:
-            if shot_memory != "off" or tsr != "off":
+            if shot_memory != "off" or tsr != "off" or late_guidance != "off":
                 # Batch training changes one thing at a time; these would change the
                 # noise / the prediction on every variant too.
-                print("[FunPackSceneChain] shot memory / decisiveness are off during batch "
-                      "training -- it varies one setting at a time, and these would vary more")
+                print("[FunPackSceneChain] shot memory / decisiveness / late-branch guidance "
+                      "are off during batch training -- it varies one setting at a time, and "
+                      "these would vary more")
             return self._run_batch_training(
                 model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed,
@@ -9315,10 +9454,11 @@ class FunPackLTXAVSceneChainSampler:
         # run so a failed one can never leave its plan for the next.
         self._shot_memory = None
         self._tsr_k = 1.0
-        if shot_memory != "off" or tsr == "learned":
+        self._late_w, self._late_block = 0.0, int(late_guidance_block)
+        if shot_memory != "off" or tsr == "learned" or late_guidance == "learned":
             if not refinement_key_input:
-                print("[FunPackSceneChain] shot memory / learned decisiveness: needs "
-                      "refinement_key_input -- off this run")
+                print("[FunPackSceneChain] shot memory / learned decisiveness / learned "
+                      "late-branch guidance: needs refinement_key_input -- off this run")
         if shot_memory != "off" and refinement_key_input:
             self._shot_memory = _shot_memory.ShotMemory(
                 refinement_key_input, shot_memory, shot_memory_amount)
@@ -9326,6 +9466,14 @@ class FunPackLTXAVSceneChainSampler:
             self._tsr_k, _tsr_note = _tsr.choose_k(refinement_key_input, tsr, tsr_k)
             if _tsr_note:
                 print(f"[FunPackSceneChain] decisiveness: {_tsr_note}")
+        if late_guidance != "off":
+            if not self._is_h3:
+                print("[FunPackSceneChain] late-branch guidance: H3 only -- off this run")
+            else:
+                self._late_w, _late_note = _late.choose_w(
+                    refinement_key_input, late_guidance, late_guidance_strength)
+                if _late_note:
+                    print(f"[FunPackSceneChain] late-branch guidance: {_late_note}")
 
         # Per-bucket value functions for trajectory_guidance. Separate from the one above
         # because they answer a different question: that one asks "is this a good finish",
@@ -10580,6 +10728,10 @@ class FunPackLTXAVSceneChainSampler:
                 _tsr.save_pending(refinement_key_input, self._tsr_k)
             else:
                 _tsr.clear_pending(refinement_key_input)
+            if late_guidance == "learned" and self._is_h3:
+                _late.save_pending(refinement_key_input, self._late_w)
+            else:
+                _late.clear_pending(refinement_key_input)
 
         # Trajectory probe: same run/rating pairing as the two above — the rating that scores
         # THIS run appends these per-bucket descriptors to the measurement log.
