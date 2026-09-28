@@ -21,6 +21,10 @@
 
 ### Changed
 
+- **H3: decisiveness, DynaShift, output/trajectory guidance, score slider and late-branch
+  guidance no longer edit the last step.** On few-step schedules the last step is the video,
+  and edits there showed as grain. Each edit now goes into the next step's input.
+
 - The harmless `set_mempolicy: Operation not permitted` line from ffmpeg is hidden (said once).
 
 ## [4.0.0] "Blinding Blackout" - 2026-08-27

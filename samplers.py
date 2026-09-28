@@ -873,6 +873,85 @@ def _step_position(args):
     return int(hit[0]), int(sched.shape[0]) - 1
 
 
+class _InputSteer:
+    """Carry a step's edit into the NEXT step's input instead of editing its answer (H3).
+
+    On a few-step schedule the last answer is the video: an edit to it lands in the output
+    with no later step to clean it, and on 4 steps that shows as grain. So the edit a
+    wrapper makes to step i's answer is added to step i+1's input, scaled to that step's
+    noise level (a rectified-flow input is (1 - sigma) * picture + sigma * noise), and the
+    model's own answer is returned. The model then cleans the push like the rest of its
+    input, and the last answer is never edited. Disabled (LTX), `keep` returns the edited
+    answer as before. Calls between schedule steps (a midpoint sampler) are left alone,
+    and said so once."""
+
+    def __init__(self, enabled, what):
+        self.enabled, self.what = bool(enabled), what
+        self._held = {}         # context window -> {"seen": step, "step": step, "delta"}
+
+    def _where(self, args):
+        c = args.get("c") if isinstance(args.get("c"), dict) else {}
+        to = c.get("transformer_options") or args.get("transformer_options") or {}
+        try:
+            i, n = _step_position({"transformer_options": to})
+        except Exception as e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", f"{self.what} (step not on the schedule)", e,
+                        "calls between schedule steps are not steered")
+            return None
+        win = to.get("context_window")
+        key = tuple(win.index_list) if win is not None and hasattr(win, "index_list") else None
+        return i, n, key, to["sample_sigmas"]
+
+    def feed(self, args):
+        """`args` with the previous step's push added to its input."""
+        if not self.enabled:
+            return args
+        where = self._where(args)
+        if where is None:
+            return args
+        i, _n, key, _sched = where
+        held = self._held.get(key)
+        if held is None:
+            return args
+        if i < held["seen"]:            # a new sampling pass: nothing carries over
+            self._held.pop(key, None)
+            return args
+        held["seen"] = i
+        x, d = args["input"], held["delta"]
+        if held["step"] not in (i - 1, i) or tuple(d.shape) != tuple(x.shape):
+            return args
+        sigma = float(args["timestep"].max())
+        return dict(args, input=x + (1.0 - sigma) * d.to(x.device, x.dtype))
+
+    def final(self, args):
+        """True on the call whose answer is the output: nothing after it carries a push."""
+        if not self.enabled:
+            return False
+        where = self._where(args)
+        return where is not None and where[0] >= where[1] - 1
+
+    def gate_sigma(self, args, sigma):
+        """The sigma a push computed now lands on (the next step's), for the late-step gate."""
+        if not self.enabled:
+            return sigma
+        where = self._where(args)
+        if where is None:
+            return sigma
+        i, _n, _key, sched = where
+        return float(sched.reshape(-1)[i + 1])
+
+    def keep(self, args, denoised, steered):
+        """Hold `steered - denoised` for the next step and return the model's own answer."""
+        if not self.enabled:
+            return steered
+        where = self._where(args)
+        if where is None:
+            return denoised
+        i, _n, key, _sched = where
+        self._held[key] = {"seen": i, "step": i, "delta": (steered - denoised).detach()}
+        return denoised
+
+
 # Set in transformer_options for late-branch guidance's weak pass. Capture hooks skip it:
 # a deliberately weakened forward is not the network's behaviour to learn from.
 WEAK_BRANCH_FLAG = "funpack_weak_branch"
@@ -5237,9 +5316,11 @@ class FunPackLTXAVSceneChainSampler:
           O(1/window) — numerically inert if applied raw. The delta is rescaled so
           strength means "fraction of the video stream's norm per fully-ramped step"
           (0.02 = 2%), the same relative-calibration convention as the slider's 0.15 and
-          the Refiner's NORM_SCALE."""
+          the Refiner's NORM_SCALE.
+        On H3 the correction is carried into the next step's input (_InputSteer)."""
         old_wrapper = model.model_options.get("model_function_wrapper")
         _ramp = ramp_fn or (lambda sigma: max(0.0, 1.0 - float(sigma) * 2.0))
+        steer = _InputSteer(getattr(self, "_is_h3", False), "output guidance")
 
         def _call(apply_fn, a):
             if old_wrapper is not None:
@@ -5247,13 +5328,16 @@ class FunPackLTXAVSceneChainSampler:
             return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
 
         def _output_wrapper(apply_fn, args, _vf=value_fn, _s=strength):
+            args = steer.feed(args)
             denoised = _call(apply_fn, args)
+            if steer.final(args):
+                return denoised
             ts = args.get("timestep")
             try:
                 sigma = float(ts.max().item()) if ts is not None else 1.0
             except Exception:
                 sigma = 1.0
-            scale = _ramp(sigma)  # same late-step gate as embed_guidance
+            scale = _ramp(steer.gate_sigma(args, sigma))  # same late-step gate as embed_guidance
             if scale <= 0:
                 return denoised
             try:
@@ -5270,10 +5354,9 @@ class FunPackLTXAVSceneChainSampler:
                 k = (_s * scale) * float(target.float().norm()) / gn
                 corrected = target + grad * k
                 if span is None:
-                    return corrected
-                return torch.cat(
-                    [denoised[..., :off], corrected, denoised[..., off + sz:]], dim=-1
-                )
+                    return steer.keep(args, denoised, corrected)
+                return steer.keep(args, denoised, torch.cat(
+                    [denoised[..., :off], corrected, denoised[..., off + sz:]], dim=-1))
             except Exception as e:
                 print(f"[FunPackSceneChain] output_guidance: gradient failed ({e}), passing through")
                 return denoised
@@ -5379,8 +5462,13 @@ class FunPackLTXAVSceneChainSampler:
                 return old_wrapper(apply_fn, a)
             return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
 
+        steer = _InputSteer(getattr(self, "_is_h3", False), "trajectory guidance")
+
         def _guided(apply_fn, args, _b=buckets, _s=strength):
+            args = steer.feed(args)
             denoised = _call(apply_fn, args)
+            if steer.final(args):
+                return denoised
             ts = args.get("timestep")
             try:
                 sigma = float(ts.max().item()) if ts is not None else None
@@ -5410,8 +5498,8 @@ class FunPackLTXAVSceneChainSampler:
                     return denoised
                 k = _s * float(target.float().norm()) / gn
                 corrected = target + grad * k
-                return torch.cat(
-                    [denoised[..., :off], corrected, denoised[..., off + sz:]], dim=-1)
+                return steer.keep(args, denoised, torch.cat(
+                    [denoised[..., :off], corrected, denoised[..., off + sz:]], dim=-1))
             except Exception as e:
                 try:
                     from .funpack_log import failed
@@ -5426,14 +5514,19 @@ class FunPackLTXAVSceneChainSampler:
     def _build_tsr_wrapper(self, model, k):
         """Decisiveness (tsr.py): scale the noise part of each step's picture prediction.
         Installed first of the scene wrappers, so it calibrates the model's own prediction
-        and every steering wrapper sees the result. Picture rows only."""
+        and every steering wrapper sees the result. Picture rows only. On H3 the change
+        is carried into the next step's input (_InputSteer), never onto the output."""
         old_wrapper = model.model_options.get("model_function_wrapper")
+        steer = _InputSteer(getattr(self, "_is_h3", False), "decisiveness")
 
         def _tsr_wrapper(apply_fn, args):
+            args = steer.feed(args)
             if old_wrapper is not None:
                 denoised = old_wrapper(apply_fn, args)
             else:
                 denoised = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+            if steer.final(args):
+                return denoised
             try:
                 sigma = float(args["timestep"].max())
                 x = args["input"]
@@ -5443,11 +5536,11 @@ class FunPackLTXAVSceneChainSampler:
                     # picture+sound latent whose layout can't be read: leave it alone.
                     if denoised.dim() != 5:
                         return denoised
-                    return _tsr.rescale_x0(x, denoised, sigma, k)
+                    return steer.keep(args, denoised, _tsr.rescale_x0(x, denoised, sigma, k))
                 off, sz, _shape = span
                 video = _tsr.rescale_x0(x[..., off:off + sz], denoised[..., off:off + sz], sigma, k)
-                return torch.cat([denoised[..., :off], video.to(denoised.dtype),
-                                  denoised[..., off + sz:]], dim=-1)
+                return steer.keep(args, denoised, torch.cat(
+                    [denoised[..., :off], video.to(denoised.dtype), denoised[..., off + sz:]], dim=-1))
             except Exception as e:  # noqa: BLE001
                 print(f"[FunPackSceneChain] decisiveness failed ({e}), passing through")
                 return denoised
@@ -5612,14 +5705,19 @@ class FunPackLTXAVSceneChainSampler:
                     weights.append(torch.ones((), device=device))
             return torch.stack(weights)
 
+        steer = _InputSteer(getattr(self, "_is_h3", False), "DynaShift")
+
         def _dynashift_wrapper(apply_fn, args, _s=float(strength), _thr=float(threshold)):
+            args = steer.feed(args)
             denoised = _call(apply_fn, args)
+            if steer.final(args):
+                return denoised
             ts = args.get("timestep")
             try:
                 sigma = float(ts.max().item()) if ts is not None else 1.0
             except Exception:
                 sigma = 1.0
-            ramp = _ramp(sigma)  # same late-step gate as the other wrappers
+            ramp = _ramp(steer.gate_sigma(args, sigma))  # same late-step gate as the other wrappers
             if ramp <= 0.0 or _s <= 0.0:
                 return denoised
             try:
@@ -5657,9 +5755,9 @@ class FunPackLTXAVSceneChainSampler:
                 if not changed:
                     return denoised
                 new_span = new_f.reshape(t, c, h, w).permute(1, 0, 2, 3).reshape(1, 1, sz)
-                return torch.cat([denoised[..., :off],
-                                  new_span.to(denoised.dtype),
-                                  denoised[..., off + sz:]], dim=-1)
+                return steer.keep(args, denoised, torch.cat([denoised[..., :off],
+                                                             new_span.to(denoised.dtype),
+                                                             denoised[..., off + sz:]], dim=-1))
             except Exception as e:
                 print(f"[FunPackSceneChain] dynashift failed ({e}), passing through")
                 return denoised
@@ -5956,7 +6054,10 @@ class FunPackLTXAVSceneChainSampler:
                 return old_wrapper(apply_fn, a)
             return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
 
+        steer = _InputSteer(getattr(self, "_is_h3", False), "score slider")
+
         def _slider_wrapper(apply_fn, args, _fixed=fixed_dir, _bad=bad_fixed, _eta=float(eta)):
+            args = steer.feed(args)
             c = args.get("c") or {}
             cond = c.get("c_crossattn")
             ts = args.get("timestep")
@@ -5964,8 +6065,8 @@ class FunPackLTXAVSceneChainSampler:
                 sigma = float(ts.max().item()) if ts is not None else 1.0
             except Exception:
                 sigma = 1.0
-            ramp = _ramp(sigma)  # base-only warmup early in the schedule
-            if cond is None or _eta == 0.0 or ramp <= 0.0:
+            ramp = _ramp(steer.gate_sigma(args, sigma))  # base-only warmup early in the schedule
+            if cond is None or _eta == 0.0 or ramp <= 0.0 or steer.final(args):
                 return _call(apply_fn, args)
             try:
                 _mapped = resolve_dir(cond)
@@ -6002,7 +6103,7 @@ class FunPackLTXAVSceneChainSampler:
                 vmask = _packed_video_mask(model, args["input"])
                 if vmask is not None and vmask.shape[-1] == delta.shape[-1]:
                     delta = delta * vmask.to(delta.device, delta.dtype)
-                return eps_base + delta
+                return steer.keep(args, eps_base, eps_base + delta)
             except Exception as _e:
                 print(f"[FunPackSceneChain] score_slider failed ({_e}), using base prediction")
                 return _call(apply_fn, args)
@@ -8638,10 +8739,16 @@ class FunPackLTXAVSceneChainSampler:
             # parent copy first and leaves it tracking a dead model ("memory leak with model").
             # The shapes live on the shared base model, which holds no patcher.
             span_source = types.SimpleNamespace(model=patched.model)
+            # On H3 the push rides into the next step's input; the last step, whose answer
+            # is the output, runs no weak copy at all.
+            steer = _InputSteer(getattr(self, "_is_h3", False), "late-branch guidance")
 
-            def _guided(apply_fn, cond_only):
+            def _guided(apply_fn, cond_only, args, final):
                 def _apply(x, t, **c):
                     normal = apply_fn(x, t, **c)
+                    if final:
+                        saved.pop("h", None)
+                        return normal
                     if not cond_only:
                         # A negative-prompt call (CFG above 1): guidance is for the picture
                         # the prompt asks for, and a weak copy here would double the cost.
@@ -8664,18 +8771,19 @@ class FunPackLTXAVSceneChainSampler:
                                             "the latent, nothing guided")
                             return normal
                         stats["guided"] += 1
-                        return _late.mix(normal, weak, _w)
+                        return steer.keep(args, normal, _late.mix(normal, weak, _w))
                     stats["guided"] += 1
                     off, sz, _shape = span
                     video = _late.mix(normal[..., off:off + sz], weak[..., off:off + sz], _w)
-                    return torch.cat([normal[..., :off], video.to(normal.dtype),
-                                      normal[..., off + sz:]], dim=-1)
+                    return steer.keep(args, normal, torch.cat(
+                        [normal[..., :off], video.to(normal.dtype), normal[..., off + sz:]], dim=-1))
                 return _apply
 
             def _late_wrapper(apply_fn, args):
                 # Innermost: every other wrapper sees one guided prediction, not two calls.
+                args = steer.feed(args)
                 cond_only = all(int(i) == 0 for i in (args.get("cond_or_uncond") or [0]))
-                guided = _guided(apply_fn, cond_only)
+                guided = _guided(apply_fn, cond_only, args, steer.final(args))
                 if old_wrapper is not None:
                     return old_wrapper(guided, args)
                 return guided(args["input"], args["timestep"], **args.get("c", {}))
@@ -8684,7 +8792,8 @@ class FunPackLTXAVSceneChainSampler:
                 _late_wrapper, old_wrapper)
             print(f"[FunPackSceneChain] late-branch guidance: strength {_w:.2f}, weak copy "
                   f"skips block {branch} and shares 0-{branch - 1} "
-                  f"(~{100.0 * (len(dit) - branch) / len(dit):.0f}% extra per step), edits the picture (the sound can react).")
+                  f"(~{100.0 * (len(dit) - branch) / len(dit):.0f}% extra per step, none on the last), "
+                  f"edits the picture (the sound can react).")
             return patched, stats
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "late-branch guidance", _e,
@@ -9683,7 +9792,8 @@ class FunPackLTXAVSceneChainSampler:
                 _gated, _total, _peak = _cov
                 print(f"[FunPackSceneChain] steering window: {_gated} of {_total} steps "
                       f"(peak gate {_peak:.2f})"
-                      + (" — read off the schedule's base grid" if self._is_h3 else ""))
+                      + (" — read off the schedule's base grid; each edit goes into the next "
+                         "step's input, the last step is the model's own" if self._is_h3 else ""))
                 if _gated == 0:
                     print("[FunPackSceneChain] steering window: NOTHING will steer on this "
                           "schedule — every rating-driven mechanism is gated off")
