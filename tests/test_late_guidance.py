@@ -143,3 +143,39 @@ def test_strength_learns_from_ratings(monkeypatch, tmp_path):
     assert d.commit("k", -1.0) is None
     assert d.choose("k", "off", 0.5)[0] is None
     assert d.choose("", "learned", 0.5)[0] is None          # no key: off
+
+
+def test_installed_copies_free_without_a_full_gc():
+    """A hook that holds its own ModelPatcher is a cycle: only a full gc frees it, and that
+    clears ComfyUI's weak link to the parent copy first -> "memory leak with model".
+    Real ComfyUI in a subprocess: this suite stubs `comfy`."""
+    import os
+    import subprocess
+    import pytest
+    root = Path(os.environ.get("COMFYUI_DIR", Path.home() / "Documents" / "ComfyUI"))
+    if not (root / "comfy" / "model_patcher.py").exists():
+        pytest.skip("no ComfyUI checkout to test against")
+    code = f"""
+import sys, gc, weakref
+sys.path[:0] = [{str(Path(__file__).resolve().parents[1])!r}, {str(root)!r}]
+import torch, comfy.model_patcher as mp, samplers
+gc.disable()
+class Net(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.blocks = torch.nn.ModuleList([torch.nn.Identity() for _ in range(6)])
+class Base(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.diffusion_model = Net()
+root = mp.ModelPatcher(Base(), torch.device("cpu"), torch.device("cpu"))
+s = samplers.FunPackLTXAVSceneChainSampler()
+for name, install in (("late", lambda m: s._install_late_branch(m, 3, 0.5)[0]),
+                      ("stas", lambda m: s._install_stas(m, 2, 2.0, torch.zeros(1, 24, 2, 4, 6))[0])):
+    p = install(root.clone())
+    ref = weakref.ref(p)
+    del p
+    assert ref() is None, name + " copy is in a reference cycle"
+"""
+    done = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[-2000:]

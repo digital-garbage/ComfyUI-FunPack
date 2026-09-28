@@ -8633,6 +8633,11 @@ class FunPackLTXAVSceneChainSampler:
             old_wrapper = patched.model_options.get("model_function_wrapper")
             _w = float(w)
             stats = {"guided": 0, "why": None}
+            # The wrapper lives in patched.model_options, so it must not hold `patched`: that
+            # cycle is only freed by a full gc, which clears ComfyUI's weak link to the
+            # parent copy first and leaves it tracking a dead model ("memory leak with model").
+            # The shapes live on the shared base model, which holds no patcher.
+            span_source = types.SimpleNamespace(model=patched.model)
 
             def _guided(apply_fn, cond_only):
                 def _apply(x, t, **c):
@@ -8650,7 +8655,7 @@ class FunPackLTXAVSceneChainSampler:
                         weak = apply_fn(x, t, **{**c, "transformer_options": weak_to})
                     finally:
                         saved.pop("h", None)
-                    span = _video_span(patched, normal)
+                    span = _video_span(span_source, normal)
                     if span is None:
                         # A plain 5-D latent is picture only; an unreadable packed one is
                         # left alone rather than guessed at.
