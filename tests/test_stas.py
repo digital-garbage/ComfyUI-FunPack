@@ -95,3 +95,20 @@ def test_unreadable_layout_is_declared(monkeypatch):
     h = torch.randn(30, 8)
     out, _ = _call(patched, h.clone(), step=0, total=7, video_rows=None)
     assert torch.equal(out, h) and "nothing steered" in report()[0] and report()[1] == 0
+
+
+def test_weak_branch_calls_are_steered_but_not_counted(monkeypatch):
+    import samplers
+    import h3_repr_steering as rs
+    monkeypatch.setattr(rs, "video_mask_from_mod_segments",
+                        lambda v, n, d: torch.arange(n) < 12)
+    patched, report = samplers.FunPackLTXAVSceneChainSampler()._install_stas(
+        _Model(), 2, 2.0, torch.zeros(1, 24, 2, 4, 6))
+    hook = patched.model_options["transformer_options"]["patches_replace"]["dit"][("double_block", 2)]
+    sched = torch.linspace(1.0, 0.0, 8)
+    h = torch.randn(20, 64) * 0.1
+    h[:12, 3] = 30.0
+    to = {"sample_sigmas": sched, "sigmas": sched[:1], samplers.WEAK_BRANCH_FLAG: True}
+    out = hook({"img": h.clone(), "mod_segments": None, "transformer_options": to},
+               {"original_block": lambda a: {"img": a["img"]}})["img"]
+    assert float(out[0, 3]) == 60.0 and report()[1] == 0

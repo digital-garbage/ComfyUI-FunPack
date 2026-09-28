@@ -8543,7 +8543,9 @@ class FunPackLTXAVSceneChainSampler:
                         stats["empty"] += 1
                         return {"img": out}
                     _stas.steer(video_rows, rows, dims, peaks, _alpha)
-                    stats["steered"] += 1
+                    # Late-branch's weak copy is steered too (it must differ from the normal
+                    # pass only by its skipped block), but it is not a step of its own.
+                    stats["steered"] += 0 if _in_weak_branch(args) else 1
                     if stats["dims"] is None:
                         stats["dims"] = ", ".join(f"{int(d)} ({float(r):.0f}x)"
                                                   for d, r in zip(dims, ratios))
