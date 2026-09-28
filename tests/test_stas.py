@@ -83,7 +83,7 @@ def test_hook_steers_picture_rows_on_early_steps_only(monkeypatch):
     assert torch.equal(out[17:21], h[17:21])                                    # interior
     late, _ = _call(patched, h.clone(), step=5, total=7, video_rows=None)
     assert torch.equal(late, h)                                                 # past 40%
-    assert "channels 3" in report()
+    assert "channels 3" in report()[0] and report()[1] == 1
 
 
 def test_unreadable_layout_is_declared(monkeypatch):
@@ -94,4 +94,4 @@ def test_unreadable_layout_is_declared(monkeypatch):
         _Model(), 2, 2.0, torch.zeros(1, 24, 2, 4, 6))
     h = torch.randn(30, 8)
     out, _ = _call(patched, h.clone(), step=0, total=7, video_rows=None)
-    assert torch.equal(out, h) and "nothing steered" in report()
+    assert torch.equal(out, h) and "nothing steered" in report()[0] and report()[1] == 0

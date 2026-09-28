@@ -763,9 +763,7 @@ def _get_latent_shapes(model):
     try:
         guider = getattr(model, "inner_model", None)  # CFGGuider
         conds = getattr(guider, "conds", None)
-        if not isinstance(conds, dict):
-            return None
-        for key in ("positive", "negative"):
+        for key in (("positive", "negative") if isinstance(conds, dict) else ()):
             lst = conds.get(key)
             if not lst:
                 continue
@@ -776,8 +774,14 @@ def _get_latent_shapes(model):
                 if val and len(val) > 1:
                     return val
     except Exception:
+        pass
+    # A ModelPatcher (what every model_function_wrapper builder holds) has no inner_model.
+    # CFGGuider.inner_sample publishes the shapes on its BaseModel, which clones share.
+    try:
+        val = getattr(getattr(model, "model", None), "latent_shapes", None)
+        return list(val) if val and len(val) > 1 else None
+    except Exception:
         return None
-    return None
 
 
 def _packed_video_mask(model, x):
@@ -4167,10 +4171,10 @@ class FunPackLTXAVSceneChainSampler:
 
         # Outermost of the block hooks: its weak pass must be able to skip every hook on the
         # shared blocks, and run the tail exactly as the normal pass does.
-        _late_installed = False
+        _late_installed, _late_stats = False, None
         if self._is_h3 and getattr(self, "_late_w", 0.0) > 0.0:
             _model_before_late = model
-            model = self._install_late_branch(model, self._late_block, self._late_w)
+            model, _late_stats = self._install_late_branch(model, self._late_block, self._late_w)
             _late_installed = model is not _model_before_late
 
         _phrase_probe = self._install_phrase_probe(model, positive, latent)
@@ -4194,7 +4198,14 @@ class FunPackLTXAVSceneChainSampler:
                     callback=_progress_cb if pbar is not None else None,
                 )
             if _stas_report is not None:
-                print(f"[FunPackSceneChain] STAS: {_stas_report()}")
+                _line, _n = _stas_report()
+                self._stas_ran = getattr(self, "_stas_ran", 0) + _n
+                print(f"[FunPackSceneChain] STAS: {_line}")
+            if _late_stats is not None:
+                self._late_ran = getattr(self, "_late_ran", 0) + _late_stats["guided"]
+                print("[FunPackSceneChain] late-branch guidance: " + (
+                    f"guided {_late_stats['guided']} step call(s)" if _late_stats["guided"]
+                    else (_late_stats["why"] or "no step call reached it, nothing guided")))
             if _phrase_probe is not None:
                 self._report_phrase_probe(_phrase_probe[1])
                 # The masked probe passes ran through every capture hook too, so this
@@ -8546,14 +8557,15 @@ class FunPackLTXAVSceneChainSampler:
             patched.model_options["transformer_options"] = to
 
             def _report():
+                """-> (log line, steered call count)."""
                 if stats["steered"]:
                     line = (f"alpha {_alpha:.2f} at block {block}: steered {stats['steered']} "
                             f"call(s), channels {stats['dims']}")
                     if stats["empty"]:
                         line += f"; {stats['empty']} call(s) had no massive channel"
-                    return line
+                    return line, stats["steered"]
                 return (stats["why"] or f"no channel at block {block} is over "
-                        f"{_stas.MA_RATIO:.0f}x the mean, nothing steered -- try another block")
+                        f"{_stas.MA_RATIO:.0f}x the mean, nothing steered -- try another block"), 0
 
             print(f"[FunPackSceneChain] STAS: alpha {_alpha:.2f} at block {block}, first "
                   f"{_stas.EARLY_FRACTION:.0%} of steps, frame 0 + frame edges, picture only.")
@@ -8581,7 +8593,7 @@ class FunPackLTXAVSceneChainSampler:
                 _log.failed("FunPackSceneChain", "late-branch guidance",
                             f"block {branch} is not a block of this model",
                             "the run goes on without it")
-                return model
+                return model, None
             patched = model.clone()
             to = patched.model_options.get("transformer_options", {}).copy()
             patches_replace = dict(to.get("patches_replace", {}))
@@ -8618,6 +8630,7 @@ class FunPackLTXAVSceneChainSampler:
 
             old_wrapper = patched.model_options.get("model_function_wrapper")
             _w = float(w)
+            stats = {"guided": 0, "why": None}
 
             def _guided(apply_fn, cond_only):
                 def _apply(x, t, **c):
@@ -8639,7 +8652,13 @@ class FunPackLTXAVSceneChainSampler:
                     if span is None:
                         # A plain 5-D latent is picture only; an unreadable packed one is
                         # left alone rather than guessed at.
-                        return _late.mix(normal, weak, _w) if normal.dim() == 5 else normal
+                        if normal.dim() != 5:
+                            stats["why"] = ("picture and sound could not be told apart in "
+                                            "the latent, nothing guided")
+                            return normal
+                        stats["guided"] += 1
+                        return _late.mix(normal, weak, _w)
+                    stats["guided"] += 1
                     off, sz, _shape = span
                     video = _late.mix(normal[..., off:off + sz], weak[..., off:off + sz], _w)
                     return torch.cat([normal[..., :off], video.to(normal.dtype),
@@ -8659,11 +8678,11 @@ class FunPackLTXAVSceneChainSampler:
             print(f"[FunPackSceneChain] late-branch guidance: strength {_w:.2f}, weak copy "
                   f"skips block {branch} and shares 0-{branch - 1} "
                   f"(~{100.0 * (len(dit) - branch) / len(dit):.0f}% extra per step), picture only.")
-            return patched
+            return patched, stats
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "late-branch guidance", _e,
                         "the run goes on without it")
-            return model
+            return model, None
 
     def _install_block_influence(self, model, capture_holder, n_blocks=50, max_rows=512):
         """MEASUREMENT ONLY (H3). See block_influence.py.
@@ -9582,6 +9601,7 @@ class FunPackLTXAVSceneChainSampler:
         self._tsr_k = 1.0
         self._late_w, self._late_block = 0.0, int(late_guidance_block)
         self._stas_alpha, self._stas_block = None, int(stas_block)
+        self._late_ran, self._stas_ran = 0, 0      # calls the features actually changed
         if (shot_memory != "off" or tsr == "learned" or late_guidance == "learned"
                 or stas == "learned"):
             if not refinement_key_input:
@@ -10866,14 +10886,19 @@ class FunPackLTXAVSceneChainSampler:
                 _tsr.save_pending(refinement_key_input, self._tsr_k)
             else:
                 _tsr.clear_pending(refinement_key_input)
-            if late_guidance == "learned" and self._is_h3:
-                _late.DIAL.save_pending(refinement_key_input, self._late_w)
-            else:
-                _late.DIAL.clear_pending(refinement_key_input)
-            if stas == "learned" and self._stas_alpha is not None:
-                _stas.DIAL.save_pending(refinement_key_input, self._stas_alpha)
-            else:
-                _stas.DIAL.clear_pending(refinement_key_input)
+            # A learned value is only rated when it changed something: a run where the
+            # feature never applied must not teach the dial about the value it drew.
+            for _on, _ran, _dial, _v, _name in (
+                    (late_guidance == "learned", self._late_ran, _late.DIAL, self._late_w,
+                     "late-branch guidance"),
+                    (stas == "learned", self._stas_ran, _stas.DIAL, self._stas_alpha, "STAS")):
+                if _on and _ran and _v is not None:
+                    _dial.save_pending(refinement_key_input, _v)
+                    continue
+                _dial.clear_pending(refinement_key_input)
+                if _on and self._is_h3:
+                    print(f"[FunPackSceneChain] {_name}: did not apply this run, so this "
+                          f"run's rating will not teach its learned strength")
 
         # Trajectory probe: same run/rating pairing as the two above — the rating that scores
         # THIS run appends these per-bucket descriptors to the measurement log.

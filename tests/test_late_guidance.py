@@ -71,7 +71,7 @@ def test_weak_pass_shares_the_head_skips_the_branch_and_pushes_away():
         return extra["original_block"](args)
     base = _Model(net)
     base.model_options["transformer_options"] = {"patches_replace": {"dit": {("double_block", 5): spy}}}
-    patched = samplers.FunPackLTXAVSceneChainSampler()._install_late_branch(base, 3, 0.5)
+    patched = samplers.FunPackLTXAVSceneChainSampler()._install_late_branch(base, 3, 0.5)[0]
     assert patched is not base
 
     x = torch.zeros(1, 2, 1, 2, 2)
@@ -86,24 +86,25 @@ def test_refuses_a_block_the_model_does_not_have():
     import samplers
     base = _Model(_Blocks())
     s = samplers.FunPackLTXAVSceneChainSampler()
-    assert s._install_late_branch(base, 0, 0.5) is base
-    assert s._install_late_branch(base, 6, 0.5) is base
+    assert s._install_late_branch(base, 0, 0.5)[0] is base
+    assert s._install_late_branch(base, 6, 0.5)[0] is base
 
 
 def test_unreadable_packed_latent_is_left_alone(monkeypatch):
     import samplers
     monkeypatch.setattr(samplers, "_video_span", lambda model, x: None)
     net = _Blocks()
-    patched = samplers.FunPackLTXAVSceneChainSampler()._install_late_branch(_Model(net), 3, 0.5)
+    patched, stats = samplers.FunPackLTXAVSceneChainSampler()._install_late_branch(_Model(net), 3, 0.5)
     x = torch.zeros(1, 1, 8)
     assert torch.allclose(_run(patched, net, x), torch.full_like(x, 21.0))
+    assert stats["guided"] == 0 and "nothing guided" in stats["why"]   # said, not silent
 
 
 def test_video_span_only_the_picture_is_guided(monkeypatch):
     import samplers
     monkeypatch.setattr(samplers, "_video_span", lambda model, x: (0, 5, (1, 1, 1, 1, 5)))
     net = _Blocks()
-    patched = samplers.FunPackLTXAVSceneChainSampler()._install_late_branch(_Model(net), 3, 1.0)
+    patched = samplers.FunPackLTXAVSceneChainSampler()._install_late_branch(_Model(net), 3, 1.0)[0]
     out = _run(patched, net, torch.zeros(1, 1, 8))
     assert torch.allclose(out[..., :5], torch.full((1, 1, 5), 25.0))   # 21 + 1*(21-17)
     assert torch.allclose(out[..., 5:], torch.full((1, 1, 3), 21.0))   # sound: normal pass
@@ -113,7 +114,7 @@ def test_negative_prompt_calls_are_not_guided():
     """CFG above 1: the negative call runs once, plain; the prompt call is still guided."""
     import samplers
     net = _Blocks()
-    patched = samplers.FunPackLTXAVSceneChainSampler()._install_late_branch(_Model(net), 3, 0.5)
+    patched = samplers.FunPackLTXAVSceneChainSampler()._install_late_branch(_Model(net), 3, 0.5)[0]
     wrapper = patched.model_options["model_function_wrapper"]
     x = torch.zeros(1, 2, 1, 2, 2)
     c = {"transformer_options": patched.model_options["transformer_options"]}
