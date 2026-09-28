@@ -2088,7 +2088,8 @@ if web is not None and PromptServer is not None:
             limit = int(req.query.get("limit", "600"))
         except (TypeError, ValueError):
             limit = 600
-        return web.json_response({"lines": bridge.recent_log(limit)})
+        lines = bridge.recent_log(limit)
+        return web.json_response({"lines": lines, "levels": bridge.log_levels(lines)})
 
     @routes.post(UI_PREFIX + "/api/interrupt")
     async def _interrupt(_req):

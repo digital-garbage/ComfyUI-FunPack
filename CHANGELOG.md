@@ -9,6 +9,13 @@
   No extra model call; sound untouched.
 - **Decisiveness** (experimental, Temporal Score Rescaling): above 1 commits harder, below 1
   varies more. Learned from ratings or set by hand. Picture only, no extra model call.
+- **Coloured logs**: red errors, orange warnings, green successes, in the terminal (FunPack's
+  lines; `FUNPACK_LOG_COLOR=1/0` forces) and in the Editor's Log panel. The panel now also
+  shows ComfyUI's own logging output, node crashes included.
+
+### Changed
+
+- The harmless `set_mempolicy: Operation not permitted` line from ffmpeg is hidden (said once).
 
 ## [4.0.0] "Blinding Blackout" - 2026-08-27
 

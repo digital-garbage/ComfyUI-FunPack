@@ -155,3 +155,114 @@ def test_progress_carries_the_live_enhanced_rewrite(monkeypatch):
     assert got == {"prompt_id": "p1", "items": [{"after": "A cat in the rain."}]}
     monkeypatch.setattr(_sys, "_funpack_run_phase", {"label": "", "seq": 1}, raising=False)
     assert bridge.current_progress()["enhanced"] is None
+
+
+def test_log_levels_read_what_a_line_says():
+    lines = ["[FunPackSceneChain] dynashift failed (x), passing through",
+             "Traceback (most recent call last):",
+             '  File "samplers.py", line 3, in f',
+             "[FunPack] Region locks: Inactive | This model is not MiniMax H3",
+             "[FunPack] Region locks: Active",
+             "Prompt executed in 12.3 seconds",
+             "[FunPackSceneChain] scene 1/2 sampling",
+             "ImportError: cannot import name 'x' from 'y'",
+             "No OpenGL_accelerate module loaded: No module named 'OpenGL_accelerate'"]
+    assert bridge.log_levels(lines) == ["error", "error", "error", "warn", "ok", "ok", "info",
+                                        "error", "warn"]
+
+
+def test_terminal_colours_only_funpack_lines_and_the_buffer_stays_plain():
+    import io
+    out = io.StringIO()
+    tee = bridge._Tee(out, color=True)
+    before = len(bridge._LOG)
+    tee.write("[FunPack] thing failed")
+    tee.write("\n")
+    tee.write("some other pack: error\n")
+    tee.write("[FunPack] scene 1/2 sampling\n")
+    assert out.getvalue() == ("\x1b[91m[FunPack] thing failed\x1b[0m\n"
+                              "some other pack: error\n[FunPack] scene 1/2 sampling\n")
+    assert list(bridge._LOG)[before:] == ["[FunPack] thing failed", "some other pack: error",
+                                          "[FunPack] scene 1/2 sampling"]
+    plain = io.StringIO()
+    bridge._Tee(plain).write("[FunPack] thing failed")
+    assert plain.getvalue() == "[FunPack] thing failed"
+
+
+def test_colour_codes_in_comfyuis_log_file_never_reach_the_panel(logfile):
+    logfile.write_text("\x1b[91m[FunPack] boom failed\x1b[0m\n")
+    assert bridge.recent_log(10)[-1] == "[FunPack] boom failed"
+
+
+def test_other_packs_colour_codes_are_stripped_for_the_panel(logfile):
+    with bridge._LOG_LOCK:
+        bridge._LOG.append("[VideoHelperSuite] - \x1b[0;33mWARNING\x1b[0m - x")
+    assert bridge.recent_log(5)[-1] == "[VideoHelperSuite] - WARNING - x"
+
+
+def test_plural_and_ing_forms_keep_their_colour():
+    assert [bridge.log_level(x) for x in (
+        "errors occurred while loading", "3 exceptions were raised", "multiple crashes",
+        "some warnings were shown", "the load fails silently", "3 attempts fail before success",
+        "skipping scene 2", "10 rated gens, all good", "[CRITICAL] disk full")] == [
+        "error", "error", "error", "warn", "error", "error", "warn", "info", "error"]
+
+
+def test_a_funpack_line_after_a_newline_is_still_coloured():
+    assert bridge._paint("\n[FunPack] x failed\n") == "\x1b[91m\n[FunPack] x failed\n\x1b[0m"
+    assert bridge._paint("\n[FunPack] Restarting ComfyUI...\n") == "\n[FunPack] Restarting ComfyUI...\n"
+
+
+def test_colour_switch(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FUNPACK_LOG_COLOR", "1")
+    assert bridge._color_wanted()
+    monkeypatch.setenv("FUNPACK_LOG_COLOR", "0")
+    assert not bridge._color_wanted()
+    monkeypatch.delenv("FUNPACK_LOG_COLOR")
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert not bridge._color_wanted()
+
+
+def test_set_mempolicy_noise_is_dropped_and_said_once(monkeypatch):
+    import io
+    monkeypatch.setattr(bridge, "_noise_said", False)
+    out = io.StringIO()
+    tee = bridge._Tee(out)
+    before = len(bridge._LOG)
+    tee.write("set_mempolicy: Operation not permitted\nframe=  24 fps=0.0\n"
+              "set_mempolicy: Operation not permitted\n")
+    tee.write("set_mempolicy: Operation not permitted\n")
+    text = out.getvalue()
+    assert "set_mempolicy: Operation not permitted\n" not in text.replace('"set_mempolicy: Operation not permitted" lines', "")
+    assert "frame=  24 fps=0.0" in text and text.count("Hiding") == 1
+    assert not any(l.startswith("set_mempolicy") for l in list(bridge._LOG)[before:])
+
+
+def test_logging_output_reaches_the_panel_buffer(logfile):
+    import logging
+    handler = bridge._LogToBuffer()
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError:
+        record = logging.getLogger("t").makeRecord(
+            "t", logging.ERROR, __file__, 1, "!!! Exception during processing !!!", None,
+            __import__("sys").exc_info())
+    handler.emit(record)
+    lines = bridge.recent_log(50)
+    assert lines[0] == "[ERROR] !!! Exception during processing !!!"
+    assert lines[-1] == "RuntimeError: boom"
+    assert set(bridge.log_levels(lines)) == {"error"}
+
+
+def test_the_seam_ignores_a_logging_level_tag(logfile):
+    logfile.write_text("old line\nPrompt executed in 3.1 seconds\n")
+    with bridge._LOG_LOCK:
+        bridge._LOG.append("[INFO] Prompt executed in 3.1 seconds")
+    assert bridge.recent_log(10) == ["old line", "[INFO] Prompt executed in 3.1 seconds"]
+
+
+def test_a_traceback_is_red_through_its_closing_line():
+    lines = ["[FunPack][movie] x failed:", "Traceback (most recent call last):",
+             '  File "a.py", line 1, in f', "KeyboardInterrupt", "next unrelated line"]
+    assert bridge.log_levels(lines) == ["error", "error", "error", "error", "info"]

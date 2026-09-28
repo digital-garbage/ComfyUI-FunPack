@@ -215,21 +215,113 @@ def validate_generation_prompt(full, target) -> dict:
 # Tee stdout/stderr into a ring buffer so the editor can show ComfyUI's real backend
 # log (writes still pass through to the terminal). Captures print() and logging.
 import collections as _collections
+import logging
 import threading as _threading
 
 _LOG = _collections.deque(maxlen=5000)
 _LOG_LOCK = _threading.Lock()
 _log_installed = False
 
+# Log levels by what a line SAYS. One classifier for both the terminal colours and the
+# Editor's Log panel, so the two never disagree.
+# ponytail: keyword guess over ~600 existing prints; an explicit level per call would be exact.
+import re as _re
+_ANSI = _re.compile(r"\x1b\[[0-9;]*m")
+_ERROR = _re.compile(r"\b(fail(s|ed|ing|ures?)?|\w*errors?|\w*exceptions?|traceback|crash(es|ed)?|"
+                     r"refused|out of memory|nan|critical|fatal)\b", _re.I)
+_WARN = _re.compile(r"\b(warn(s|ing|ings)?|skip(s|ped|ping)?|inactive|disabled|not ready|could not|"
+                    r"cannot|can't|missing|ignor(ed|ing)|fallback|falling back|stripped|leaked|"
+                    r"deprecated|no module named)\b", _re.I)
+_OK = _re.compile(r"\b(active|done|saved|recorded|updated|loaded|finished|completed?|success(ful|fully)?|"
+                  r"succeeded|prompt executed|installed|applied)\b", _re.I)
+# White (info) is the terminal's own colour, so it gets no code.
+_TERM = {"error": "\x1b[91m", "warn": "\x1b[38;5;208m", "ok": "\x1b[92m"}
+
+
+def log_level(line: str) -> str:
+    """"error" | "warn" | "ok" | "info" for one log line."""
+    for level, pattern in (("error", _ERROR), ("warn", _WARN), ("ok", _OK)):
+        if pattern.search(line):
+            return level
+    return "info"
+
+
+_EXC_LINE = _re.compile(r"[A-Za-z_][\w.]*(:|$)")
+
+
+def log_levels(lines: list) -> list:
+    """Levels for consecutive lines. A traceback's indented body stays red with its head."""
+    out, prev, in_tb = [], "info", False
+    for line in lines:
+        level = log_level(line)
+        indented = line[:1] in (" ", "\t", "^")
+        if in_tb and not indented:
+            in_tb = False
+            if _EXC_LINE.match(line):
+                level = "error"                    # the exception line closes a traceback
+        elif level == "info" and prev == "error" and indented:
+            level = "error"
+        if "Traceback (most recent call last)" in line:
+            in_tb = True
+        out.append(level)
+        prev = level
+    return out
+
+
+def _color_wanted() -> bool:
+    import os
+    forced = os.environ.get("FUNPACK_LOG_COLOR", "").strip().lower()
+    if forced in ("1", "on", "true", "yes"):
+        return True
+    if forced in ("0", "off", "false", "no") or "NO_COLOR" in os.environ:
+        return False
+    try:
+        return bool(sys.__stdout__.isatty())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _paint(s):
+    """FunPack's own lines coloured for a terminal. Other packs' output is left as written."""
+    if not isinstance(s, str) or not s.lstrip().startswith("[FunPack"):
+        return s
+    code = _TERM.get(log_level(s))
+    return f"{code}{s}\x1b[0m" if code else s
+
+
+# Lines other software prints that say nothing actionable, dropped before the terminal and
+# the panel. set_mempolicy: libnuma inside ffmpeg's encoder (VHS prints ffmpeg's stderr) on
+# a container that may not pin memory. Harmless, once per video.
+_NOISE = ("set_mempolicy: Operation not permitted",)
+_noise_said = False
+
+
+def _quiet(s):
+    """`s` without its noise lines; the first time any is dropped, say so once."""
+    global _noise_said
+    if not isinstance(s, str) or not any(n in s for n in _NOISE):
+        return s
+    kept = "".join(l for l in s.splitlines(keepends=True) if not any(n in l for n in _NOISE))
+    if not _noise_said:
+        _noise_said = True
+        kept += ("[FunPack] Hiding \"set_mempolicy: Operation not permitted\" lines: "
+                 "ffmpeg on this machine may not pin memory, which is harmless\n")
+    return kept
+
 
 class _Tee:
-    def __init__(self, orig):
+    def __init__(self, orig, color=False):
         self._orig = orig
         self._buf = ""
+        self._color = color
 
     def write(self, s):
+        n = len(s) if isinstance(s, str) else 0
+        s = _quiet(s)
+        if not s:
+            return n
         try:
-            self._orig.write(s)
+            self._orig.write(_paint(s) if self._color else s)
         except Exception:
             pass
         try:
@@ -240,7 +332,7 @@ class _Tee:
                     _LOG.append(line)
         except Exception:
             pass
-        return len(s) if isinstance(s, str) else 0
+        return n
 
     def flush(self):
         try:
@@ -252,15 +344,38 @@ class _Tee:
         return getattr(self._orig, name)
 
 
+class _LogToBuffer(logging.Handler):
+    """logging records into the panel's buffer, formatted as ComfyUI's console shows them."""
+
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+
+    def emit(self, record):
+        try:
+            text = _quiet(self.format(record))
+            with _LOG_LOCK:
+                _LOG.extend(text.splitlines())
+        except Exception:  # noqa: BLE001 -- a log line must never raise
+            pass
+
+
 def install_log_capture():
     global _log_installed
     if _log_installed:
         return
     import sys
     try:
-        sys.stdout = _Tee(sys.stdout)
-        sys.stderr = _Tee(sys.stderr)
+        color = _color_wanted()
+        sys.stdout = _Tee(sys.stdout, color)
+        sys.stderr = _Tee(sys.stderr, color)
+        # ComfyUI's logging handlers were bound to the streams before this tee existed, so
+        # logging output (a node's crash included) never passes through it. Collect it here.
+        logging.getLogger().addHandler(_LogToBuffer())
         _log_installed = True
+        if not color:
+            print("[FunPack] Terminal log colours off: output is not a terminal "
+                  "(set FUNPACK_LOG_COLOR=1 to force them on)")
     except Exception:
         pass
 
@@ -302,7 +417,7 @@ def _log_file_tail(limit: int) -> list:
             if size > _LOG_FILE_MAX_BYTES:
                 fh.seek(size - _LOG_FILE_MAX_BYTES)
                 fh.readline()           # drop the partial first line
-            lines = fh.read().decode("utf-8", errors="replace").splitlines()
+            lines = _ANSI.sub("", fh.read().decode("utf-8", errors="replace")).splitlines()
     except Exception:  # noqa: BLE001
         lines = []
     _LOG_FILE_CACHE["at"] = now
@@ -321,7 +436,7 @@ def recent_log(limit: int = 500) -> list:
     """
     limit = int(limit)
     with _LOG_LOCK:
-        live = list(_LOG)[-limit:]
+        live = [_ANSI.sub("", line) for line in list(_LOG)[-limit:]]
     if len(live) >= limit:
         return live
     older = _log_file_tail(limit - len(live))
@@ -331,7 +446,8 @@ def recent_log(limit: int = 500) -> list:
         return older
     # The file also contains what is in the buffer. Cut the overlap so the panel does not
     # show the same lines twice across the seam.
-    first = live[0]
+    # A logging line carries its "[LEVEL] " tag here but not in the file.
+    first = _re.sub(r"^\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\] ", "", live[0])
     for i in range(len(older) - 1, -1, -1):
         if older[i].endswith(first):
             older = older[:i]

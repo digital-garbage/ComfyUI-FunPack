@@ -19,7 +19,7 @@
   panel.append(head, bodyEl);
   document.body.append(panel);
 
-  let timer = null, autoscroll = true, lastText = "", isFrozen = false, isManuallyPaused = false, pendingText = null;
+  let timer = null, autoscroll = true, lastText = "", lastLevels = [], isFrozen = false, isManuallyPaused = false, pendingText = null;
   // Set when a poll fails. Held so the panel keeps the last lines the server managed to send
   // instead of replacing them with the error that means the server is gone.
   let disconnected = false;
@@ -63,6 +63,7 @@
 
       // Update is safe to apply.
       lastText = newText;
+      lastLevels = r.levels || [];
       render(newText);
       if (isFrozen) {
         isFrozen = false;
@@ -85,8 +86,19 @@
 
   // The body is the last good log plus an optional trailing note. `lastText` stays the log
   // ALONE, so Copy hands over the log rather than the log plus our commentary.
+  // One span per line, coloured by the level the backend gave it (info stays plain).
   function render(text, note) {
-    bodyEl.textContent = text + (note || "");
+    const lines = text.split("\n");
+    const frag = document.createDocumentFragment();
+    lines.forEach((line, i) => {
+      const span = document.createElement("span");
+      const level = lastLevels[i];
+      if (level && level !== "info") span.className = "log-" + level;
+      span.textContent = i < lines.length - 1 ? line + "\n" : line;
+      frag.append(span);
+    });
+    if (note) frag.append(document.createTextNode(note));
+    bodyEl.replaceChildren(frag);
     if (autoscroll) bodyEl.scrollTop = bodyEl.scrollHeight;
   }
 

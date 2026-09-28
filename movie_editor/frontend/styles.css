@@ -411,7 +411,10 @@ a.brand:hover .brand-sub { color: var(--accent-hi); }
 .log-actions { display: flex; gap: 6px; align-items: center; }
 .log-freeze-indicator { font-family: var(--font-ui); font-size: 10px; color: var(--faint); white-space: nowrap; }
 .log-body { flex: 1; margin: 0; padding: 8px 10px; overflow: auto; white-space: pre-wrap; word-break: break-word;
-  font-family: var(--font-ui); font-size: 11px; line-height: 1.45; color: var(--muted); background: var(--ink-void); }
+  font-family: var(--font-ui); font-size: 11px; line-height: 1.45; color: var(--text); background: var(--ink-void); }
+.log-body .log-error { color: var(--danger); }
+.log-body .log-warn { color: var(--warn); }
+.log-body .log-ok { color: var(--good); }
 
 /* ──────────── WORKSPACE — OpenCut-style NLE: Assets | Preview | Properties / Timeline ──────────── */
 /* (layout borrowed from OpenCut: three resizable columns over a full-width timeline) */
