@@ -48,6 +48,7 @@ if __package__:
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     from .templates import FunPackRefinementKeyLoader
+    from .video_upscale import FunPackUpscaleVideo
     try:
         from . import batch_training  # noqa: F401  registers /funpack/batch/* routes
     except Exception as _e:
@@ -104,6 +105,10 @@ else:
         from templates import FunPackRefinementKeyLoader
     except Exception:
         FunPackRefinementKeyLoader = None
+    try:
+        from video_upscale import FunPackUpscaleVideo
+    except Exception:
+        FunPackUpscaleVideo = None
 
 WEB_DIRECTORY = "./web"
 
@@ -132,6 +137,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackCLIPLoader": FunPackCLIPLoader,
     "FunPackVAELoader": FunPackVAELoader,
     "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
+    "FunPackUpscaleVideo": FunPackUpscaleVideo,
 }
 NODE_CLASS_MAPPINGS = {name: cls for name, cls in NODE_CLASS_MAPPINGS.items() if cls is not None}
 
@@ -160,6 +166,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCLIPLoader": "FunPack CLIP Loader",
     "FunPackVAELoader": "FunPack VAE Loader",
     "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
+    "FunPackUpscaleVideo": "FunPack Upscale Video",
 }
 
 __all__ = [

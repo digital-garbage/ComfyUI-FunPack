@@ -4,6 +4,9 @@
 
 ### Added
 
+- **Upscale finished renders** (Settings ▸ Editor): run a `models/upscale_models` model over a
+  finished video, keeping its fps and sound; the result replaces the render. Never, always, or
+  on demand with the Upscale button beside the rating.
 - **Shot memory** (experimental, Chain Sampler ▸ Guidance): new gens can reuse the layout of
   a liked gen with fresh details. Ratings learn when to reuse, which shot and how strongly.
   No extra model call.

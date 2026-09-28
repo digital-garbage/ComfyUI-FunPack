@@ -1791,9 +1791,18 @@
     // it without making the user click it first.
     const scenes = p?.scenes || [];
     const sceneId = st.selectedSceneId || (scenes.length === 1 ? scenes[0].id : null);
-    if (!studioOn || !sceneId || !hasRender(st, sceneId) || !Picker) return wrap;
+    if (!sceneId || !hasRender(st, sceneId)) return wrap;
     const sc = S.scene(sceneId);
     if (!sc || !S.isGenerativeScene(sc)) return wrap;
+    if (S.getEditorSetting("upscaleMode") === "button") {
+      const busy = S.isUpscaling(sceneId);
+      const up = el("button", "btn ghost tiny tl-upscale-btn", busy ? "Upscaling…" : "Upscale");
+      up.title = "Upscale this video with the model picked in Settings ▸ Editor; it replaces the render";
+      up.disabled = busy;
+      up.onclick = (e) => { e.stopPropagation(); S.upscaleRender(sceneId); };
+      wrap.append(up);
+    }
+    if (!studioOn || !Picker) return wrap;
     const sceneNo = p.scenes.indexOf(sc) + 1;
     const raw = sceneRatingRaw(st, sc);
     const rlabel = el("span", "tl-keys", `Scene ${sceneNo}`);
@@ -1806,8 +1815,7 @@
         S.setSceneRating(sc.id, val);
       }, { h3: !!window.PipelineCaps?.isH3(st) });
     };
-    wrap.append(rlabel);
-    wrap.append(btn);
+    wrap.prepend(rlabel, btn);
     return wrap;
   }
 

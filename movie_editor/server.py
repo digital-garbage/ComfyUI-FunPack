@@ -2071,6 +2071,32 @@ if web is not None and PromptServer is not None:
             running = True
         return web.json_response({"state": "running" if running else "pending", "media": []})
 
+    @routes.get(UI_PREFIX + "/api/upscale_models")
+    async def _upscale_models(_req):
+        try:
+            import folder_paths
+            return web.json_response({"models": folder_paths.get_filename_list("upscale_models")})
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"models": [], "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/projects/{pid}/upscale")
+    async def _upscale(req):
+        """Queue FunPackUpscaleVideo on one finished render; poll /status like a generation."""
+        _project_or_404(req.match_info["pid"])
+        body = await req.json() if req.can_read_body else {}
+        media, model = body.get("media") or {}, body.get("model") or ""
+        if not media.get("filename") or not model:
+            raise web.HTTPBadRequest(reason="pick an upscale model and a rendered video")
+        graph = {"1": {"class_type": "FunPackUpscaleVideo", "inputs": {
+            "filename": media["filename"], "subfolder": media.get("subfolder") or "",
+            "type": "temp" if media.get("type") == "temp" else "output",
+            "upscale_model": model}}}
+        try:
+            data = await bridge.queue_prompt(graph)
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": bridge.format_funpack_error(e)}, status=502)
+        return web.json_response({"prompt_id": data.get("prompt_id")})
+
     @routes.get(UI_PREFIX + "/api/rating-labels")
     async def _rating_labels(_req):
         try:

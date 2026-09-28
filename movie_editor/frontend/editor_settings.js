@@ -213,6 +213,33 @@
     return row;
   }
 
+  // Post-render upscale: a models/upscale_models model run over a finished render, which it
+  // then replaces. Always = every render when it finishes; button = "Upscale" beside the rating.
+  function upscaleSection() {
+    const wrap = el("div", "es-section");
+    wrap.append(el("div", "es-section-title", "Upscale finished renders"));
+    wrap.append(el("div", "es-hint",
+      "Runs an upscale model over a finished video and replaces the render with the result. "
+      + "Models come from ComfyUI/models/upscale_models."));
+    const mode = el("select");
+    [["never", "Never"], ["button", "When I press Upscale (beside the rating)"], ["always", "Always, when a render finishes"]]
+      .forEach(([v, t]) => mode.append(new Option(t, v, false, (S.getEditorSetting("upscaleMode") || "never") === v)));
+    mode.onchange = () => S.setEditorSetting("upscaleMode", mode.value);
+    wrap.append(labeled("Upscale", mode));
+    const model = el("select");
+    model.append(new Option("Loading…", ""));
+    wrap.append(labeled("Model", model));
+    API.upscaleModels().then((r) => {
+      const list = (r && r.models) || [];
+      const cur = S.getEditorSetting("upscaleModel") || "";
+      model.replaceChildren(new Option(list.length ? "— pick a model —" : "Nothing in models/upscale_models", ""));
+      list.forEach((m) => model.append(new Option(m, m, false, m === cur)));
+      if (cur && !list.includes(cur)) model.append(new Option(`${cur} (missing)`, cur, false, true));
+    }).catch(() => model.replaceChildren(new Option("Could not list models", "")));
+    model.onchange = () => S.setEditorSetting("upscaleModel", model.value);
+    return wrap;
+  }
+
   function mount(body) {
     const content = el("div", "es-content");
     content.append(toggleRow(
@@ -229,13 +256,14 @@
       "anchorEnabled"));
     content.append(revolverSection());
     content.append(anchorGuideSection());
+    content.append(upscaleSection());
     body.append(content);
   }
 
   window.SettingsWindow.register({
     id: "editor", group: "", title: "Editor",
     subtitle: "How the editor behaves. The open project remembers these, so they follow it to another machine.",
-    keywords: "autocomplete anchor prompt shortcuts ideas suggestions i2v bypass guide preferences revolver random replacements cycle",
+    keywords: "upscale upscaler esrgan resolution autocomplete anchor prompt shortcuts ideas suggestions i2v bypass guide preferences revolver random replacements cycle",
     iconBg: "linear-gradient(180deg,#6aa9ff,#3b6fd9)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="6" cy="4.5" r="1.7" fill="#fff" stroke="none"/><circle cx="11" cy="8" r="1.7" fill="#fff" stroke="none"/><circle cx="5" cy="11.5" r="1.7" fill="#fff" stroke="none"/></svg>',
     mount,

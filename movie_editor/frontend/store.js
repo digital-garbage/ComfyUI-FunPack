@@ -3464,6 +3464,67 @@
     }
   }
 
+  // Post-render upscale (video_upscale.py): one ComfyUI job per file, then the upscaled file
+  // replaces the original under every scene and ghost that plays it (a chain run is one file).
+  const _upscaling = new Set();
+  function _sameMedia(a, b) {
+    return !!(a && b && a.filename === b.filename && (a.subfolder || "") === (b.subfolder || "")
+      && (a.type || "output") === (b.type || "output"));
+  }
+  function _swapRenderMedia(from, to) {
+    let n = 0;
+    for (const id of Object.keys(state.sceneRenders || {})) {
+      const r = state.sceneRenders[id];
+      if (r && _sameMedia(r.media, from)) { state.sceneRenders[id] = { ...r, media: to }; n++; }
+    }
+    state.sceneGhosts = (state.sceneGhosts || []).map((g) => (_sameMedia(g.media, from) ? { ...g, media: to } : g));
+    if (n) { _validateRendersToken++; _syncEditorStateToProject(); scheduleSaveSilent(); }
+    return n;
+  }
+  async function upscaleMedia(media) {
+    const model = getEditorSetting("upscaleModel");
+    if (!media || !media.filename) return;
+    if (!model) {
+      set({ notice: "Upscale: pick a model in Settings ▸ Editor ▸ Upscale finished renders." });
+      return;
+    }
+    const key = `${media.type || "output"}/${media.subfolder || ""}/${media.filename}`;
+    const pid = state.project && state.project.id;
+    if (!pid || _upscaling.has(key)) return;
+    _upscaling.add(key);
+    set({ notice: `Upscaling with ${model}…` });
+    let notice = "";
+    try {
+      const { prompt_id: promptId } = await API.upscale(pid, media, model);
+      for (;;) {
+        await new Promise((res) => setTimeout(res, 2000));
+        const s = await API.status(pid, promptId);
+        if (s.state === "error") throw new Error(s.error || "stopped or failed inside ComfyUI");
+        if (s.state !== "completed") continue;
+        const out = (s.media || []).find((m) => m.kind === "videos");
+        if (!out) throw new Error(s.error || "no video came out, check the ComfyUI terminal");
+        if (state.project && state.project.id === pid && !_swapRenderMedia(media, out)) {
+          notice = "Upscaled, but that render was replaced meanwhile, so nothing was swapped.";
+        }
+        break;
+      }
+    } catch (e) {
+      notice = `Upscale failed: ${e && e.message ? e.message : e}`;
+    } finally {
+      _upscaling.delete(key);
+      set({ notice });
+    }
+  }
+  function upscaleRender(sceneId) {
+    const r = (state.sceneRenders || {})[sceneId];
+    return upscaleMedia(r && r.media);
+  }
+  function isUpscaling(sceneId) {
+    const r = (state.sceneRenders || {})[sceneId];
+    const m = r && r.media;
+    return !!(m && _upscaling.has(`${m.type || "output"}/${m.subfolder || ""}/${m.filename}`));
+  }
+
   // Poll a single queued prompt to completion. Resolves true on success, false on error.
   function _pollPromise(promptId, targetSceneIds, prefix) {
     prefix = prefix || "Generating…";
@@ -3522,6 +3583,9 @@
             _clearGenTimers();
             _recordSegment(s.media, targetSceneIds, { sceneLayout: s.scene_layout });
             set({ gen: { state: "done", promptId, media: s.media, msg: s.media.length ? "" : "Completed but no output media found — check ComfyUI terminal." } });
+            if (getEditorSetting("upscaleMode") === "always") {
+              upscaleMedia((s.media || []).find((m) => m.kind === "videos" || m.kind === "gifs"));
+            }
             resolve(true);
           } else {
             // "pending" after "running" means the job left the queue without a history
@@ -4739,6 +4803,8 @@
   });
 
   window.Store = {
+    upscaleRender,
+    isUpscaling,
     get, set, subscribe, notify, init,
     scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,

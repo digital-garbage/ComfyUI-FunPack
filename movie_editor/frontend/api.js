@@ -185,6 +185,8 @@
     generate: (id, onlyScene, sceneIds, resetSession, nodeOverrides, prevSceneMedia, project) =>
       j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession, node_overrides: nodeOverrides || null, simple: !!window.FunPackMode?.isSimple(), prev_scene_media: prevSceneMedia || null, project: project || null }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
+    upscaleModels: () => j("GET", API("/upscale_models")),
+    upscale: (id, media, model) => j("POST", API(`/projects/${id}/upscale`), { media, model }),
     progress: () => j("GET", API("/progress")),
     // The editor's own in-flight generation, recovered from ComfyUI's queue (survives a UI reload).
     active: () => j("GET", API("/active")),
