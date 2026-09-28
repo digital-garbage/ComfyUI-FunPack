@@ -19,8 +19,12 @@ import comfy.utils
 
 try:
     from . import funpack_log as _log
+    from . import shot_memory as _shot_memory
+    from . import tsr as _tsr
 except ImportError:  # flat import when ComfyUI loads the pack as a top-level module
     import funpack_log as _log
+    import shot_memory as _shot_memory
+    import tsr as _tsr
 
 
 MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
@@ -843,6 +847,15 @@ def _video_span(model, x):
         return sum(sizes[:video_idx]), sizes[video_idx], tuple(shapes[video_idx])
     except Exception:
         return None
+
+
+def _raw_cond(positive):
+    """The raw text conditioning tensor of a CONDITIONING list, or None."""
+    try:
+        cond = positive[0][0]
+    except (TypeError, IndexError, KeyError):
+        return None
+    return cond if isinstance(cond, torch.Tensor) else None
 
 
 # Per-scene model_function_wrappers (embed guidance / score slider / output guidance /
@@ -3149,6 +3162,22 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "Allow when REINS/Q-steer are active. Off (default): shadow negative replaces EVERY block's forward outright, which also stops REINS/Q-steer/block-repeat/attn_temperature/av_decouple from capturing or steering on the blocks they use -- ratings made while shadow negative is on will not train them. On: shadow negative skips whichever block(s) those mechanisms already claimed, leaving them free to keep capturing/steering there, and only applies its own push to the rest. Not true mathematical composition -- no single block ever runs both at once, they simply stop overwriting each other. No effect when h3_shadow_negative is off.",
                 }),
+                "shot_memory": (list(_shot_memory.MODES), {
+                    "default": "off",
+                    "tooltip": "EXPERIMENTAL. The starting noise remembers shots you liked: a new run may reuse a liked shot's layout with fresh details, or start fresh. Whether to reuse, which shot and how strongly are all learned from ratings. learned = all three learned; manual = strength fixed below. Needs refinement_key_input. No extra model call; sound untouched.",
+                }),
+                "shot_memory_amount": ("FLOAT", {
+                    "default": 0.7, "min": 0.0, "max": 0.95, "step": 0.05,
+                    "tooltip": "manual mode only: how much of the liked shot's layout to keep. 0 = none, 0.95 = nearly the same layout.",
+                }),
+                "tsr": (list(_tsr.MODES), {
+                    "default": "off",
+                    "tooltip": "EXPERIMENTAL decisiveness (Temporal Score Rescaling, arXiv 2510.01184). Above 1 the model commits harder and varies less; below 1 it varies more. learned = each run tries a nearby value and ratings move it; manual = fixed below. Picture only, no extra model call.",
+                }),
+                "tsr_k": ("FLOAT", {
+                    "default": 1.0, "min": 0.5, "max": 2.0, "step": 0.01,
+                    "tooltip": "manual mode only. 1.0 = off.",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -3924,6 +3953,8 @@ class FunPackLTXAVSceneChainSampler:
         samples = latent["samples"]
         self._assert_finite_inputs(samples, sigmas)
         noise = comfy.sample.prepare_noise(samples, int(seed))
+        if getattr(self, "_shot_memory", None) is not None:
+            noise = self._shot_memory.shape(noise, samples, _raw_cond(positive), record=True)
 
         def _progress_cb(step, _denoised, _x, _total_steps):
             if pbar is not None:
@@ -5031,6 +5062,8 @@ class FunPackLTXAVSceneChainSampler:
                 model.model_options["model_function_wrapper"] = _tag_scene_wrapper(
                     _observe_wrapper, old_wrapper)
                 cand_noise = comfy.sample.prepare_noise(samples, cand_seed)
+                if getattr(self, "_shot_memory", None) is not None:
+                    cand_noise = self._shot_memory.shape(cand_noise, samples, _raw_cond(positive))
                 comfy.sample.sample_custom(
                     model, cand_noise, float(cfg), sampler, probe_sigmas, positive, negative,
                     samples, noise_mask=probe_latent.get("noise_mask"), seed=cand_seed,
@@ -5304,6 +5337,38 @@ class FunPackLTXAVSceneChainSampler:
                 return denoised
 
         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_guided, old_wrapper)
+        return old_wrapper
+
+    def _build_tsr_wrapper(self, model, k):
+        """Decisiveness (tsr.py): scale the noise part of each step's picture prediction.
+        Installed first of the scene wrappers, so it calibrates the model's own prediction
+        and every steering wrapper sees the result. Picture rows only."""
+        old_wrapper = model.model_options.get("model_function_wrapper")
+
+        def _tsr_wrapper(apply_fn, args):
+            if old_wrapper is not None:
+                denoised = old_wrapper(apply_fn, args)
+            else:
+                denoised = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+            try:
+                sigma = float(args["timestep"].max())
+                x = args["input"]
+                span = _video_span(model, denoised)
+                if span is None:
+                    # A plain 5-D latent is picture only. Anything else is a packed
+                    # picture+sound latent whose layout can't be read: leave it alone.
+                    if denoised.dim() != 5:
+                        return denoised
+                    return _tsr.rescale_x0(x, denoised, sigma, k)
+                off, sz, _shape = span
+                video = _tsr.rescale_x0(x[..., off:off + sz], denoised[..., off:off + sz], sigma, k)
+                return torch.cat([denoised[..., :off], video.to(denoised.dtype),
+                                  denoised[..., off + sz:]], dim=-1)
+            except Exception as e:  # noqa: BLE001
+                print(f"[FunPackSceneChain] decisiveness failed ({e}), passing through")
+                return denoised
+
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_tsr_wrapper, old_wrapper)
         return old_wrapper
 
     def _build_dynashift_wrapper(self, model, negatives, strength, threshold, raw_cond=None,
@@ -8831,6 +8896,7 @@ class FunPackLTXAVSceneChainSampler:
                h3_shadow_negative_audio_scale=1.0, h3_shadow_negative_tau=2.5,
                h3_shadow_negative_alpha=0.35, h3_shadow_negative_start_percent=0.0,
                h3_shadow_negative_end_percent=0.60, h3_shadow_negative_compose=False,
+               shot_memory="off", shot_memory_amount=0.7, tsr="off", tsr_k=1.0,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -9065,6 +9131,11 @@ class FunPackLTXAVSceneChainSampler:
         # tagged 'funpack_batch_variant'. That marker is the only trigger — the sampler has no
         # batch-count input. Sample one chain per packed entry, persist each for rating in Studio.
         if self._split_batch_variants(positive) is not None:
+            if shot_memory != "off" or tsr != "off":
+                # Batch training changes one thing at a time; these would change the
+                # noise / the prediction on every variant too.
+                print("[FunPackSceneChain] shot memory / decisiveness are off during batch "
+                      "training -- it varies one setting at a time, and these would vary more")
             return self._run_batch_training(
                 model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed,
@@ -9239,6 +9310,22 @@ class FunPackLTXAVSceneChainSampler:
             _n = self._output_value_fn_sample_count(refinement_key_input)
             print(f"[FunPackSceneChain] explore_first_step: value function not ready yet "
                   f"({_n if _n is not None else 0}/10 rated generations so far)")
+
+        # Shot memory and decisiveness: one decision per run, rated as a whole. Reset every
+        # run so a failed one can never leave its plan for the next.
+        self._shot_memory = None
+        self._tsr_k = 1.0
+        if shot_memory != "off" or tsr == "learned":
+            if not refinement_key_input:
+                print("[FunPackSceneChain] shot memory / learned decisiveness: needs "
+                      "refinement_key_input -- off this run")
+        if shot_memory != "off" and refinement_key_input:
+            self._shot_memory = _shot_memory.ShotMemory(
+                refinement_key_input, shot_memory, shot_memory_amount)
+        if tsr != "off":
+            self._tsr_k, _tsr_note = _tsr.choose_k(refinement_key_input, tsr, tsr_k)
+            if _tsr_note:
+                print(f"[FunPackSceneChain] decisiveness: {_tsr_note}")
 
         # Per-bucket value functions for trajectory_guidance. Separate from the one above
         # because they answer a different question: that one asks "is this a good finish",
@@ -9644,6 +9731,9 @@ class FunPackLTXAVSceneChainSampler:
                 _raw_scene_cond = (scene_positive[0][0]
                                    if scene_positive and isinstance(scene_positive[0], (list, tuple))
                                    else None)
+                if self._tsr_k != 1.0:
+                    run_mechanisms.append(f"decisiveness(k={self._tsr_k:.3f})")
+                    self._build_tsr_wrapper(model, self._tsr_k)
                 if embed_guidance and _scene_liked_dir is not None:
                     run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
                     self._build_embed_guidance_wrapper(model, _scene_liked_dir, embed_guidance_strength,
@@ -10470,6 +10560,26 @@ class FunPackLTXAVSceneChainSampler:
                                label=(f"repeat {h3_block_repeat}x{int(h3_block_repeat_times) + 1}"
                                       if self._parse_block_spec(h3_block_repeat) else "no repeat"),
                                seed=seed, settings=_run_settings)
+
+        # Shot memory + decisiveness: this finished run is what the next rating scores.
+        if refinement_key_input:
+            # A run with a feature off still clears its pending entry: otherwise the rating
+            # of THIS run would score the shots / k of an older, unrated one.
+            if self._shot_memory is not None:
+                for _note in self._shot_memory.notes:
+                    print(f"[FunPackSceneChain] shot memory: {_note}")
+                if self._shot_memory.skipped:
+                    print(f"[FunPackSceneChain] shot memory: left {self._shot_memory.skipped} "
+                          f"sampling pass(es) alone -- their latent already held a picture "
+                          f"(second pass, latent anchor or carried overlap), so the noise "
+                          f"does not decide the shot there")
+                self._shot_memory.save_pending()
+            else:
+                _shot_memory.clear_pending(refinement_key_input)
+            if tsr == "learned":
+                _tsr.save_pending(refinement_key_input, self._tsr_k)
+            else:
+                _tsr.clear_pending(refinement_key_input)
 
         # Trajectory probe: same run/rating pairing as the two above — the rating that scores
         # THIS run appends these per-bucket descriptors to the measurement log.

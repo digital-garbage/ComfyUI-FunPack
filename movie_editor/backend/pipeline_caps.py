@@ -123,6 +123,8 @@ SIMPLE_MODE_SAMPLER_OFF: dict[str, Any] = {
     "output_guidance": False,
     "trajectory_guidance": False,
     "dynashift": False,
+    "shot_memory": "off",
+    "tsr": "off",
 }
 
 # Studio refiner keys, same rule.

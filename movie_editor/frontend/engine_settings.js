@@ -23,6 +23,7 @@
     "output_guidance", "output_guidance_strength",
     "trajectory_guidance", "trajectory_guidance_strength",
     "dynashift", "dynashift_strength", "dynashift_threshold",
+    "shot_memory", "shot_memory_amount", "tsr", "tsr_k",
     "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block",
   ]);
   const RATING_GATED_STUDIO = new Set(["reference_injection", "value_guidance", "steer_mode", "absolute_strength"]);
@@ -308,6 +309,16 @@
       hint: "How much of the matched bad direction is removed per step. 0.3 is a gentle nudge; 1.0 removes it outright each step." },
     { name: "dynashift_threshold",   label: "DynaShift match threshold", kind: "float", default: 0.6, min: 0.3, max: 0.95, step: 0.05, dependsOn: "dynashift",
       hint: "How closely a frame must resemble a banked bad one before steering starts. Lower is more aggressive and more likely to push away from content that was actually fine." },
+    { name: "shot_memory", label: "Shot memory (experimental)", kind: "combo", choices: ["off", "learned", "manual"], default: "off",
+      hint: "New gens may reuse the layout of a shot you liked, with fresh details. Ratings learn when to reuse, which shot, and how strongly.",
+      detail: "Works on the starting noise: its coarse part decides where things sit in the frame, the fine part the details. A liked gen's coarse noise is kept; the next gen either blends it in or starts fresh, and the ratings of both kinds decide which it does more often. Needs a refinement key. No extra model call; sound untouched. A pass whose latent already holds a picture (LTX anchor, second pass) is left alone, and the run log says so. One rating teaches from the run's first scene. Learned = strength learned too; manual = strength fixed below." },
+    { name: "shot_memory_amount", label: "Shot memory strength", kind: "float", default: 0.7, min: 0.0, max: 0.95, step: 0.05, dependsOn: "shot_memory", dependsValue: "manual",
+      hint: "How much of the liked shot's layout to keep. 0.95 is nearly the same layout." },
+    { name: "tsr", label: "Decisiveness (experimental)", kind: "combo", choices: ["off", "learned", "manual"], default: "off",
+      hint: "Above 1 the model commits harder and varies less; below 1 it varies more. Learned: each gen tries a nearby value and ratings move it.",
+      detail: "Temporal Score Rescaling (arXiv 2510.01184): scales the noise part of each step's picture prediction. It fades out near pure noise, so the first steps are left alone. Picture only, no extra model call. Learned needs a refinement key." },
+    { name: "tsr_k", label: "Decisiveness", kind: "float", default: 1.0, min: 0.5, max: 2.0, step: 0.01, dependsOn: "tsr", dependsValue: "manual",
+      hint: "1.0 = off." },
     { name: "h3_repr_steering",      label: "REINS (representation steering, H3, experimental)", kind: "bool", default: false,
       hint: "EXPERIMENTAL, unvalidated, H3 only. Reaches inside the model instead of around it: captures each steered block's video-row hidden state every generation, and once a block has 3+ liked and 3+ disliked runs of its OWN, adds that block's mean liked-minus-disliked difference back into its own output on every later run. No architectural ceiling like the attention-bias mechanisms have — push the strength too far and coherence can break with no warning." },
     { name: "h3_repr_steering_strength", label: "REINS strength", kind: "float", default: 0.05, min: 0.0, max: 2.0, step: 0.01, dependsOn: "h3_repr_steering",
@@ -528,7 +539,7 @@
   const CHAIN_VIEW_KNOBS = {
     chain_continuity: ["carry_i2v_guides", "carry_overlap_through_anchor"],
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
-    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "explore_first_step", "explore_first_step_candidates", "dynashift", "dynashift_strength", "dynashift_threshold", "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block", "h3_repr_steering_passive_capture", "h3_q_steer_block", "h3_q_steer_strength", "h3_av_decouple"],
+    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "trajectory_guidance", "trajectory_guidance_strength", "explore_first_step", "explore_first_step_candidates", "dynashift", "dynashift_strength", "dynashift_threshold", "shot_memory", "shot_memory_amount", "tsr", "tsr_k", "h3_repr_steering", "h3_repr_steering_strength", "h3_repr_steering_block", "h3_repr_steering_passive_capture", "h3_q_steer_block", "h3_q_steer_strength", "h3_av_decouple"],
     chain_decode: ["h3_video_detail", "decode_noise_scale", "decode_timestep", "decode_tile_size"],
     chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "h3_block_repeat", "h3_block_repeat_span_loop", "h3_block_repeat_video_only", "h3_block_repeat_times", "h3_block_repeat_last_steps", "h3_explore_temperature", "h3_explore_temperature_block", "h3_shadow_negative", "h3_shadow_negative_compose", "h3_shadow_negative_video_scale", "h3_shadow_negative_audio_scale", "h3_shadow_negative_tau", "h3_shadow_negative_alpha", "h3_shadow_negative_start_percent", "h3_shadow_negative_end_percent", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Shot memory** (experimental, Chain Sampler ▸ Guidance): new gens can reuse the layout of
+  a liked gen with fresh details. Ratings learn when to reuse, which shot and how strongly.
+  No extra model call; sound untouched.
+- **Decisiveness** (experimental, Temporal Score Rescaling): above 1 commits harder, below 1
+  varies more. Learned from ratings or set by hand. Picture only, no extra model call.
+
 ## [4.0.0] "Blinding Blackout" - 2026-08-27
 
 ### Removed
