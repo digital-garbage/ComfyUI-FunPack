@@ -3198,7 +3198,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "shot_memory": (list(_shot_memory.MODES), {
                     "default": "off",
-                    "tooltip": "EXPERIMENTAL. The starting noise remembers shots you liked: a new run may reuse a liked shot's layout with fresh details, or start fresh. Whether to reuse, which shot and how strongly are all learned from ratings. learned = all three learned; manual = strength fixed below. Needs refinement_key_input. No extra model call; sound untouched.",
+                    "tooltip": "EXPERIMENTAL. The starting noise remembers shots you liked: a new run may reuse a liked shot's layout with fresh details, or start fresh. Whether to reuse, which shot and how strongly are all learned from ratings. learned = all three learned; manual = strength fixed below. Needs refinement_key_input. No extra model call; sound noise not edited (the sound can still react).",
                 }),
                 "shot_memory_amount": ("FLOAT", {
                     "default": 0.7, "min": 0.0, "max": 0.95, "step": 0.05,
@@ -3206,7 +3206,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "tsr": (list(_tsr.MODES), {
                     "default": "off",
-                    "tooltip": "EXPERIMENTAL decisiveness (Temporal Score Rescaling, arXiv 2510.01184). Above 1 the model commits harder and varies less; below 1 it varies more. learned = each run tries a nearby value and ratings move it; manual = fixed below. Picture only, no extra model call.",
+                    "tooltip": "EXPERIMENTAL decisiveness (Temporal Score Rescaling, arXiv 2510.01184). Above 1 the model commits harder and varies less; below 1 it varies more. learned = each run tries a nearby value and ratings move it; manual = fixed below. Edits the picture only (the sound can react); no extra model call.",
                 }),
                 "tsr_k": ("FLOAT", {
                     "default": 1.0, "min": 0.5, "max": 2.0, "step": 0.01,
@@ -3214,7 +3214,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "late_guidance": (list(_late.MODES), {
                     "default": "off",
-                    "tooltip": "EXPERIMENTAL, H3 only. Each step also makes a weaker picture (one late block skipped) and pushes away from it. Both share the blocks before the branch, so it costs ~15% at block 43. learned = strength learned from ratings; manual = fixed below. Picture only.",
+                    "tooltip": "EXPERIMENTAL, H3 only. Each step also makes a weaker picture (one late block skipped) and pushes away from it. Both share the blocks before the branch, so it costs ~15% at block 43. learned = strength learned from ratings; manual = fixed below. Edits the picture only; the sound can react.",
                 }),
                 "late_guidance_strength": ("FLOAT", {
                     "default": 0.5, "min": 0.0, "max": 2.0, "step": 0.05,
@@ -8570,7 +8570,7 @@ class FunPackLTXAVSceneChainSampler:
                         f"{_stas.MA_RATIO:.0f}x the mean, nothing steered -- try another block"), 0
 
             print(f"[FunPackSceneChain] STAS: alpha {_alpha:.2f} at block {block}, first "
-                  f"{_stas.EARLY_FRACTION:.0%} of steps, frame 0 + frame edges, picture only.")
+                  f"{_stas.EARLY_FRACTION:.0%} of steps, frame 0 + frame edges, picture rows (the sound can react).")
             return patched, _report
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "STAS", _e, "the run goes on without it")
@@ -8582,7 +8582,7 @@ class FunPackLTXAVSceneChainSampler:
         Every step runs the model twice. The normal pass saves the stream as it enters block
         `branch`. The weak pass skips blocks 0..branch-1 (their result is that saved stream),
         skips `branch` itself, and runs the tail as usual. The picture is then pushed away
-        from the weak prediction; sound keeps the normal one.
+        from the weak prediction; sound keeps the normal one for that step (later steps react).
 
         The weak pass is flagged in transformer_options (WEAK_BRANCH_FLAG) so capture hooks
         (REINS, query steering, the influence probe) do not learn from it. Returns the model
@@ -8679,7 +8679,7 @@ class FunPackLTXAVSceneChainSampler:
                 _late_wrapper, old_wrapper)
             print(f"[FunPackSceneChain] late-branch guidance: strength {_w:.2f}, weak copy "
                   f"skips block {branch} and shares 0-{branch - 1} "
-                  f"(~{100.0 * (len(dit) - branch) / len(dit):.0f}% extra per step), picture only.")
+                  f"(~{100.0 * (len(dit) - branch) / len(dit):.0f}% extra per step), edits the picture (the sound can react).")
             return patched, stats
         except Exception as _e:  # noqa: BLE001
             _log.failed("FunPackSceneChain", "late-branch guidance", _e,

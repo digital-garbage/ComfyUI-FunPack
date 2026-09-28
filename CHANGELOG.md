@@ -6,9 +6,9 @@
 
 - **Shot memory** (experimental, Chain Sampler ▸ Guidance): new gens can reuse the layout of
   a liked gen with fresh details. Ratings learn when to reuse, which shot and how strongly.
-  No extra model call; sound untouched.
+  No extra model call.
 - **Decisiveness** (experimental, Temporal Score Rescaling): above 1 commits harder, below 1
-  varies more. Learned from ratings or set by hand. Picture only, no extra model call.
+  varies more. Learned from ratings or set by hand. No extra model call.
 - **Late-branch guidance** (experimental, H3): each step also makes a weaker picture (one
   late block skipped) and steers away from it. ~15% cost at block 43. Learned or manual.
 - **STAS** (experimental, H3): strengthens the model's own frame-edge signals over the first

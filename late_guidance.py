@@ -4,7 +4,7 @@ STG-style skip guidance (the weak copy skips one block), made cheap enough for C
 both copies share every block before the branch, so the weak one only re-runs the tail.
 Branching at 43 of H3's 50 blocks costs ~7 blocks per step (~15%), not a second forward.
 
-    guided = normal + w * (normal - weak)      picture only; sound is the normal pass
+    guided = normal + w * (normal - weak)      picture only; the sound can still react
 
 The strength w is learned from ratings (rated_dial.py) or set by hand.
 """

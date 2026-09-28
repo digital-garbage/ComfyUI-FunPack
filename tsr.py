@@ -11,7 +11,7 @@ so it cannot disturb the first steps; `s` sets how early it takes hold.
 
 One number per run, learned from ratings: every run tries a slightly different k
 around the key's current value, and each rating pulls the value toward the k that
-was liked or away from the one that was disliked. Picture only, sound untouched;
+was liked or away from the one that was disliked. Edits the picture only (the sound can react);
 no extra model call.
 """
 
