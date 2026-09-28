@@ -3677,6 +3677,11 @@ def _enhancer_vocab(text):
             if w not in _ENHANCER_STOPWORDS}
 
 
+#: The line above the reference entries (shortcuts, lorebooks) the enhancer is handed.
+#: Composer ▸ Enhance ▸ Reference can replace it; empty uses this.
+V2_PROMPT_ENHANCER_REFERENCE_INTRO = ("Reference entries. Use an entry only where the prompt "
+                                      "calls for it, in your own words; ignore the rest.")
+
 V2_PROMPT_ENHANCER_SYSTEM_PROMPT = """You expand short video prompts into detailed ones for a text-to-video model.
 
 Rules:
@@ -9051,7 +9056,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return [g for g in groups if g]
 
     @staticmethod
-    def _v2_enhancer_reference(text, sources):
+    def _v2_enhancer_reference(text, sources, intro=""):
         """Reference appended after the prompt the enhancer rewrites. Per group: the entries
         the prompt mentions, or the whole group when it mentions none (the model may need
         what the prompt does not name). Shortcuts are mentioned by name, trigger, content, or
@@ -9093,9 +9098,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             blocks += [e["block"] for e in (hit or group)]
         if not blocks:
             return ""
-        return ("\n\nReference entries. Use an entry only where the prompt calls for it, "
-                "working it in in your own words; ignore entries it does not need.\n\n"
-                + "\n\n".join(blocks))
+        intro = str(intro or "").strip() or V2_PROMPT_ENHANCER_REFERENCE_INTRO
+        return "\n\n" + intro + "\n\n" + "\n\n".join(blocks)
 
     #: one enhancement per distinct (system, text) within a run — a multi-scene chain often
     #: repeats an anchor line across scenes, and each call is a full LLM generation
@@ -10130,7 +10134,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
                   h3_phrase_emphasis=False, h3_phrase_variability=0.0,
-                  prompt_enhance=False, prompt_enhance_system="",
+                  prompt_enhance=False, prompt_enhance_system="", prompt_enhance_reference_intro="",
                   prompt_enhance_temperature=0.7, prompt_enhance_top_p=0.92,
                   prompt_enhance_max_length=400, prompt_enhance_thinking=False,
                   prompt_enhance_image=None, prompt_enhance_sampling=None,
@@ -10831,7 +10835,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   "splits into scenes and each scene is enhanced instead.")
         if _enhance_base:
             _before = prompt_to_encode
-            _ref = self._v2_enhancer_reference(prompt_to_encode, _enhance_sources)
+            _ref = self._v2_enhancer_reference(prompt_to_encode, _enhance_sources, prompt_enhance_reference_intro)
             prompt_to_encode, _enhance_status = self._v2_enhance_prompt(
                 _enhance_clip, prompt_to_encode, _enhance_system, cache=_enhance_cache,
                 reference=_ref, chat=self._v2_enhancer_chat(prompt_enhance_chat),
@@ -10854,7 +10858,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if prompt_enhance_output:
             _whole = str((_link_texts or {}).get("full_prompt") or "").strip()
             if prompt_enhance and _whole:
-                _ref = self._v2_enhancer_reference(_whole, _enhance_sources)
+                _ref = self._v2_enhancer_reference(_whole, _enhance_sources, prompt_enhance_reference_intro)
                 _after, _st = self._v2_enhance_prompt(
                     _enhance_clip, _whole, _enhance_system, cache=_enhance_cache,
                     reference=_ref, chat=self._v2_enhancer_chat(prompt_enhance_chat),
@@ -11107,7 +11111,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     if _enhance_own and split_scene_texts:
                         _enhanced_texts = []
                         for _i, t in enumerate(split_scene_texts):
-                            _ref = self._v2_enhancer_reference(t, _enhance_sources)
+                            _ref = self._v2_enhancer_reference(t, _enhance_sources, prompt_enhance_reference_intro)
                             _after, _st = self._v2_enhance_prompt(
                                 _enhance_clip, t, _enhance_system, cache=_enhance_cache,
                                 reference=_ref,
@@ -14118,6 +14122,7 @@ class FunPackStudio:
             prompt_enhance_lorebooks=rf.get("prompt_enhance_lorebooks") or [],
             prompt_enhance_chat=rf.get("prompt_enhance_chat") or [],
             prompt_enhance_system=str(rf.get("prompt_enhance_system", "") or ""),
+            prompt_enhance_reference_intro=str(rf.get("prompt_enhance_reference_intro", "") or ""),
             prompt_enhance_temperature=float(rf.get("prompt_enhance_temperature", 0.7)),
             prompt_enhance_top_p=float(rf.get("prompt_enhance_top_p", 0.92)),
             prompt_enhance_max_length=int(rf.get("prompt_enhance_max_length", 400)),

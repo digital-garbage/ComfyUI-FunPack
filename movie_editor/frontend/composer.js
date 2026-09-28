@@ -970,13 +970,16 @@
   // settings are Studio's refiner settings; the last run's rewrite comes back from the run's
   // history (Store.enhanced). Also mounted in Engine settings for Simple mode (no Composer).
   const ENH_DEFAULTS = {
-    prompt_enhance: false, prompt_enhance_system: "", prompt_enhance_max_length: 400,
+    prompt_enhance: false, prompt_enhance_system: "", prompt_enhance_reference_intro: "",
+    prompt_enhance_max_length: 400,
     prompt_enhance_temperature: 0.7, prompt_enhance_top_p: 0.92, prompt_enhance_top_k: 50,
     prompt_enhance_min_p: 0.05, prompt_enhance_repetition_penalty: 1.3,
     prompt_enhance_presence_penalty: 0, prompt_enhance_seed: 0, prompt_enhance_greedy: false,
     prompt_enhance_thinking: false, prompt_enhance_use_image: true,
     prompt_enhance_shortcuts: [], prompt_enhance_lorebooks: [], prompt_enhance_chat: [],
   };
+  // conditioning.py V2_PROMPT_ENHANCER_REFERENCE_INTRO; shown as the placeholder.
+  const ENH_REFERENCE_INTRO = "Reference entries. Use an entry only where the prompt calls for it, in your own words; ignore the rest.";
   // `sampled`: only read while sampling. Greedy returns the single likeliest word before
   // ComfyUI looks at any of them, so they disappear rather than sit there doing nothing.
   const ENH_GROUPS = [
@@ -1144,6 +1147,24 @@
     lbIn.onkeydown = (e) => { if (e.key === "Enter") addLb(); };
     lbRow.append(lbIn, lbAdd);
     box.append(lbRow);
+
+    // The line the model reads above the entries. Empty = the built-in one (the placeholder).
+    const introHead = el("div", "enh-section-head");
+    introHead.append(el("div", "insp-hint", "How the entries are introduced to the model"));
+    if (String(val("prompt_enhance_reference_intro") || "").trim()) {
+      const reset = el("button", "btn ghost tiny", "Use built-in");
+      reset.type = "button";
+      reset.onclick = () => { SS.patchRefiner({ prompt_enhance_reference_intro: "" }, true); repaintAll(); };
+      introHead.append(reset);
+    }
+    box.append(introHead);
+    const intro = el("textarea", "lib-in enh-system"); intro.rows = 2;
+    intro.dataset.k = "rf-prompt_enhance_reference_intro";
+    intro.value = String(val("prompt_enhance_reference_intro") || "");
+    intro.placeholder = ENH_REFERENCE_INTRO;
+    intro.oninput = () => SS.patchRefiner({ prompt_enhance_reference_intro: intro.value }, false);
+    intro.onchange = () => SS.patchRefiner({ prompt_enhance_reference_intro: intro.value }, true);
+    box.append(intro);
     return box;
   }
 

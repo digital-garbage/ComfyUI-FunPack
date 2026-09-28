@@ -12,6 +12,8 @@
 - **Coloured logs**: red errors, orange warnings, green successes, in the terminal (FunPack's
   lines; `FUNPACK_LOG_COLOR=1/0` forces) and in the Editor's Log panel. The panel now also
   shows ComfyUI's own logging output, node crashes included.
+- **Prompt enhancer**: the line introducing reference entries is editable (Composer ▸ Enhance ▸
+  Reference). Built-in wording fixed ("in in").
 
 ### Changed
 

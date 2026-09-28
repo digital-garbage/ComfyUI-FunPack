@@ -688,3 +688,12 @@ def test_a_chat_run_records_the_whole_message_for_the_readout(studio):
     assert studio._v2_last_sent == sent                    # a reused answer reports the same
     studio._v2_enhance_prompt(FakeClip(), "a fox", "my rules")
     assert studio._v2_last_sent == ""
+
+
+def test_reference_intro_is_editable_and_blank_means_built_in(tmp_path, monkeypatch):
+    src = _sources(tmp_path, monkeypatch)
+    R = C.FunPackVideoRefinerV2._v2_enhancer_reference
+    assert R("a dog", src).startswith("\n\n" + C.V2_PROMPT_ENHANCER_REFERENCE_INTRO + "\n\n")
+    assert R("a dog", src, "  ").startswith("\n\n" + C.V2_PROMPT_ENHANCER_REFERENCE_INTRO)
+    mine = R("a dog", src, "Notes you may use:")
+    assert mine.startswith("\n\nNotes you may use:\n\n[") and "Reference entries" not in mine

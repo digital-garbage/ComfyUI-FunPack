@@ -180,6 +180,7 @@ _OWNED_EXTRA = {
     # The prompt enhancer's settings live in the Composer (composer.js), not engine_settings.js.
     "prompt_enhance_max_length": ("prompt_enhance", ('true',)),
     "prompt_enhance_system": ("prompt_enhance", ('true',)),
+    "prompt_enhance_reference_intro": ("prompt_enhance", ('true',)),
     "prompt_enhance_temperature": ("prompt_enhance", ('true',)),
     "prompt_enhance_thinking": ("prompt_enhance", ('true',)),
     "prompt_enhance_top_p": ("prompt_enhance", ('true',)),
@@ -342,6 +343,7 @@ _EDITOR_DEFAULTS = {
     "prompt_enhance": False,
     "prompt_enhance_max_length": 400,
     "prompt_enhance_system": "",
+    "prompt_enhance_reference_intro": "",
     "prompt_enhance_temperature": 0.7,
     "prompt_enhance_thinking": False,
     "prompt_enhance_top_p": 0.92,
