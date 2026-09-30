@@ -1613,3 +1613,28 @@ def test_studio_skips_its_own_enhancement_when_nothing_reads_its_conditioning():
                 "slots": [{"id": "r2v", "node_class": "R2V", "inputs": {}, "wires": {}}],
                 "core_overrides": {"sampler": {"positive": "out:r2v:CONDITIONING"}}}
     assert rf_of(bypassed)["prompt_enhance_scenes"] is False
+
+
+def _lat(graph):
+    return next(n for n in graph.values() if n["class_type"] == "EmptyMiniMaxH3LatentAV")
+
+
+def test_an_unlinked_h3_latent_length_follows_the_projects_frames():
+    """The project length was changed to 362 and the latent node kept its typed 260: the
+    sampler then refuses the run. Unlinked = follows the project."""
+    models = {"model_family": "minimax_h3", "slots": [
+        dict(s, inputs={"length": 260}) if s["id"] == "lat" else s for s in H3_MODELS["slots"]]}
+    graph, report = builder.build(H3_OI, models, {"prompt": "a shot", "num_frames_per_scene": 362})
+    length = _lat(graph)["inputs"]["length"]
+    assert isinstance(length, list) and length[0] == "frames"
+    assert graph["frames"]["inputs"]["value"] == 362
+    assert any("length (260)" in w and "362" in w for w in report["wired"]), report["wired"]
+
+
+def test_a_linked_h3_latent_length_is_left_as_the_user_linked_it():
+    models = {"model_family": "minimax_h3", "slots": [
+        dict(s, inputs={"length": 260}, input_sources={"length": "core:frames:0"})
+        if s["id"] == "lat" else s for s in H3_MODELS["slots"]]}
+    graph, report = builder.build(H3_OI, models, {"prompt": "a shot", "num_frames_per_scene": 362})
+    assert _lat(graph)["inputs"]["length"][0] == "frames"
+    assert not any("length (260)" in w for w in report["wired"])

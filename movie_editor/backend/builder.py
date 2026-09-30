@@ -185,6 +185,10 @@ FAMILY_FRAME_GRID: dict[str, dict] = {
 }
 
 
+#: nodes that make the H3 latent template; their `length` must equal the sampler's frames.
+H3_LENGTH_NODES = frozenset({"MiniMaxH3ReferenceToVideo", "EmptyMiniMaxH3LatentAV"})
+
+
 def family_frames(family: str, frames) -> int:
     """`frames` snapped UP to `family`'s pixel-frame grid (never below one whole step)."""
     grid = FAMILY_FRAME_GRID.get(family) or FAMILY_FRAME_GRID[DEFAULT_FAMILY]
@@ -683,7 +687,19 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     for s in slots:
         sid = slot_node_id[s["id"]]
         nd_s = slot_def[s["id"]]
-        for ci_name, source in (s.get("input_sources") or {}).items():
+        sources = dict(s.get("input_sources") or {})
+        # An H3 latent node has to be built for the SAME length the sampler is given or the run
+        # dies at sampling ("latent node's `length` must be the SAME ... frame count"). Left
+        # unlinked it keeps whatever number it was last typed with, so changing the project's
+        # length silently stranded it. Unlinked = follows the project; a choice stays a choice.
+        if (s.get("node_class") in H3_LENGTH_NODES and not sources.get("length")
+                and "frames" in graph and "length" in (graph[sid].get("inputs") or {})
+                and not isinstance(graph[sid]["inputs"]["length"], list)):
+            was = graph[sid]["inputs"]["length"]
+            sources["length"] = "core:frames:0"
+            report["wired"].append(f"{s.get('node_class')} length ({was}) -> Project frames "
+                                   f"({graph['frames']['inputs'].get('value')})")
+        for ci_name, source in sources.items():
             ci_name = _canonical_input(nd_s, ci_name)
             if not source or source == "auto":
                 continue

@@ -254,3 +254,15 @@ def test_a_model_slot_does_not_print_a_stale_input_or_sla_settings_with_sla_off(
     rows = dict(next(s for s in sc.collect({"slots": [slot]}, {})["sections"]
                      if s["title"] == "Diffusion model")["rows"])
     assert "sla_sparsity" in rows and "sla_enabled" not in rows
+
+
+def test_an_unlinked_h3_latent_length_is_shown_as_following_the_project():
+    slot = {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "label": "R2V",
+            "inputs": {"width": 1344, "length": 260}, "input_sources": {"length": ""}}
+    card = sc.collect({"slots": [slot]}, {}, render={"frames per scene": 362})
+    rows = dict(next(s for s in card["sections"] if s["title"] == "R2V")["rows"])
+    assert rows["length"] == "follows project (362)"
+    slot["input_sources"]["length"] = "core:frames:0"
+    rows = dict(next(s for s in sc.collect({"slots": [slot]}, {}, render={"frames per scene": 362})["sections"]
+                     if s["title"] == "R2V")["rows"])
+    assert rows["length"] != "follows project (362)"

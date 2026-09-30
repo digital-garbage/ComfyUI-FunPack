@@ -550,6 +550,11 @@ def _sampling_sections(studio_inputs: dict, sampler_inputs: dict) -> list:
     return out
 
 
+def _h3_length_nodes():
+    from .builder import H3_LENGTH_NODES
+    return H3_LENGTH_NODES
+
+
 def collect(models: dict, host: dict, *, project_name=None, version=None,
             codename=None, render=None, studio_inputs=None, sampler_inputs=None) -> dict:
     """The card's content, as data. Rendering is a separate step so this is testable."""
@@ -580,6 +585,12 @@ def collect(models: dict, host: dict, *, project_name=None, version=None,
                 rows.append((name, ""))
                 rows.extend((f"    {k}", v) for k, v in listed)
                 continue
+            if (name == "length" and slot.get("node_class") in _h3_length_nodes()
+                    and not (slot.get("input_sources") or {}).get("length")
+                    and (render or {}).get("frames per scene")):
+                # The builder links an unlinked H3 latent length to the project's frames, so
+                # the typed number is not what runs.
+                value = f"follows project ({render['frames per scene']})"
             rows.append((name, _short(value)))
         sections.append({
             "title": str(title),
