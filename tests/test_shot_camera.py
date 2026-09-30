@@ -29,7 +29,7 @@ def test_move_aims_at_a_part_of_the_subject_never_the_subject():
     assert rep[1]["target"] == "<Subject 1>'s lower lip"
     for r in rep:
         assert r["move"] and "<Subject 1>." not in r["move"].replace("'s", "")
-    assert "Camera moves into a close-up on <Subject 1>'s hand." in out
+    assert rep[0]["move"] in out and "<Subject 1>'s hand" in rep[0]["move"]
 
 
 def test_moves_sit_inside_their_shot_and_before_the_music():
@@ -90,7 +90,7 @@ def test_refiner_wrapper_returns_the_prompt_and_says_what_it_did(capsys):
     pytest.importorskip("spacy")
     import conditioning
     out = conditioning.FunPackVideoRefinerV2._v2_camera_moves(PROMPT, "prompt")
-    assert "Camera moves into a close-up on <Subject 1>'s hand." in out
+    assert "The camera" in out and "<Subject 1>'s hand" in out
     assert "camera moves: Active" in capsys.readouterr().out
     assert conditioning.FunPackVideoRefinerV2._v2_camera_moves("no shots here", "prompt") == "no shots here"
 
@@ -151,4 +151,15 @@ def test_a_single_topic_shot_can_still_chain_with_a_pull_back():
     pytest.importorskip("spacy")
     moves = {sc.add_camera_moves(ONE, seed=s)[1][0]["move"] for s in range(60)}
     assert any("Then the camera" in m for m in moves) and any("Then" not in m for m in moves)
-    assert all(m.startswith("Camera") for m in moves)
+    assert all(m.startswith("The camera") for m in moves)
+
+
+def test_a_shot_that_opens_with_a_cut_is_not_taken_for_having_a_camera_move():
+    """H3 writes cuts at a shot's opening: "At 00:03.500, the camera cuts to ..."."""
+    pytest.importorskip("spacy")
+    p = (HEAD + "[Shot 1] <Subject 1> raises <Subject 1>'s hand. "
+         "[Shot 2] At 00:03.500, the camera cuts to <Subject 2> who lifts <Subject 2>'s chin.")
+    _out, rep = sc.add_camera_moves(p)
+    assert rep[1]["move"] and "already" not in rep[1]["why"]
+    p2 = HEAD + "[Shot 1] <Subject 1> raises <Subject 1>'s hand as the camera pushes in slowly."
+    assert "already" in sc.add_camera_moves(p2)[1][0]["why"]

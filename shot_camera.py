@@ -20,9 +20,13 @@ NAMES = ("Mariel", "Tobias", "Odette", "Rurik", "Sabine", "Teodor", "Ilsa", "Cor
 STAND_IN = re.compile(r"\b(" + "|".join(NAMES) + r")\b")
 AUDIO = re.compile(r"\b(music|soundtrack|score|melody|instrumental|beat|bassline|synth|"
                    r"song|tempo|audio|ambient sound|sound of)\b", re.I)
+# H3's own vocabulary (VIDEO_PROMPT_WRITING_GUIDE_base_en.md): a shot opening "the camera cuts
+# to" is a cut, not a camera move, and must not make the shot look like it already has one.
+CUT = re.compile(r"\b(?:the )?(?:camera|shot) (?:cuts|transitions|changes|switches) to\b", re.I)
 CAMERA = re.compile(r"\b(camera|zoom(?:s|ing)?|close-?up|pan(?:s|ning)?|dolly|tracking|"
-                    r"rack focus|focus(?:es|ing)? (?:on|at)|tilt(?:s|ing)?|rotate|orbit|"
-                    r"push[- ]in|pull[- ]back|wide shot|handheld|crane)\b", re.I)
+                    r"rack(?:s|ing)? focus|focus(?:es|ing)? (?:on|at)|tilt(?:s|ing)?|rotate|orbit|"
+                    r"push(?:es)?[- ]in|pull(?:s)?[- ](?:out|back)|arc(?:s)? |truck(?:s|ing)?|"
+                    r"pedestal|roll(?:s)? (?:clockwise|counter)|pov|wide shot|handheld|crane)\b", re.I)
 GENERIC = {"camera", "video", "scene", "shot", "frame", "background", "foreground", "view",
            "image", "screen", "moment", "time", "way", "side", "front", "middle", "one",
            "other", "something", "everything", "thing", "music", "sound", "style", "lighting",
@@ -32,17 +36,17 @@ PARTS = {"lip", "mouth", "tongue", "tooth", "teeth", "eye", "eyes", "face", "che
          "skin", "expression", "smile", "gaze", "back", "chin", "brow"}
 PLACES = {"room", "street", "kitchen", "bedroom", "bed", "table", "floor", "stage", "hall",
           "garden", "beach", "forest", "city", "car", "office", "bathroom", "field"}
-MOVES_DETAIL = ("Camera moves into a close-up on {x}.", "Camera focuses at {x}.",
-                "Camera zooms in at {x}.")
-MOVES_OTHER = ("Camera zooms in at {x}.", "Camera moves around {x}.",
-               "Camera rotates to {x}.")
-MOVES_TRAVEL = ("Camera moves from {x} to {y}.", "Camera pans from {x} to {y}.",
-                "Camera shifts focus from {x} to {y}.")
+MOVES_DETAIL = ("The camera pushes in toward {x}.", "The camera racks focus to {x}.",
+                "The camera zooms in on {x}.")
+MOVES_OTHER = ("The camera zooms in on {x}.", "The camera arcs around {x}.",
+               "The camera pushes in toward {x}.")
+MOVES_TRAVEL = ("The camera pans from {x} to {y}.", "The camera racks focus from {x} to {y}.",
+                "The camera moves from {x} to {y}.")
 # Chained moves (varied mode): a follow-up to a first move, and a closing pull-back.
-MOVES_THEN = ("Then the camera moves to {y}.", "Then the camera pans to {y}.",
-              "Then the camera focuses at {y}.")
-MOVES_FINISH = ("Then the camera zooms out.", "Then the camera pulls back.",
-               "Then the camera pulls back to a wider view.")
+MOVES_THEN = ("Then the camera pans to {y}.", "Then the camera racks focus to {y}.",
+              "Then the camera pushes in toward {y}.")
+MOVES_FINISH = ("Then the camera pulls out.", "Then the camera zooms out.",
+               "Then the camera pulls out to a wider view.")
 COUNT_WEIGHTS = (6, 3, 1)      # one move / two / three, in a shot that gets any
 TRAVEL_SHARE = 0.5             # of one-move shots with two topics, how many travel X -> Y
 DETERMINERS = {"the", "a", "an", "this", "that", "these", "those"}
@@ -229,7 +233,7 @@ def add_camera_moves(text, seed=None, chance=1.0):
         entry = {"shot": int(m.group(1)), "move": None, "target": None, "why": ""}
         rng = random.Random(f"{seed}:{i}") if seed is not None else None
         pool = [c for c in cands[i] if c[0] not in constant]
-        if CAMERA.search(picture):
+        if CAMERA.search(CUT.sub("", picture)):
             entry["why"] = "already has a camera move"
         elif not pool:
             entry["why"] = "nothing specific to aim at"
