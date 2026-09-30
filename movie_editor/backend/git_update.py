@@ -281,6 +281,19 @@ def _satisfies(have: str, spec: str) -> bool:
         return True
 
 
+def install_target(name: str) -> str:
+    """What to hand pip for a missing `name`: the URL when requirements.txt gives one
+    (`name @ https://...`, e.g. a model wheel that is not on PyPI), else the bare name."""
+    try:
+        for line in (REPO_ROOT / REQUIREMENTS).read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^\s*([A-Za-z0-9._-]+)\s*@\s*(\S+)", line.split("#", 1)[0])
+            if m and m.group(1).lower().replace("-", "_") == name.lower().replace("-", "_"):
+                return m.group(2)
+    except OSError:
+        pass
+    return name
+
+
 def install_requirements(timeout: int = 900) -> dict:
     """Install ONLY the requirements that are absent. Never upgrades anything.
 
@@ -321,7 +334,7 @@ def install_requirements(timeout: int = 900) -> dict:
     # nothing under it is not installed, it is broken. The freeze diff below is what says
     # whether anything already present moved as a result.
     cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-           *status["missing"]]
+           *[install_target(n) for n in status["missing"]]]
     try:
         proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True,
                               timeout=timeout)

@@ -344,3 +344,17 @@ def test_a_pip_timeout_is_reported_not_raised(monkeypatch):
     monkeypatch.setattr(gu.subprocess, "run", boom)
     out = gu.install_requirements()
     assert out["ok"] is False and "did not finish" in out["detail"]
+
+
+def test_a_url_requirement_is_installed_from_its_url_not_its_name(monkeypatch):
+    """`en_core_web_sm` is not on PyPI: by name pip fails and takes every other package in the
+    same command with it."""
+    from movie_editor.backend import git_update as gu
+    assert gu.parse_requirement("en_core_web_sm @ https://x/y.whl")[0] == "en_core_web_sm"
+    assert gu.install_target("en_core_web_sm").startswith("https://github.com/explosion/")
+    assert gu.install_target("gguf") == "gguf"
+    calls = _fake_pip(monkeypatch, gu, {"missing": ["gguf", "en_core_web_sm"],
+                                        "below_floor": [], "present": []})
+    gu.install_requirements()
+    install = [c for c in calls if c[3] == "install"][0]
+    assert install[-2] == "gguf" and install[-1].endswith(".whl")
