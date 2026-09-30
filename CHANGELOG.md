@@ -6,6 +6,7 @@
 - Decisiveness now rescales after embed guidance, score slider and DynaShift, so it acts on their combined result.
 
 ### Fixed
+- Shot views: "from behind / above / below" now counts as a stated view only with a camera word ("seen from behind"), not as a body action, so those shots can get a view.
 - An H3 latent node (Reference-to-Video / Empty AV Latent) whose `length` is not linked now follows the project's frames, instead of keeping an old typed number that made the sampler refuse the run; the settings export shows it as "follows project".
 - A view added by Shot views (POV...) no longer makes the shot look like it already has a camera move.
 - Export settings no longer prints a loader input the node no longer has (a stale `sla_enabled: on`) or SLA's settings while `sla` is off.

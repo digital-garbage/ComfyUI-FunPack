@@ -434,3 +434,14 @@ def test_some_shots_hold_still_on_one_object_and_pans_are_the_minority():
             kinds["other"] += 1
     assert kinds["hold"] > 20 and 0 < kinds["pan"] < kinds["other"], kinds
     assert kinds["pan"] < 0.3 * 300, kinds
+
+
+def test_a_body_action_from_behind_is_not_a_stated_view():
+    for text in ("She is taken from behind by him.", "Water drips from above onto her.",
+                 "He enters from below the stairs."):
+        assert not sc.VIEW_STATED.search(text), text
+    for text in ("POV view, she waves.", "Seen from behind, she walks.", "Shot from above, the room.",
+                 "Side view of the table.", "The camera films from below."):
+        assert sc.VIEW_STATED.search(text), text
+    out, added = sc.add_shot_views("[Shot 1] A.\n[Shot 2] She is taken from behind by him.", seed=1, chance=1.0)
+    assert added and added[0]["shot"] == 2

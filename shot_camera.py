@@ -542,8 +542,12 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
 # frame, which a new view would contradict; every later shot starts on a new angle anyway.
 VIEWS = ("POV view", "POV view from above", "POV view from below", "Side view",
          "View from above", "View from below", "View from behind", "Front view")
-VIEW_STATED = re.compile(r"\b(pov|(?:side|front|rear|back|top|overhead|bird'?s[- ]eye)[- ]view|"
-                         r"view from|from (?:above|below|behind))\b", re.I)
+# A view the shot already asks for. "from behind" / "from above" alone are also body actions
+# ("enters from behind", "drips from above"), so they count only when a camera word goes with
+# them ("seen from behind", "shot from above", "camera from below").
+VIEW_STATED = re.compile(r"\b(pov|(?:side|front|rear|back|top|overhead|bird'?s[- ]eye)[- ]view|view from|"
+                         r"(?:seen|shot|filmed|viewed|captured|camera|angle|footage)\b[^.!?,;]{0,20}?"
+                         r"\bfrom (?:above|below|behind))\b", re.I)
 OPENER = re.compile(r"^\s*At \d\d:\d\d\.\d{3},[^.!?]*[.!?]\s*")
 
 
