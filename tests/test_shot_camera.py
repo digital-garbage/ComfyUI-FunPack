@@ -208,3 +208,16 @@ def test_a_noun_in_every_shot_is_still_a_constant():
     p = (HEAD + "[Shot 1] <Subject 1> holds the rose. [Shot 2] <Subject 2> smells the rose. "
          "[Shot 3] <Subject 1> drops the rose.")
     assert [r["move"] for r in sc.add_camera_moves(p)[1]] == [None, None, None]
+
+
+def test_the_final_prompt_is_published_for_the_composer_with_the_enhancer_off():
+    import conditioning
+    import run_phase
+    node = conditioning.FunPackVideoRefinerV2.__new__(conditioning.FunPackVideoRefinerV2)
+    node._v2_enhanced_prompts = []
+    run_phase.reset_enhanced()
+    node._v2_note_final("before", "after with moves", 1)
+    item = node._v2_enhanced_prompts[0]
+    assert item["kind"] == "final" and item["scene"] == 1
+    assert (item["before"], item["after"]) == ("before", "after with moves")
+    assert run_phase._state()["enhanced"]["items"][0]["after"] == "after with moves"

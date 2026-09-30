@@ -9275,6 +9275,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return head[:cut + 1].strip(), True
         return head.rsplit(" ", 1)[0].strip(), True
 
+    def _v2_note_final(self, before, after, scene):
+        """The prompt exactly as it is encoded (after shortcuts, $variables, camera moves),
+        shown in the Composer with the enhancer off. `before` is the text before camera moves."""
+        self._v2_note_enhanced({"scene": scene, "kind": "final", "before": before,
+                                "after": after, "status": "Prompt as encoded — enhancer off"})
+
     @staticmethod
     def _v2_camera_moves(text, where, seed=None, chance=1.0):
         """`text` with a camera move added to each [Shot N] block that lacks one."""
@@ -10841,6 +10847,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         # Camera moves for MiniMax's own `[Shot N]` blocks (not timeline scenes): after
         # shortcuts and $variables, before the enhancer, so the enhancer sees them.
+        _base_before_camera = prompt_to_encode
         if camera_moves and not split_by_transitions:
             prompt_to_encode = self._v2_camera_moves(prompt_to_encode, "prompt", seed, camera_moves_chance)
 
@@ -10854,12 +10861,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # What the enhancer wrote, per encoded prompt — Studio hands it to the Editor as a
         # node ui output so the Composer can show before/after. A readout, never read back.
         self._v2_enhanced_prompts = []
-        if prompt_enhance:
-            try:
-                from . import run_phase as _rp
-            except ImportError:
-                import run_phase as _rp
-            _rp.reset_enhanced()
+        try:
+            from . import run_phase as _rp
+        except ImportError:
+            import run_phase as _rp
+        _rp.reset_enhanced()          # also with the enhancer off: the final prompts go there
         _enhance_clip = advisor_clip          # already falls back to `clip` at the top
         _enhance_system = str(prompt_enhance_system or "").strip() or V2_PROMPT_ENHANCER_SYSTEM_PROMPT
         # Reference the user picked in Composer ▸ Enhance (shortcuts, lorebooks): loaded once
@@ -10900,6 +10906,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "status": _enhance_status, "image": prompt_enhance_image is not None,
                 "reference": _ref.strip(), "chat": self._v2_last_sent,
                 "thinking": self._v2_last_thinking})
+
+        if not prompt_enhance and not split_by_transitions:
+            self._v2_note_final(_base_before_camera, prompt_to_encode, None)
 
         # Studio's `enhanced_prompt` output, for a node encoding on its own (Editor link
         # "Enhanced prompt, fallback to prompt + postfix"). The same text that link's
@@ -11154,6 +11163,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         split_scene_texts = [
                             _resolve_variables(t, _prompt_variables)[0] for t in split_scene_texts
                         ]
+                    _scene_before_camera = list(split_scene_texts or [])
                     if camera_moves and split_scene_texts:
                         split_scene_texts = [self._v2_camera_moves(t, f"scene {_i + 1}", f"{seed}:{_i}",
                                                                     camera_moves_chance)
@@ -11184,6 +11194,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                 "thinking": self._v2_last_thinking})
                             _enhanced_texts.append(_after)
                         split_scene_texts = _enhanced_texts
+                    elif not prompt_enhance:
+                        for _i, t in enumerate(split_scene_texts or []):
+                            self._v2_note_final(_scene_before_camera[_i], t, _i)
                     scene_refinement_keys = [set(s.get("keys") or set()) for s in canon_scenes]
                     current_scene_seeds = self._v2_scene_seed_values(seed, len(split_scene_texts), _scene_seeds)
                     current_scene_seed_source = (

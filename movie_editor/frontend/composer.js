@@ -1045,10 +1045,12 @@
     const before = String(it.before || "").trim();
     const after = String(it.after || "").trim();
     const changed = !!after && after !== before;
+    const final = it.kind === "final";    // enhancer off: the prompt as encoded, not a rewrite
     const head = el("div", "enh-card-head");
-    head.append(el("span", "enh-card-title", it.scene == null ? "Prompt" : `Scene ${it.scene + 1}`));
+    head.append(el("span", "enh-card-title", (final ? "Final prompt · " : "")
+      + (it.scene == null ? "Prompt" : `Scene ${it.scene + 1}`)));
     if (it.image) head.append(el("span", "enh-chip", "image sent"));
-    if (!changed) head.append(el("span", "enh-chip enh-chip-warn", "unchanged"));
+    if (!changed && !final) head.append(el("span", "enh-chip enh-chip-warn", "unchanged"));
     const copy = el("button", "btn ghost tiny enh-copy", "Copy");
     copy.type = "button";
     copy.onclick = async () => {
@@ -1060,7 +1062,8 @@
     card.append(head, el("div", "enh-after", after || before));
     if (changed) {
       const det = el("details", "enh-before");
-      det.append(el("summary", null, "What went in"), el("div", "enh-before-text", before));
+      det.append(el("summary", null, final ? "Before camera moves" : "What went in"),
+        el("div", "enh-before-text", before));
       card.append(det);
     }
     // The model's reasoning before it answered ("Think first"); never part of the prompt.
@@ -1340,7 +1343,7 @@
     if (!items.length) {
       wrap.append(el("div", "enh-empty", on
         ? "Nothing yet. Generate, and the rewritten prompt shows up here next to what went in."
-        : "Turn the enhancer on and generate. Its rewrite shows up here."));
+        : "Generate, and the final prompt (after shortcuts, variables and camera moves) shows up here."));
     } else {
       items.forEach((it) => wrap.append(enhanceResultCard(it)));
     }
