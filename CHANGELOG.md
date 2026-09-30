@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Reactive focus (Engine Settings, needs camera moves): before Generate, pick what the camera aims at in each `[Shot N]`, hold or move, or no move. Asked once per shot; picks are remembered and steer later suggestions.
 ### Fixed
 - An H3 latent node (Reference-to-Video / Empty AV Latent) whose `length` is not linked now follows the project's frames, instead of keeping an old typed number that made the sampler refuse the run; the settings export shows it as "follows project".
 - A view added by Shot views (POV...) no longer makes the shot look like it already has a camera move.

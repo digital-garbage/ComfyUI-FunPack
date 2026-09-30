@@ -3732,6 +3732,9 @@
 
   async function _generateRun(sceneIds, onlyScene, prefix, resetSession, extraOverrides) {
     _interrupted = false;
+    if (!extraOverrides && window.ReactiveFocus && state.project) {
+      if (!(await window.ReactiveFocus.review(state.project, onlyScene ? [onlyScene] : sceneIds))) return false;
+    }
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
       const overrides = [...(_anchorGuideNodeOverrides(sceneIds) || []), ...(extraOverrides || [])];
