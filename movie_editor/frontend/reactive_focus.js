@@ -160,6 +160,17 @@
     });
   }
 
+  // Why no shot was offered a view: the honest reason per shot.
+  function whyNone(scenes, saved) {
+    const all = scenes.flatMap((sc) => sc.views || []);
+    if (!all.length) return "a view only opens shots 2 and later, so the prompt needs two or more [Shot N] blocks.";
+    return all.map((s) => {
+      if (s.already) return `shot ${s.shot} already states “${s.stated}”`;
+      if (saved[s.key]) return `shot ${s.shot} is already decided (forget it in Settings ▸ Refinement & Taste)`;
+      return `no view can show shot ${s.shot}`;
+    }).join("; ") + ".";
+  }
+
   // Called by Store before it queues a run. -> false to abort the run.
   async function review(project, sceneIds) {
     const { rf } = window.StudioSettings.read(project);
@@ -187,15 +198,17 @@
       const todo = pending(scenes, savedViews, "views", (s) => !s.already && s.candidates.length);
       if (todo.length) steps.push({ kind: "views", title: "Views", page: viewsPage(todo) });
     }
+    // A wanted step with nothing to ask says why, or "no views" looks like "broken".
+    const whys = [];
+    if (wantViews && !steps.some((x) => x.kind === "views")) whys.push("Views: " + whyNone(scenes, savedViews));
     if (!steps.length) {
-      // Say why nothing was asked, or "no modal" is indistinguishable from "broken".
       const why = !seen.with_shot_marks
-        ? `no [Shot N] found in the ${seen.texts == null ? "" : seen.texts + " "}scene text(s) sent to generation`
-        : scenes.length ? "every shot is already decided or already has a camera move/view"
-          : "no shot has a target or view to offer";
-      window.Store.get().notice = `Reactive focus: nothing to ask — ${why}.`;
+        ? `no [Shot N] found in the ${seen.texts == null ? "" : seen.texts + " "}scene text(s) sent to generation.`
+        : whys.join(" ") || "every shot is already decided or already has a camera move.";
+      window.Store.get().notice = `Reactive focus: nothing to ask — ${why}`;
       return true;
     }
+    if (whys.length) steps[steps.length - 1].page.nodes.push(el("div", "ov-label", whys.join(" ")));
     const res = await ask(steps);
     if (!res) return false;
     const patch = {}, learn = { decisions: [], views: [] };

@@ -613,8 +613,9 @@ def view_options(text, stats=None):
         traits = view_traits(picture)
         cands = sorted(((v, _view_weight(v, traits, stats)) for v in allowed_views(traits)),
                        key=lambda c: -c[1])
+        stated = VIEW_STATED.search(CUT.sub("", picture))
         out.append({"shot": int(m.group(1)), "key": shot_key(picture), "traits": traits,
-                    "already": bool(VIEW_STATED.search(CUT.sub("", picture))),
+                    "already": bool(stated), "stated": stated.group(0) if stated else "",
                     "candidates": [{"view": v, "score": round(w, 2)} for v, w in cands],
                     "auto": cands[0][0] if cands else None})
     return out
