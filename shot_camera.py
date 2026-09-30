@@ -53,9 +53,9 @@ def _spacy():
                 import funpack_log as _log
             except ImportError:
                 from . import funpack_log as _log
-            _log.failed("FunPackCameraMoves", "spaCy tagger", e,
-                        "using the simple word rules; run `pip install spacy` and "
-                        "`python -m spacy download en_core_web_sm` for better targets")
+            fix = ("spacy not installed, run `pip install spacy`" if isinstance(e, ImportError)
+                   else "model missing, run `python -m spacy download en_core_web_sm`")
+            _log.failed("FunPackCameraMoves", "spaCy tagger", e, f"simple word rules used; {fix}")
     return _nlp
 
 
