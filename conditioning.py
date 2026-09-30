@@ -9344,7 +9344,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return out
 
     @staticmethod
-    def _v2_camera_moves(text, where, seed=None, chance=1.0, key=None):
+    def _v2_camera_moves(text, where, seed=None, chance=1.0):
         """`text` with a camera move added to each [Shot N] block that lacks one."""
         try:
             try:
@@ -9356,14 +9356,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             except ImportError:
                 import focus_memory as _fm
             try:
-                prior = _fm.prior(key)
+                prior = _fm.prior()
             except Exception as e:  # noqa: BLE001
                 _log.failed("FunPackVideoRefinerV2", "focus memory", e, "targets are scored without it")
                 prior = {}
             out, report = _sc.add_camera_moves(text, seed=seed, chance=chance, prior=prior)
-            if key and report:
+            if report:
                 try:
-                    _fm.observe(key, _sc.content_fingerprint(text),
+                    _fm.observe(_sc.content_fingerprint(text),
                                 [w for r in report for w in r.get("lemmas", [])])
                 except Exception as e:  # noqa: BLE001
                     _log.failed("FunPackVideoRefinerV2", "focus memory", e, "this prompt was not counted")
@@ -10932,8 +10932,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             prompt_to_encode = self._v2_shot_views(prompt_to_encode, "prompt", seed, shot_view_chance)
         _base_before_camera = prompt_to_encode
         if camera_moves and not split_by_transitions:
-            prompt_to_encode = self._v2_camera_moves(prompt_to_encode, "prompt", seed, camera_moves_chance,
-                                                    refinement_key)
+            prompt_to_encode = self._v2_camera_moves(prompt_to_encode, "prompt", seed, camera_moves_chance)
 
         # ── prompt enhancer ────────────────────────────────────────────────────────────
         # Runs BEFORE the prompt becomes conditioning, so what ComfyUI generates from is the
@@ -11260,7 +11259,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     _scene_before_camera = list(split_scene_texts or [])
                     if camera_moves and split_scene_texts:
                         split_scene_texts = [self._v2_camera_moves(t, f"scene {_i + 1}", f"{seed}:{_i}",
-                                                                    camera_moves_chance, refinement_key)
+                                                                    camera_moves_chance)
                                              for _i, t in enumerate(split_scene_texts)]
                     # Enhanced PER SCENE, not as one blob. The editor's scene list is
                     # authoritative on count, so rewriting the scenes as a single paragraph

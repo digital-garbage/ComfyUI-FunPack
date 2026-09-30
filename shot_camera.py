@@ -69,6 +69,19 @@ _nlp = None
 _tried = False
 
 
+def _say(what, error, effect):
+    """One log line when something falls back. Uses the host pack's logger when there is one
+    (run-once, colour rules), a plain print otherwise, so this module needs no host."""
+    try:
+        try:
+            import funpack_log as _log
+        except ImportError:
+            from . import funpack_log as _log
+        _log.failed("ShotCamera", what, error, effect)
+    except ImportError:
+        print(f"[ShotCamera] {what}: Failed | {effect}")
+
+
 def _spacy():
     """The small English tagger, or None (said once) when it is not installed."""
     global _nlp, _tried
@@ -78,13 +91,9 @@ def _spacy():
             import spacy
             _nlp = spacy.load("en_core_web_sm")
         except Exception as e:  # noqa: BLE001
-            try:
-                import funpack_log as _log
-            except ImportError:
-                from . import funpack_log as _log
             fix = ("spacy not installed, run `pip install spacy`" if isinstance(e, ImportError)
                    else "model missing, run `python -m spacy download en_core_web_sm`")
-            _log.failed("FunPackCameraMoves", "spaCy tagger", e, f"simple word rules used; {fix}")
+            _say("spaCy tagger", e, f"simple word rules used; {fix}")
     return _nlp
 
 

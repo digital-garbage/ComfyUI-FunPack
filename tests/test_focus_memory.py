@@ -12,29 +12,45 @@ import shot_camera as sc  # noqa: E402
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.setattr(fm, "_path", lambda key: str(tmp_path / f"{key}.focus.json"))
+    monkeypatch.setattr(fm, "_path", lambda: str(tmp_path / "focus_memory.json"))
     return tmp_path
 
 
 def test_silent_until_enough_prompts_then_more_seen_means_more_bonus(store):
-    assert fm.prior("k") == {}
-    fm.observe("k", "a", ["chin", "lamp"])
-    fm.observe("k", "b", ["chin"])
-    assert fm.prior("k") == {}                                   # two prompts: not a habit yet
-    fm.observe("k", "c", ["chin", "door"])
-    p = fm.prior("k")
+    assert fm.prior() == {}
+    fm.observe("a", ["chin", "lamp"])
+    fm.observe("b", ["chin"])
+    assert fm.prior() == {}                                   # two prompts: not a habit yet
+    fm.observe("c", ["chin", "door"])
+    p = fm.prior()
     assert p["chin"] == pytest.approx(fm.FREQ_W) and 0 < p["lamp"] < p["chin"]
     assert p["lamp"] == p["door"]
 
 
 def test_the_same_prompt_again_counts_nothing(store):
     for _ in range(5):
-        fm.observe("k", "same", ["chin"])
-    assert fm.observe("k", "same", ["chin"]) == 1 and fm.prior("k") == {}
+        fm.observe("same", ["chin"])
+    assert fm.observe("same", ["chin"]) == 1 and fm.prior() == {}
 
 
-def test_no_key_keeps_nothing(store):
-    assert fm.observe("", "a", ["chin"]) == 0 and fm.prior("") == {}
+def test_nothing_to_count_keeps_nothing(store):
+    assert fm.observe("a", []) == 0 and fm.prior() == {}
+
+
+def test_the_memory_is_its_own_file_named_by_the_environment_or_the_user_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "mine.json"))
+    assert fm._path() == str(tmp_path / "mine.json")
+    fm.observe("a", ["chin"])
+    assert (tmp_path / "mine.json").is_file()
+    monkeypatch.delenv("SHOT_CAMERA_MEMORY")
+    assert fm._path().endswith("focus_memory.json") and "shot_camera" in fm._path()
+
+
+def test_shot_camera_and_focus_memory_need_nothing_from_the_host_pack():
+    import re
+    for name in ("shot_camera.py", "focus_memory.py"):
+        src = (Path(__file__).resolve().parents[1] / name).read_text(encoding="utf-8")
+        assert not re.search(r"^\s*(?:from|import)\s+(?:conditioning|samplers|templates|movie_editor)", src, re.M)
 
 
 def test_a_recurring_word_wins_between_two_otherwise_equal_targets():
@@ -77,12 +93,11 @@ def test_refiner_wrapper_counts_prompts_and_uses_the_prior(store, monkeypatch):
     pytest.importorskip("spacy")
     import conditioning
     R = conditioning.FunPackVideoRefinerV2
-    monkeypatch.setattr(conditioning, "refinement_state_path", lambda k, *a, **kw: str(store / f"{k}.j"))
-    monkeypatch.setattr(fm, "_path", lambda k: str(store / f"{k}.j"))
+    monkeypatch.setattr(fm, "_path", lambda: str(store / "focus_memory.json"))
     for i in range(3):
         R._v2_camera_moves(f"Intro. [Shot 1] <Subject 1> touches <Subject 1>'s chin{i and ' again' * i}.",
-                           "prompt", 1, 1.0, "k")
-    assert fm.prior("k").get("chin", 0) > 0
+                           "prompt", 1, 1.0)
+    assert fm.prior().get("chin", 0) > 0
 
 
 def test_a_habit_does_not_win_every_shot_it_merely_appears_in():
