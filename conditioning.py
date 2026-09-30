@@ -775,6 +775,26 @@ def split_prompt_by_transitions(prompt, placement="start"):
     return [(text, None)]
 
 
+def _shortcut_texts(min_len=15):
+    """Every enabled shortcut's replacement text, longest first: how shot cuts tell where one
+    of the user's shortcuts ends and the next begins in an already-expanded prompt."""
+    try:
+        try:
+            from .templates import load_shortcut_db, _shortcut_replacements
+        except ImportError:
+            from templates import load_shortcut_db, _shortcut_replacements
+        out = set()
+        for sc in (load_shortcut_db().get("shortcuts", {}) or {}).values():
+            if isinstance(sc, dict) and sc.get("enabled", True):
+                for r in _shortcut_replacements(sc.get("replacements", sc.get("replacement", []))):
+                    r = str(r or "").strip()
+                    if len(r) >= min_len:
+                        out.add(r)
+        return sorted(out, key=len, reverse=True)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _expand_with_map(text):
     """Expand shortcuts EXACTLY like apply_prompt_shortcuts, but record a position map so
     boundaries found in the expanded text can be projected back onto the original.
@@ -9307,7 +9327,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 from . import shot_camera as _sc
             except ImportError:
                 import shot_camera as _sc
-            out, info = _sc.add_shot_cuts(text, seconds, seed=seed, chance=chance)
+            out, info = _sc.add_shot_cuts(text, seconds, seed=seed, chance=chance,
+                                          pieces=_shortcut_texts() if chance > 0 else ())
         except Exception as e:  # noqa: BLE001
             print(f"[FunPackVideoRefinerV2] shot cuts: failed | {where}: {e}; prompt left as written")
             return text

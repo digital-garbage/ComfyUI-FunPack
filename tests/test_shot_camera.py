@@ -223,15 +223,17 @@ def test_the_final_prompt_is_published_for_the_composer_with_the_enhancer_off():
     assert run_phase._state()["enhanced"]["items"][0]["after"] == "after with moves"
 
 
+PA = "<Subject 1> touches <Subject 1>'s chin and smiles."
+PB = "Then <Subject 2> opens the window and the curtain sways."
+PC = "<Subject 1> laughs and pours a glass of wine."
+PIECES = [PA, PB, PC]
 CUTS = ("Two friends in a sunlit loft, <Subject 1> is a tall woman, <Subject 2> is a man. "
-        "[Shot 1] <Subject 1> touches <Subject 1>'s chin and smiles. Then <Subject 2> opens the "
-        "window and the curtain sways. [Shot 2] <Subject 1> laughs and pours a glass of wine. "
-        "Upbeat jazz music plays.")
+        f"[Shot 1] {PA} {PB} [Shot 2] {PC} Upbeat jazz music plays.")
 
 
 def test_a_shot_whose_point_changes_is_cut_in_two_with_whole_second_times():
     pytest.importorskip("spacy")
-    out, info = sc.add_shot_cuts(CUTS, 12, seed=1, chance=1.0)
+    out, info = sc.add_shot_cuts(CUTS, 12, seed=1, chance=1.0, pieces=PIECES)
     assert (info["before"], info["after"]) == (2, 3)
     assert info["times"] == ["00:04.000", "00:08.000"]
     assert "[Shot 3] At 00:08.000," in out and "[Shot 2] At 00:04.000," in out
@@ -242,7 +244,7 @@ def test_a_shot_whose_point_changes_is_cut_in_two_with_whole_second_times():
 def test_cut_times_rise_and_stay_inside_the_video():
     pytest.importorskip("spacy")
     for secs in (5, 9, 14, 30):
-        _out, info = sc.add_shot_cuts(CUTS, secs, seed=2, chance=1.0)
+        _out, info = sc.add_shot_cuts(CUTS, secs, seed=2, chance=1.0, pieces=PIECES)
         ts = [int(t[3:5]) + 60 * int(t[:2]) for t in info["times"]]
         assert ts == sorted(set(ts)) and all(0 < t < secs for t in ts)
 
@@ -252,7 +254,7 @@ def test_no_length_or_existing_times_or_no_room_leave_the_prompt_alone():
     assert sc.add_shot_cuts(CUTS, None)[0] == CUTS and "length" in sc.add_shot_cuts(CUTS, None)[1]["why"]
     assert sc.add_shot_cuts(CUTS, 1)[0] == CUTS
     stamped = CUTS.replace("[Shot 2] ", "[Shot 2] At 00:05.000, the camera cuts to ")
-    out, info = sc.add_shot_cuts(stamped, 12, chance=1.0)
+    out, info = sc.add_shot_cuts(stamped, 12, chance=1.0, pieces=PIECES)
     assert out == stamped and "already" in info["why"]
     assert sc.add_shot_cuts("no shots", 10)[0] == "no shots"
 
@@ -265,12 +267,14 @@ def test_chance_zero_still_stamps_the_existing_shots_but_splits_nothing():
 
 def test_shot_cuts_are_reproducible_from_the_seed():
     pytest.importorskip("spacy")
-    assert sc.add_shot_cuts(CUTS, 12, seed=5, chance=1.0) == sc.add_shot_cuts(CUTS, 12, seed=5, chance=1.0)
+    assert (sc.add_shot_cuts(CUTS, 12, seed=5, chance=1.0, pieces=PIECES)
+            == sc.add_shot_cuts(CUTS, 12, seed=5, chance=1.0, pieces=PIECES))
 
 
-def test_refiner_wrapper_reports_cuts(capsys):
+def test_refiner_wrapper_reports_cuts(capsys, monkeypatch):
     pytest.importorskip("spacy")
     import conditioning
+    monkeypatch.setattr(conditioning, "_shortcut_texts", lambda: PIECES)
     R = conditioning.FunPackVideoRefinerV2
     out = R._v2_shot_cuts(CUTS, "scene 1", 1, 1.0, 12)
     assert "shot cuts: Active" in capsys.readouterr().out and "00:04.000" in out
@@ -309,3 +313,22 @@ def test_refiner_wrapper_reports_views(capsys):
     P = HEAD + "[Shot 1] <Subject 1> waves. [Shot 2] <Subject 2> nods."
     out = conditioning.FunPackVideoRefinerV2._v2_shot_views(P, "scene 1", 1, 1.0)
     assert "shot views: Active" in capsys.readouterr().out and out != P
+
+
+def test_a_shot_is_never_cut_inside_one_shortcut():
+    """The topic changes between PA and PB. If PA+PB is ONE shortcut, nothing may be split."""
+    pytest.importorskip("spacy")
+    one = f"{PA} {PB}"
+    out, info = sc.add_shot_cuts(CUTS, 12, seed=1, chance=1.0, pieces=[one, PC])
+    assert info["after"] == 2 and out.count("[Shot ") == 2
+    out, info = sc.add_shot_cuts(CUTS, 12, seed=1, chance=1.0)          # no shortcut texts known
+    assert info["after"] == 2
+
+
+def test_shortcut_texts_come_from_the_library(monkeypatch):
+    import conditioning, templates
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: {"shortcuts": {
+        "a": {"enabled": True, "replacements": ["A long enough replacement text."]},
+        "b": {"enabled": False, "replacements": ["Disabled but long enough text."]},
+        "c": {"enabled": True, "replacements": ["short"]}}})
+    assert conditioning._shortcut_texts() == ["A long enough replacement text."]

@@ -288,23 +288,29 @@ def _sentence_topics(sentence, constant):
     return {c[0] for c in candidates(sentence) if c[0] not in constant and _score(c) > 0.5}
 
 
-def _switch_point(picture, constant):
-    """Index of the first sentence whose topics share nothing with everything before it (and
-    both sides have some), or None: the shot's main point changes there."""
+def _switch_point(picture, constant, pieces):
+    """Index of the first sentence that (a) starts exactly where a known shortcut text starts and
+    (b) shares no topic with everything before it, both sides having some: the shot's main
+    point changes between two of the user's shortcuts. Never inside one."""
     sentences = SENTENCE.findall(picture)
-    seen = set()
+    seen, offset = set(), 0
     for j, sent in enumerate(sentences):
         topics = _sentence_topics(sent, constant)
-        if j and seen and topics and not (topics & seen):
+        starts_piece = j and any(picture.startswith(r, offset + len(sent) - len(sent.lstrip()))
+                                 for r in pieces)
+        if starts_piece and seen and topics and not (topics & seen):
             return j, sentences
         seen |= topics
+        offset += len(sent)
     return None, sentences
 
 
-def add_shot_cuts(text, seconds, seed=0, chance=0.5):
+def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
     """-> (new prompt, info). Shots whose main point changes are split in two; every shot after
     the first then opens with its cut time, spread over `seconds` by text length and rounded
     to whole seconds. A prompt that already carries cut times is left alone.
+    `pieces`: the texts of the user's shortcuts; a shot is only ever cut BETWEEN two of them,
+    so with none given nothing is split (times are still added).
     info = {"before", "after", "times": [...], "why": str}."""
     marks = list(SHOT.finditer(text or ""))
     info = {"before": len(marks), "after": len(marks), "times": [], "why": ""}
@@ -331,7 +337,7 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5):
     blocks = []                                   # [picture text, sound text]
     for i, (picture, sound) in enumerate(parts):
         rng = random.Random(f"{seed}:cut:{i}")
-        j, sentences = _switch_point(picture, constant)
+        j, sentences = _switch_point(picture, constant, pieces)
         if j is not None and rng.random() < chance:
             first, second = "".join(sentences[:j]), "".join(sentences[j:])
             blocks.append([first.rstrip() + " ", ""])
