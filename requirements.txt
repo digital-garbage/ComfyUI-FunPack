@@ -14,6 +14,7 @@ gguf
 Pillow
 insightface
 opencv-python-headless
-# Picks the target of a camera move in [Shot N] prompts. Optional: without it (or without
-# its model, `python -m spacy download en_core_web_sm`) simpler word rules are used.
-spacy
+# Picks the target of a camera move in [Shot N] prompts, plus its 12 MB English model
+# (a wheel, so `pip install -r` gets both). Optional: without them simpler word rules run.
+spacy>=3.8,<3.9
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
