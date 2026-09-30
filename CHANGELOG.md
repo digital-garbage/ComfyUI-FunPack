@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Decisiveness now rescales after embed guidance, score slider and DynaShift, so it acts on their combined result.
+
 ### Fixed
 - An H3 latent node (Reference-to-Video / Empty AV Latent) whose `length` is not linked now follows the project's frames, instead of keeping an old typed number that made the sampler refuse the run; the settings export shows it as "follows project".
 - A view added by Shot views (POV...) no longer makes the shot look like it already has a camera move.

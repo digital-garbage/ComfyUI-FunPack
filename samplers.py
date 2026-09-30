@@ -10368,9 +10368,6 @@ class FunPackLTXAVSceneChainSampler:
                 _raw_scene_cond = (scene_positive[0][0]
                                    if scene_positive and isinstance(scene_positive[0], (list, tuple))
                                    else None)
-                if self._tsr_k != 1.0:
-                    run_mechanisms.append(f"decisiveness(k={self._tsr_k:.3f})")
-                    self._build_tsr_wrapper(model, self._tsr_k)
                 if embed_guidance and _scene_liked_dir is not None:
                     run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
                     self._build_embed_guidance_wrapper(model, _scene_liked_dir, embed_guidance_strength,
@@ -10389,6 +10386,11 @@ class FunPackLTXAVSceneChainSampler:
                         model, _dynashift_negatives, dynashift_strength, dynashift_threshold,
                         raw_cond=_raw_scene_cond, ramp_fn=_steer_ramp,
                         positives=_dynashift_positives)
+                # After the additive guidances so it rescales what they produced; before
+                # output_guidance, which corrects the final prediction.
+                if self._tsr_k != 1.0:
+                    run_mechanisms.append(f"decisiveness(k={self._tsr_k:.3f})")
+                    self._build_tsr_wrapper(model, self._tsr_k)
                 if output_guidance and _output_value_fn is not None:
                     # Installed outermost (after embed_guidance/score_slider/dynashift) so it
                     # corrects whatever prediction those already produced, not the raw base one.
