@@ -33,7 +33,7 @@ _CAMERA_VERBS = (r"(?:moves?|pushes|pulls|pans|tilts|zooms|tracks|follows|drifts
                  r"starts|begins|continues|lingers|settles|zoom|pan|tilt|push|pull)")
 CAMERA = re.compile(
     r"\b(?:zoom(?:s|ed|ing)?\s+(?:in|out)|zoom-(?:in|out)|dolly|rack(?:s|ing)? focus|close-?up|"
-    r"pov|handheld|wide shot|wide-angle shot|tracking shot|crane shot|static shot|whip pan|"
+    r"handheld|wide shot|wide-angle shot|tracking shot|crane shot|static shot|whip pan|"
     r"push[- ]in|pull[- ]out|camera shake)\b"
     r"|\bcamera(?:'s)?\s+(?:\w+ly\s+)?" + _CAMERA_VERBS + r"\b"
     r"|\bcamera(?:'s)? (?:movement|motion|move)\b"

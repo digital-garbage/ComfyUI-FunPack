@@ -332,3 +332,18 @@ def test_shortcut_texts_come_from_the_library(monkeypatch):
         "b": {"enabled": False, "replacements": ["Disabled but long enough text."]},
         "c": {"enabled": True, "replacements": ["short"]}}})
     assert conditioning._shortcut_texts() == ["A long enough replacement text."]
+
+
+@pytest.mark.parametrize("view", sc.VIEWS)
+def test_a_view_is_not_a_camera_move(view):
+    assert not sc.CAMERA.search(sc.CUT.sub("", view + "."))
+
+
+def test_a_shot_that_was_given_a_view_still_gets_its_move():
+    pytest.importorskip("spacy")
+    p = HEAD + "[Shot 1] <Subject 1> waves. [Shot 2] <Subject 2> touches <Subject 2>'s chin."
+    for seed in range(12):
+        viewed, added = sc.add_shot_views(p, seed=seed, chance=1.0)
+        assert added
+        _out, rep = sc.add_camera_moves(viewed, seed=seed, chance=1.0)
+        assert rep[1]["move"], (added, rep[1]["why"])
