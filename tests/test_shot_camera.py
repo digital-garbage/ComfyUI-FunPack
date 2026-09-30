@@ -370,3 +370,28 @@ def test_the_phrases_we_write_never_say_the_camera_pulls_out():
     """Only what the rewriter writes; a shortcut may say it as an action."""
     for group in (sc.MOVES_DETAIL, sc.MOVES_OTHER, sc.MOVES_TRAVEL, sc.MOVES_THEN, sc.MOVES_FINISH):
         assert not any("pulls out" in m for m in group), group
+
+
+def test_words_the_rewriter_wrote_never_become_targets():
+    """'The camera pans from the shot transitions to the tip': the cut opener was read as
+    the shot's own content."""
+    pytest.importorskip("spacy")
+    P = (HEAD + "[Shot 1] <Subject 1> waves. [Shot 2] At 00:04.000, the shot transitions to the next "
+         "moment. Side view. <Subject 2> touches <Subject 2>'s chin, then reaches for the lamp.")
+    _out, rep = sc.add_camera_moves(P, seed=1, chance=1.0)
+    m = rep[1]["move"] or ""
+    assert "transition" not in m and "moment" not in m and "view" not in m.lower(), m
+    assert "chin" in m or "lamp" in m
+
+
+def test_the_full_pipeline_output_has_no_own_words_in_a_move():
+    pytest.importorskip("spacy")
+    P = (HEAD + f"[Shot 1] {PA} [Shot 2] {PB} {PC} " + MUSIC)
+    for seed in range(20):
+        a, _ = sc.add_shot_cuts(P, 12, seed=seed, chance=1.0, pieces=PIECES)
+        b, _ = sc.add_shot_views(a, seed=seed, chance=1.0)
+        _out, rep = sc.add_camera_moves(b, seed=seed, chance=1.0)
+        for r in rep:
+            t = (r["target"] or "").lower()
+            assert not any(w in t for w in ("transition", "moment", "beat", "new angle", "new view",
+                                            "switch", "changes")), t

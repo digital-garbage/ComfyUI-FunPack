@@ -232,7 +232,7 @@ def add_camera_moves(text, seed=None, chance=1.0):
     bodies = [text[m.end():(marks[i + 1].start() if i + 1 < len(marks) else len(text))]
               for i, m in enumerate(marks)]
     parts = [_split_sound(b) for b in bodies]
-    cands = [candidates(p[0]) for p in parts]
+    cands = [candidates(own_words_removed(p[0])) for p in parts]
     header_lemmas = {c[0] for c in candidates(header)}
     # In (nearly) every shot = about the whole prompt, not this shot. 70%: with three shots a
     # noun shared by two of them is still a topic of those two, only all three is a constant.
@@ -326,7 +326,7 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
         return text, info
     header = text[:marks[0].start()]
     parts = [_split_sound(b) for b in bodies]
-    cands = [candidates(p[0]) for p in parts]
+    cands = [candidates(own_words_removed(p[0])) for p in parts]
     header_lemmas = {c[0] for c in candidates(header)}
     need = max(2, math.ceil(0.7 * len(bodies))) if len(bodies) > 1 else 10 ** 9
     seen = {}
@@ -413,3 +413,22 @@ def add_shot_views(text, seed=0, chance=0.4):
             last = view
         out.append(m.group(0) + body)
     return "".join(out), added
+
+
+_VIEW_SENTENCE = re.compile(r"^\s*(?:" + "|".join(re.escape(v) for v in VIEWS) + r")\.\s*", re.I)
+
+
+def own_words_removed(picture):
+    """`picture` without what this module wrote into it (its own cut openers and views) and
+    without the bare cut words of a user-written opener ("At 00:03.500, the camera cuts to"),
+    whose content after them is kept: those words are not the shot's content and must never
+    become a target or a topic."""
+    picture = _OUR_OPENER.sub("", picture, count=1)
+    picture = _CUT_WORDS.sub("", picture, count=1)
+    return _VIEW_SENTENCE.sub("", picture, count=1)
+
+
+_OUR_OPENER = re.compile(r"^\s*At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in CUT_OPENERS)
+                         + r")\.\s*", re.I)
+_CUT_WORDS = re.compile(r"^\s*(?:At \d\d:\d\d\.\d{3},\s*)?(?:the\s+)?(?:camera|shot)\s+"
+                        r"(?:cuts|transitions|changes|switches)\s+to\b\s*", re.I)
