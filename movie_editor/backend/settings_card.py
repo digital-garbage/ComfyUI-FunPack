@@ -344,7 +344,7 @@ _EDITOR_DEFAULTS = {
     "camera_moves": False,
     "camera_moves_chance": 0.7,
     "shot_cuts": False,
-    "shot_cut_chance": 0.5,
+    "shot_cut_chance": 0.0,
     "shot_views": False,
     "shot_view_chance": 0.4,
     "h3_phrase_variability": 0.0,
