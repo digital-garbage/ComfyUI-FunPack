@@ -163,3 +163,31 @@ def test_a_shot_that_opens_with_a_cut_is_not_taken_for_having_a_camera_move():
     assert rep[1]["move"] and "already" not in rep[1]["why"]
     p2 = HEAD + "[Shot 1] <Subject 1> raises <Subject 1>'s hand as the camera pushes in slowly."
     assert "already" in sc.add_camera_moves(p2)[1][0]["why"]
+
+
+@pytest.mark.parametrize("text", [
+    "<Subject 1> tilts <Subject 1>'s head up and down.",
+    "<Subject 1> rolls onto <Subject 1>'s side and pulls out a knife.",
+    "<Subject 1> looks at the camera and smiles, pushes in the last piece.",
+    "<Subject 1>'s back arcs, then <Subject 2> focuses on the screen.",
+    "<Subject 1> moves up and down, then pans <Subject 1>'s gaze across the room.",
+])
+def test_body_movement_and_looking_at_the_camera_are_not_camera_moves(text):
+    assert not sc.CAMERA.search(sc.CUT.sub("", text))
+
+
+@pytest.mark.parametrize("text", [
+    "The camera pushes in slowly toward <Subject 1>.",
+    "Camera pans left across the room.",
+    "Slow zoom in on <Subject 1>'s face.",
+    "<Subject 1> waves. Pan right to reveal the door.",
+    "A tracking shot follows <Subject 1>.",
+    "Rack focus to the window.",
+    "The camera slowly drifts upward.",
+])
+def test_real_camera_moves_are_still_found(text):
+    assert sc.CAMERA.search(sc.CUT.sub("", text))
+
+
+def test_a_cut_alone_is_not_a_camera_move():
+    assert not sc.CAMERA.search(sc.CUT.sub("", "At 00:03.500, the camera cuts to <Subject 2>."))

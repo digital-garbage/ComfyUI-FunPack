@@ -23,10 +23,23 @@ AUDIO = re.compile(r"\b(music|soundtrack|score|melody|instrumental|beat|bassline
 # H3's own vocabulary (VIDEO_PROMPT_WRITING_GUIDE_base_en.md): a shot opening "the camera cuts
 # to" is a cut, not a camera move, and must not make the shot look like it already has one.
 CUT = re.compile(r"\b(?:the )?(?:camera|shot) (?:cuts|transitions|changes|switches) to\b", re.I)
-CAMERA = re.compile(r"\b(camera|zoom(?:s|ing)?|close-?up|pan(?:s|ning)?|dolly|tracking|"
-                    r"rack(?:s|ing)? focus|focus(?:es|ing)? (?:on|at)|tilt(?:s|ing)?|rotate|orbit|"
-                    r"push(?:es)?[- ]in|pull(?:s)?[- ](?:out|back)|arc(?:s)? |truck(?:s|ing)?|"
-                    r"pedestal|roll(?:s)? (?:clockwise|counter)|pov|wide shot|handheld|crane)\b", re.I)
+# Whether a shot ALREADY has a camera move. Words like tilt, roll, pull, push, arc, focus are
+# ordinary body movement ("tilts <Subject 1>'s head up and down", "pulls out a knife"), and
+# "the camera" is often only where someone is looking, so those count only when the CAMERA
+# does them, or when a sentence opens with the bare camera verb ("Pan right to reveal...").
+_CAMERA_VERBS = (r"(?:moves?|pushes|pulls|pans|tilts|zooms|tracks|follows|drifts|circles|orbits|"
+                 r"rises|lowers|glides|sweeps|racks|arcs|dollies|trucks|rolls|rotates|holds|"
+                 r"shakes|stays|remains|sways|slides|cranes|swings|reframes|widens|tightens|"
+                 r"starts|begins|continues|lingers|settles|zoom|pan|tilt|push|pull)")
+CAMERA = re.compile(
+    r"\b(?:zoom(?:s|ed|ing)?\s+(?:in|out)|zoom-(?:in|out)|dolly|rack(?:s|ing)? focus|close-?up|"
+    r"pov|handheld|wide shot|wide-angle shot|tracking shot|crane shot|static shot|whip pan|"
+    r"push[- ]in|pull[- ]out|camera shake)\b"
+    r"|\bcamera(?:'s)?\s+(?:\w+ly\s+)?" + _CAMERA_VERBS + r"\b"
+    r"|\bcamera(?:'s)? (?:movement|motion|move)\b"
+    r"|(?:^|[.!?]\s+)(?:slowly |quickly |smoothly )?(?:pan|tilt|truck|pedestal|arc|orbit|roll|"
+    r"push in|pull out|pull back|zoom|track|dolly|crane)\b",
+    re.I)
 GENERIC = {"camera", "video", "scene", "shot", "frame", "background", "foreground", "view",
            "image", "screen", "moment", "time", "way", "side", "front", "middle", "one",
            "other", "something", "everything", "thing", "music", "sound", "style", "lighting",
