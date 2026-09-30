@@ -193,10 +193,12 @@ def candidates(picture):
     return out
 
 
-def _score(c):
+def _score(c, prior=None):
+    """How much `c` deserves the camera: what it is in its own prompt (an owned part, an object
+    of a verb), plus, when given, `prior`'s bonus for words the user's prompts keep returning to."""
     lemma, _text, owned, pos, dep = c
     return ((2 if owned or lemma in PARTS else 0) + (1 if dep in ("dobj", "pobj") else 0)
-            - pos * 1e-4)
+            + (prior or {}).get(lemma, 0.0) - pos * 1e-4)
 
 
 def _name(c):
@@ -224,12 +226,14 @@ def _pick(options, last, rng):
     return rng.choice(pool) if rng else pool[0]
 
 
-def _plan(pool, last, rng):
+def _plan(pool, last, rng, prior=None):
     """-> (moves text, target description, opening template). Fixed and minimal without
     `rng` (one move, X -> Y when the shot has two topics); with it, how many moves, whether
     they travel and which words are all drawn, so no shot pattern repeats by construction."""
     topics = _topics(pool)
-    best = max(pool, key=_score)
+    best = max(pool, key=lambda c: _score(c, prior))
+    if prior and len(topics) > 2:                 # the two it cares about most, in text order
+        topics = sorted(sorted(topics, key=lambda c: -_score(c, prior))[:2], key=lambda c: c[3])
     if rng is None:
         k, travel = 1, len(topics) >= 2
     else:
@@ -257,7 +261,7 @@ def _plan(pool, last, rng):
     return " ".join(sentences), desc, opening
 
 
-def add_camera_moves(text, seed=None, chance=1.0):
+def add_camera_moves(text, seed=None, chance=1.0, prior=None):
     """-> (new prompt, [per-shot report dicts]). Unchanged when there is no `[Shot N]`.
 
     `seed=None`: one plain move per shot (deterministic). With a `seed`, each shot is left
@@ -283,9 +287,10 @@ def add_camera_moves(text, seed=None, chance=1.0):
     report, out, last = [], [header], None
     for i, m in enumerate(marks):
         picture, sound = parts[i]
-        entry = {"shot": int(m.group(1)), "move": None, "target": None, "why": ""}
+        entry = {"shot": int(m.group(1)), "move": None, "target": None, "why": "", "lemmas": []}
         rng = random.Random(f"{seed}:{i}") if seed is not None else None
         pool = [c for c in cands[i] if c[0] not in constant]
+        entry["lemmas"] = [c[0] for c in pool if _score(c) > 0.5]      # the words this shot dwells on
         if CAMERA.search(CUT.sub("", picture)):
             entry["why"] = "already has a camera move"
         elif not pool:
@@ -293,7 +298,7 @@ def add_camera_moves(text, seed=None, chance=1.0):
         elif rng is not None and rng.random() >= chance:
             entry["why"] = "left as written by chance"
         else:
-            moves, desc, opening = _plan(pool, last, rng)
+            moves, desc, opening = _plan(pool, last, rng, prior)
             entry.update(move=moves, target=desc)
             last = opening
             core = picture.rstrip()
@@ -470,3 +475,16 @@ _OUR_OPENER = re.compile(r"^\s*At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(
                          + r")\.\s*", re.I)
 _CUT_WORDS = re.compile(r"^\s*(?:At \d\d:\d\d\.\d{3},\s*)?(?:the\s+)?(?:camera|shot)\s+"
                         r"(?:cuts|transitions|changes|switches)\s+to\b\s*", re.I)
+
+
+def content_fingerprint(text):
+    """A hash of a prompt's own content: the same whatever cut times, openers, views or shot
+    labels this module added on that run, so regenerating one prompt is one prompt."""
+    import hashlib
+    body = re.sub(r"\[\s*Shot\s+\d+\s*\]", " ", text or "", flags=re.I)
+    body = re.sub(r"At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in CUT_OPENERS) + r")\.",
+                  " ", body, flags=re.I)
+    body = re.sub(r"\s+", " ", body)
+    body = re.sub(r"(?:^|(?<=[.!?]\s))(?:" + "|".join(re.escape(v) for v in VIEWS) + r")\.", " ", body)
+    body = re.sub(r"\s+", " ", body).strip().lower()
+    return hashlib.md5(body.encode("utf-8", "replace")).hexdigest()
