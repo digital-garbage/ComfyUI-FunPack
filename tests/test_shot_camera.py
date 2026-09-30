@@ -417,3 +417,20 @@ def test_a_move_never_ends_on_a_dangling_word():
     P = HEAD + "[Shot 1] <Subject 1> touches the base, then the skin, while <Subject 2> watches."
     _out, rep = sc.add_camera_moves(P, seed=1, chance=1.0)
     assert rep[0]["move"] is None
+
+
+def test_some_shots_hold_still_on_one_object_and_pans_are_the_minority():
+    """Not every shot is a move: a static focus is part of the mix, and X -> Y is rarer than it."""
+    pytest.importorskip("spacy")
+    kinds = {"hold": 0, "pan": 0, "other": 0}
+    for seed in range(300):
+        _o, rep = sc.add_camera_moves(TWO, seed=seed)
+        m = rep[0]["move"]
+        if "holds steady" in m or "stays still" in m or "stays fixed" in m:
+            kinds["hold"] += 1
+        elif " from " in m and " to " in m and " Then" not in m:
+            kinds["pan"] += 1
+        else:
+            kinds["other"] += 1
+    assert kinds["hold"] > 20 and 0 < kinds["pan"] < kinds["other"], kinds
+    assert kinds["pan"] < 0.3 * 300, kinds

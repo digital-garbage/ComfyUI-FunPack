@@ -61,7 +61,10 @@ MOVES_THEN = ("Then the camera pans to {y}.", "Then the camera racks focus to {y
 MOVES_FINISH = ("Then the camera zooms out.", "Then the camera pulls back.",
                "Then the camera pulls back to a wider view.")
 COUNT_WEIGHTS = (6, 3, 1)      # one move / two / three, in a shot that gets any
-TRAVEL_SHARE = 0.5             # of one-move shots with two topics, how many travel X -> Y
+TRAVEL_SHARE = 0.25            # of one-move shots with two topics, how many travel X -> Y
+HOLD_SHARE = 0.25              # of the other one-move shots, how many stay still on one thing
+MOVES_HOLD = ("The camera holds steady on {x}.", "The camera stays still, focused on {x}.",
+              "The camera stays fixed, focused on {x}.")
 DETERMINERS = {"the", "a", "an", "this", "that", "these", "those"}
 POSSESSIVE_PRONOUNS = {"his", "her", "their", "its", "my", "your", "our"}
 
@@ -277,6 +280,10 @@ def _plan(pool, last, rng, prior=None):
         x, y = _name(topics[0]), _name(topics[-1])
         move = _pick(MOVES_TRAVEL, last, rng)
         return move.format(x=x, y=y), f"{x} -> {y}", move
+    if rng is not None and k == 1 and rng.random() < HOLD_SHARE:
+        hold = _pick(MOVES_HOLD, last, rng)              # some shots want one fixed focus
+        target = _name(best)
+        return hold.format(x=target), target, hold
     first = topics[0] if (k > 1 and topics) else best
     moves = MOVES_DETAIL if (first[2] or first[0] in PARTS) else MOVES_OTHER
     opening = _pick(moves, last, rng)
