@@ -14,6 +14,11 @@
       .filter((sc) => sc[field].length);
   }
 
+  // What the settings list shows for a saved shot, so it can be recognised and forgotten.
+  function label(s) {
+    return `Shot ${s.shot} — ${(s.raw || s.text || "").slice(0, 70)}`;
+  }
+
   // One page of rows. -> {nodes, collect()}; collect() -> {choices, decisions}.
   function movesPage(scenes) {
     const state = new Map();
@@ -36,6 +41,7 @@
           const lemmas = st.picks.length ? st.picks : [s.auto_lemma];
           choices[s.key] = st.mode === "none" ? { mode: "none", lemma: null }
             : { mode: st.mode, lemma: lemmas[0], lemmas };
+          choices[s.key].label = label(s);
           decisions.push({ auto: s.auto_lemma, picked: st.mode === "none" ? [] : lemmas, mode: st.mode });
         }));
         return { choices, decisions };
@@ -64,6 +70,7 @@
           if (st.mode === "none") choices[s.key] = { mode: "none" };
           else if (st.picks.length) choices[s.key] = { mode: "pick", views: st.picks.slice() };
           else choices[s.key] = { mode: "auto" };
+          choices[s.key].label = label(s);
           // Accepting "Auto" is not a pick: the draw may land on any allowed view.
           decisions.push({ auto: s.auto, picked: st.mode === "none" ? [] : st.picks, traits: s.traits });
         }));
@@ -163,7 +170,7 @@
   // Why no shot was offered a view: the honest reason per shot.
   function whyNone(scenes, saved) {
     const all = scenes.flatMap((sc) => sc.views || []);
-    if (!all.length) return "a view only opens shots 2 and later, so the prompt needs two or more [Shot N] blocks.";
+    if (!all.length) return "the prompt has no [Shot N] block to open with a view.";
     return all.map((s) => {
       if (s.already) return `shot ${s.shot} already states “${s.stated}”`;
       if (saved[s.key]) return `shot ${s.shot} is already decided (forget it in Settings ▸ Refinement & Taste)`;

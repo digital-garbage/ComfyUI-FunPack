@@ -610,7 +610,7 @@ def view_options(text, stats=None):
     marks = list(SHOT.finditer(text or ""))
     out = []
     for i, m in enumerate(marks):
-        if not i:
+        if not i and len(marks) > 1:        # see add_shot_views: a lone shot may take a view
             continue
         end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
         picture, _sound = _split_sound(text[m.end():end])
@@ -626,17 +626,18 @@ def view_options(text, stats=None):
 
 
 def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None, skipped=None):
-    """-> (new prompt, [{"shot", "view", "traits"}]). Shots 2+ that state no view get one of the
+    """-> (new prompt, [{"shot", "view", "traits"}]). Shots 2+ (or the only shot) that state no view get one of the
     views that can show them as a sentence of its own (after the cut opener, if there is one),
     never the same as the shot before, drawn per shot from the seed and weighted by `stats`
     (what ratings taught). `choices` {shot_key: {"mode": "auto"|"none"|"pick", "view": str}}:
     a person's pick is always used, "none" leaves the shot alone. `skipped`, if a list, gets one
     "shot N: reason" per shot that got no view."""
     marks = list(SHOT.finditer(text or ""))
-    if len(marks) < 2:
-        if skipped is not None and marks:
-            skipped.append("only one [Shot N]: a view opens shots 2 and later")
+    if not marks:
         return text, []
+    # Shot 1 of several may sit on a reference image or a pinned first frame, which a view would
+    # contradict, so views open shots 2+. A prompt with ONE shot has nothing else to open.
+    lone = len(marks) == 1
     out, added, last = [text[:marks[0].start()]], [], None
     for i, m in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
@@ -644,10 +645,10 @@ def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None, skipped=N
         rng = random.Random(f"{seed}:view:{i}")
         picture, sound = _split_sound(body)
         view = None
-        stated = VIEW_STATED.search(CUT.sub("", picture)) if i else None
+        stated = VIEW_STATED.search(CUT.sub("", picture)) if (i or lone) else None
         if stated and skipped is not None:
             skipped.append(f"shot {m.group(1)}: already states “{stated.group(0)}”")
-        if i and not stated:
+        if (i or lone) and not stated:
             traits = view_traits(picture)
             said = (choices or {}).get(shot_key(picture)) or {}
             allowed = allowed_views(traits)

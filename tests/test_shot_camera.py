@@ -302,7 +302,7 @@ def test_views_respect_chance_zero_and_a_view_already_stated():
     assert sc.add_shot_views(P, seed=1, chance=0.0) == (P, [])
     _out, added = sc.add_shot_views(P, seed=1, chance=1.0)
     assert [a["shot"] for a in added] == [3]
-    assert sc.add_shot_views("[Shot 1] only one.", seed=1, chance=1.0)[1] == []
+    assert sc.add_shot_views("[Shot 1] only one.", seed=1, chance=1.0)[1][0]["shot"] == 1   # a lone shot takes a view
 
 
 def test_a_view_goes_after_the_cut_opener_and_before_the_action():
@@ -449,8 +449,16 @@ def test_a_body_action_from_behind_is_not_a_stated_view():
 
 def test_views_say_why_a_shot_got_none():
     why = []
-    sc.add_shot_views("[Shot 1] A cat.", seed=1, chance=1.0, skipped=why)
-    assert "only one [Shot N]" in why[0]
+    sc.add_shot_views("[Shot 1] POV view, a cat.", seed=1, chance=1.0, skipped=why)
+    assert "already states" in why[0]
     why = []
     sc.add_shot_views("[Shot 1] A.\n[Shot 2] POV view, a dog.\n[Shot 3] A bird.", seed=1, chance=0.0, skipped=why)
     assert any("already states" in w for w in why) and any("by chance" in w for w in why)
+
+
+def test_a_lone_shot_can_take_a_view_but_shot_one_of_several_still_cannot():
+    out, added = sc.add_shot_views("[Shot 1] A cat sits.", seed=1, chance=1.0)
+    assert added and added[0]["shot"] == 1 and out.startswith("[Shot 1] ")
+    assert sc.view_options("[Shot 1] A cat sits.")[0]["shot"] == 1
+    _o, several = sc.add_shot_views("[Shot 1] A.\n[Shot 2] B.", seed=1, chance=1.0)
+    assert [a["shot"] for a in several] == [2]

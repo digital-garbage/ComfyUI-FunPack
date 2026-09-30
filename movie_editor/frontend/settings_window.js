@@ -228,16 +228,36 @@
       const m = await API.focusMemory();
       clear(box);
       const proj = window.Store?.get().project;
-      const rf = proj && window.StudioSettings ? window.StudioSettings.read(proj).rf : {};
-      const saved = Object.keys(rf.focus_choices || {}).length + Object.keys(rf.view_choices || {}).length;
-      box.append(actionRow("This project's saved choices",
-        saved ? `${saved} shot choice(s) saved; forgetting them makes Reactive focus ask again.`
-              : "Nothing saved: Reactive focus asks about every shot.",
-        "Forget…", () => {
-          if (!confirm("Forget this project's saved focus and view choices? Reactive focus will ask again.")) return;
-          window.StudioSettings.patchRefiner({ focus_choices: {}, view_choices: {} }, true);
-          reload();
-        }, { disabled: !saved }));
+      const rfNow = () => (window.Store?.get().project && window.StudioSettings
+        ? window.StudioSettings.read(window.Store.get().project).rf : {});
+      const rf = rfNow();
+      const moves = rf.focus_choices || {}, views = rf.view_choices || {};
+      const keys = [...new Set([...Object.keys(moves), ...Object.keys(views)])];
+      // Take saved choices back out of the project and write it NOW: waiting for the autosave
+      // lets a reload inside its delay bring them back.
+      const dropSaved = async (which) => {
+        const cur = rfNow();
+        const strip = (o) => Object.fromEntries(Object.entries(o || {}).filter(([k]) => !which.includes(k)));
+        window.StudioSettings.patchRefiner({ focus_choices: strip(cur.focus_choices), view_choices: strip(cur.view_choices) }, true);
+        try { await window.Store.flushSave?.(); } catch (_) {}
+        const left = Object.keys(rfNow().focus_choices || {}).concat(Object.keys(rfNow().view_choices || {}))
+          .filter((k) => which.includes(k)).length;
+        if (left) alert("Could not forget those choices — they are still in the project.");
+        reload();
+      };
+      box.append(actionRow("Saved shot choices in this project",
+        keys.length ? `${keys.length} shot(s) decided; forgetting one makes Reactive focus ask about it again.`
+                    : "Nothing saved: Reactive focus asks about every shot.",
+        "Forget all…", () => {
+          if (confirm("Forget all saved focus and view choices in this project? Reactive focus will ask again.")) dropSaved(keys);
+        }, { disabled: !keys.length, danger: true }));
+      keys.forEach((k) => {
+        const m = moves[k], v = views[k];
+        const what = [m && (m.mode === "none" ? "no move" : `${m.mode}: ${(m.lemmas || [m.lemma]).filter(Boolean).join(" → ")}`),
+          v && (v.mode === "none" ? "no view" : v.views ? `view: ${v.views.join(" / ")}` : `view: ${v.mode}`)]
+          .filter(Boolean).join(" · ");
+        box.append(actionRow((m?.label || v?.label || `Shot ${k.slice(0, 6)}…`), what, "Forget", () => dropSaved([k])));
+      });
       box.append(el("div", "sw-hint",
         `Remembered across all projects: ${m.prompts} prompt(s), ${m.shots} reviewed shot(s), ${m.kept} kept a move.`));
       m.words.forEach((w) => box.append(actionRow(w.word,

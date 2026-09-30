@@ -12,6 +12,7 @@
 - Export settings no longer prints a loader input the node no longer has (a stale `sla_enabled: on`) or SLA's settings while `sla` is off.
 
 ### Added
+- A prompt with a single `[Shot N]` can now take a view, and Reactive focus offers it. Settings lists every saved shot choice (readable label) with its own Forget, and writes the change to the project at once.
 - Settings ▸ Refinement & Taste lists what camera focus and views have learned, with Forget per word / view / everything, and a button to forget this project's saved shot choices.
 - Reactive focus shows each shot as typed (shortcuts unexpanded) and as written, lets you pick several views ("fine from any of these") and several targets in order (the camera travels from the first to the last).
 - Shot views now learn from ratings (liked = good, disliked = bad; picture-only dislikes teach nothing) and only offer views that can show the shot: a face shot never gets the view from behind, a back or someone leaving never a front/POV view. Reactive focus gains a second step to pick each shot's view.
