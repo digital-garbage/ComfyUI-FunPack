@@ -108,17 +108,52 @@ def _split_sound(body):
     return body, ""
 
 
-def _phrase(tok):
-    """A chunk head with the words that name it ("Subject1's hand", "red lips")."""
+# Nouns that only mean something as part of a bigger thing: "the base" of what?
+RELATIONAL = {"base", "tip", "top", "bottom", "side", "edge", "end", "middle", "part", "front",
+              "back", "surface", "inside", "outside", "center", "centre", "head", "bit", "area",
+              "spot", "line", "corner", "half"}
+
+
+def _words(tok, with_det=False):
     keep = {tok}
     for c in tok.children:
-        if c.dep_ in ("poss", "compound", "amod") and c.i < tok.i:
+        if c.i < tok.i and (c.dep_ in ("poss", "compound", "amod")
+                            or (with_det and c.dep_ == "det")):
             keep.add(c)
             if c.dep_ == "poss":
                 keep.update(g for g in c.children if g.dep_ == "case")
     toks = sorted(keep, key=lambda t: t.i)
-    text = " ".join(t.text for t in toks).strip().replace(" 's", "'s").replace(" ’s", "’s")
-    return text, any(c.dep_ == "poss" for c in tok.children)
+    return " ".join(t.text for t in toks).strip().replace(" 's", "'s").replace(" ’s", "’s")
+
+
+def _phrase(tok):
+    """-> (text, owned, has_of): a chunk head with the words that name it ("Subject1's hand",
+    "red lips", "base of the lamp"). An "of ..." that follows belongs to the noun and is kept:
+    a target cut off before it ("the base") names nothing."""
+    text = _words(tok)
+    has_of = False
+    for c in tok.children:
+        if c.dep_ == "prep" and c.lower_ == "of":
+            pobj = next((g for g in c.children if g.dep_ == "pobj"), None)
+            if pobj is not None:
+                text += " of " + _words(pobj, with_det=True)
+                has_of = True
+    return text, any(c.dep_ == "poss" for c in tok.children), has_of
+
+
+def _resolve(lemma, text, owned, has_of, names):
+    """The candidate's phrase made whole, or None when it cannot be: a relational noun with
+    nothing to be the base/tip/side OF, or a body part with no owner when the shot has more
+    than one person ("the skin": whose?). With exactly one person in the shot, they own it."""
+    if has_of or owned:
+        return text, True
+    if lemma in RELATIONAL:
+        return None
+    if lemma in PARTS:
+        if len(names) == 1:
+            return f"{next(iter(names))}'s {text}", True
+        return None
+    return text, owned
 
 
 def candidates(picture):
@@ -138,10 +173,13 @@ def candidates(picture):
             lemma = root.lemma_.lower()
             if root.dep_ == "pobj" and root.head.lower_ == "of":
                 continue                      # "a glass of wine": the glass is the thing
-            text, owned = _phrase(root)
+            text, owned, has_of = _phrase(root)
             if _is_subject(text) or lemma in GENERIC or STAND_IN.fullmatch(root.text):
                 continue
-            out.append((lemma, text, owned, chunk.start, root.dep_))
+            whole = _resolve(lemma, text, owned, has_of, set(STAND_IN.findall(hidden)))
+            if whole is None:
+                continue
+            out.append((lemma, whole[0], whole[1], chunk.start, root.dep_))
         return out
     for m in re.finditer(rf"(?:({'|'.join(NAMES)})'s|\b(his|her|their|the|a|an))\s+((?:\w+\s+)?\w+)",
                          hidden, re.I):

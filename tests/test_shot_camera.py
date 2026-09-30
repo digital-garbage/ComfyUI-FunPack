@@ -395,3 +395,25 @@ def test_the_full_pipeline_output_has_no_own_words_in_a_move():
             t = (r["target"] or "").lower()
             assert not any(w in t for w in ("transition", "moment", "beat", "new angle", "new view",
                                             "switch", "changes")), t
+
+
+def test_a_relational_noun_is_kept_with_what_it_is_part_of_or_dropped():
+    pytest.importorskip("spacy")
+    c = {x[0]: x[1] for x in sc.candidates(" <Subject 1> reaches for the base of the lamp.")}
+    assert c.get("base") == "base of the lamp"
+    assert "base" not in {x[0] for x in sc.candidates(" <Subject 1> looks at the base, then leaves.")}
+
+
+def test_an_unowned_body_part_needs_a_single_owner():
+    pytest.importorskip("spacy")
+    one = {x[0]: x[1] for x in sc.candidates(" <Subject 1> touches the skin.")}
+    assert one.get("skin") == "<Subject 1>'s skin" or "Mariel's skin" in one.values()
+    two = {x[0] for x in sc.candidates(" <Subject 1> touches the skin while <Subject 2> watches.")}
+    assert "skin" not in two
+
+
+def test_a_move_never_ends_on_a_dangling_word():
+    pytest.importorskip("spacy")
+    P = HEAD + "[Shot 1] <Subject 1> touches the base, then the skin, while <Subject 2> watches."
+    _out, rep = sc.add_camera_moves(P, seed=1, chance=1.0)
+    assert rep[0]["move"] is None
