@@ -3733,7 +3733,10 @@
   async function _generateRun(sceneIds, onlyScene, prefix, resetSession, extraOverrides) {
     _interrupted = false;
     if (!extraOverrides && window.ReactiveFocus && state.project) {
-      if (!(await window.ReactiveFocus.review(state.project, onlyScene ? [onlyScene] : sceneIds))) return false;
+      if (!(await window.ReactiveFocus.review(state.project, onlyScene ? [onlyScene] : sceneIds))) {
+        set({ gen: { state: "idle", promptId: null, media: [], msg: "Cancelled." } });
+        return false;
+      }
     }
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
