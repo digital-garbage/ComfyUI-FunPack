@@ -58,8 +58,8 @@ MOVES_TRAVEL = ("The camera pans from {x} to {y}.", "The camera racks focus from
 # Chained moves (varied mode): a follow-up to a first move, and a closing pull-back.
 MOVES_THEN = ("Then the camera pans to {y}.", "Then the camera racks focus to {y}.",
               "Then the camera pushes in toward {y}.")
-MOVES_FINISH = ("Then the camera pulls out.", "Then the camera zooms out.",
-               "Then the camera pulls out to a wider view.")
+MOVES_FINISH = ("Then the camera zooms out.", "Then the camera pulls back.",
+               "Then the camera pulls back to a wider view.")
 COUNT_WEIGHTS = (6, 3, 1)      # one move / two / three, in a shot that gets any
 TRAVEL_SHARE = 0.5             # of one-move shots with two topics, how many travel X -> Y
 DETERMINERS = {"the", "a", "an", "this", "that", "these", "those"}

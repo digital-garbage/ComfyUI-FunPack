@@ -360,3 +360,8 @@ def test_cut_times_split_the_scene_evenly_with_no_tiny_shots():
     assert all(b - a >= 2 for a, b in zip(edges, edges[1:]))
     assert sc.add_shot_cuts(P, 8)[1]["times"] == ["00:02.000", "00:04.000", "00:06.000"]
     assert sc.add_shot_cuts(P, 4)[1]["times"] == ["00:01.000", "00:02.000", "00:03.000"]
+
+
+def test_no_phrase_reads_as_the_camera_pulling_something_out():
+    for group in (sc.MOVES_DETAIL, sc.MOVES_OTHER, sc.MOVES_TRAVEL, sc.MOVES_THEN, sc.MOVES_FINISH):
+        assert not any("pulls out" in m for m in group), group
