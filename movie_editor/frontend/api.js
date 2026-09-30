@@ -173,6 +173,8 @@
     systemInfo: () => j("GET", API("/system/info")),
     focusOptions: (pid, sceneIds) => j("POST", API(`/projects/${pid}/focus_options`), { scene_ids: sceneIds }),
     focusLearn: (decisions, views) => j("POST", API("/focus/learn"), { decisions: decisions || [], views: views || [] }),
+    focusMemory: () => j("GET", API("/focus/memory")),
+    focusForget: (kind, name) => j("POST", API("/focus/memory/forget"), { kind, name }),
     gitStatus: () => j("GET", API("/git/status")),
     gitUpdate: (branch) => j("POST", API("/git/update"), branch ? { branch } : {}),
     gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),

@@ -3158,6 +3158,21 @@ if web is not None and PromptServer is not None:
             return web.json_response({"detail": f"Could not remember the choices: {e}"}, status=500)
         return web.json_response({"remembered": n})
 
+    @routes.get(UI_PREFIX + "/api/focus/memory")
+    async def _focus_memory(_req):
+        import asyncio
+        return web.json_response(await asyncio.to_thread(bridge._funpack_attr("focus_memory", "summary")))
+
+    @routes.post(UI_PREFIX + "/api/focus/memory/forget")
+    async def _focus_forget(req):
+        import asyncio
+        body = await req.json() if req.can_read_body else {}
+        kind, name = body.get("kind"), body.get("name")
+        if kind not in ("all", "word", "view") or (kind != "all" and not name):
+            return web.json_response({"detail": "Say what to forget: kind all, or word/view with a name."}, status=400)
+        done = await asyncio.to_thread(bridge._funpack_attr("focus_memory", "forget"), kind, name)
+        return web.json_response({"forgot": bool(done)})
+
     @routes.get(UI_PREFIX + "/api/git/status")
     async def _git_status(_req):
         return web.json_response(git_update.status())

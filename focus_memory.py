@@ -135,6 +135,44 @@ def learn_views(decisions):
     return n
 
 
+def summary(limit=40):
+    """What is remembered, for the person to read and prune: words (picked / replaced / merely
+    recurring) and views (good / bad, with the per-trait rows folded under their view)."""
+    data = _read()
+    picks, rejects, seen = (data.get("picks") or {}), (data.get("rejects") or {}), (data.get("seen") or {})
+    words = [{"word": w, "picks": int(picks.get(w, 0)), "rejects": int(rejects.get(w, 0)), "seen": int(seen.get(w, 0))}
+             for w in {*picks, *rejects, *seen}]
+    words.sort(key=lambda r: -(r["picks"] * 3 + r["rejects"] * 3 + r["seen"]))
+    views = [{"view": k, "good": g, "bad": b} for k, (g, b) in view_stats().items() if "@" not in k]
+    views.sort(key=lambda r: -(r["good"] + r["bad"]))
+    return {"words": words[:limit], "more": max(0, len(words) - limit), "views": views,
+            "prompts": int(data.get("prompts", 0)), "shots": int(data.get("shots", 0)),
+            "kept": int(data.get("kept", 0))}
+
+
+def forget(kind, name=None):
+    """Drop one remembered word (`kind="word"`), one view and its per-trait rows (`"view"`), or
+    everything (`"all"`). -> True if anything was removed."""
+    data = _read()
+    if kind == "all":
+        existed = bool(data)
+        data = {}
+    elif kind == "word":
+        existed = any(name in (data.get(k) or {}) for k in ("picks", "rejects", "seen"))
+        for k in ("picks", "rejects", "seen"):
+            (data.get(k) or {}).pop(name, None)
+    elif kind == "view":
+        views = data.get("views") or {}
+        gone = [k for k in views if k == name or k.startswith(f"{name}@")]
+        existed = bool(gone)
+        for k in gone:
+            views.pop(k)
+    else:
+        raise ValueError(f"unknown kind {kind!r}")
+    _save(data)
+    return existed
+
+
 def effective_chance(chance):
     """The configured chance of a move, pulled toward how often the user actually keeps one
     (of the shots they reviewed) once enough were reviewed."""

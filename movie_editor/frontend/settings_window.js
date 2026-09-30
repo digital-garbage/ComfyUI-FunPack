@@ -216,6 +216,46 @@
     return row;
   }
 
+  // ── Camera focus & views memory (shot_camera / focus_memory) ─────────────
+  // What Reactive focus and the ratings taught, with a way to take a wrong lesson back, plus the
+  // choices this project already saved (saved shots are not asked about again).
+  function focusMemoryRows() {
+    const box = el("div", "sw-rows");
+    const API = window.MovieEditorAPI;
+    const reload = () => fill().catch((e) => { clear(box); box.append(el("div", "sw-hint", `Could not read the memory: ${e.message}`)); });
+    const forget = (kind, name) => API.focusForget(kind, name).then(reload);
+    async function fill() {
+      const m = await API.focusMemory();
+      clear(box);
+      const proj = window.Store?.get().project;
+      const rf = proj && window.StudioSettings ? window.StudioSettings.read(proj).rf : {};
+      const saved = Object.keys(rf.focus_choices || {}).length + Object.keys(rf.view_choices || {}).length;
+      box.append(actionRow("This project's saved choices",
+        saved ? `${saved} shot choice(s) saved; forgetting them makes Reactive focus ask again.`
+              : "Nothing saved: Reactive focus asks about every shot.",
+        "Forget…", () => {
+          if (!confirm("Forget this project's saved focus and view choices? Reactive focus will ask again.")) return;
+          window.StudioSettings.patchRefiner({ focus_choices: {}, view_choices: {} }, true);
+          reload();
+        }, { disabled: !saved }));
+      box.append(el("div", "sw-hint",
+        `Remembered across all projects: ${m.prompts} prompt(s), ${m.shots} reviewed shot(s), ${m.kept} kept a move.`));
+      m.words.forEach((w) => box.append(actionRow(w.word,
+        `picked ${w.picks}× · replaced ${w.rejects}× · recurring in ${w.seen} prompt(s)`, "Forget",
+        () => forget("word", w.word))));
+      if (m.more) box.append(el("div", "sw-hint", `…and ${m.more} more words.`));
+      m.views.forEach((v) => box.append(actionRow(v.view,
+        `good ${v.good.toFixed(1)} · bad ${v.bad.toFixed(1)} (and per shot type)`, "Forget",
+        () => forget("view", v.view))));
+      box.append(actionRow("Forget everything",
+        "Wipes the recurring-word memory, picks, replaced words and view ratings.", "Clear…",
+        () => { if (confirm("Forget all remembered camera focus and view lessons?")) forget("all"); },
+        { danger: true }));
+    }
+    reload();
+    return box;
+  }
+
   // ── Trajectory probe ───────────────────────────────────────────────────
   // Every rating-driven mechanism only acts over the last half of a generation, so a
   // rating about MOTION arrives after motion was decided. The probe records what the model
@@ -1043,6 +1083,9 @@
         rows.append(actionRow("Export refinement key", "Download a key as <key>.json.", "⬇ Export…", () => M.exportRefinementKey?.()));
         rows.append(actionRow("Import refinement key", "Load a previously exported <key>.json onto this instance.", "Import…", () => M.importRefinementKeyFile?.()));
         wrap.append(rows);
+
+        wrap.append(el("div", "sw-rows-label", "Camera focus & views memory"));
+        wrap.append(focusMemoryRows());
 
         wrap.append(el("div", "sw-rows-label", "Trajectory probe"));
         wrap.append(probeRows());

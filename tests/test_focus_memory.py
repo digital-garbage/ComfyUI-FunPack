@@ -291,3 +291,17 @@ def test_raw_previews_keep_the_typed_shortcuts(monkeypatch):
         {"anchor": "", "scenes": ["$style [Shot 2] MISS CIPI"], "postfix": ""},
         [{"name": "style", "value": "intro [Shot 1] HH FF"}])
     assert raw == [{1: "HH FF", 2: "MISS CIPI"}]
+
+
+def test_what_is_remembered_can_be_read_and_taken_back(tmp_path, monkeypatch):
+    import focus_memory as fm
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    fm.learn([{"auto": "coat", "picked": ["cup"], "mode": "move"}])
+    fm.rate_views([{"view": "Side view", "traits": ["face"]}], -1)
+    s = fm.summary()
+    assert {w["word"] for w in s["words"]} >= {"cup", "coat"} and s["views"][0]["view"] == "Side view"
+    assert fm.forget("word", "cup") and "cup" not in {w["word"] for w in fm.summary()["words"]}
+    assert fm.forget("view", "Side view") and fm.view_stats() == {}     # per-trait rows go with it
+    assert not fm.forget("word", "never-heard-of-it")
+    fm.forget("all")
+    assert fm.summary()["words"] == [] and fm.summary()["shots"] == 0
