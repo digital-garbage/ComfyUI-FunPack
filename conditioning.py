@@ -3561,6 +3561,8 @@ MOVIE_EDITOR_FRESH_PROMPT_RATING = "__funpack_fresh_prompt__"
 
 _BASE_RATING_LABELS = [
     "-Just forget it-",
+    "Disliked: bad image",
+    "Disliked: bad composition",
     "Perfect",
     "Nailed it",
     "Missing details",
@@ -3577,7 +3579,8 @@ _BASE_RATING_LABELS = [
     "Awful",
 ]
 _NO_LOVED_LABELS = {
-    "-Just forget it-", "Perfect", "Awful", "Missing quality",
+    "-Just forget it-", "Perfect", "Awful", "Missing quality", "Disliked: bad image",
+    "Disliked: bad composition",
     "Missing details + quality", "Missing action + quality", "Wrong action + quality",
     MOVIE_EDITOR_CONTINUE_RATING,
     MOVIE_EDITOR_FRESH_PROMPT_RATING,
@@ -3633,6 +3636,12 @@ V2_RATING_PROFILES = {
     "Missing details + quality": {"key": "missing_details_quality", "reward": -0.40, "level": 2, "missing_axes": ["details", "quality"]},
     "Missing action + quality": {"key": "missing_action_quality", "reward": -0.55, "level": 1, "missing_axes": ["action", "quality"]},
     "Awful": {"key": "awful", "reward": -0.90, "level": 0, "missing_axes": ["details", "action", "quality"]},
+    # H3 follow-ups to Disliked: same key/reward as Awful, so every other consumer treats them
+    # as Awful; `axis` only tells the rated-dial learners which half was at fault.
+    "Disliked: bad image": {"key": "awful", "reward": -0.90, "level": 0, "axis": "image",
+                            "missing_axes": ["details", "action", "quality"]},
+    "Disliked: bad composition": {"key": "awful", "reward": -0.90, "level": 0, "axis": "composition",
+                                  "missing_axes": ["details", "action", "quality"]},
 }
 
 V2_FEEDBACK_AXES = ("details", "action", "quality")
@@ -10482,7 +10491,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     except ImportError:
                         from negative_memory import consume_pending, is_negative_profile, \
                             is_positive_profile
-                    if is_negative_profile(learning_profile):
+                    if learning_profile.get("axis") == "composition":
+                        consume_pending(refinement_key, False)   # picture was fine: not a bad latent
+                    elif is_negative_profile(learning_profile):
                         n = consume_pending(refinement_key, True,
                                              rating_key=learning_profile.get("key"),
                                              bank="negative")
@@ -10505,6 +10516,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
                 _sm_reward = (0.0 if learning_profile.get("skip_value_function")
                               else float(learning_profile.get("reward", 0.0) or 0.0))
+                # A dislike blamed on the picture alone says nothing about the shot plan
+                # these four learners choose (composition); neutral for them.
+                if learning_profile.get("axis") == "image":
+                    _sm_reward = 0.0
                 try:
                     try:
                         from . import shot_memory as _sm, tsr as _tsr_mod, late_guidance as _lg, stas as _st

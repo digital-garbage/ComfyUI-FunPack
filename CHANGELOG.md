@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Added
+- H3 rating picker: "Disliked — bad image" and "Disliked — bad composition". Everything else reads them as Disliked; shot memory, decisiveness, late-branch and STAS learn only from composition blame, and DynaShift discards the latent when composition was the fault.
+- Late-branch guidance now measures how hard it actually pushed; a rating counts up to 2x (down to 0.25x) when that run was unusually strong (weak) for the key, after 3 runs of history.
+
+### Added
 
 - **Camera move** (experimental, H3, Engine ▸ Guidance): a pan (any direction) or zoom (in/out,
   aimed at any point) without camera words in the prompt. From a chosen sampling step on, the

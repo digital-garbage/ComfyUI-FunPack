@@ -57,6 +57,8 @@
   const H3_SCALE = [
     { label: "10", display: "Liked", reward: "+", hint: "This generation was good." },
     { label: "1", display: "Disliked", reward: "−", hint: "This generation was not." },
+    { label: "Disliked: bad image", display: "Disliked — bad image", reward: "−", hint: "Composition was fine; the picture itself was ruined." },
+    { label: "Disliked: bad composition", display: "Disliked — bad composition", reward: "−", hint: "Well drawn, but the shots/layout/movement were wrong." },
   ];
 
   // canonical label -> display name, for rendering a stored value (scene button, chips).
@@ -66,7 +68,7 @@
   const displayName = (label) => DISPLAY_NAMES[label] || label;
 
   const NO_LOVED = new Set([
-    "Perfect", "Nailed it", "Awful", FORGET_LABEL,
+    "Perfect", "Nailed it", "Awful", FORGET_LABEL, "Disliked: bad image", "Disliked: bad composition",
     "Missing quality", "Missing details + quality", "Missing action + quality", "Wrong action + quality",
     // H3 scale (1-10): a bare number never reaches the label branch that applies the loved
     // boost (normalize_refiner_v2_rating), so the heart would silently do nothing. 10 already

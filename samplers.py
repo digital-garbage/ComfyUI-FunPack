@@ -904,6 +904,11 @@ class _InputSteer:
         # "cur": (step, push)}. A push made during step i is only usable from step i+1 on,
         # so a second call inside step i (a split batch, a hook group) never gets it.
         self._held = {}
+        self._hit, self._hits = 0.0, 0     # edit size / answer size, summed over steered calls
+
+    def effect(self):
+        """Mean relative size of the edits made, or None when none were."""
+        return self._hit / self._hits if self._hits else None
 
     def _where(self, args):
         c = args.get("c") if isinstance(args.get("c"), dict) else {}
@@ -971,6 +976,11 @@ class _InputSteer:
 
     def keep(self, args, denoised, steered):
         """Hold `steered - denoised` for the next step and return the model's own answer."""
+        try:
+            self._hit += float((steered - denoised).norm() / denoised.norm().clamp(min=1e-8))
+            self._hits += 1
+        except Exception:  # noqa: BLE001  # a measurement must never break sampling
+            pass
         if not self.enabled:
             return steered
         where = self._where(args)
@@ -4363,6 +4373,8 @@ class FunPackLTXAVSceneChainSampler:
                 print(f"[FunPackSceneChain] STAS: {'Active' if _n else 'Inactive'} | {_line}")
             if _late_stats is not None:
                 self._late_ran = getattr(self, "_late_ran", 0) + _late_stats["guided"]
+                _st_steer = _late_stats.get("steer")
+                self._late_effect = _st_steer.effect() if _st_steer is not None else None
                 print("[FunPackSceneChain] late-branch guidance: " + (
                     f"Active | guided {_late_stats['guided']} step call(s)" if _late_stats["guided"]
                     else "Inactive | " + (_late_stats["why"] or "no step call reached it, nothing guided")))
@@ -8891,7 +8903,7 @@ class FunPackLTXAVSceneChainSampler:
 
             old_wrapper = patched.model_options.get("model_function_wrapper")
             _w = float(w)
-            stats = {"guided": 0, "why": None}
+            stats = {"guided": 0, "why": None, "steer": None}
             # The wrapper lives in patched.model_options, so it must not hold `patched`: that
             # cycle is only freed by a full gc, which clears ComfyUI's weak link to the
             # parent copy first and leaves it tracking a dead model ("memory leak with model").
@@ -8900,6 +8912,7 @@ class FunPackLTXAVSceneChainSampler:
             # On H3 the push rides into the next step's input; the last step, whose answer
             # is the output, runs no weak copy at all.
             steer = _InputSteer(getattr(self, "_is_h3", False), "late-branch guidance")
+            stats["steer"] = steer
 
             def _guided(apply_fn, cond_only, args, final):
                 def _apply(x, t, **c):
@@ -9878,6 +9891,7 @@ class FunPackLTXAVSceneChainSampler:
         self._late_w, self._late_block = 0.0, int(late_guidance_block)
         self._stas_alpha, self._stas_block = None, int(stas_block)
         self._late_ran, self._stas_ran = 0, 0      # calls the features actually changed
+        self._late_effect = None                   # ponytail: last scene chunk's effect stands for the run
         self._tsr_acts = True                      # False: too weak on this schedule to be rated
         self._camera_move = None
         if camera_move != "off":
@@ -11211,7 +11225,9 @@ class FunPackLTXAVSceneChainSampler:
                      "late-branch guidance"),
                     (stas == "learned", self._stas_ran, _stas.DIAL, self._stas_alpha, "STAS")):
                 if _on and _ran and _v is not None:
-                    _dial.save_pending(refinement_key_input, _v)
+                    _dial.save_pending(refinement_key_input, _v,
+                                       getattr(self, "_late_effect", None) if _dial is _late.DIAL
+                                       else None)
                     continue
                 _dial.clear_pending(refinement_key_input)
                 if _on and self._is_h3:
