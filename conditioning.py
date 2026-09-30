@@ -9282,6 +9282,47 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                 "after": after, "status": "Prompt as encoded — enhancer off"})
 
     @staticmethod
+    def _v2_shot_views(text, where, seed, chance):
+        """`text` with a view (side, from above, POV...) opening some of its later shots."""
+        try:
+            try:
+                from . import shot_camera as _sc
+            except ImportError:
+                import shot_camera as _sc
+            out, added = _sc.add_shot_views(text, seed=seed, chance=chance)
+        except Exception as e:  # noqa: BLE001
+            print(f"[FunPackVideoRefinerV2] shot views: failed | {where}: {e}; prompt left as written")
+            return text
+        if _sc.SHOT.search(text or ""):
+            print("[FunPackVideoRefinerV2] shot views: " + (
+                f"Active | {where}: " + ", ".join(f"shot {a['shot']} {a['view']}" for a in added)
+                if added else f"Inactive | {where}: no shot got a view"))
+        return out
+
+    @staticmethod
+    def _v2_shot_cuts(text, where, seed, chance, seconds):
+        """`text` with cut times on its [Shot N] blocks, and a cut where a shot's point changes."""
+        try:
+            try:
+                from . import shot_camera as _sc
+            except ImportError:
+                import shot_camera as _sc
+            out, info = _sc.add_shot_cuts(text, seconds, seed=seed, chance=chance)
+        except Exception as e:  # noqa: BLE001
+            print(f"[FunPackVideoRefinerV2] shot cuts: failed | {where}: {e}; prompt left as written")
+            return text
+        if not info["before"]:
+            return text
+        if info["times"]:
+            grown = (f", {info['before']} -> {info['after']} shots" if info["after"] != info["before"]
+                     else "")
+            print(f"[FunPackVideoRefinerV2] shot cuts: Active | {where}: cut times "
+                  f"{', '.join(info['times'])} over {seconds:g}s{grown}")
+        else:
+            print(f"[FunPackVideoRefinerV2] shot cuts: Inactive | {where}: {info['why']}")
+        return out
+
+    @staticmethod
     def _v2_camera_moves(text, where, seed=None, chance=1.0):
         """`text` with a camera move added to each [Shot N] block that lacks one."""
         try:
@@ -10172,6 +10213,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
                   h3_phrase_emphasis=False, h3_phrase_variability=0.0, camera_moves=False, camera_moves_chance=0.7,
+                  shot_cuts=False, shot_cut_chance=0.5,
+                  shot_views=False, shot_view_chance=0.4,
                   prompt_enhance=False, prompt_enhance_system="", prompt_enhance_reference_intro="",
                   prompt_enhance_temperature=0.7, prompt_enhance_top_p=0.92,
                   prompt_enhance_max_length=400, prompt_enhance_thinking=False,
@@ -10847,6 +10890,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         # Camera moves for MiniMax's own `[Shot N]` blocks (not timeline scenes): after
         # shortcuts and $variables, before the enhancer, so the enhancer sees them.
+        if shot_cuts and not split_by_transitions:
+            prompt_to_encode = self._v2_shot_cuts(prompt_to_encode, "prompt", seed, shot_cut_chance, None)
+        if shot_views and not split_by_transitions:
+            prompt_to_encode = self._v2_shot_views(prompt_to_encode, "prompt", seed, shot_view_chance)
         _base_before_camera = prompt_to_encode
         if camera_moves and not split_by_transitions:
             prompt_to_encode = self._v2_camera_moves(prompt_to_encode, "prompt", seed, camera_moves_chance)
@@ -11163,6 +11210,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         split_scene_texts = [
                             _resolve_variables(t, _prompt_variables)[0] for t in split_scene_texts
                         ]
+                    if shot_cuts and split_scene_texts:
+                        _secs = (scene_segments or {}).get("seconds") or []
+                        split_scene_texts = [
+                            self._v2_shot_cuts(t, f"scene {_i + 1}", f"{seed}:{_i}", shot_cut_chance,
+                                               _secs[_i] if _i < len(_secs) else None)
+                            for _i, t in enumerate(split_scene_texts)]
+                    if shot_views and split_scene_texts:
+                        split_scene_texts = [self._v2_shot_views(t, f"scene {_i + 1}", f"{seed}:{_i}",
+                                                                 shot_view_chance)
+                                             for _i, t in enumerate(split_scene_texts)]
                     _scene_before_camera = list(split_scene_texts or [])
                     if camera_moves and split_scene_texts:
                         split_scene_texts = [self._v2_camera_moves(t, f"scene {_i + 1}", f"{seed}:{_i}",
@@ -14183,6 +14240,10 @@ class FunPackStudio:
             h3_phrase_emphasis=bool(rf.get("h3_phrase_emphasis", False)),
             camera_moves=bool(rf.get("camera_moves", False)),
             camera_moves_chance=float(rf.get("camera_moves_chance", 0.7)),
+            shot_cuts=bool(rf.get("shot_cuts", False)),
+            shot_cut_chance=float(rf.get("shot_cut_chance", 0.5)),
+            shot_views=bool(rf.get("shot_views", False)),
+            shot_view_chance=float(rf.get("shot_view_chance", 0.4)),
             h3_phrase_variability=float(rf.get("h3_phrase_variability", 0.0) or 0.0),
             prompt_enhance=bool(rf.get("prompt_enhance", False)),
             prompt_enhance_output=bool(rf.get("prompt_enhance_output", False)),

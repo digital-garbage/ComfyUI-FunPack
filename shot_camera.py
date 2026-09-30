@@ -265,3 +265,141 @@ def add_camera_moves(text, seed=None, chance=1.0):
         out.append(m.group(0) + picture + sound)
         report.append(entry)
     return "".join(out), report
+
+
+# ── shot cuts ───────────────────────────────────────────────────────────────────────
+# H3 wants every shot after the first to open with its cut time and a cut phrase
+# ("[Shot 2] At 00:03.000, the camera cuts to ..."), times increasing and inside the video.
+# Nothing in a prompt knows the video's length, so the caller hands it in (seconds).
+STAMP = re.compile(r"\b\d\d:\d\d\.\d{3}\b")
+CUT_OPENERS = ("the camera cuts to a new angle", "the shot transitions to the next moment",
+               "the shot changes to a new view", "the shot switches to the next beat")
+LEAD_CUT = re.compile(r"^\s*(?:the\s+)?(?:camera|shot)\s+(?:cuts|transitions|changes|switches)\s+to\b",
+                      re.I)
+MIN_SHOT_SECONDS = 2
+SENTENCE = re.compile(r"[^.!?]+[.!?]*\s*")
+
+
+def _stamp(t):
+    return f"{int(t) // 60:02d}:{int(t) % 60:02d}.000"
+
+
+def _sentence_topics(sentence, constant):
+    return {c[0] for c in candidates(sentence) if c[0] not in constant and _score(c) > 0.5}
+
+
+def _switch_point(picture, constant):
+    """Index of the first sentence whose topics share nothing with everything before it (and
+    both sides have some), or None: the shot's main point changes there."""
+    sentences = SENTENCE.findall(picture)
+    seen = set()
+    for j, sent in enumerate(sentences):
+        topics = _sentence_topics(sent, constant)
+        if j and seen and topics and not (topics & seen):
+            return j, sentences
+        seen |= topics
+    return None, sentences
+
+
+def add_shot_cuts(text, seconds, seed=0, chance=0.5):
+    """-> (new prompt, info). Shots whose main point changes are split in two; every shot after
+    the first then opens with its cut time, spread over `seconds` by text length and rounded
+    to whole seconds. A prompt that already carries cut times is left alone.
+    info = {"before", "after", "times": [...], "why": str}."""
+    marks = list(SHOT.finditer(text or ""))
+    info = {"before": len(marks), "after": len(marks), "times": [], "why": ""}
+    if not marks:
+        return text, info
+    if not seconds or seconds < MIN_SHOT_SECONDS:
+        info["why"] = "the video's length is not known here" if not seconds else "the video is too short"
+        return text, info
+    bodies = [text[m.end():(marks[i + 1].start() if i + 1 < len(marks) else len(text))]
+              for i, m in enumerate(marks)]
+    if any(STAMP.search(b[:60]) for b in bodies[1:]):
+        info["why"] = "cut times are already written, left as they are"
+        return text, info
+    header = text[:marks[0].start()]
+    parts = [_split_sound(b) for b in bodies]
+    cands = [candidates(p[0]) for p in parts]
+    header_lemmas = {c[0] for c in candidates(header)}
+    need = max(2, math.ceil(0.7 * len(bodies))) if len(bodies) > 1 else 10 ** 9
+    seen = {}
+    for lst in cands:
+        for lemma in {c[0] for c in lst}:
+            seen[lemma] = seen.get(lemma, 0) + 1
+    constant = {l for l, n in seen.items() if n >= need} | header_lemmas
+    blocks = []                                   # [picture text, sound text]
+    for i, (picture, sound) in enumerate(parts):
+        rng = random.Random(f"{seed}:cut:{i}")
+        j, sentences = _switch_point(picture, constant)
+        if j is not None and rng.random() < chance:
+            first, second = "".join(sentences[:j]), "".join(sentences[j:])
+            blocks.append([first.rstrip() + " ", ""])
+            second = re.sub(r"^\s*(?:then|next|after that|afterwards),?\s+", "", second, flags=re.I)
+            blocks.append([second[:1].upper() + second[1:], sound])
+        else:
+            blocks.append([picture, sound])
+    if len(blocks) > len(marks) and (len(blocks) > seconds or seconds / len(blocks) < MIN_SHOT_SECONDS):
+        blocks = [[p, s] for p, s in parts]         # not enough seconds for the splits
+    weights = [max(1, len(b[0].strip())) for b in blocks]
+    total = float(sum(weights))
+    times, acc = [], 0.0
+    for k in range(len(blocks) - 1):
+        acc += weights[k]
+        t = max(round(acc / total * seconds), (times[-1] + 1) if times else 1)
+        times.append(t)
+    if len(blocks) > 1 and times[-1] >= seconds:
+        info["why"] = f"{len(blocks)} shots do not fit in {seconds}s at whole seconds"
+        return text, info
+    out = [header]
+    for k, (picture, sound) in enumerate(blocks):
+        label = f"[Shot {k + 1}]"
+        body = picture
+        if k:
+            stamp = f"At {_stamp(times[k - 1])}, "
+            rng = random.Random(f"{seed}:opener:{k}")
+            if LEAD_CUT.match(body):
+                body = " " + stamp + LEAD_CUT.sub(lambda m: m.group(0).strip().lower(), body.lstrip(), 1)
+            else:
+                body = " " + stamp + rng.choice(CUT_OPENERS) + ". " + body.lstrip()
+        else:
+            body = body if body.startswith(" ") else " " + body
+        out.append(label + body + sound)
+    info.update(after=len(blocks), times=[_stamp(t) for t in times])
+    return "".join(out), info
+
+
+# ── views ───────────────────────────────────────────────────────────────────────────
+# Chosen, not detected: a prompt seldom says which view it wants. The user's own trusted
+# wording, verbatim. Shot 1 is skipped: it may sit on a reference image or a pinned first
+# frame, which a new view would contradict; every later shot starts on a new angle anyway.
+VIEWS = ("POV view", "POV view from above", "POV view from below", "Side view",
+         "View from above", "View from below", "View from behind", "Front view")
+VIEW_STATED = re.compile(r"\b(pov|(?:side|front|rear|back|top|overhead|bird'?s[- ]eye)[- ]view|"
+                         r"view from|from (?:above|below|behind))\b", re.I)
+OPENER = re.compile(r"^\s*At \d\d:\d\d\.\d{3},[^.!?]*[.!?]\s*")
+
+
+def add_shot_views(text, seed=0, chance=0.4):
+    """-> (new prompt, [{"shot", "view"}]). Shots 2+ that state no view get one of VIEWS as a
+    sentence of its own (after the cut opener, if there is one), never the same as the shot
+    before, drawn per shot from the seed."""
+    marks = list(SHOT.finditer(text or ""))
+    if len(marks) < 2:
+        return text, []
+    out, added, last = [text[:marks[0].start()]], [], None
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        body = text[m.end():end]
+        rng = random.Random(f"{seed}:view:{i}")
+        picture, sound = _split_sound(body)
+        if i and not VIEW_STATED.search(CUT.sub("", picture)) and rng.random() < chance:
+            view = rng.choice([v for v in VIEWS if v != last])
+            head = OPENER.match(picture)
+            cut = head.end() if head else len(picture) - len(picture.lstrip())
+            picture = picture[:cut].rstrip() + (" " if cut else " ") + view + ". " + picture[cut:].lstrip()
+            body = picture + sound
+            added.append({"shot": int(m.group(1)), "view": view})
+            last = view
+        out.append(m.group(0) + body)
+    return "".join(out), added

@@ -454,3 +454,10 @@ def test_active_prompt_template_defaults_to_none_applied():
     # A stored null must not become the string "None".
     assert Project.from_dict({"id": "p", "name": "n",
                               "active_prompt_template": None}).active_prompt_template == ""
+
+
+def test_scene_segments_carry_each_units_length_in_seconds():
+    from movie_editor.backend.timeline import Project, Scene, build_generation_scene_segments
+    p = Project(name="t", scenes=[Scene(id="a", text="one", frames=48, fps=24, frames_mode="custom",
+                                        fps_mode="custom")])
+    assert build_generation_scene_segments(p)["seconds"] == [2.0]

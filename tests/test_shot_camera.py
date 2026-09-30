@@ -221,3 +221,91 @@ def test_the_final_prompt_is_published_for_the_composer_with_the_enhancer_off():
     assert item["kind"] == "final" and item["scene"] == 1
     assert (item["before"], item["after"]) == ("before", "after with moves")
     assert run_phase._state()["enhanced"]["items"][0]["after"] == "after with moves"
+
+
+CUTS = ("Two friends in a sunlit loft, <Subject 1> is a tall woman, <Subject 2> is a man. "
+        "[Shot 1] <Subject 1> touches <Subject 1>'s chin and smiles. Then <Subject 2> opens the "
+        "window and the curtain sways. [Shot 2] <Subject 1> laughs and pours a glass of wine. "
+        "Upbeat jazz music plays.")
+
+
+def test_a_shot_whose_point_changes_is_cut_in_two_with_whole_second_times():
+    pytest.importorskip("spacy")
+    out, info = sc.add_shot_cuts(CUTS, 12, seed=1, chance=1.0)
+    assert (info["before"], info["after"]) == (2, 3)
+    assert info["times"] == ["00:04.000", "00:08.000"]
+    assert "[Shot 3] At 00:08.000," in out and "[Shot 2] At 00:04.000," in out
+    assert out.count("[Shot ") == 3 and out.endswith("Upbeat jazz music plays.")
+    assert "Then <Subject 2>" not in out
+
+
+def test_cut_times_rise_and_stay_inside_the_video():
+    pytest.importorskip("spacy")
+    for secs in (5, 9, 14, 30):
+        _out, info = sc.add_shot_cuts(CUTS, secs, seed=2, chance=1.0)
+        ts = [int(t[3:5]) + 60 * int(t[:2]) for t in info["times"]]
+        assert ts == sorted(set(ts)) and all(0 < t < secs for t in ts)
+
+
+def test_no_length_or_existing_times_or_no_room_leave_the_prompt_alone():
+    pytest.importorskip("spacy")
+    assert sc.add_shot_cuts(CUTS, None)[0] == CUTS and "length" in sc.add_shot_cuts(CUTS, None)[1]["why"]
+    assert sc.add_shot_cuts(CUTS, 1)[0] == CUTS
+    stamped = CUTS.replace("[Shot 2] ", "[Shot 2] At 00:05.000, the camera cuts to ")
+    out, info = sc.add_shot_cuts(stamped, 12, chance=1.0)
+    assert out == stamped and "already" in info["why"]
+    assert sc.add_shot_cuts("no shots", 10)[0] == "no shots"
+
+
+def test_chance_zero_still_stamps_the_existing_shots_but_splits_nothing():
+    pytest.importorskip("spacy")
+    out, info = sc.add_shot_cuts(CUTS, 10, seed=1, chance=0.0)
+    assert info["after"] == 2 and len(info["times"]) == 1 and "[Shot 2] At 00:" in out
+
+
+def test_shot_cuts_are_reproducible_from_the_seed():
+    pytest.importorskip("spacy")
+    assert sc.add_shot_cuts(CUTS, 12, seed=5, chance=1.0) == sc.add_shot_cuts(CUTS, 12, seed=5, chance=1.0)
+
+
+def test_refiner_wrapper_reports_cuts(capsys):
+    pytest.importorskip("spacy")
+    import conditioning
+    R = conditioning.FunPackVideoRefinerV2
+    out = R._v2_shot_cuts(CUTS, "scene 1", 1, 1.0, 12)
+    assert "shot cuts: Active" in capsys.readouterr().out and "00:04.000" in out
+    assert R._v2_shot_cuts(CUTS, "prompt", 1, 1.0, None) == CUTS
+    assert "shot cuts: Inactive" in capsys.readouterr().out
+
+
+def test_views_use_the_trusted_words_skip_shot_one_and_never_repeat():
+    P = HEAD + "[Shot 1] <Subject 1> waves. [Shot 2] <Subject 2> nods. [Shot 3] <Subject 1> smiles. [Shot 4] <Subject 2> sits."
+    for seed in range(30):
+        out, added = sc.add_shot_views(P, seed=seed, chance=1.0)
+        assert [a["shot"] for a in added] == [2, 3, 4]
+        assert all(a["view"] in sc.VIEWS for a in added)
+        assert all(a["view"] != b["view"] for a, b in zip(added, added[1:]))
+        assert out.startswith(HEAD + "[Shot 1] <Subject 1> waves. [Shot 2]")
+    assert len({tuple(a["view"] for a in sc.add_shot_views(P, seed=s, chance=1.0)[1]) for s in range(40)}) > 5
+
+
+def test_views_respect_chance_zero_and_a_view_already_stated():
+    P = HEAD + "[Shot 1] <Subject 1> waves. [Shot 2] Front view. <Subject 2> nods. [Shot 3] <Subject 1> smiles."
+    assert sc.add_shot_views(P, seed=1, chance=0.0) == (P, [])
+    _out, added = sc.add_shot_views(P, seed=1, chance=1.0)
+    assert [a["shot"] for a in added] == [3]
+    assert sc.add_shot_views("[Shot 1] only one.", seed=1, chance=1.0)[1] == []
+
+
+def test_a_view_goes_after_the_cut_opener_and_before_the_action():
+    P = HEAD + "[Shot 1] <Subject 1> waves. [Shot 2] At 00:04.000, the camera cuts to a new angle. <Subject 2> nods. " + MUSIC
+    out, added = sc.add_shot_views(P, seed=3, chance=1.0)
+    v = added[0]["view"]
+    assert f"a new angle. {v}. <Subject 2> nods." in out and out.endswith(MUSIC)
+
+
+def test_refiner_wrapper_reports_views(capsys):
+    import conditioning
+    P = HEAD + "[Shot 1] <Subject 1> waves. [Shot 2] <Subject 2> nods."
+    out = conditioning.FunPackVideoRefinerV2._v2_shot_views(P, "scene 1", 1, 1.0)
+    assert "shot views: Active" in capsys.readouterr().out and out != P

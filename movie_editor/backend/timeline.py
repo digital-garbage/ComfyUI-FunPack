@@ -794,13 +794,18 @@ def build_generation_scene_segments(project: Project, include_excluded: bool = F
     ]
     units = group_generative_units(scenes)
     out: list[str] = []
+    seconds: list[float] = []
     for i, (_uid, group) in enumerate(units):
         text = (gen_unit_root(group).text or "").strip()
         prev_root = gen_unit_root(units[i - 1][1]) if i > 0 else None
         trans = ((project.intro_transition or "").strip() if i == 0
                  else ((prev_root.transition_to_next if prev_root else "") or "").strip())
         out.append((trans + " " + text).strip() if trans else text)
-    return {"anchor": effective_anchor(project), "scenes": out,
+        root = gen_unit_root(group)
+        fps = max(1, int(root.eff_fps(project) or 1))
+        seconds.append(sum(int(g.eff_frames(project) or 0) for g in group) / fps)
+    # `seconds`: each unit's length, so a prompt can be given cut times that fit the video.
+    return {"anchor": effective_anchor(project), "scenes": out, "seconds": seconds,
             "postfix": effective_postfix(project)}
 
 
