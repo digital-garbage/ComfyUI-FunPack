@@ -14,3 +14,6 @@ gguf
 Pillow
 insightface
 opencv-python-headless
+# Picks the target of a camera move in [Shot N] prompts. Optional: without it (or without
+# its model, `python -m spacy download en_core_web_sm`) simpler word rules are used.
+spacy

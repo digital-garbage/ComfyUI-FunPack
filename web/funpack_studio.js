@@ -1138,6 +1138,11 @@ function openPanel(node) {
       settings.refiner.h3_phrase_emphasis = phraseEmph.checked;
     });
     body.append(row("Rating-driven phrase emphasis (H3)", phraseEmph));
+
+    const camMoves = el("input"); camMoves.type = "checkbox";
+    camMoves.checked = !!settings.refiner.camera_moves;
+    camMoves.addEventListener("change", () => { settings.refiner.camera_moves = camMoves.checked; });
+    body.append(row("Camera moves for [Shot N] (H3)", camMoves));
     body.append(el("div", "funpack-studio-hint",
       "EXPERIMENTAL, unvalidated. Boosts the attention paid to phrases the rating said were "
       + "MISSING, by biasing their attention logits in H3's packed stream. Needs a rated run "

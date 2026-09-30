@@ -119,6 +119,8 @@
       hint: "Puts each word back to its original strength after the change, so the result reads as 'less of that thing' rather than 'quieter prompt'. Off is the raw result." },
     { name: "h3_phrase_emphasis", label: "Rating-driven phrase emphasis (H3)", kind: "bool", default: false,
       hint: "EXPERIMENTAL, unvalidated. Boosts the attention paid to phrases the rating said were MISSING, by biasing their attention logits in H3's packed stream. Needs a rated run first. Turn it off if generations drift away from the prompt — and note it forces SLA to run dense." },
+    { name: "camera_moves", label: "Camera moves for [Shot N] (H3)", kind: "bool", default: false,
+      hint: "Adds a camera move (close-up, focus, zoom in...) to each [Shot N] block that has none, aimed at the most specific thing in it — a part of the subject, never the subject itself. No language model; instant. Blocks that already name a camera move, and music text, are left alone." },
     { name: "h3_phrase_variability", label: "Phrase emphasis variability", kind: "float", default: 0.0, min: 0.0, max: 1.0, step: 0.05,
       dependsOn: "h3_phrase_emphasis", dependsVals: [true],
       hint: "0 = only what the rating has cemented gets extra attention, nothing else. 1 = that emphasis is switched off entirely, so untrained phrasing and actions compete on equal footing and can bleed into the scene — including ones you have rated against before. Same bias channel as the toggle above, just scaled down." },

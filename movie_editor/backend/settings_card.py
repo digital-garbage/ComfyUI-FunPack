@@ -338,6 +338,7 @@ _EDITOR_DEFAULTS = {
     "h3_block_repeat_video_only": False,
     "h3_block_repeat_last_steps": 0,
     "h3_phrase_emphasis": False,
+    "camera_moves": False,
     "h3_phrase_variability": 0.0,
     "h3_repr_steering": False,
     "h3_repr_steering_block": "25",
