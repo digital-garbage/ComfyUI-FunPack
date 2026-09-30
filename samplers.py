@@ -23,14 +23,14 @@ try:
     from . import tsr as _tsr
     from . import late_guidance as _late
     from . import stas as _stas
-    from . import camera_noise as _camera
+    from . import camera_move as _camera
 except ImportError:  # flat import when ComfyUI loads the pack as a top-level module
     import funpack_log as _log
     import shot_memory as _shot_memory
     import tsr as _tsr
     import late_guidance as _late
     import stas as _stas
-    import camera_noise as _camera
+    import camera_move as _camera
 
 
 MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
@@ -3335,33 +3335,33 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 15, "min": 0, "max": 49,
                     "tooltip": "The block whose output is steered. The paper's best was ~30% deep (block 9 of 30).",
                 }),
-                "camera_noise": (list(_camera.MODES), {
+                "camera_move": (list(_camera.MODES), {
                     "default": "off",
-                    "tooltip": "EXPERIMENTAL. Writes a camera move into the starting noise, no prompt words: the same noise pattern travels across the clip (pan) or is scaled about a point (zoom in/out), and the model tends to draw the picture travelling with it. manual = the move set below. Empty starts only (not second passes or carried overlaps). No extra model call; sound noise not edited.",
+                    "tooltip": "EXPERIMENTAL, H3. A pan or zoom without camera words in the prompt: from one step on, the picture in the running latent is moved frame by frame (the noise stays untouched) and the model re-draws what it uncovers. It is a move of the picture the model made, not new 3D parallax. manual = the move set below. Empty starts only (not second passes or carried overlaps), not with context windows, and it needs cfg 1. No extra model call; sound not edited.",
                 }),
                 "camera_pan_x": ("FLOAT", {
                     "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05,
-                    "tooltip": "Share of the frame width the noise travels over the clip. Positive = camera moves right (the picture moves left), negative = left. 0 = none.",
+                    "tooltip": "Share of the frame width the picture travels over the clip. Positive = camera moves right (the picture moves left), negative = left. 0 = none.",
                 }),
                 "camera_pan_y": ("FLOAT", {
                     "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05,
-                    "tooltip": "Share of the frame height the noise travels over the clip. Positive = camera moves down, negative = up. 0 = none.",
+                    "tooltip": "Share of the frame height the picture travels over the clip. Positive = camera moves down, negative = up. 0 = none.",
                 }),
                 "camera_zoom": ("FLOAT", {
                     "default": 1.0, "min": 0.5, "max": 2.0, "step": 0.05,
-                    "tooltip": "Scale reached by the end of the clip. Above 1 = camera moves in, below 1 = out, 1 = none. Zooming in stretches the noise, which makes neighbouring values alike; keep it modest (under 1.5) until you have seen it work.",
+                    "tooltip": "Scale reached by the end of the clip. Above 1 = camera moves in, below 1 = out, 1 = none.",
                 }),
                 "camera_focus_x": ("FLOAT", {
                     "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
-                    "tooltip": "Where the zoom aims, left (0) to right (1). The point that stays put while everything else grows or shrinks around it.",
+                    "tooltip": "Where the zoom aims, left (0) to right (1): the point that stays put while everything else grows or shrinks around it.",
                 }),
                 "camera_focus_y": ("FLOAT", {
                     "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
                     "tooltip": "Where the zoom aims, top (0) to bottom (1).",
                 }),
-                "camera_amount": ("FLOAT", {
-                    "default": 0.8, "min": 0.0, "max": 0.95, "step": 0.05,
-                    "tooltip": "How much of the travelling noise each frame keeps; the rest is its own fresh noise. Higher = a more deliberate move, lower = looser.",
+                "camera_step": ("INT", {
+                    "default": 3, "min": 1, "max": 50,
+                    "tooltip": "The sampling step (counting from 1) from which the model sees the moved picture. Earlier = the model builds on the move for longer (a stronger move, more risk to the picture); later = closer to a plain pan of the finished video. A schedule with fewer steps uses its last step.",
                 }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
@@ -4140,11 +4140,6 @@ class FunPackLTXAVSceneChainSampler:
         noise = comfy.sample.prepare_noise(samples, int(seed))
         if getattr(self, "_shot_memory", None) is not None:
             noise = self._shot_memory.shape(noise, samples, _raw_cond(positive), record=True)
-        if getattr(self, "_camera_move", None) is not None:
-            noise, _cam_note = _camera.shape(noise, samples, self._camera_move, int(seed))
-            if _cam_note not in self._camera_said:
-                self._camera_said.add(_cam_note)
-                print(f"[FunPackSceneChain] camera noise: {_cam_note}")
 
         def _progress_cb(step, _denoised, _x, _total_steps):
             if pbar is not None:
@@ -4309,6 +4304,17 @@ class FunPackLTXAVSceneChainSampler:
             model, _late_stats = self._install_late_branch(model, self._late_block, self._late_w)
             _late_installed = model is not _model_before_late
 
+        # Outermost of everything above: it moves the picture the whole stack below sees, so
+        # every wrapper and block hook works in one consistent frame.
+        _camera_stats = None
+        if getattr(self, "_camera_move", None) is not None:
+            if bool(torch.count_nonzero(samples.unbind()[0] if getattr(samples, "is_nested", False)
+                                        else samples)):
+                print("[FunPackSceneChain] camera move: Inactive | this pass starts from a "
+                      "picture (second pass, latent anchor or carried overlap), so it stands down")
+            else:
+                model, _camera_stats = self._install_camera_move(model, self._camera_move, int(seed))
+
         _phrase_probe = self._install_phrase_probe(model, positive, latent)
         if _phrase_probe is not None:
             model = _phrase_probe[0]
@@ -4329,6 +4335,13 @@ class FunPackLTXAVSceneChainSampler:
                     noise_mask=latent.get("noise_mask"), seed=int(seed),
                     callback=_progress_cb if pbar is not None else None,
                 )
+            if _camera_stats is not None:
+                _steps = int(sigmas.shape[0]) - 1
+                print("[FunPackSceneChain] camera move: " + (
+                    f"Active | {self._camera_move.describe(_steps)}, {_camera_stats['moved']} "
+                    f"step call(s) moved" if _camera_stats["moved"] else
+                    "Inactive | no step call reached it"
+                    + (f" ({_camera_stats['why']})" if _camera_stats["why"] else "")))
             if _stas_report is not None:
                 _line, _n = _stas_report()
                 self._stas_ran = getattr(self, "_stas_ran", 0) + _n
@@ -5280,8 +5293,6 @@ class FunPackLTXAVSceneChainSampler:
                 cand_noise = comfy.sample.prepare_noise(samples, cand_seed)
                 if getattr(self, "_shot_memory", None) is not None:
                     cand_noise = self._shot_memory.shape(cand_noise, samples, _raw_cond(positive))
-                if getattr(self, "_camera_move", None) is not None:
-                    cand_noise, _ = _camera.shape(cand_noise, samples, self._camera_move, cand_seed)
                 comfy.sample.sample_custom(
                     model, cand_noise, float(cfg), sampler, probe_sigmas, positive, negative,
                     samples, noise_mask=probe_latent.get("noise_mask"), seed=cand_seed,
@@ -8732,6 +8743,79 @@ class FunPackLTXAVSceneChainSampler:
             _log.failed("FunPackSceneChain", "STAS", _e, "the run goes on without it")
             return model, None
 
+    def _install_camera_move(self, model, move, seed):
+        """Camera move (camera_move.py), H3. From `move.step` on, every model call sees the
+        picture's running latent moved frame by frame; the sampler's own state stays in the
+        original frame (each prediction is moved back) and the LAST call returns the model's own
+        prediction on the moved input. Returns (model, stats); the model comes back untouched,
+        with the reason in stats["why"], when it cannot be installed."""
+        stats = {"moved": 0, "why": None}
+        try:
+            patched = model.clone()
+            old = patched.model_options.get("model_function_wrapper")
+            # Not `patched`: a wrapper in its own model_options must not hold its owner.
+            span_source = types.SimpleNamespace(model=patched.model)
+            where = _InputSteer(True, "camera move")
+            gen_seed = (int(seed) ^ 0x5CA3E12A) & 0x7FFFFFFFFFFFFFFF
+
+            def _plain(apply_fn, args):
+                if old is not None:
+                    return old(apply_fn, args)
+                return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+            def _wrapper(apply_fn, args):
+                try:
+                    pos = where._where(args)
+                    if pos is None:
+                        return _plain(apply_fn, args)
+                    i, n, _key, _sched = pos
+                    c = args.get("c") if isinstance(args.get("c"), dict) else {}
+                    if (c.get("transformer_options") or {}).get("context_window") is not None:
+                        stats["why"] = "context windows"
+                        return _plain(apply_fn, args)
+                    if i < move.first_step(n):
+                        return _plain(apply_fn, args)
+                    x = args["input"]
+                    if x.dim() == 0 or int(x.shape[0]) != 1:
+                        stats["why"] = "a batched call (cfg above 1)"
+                        return _plain(apply_fn, args)
+                    span = _video_span(span_source, x)
+                    if span is not None:
+                        off, sz, shape = span
+                        cc, tt, hh, ww = (int(v) for v in tuple(shape)[-4:])
+                        vid = x[..., off:off + sz].reshape(cc, tt, hh, ww)
+                    elif x.dim() == 5:
+                        off, sz, vid = None, None, x[0]
+                    else:
+                        stats["why"] = "picture and sound could not be told apart in the latent"
+                        return _plain(apply_fn, args)
+
+                    def _put(latent, video):
+                        if off is None:
+                            return video[None]
+                        return torch.cat([latent[..., :off], video.reshape(*latent.shape[:-1], sz),
+                                          latent[..., off + sz:]], dim=-1)
+
+                    sigma = float(args["timestep"].max())
+                    gen = torch.Generator().manual_seed(gen_seed + int(i))
+                    moved_x = _put(x, _camera.warp(vid, move, sigma, gen))
+                    d = _plain(apply_fn, dict(args, input=moved_x))
+                    stats["moved"] += 1
+                    if i >= n - 1:
+                        return d                     # the model's own prediction, left moved
+                    dv = d[..., off:off + sz].reshape(cc, tt, hh, ww) if off is not None else d[0]
+                    return _put(d, _camera.unwarp(dv, vid, move))
+                except Exception as e:  # noqa: BLE001
+                    stats["why"] = f"failed ({e})"
+                    _log.failed("FunPackSceneChain", "camera move", e, "this step is not moved")
+                    return _plain(apply_fn, args)
+
+            patched.model_options["model_function_wrapper"] = _tag_scene_wrapper(_wrapper, old)
+            return patched, stats
+        except Exception as _e:  # noqa: BLE001
+            _log.failed("FunPackSceneChain", "camera move", _e, "the run goes on without it")
+            return model, stats
+
     def _install_late_branch(self, model, branch, w, n_blocks=50):
         """Late-branch guidance (late_guidance.py), H3.
 
@@ -9351,8 +9435,8 @@ class FunPackLTXAVSceneChainSampler:
                shot_memory="off", shot_memory_amount=0.7, tsr="off", tsr_k=1.0,
                late_guidance="off", late_guidance_strength=0.5, late_guidance_block=43,
                stas="off", stas_alpha=2.0, stas_block=15,
-               camera_noise="off", camera_pan_x=0.0, camera_pan_y=0.0, camera_zoom=1.0,
-               camera_focus_x=0.5, camera_focus_y=0.5, camera_amount=0.8,
+               camera_move="off", camera_pan_x=0.0, camera_pan_y=0.0, camera_zoom=1.0,
+               camera_focus_x=0.5, camera_focus_y=0.5, camera_step=3,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -9776,19 +9860,25 @@ class FunPackLTXAVSceneChainSampler:
         self._stas_alpha, self._stas_block = None, int(stas_block)
         self._late_ran, self._stas_ran = 0, 0      # calls the features actually changed
         self._tsr_acts = True                      # False: too weak on this schedule to be rated
-        self._camera_move, self._camera_said = None, set()
-        if camera_noise != "off":
+        self._camera_move = None
+        if camera_move != "off":
             self._camera_move = _camera.Move(
                 pan_x=_camera.clamp_pan(camera_pan_x), pan_y=_camera.clamp_pan(camera_pan_y),
                 zoom=min(max(float(camera_zoom), 0.5), 2.0),
                 focus_x=min(max(float(camera_focus_x), 0.0), 1.0),
                 focus_y=min(max(float(camera_focus_y), 0.0), 1.0),
-                amount=float(camera_amount))
-            if context_windows and context_window_freenoise:
-                print("[FunPackSceneChain] camera noise: Inactive beyond the first context window | "
-                      "FreeNoise refills the later windows with shuffled earlier noise after this, "
-                      "so a scene longer than one window loses the move there; switch "
-                      "context_window_freenoise off to keep it")
+                step=min(max(int(camera_step), 1), 50))
+            if not self._is_h3:
+                print("[FunPackSceneChain] camera move: Inactive | H3 only")
+                self._camera_move = None
+            elif self._camera_move.still():
+                print("[FunPackSceneChain] camera move: Inactive | no pan and no zoom set, so "
+                      "there is no move to make")
+                self._camera_move = None
+            elif context_windows:
+                print("[FunPackSceneChain] camera move: Inactive | context windows split the "
+                      "clip into pieces that each see only some frames, so the move stands down")
+                self._camera_move = None
         if (shot_memory != "off" or tsr == "learned" or late_guidance == "learned"
                 or stas == "learned"):
             if not refinement_key_input:

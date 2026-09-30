@@ -281,7 +281,7 @@ def test_the_new_features_lines_carry_their_state_colour():
         "shot memory: Active | reusing a liked shot of 5 (reuse 0.71 > fresh 0.40), amount 0.70",
         "shot memory: Active | fresh (reuse 0.30 < fresh 0.55)",
         "steering window: Active | 1 of 4 steps (peak gate 0.50)",
-        "camera noise: Active | pan right 0.30, zoom in x1.30 toward (0.30, 0.50), 80% carried",
+        "camera move: Active | pan right 0.30, from step 3 of 4, 1 step call(s) moved",
         "[FunPack] upscaled a.mp4 with 4x.safetensors: 96 frames -> funpack_upscaled/a_4x.mp4",
     )
     orange = (
@@ -294,8 +294,8 @@ def test_the_new_features_lines_carry_their_state_colour():
         "decisiveness: Inactive | a 1-step schedule has no step before the output to carry an edit into",
         "shot memory: Inactive | left 1 sampling pass(es) alone, their latent already held a picture",
         "steering window: Inactive | nothing will steer on this schedule, every rating-driven mechanism is gated off",
-        "camera noise: Inactive beyond the first context window | FreeNoise refills the later windows",
-        "camera noise: Inactive | this pass starts from a picture (second pass, latent anchor or carried overlap)",
+        "camera move: Inactive | context windows split the clip into pieces that each see only some frames",
+        "camera move: Inactive | this pass starts from a picture (second pass, latent anchor or carried overlap)",
     )
     for line in green:
         text = line if line.startswith("[") else P + line

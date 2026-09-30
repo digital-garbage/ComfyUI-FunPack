@@ -4,9 +4,10 @@
 
 ### Added
 
-- **Camera move in the noise** (experimental, Engine ▸ Guidance): a pan (left/right/up/down)
-  or zoom (in/out, aimed at any point) written into the starting noise, no prompt words. Manual
-  for now; unproven on H3. No extra model call.
+- **Camera move** (experimental, H3, Engine ▸ Guidance): a pan (any direction) or zoom (in/out,
+  aimed at any point) without camera words in the prompt. From a chosen sampling step on, the
+  picture in the running latent is moved frame by frame and the model re-draws what it uncovers.
+  Not new 3D parallax. No extra model call.
 - **Upscale finished renders** (Settings ▸ Editor): run a `models/upscale_models` model over a
   finished video, keeping its fps and sound; the result replaces the render. Never, always, or
   on demand with the Upscale button beside the rating.
