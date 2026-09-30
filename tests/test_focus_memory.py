@@ -192,6 +192,11 @@ def test_focus_scene_texts_and_options_follow_the_generation_path(monkeypatch):
     assert "touches <Subject 1>'s chin" in texts[0]
     opts = sc.focus_options(texts[0])
     assert opts[0]["candidates"] and opts[0]["auto_lemma"]
+    # A project with $variables must resolve them, not crash the review.
+    with_var = conditioning.focus_scene_texts(
+        {"anchor": "", "scenes": ["[Shot 1] $who waves."], "postfix": ""},
+        [{"name": "who", "value": "a tall man"}], "start")
+    assert "a tall man waves" in with_var[0]
 
 
 # ── rated, trait-aware views ─────────────────────────────────────────────────────────

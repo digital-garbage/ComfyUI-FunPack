@@ -787,6 +787,10 @@ def focus_scene_texts(scene_segments, variables=None, placement="start"):
         placement=placement, postfix=scene_segments.get("postfix", ""))
     anchor = (canonical.get("anchor_expanded", "") or "").strip()
     postfix = (canonical.get("postfix_expanded", "") or "").strip()
+    try:
+        from .templates import resolve_variables as _resolve_variables
+    except ImportError:
+        from templates import resolve_variables as _resolve_variables
     texts = []
     for s in canonical.get("scenes", []) or []:
         seg = (s.get("expanded") or "").strip()

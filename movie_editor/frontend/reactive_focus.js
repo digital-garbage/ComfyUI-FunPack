@@ -74,6 +74,7 @@
     const r = el("div", "ov-field full");
     r.appendChild(el("span", "ov-label", label));
     const chips = el("div", "ov-checklist");
+    chips.style.cssText = "flex-direction:row;flex-wrap:wrap;gap:6px";
     const btns = options.map(([value, text]) => {
       const b = el("button", "btn", text);
       b.type = "button";
@@ -142,6 +143,7 @@
       scenes = (await window.MovieEditorAPI.focusOptions(project.id, sceneIds)).scenes || [];
     } catch (e) {
       console.warn("[FunPack] reactive focus: could not list targets —", e.message);
+      window.Store.get().notice = `Reactive focus was skipped: ${e.message}`;
       return true;
     }
     const objOr = (v) => (v && typeof v === "object" ? v : {});
