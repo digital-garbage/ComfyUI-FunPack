@@ -941,8 +941,8 @@ class _InputSteer:
         where = self._where(args)
         if where is not None and where[1] <= 1:
             _log.note_once("FunPackSceneChain",
-                           f"{self.what}: a 1-step schedule has no step before the output "
-                           f"to carry an edit into, so it does nothing this run",
+                           f"{self.what}: Inactive | a 1-step schedule has no step before the "
+                           f"output to carry an edit into, so it does nothing this run",
                            key=f"input steer 1 step:{self.what}")
         return where is not None and where[0] >= where[1] - 1
 
@@ -4297,12 +4297,12 @@ class FunPackLTXAVSceneChainSampler:
             if _stas_report is not None:
                 _line, _n = _stas_report()
                 self._stas_ran = getattr(self, "_stas_ran", 0) + _n
-                print(f"[FunPackSceneChain] STAS: {_line}")
+                print(f"[FunPackSceneChain] STAS: {'Active' if _n else 'Inactive'} | {_line}")
             if _late_stats is not None:
                 self._late_ran = getattr(self, "_late_ran", 0) + _late_stats["guided"]
                 print("[FunPackSceneChain] late-branch guidance: " + (
-                    f"guided {_late_stats['guided']} step call(s)" if _late_stats["guided"]
-                    else (_late_stats["why"] or "no step call reached it, nothing guided")))
+                    f"Active | guided {_late_stats['guided']} step call(s)" if _late_stats["guided"]
+                    else "Inactive | " + (_late_stats["why"] or "no step call reached it, nothing guided")))
             if _phrase_probe is not None:
                 self._report_phrase_probe(_phrase_probe[1])
                 # The masked probe passes ran through every capture hook too, so this
@@ -8688,7 +8688,7 @@ class FunPackLTXAVSceneChainSampler:
                 return (stats["why"] or f"no channel at block {block} is over "
                         f"{_stas.MA_RATIO:.0f}x the mean, nothing steered -- try another block"), 0
 
-            print(f"[FunPackSceneChain] STAS: alpha {_alpha:.2f} at block {block}, first "
+            print(f"[FunPackSceneChain] STAS: Active | alpha {_alpha:.2f} at block {block}, first "
                   f"{_stas.EARLY_FRACTION:.0%} of steps, frame 0 + frame edges, picture rows (the sound can react).")
             return patched, _report
         except Exception as _e:  # noqa: BLE001
@@ -8808,8 +8808,8 @@ class FunPackLTXAVSceneChainSampler:
 
             patched.model_options["model_function_wrapper"] = _tag_scene_wrapper(
                 _late_wrapper, old_wrapper)
-            print(f"[FunPackSceneChain] late-branch guidance: strength {_w:.2f}, weak copy "
-                  f"skips block {branch} and shares 0-{branch - 1} "
+            print(f"[FunPackSceneChain] late-branch guidance: Active | strength {_w:.2f}, "
+                  f"a copy with block {branch} left out, sharing blocks 0-{branch - 1} "
                   f"(~{100.0 * (len(dit) - branch) / len(dit):.0f}% extra per step, none on the last), "
                   f"edits the picture (the sound can react).")
             return patched, stats
@@ -9736,36 +9736,49 @@ class FunPackLTXAVSceneChainSampler:
         self._late_w, self._late_block = 0.0, int(late_guidance_block)
         self._stas_alpha, self._stas_block = None, int(stas_block)
         self._late_ran, self._stas_ran = 0, 0      # calls the features actually changed
+        self._tsr_acts = True                      # False: too weak on this schedule to be rated
         if (shot_memory != "off" or tsr == "learned" or late_guidance == "learned"
                 or stas == "learned"):
             if not refinement_key_input:
                 print("[FunPackSceneChain] shot memory / learned decisiveness / learned "
-                      "late-branch guidance / learned STAS: needs refinement_key_input -- "
-                      "off this run")
+                      "late-branch guidance / learned STAS: Inactive | needs refinement_key_input")
         if shot_memory != "off" and refinement_key_input:
             self._shot_memory = _shot_memory.ShotMemory(
                 refinement_key_input, shot_memory, shot_memory_amount)
         if tsr != "off":
             self._tsr_k, _tsr_note = _tsr.choose_k(refinement_key_input, tsr, tsr_k)
             if _tsr_note:
-                print(f"[FunPackSceneChain] decisiveness: {_tsr_note}")
+                _reach = None
+                if self._is_h3 and self._tsr_k != 1.0:
+                    try:
+                        _reach = _tsr.reach(sigmas.flatten().tolist(), self._tsr_k)
+                    except Exception:  # noqa: BLE001
+                        _reach = None
+                if _reach is not None and _reach < _tsr.INERT_SHARE:
+                    self._tsr_acts = False
+                    print(f"[FunPackSceneChain] decisiveness: barely acts on this schedule (its "
+                          f"push is at most {_reach:.1%} of a step's noise, the last step is never "
+                          f"edited), so this run's rating will not teach k | {_tsr_note}")
+                else:
+                    print(f"[FunPackSceneChain] decisiveness: Active | {_tsr_note}"
+                          + (f", push up to {_reach:.0%} of a step's noise" if _reach is not None else ""))
         if late_guidance != "off":
             if not self._is_h3:
-                print("[FunPackSceneChain] late-branch guidance: H3 only -- off this run")
+                print("[FunPackSceneChain] late-branch guidance: Inactive | H3 only")
             else:
                 _w, _late_note = _late.DIAL.choose(
                     refinement_key_input, late_guidance, late_guidance_strength)
                 self._late_w = max(0.0, _w or 0.0)
                 if _late_note:
-                    print(f"[FunPackSceneChain] late-branch guidance: {_late_note}")
+                    print(f"[FunPackSceneChain] late-branch guidance: Active | {_late_note}")
         if stas != "off":
             if not self._is_h3:
-                print("[FunPackSceneChain] STAS: H3 only -- off this run")
+                print("[FunPackSceneChain] STAS: Inactive | H3 only")
             else:
                 self._stas_alpha, _stas_note = _stas.DIAL.choose(
                     refinement_key_input, stas, stas_alpha)
                 if _stas_note:
-                    print(f"[FunPackSceneChain] STAS alpha: {_stas_note}")
+                    print(f"[FunPackSceneChain] STAS: Active | alpha {_stas_note}")
 
         # Per-bucket value functions for trajectory_guidance. Separate from the one above
         # because they answer a different question: that one asks "is this a good finish",
@@ -9808,13 +9821,13 @@ class FunPackLTXAVSceneChainSampler:
             _cov = _steer_ramp_coverage(_steer_ramp, sigmas)
             if _cov is not None:
                 _gated, _total, _peak = _cov
-                print(f"[FunPackSceneChain] steering window: {_gated} of {_total} steps "
-                      f"(peak gate {_peak:.2f})"
+                print(f"[FunPackSceneChain] steering window: {'Active' if _gated else 'Inactive'} | "
+                      f"{_gated} of {_total} steps (peak gate {_peak:.2f})"
                       + (" — read off the schedule's base grid; each edit goes into the next "
                          "step's input, the last step is the model's own" if self._is_h3 else ""))
                 if _gated == 0:
-                    print("[FunPackSceneChain] steering window: NOTHING will steer on this "
-                          "schedule — every rating-driven mechanism is gated off")
+                    print("[FunPackSceneChain] steering window: Inactive | nothing will steer on "
+                          "this schedule, every rating-driven mechanism is gated off")
 
         # Trajectory probe (FUNPACK_TRAJECTORY_PROBE=1): record the predicted x0 per
         # schedule bucket so a later analysis can say whether ratings separate EARLY, in the
@@ -11008,16 +11021,17 @@ class FunPackLTXAVSceneChainSampler:
             # of THIS run would score the shots / k of an older, unrated one.
             if self._shot_memory is not None:
                 for _note in self._shot_memory.notes:
-                    print(f"[FunPackSceneChain] shot memory: {_note}")
+                    print(f"[FunPackSceneChain] shot memory: "
+                          f"{'Inactive' if 'left alone' in _note else 'Active'} | {_note}")
                 if self._shot_memory.skipped:
-                    print(f"[FunPackSceneChain] shot memory: left {self._shot_memory.skipped} "
-                          f"sampling pass(es) alone -- their latent already held a picture "
+                    print(f"[FunPackSceneChain] shot memory: Inactive | left {self._shot_memory.skipped} "
+                          f"sampling pass(es) alone, their latent already held a picture "
                           f"(second pass, latent anchor or carried overlap), so the noise "
                           f"does not decide the shot there")
                 self._shot_memory.save_pending()
             else:
                 _shot_memory.clear_pending(refinement_key_input)
-            if tsr == "learned":
+            if tsr == "learned" and getattr(self, "_tsr_acts", True):
                 _tsr.save_pending(refinement_key_input, self._tsr_k)
             else:
                 _tsr.clear_pending(refinement_key_input)
@@ -11032,7 +11046,7 @@ class FunPackLTXAVSceneChainSampler:
                     continue
                 _dial.clear_pending(refinement_key_input)
                 if _on and self._is_h3:
-                    print(f"[FunPackSceneChain] {_name}: did not apply this run, so this "
+                    print(f"[FunPackSceneChain] {_name}: Inactive | did not apply this run, so this "
                           f"run's rating will not teach its learned strength")
 
         # Trajectory probe: same run/rating pairing as the two above — the rating that scores

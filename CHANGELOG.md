@@ -28,6 +28,8 @@
   guidance no longer edit the last step.** On few-step schedules the last step is the video,
   and edits there showed as grain. Each edit now goes into the next step's input.
 
+- Decisiveness says when a schedule leaves it too little to act on (simple at 4 steps) and then
+  does not learn from that run's rating. New features' log lines now colour by state.
 - The harmless `set_mempolicy: Operation not permitted` line from ffmpeg is hidden (said once).
 
 ## [4.0.0] "Blinding Blackout" - 2026-08-27

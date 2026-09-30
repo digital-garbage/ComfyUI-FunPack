@@ -201,3 +201,12 @@ def test_h3_a_one_step_schedule_says_it_does_nothing(capsys):
     _euler(model.model_options["model_function_wrapper"], torch.randn(1, 2, 3, 4, 4),
            schedule=torch.tensor([1.0, 0.0]))
     assert "1-step schedule" in capsys.readouterr().out
+
+
+def test_decisiveness_reach_tells_a_weak_schedule_from_a_strong_one():
+    simple4 = [1.0, 0.973, 0.923, 0.8, 0.0]
+    beta57_8 = [1.0, 0.99, 0.969, 0.933, 0.872, 0.764, 0.563, 0.235, 0.0]
+    assert tsr.reach(simple4, 0.9) < tsr.INERT_SHARE          # ~2%: can't be felt
+    assert tsr.reach(beta57_8, 0.95) > tsr.INERT_SHARE * 3    # a real push
+    assert tsr.reach([1.0, 0.0], 0.9) == 0.0                  # one step: nothing to carry into
+    assert tsr.reach(simple4, 1.0) == 0.0                     # k = 1 is exactly off

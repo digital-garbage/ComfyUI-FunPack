@@ -266,3 +266,38 @@ def test_a_traceback_is_red_through_its_closing_line():
     lines = ["[FunPack][movie] x failed:", "Traceback (most recent call last):",
              '  File "a.py", line 1, in f', "KeyboardInterrupt", "next unrelated line"]
     assert bridge.log_levels(lines) == ["error", "error", "error", "error", "info"]
+
+
+def test_the_new_features_lines_carry_their_state_colour():
+    """Green = it is acting, orange = it cannot or barely does, red = it failed."""
+    P = "[FunPackSceneChain] "
+    green = (
+        "STAS: Active | alpha 2.00 at block 15: steered 12 call(s), channels 3 and 41",
+        "STAS: Active | alpha learned 2.00 from 4 rating(s), trying 2.10",
+        "late-branch guidance: Active | strength 0.50, a copy with block 43 left out, sharing "
+        "blocks 0-42 (~14% extra per step, none on the last), edits the picture (the sound can react).",
+        "late-branch guidance: Active | guided 3 step call(s)",
+        "decisiveness: Active | learned k 1.020 from 7 rating(s), trying 1.050, push up to 9% of a step's noise",
+        "shot memory: Active | reusing a liked shot of 5 (reuse 0.71 > fresh 0.40), amount 0.70",
+        "shot memory: Active | fresh (reuse 0.30 < fresh 0.55)",
+        "steering window: Active | 1 of 4 steps (peak gate 0.50)",
+        "[FunPack] upscaled a.mp4 with 4x.safetensors: 96 frames -> funpack_upscaled/a_4x.mp4",
+    )
+    orange = (
+        "STAS: Inactive | no channel at block 15 is over 50x the mean, nothing steered -- try another block",
+        "STAS: Inactive | H3 only",
+        "late-branch guidance: Inactive | no step call reached it, nothing guided",
+        "late-branch guidance: Inactive | did not apply this run, so this run's rating will not teach its learned strength",
+        "decisiveness: barely acts on this schedule (its push is at most 1.9% of a step's noise, the "
+        "last step is never edited), so this run's rating will not teach k | learned k 0.900",
+        "decisiveness: Inactive | a 1-step schedule has no step before the output to carry an edit into",
+        "shot memory: Inactive | left 1 sampling pass(es) alone, their latent already held a picture",
+        "steering window: Inactive | nothing will steer on this schedule, every rating-driven mechanism is gated off",
+    )
+    for line in green:
+        text = line if line.startswith("[") else P + line
+        assert bridge.log_level(text) == "ok", text
+    for line in orange:
+        text = line if line.startswith("[") else P + line
+        assert bridge.log_level(text) == "warn", text
+    assert bridge.log_level(P + "decisiveness failed (boom), passing through") == "error"

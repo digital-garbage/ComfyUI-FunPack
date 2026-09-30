@@ -231,9 +231,9 @@ _ERROR = _re.compile(r"\b(fail(s|ed|ing|ures?)?|\w*errors?|\w*exceptions?|traceb
                      r"refused|out of memory|nan|critical|fatal)\b", _re.I)
 _WARN = _re.compile(r"\b(warn(s|ing|ings)?|skip(s|ped|ping)?|inactive|disabled|not ready|could not|"
                     r"cannot|can't|missing|ignor(ed|ing)|fallback|falling back|stripped|leaked|"
-                    r"deprecated|no module named)\b", _re.I)
+                    r"deprecated|no module named|inert|barely|nothing (will )?steer(ed)?)\b", _re.I)
 _OK = _re.compile(r"\b(active|done|saved|recorded|updated|loaded|finished|completed?|success(ful|fully)?|"
-                  r"succeeded|prompt executed|installed|applied)\b", _re.I)
+                  r"succeeded|prompt executed|installed|applied|upscaled)\b", _re.I)
 # White (info) is the terminal's own colour, so it gets no code.
 _TERM = {"error": "\x1b[91m", "warn": "\x1b[38;5;208m", "ok": "\x1b[92m"}
 

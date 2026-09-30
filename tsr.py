@@ -44,6 +44,26 @@ def rescale_x0(x, x0, sigma, k):
     return (x - float(sigma) * r * eps) / a
 
 
+# Below this share of a step's input noise, a push cannot be felt (simple@4, k 0.9 is ~2%).
+# ponytail: judged by eye on one schedule, not measured; tune it if a rental says otherwise.
+INERT_SHARE = 0.03
+
+
+def reach(sigmas, k, s=S):
+    """The largest share of a step's input noise that decisiveness's push makes up when each
+    push rides into the NEXT step's input (H3): sigma*|1-r|/(1-sigma), scaled by the landing
+    step's (1 - sigma) and set against its noise sigma. The last step is never edited."""
+    vals = [float(v) for v in sigmas]
+    best = 0.0
+    for i in range(len(vals) - 2):
+        s0, s1 = vals[i], vals[i + 1]
+        if s0 < 1e-4 or s1 < 1e-4 or 1.0 - s0 < 1e-3:
+            continue
+        push = s0 * abs(1.0 - factor(s0, k, s)) / (1.0 - s0) * (1.0 - s1)
+        best = max(best, push / s1)
+    return best
+
+
 def _path(refinement_key):
     try:
         from .conditioning import refinement_state_path
