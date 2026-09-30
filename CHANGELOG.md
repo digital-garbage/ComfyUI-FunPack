@@ -4,6 +4,9 @@
 
 ### Added
 
+- **Camera move in the noise** (experimental, Engine ▸ Guidance): a pan (left/right/up/down)
+  or zoom (in/out, aimed at any point) written into the starting noise, no prompt words. Manual
+  for now; unproven on H3. No extra model call.
 - **Upscale finished renders** (Settings ▸ Editor): run a `models/upscale_models` model over a
   finished video, keeping its fps and sound; the result replaces the render. Never, always, or
   on demand with the Upscale button beside the rating.

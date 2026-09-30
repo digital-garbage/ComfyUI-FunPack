@@ -23,12 +23,14 @@ try:
     from . import tsr as _tsr
     from . import late_guidance as _late
     from . import stas as _stas
+    from . import camera_noise as _camera
 except ImportError:  # flat import when ComfyUI loads the pack as a top-level module
     import funpack_log as _log
     import shot_memory as _shot_memory
     import tsr as _tsr
     import late_guidance as _late
     import stas as _stas
+    import camera_noise as _camera
 
 
 MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
@@ -3333,6 +3335,34 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 15, "min": 0, "max": 49,
                     "tooltip": "The block whose output is steered. The paper's best was ~30% deep (block 9 of 30).",
                 }),
+                "camera_noise": (list(_camera.MODES), {
+                    "default": "off",
+                    "tooltip": "EXPERIMENTAL. Writes a camera move into the starting noise, no prompt words: the same noise pattern travels across the clip (pan) or is scaled about a point (zoom in/out), and the model tends to draw the picture travelling with it. manual = the move set below. Empty starts only (not second passes or carried overlaps). No extra model call; sound noise not edited.",
+                }),
+                "camera_pan_x": ("FLOAT", {
+                    "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Share of the frame width the noise travels over the clip. Positive = camera moves right (the picture moves left), negative = left. 0 = none.",
+                }),
+                "camera_pan_y": ("FLOAT", {
+                    "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Share of the frame height the noise travels over the clip. Positive = camera moves down, negative = up. 0 = none.",
+                }),
+                "camera_zoom": ("FLOAT", {
+                    "default": 1.0, "min": 0.5, "max": 2.0, "step": 0.05,
+                    "tooltip": "Scale reached by the end of the clip. Above 1 = camera moves in, below 1 = out, 1 = none.",
+                }),
+                "camera_focus_x": ("FLOAT", {
+                    "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Where the zoom aims, left (0) to right (1). The point that stays put while everything else grows or shrinks around it.",
+                }),
+                "camera_focus_y": ("FLOAT", {
+                    "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Where the zoom aims, top (0) to bottom (1).",
+                }),
+                "camera_amount": ("FLOAT", {
+                    "default": 0.8, "min": 0.0, "max": 0.95, "step": 0.05,
+                    "tooltip": "How much of the travelling noise each frame keeps; the rest is its own fresh noise. Higher = a more deliberate move, lower = looser.",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -4110,6 +4140,11 @@ class FunPackLTXAVSceneChainSampler:
         noise = comfy.sample.prepare_noise(samples, int(seed))
         if getattr(self, "_shot_memory", None) is not None:
             noise = self._shot_memory.shape(noise, samples, _raw_cond(positive), record=True)
+        if getattr(self, "_camera_move", None) is not None:
+            noise, _cam_note = _camera.shape(noise, samples, self._camera_move, int(seed))
+            if _cam_note not in self._camera_said:
+                self._camera_said.add(_cam_note)
+                print(f"[FunPackSceneChain] camera noise: {_cam_note}")
 
         def _progress_cb(step, _denoised, _x, _total_steps):
             if pbar is not None:
@@ -9314,6 +9349,8 @@ class FunPackLTXAVSceneChainSampler:
                shot_memory="off", shot_memory_amount=0.7, tsr="off", tsr_k=1.0,
                late_guidance="off", late_guidance_strength=0.5, late_guidance_block=43,
                stas="off", stas_alpha=2.0, stas_block=15,
+               camera_noise="off", camera_pan_x=0.0, camera_pan_y=0.0, camera_zoom=1.0,
+               camera_focus_x=0.5, camera_focus_y=0.5, camera_amount=0.8,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -9737,6 +9774,14 @@ class FunPackLTXAVSceneChainSampler:
         self._stas_alpha, self._stas_block = None, int(stas_block)
         self._late_ran, self._stas_ran = 0, 0      # calls the features actually changed
         self._tsr_acts = True                      # False: too weak on this schedule to be rated
+        self._camera_move, self._camera_said = None, set()
+        if camera_noise != "off":
+            self._camera_move = _camera.Move(
+                pan_x=float(camera_pan_x), pan_y=float(camera_pan_y),
+                zoom=min(max(float(camera_zoom), 0.5), 2.0),
+                focus_x=min(max(float(camera_focus_x), 0.0), 1.0),
+                focus_y=min(max(float(camera_focus_y), 0.0), 1.0),
+                amount=float(camera_amount))
         if (shot_memory != "off" or tsr == "learned" or late_guidance == "learned"
                 or stas == "learned"):
             if not refinement_key_input:
