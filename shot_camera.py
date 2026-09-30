@@ -34,11 +34,11 @@ _CAMERA_VERBS = (r"(?:moves?|pushes|pulls|pans|tilts|zooms|tracks|follows|drifts
 CAMERA = re.compile(
     r"\b(?:zoom(?:s|ed|ing)?\s+(?:in|out)|zoom-(?:in|out)|dolly|rack(?:s|ing)? focus|close-?up|"
     r"handheld|wide shot|wide-angle shot|tracking shot|crane shot|static shot|whip pan|"
-    r"push[- ]in|pull[- ]out|camera shake)\b"
+    r"camera shake)\b"
     r"|\bcamera(?:'s)?\s+(?:\w+ly\s+)?" + _CAMERA_VERBS + r"\b"
     r"|\bcamera(?:'s)? (?:movement|motion|move)\b"
     r"|(?:^|[.!?]\s+)(?:slowly |quickly |smoothly )?(?:pan|tilt|truck|pedestal|arc|orbit|roll|"
-    r"push in|pull out|pull back|zoom|track|dolly|crane)\b",
+    r"zoom|track|dolly|crane)\b",
     re.I)
 GENERIC = {"camera", "video", "scene", "shot", "frame", "background", "foreground", "view",
            "image", "screen", "moment", "time", "way", "side", "front", "middle", "one",

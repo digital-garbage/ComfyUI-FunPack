@@ -170,6 +170,8 @@ def test_a_shot_that_opens_with_a_cut_is_not_taken_for_having_a_camera_move():
     "<Subject 1> rolls onto <Subject 1>'s side and pulls out a knife.",
     "<Subject 1> looks at the camera and smiles, pushes in the last piece.",
     "<Subject 1>'s back arcs, then <Subject 2> focuses on the screen.",
+    "<Subject 1> starts to pull out slowly and pushes in again, then will push in once more.",
+    "Pull out slowly. Push in deeper.",
     "<Subject 1> moves up and down, then pans <Subject 1>'s gaze across the room.",
 ])
 def test_body_movement_and_looking_at_the_camera_are_not_camera_moves(text):
@@ -184,6 +186,8 @@ def test_body_movement_and_looking_at_the_camera_are_not_camera_moves(text):
     "A tracking shot follows <Subject 1>.",
     "Rack focus to the window.",
     "The camera slowly drifts upward.",
+    "The camera pulls back to a wider view.",
+    "The camera pushes in toward <Subject 1>.",
 ])
 def test_real_camera_moves_are_still_found(text):
     assert sc.CAMERA.search(sc.CUT.sub("", text))
@@ -362,6 +366,7 @@ def test_cut_times_split_the_scene_evenly_with_no_tiny_shots():
     assert sc.add_shot_cuts(P, 4)[1]["times"] == ["00:01.000", "00:02.000", "00:03.000"]
 
 
-def test_no_phrase_reads_as_the_camera_pulling_something_out():
+def test_the_phrases_we_write_never_say_the_camera_pulls_out():
+    """Only what the rewriter writes; a shortcut may say it as an action."""
     for group in (sc.MOVES_DETAIL, sc.MOVES_OTHER, sc.MOVES_TRAVEL, sc.MOVES_THEN, sc.MOVES_FINISH):
         assert not any("pulls out" in m for m in group), group
