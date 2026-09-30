@@ -625,14 +625,17 @@ def view_options(text, stats=None):
     return out
 
 
-def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None):
+def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None, skipped=None):
     """-> (new prompt, [{"shot", "view", "traits"}]). Shots 2+ that state no view get one of the
     views that can show them as a sentence of its own (after the cut opener, if there is one),
     never the same as the shot before, drawn per shot from the seed and weighted by `stats`
     (what ratings taught). `choices` {shot_key: {"mode": "auto"|"none"|"pick", "view": str}}:
-    a person's pick is always used, "none" leaves the shot alone."""
+    a person's pick is always used, "none" leaves the shot alone. `skipped`, if a list, gets one
+    "shot N: reason" per shot that got no view."""
     marks = list(SHOT.finditer(text or ""))
     if len(marks) < 2:
+        if skipped is not None and marks:
+            skipped.append("only one [Shot N]: a view opens shots 2 and later")
         return text, []
     out, added, last = [text[:marks[0].start()]], [], None
     for i, m in enumerate(marks):
@@ -641,7 +644,10 @@ def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None):
         rng = random.Random(f"{seed}:view:{i}")
         picture, sound = _split_sound(body)
         view = None
-        if i and not VIEW_STATED.search(CUT.sub("", picture)):
+        stated = VIEW_STATED.search(CUT.sub("", picture)) if i else None
+        if stated and skipped is not None:
+            skipped.append(f"shot {m.group(1)}: already states “{stated.group(0)}”")
+        if i and not stated:
             traits = view_traits(picture)
             said = (choices or {}).get(shot_key(picture)) or {}
             allowed = allowed_views(traits)
@@ -657,6 +663,9 @@ def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None):
                 pool = [v for v in allowed if v != last] or allowed
                 if pool:
                     view = rng.choices(pool, weights=[_view_weight(v, traits, stats) for v in pool])[0]
+            if not view and skipped is not None:
+                skipped.append(f"shot {m.group(1)}: " + ("no view, as you chose" if said.get("mode") == "none"
+                               else "left as written by chance"))
         if view:
             head = OPENER.match(picture)
             cut = head.end() if head else len(picture) - len(picture.lstrip())

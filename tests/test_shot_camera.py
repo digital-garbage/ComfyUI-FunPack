@@ -445,3 +445,12 @@ def test_a_body_action_from_behind_is_not_a_stated_view():
         assert sc.VIEW_STATED.search(text), text
     out, added = sc.add_shot_views("[Shot 1] A.\n[Shot 2] She is taken from behind by him.", seed=1, chance=1.0)
     assert added and added[0]["shot"] == 2
+
+
+def test_views_say_why_a_shot_got_none():
+    why = []
+    sc.add_shot_views("[Shot 1] A cat.", seed=1, chance=1.0, skipped=why)
+    assert "only one [Shot N]" in why[0]
+    why = []
+    sc.add_shot_views("[Shot 1] A.\n[Shot 2] POV view, a dog.\n[Shot 3] A bird.", seed=1, chance=0.0, skipped=why)
+    assert any("already states" in w for w in why) and any("by chance" in w for w in why)

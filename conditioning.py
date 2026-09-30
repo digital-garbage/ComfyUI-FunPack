@@ -9388,8 +9388,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             except ImportError:
                 import shot_camera as _sc
                 import focus_memory as _fm
+            why = []
             out, added = _sc.add_shot_views(text, seed=seed, chance=chance, stats=_fm.view_stats(),
-                                            choices=choices)
+                                            choices=choices, skipped=why)
             _RUN_VIEWS.extend({"view": a["view"], "traits": a["traits"]} for a in added)
         except Exception as e:  # noqa: BLE001
             print(f"[FunPackVideoRefinerV2] shot views: failed | {where}: {e}; prompt left as written")
@@ -9397,7 +9398,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if _sc.SHOT.search(text or ""):
             print("[FunPackVideoRefinerV2] shot views: " + (
                 f"Active | {where}: " + ", ".join(f"shot {a['shot']} {a['view']}" for a in added)
-                if added else f"Inactive | {where}: no shot got a view"))
+                if added else f"Inactive | {where}: no shot got a view ({'; '.join(why) or 'nothing to do'})"))
         return out
 
     @staticmethod
