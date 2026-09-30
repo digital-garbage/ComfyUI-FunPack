@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Export settings no longer prints a loader input the node no longer has (a stale `sla_enabled: on`) or SLA's settings while `sla` is off.
+
 ### Added
 - Shot cut times (H3, off by default): every `[Shot N]` after the first opens with its cut time, spread over the scene's length by text and rounded to whole seconds; a shot whose main point changes is split in two. Prompts that already carry times are left alone.
 - Shot views (H3, off by default): later shots may open with POV / side / front / from above / below / behind, never the same twice in a row; shot 1 is skipped.

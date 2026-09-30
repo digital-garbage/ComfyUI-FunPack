@@ -230,3 +230,27 @@ def test_defaults_are_read_off_the_node_not_copied_here():
     import inspect
     src = inspect.getsource(sc._node_inputs)
     assert "INPUT_TYPES()" in src
+
+
+def test_sla_settings_are_hidden_while_sla_is_off():
+    """A changed sla_* knob with the `sla` switch off reached the card as a live setting."""
+    changed = {"sla": False, "sla_sparsity": 0.5, "sla_block_size": "128", "sla_dense_last_steps": 4}
+    assert [n for n, _ in sc._live_rows(changed, defaults={"sla": False})] == []
+    on = dict(changed, sla=True)
+    names = [n for n, _ in sc._live_rows(on, defaults={"sla": False})]
+    assert {"sla", "sla_sparsity", "sla_block_size", "sla_dense_last_steps"} <= set(names)
+
+
+def test_a_model_slot_does_not_print_a_stale_input_or_sla_settings_with_sla_off():
+    """`sla_enabled: on` sat in a project's stored loader inputs from an older version, and the
+    card printed it (and the sla_* knobs) under `sla: off`."""
+    slot = {"id": "s1", "node_class": "FunPackDiffusionModelLoader", "label": "Diffusion model",
+            "inputs": {"attention": "sage3", "sla": False, "sla_enabled": True,
+                       "sla_sparsity": 0.85, "sla_block_size": "64"}}
+    card = sc.collect({"slots": [slot]}, {})
+    rows = dict(next(s for s in card["sections"] if s["title"] == "Diffusion model")["rows"])
+    assert rows == {"attention": "sage3", "sla": "off"} or set(rows) == {"attention", "sla"}, rows
+    slot["inputs"]["sla"] = True
+    rows = dict(next(s for s in sc.collect({"slots": [slot]}, {})["sections"]
+                     if s["title"] == "Diffusion model")["rows"])
+    assert "sla_sparsity" in rows and "sla_enabled" not in rows

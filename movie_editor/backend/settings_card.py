@@ -172,6 +172,13 @@ _OWNED_EXTRA = {
     # Segmented detailing is no longer offered in the Editor (see detailing.py), but a raw
     # ComfyUI graph can still tick it, so the card still has to hide its settings when it
     # is off.
+    # SLA's settings sit on the loader node next to its `sla` switch. With the switch off they
+    # decide nothing, but a changed one was printed as if SLA were running.
+    "sla_sparsity": ("sla", None),
+    "sla_block_size": ("sla", None),
+    "sla_protect_audio": ("sla", None),
+    "sla_min_seq_len": ("sla", None),
+    "sla_dense_last_steps": ("sla", None),
     "detail_targets": ("segmented_detailing", None),
     "detail_strength": ("segmented_detailing", None),
     "detail_threshold": ("segmented_detailing", None),
@@ -416,8 +423,9 @@ def _node_inputs(node_class: str) -> tuple:
     """
     try:
         from . import bridge
-        spec = bridge._funpack_attr("samplers" if "Sampler" in node_class else "conditioning",
-                                    node_class).INPUT_TYPES()
+        module = ("samplers" if "Sampler" in node_class
+                  else "loaders" if "Loader" in node_class else "conditioning")
+        spec = bridge._funpack_attr(module, node_class).INPUT_TYPES()
     except Exception:
         return frozenset(), {}
     declared, defaults = set(), {}
@@ -551,8 +559,14 @@ def collect(models: dict, host: dict, *, project_name=None, version=None,
         title = (slot.get("label") or slot.get("role_label")
                  or slot.get("node_class") or slot.get("id") or "node")
         rows = []
-        for name, value in (slot.get("inputs") or {}).items():
+        values = slot.get("inputs") or {}
+        declared, defaults = _node_inputs(str(slot.get("node_class") or ""))
+        for name, value in values.items():
             if name in _NOISE_INPUTS:
+                continue
+            if declared and name not in declared:    # a leftover the node no longer has
+                continue
+            if not _switched_on(name, values, defaults):   # e.g. sla_* with `sla` off
                 continue
             if _is_wired(slot, name, slots):
                 rows.append((name, "‹wired›"))
