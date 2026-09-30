@@ -9276,14 +9276,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return head.rsplit(" ", 1)[0].strip(), True
 
     @staticmethod
-    def _v2_camera_moves(text, where):
+    def _v2_camera_moves(text, where, seed=None, chance=1.0):
         """`text` with a camera move added to each [Shot N] block that lacks one."""
         try:
             try:
                 from . import shot_camera as _sc
             except ImportError:
                 import shot_camera as _sc
-            out, report = _sc.add_camera_moves(text)
+            out, report = _sc.add_camera_moves(text, seed=seed, chance=chance)
         except Exception as e:  # noqa: BLE001
             print(f"[FunPackVideoRefinerV2] camera moves: failed | {where}: {e}; prompt left as written")
             return text
@@ -10165,7 +10165,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
-                  h3_phrase_emphasis=False, h3_phrase_variability=0.0, camera_moves=False,
+                  h3_phrase_emphasis=False, h3_phrase_variability=0.0, camera_moves=False, camera_moves_chance=0.7,
                   prompt_enhance=False, prompt_enhance_system="", prompt_enhance_reference_intro="",
                   prompt_enhance_temperature=0.7, prompt_enhance_top_p=0.92,
                   prompt_enhance_max_length=400, prompt_enhance_thinking=False,
@@ -10842,7 +10842,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # Camera moves for MiniMax's own `[Shot N]` blocks (not timeline scenes): after
         # shortcuts and $variables, before the enhancer, so the enhancer sees them.
         if camera_moves and not split_by_transitions:
-            prompt_to_encode = self._v2_camera_moves(prompt_to_encode, "prompt")
+            prompt_to_encode = self._v2_camera_moves(prompt_to_encode, "prompt", seed, camera_moves_chance)
 
         # ── prompt enhancer ────────────────────────────────────────────────────────────
         # Runs BEFORE the prompt becomes conditioning, so what ComfyUI generates from is the
@@ -11155,7 +11155,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             _resolve_variables(t, _prompt_variables)[0] for t in split_scene_texts
                         ]
                     if camera_moves and split_scene_texts:
-                        split_scene_texts = [self._v2_camera_moves(t, f"scene {_i + 1}")
+                        split_scene_texts = [self._v2_camera_moves(t, f"scene {_i + 1}", f"{seed}:{_i}",
+                                                                    camera_moves_chance)
                                              for _i, t in enumerate(split_scene_texts)]
                     # Enhanced PER SCENE, not as one blob. The editor's scene list is
                     # authoritative on count, so rewriting the scenes as a single paragraph
@@ -14168,6 +14169,7 @@ class FunPackStudio:
             positive_conditioning=positive_conditioning,
             h3_phrase_emphasis=bool(rf.get("h3_phrase_emphasis", False)),
             camera_moves=bool(rf.get("camera_moves", False)),
+            camera_moves_chance=float(rf.get("camera_moves_chance", 0.7)),
             h3_phrase_variability=float(rf.get("h3_phrase_variability", 0.0) or 0.0),
             prompt_enhance=bool(rf.get("prompt_enhance", False)),
             prompt_enhance_output=bool(rf.get("prompt_enhance_output", False)),

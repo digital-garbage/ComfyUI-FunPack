@@ -9,6 +9,7 @@ the first shot) is a constant, not a target. Sound text (music, score...) is lef
 """
 
 import math
+import random
 import re
 
 SHOT = re.compile(r"\[\s*Shot\s+(\d+)\s*\]", re.I)
@@ -31,10 +32,19 @@ PARTS = {"lip", "mouth", "tongue", "tooth", "teeth", "eye", "eyes", "face", "che
          "skin", "expression", "smile", "gaze", "back", "chin", "brow"}
 PLACES = {"room", "street", "kitchen", "bedroom", "bed", "table", "floor", "stage", "hall",
           "garden", "beach", "forest", "city", "car", "office", "bathroom", "field"}
-MOVES_DETAIL = ("Close-up on {x}.", "Focus at {x}.", "Zoom in at {x}.")
-MOVES_OTHER = ("Zoom in at {x}.", "Move around {x}.", "Rotate the camera to {x}.")
-MOVES_TRAVEL = ("Camera moves from {x} to {y}.", "Pan from {x} to {y}.",
-                "Focus shifts from {x} to {y}.")
+MOVES_DETAIL = ("Camera moves into a close-up on {x}.", "Camera focuses at {x}.",
+                "Camera zooms in at {x}.")
+MOVES_OTHER = ("Camera zooms in at {x}.", "Camera moves around {x}.",
+               "Camera rotates to {x}.")
+MOVES_TRAVEL = ("Camera moves from {x} to {y}.", "Camera pans from {x} to {y}.",
+                "Camera shifts focus from {x} to {y}.")
+# Chained moves (varied mode): a follow-up to a first move, and a closing pull-back.
+MOVES_THEN = ("Then the camera moves to {y}.", "Then the camera pans to {y}.",
+              "Then the camera focuses at {y}.")
+MOVES_FINISH = ("Then the camera zooms out.", "Then the camera pulls back.",
+               "Then the camera pulls back to a wider view.")
+COUNT_WEIGHTS = (6, 3, 1)      # one move / two / three, in a shot that gets any
+TRAVEL_SHARE = 0.5             # of one-move shots with two topics, how many travel X -> Y
 DETERMINERS = {"the", "a", "an", "this", "that", "these", "those"}
 POSSESSIVE_PRONOUNS = {"his", "her", "their", "its", "my", "your", "our"}
 
@@ -153,8 +163,51 @@ def _topics(pool):
     return out
 
 
-def add_camera_moves(text):
-    """-> (new prompt, [per-shot report dicts]). Unchanged when there is no `[Shot N]`."""
+def _pick(options, last, rng):
+    """One of `options`, never the one the previous shot opened with when others exist."""
+    pool = [o for o in options if o != last] or list(options)
+    return rng.choice(pool) if rng else pool[0]
+
+
+def _plan(pool, last, rng):
+    """-> (moves text, target description, opening template). Fixed and minimal without
+    `rng` (one move, X -> Y when the shot has two topics); with it, how many moves, whether
+    they travel and which words are all drawn, so no shot pattern repeats by construction."""
+    topics = _topics(pool)
+    best = max(pool, key=_score)
+    if rng is None:
+        k, travel = 1, len(topics) >= 2
+    else:
+        k = rng.choices((1, 2, 3), COUNT_WEIGHTS)[0]
+        travel = k == 1 and len(topics) >= 2 and rng.random() < TRAVEL_SHARE
+    if travel:
+        x, y = _name(topics[0]), _name(topics[-1])
+        move = _pick(MOVES_TRAVEL, last, rng)
+        return move.format(x=x, y=y), f"{x} -> {y}", move
+    first = topics[0] if (k > 1 and topics) else best
+    moves = MOVES_DETAIL if (first[2] or first[0] in PARTS) else MOVES_OTHER
+    opening = _pick(moves, last, rng)
+    target = _name(first)
+    sentences = [opening.format(x=target)]
+    desc = target
+    if k > 1:
+        if len(topics) >= 2:
+            y = _name(topics[-1])
+            sentences.append(_pick(MOVES_THEN, None, rng).format(y=y))
+            desc += f" -> {y}"
+        else:
+            sentences.append(_pick(MOVES_FINISH, None, rng))
+    if k > 2 and len(topics) >= 2:
+        sentences.append(_pick(MOVES_FINISH, None, rng))
+    return " ".join(sentences), desc, opening
+
+
+def add_camera_moves(text, seed=None, chance=1.0):
+    """-> (new prompt, [per-shot report dicts]). Unchanged when there is no `[Shot N]`.
+
+    `seed=None`: one plain move per shot (deterministic). With a `seed`, each shot is left
+    alone with probability 1 - `chance`, and otherwise gets one to three moves, drawn per
+    shot from the seed, so the same prompt and seed always give the same text."""
     marks = list(SHOT.finditer(text or ""))
     if not marks:
         return text, []
@@ -174,28 +227,22 @@ def add_camera_moves(text):
     for i, m in enumerate(marks):
         picture, sound = parts[i]
         entry = {"shot": int(m.group(1)), "move": None, "target": None, "why": ""}
+        rng = random.Random(f"{seed}:{i}") if seed is not None else None
         pool = [c for c in cands[i] if c[0] not in constant]
         if CAMERA.search(picture):
             entry["why"] = "already has a camera move"
         elif not pool:
             entry["why"] = "nothing specific to aim at"
+        elif rng is not None and rng.random() >= chance:
+            entry["why"] = "left as written by chance"
         else:
-            topics = _topics(pool)
-            if len(topics) >= 2:
-                x, y = _name(topics[0]), _name(topics[-1])
-                move = next((mv for mv in MOVES_TRAVEL if mv != last), MOVES_TRAVEL[0])
-                entry.update(move=move.format(x=x, y=y), target=f"{x} -> {y}")
-            else:
-                best = max(pool, key=_score)
-                moves = MOVES_DETAIL if (best[2] or best[0] in PARTS) else MOVES_OTHER
-                move = next((mv for mv in moves if mv != last), moves[0])
-                target = _name(best)
-                entry.update(move=move.format(x=target), target=target)
-            last = move
+            moves, desc, opening = _plan(pool, last, rng)
+            entry.update(move=moves, target=desc)
+            last = opening
             core = picture.rstrip()
             gap = picture[len(core):] or (" " if sound else "")
             picture = core + ("" if core.endswith((".", "!", "?")) else ".") + " " \
-                + entry["move"] + gap
+                + moves + gap
         out.append(m.group(0) + picture + sound)
         report.append(entry)
     return "".join(out), report
