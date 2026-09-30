@@ -2,13 +2,13 @@
 
 ## [Unreleased]
 
-- Reactive focus (Engine Settings, needs camera moves): before Generate, pick what the camera aims at in each `[Shot N]`, hold or move, or no move. Asked once per shot; picks are remembered and steer later suggestions.
 ### Fixed
 - An H3 latent node (Reference-to-Video / Empty AV Latent) whose `length` is not linked now follows the project's frames, instead of keeping an old typed number that made the sampler refuse the run; the settings export shows it as "follows project".
 - A view added by Shot views (POV...) no longer makes the shot look like it already has a camera move.
 - Export settings no longer prints a loader input the node no longer has (a stale `sla_enabled: on`) or SLA's settings while `sla` is off.
 
 ### Added
+- Reactive focus (Engine Settings, needs camera moves): before Generate, pick what the camera aims at in each `[Shot N]`, hold or move, or no move. Asked once per shot; picks are remembered and steer later suggestions.
 - Camera moves remember which words your prompts keep coming back to (its own file, `<ComfyUI user dir>/shot_camera/focus_memory.json`, not tied to a refinement key; counted once per distinct prompt) and favour them when choosing a target, by weighted chance rather than always (a habit never wins every shot it merely appears in); silent until 3 prompts have been seen, and never outranks an owned part. A word a shot keeps returning to counts for more, and a noun joined by "and" now shares its partner's role.
 - Shot cut times (H3, off by default): every `[Shot N]` after the first opens with its cut time, spread evenly over the scene's length, rounded to whole seconds, none shorter than 2 s; a shot whose main point changes is split in two. Prompts that already carry times are left alone.
 - Shot views (H3, off by default): later shots may open with POV / side / front / from above / below / behind, never the same twice in a row; shot 1 is skipped.
