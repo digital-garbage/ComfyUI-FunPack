@@ -8,7 +8,7 @@
 - Export settings no longer prints a loader input the node no longer has (a stale `sla_enabled: on`) or SLA's settings while `sla` is off.
 
 ### Added
-- Camera moves remember which words your prompts keep coming back to (per refinement key, counted once per distinct prompt) and favour them when choosing a target; silent until 3 prompts have been seen, and never outranks an owned part.
+- Camera moves remember which words your prompts keep coming back to (per refinement key, counted once per distinct prompt) and favour them when choosing a target, by weighted chance rather than always (a habit never wins every shot it merely appears in); silent until 3 prompts have been seen, and never outranks an owned part. A word a shot keeps returning to counts for more, and a noun joined by "and" now shares its partner's role.
 - Shot cut times (H3, off by default): every `[Shot N]` after the first opens with its cut time, spread evenly over the scene's length, rounded to whole seconds, none shorter than 2 s; a shot whose main point changes is split in two. Prompts that already carry times are left alone.
 - Shot views (H3, off by default): later shots may open with POV / side / front / from above / below / behind, never the same twice in a row; shot 1 is skipped.
 - Composer ▸ Enhance shows the final prompt of every run (after shortcuts, $variables and camera moves) even with the enhancer off, one card per scene, with the text before camera moves under it.

@@ -83,3 +83,32 @@ def test_refiner_wrapper_counts_prompts_and_uses_the_prior(store, monkeypatch):
         R._v2_camera_moves(f"Intro. [Shot 1] <Subject 1> touches <Subject 1>'s chin{i and ' again' * i}.",
                            "prompt", 1, 1.0, "k")
     assert fm.prior("k").get("chin", 0) > 0
+
+
+def test_a_habit_does_not_win_every_shot_it_merely_appears_in():
+    """100 videos with bananas, then a shot with a banana AND a cherry: the cherry still gets
+    the camera some of the time, and only between equals."""
+    pytest.importorskip("spacy")
+    P = "Intro. [Shot 1] <Subject 1> holds a banana and a cherry."
+    heard = {"banana": 0, "cherry": 0}
+    for seed in range(200):
+        _o, rep = sc.add_camera_moves(P, seed=seed, chance=1.0, prior={"banana": fm.FREQ_W})
+        t = rep[0]["target"]
+        heard["banana"] += "banana" in t
+        heard["cherry"] += "cherry" in t
+    assert heard["banana"] > heard["cherry"] > 20, heard          # favoured, not decisive
+
+
+def test_a_habit_never_beats_a_real_target():
+    pytest.importorskip("spacy")
+    P = "Intro. [Shot 1] <Subject 1> touches <Subject 1>'s chin and glances at a banana."
+    for seed in range(60):
+        _o, rep = sc.add_camera_moves(P, seed=seed, chance=1.0, prior={"banana": fm.FREQ_W})
+        assert "chin" in rep[0]["target"], rep[0]["target"]
+
+
+def test_a_word_the_shot_keeps_returning_to_is_what_it_is_about():
+    pytest.importorskip("spacy")
+    P = "Intro. [Shot 1] <Subject 1> lifts the cherry, then the lamp, then looks at the cherry again."
+    hits = sum("cherry" in sc.add_camera_moves(P, seed=s, chance=1.0)[1][0]["target"] for s in range(80))
+    assert hits > 50, hits

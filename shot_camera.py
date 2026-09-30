@@ -179,7 +179,11 @@ def candidates(picture):
             whole = _resolve(lemma, text, owned, has_of, set(STAND_IN.findall(hidden)))
             if whole is None:
                 continue
-            out.append((lemma, whole[0], whole[1], chunk.start, root.dep_))
+            dep, head = root.dep_, root
+            while dep == "conj" and head.head is not head:      # "a banana and a cherry": both objects
+                head = head.head
+                dep = head.dep_
+            out.append((lemma, whole[0], whole[1], chunk.start, dep))
         return out
     for m in re.finditer(rf"(?:({'|'.join(NAMES)})'s|\b(his|her|their|the|a|an))\s+((?:\w+\s+)?\w+)",
                          hidden, re.I):
@@ -226,14 +230,35 @@ def _pick(options, last, rng):
     return rng.choice(pool) if rng else pool[0]
 
 
+HABIT_TEMPERATURE = 0.7     # lower = the habit decides more; higher = closer to a coin toss
+MENTION_BONUS = 0.5         # per extra mention inside the shot, capped at 1.0: what a shot keeps returning to
+
+
+def _draw(cands, prior, rng, n):
+    """`n` distinct candidates. Only those within a role-step of the best plain score compete (a
+    habit can never lift a background word over a real target); among them, with an `rng`, the
+    pick is drawn with odds exp(score / T) rather than always taking the top, so a word the user
+    has used a hundred times does not win every shot it merely appears in."""
+    top = max(_score(c) for c in cands)
+    eligible = [c for c in cands if _score(c) >= top - 0.99] or list(cands)
+    if rng is None:
+        return sorted(eligible, key=lambda c: -_score(c, prior))[:n]
+    chosen, pool = [], list(eligible)
+    while pool and len(chosen) < n:
+        weights = [math.exp(_score(c, prior) / HABIT_TEMPERATURE) for c in pool]
+        pick = rng.choices(range(len(pool)), weights)[0]
+        chosen.append(pool.pop(pick))
+    return chosen
+
+
 def _plan(pool, last, rng, prior=None):
     """-> (moves text, target description, opening template). Fixed and minimal without
     `rng` (one move, X -> Y when the shot has two topics); with it, how many moves, whether
     they travel and which words are all drawn, so no shot pattern repeats by construction."""
     topics = _topics(pool)
-    best = max(pool, key=lambda c: _score(c, prior))
-    if prior and len(topics) > 2:                 # the two it cares about most, in text order
-        topics = sorted(sorted(topics, key=lambda c: -_score(c, prior))[:2], key=lambda c: c[3])
+    best = _draw(pool, prior, rng, 1)[0]
+    if prior and len(topics) > 2:                 # two of them, weighted by habit, in text order
+        topics = sorted(_draw(topics, prior, rng, 2), key=lambda c: c[3])
     if rng is None:
         k, travel = 1, len(topics) >= 2
     else:
@@ -291,6 +316,13 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None):
         rng = random.Random(f"{seed}:{i}") if seed is not None else None
         pool = [c for c in cands[i] if c[0] not in constant]
         entry["lemmas"] = [c[0] for c in pool if _score(c) > 0.5]      # the words this shot dwells on
+        # A word the shot keeps coming back to is what it is about: a small lift per extra mention.
+        mentions = {}
+        for c in pool:
+            mentions[c[0]] = mentions.get(c[0], 0) + 1
+        boost = {l: min(1.0, MENTION_BONUS * (n - 1)) for l, n in mentions.items() if n > 1}
+        shot_prior = ({l: (prior or {}).get(l, 0.0) + boost.get(l, 0.0) for l in {*(prior or {}), *boost}}
+                      if boost else prior)
         if CAMERA.search(CUT.sub("", picture)):
             entry["why"] = "already has a camera move"
         elif not pool:
@@ -298,7 +330,7 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None):
         elif rng is not None and rng.random() >= chance:
             entry["why"] = "left as written by chance"
         else:
-            moves, desc, opening = _plan(pool, last, rng, prior)
+            moves, desc, opening = _plan(pool, last, rng, shot_prior)
             entry.update(move=moves, target=desc)
             last = opening
             core = picture.rstrip()
