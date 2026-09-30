@@ -3121,11 +3121,14 @@ if web is not None and PromptServer is not None:
                 seg, list(target.variables or []), "start")
             sc = bridge._funpack_attr("shot_camera", "focus_options")
             prior = bridge._funpack_attr("focus_memory", "prior")()
+            views_of = bridge._funpack_attr("shot_camera", "view_options")
+            stats = bridge._funpack_attr("focus_memory", "view_stats")()
             out = []
             for i, text in enumerate(texts):
-                shots = sc(text, prior)
-                if shots:
-                    out.append({"index": i, "preview": " ".join(text.split())[:80], "shots": shots})
+                shots, views = sc(text, prior), views_of(text, stats)
+                if shots or views:
+                    out.append({"index": i, "preview": " ".join(text.split())[:80],
+                                "shots": shots, "views": views})
             return out
 
         try:
@@ -3140,8 +3143,11 @@ if web is not None and PromptServer is not None:
         body = await req.json() if req.can_read_body else {}
         decisions = [d for d in (body.get("decisions") or []) if isinstance(d, dict)]
         learn = bridge._funpack_attr("focus_memory", "learn")
+        views = [d for d in (body.get("views") or []) if isinstance(d, dict)]
+        learn_views = bridge._funpack_attr("focus_memory", "learn_views")
         try:
             n = await asyncio.to_thread(learn, decisions)
+            await asyncio.to_thread(learn_views, views)
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Could not remember the choices: {e}"}, status=500)
         return web.json_response({"remembered": n})

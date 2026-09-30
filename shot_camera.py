@@ -540,10 +540,73 @@ VIEW_STATED = re.compile(r"\b(pov|(?:side|front|rear|back|top|overhead|bird'?s[-
 OPENER = re.compile(r"^\s*At \d\d:\d\d\.\d{3},[^.!?]*[.!?]\s*")
 
 
-def add_shot_views(text, seed=0, chance=0.4):
-    """-> (new prompt, [{"shot", "view"}]). Shots 2+ that state no view get one of VIEWS as a
-    sentence of its own (after the cut opener, if there is one), never the same as the shot
-    before, drawn per shot from the seed."""
+# What a shot's own words say about which views can show it. A view that cannot show what the
+# shot describes (the back of someone whose face is the point, the front of someone walking
+# away) only confuses the model, so it is never offered. Traits also key what the ratings
+# teach: a view that works for a face shot may not work for a hands shot.
+VIEW_TRAITS = {
+    "face": re.compile(r"\b(faces?|eyes?|eye contact|mouths?|lips|smil\w*|expressions?|gaze|"
+                       r"cheeks?|facing|looks? (?:at|into))\b", re.I),
+    "back": re.compile(r"\b(back(?! and| to| into| off| up| down)|rear|spine|shoulder blades?|nape|"
+                       r"walks? away|turned away|from behind)\b", re.I),
+    "hands": re.compile(r"\b(hands?|fingers?|you|your|reach\w*|hold\w*|touch\w*)\b", re.I),
+}
+_FRONT_ONLY = ("POV view", "POV view from above", "POV view from below", "Front view")
+
+
+def view_traits(picture):
+    body = own_words_removed(picture or "")
+    return sorted(t for t, rx in VIEW_TRAITS.items() if rx.search(body))
+
+
+def allowed_views(traits):
+    """The views that can show a shot with these traits: a face excludes the view from behind;
+    a back (or someone leaving) excludes every view from the front, POV included."""
+    out = list(VIEWS)
+    if "face" in traits:
+        out = [v for v in out if v != "View from behind"]
+    if "back" in traits:
+        out = [v for v in out if v not in _FRONT_ONLY]
+    return out
+
+
+def _view_weight(view, traits, stats):
+    """How much a view is liked for a shot like this: the smoothed good-rate of the view, and
+    of the view on each of this shot's traits, averaged. 0.5 when nothing was rated yet."""
+    rates = []
+    for key in [view] + [f"{view}@{t}" for t in (traits or ["none"])]:
+        g, b = (stats or {}).get(key, (0.0, 0.0))
+        if g + b > 0:
+            rates.append((g + 1.0) / (g + b + 2.0))
+    return 0.15 + (sum(rates) / len(rates) if rates else 0.5)
+
+
+def view_options(text, stats=None):
+    """What each `[Shot N]` after the first could open with, for a person to choose from.
+    -> [{"shot", "key", "traits", "already", "candidates": [{"view", "score"}], "auto"}]"""
+    marks = list(SHOT.finditer(text or ""))
+    out = []
+    for i, m in enumerate(marks):
+        if not i:
+            continue
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        picture, _sound = _split_sound(text[m.end():end])
+        traits = view_traits(picture)
+        cands = sorted(((v, _view_weight(v, traits, stats)) for v in allowed_views(traits)),
+                       key=lambda c: -c[1])
+        out.append({"shot": int(m.group(1)), "key": shot_key(picture), "traits": traits,
+                    "already": bool(VIEW_STATED.search(CUT.sub("", picture))),
+                    "candidates": [{"view": v, "score": round(w, 2)} for v, w in cands],
+                    "auto": cands[0][0] if cands else None})
+    return out
+
+
+def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None):
+    """-> (new prompt, [{"shot", "view", "traits"}]). Shots 2+ that state no view get one of the
+    views that can show them as a sentence of its own (after the cut opener, if there is one),
+    never the same as the shot before, drawn per shot from the seed and weighted by `stats`
+    (what ratings taught). `choices` {shot_key: {"mode": "auto"|"none"|"pick", "view": str}}:
+    a person's pick is always used, "none" leaves the shot alone."""
     marks = list(SHOT.finditer(text or ""))
     if len(marks) < 2:
         return text, []
@@ -553,13 +616,25 @@ def add_shot_views(text, seed=0, chance=0.4):
         body = text[m.end():end]
         rng = random.Random(f"{seed}:view:{i}")
         picture, sound = _split_sound(body)
-        if i and not VIEW_STATED.search(CUT.sub("", picture)) and rng.random() < chance:
-            view = rng.choice([v for v in VIEWS if v != last])
+        view = None
+        if i and not VIEW_STATED.search(CUT.sub("", picture)):
+            traits = view_traits(picture)
+            said = (choices or {}).get(shot_key(picture)) or {}
+            allowed = allowed_views(traits)
+            if said.get("mode") == "none":
+                pass
+            elif said.get("view") in allowed:
+                view = said["view"]
+            elif rng.random() < chance:
+                pool = [v for v in allowed if v != last] or allowed
+                if pool:
+                    view = rng.choices(pool, weights=[_view_weight(v, traits, stats) for v in pool])[0]
+        if view:
             head = OPENER.match(picture)
             cut = head.end() if head else len(picture) - len(picture.lstrip())
             picture = picture[:cut].rstrip() + (" " if cut else " ") + view + ". " + picture[cut:].lstrip()
             body = picture + sound
-            added.append({"shot": int(m.group(1)), "view": view})
+            added.append({"shot": int(m.group(1)), "view": view, "traits": traits})
             last = view
         out.append(m.group(0) + body)
     return "".join(out), added

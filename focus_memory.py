@@ -88,6 +88,50 @@ def learn(decisions):
     return n
 
 
+def view_stats():
+    """{key: (good, bad)} for each view and each "view@trait" the ratings and picks taught."""
+    return {k: (float(v[0]), float(v[1])) for k, v in (_read().get("views") or {}).items()
+            if isinstance(v, (list, tuple)) and len(v) == 2}
+
+
+def _bump_views(data, used, good, bad):
+    views = data.setdefault("views", {})
+    for u in used:
+        for key in [u["view"]] + [f"{u['view']}@{t}" for t in (u.get("traits") or ["none"])]:
+            g, b = views.get(key, [0.0, 0.0])
+            views[key] = [round(g + good, 4), round(b + bad, 4)]
+
+
+def rate_views(used, sign):
+    """A rated generation: its views share the credit (sign > 0) or the blame (sign < 0), so a
+    run with four views does not punish each as hard as a run with one. `used`: [{"view",
+    "traits"}]. -> views rated."""
+    used = [u for u in used or [] if isinstance(u, dict) and u.get("view")]
+    if not used or not sign:
+        return 0
+    data = _read()
+    share = 1.0 / len(used)
+    _bump_views(data, used, share if sign > 0 else 0.0, share if sign < 0 else 0.0)
+    _save(data)
+    return len(used)
+
+
+def learn_views(decisions):
+    """What a person chose: [{"auto": view|None, "picked": view|None, "traits": [...]}]. A pick
+    counts as a good sign for that view; the view the rewriter proposed instead, as half a bad."""
+    data = _read()
+    n = 0
+    for d in decisions or []:
+        tr = d.get("traits") or []
+        if d.get("picked"):
+            _bump_views(data, [{"view": d["picked"], "traits": tr}], 1.0, 0.0)
+            n += 1
+            if d.get("auto") and d["auto"] != d["picked"]:
+                _bump_views(data, [{"view": d["auto"], "traits": tr}], 0.0, 0.5)
+    _save(data)
+    return n
+
+
 def effective_chance(chance):
     """The configured chance of a move, pulled toward how often the user actually keeps one
     (of the shots they reviewed) once enough were reviewed."""

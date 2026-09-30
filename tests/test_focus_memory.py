@@ -192,3 +192,51 @@ def test_focus_scene_texts_and_options_follow_the_generation_path(monkeypatch):
     assert "touches <Subject 1>'s chin" in texts[0]
     opts = sc.focus_options(texts[0])
     assert opts[0]["candidates"] and opts[0]["auto_lemma"]
+
+
+# ── rated, trait-aware views ─────────────────────────────────────────────────────────
+def test_views_a_face_never_gets_the_view_from_behind_and_a_back_never_a_front_view():
+    import shot_camera as sc
+    P = ("[Shot 1] A woman stands.\n[Shot 2] Her face and eyes fill the frame.\n"
+         "[Shot 3] She walks away, her back to us.")
+    seen2, seen3 = set(), set()
+    for seed in range(60):
+        _out, added = sc.add_shot_views(P, seed=seed, chance=1.0)
+        for a in added:
+            (seen2 if a["shot"] == 2 else seen3).add(a["view"])
+    assert seen2 and "View from behind" not in seen2
+    assert seen3 and not seen3 & set(sc._FRONT_ONLY)
+
+
+def test_views_ratings_move_the_weights_and_a_pick_is_always_used(tmp_path, monkeypatch):
+    import focus_memory as fm
+    import shot_camera as sc
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    used = [{"view": "Side view", "traits": ["face"]}, {"view": "Front view", "traits": ["face"]}]
+    for _ in range(6):
+        fm.rate_views(used, -1)
+    fm.rate_views([{"view": "Front view", "traits": ["face"]}], +1)
+    stats = fm.view_stats()
+    assert stats["Side view"][1] == 3.0 and stats["Side view@face"][1] == 3.0
+    assert sc._view_weight("Side view", ["face"], stats) < sc._view_weight("Front view", ["face"], stats)
+    P = "[Shot 1] A.\n[Shot 2] Her face."
+    key = sc.view_options(P)[0]["key"]
+    out, added = sc.add_shot_views(P, seed=1, chance=0.0, choices={key: {"mode": "pick", "view": "Side view"}})
+    assert added[0]["view"] == "Side view" and "Side view." in out
+    assert sc.add_shot_views(P, seed=1, chance=1.0, choices={key: {"mode": "none"}})[1] == []
+    fm.learn_views([{"auto": "Front view", "picked": "Side view", "traits": ["face"]}])
+    assert fm.view_stats()["Side view"][0] > stats["Side view"][0]
+
+
+def test_a_rating_reaches_the_views_the_run_carried(tmp_path, monkeypatch):
+    import conditioning
+    import focus_memory as fm
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    run = {"shot_views": [{"view": "Side view", "traits": ["face"]}]}
+    rate = conditioning.FunPackVideoRefinerV2._v2_rate_shot_views
+    rate(run, {"reward": -0.9, "axis": "image"})          # picture-only: says nothing about a view
+    rate(run, {"reward": -0.1, "skip_value_function": True})
+    assert fm.view_stats() == {}
+    rate(run, {"reward": -0.9, "axis": "composition"})
+    rate(run, {"reward": 1.0})
+    assert fm.view_stats()["Side view"] == (1.0, 1.0)

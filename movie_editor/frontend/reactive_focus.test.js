@@ -10,3 +10,10 @@ test("asks only about shots not decided yet, and skips shots with a camera move 
   assert.deepStrictEqual(out[0].shots.map((s) => s.key), ["k2"]);
   assert.deepStrictEqual(pending(scenes, { k1: 1, k2: 1 }), []);
 });
+
+test("views are asked about by their own list, and a decided view is not asked again", () => {
+  const v = (key, extra) => ({ shot: 2, key, already: false, auto: "Side view", candidates: [{ view: "Side view" }], ...extra });
+  const scenes = [{ index: 0, preview: "p", views: [v("a"), v("b"), v("c", { already: true })] }];
+  const out = pending(scenes, { a: { mode: "auto" } }, "views", (s) => !s.already && s.candidates.length);
+  assert.deepStrictEqual(out[0].views.map((s) => s.key), ["b"]);
+});

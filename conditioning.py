@@ -775,6 +775,9 @@ def split_prompt_by_transitions(prompt, placement="start"):
     return [(text, None)]
 
 
+_RUN_VIEWS = []     # the views this run added, for the rating that follows it
+
+
 def focus_scene_texts(scene_segments, variables=None, placement="start"):
     """Each scene's prompt as the camera-move step will see it: shortcuts expanded, the anchor
     and postfix folded in, $variables resolved (before cuts, views and moves, whose random
@@ -8786,6 +8789,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         entries = global_state.get("intent_expansion_memory", {}).get(key, [])
         return "; ".join(entries) if entries else ""
 
+    @staticmethod
+    def _v2_rate_shot_views(previous_run, profile):
+        """The rating of the last generation, passed on to the views it carried: liked = good,
+        disliked = bad. A picture-only dislike and the neutral 'Wrong ...' ratings say nothing
+        about a view, so they teach nothing."""
+        used = (previous_run or {}).get("shot_views") or []
+        reward = float(profile.get("reward", 0.0) or 0.0)
+        if (not used or profile.get("skip_learning") or profile.get("skip_value_function")
+                or profile.get("axis") == "image" or abs(reward) < 0.05):
+            return
+        try:
+            try:
+                from . import focus_memory as _fm
+            except ImportError:
+                import focus_memory as _fm
+            n = _fm.rate_views(used, 1 if reward > 0 else -1)
+            if n:
+                print(f"[FunPackVideoRefinerV2] shot views: rated {n} view(s) "
+                      f"{'good' if reward > 0 else 'bad'} ({profile.get('label') or profile.get('key')})")
+        except Exception as e:  # noqa: BLE001
+            print(f"[FunPackVideoRefinerV2] shot views: could not rate | {e}")
+
     def _v2_rating_is_discard(self, learning_profile):
         """True when the run must leave NO trace in refiner state — the user's
         '-Just forget it-' ('Just ignore it') rating or an auto-discarded enhancer
@@ -9326,14 +9351,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                 "after": after, "status": "Prompt as encoded — enhancer off"})
 
     @staticmethod
-    def _v2_shot_views(text, where, seed, chance):
+    def _v2_shot_views(text, where, seed, chance, choices=None):
         """`text` with a view (side, from above, POV...) opening some of its later shots."""
         try:
             try:
                 from . import shot_camera as _sc
+                from . import focus_memory as _fm
             except ImportError:
                 import shot_camera as _sc
-            out, added = _sc.add_shot_views(text, seed=seed, chance=chance)
+                import focus_memory as _fm
+            out, added = _sc.add_shot_views(text, seed=seed, chance=chance, stats=_fm.view_stats(),
+                                            choices=choices)
+            _RUN_VIEWS.extend({"view": a["view"], "traits": a["traits"]} for a in added)
         except Exception as e:  # noqa: BLE001
             print(f"[FunPackVideoRefinerV2] shot views: failed | {where}: {e}; prompt left as written")
             return text
@@ -10279,7 +10308,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   steer_mode="relative", absolute_strength=0.6,
                   h3_phrase_emphasis=False, h3_phrase_variability=0.0, camera_moves=False, camera_moves_chance=0.7,
                   shot_cuts=False, shot_cut_chance=0.0,
-                  shot_views=False, shot_view_chance=0.4, focus_choices=None,
+                  shot_views=False, shot_view_chance=0.4, focus_choices=None, view_choices=None,
                   prompt_enhance=False, prompt_enhance_system="", prompt_enhance_reference_intro="",
                   prompt_enhance_temperature=0.7, prompt_enhance_top_p=0.92,
                   prompt_enhance_max_length=400, prompt_enhance_thinking=False,
@@ -10409,6 +10438,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("liked_dir", {})
         global_state.setdefault("bad_dir", {})
         global_state.setdefault("successful_seed_memory", {})
+        _RUN_VIEWS.clear()
         previous_run = state.get("last_run")
         previous_run_refusal = self._v2_run_looks_like_refusal(previous_run)
         has_previous_run = isinstance(previous_run, dict) and not previous_run_refusal
@@ -10418,6 +10448,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             learning_profile["refusal_filtered"] = True
         else:
             learning_profile = rating_profile if has_previous_run else dict(V2_RATING_PROFILES["Initial discovery"], label="Initial discovery")
+        if has_previous_run:
+            self._v2_rate_shot_views(previous_run, learning_profile)
         previous_rating_label = str(global_state.get("last_rating_label", "Initial discovery"))
         previous_missing_axes = (
             list(global_state.get("last_missing_axes", []))
@@ -10958,7 +10990,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if shot_cuts and not split_by_transitions:
             prompt_to_encode = self._v2_shot_cuts(prompt_to_encode, "prompt", seed, shot_cut_chance, None)
         if shot_views and not split_by_transitions:
-            prompt_to_encode = self._v2_shot_views(prompt_to_encode, "prompt", seed, shot_view_chance)
+            prompt_to_encode = self._v2_shot_views(prompt_to_encode, "prompt", seed, shot_view_chance,
+                                                  view_choices)
         _base_before_camera = prompt_to_encode
         if camera_moves and not split_by_transitions:
             prompt_to_encode = self._v2_camera_moves(prompt_to_encode, "prompt", seed, camera_moves_chance,
@@ -11284,7 +11317,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             for _i, t in enumerate(split_scene_texts)]
                     if shot_views and split_scene_texts:
                         split_scene_texts = [self._v2_shot_views(t, f"scene {_i + 1}", f"{seed}:{_i}",
-                                                                 shot_view_chance)
+                                                                 shot_view_chance, view_choices)
                                              for _i, t in enumerate(split_scene_texts)]
                     _scene_before_camera = list(split_scene_texts or [])
                     if camera_moves and split_scene_texts:
@@ -11372,6 +11405,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 # so the NEXT run's rating pass can train every key that shaped the scene.
                 "scene_refinement_keys": [sorted(s) for s in scene_refinement_keys],
                 "gen_context": current_gen_context,
+                "shot_views": list(_RUN_VIEWS),
             }
         # "-Just forget it-" ("Just ignore it") and auto-discarded refusals must leave NO
         # trace: skip the feedback-learning sinks too, not only the rating-learning ones above.
@@ -14309,6 +14343,7 @@ class FunPackStudio:
             shot_cuts=bool(rf.get("shot_cuts", False)),
             shot_cut_chance=float(rf.get("shot_cut_chance", 0.0)),
             focus_choices=(rf.get("focus_choices") if isinstance(rf.get("focus_choices"), dict) else None),
+            view_choices=(rf.get("view_choices") if isinstance(rf.get("view_choices"), dict) else None),
             shot_views=bool(rf.get("shot_views", False)),
             shot_view_chance=float(rf.get("shot_view_chance", 0.4)),
             h3_phrase_variability=float(rf.get("h3_phrase_variability", 0.0) or 0.0),

@@ -261,7 +261,6 @@ _OWNED_BY = {
     "output_guidance_strength": ("output_guidance", None),
     "h3_phrase_variability": ("h3_phrase_emphasis", ('true',)),
     "camera_moves_chance": ("camera_moves", ('true',)),
-    "reactive_focus": ("camera_moves", ('true',)),
     "shot_cut_chance": ("shot_cuts", ('true',)),
     "shot_view_chance": ("shot_views", ('true',)),
     "trajectory_guidance_strength": ("trajectory_guidance", None),

@@ -172,7 +172,7 @@
     restart: () => j("POST", API("/restart")),
     systemInfo: () => j("GET", API("/system/info")),
     focusOptions: (pid, sceneIds) => j("POST", API(`/projects/${pid}/focus_options`), { scene_ids: sceneIds }),
-    focusLearn: (decisions) => j("POST", API("/focus/learn"), { decisions }),
+    focusLearn: (decisions, views) => j("POST", API("/focus/learn"), { decisions: decisions || [], views: views || [] }),
     gitStatus: () => j("GET", API("/git/status")),
     gitUpdate: (branch) => j("POST", API("/git/update"), branch ? { branch } : {}),
     gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),
