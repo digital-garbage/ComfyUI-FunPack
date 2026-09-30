@@ -8,7 +8,7 @@
 - Export settings no longer prints a loader input the node no longer has (a stale `sla_enabled: on`) or SLA's settings while `sla` is off.
 
 ### Added
-- Shot cut times (H3, off by default): every `[Shot N]` after the first opens with its cut time, spread over the scene's length by text and rounded to whole seconds; a shot whose main point changes is split in two. Prompts that already carry times are left alone.
+- Shot cut times (H3, off by default): every `[Shot N]` after the first opens with its cut time, spread evenly over the scene's length, rounded to whole seconds, none shorter than 2 s; a shot whose main point changes is split in two. Prompts that already carry times are left alone.
 - Shot views (H3, off by default): later shots may open with POV / side / front / from above / below / behind, never the same twice in a row; shot 1 is skipped.
 - Composer ▸ Enhance shows the final prompt of every run (after shortcuts, $variables and camera moves) even with the enhancer off, one card per scene, with the text before camera moves under it.
 - Camera moves for `[Shot N]` prompts (Engine settings, H3, off by default): each shot without a camera move gets one — close-up, focus, zoom in, move around — aimed at the most specific thing in it, never a bare `<Subject N>`. No language model; uses spaCy when installed (`spacy` in requirements).

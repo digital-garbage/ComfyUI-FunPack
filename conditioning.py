@@ -9338,7 +9338,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             grown = (f", {info['before']} -> {info['after']} shots" if info["after"] != info["before"]
                      else "")
             print(f"[FunPackVideoRefinerV2] shot cuts: Active | {where}: cut times "
-                  f"{', '.join(info['times'])} over {seconds:g}s{grown}")
+                  f"{', '.join(info['times'])} over {seconds:.1f}s{grown}")
         else:
             print(f"[FunPackVideoRefinerV2] shot cuts: Inactive | {where}: {info['why']}")
         return out

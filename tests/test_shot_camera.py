@@ -347,3 +347,16 @@ def test_a_shot_that_was_given_a_view_still_gets_its_move():
         assert added
         _out, rep = sc.add_camera_moves(viewed, seed=seed, chance=1.0)
         assert rep[1]["move"], (added, rep[1]["why"])
+
+
+def test_cut_times_split_the_scene_evenly_with_no_tiny_shots():
+    """Text-length weighting gave 00:03 / 00:04 / 00:09 over 15.08s: a one-second shot."""
+    pytest.importorskip("spacy")
+    P = HEAD + "[Shot 1] <Subject 1> waves. [Shot 2] <Subject 2> nods. [Shot 3] <Subject 1> smiles. [Shot 4] <Subject 2> sits."
+    _out, info = sc.add_shot_cuts(P, 15.0833)
+    secs = [int(t[3:5]) for t in info["times"]]
+    assert secs == [4, 8, 11]
+    edges = [0] + secs + [15.0833]
+    assert all(b - a >= 2 for a, b in zip(edges, edges[1:]))
+    assert sc.add_shot_cuts(P, 8)[1]["times"] == ["00:02.000", "00:04.000", "00:06.000"]
+    assert sc.add_shot_cuts(P, 4)[1]["times"] == ["00:01.000", "00:02.000", "00:03.000"]

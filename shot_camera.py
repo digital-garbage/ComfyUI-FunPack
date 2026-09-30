@@ -307,7 +307,7 @@ def _switch_point(picture, constant, pieces):
 
 def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
     """-> (new prompt, info). Shots whose main point changes are split in two; every shot after
-    the first then opens with its cut time, spread over `seconds` by text length and rounded
+    the first then opens with its cut time, spread evenly over `seconds` and rounded
     to whole seconds. A prompt that already carries cut times is left alone.
     `pieces`: the texts of the user's shortcuts; a shot is only ever cut BETWEEN two of them,
     so with none given nothing is split (times are still added).
@@ -347,12 +347,16 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
             blocks.append([picture, sound])
     if len(blocks) > len(marks) and (len(blocks) > seconds or seconds / len(blocks) < MIN_SHOT_SECONDS):
         blocks = [[p, s] for p, s in parts]         # not enough seconds for the splits
-    weights = [max(1, len(b[0].strip())) for b in blocks]
-    total = float(sum(weights))
-    times, acc = [], 0.0
-    for k in range(len(blocks) - 1):
-        acc += weights[k]
-        t = max(round(acc / total * seconds), (times[-1] + 1) if times else 1)
+    # Equal shares of the scene, rounded to whole seconds, no shot shorter than MIN_SHOT_SECONDS
+    # (a shortcut's text length says nothing about how long its beat should last: weighting by
+    # it gave one-second shots next to five-second ones).
+    n = len(blocks)
+    gap = MIN_SHOT_SECONDS if n * MIN_SHOT_SECONDS <= seconds else 1
+    times = []
+    for k in range(1, n):
+        t = round(k * seconds / n)
+        t = max(t, (times[-1] if times else 0) + gap)          # not too close behind
+        t = min(t, int(seconds) - (n - k) * gap)               # leave room for the shots after
         times.append(t)
     if len(blocks) > 1 and times[-1] >= seconds:
         info["why"] = f"{len(blocks)} shots do not fit in {seconds}s at whole seconds"
