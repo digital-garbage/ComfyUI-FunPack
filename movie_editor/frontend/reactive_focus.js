@@ -19,12 +19,12 @@
     const state = new Map();
     const nodes = [];
     scenes.forEach((sc) => {
-      nodes.push(el("div", "ov-label", `Scene ${sc.index + 1} — ${sc.preview}`));
+      nodes.push(el("div", "ov-label", `Scene ${sc.index + 1}`));
       sc.shots.forEach((s) => {
-        const st = { mode: "auto", lemma: null };
+        const st = { mode: "auto", picks: [] };
         state.set(s.key, st);
-        nodes.push(row(`Shot ${s.shot}`, s.candidates.slice(0, 6).map((c) => [c.lemma, c.text]), st,
-          "lemma", s.auto_lemma, MOVE_MODES));
+        nodes.push(row(s, st, s.candidates.slice(0, 8).map((c) => [c.lemma, c.text]), s.auto_lemma, MOVE_MODES,
+          "Click several, in order: the camera travels from the first to the last. Hold aims at the first only."));
       });
     });
     return {
@@ -33,8 +33,10 @@
         const choices = {}, decisions = [];
         scenes.forEach((sc) => sc.shots.forEach((s) => {
           const st = state.get(s.key);
-          choices[s.key] = { mode: st.mode, lemma: st.mode === "none" ? null : (st.lemma || s.auto_lemma) };
-          decisions.push({ auto: s.auto_lemma, picked: choices[s.key].lemma, mode: st.mode });
+          const lemmas = st.picks.length ? st.picks : [s.auto_lemma];
+          choices[s.key] = st.mode === "none" ? { mode: "none", lemma: null }
+            : { mode: st.mode, lemma: lemmas[0], lemmas };
+          decisions.push({ auto: s.auto_lemma, picked: st.mode === "none" ? [] : lemmas, mode: st.mode });
         }));
         return { choices, decisions };
       },
@@ -47,9 +49,10 @@
     scenes.forEach((sc) => {
       nodes.push(el("div", "ov-label", `Scene ${sc.index + 1} — views`));
       sc.views.forEach((s) => {
-        const st = { mode: "auto", view: null };
+        const st = { mode: "auto", picks: [] };
         state.set(s.key, st);
-        nodes.push(row(`Shot ${s.shot}`, s.candidates.map((c) => [c.view, c.view]), st, "view", s.auto, VIEW_MODES));
+        nodes.push(row(s, st, s.candidates.map((c) => [c.view, c.view]), null, VIEW_MODES,
+          "Click every view you are happy with: one of them is used."));
       });
     });
     return {
@@ -59,39 +62,64 @@
         scenes.forEach((sc) => sc.views.forEach((s) => {
           const st = state.get(s.key);
           if (st.mode === "none") choices[s.key] = { mode: "none" };
-          else if (st.view) choices[s.key] = { mode: "pick", view: st.view };
+          else if (st.picks.length) choices[s.key] = { mode: "pick", views: st.picks.slice() };
           else choices[s.key] = { mode: "auto" };
           // Accepting "Auto" is not a pick: the draw may land on any allowed view.
-          decisions.push({ auto: s.auto, picked: st.mode === "none" ? null : st.view, traits: s.traits });
+          decisions.push({ auto: s.auto, picked: st.mode === "none" ? [] : st.picks, traits: s.traits });
         }));
         return { choices, decisions };
       },
     };
   }
 
-  // A row: label, candidate chips (click to pick, click again to unpick), mode select.
-  function row(label, options, st, field, autoValue, modes) {
+  // A row: what the shot says, candidate chips (click to add/remove; the number is the order),
+  // mode select. `autoValue` is highlighted (dimmed) until the person picks something.
+  function row(shot, st, options, autoValue, modes, hint) {
     const r = el("div", "ov-field full");
-    r.appendChild(el("span", "ov-label", label));
+    r.appendChild(el("span", "ov-label", `Shot ${shot.shot}`));
+    if (shot.raw) {
+      const typed = el("div", "", shot.raw);
+      typed.style.cssText = "font:12px ui-monospace,monospace;opacity:.85;margin:2px 0";
+      r.appendChild(typed);
+    }
+    if (shot.text && shot.text !== shot.raw) {
+      const said = el("div", "", shot.text);
+      said.title = "Click to show all";
+      said.style.cssText = "font-size:12px;opacity:.6;cursor:pointer;margin-bottom:4px;"
+        + "display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden";
+      said.onclick = () => { said.style.webkitLineClamp = said.style.webkitLineClamp === "unset" ? "2" : "unset"; };
+      r.appendChild(said);
+    }
     const chips = el("div", "ov-checklist");
     chips.style.cssText = "flex-direction:row;flex-wrap:wrap;gap:6px";
     const btns = options.map(([value, text]) => {
       const b = el("button", "btn", text);
       b.type = "button";
-      b.onclick = () => { st[field] = st[field] === value ? null : value; paint(); };
+      b.onclick = () => {
+        const at = st.picks.indexOf(value);
+        if (at >= 0) st.picks.splice(at, 1); else st.picks.push(value);
+        paint();
+      };
       chips.appendChild(b);
-      return [b, value];
+      return [b, value, text];
     });
     const sel = document.createElement("select");
     sel.className = "ov-input";
     modes.forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); });
     sel.onchange = () => { st.mode = sel.value; paint(); };
     function paint() {
-      btns.forEach(([b, v]) => b.classList.toggle("primary", (st[field] || autoValue) === v));
+      btns.forEach(([b, v, text]) => {
+        const at = st.picks.indexOf(v);
+        const on = at >= 0 || (!st.picks.length && autoValue === v);
+        b.classList.toggle("primary", on);
+        b.textContent = at >= 0 && (st.picks.length > 1 || options.length > 0) ? `${at + 1} · ${text}` : text;
+      });
       chips.style.opacity = st.mode === "none" ? "0.4" : "";
     }
     paint();
-    r.append(chips, sel);
+    const note = el("div", "", hint);
+    note.style.cssText = "font-size:11px;opacity:.5;margin-top:4px";
+    r.append(chips, sel, note);
     return r;
   }
 

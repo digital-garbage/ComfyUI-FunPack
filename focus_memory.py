@@ -79,10 +79,11 @@ def learn(decisions):
         if mode == "none":
             continue
         picked, auto = d.get("picked"), d.get("auto")
-        if picked:
-            picks[picked] = picks.get(picked, 0) + 1
-            if auto and auto != picked:
-                rejects[auto] = rejects.get(auto, 0) + 1
+        picked = [picked] if isinstance(picked, str) else list(picked or [])
+        for word in picked:
+            picks[word] = picks.get(word, 0) + 1
+        if picked and auto and auto not in picked:
+            rejects[auto] = rejects.get(auto, 0) + 1
     data.update(picks=picks, rejects=rejects, shots=total, kept=kept)
     _save(data)
     return n
@@ -123,10 +124,12 @@ def learn_views(decisions):
     n = 0
     for d in decisions or []:
         tr = d.get("traits") or []
-        if d.get("picked"):
-            _bump_views(data, [{"view": d["picked"], "traits": tr}], 1.0, 0.0)
+        picked = [d["picked"]] if isinstance(d.get("picked"), str) else list(d.get("picked") or [])
+        if picked:
+            for v in picked:
+                _bump_views(data, [{"view": v, "traits": tr}], 1.0 / len(picked), 0.0)
             n += 1
-            if d.get("auto") and d["auto"] != d["picked"]:
+            if d.get("auto") and d["auto"] not in picked:
                 _bump_views(data, [{"view": d["auto"], "traits": tr}], 0.0, 0.5)
     _save(data)
     return n

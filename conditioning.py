@@ -778,6 +778,30 @@ def split_prompt_by_transitions(prompt, placement="start"):
 _RUN_VIEWS = []     # the views this run added, for the rating that follows it
 
 
+def focus_scene_raw(scene_segments, variables=None):
+    """Per scene, {shot number: the shot as the person typed it}: shortcut triggers still
+    unexpanded ($variables resolved). {} for a scene whose `[Shot N]` markers only appear once its
+    shortcuts are expanded. What the Reactive focus review prints above each shot."""
+    try:
+        from .templates import resolve_variables as _resolve
+    except ImportError:
+        from templates import resolve_variables as _resolve
+    try:
+        from . import shot_camera as _sc
+    except ImportError:
+        import shot_camera as _sc
+    anchor = (scene_segments.get("anchor") or "").strip()
+    postfix = (scene_segments.get("postfix") or "").strip()
+    out = []
+    for seg in scene_segments.get("scenes", []) or []:
+        text = " ".join(p for p in (anchor, (seg or "").strip(), postfix) if p)
+        text = _resolve(text, variables)[0] if variables else text
+        marks = list(_sc.SHOT.finditer(text))
+        out.append({int(m.group(1)): " ".join(text[m.end():(marks[i + 1].start() if i + 1 < len(marks) else len(text))].split())
+                    for i, m in enumerate(marks)})
+    return out
+
+
 def focus_scene_texts(scene_segments, variables=None, placement="start"):
     """Each scene's prompt as the camera-move step will see it: shortcuts expanded, the anchor
     and postfix folded in, $variables resolved (before cuts, views and moves, whose random

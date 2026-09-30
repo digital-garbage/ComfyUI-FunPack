@@ -245,3 +245,49 @@ def test_a_rating_reaches_the_views_the_run_carried(tmp_path, monkeypatch):
     rate(run, {"reward": -0.9, "axis": "composition"})
     rate(run, {"reward": 1.0})
     assert fm.view_stats()["Side view"] == (1.0, 1.0)
+
+
+# ── several picks per shot, and readable previews ────────────────────────────────────
+def test_several_targets_in_order_become_one_travelling_move():
+    P = "[Shot 1] A woman raises the lamp. Her hand holds a cup near the window."
+    opts = sc.focus_options(P)[0]["candidates"]
+    assert len(opts) >= 3
+    a, b, c = opts[0]["lemma"], opts[1]["lemma"], opts[2]["lemma"]
+    key = sc.shot_key(P.split("]", 1)[1])
+    out, rep = sc.add_camera_moves(P, seed=1, chance=0.0,
+                                   choices={key: {"mode": "move", "lemmas": [b, a, c]}})
+    assert rep[0]["target"].count("->") == 2 and rep[0]["lemmas"]
+    names = [t.strip() for t in rep[0]["target"].split("->")]
+    assert names[0].endswith(next(o["text"] for o in opts if o["lemma"] == b).split()[-1])
+    assert "from" in out and out.count("Then the camera") == 1
+    one, rep1 = sc.add_camera_moves(P, seed=1, chance=0.0, choices={key: {"mode": "hold", "lemmas": [a, b]}})
+    assert "->" not in rep1[0]["target"]                      # Hold aims at the first pick only
+
+
+def test_several_views_are_a_shortlist_and_learning_counts_them_all(tmp_path, monkeypatch):
+    import focus_memory as fm
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    P = "[Shot 1] A.\n[Shot 2] Her face."
+    key = sc.view_options(P)[0]["key"]
+    short = ["Side view", "Front view"]
+    got = {sc.add_shot_views(P, seed=s, chance=0.0, choices={key: {"mode": "pick", "views": short}})[1][0]["view"]
+           for s in range(40)}
+    assert got == set(short)
+    fm.learn_views([{"auto": "POV view", "picked": short, "traits": ["face"]}])
+    st = fm.view_stats()
+    assert st["Side view"][0] == 0.5 and st["POV view"][1] == 0.5
+    fm.learn([{"auto": "x", "picked": ["a", "b"], "mode": "move"}])
+    assert fm.prior()["a"] > 0 and fm.prior()["x"] < 0
+
+
+def test_shot_texts_name_what_each_shot_says():
+    t = sc.shot_texts("[Shot 1] A cat sits.  [Shot 2] At 00:03.000, the camera cuts to a new angle. A dog runs.")
+    assert t == {1: "A cat sits.", 2: "A dog runs."}
+
+
+def test_raw_previews_keep_the_typed_shortcuts(monkeypatch):
+    import conditioning
+    raw = conditioning.focus_scene_raw(
+        {"anchor": "", "scenes": ["$style [Shot 2] MISS CIPI"], "postfix": ""},
+        [{"name": "style", "value": "intro [Shot 1] HH FF"}])
+    assert raw == [{1: "HH FF", 2: "MISS CIPI"}]

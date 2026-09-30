@@ -3123,9 +3123,14 @@ if web is not None and PromptServer is not None:
             prior = bridge._funpack_attr("focus_memory", "prior")()
             views_of = bridge._funpack_attr("shot_camera", "view_options")
             stats = bridge._funpack_attr("focus_memory", "view_stats")()
+            raws = bridge._funpack_attr("conditioning", "focus_scene_raw")(seg, list(target.variables or []))
+            read = bridge._funpack_attr("shot_camera", "shot_texts")
             out = []
             for i, text in enumerate(texts):
                 shots, views = sc(text, prior), views_of(text, stats)
+                shown, raw = read(text), (raws[i] if i < len(raws) else {})
+                for s in (*shots, *views):      # what the shot says, and what was typed for it
+                    s["text"], s["raw"] = shown.get(s["shot"], ""), raw.get(s["shot"], "")
                 if shots or views:
                     out.append({"index": i, "preview": " ".join(text.split())[:80],
                                 "shots": shots, "views": views})

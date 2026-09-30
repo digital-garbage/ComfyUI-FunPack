@@ -271,12 +271,18 @@ def _plan(pool, last, rng, prior=None, force=None, mode="auto"):
     best = _draw(pool, prior, rng, 1)[0]
     if prior and len(topics) > 2:                 # two of them, weighted by habit, in text order
         topics = sorted(_draw(topics, prior, rng, 2), key=lambda c: c[3])
-    if force is not None:                         # the user picked the thing to aim at
-        best, topics = force, [force]
+    if force:                                     # the user picked what to aim at, in this order
+        best, topics = force[0], list(force)
     if mode == "hold":
         hold = _pick(MOVES_HOLD, last, rng)
         target = _name(best)
         return hold.format(x=target), target, hold
+    if force and len(force) >= 2:
+        # "from here to there (and on to...)": the camera visits the picks in the order given.
+        move = _pick(MOVES_TRAVEL, last, rng)
+        sentences = [move.format(x=_name(force[0]), y=_name(force[1]))]
+        sentences += [_pick(MOVES_THEN, None, rng).format(y=_name(c)) for c in force[2:]]
+        return " ".join(sentences), " -> ".join(_name(c) for c in force), move
     if mode == "move":
         k, travel = 1, False
     elif rng is None:
@@ -387,7 +393,8 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None):
         # What the person said about this shot, if anything: "none", or a target and/or a mode.
         said = (choices or {}).get(entry["key"]) or {}
         mode = said.get("mode") or "auto"
-        force = next((c for c in pool if c[0] == said.get("lemma")), None) if said.get("lemma") else None
+        wanted = said.get("lemmas") or ([said["lemma"]] if said.get("lemma") else [])
+        force = [c for c in (next((c for c in pool if c[0] == l), None) for l in wanted) if c]
         entry["lemmas"] = [c[0] for c in pool if _score(c) > 0.5]      # the words this shot dwells on
         # A word the shot keeps coming back to is what it is about: a small lift per extra mention.
         mentions = {}
@@ -402,7 +409,7 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None):
             entry["why"] = "nothing specific to aim at"
         elif mode == "none":
             entry["why"] = "no move, as you chose"
-        elif rng is not None and mode == "auto" and force is None and rng.random() >= chance:
+        elif rng is not None and mode == "auto" and not force and rng.random() >= chance:
             entry["why"] = "left as written by chance"
         else:
             moves, desc, opening = _plan(pool, last, rng, shot_prior, force=force, mode=mode)
@@ -581,6 +588,18 @@ def _view_weight(view, traits, stats):
     return 0.15 + (sum(rates) / len(rates) if rates else 0.5)
 
 
+def shot_texts(text):
+    """{shot number: its picture text, without what this module wrote into it}: what the
+    Reactive focus review shows so a choice is about a shot the person can read."""
+    out = {}
+    marks = list(SHOT.finditer(text or ""))
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        picture, _sound = _split_sound(text[m.end():end])
+        out[int(m.group(1))] = " ".join(own_words_removed(picture).split())
+    return out
+
+
 def view_options(text, stats=None):
     """What each `[Shot N]` after the first could open with, for a person to choose from.
     -> [{"shot", "key", "traits", "already", "candidates": [{"view", "score"}], "auto"}]"""
@@ -623,8 +642,12 @@ def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None):
             allowed = allowed_views(traits)
             if said.get("mode") == "none":
                 pass
-            elif said.get("view") in allowed:
-                view = said["view"]
+            elif said.get("views") or said.get("view"):
+                # "fine from these": a pick is always used; with several, one of them is drawn.
+                wanted = [v for v in (said.get("views") or [said.get("view")]) if v in allowed]
+                pool = [v for v in wanted if v != last] or wanted
+                if pool:
+                    view = rng.choices(pool, weights=[_view_weight(v, traits, stats) for v in pool])[0]
             elif rng.random() < chance:
                 pool = [v for v in allowed if v != last] or allowed
                 if pool:
