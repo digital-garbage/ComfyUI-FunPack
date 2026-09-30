@@ -875,6 +875,17 @@ def _step_position(args):
     return int(hit[0]), int(sched.shape[0]) - 1
 
 
+# Samplers that call the model exactly once per schedule step, which the camera move's
+# original-frame bookkeeping relies on (heun, dpmpp_2s, dpm_2 ... call it twice: the second
+# call would be read as the next step).
+_CAMERA_SAFE_SAMPLERS = frozenset({
+    "sample_euler", "sample_euler_ancestral", "sample_lcm", "sample_dpmpp_2m",
+    "sample_dpmpp_2m_sde", "sample_dpmpp_3m_sde", "sample_res_multistep", "sample_lms",
+    "sample_ipndm", "sample_ipndm_v", "sample_deis", "sample_gradient_estimation",
+    "sample_er_sde", "sample_ddpm",
+})
+
+
 class _InputSteer:
     """Carry a step's edit into the NEXT step's input instead of editing its answer (H3).
 
@@ -4314,6 +4325,10 @@ class FunPackLTXAVSceneChainSampler:
                       "picture (second pass, latent anchor or carried overlap), so it stands down")
             else:
                 model, _camera_stats = self._install_camera_move(model, self._camera_move, int(seed))
+                _pins = self._conditioning_value(positive, "minimax_keyframes") or []
+                if any(int(p.get("resolved_frame_index", 0)) > 0 for p in _pins):
+                    print("[FunPackSceneChain] camera move: keyframe pins after the first frame "
+                          "stay where they are while the picture moves, so they may fight the move")
 
         _phrase_probe = self._install_phrase_probe(model, positive, latent)
         if _phrase_probe is not None:
@@ -8767,6 +8782,7 @@ class FunPackLTXAVSceneChainSampler:
                 try:
                     pos = where._where(args)
                     if pos is None:
+                        stats["why"] = "this sampler's calls are not on the schedule"
                         return _plain(apply_fn, args)
                     i, n, _key, _sched = pos
                     c = args.get("c") if isinstance(args.get("c"), dict) else {}
@@ -8783,6 +8799,9 @@ class FunPackLTXAVSceneChainSampler:
                     if span is not None:
                         off, sz, shape = span
                         cc, tt, hh, ww = (int(v) for v in tuple(shape)[-4:])
+                        if tt < 2:
+                            stats["why"] = "one latent frame has nothing to move across"
+                            return _plain(apply_fn, args)
                         vid = x[..., off:off + sz].reshape(cc, tt, hh, ww)
                     elif x.dim() == 5:
                         off, sz, vid = None, None, x[0]
@@ -9864,9 +9883,9 @@ class FunPackLTXAVSceneChainSampler:
         if camera_move != "off":
             self._camera_move = _camera.Move(
                 pan_x=_camera.clamp_pan(camera_pan_x), pan_y=_camera.clamp_pan(camera_pan_y),
-                zoom=min(max(float(camera_zoom), 0.5), 2.0),
-                focus_x=min(max(float(camera_focus_x), 0.0), 1.0),
-                focus_y=min(max(float(camera_focus_y), 0.0), 1.0),
+                zoom=_camera.finite(camera_zoom, 1.0, 0.5, 2.0),
+                focus_x=_camera.finite(camera_focus_x, 0.5, 0.0, 1.0),
+                focus_y=_camera.finite(camera_focus_y, 0.5, 0.0, 1.0),
                 step=min(max(int(camera_step), 1), 50))
             if not self._is_h3:
                 print("[FunPackSceneChain] camera move: Inactive | H3 only")
@@ -9879,6 +9898,14 @@ class FunPackLTXAVSceneChainSampler:
                 print("[FunPackSceneChain] camera move: Inactive | context windows split the "
                       "clip into pieces that each see only some frames, so the move stands down")
                 self._camera_move = None
+            else:
+                _fn = getattr(sampler, "sampler_function", None)
+                _name = getattr(_fn, "__name__", "") or type(sampler).__name__
+                if _name not in _CAMERA_SAFE_SAMPLERS:
+                    print(f"[FunPackSceneChain] camera move: Inactive | sampler {_name} may call "
+                          f"the model more than once per step, which the move cannot follow; use "
+                          f"one of: {', '.join(sorted(n.replace('sample_', '') for n in _CAMERA_SAFE_SAMPLERS))}")
+                    self._camera_move = None
         if (shot_memory != "off" or tsr == "learned" or late_guidance == "learned"
                 or stas == "learned"):
             if not refinement_key_input:

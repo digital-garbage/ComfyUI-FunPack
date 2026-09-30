@@ -183,6 +183,9 @@
     stas:
       "Steers H3's own block outputs by their packed frame layout; LTX's blocks are hooked "
       + "differently.",
+    camera_move:
+      "Moves the picture inside H3's packed latent (picture and sound in one sequence); it is "
+      + "written for that layout and is not built for LTX.",
     h3_video_detail:
       "Scales H3's own final layer, which reads video and audio on separate rows. LTX has no "
       + "layer of that shape, so the sampler has nothing to scale.",
@@ -195,6 +198,7 @@
     "h3_shadow_negative_start_percent", "h3_shadow_negative_end_percent",
     "h3_shadow_negative_compose",
     "late_guidance_strength", "late_guidance_block", "stas_alpha", "stas_block",
+    "camera_pan_x", "camera_pan_y", "camera_zoom", "camera_focus_x", "camera_focus_y", "camera_step",
   ];
 
   // Sub-settings of identity transfer: meaningless wherever the feature itself cannot run,

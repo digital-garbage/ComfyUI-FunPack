@@ -29,10 +29,15 @@ import torch
 MODES = ("off", "manual")
 
 
+def finite(v, default, lo, hi):
+    """`v` clamped to [lo, hi]; anything unreadable (NaN) becomes `default`."""
+    v = float(v)
+    return default if v != v else min(max(v, lo), hi)
+
+
 def clamp_pan(v):
     """A pan share in [-1, 1]; anything unreadable (NaN) is no pan."""
-    v = float(v)
-    return 0.0 if v != v else min(max(v, -1.0), 1.0)
+    return finite(v, 0.0, -1.0, 1.0)
 
 
 @dataclass(frozen=True)
@@ -86,7 +91,7 @@ def warp(video, move, sigma, generator):
     fresh noise at the current noise level `sigma` (x = (1 - sigma) * picture + sigma * noise
     with the picture unknown there), so they look like the rest of a noisy latent."""
     c, t, h, w = video.shape
-    iy, ix = sources(move, t, h, w)
+    iy, ix = (v.to(video.device) for v in sources(move, t, h, w))
     ok_y, ok_x = (iy >= 0) & (iy < h), (ix >= 0) & (ix < w)
     fresh = torch.randn(video.shape, generator=generator).to(video) * float(sigma)
     out = torch.empty_like(video)
@@ -102,7 +107,7 @@ def unwarp(moved, original, move):
     Cells the move never showed keep `original`'s value, so the sampler's state there is
     left as it was."""
     c, t, h, w = moved.shape
-    iy, ix = sources(move, t, h, w)
+    iy, ix = (v.to(moved.device) for v in sources(move, t, h, w))
     ok_y, ok_x = (iy >= 0) & (iy < h), (ix >= 0) & (ix < w)
     out = original.clone()
     for f in range(t):

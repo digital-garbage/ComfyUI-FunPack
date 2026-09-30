@@ -199,3 +199,25 @@ def test_the_sampler_inputs_agree_with_the_editor_defaults():
                  "camera_focus_x", "camera_focus_y", "camera_step"]:
         assert opt[name][1]["default"] == settings_card._EDITOR_DEFAULTS[name], name
     assert opt["camera_move"][1]["default"] == "off"
+
+
+def test_the_move_works_on_an_accelerator_when_there_is_one():
+    dev = ("cuda" if torch.cuda.is_available()
+           else "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available() else None)
+    if dev is None:
+        import pytest
+        pytest.skip("no GPU here; the rental is where this runs")
+    x = torch.randn(2, 9, 12, 20, device=dev)
+    move = cm.Move(pan_x=0.5, zoom=1.3)
+    out = cm.warp(x, move, 0.5, _gen())
+    back = cm.unwarp(out, x, move)
+    assert out.device == x.device and back.device == x.device and torch.isfinite(out).all()
+    assert torch.equal(cm.warp(x.cpu(), move, 0.5, _gen()).to(dev), out)     # same as the CPU result
+
+
+def test_only_single_call_samplers_are_allowed_and_bad_numbers_are_neutral():
+    import samplers
+    safe = samplers._CAMERA_SAFE_SAMPLERS
+    assert {"sample_euler", "sample_lcm"} <= safe
+    assert not ({"sample_heun", "sample_dpmpp_2s_ancestral", "sample_dpm_2", "sample_dpm_adaptive"} & safe)
+    assert cm.finite(float("nan"), 1.0, 0.5, 2.0) == 1.0 and cm.finite(9, 1.0, 0.5, 2.0) == 2.0
