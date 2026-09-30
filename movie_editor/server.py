@@ -3129,13 +3129,14 @@ if web is not None and PromptServer is not None:
                 if shots or views:
                     out.append({"index": i, "preview": " ".join(text.split())[:80],
                                 "shots": shots, "views": views})
-            return out
+            marked = sum(1 for t in texts if "[shot" in t.lower())
+            return out, {"texts": len(texts), "with_shot_marks": marked}
 
         try:
-            scenes = await asyncio.to_thread(_build)
+            scenes, seen = await asyncio.to_thread(_build)
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Could not list camera targets: {e}"}, status=500)
-        return web.json_response({"scenes": scenes})
+        return web.json_response({"scenes": scenes, **seen})
 
     @routes.post(UI_PREFIX + "/api/focus/learn")
     async def _focus_learn(req):

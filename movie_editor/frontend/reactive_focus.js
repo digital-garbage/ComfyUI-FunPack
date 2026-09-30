@@ -103,6 +103,7 @@
         title: "Reactive focus",
         subtitle: "",
         widthClass: "ov-modal-wide",
+        sticky: true,      // a stray click must not cancel the run; only × / Cancel / a step does
         onClose: () => { if (!done) { done = true; resolve(null); } },
       });
       const show = () => {
@@ -138,9 +139,10 @@
     const wantMoves = !!(rf.camera_moves && rf.reactive_focus && chance(rf.camera_moves_chance, 0.7) > 0);
     const wantViews = !!(rf.shot_views && rf.reactive_focus && chance(rf.shot_view_chance, 0.4) > 0);
     if (!wantMoves && !wantViews) return true;
-    let scenes;
+    let scenes, seen = {};
     try {
-      scenes = (await window.MovieEditorAPI.focusOptions(project.id, sceneIds)).scenes || [];
+      seen = await window.MovieEditorAPI.focusOptions(project.id, sceneIds);
+      scenes = seen.scenes || [];
     } catch (e) {
       console.warn("[FunPack] reactive focus: could not list targets —", e.message);
       window.Store.get().notice = `Reactive focus was skipped: ${e.message}`;
@@ -157,7 +159,15 @@
       const todo = pending(scenes, savedViews, "views", (s) => !s.already && s.candidates.length);
       if (todo.length) steps.push({ kind: "views", title: "Views", page: viewsPage(todo) });
     }
-    if (!steps.length) return true;
+    if (!steps.length) {
+      // Say why nothing was asked, or "no modal" is indistinguishable from "broken".
+      const why = !seen.with_shot_marks
+        ? `no [Shot N] found in the ${seen.texts == null ? "" : seen.texts + " "}scene text(s) sent to generation`
+        : scenes.length ? "every shot is already decided or already has a camera move/view"
+          : "no shot has a target or view to offer";
+      window.Store.get().notice = `Reactive focus: nothing to ask — ${why}.`;
+      return true;
+    }
     const res = await ask(steps);
     if (!res) return false;
     const patch = {}, learn = { decisions: [], views: [] };

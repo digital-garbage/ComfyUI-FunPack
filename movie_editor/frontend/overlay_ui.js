@@ -79,7 +79,7 @@
     return sel;
   }
 
-  function openModal({ title, subtitle, widthClass, onClose }) {
+  function openModal({ title, subtitle, widthClass, onClose, sticky }) {
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay ov-modal-overlay";
     const box = document.createElement("div");
@@ -115,7 +115,7 @@
       if (onClose) onClose();
     };
     closeBtn.onclick = close;
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    if (!sticky) overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
     document.body.append(overlay);
     return { overlay, body, foot, close };
   }
