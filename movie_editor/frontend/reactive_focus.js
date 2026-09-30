@@ -133,8 +133,9 @@
   // Called by Store before it queues a run. -> false to abort the run.
   async function review(project, sceneIds) {
     const { rf } = window.StudioSettings.read(project);
-    const wantMoves = !!(rf.camera_moves && rf.reactive_focus);
-    const wantViews = !!(rf.shot_views && rf.reactive_focus);
+    const chance = (v, d) => (v == null ? d : Number(v));
+    const wantMoves = !!(rf.camera_moves && rf.reactive_focus && chance(rf.camera_moves_chance, 0.7) > 0);
+    const wantViews = !!(rf.shot_views && rf.reactive_focus && chance(rf.shot_view_chance, 0.4) > 0);
     if (!wantMoves && !wantViews) return true;
     let scenes;
     try {
