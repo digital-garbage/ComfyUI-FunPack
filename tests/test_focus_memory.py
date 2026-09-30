@@ -127,3 +127,68 @@ def test_a_word_the_shot_keeps_returning_to_is_what_it_is_about():
     P = "Intro. [Shot 1] <Subject 1> lifts the cherry, then the lamp, then looks at the cherry again."
     hits = sum("cherry" in sc.add_camera_moves(P, seed=s, chance=1.0)[1][0]["target"] for s in range(80))
     assert hits > 50, hits
+
+
+def test_choices_reinforce_what_was_picked_and_mark_down_what_was_replaced(store):
+    fm.learn([{"auto": "lamp", "picked": "chin", "mode": "auto"}] * 3)
+    p = fm.prior()
+    assert p["chin"] > 0.5 > 0 > p["lamp"]
+    fm.learn([{"auto": "lamp", "picked": "lamp", "mode": "auto"}])
+    assert fm.prior()["lamp"] > p["lamp"] - 1                          # agreeing does not punish
+
+
+def test_no_move_counts_against_moves_not_against_words(store):
+    fm.learn([{"auto": "chin", "picked": None, "mode": "none"}] * 12)
+    assert fm.prior() == {}
+    assert fm.effective_chance(0.7) < 0.4
+    assert fm.effective_chance(1.0) < 0.6
+
+
+def test_the_chance_is_left_alone_until_enough_shots_were_reviewed(store):
+    fm.learn([{"auto": "chin", "picked": None, "mode": "none"}] * 3)
+    assert fm.effective_chance(0.7) == 0.7
+
+
+def test_a_chosen_target_and_mode_are_obeyed():
+    pytest.importorskip("spacy")
+    P = "Intro. [Shot 1] <Subject 1> raises the lamp and lowers the mirror."
+    opts = sc.focus_options(P)[0]
+    key = opts["key"]
+    assert {c["lemma"] for c in opts["candidates"]} >= {"lamp", "mirror"}
+    for seed in range(10):
+        _o, rep = sc.add_camera_moves(P, seed=seed, chance=1.0,
+                                      choices={key: {"mode": "hold", "lemma": "mirror"}})
+        assert "mirror" in rep[0]["move"] and ("holds" in rep[0]["move"] or "stays" in rep[0]["move"])
+        _o, rep = sc.add_camera_moves(P, seed=seed, chance=1.0,
+                                      choices={key: {"mode": "move", "lemma": "lamp"}})
+        assert "lamp" in rep[0]["move"] and "mirror" not in rep[0]["move"] and " Then" not in rep[0]["move"]
+        _o, rep = sc.add_camera_moves(P, seed=seed, chance=1.0, choices={key: {"mode": "none"}})
+        assert rep[0]["move"] is None and "you chose" in rep[0]["why"]
+
+
+def test_a_choice_survives_cut_openers_and_views_added_to_the_shot():
+    pytest.importorskip("spacy")
+    base = "Intro. [Shot 1] <Subject 1> waves. [Shot 2] <Subject 2> raises the lamp."
+    viewed = ("Intro. [Shot 1] <Subject 1> waves. [Shot 2] At 00:04.000, the camera cuts to a new angle. "
+              "Side view. <Subject 2> raises the lamp.")
+    assert sc.focus_options(base)[1]["key"] == sc.focus_options(viewed)[1]["key"]
+
+
+def test_focus_scene_texts_and_options_follow_the_generation_path(monkeypatch):
+    """The review shows the text the camera-move step will see: shortcuts expanded, anchor and
+    postfix folded in, one text per scene."""
+    pytest.importorskip("spacy")
+    import conditioning
+    import templates
+    db = {"shortcuts": {"k": {"name": "k", "enabled": True, "triggers": ["tip"],
+                              "replacements": ["[Shot 1] <Subject 1> touches <Subject 1>'s chin and raises the lamp."],
+                              "refinement_key": "", "category": "", "sub_category": ""}}}
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    texts = conditioning.focus_scene_texts(
+        {"anchor": "Intro <Subject 1>.", "scenes": ["tip", "[Shot 1] <Subject 1> waves."], "postfix": ""},
+        [], "start")
+    assert len(texts) == 2 and texts[0].startswith("Intro <Subject 1>.")
+    assert "touches <Subject 1>'s chin" in texts[0]
+    opts = sc.focus_options(texts[0])
+    assert opts[0]["candidates"] and opts[0]["auto_lemma"]

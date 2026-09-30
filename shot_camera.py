@@ -263,7 +263,7 @@ def _draw(cands, prior, rng, n):
     return chosen
 
 
-def _plan(pool, last, rng, prior=None):
+def _plan(pool, last, rng, prior=None, force=None, mode="auto"):
     """-> (moves text, target description, opening template). Fixed and minimal without
     `rng` (one move, X -> Y when the shot has two topics); with it, how many moves, whether
     they travel and which words are all drawn, so no shot pattern repeats by construction."""
@@ -271,7 +271,15 @@ def _plan(pool, last, rng, prior=None):
     best = _draw(pool, prior, rng, 1)[0]
     if prior and len(topics) > 2:                 # two of them, weighted by habit, in text order
         topics = sorted(_draw(topics, prior, rng, 2), key=lambda c: c[3])
-    if rng is None:
+    if force is not None:                         # the user picked the thing to aim at
+        best, topics = force, [force]
+    if mode == "hold":
+        hold = _pick(MOVES_HOLD, last, rng)
+        target = _name(best)
+        return hold.format(x=target), target, hold
+    if mode == "move":
+        k, travel = 1, False
+    elif rng is None:
         k, travel = 1, len(topics) >= 2
     else:
         k = rng.choices((1, 2, 3), COUNT_WEIGHTS)[0]
@@ -302,15 +310,13 @@ def _plan(pool, last, rng, prior=None):
     return " ".join(sentences), desc, opening
 
 
-def add_camera_moves(text, seed=None, chance=1.0, prior=None):
-    """-> (new prompt, [per-shot report dicts]). Unchanged when there is no `[Shot N]`.
-
-    `seed=None`: one plain move per shot (deterministic). With a `seed`, each shot is left
-    alone with probability 1 - `chance`, and otherwise gets one to three moves, drawn per
-    shot from the seed, so the same prompt and seed always give the same text."""
+def _analyse(text):
+    """-> (marks, header, parts, pools): the `[Shot N]` markers, the text before the first, each
+    shot's (picture, sound) and its candidate targets with the things that are in (nearly) every
+    shot, or in the intro, taken out."""
     marks = list(SHOT.finditer(text or ""))
     if not marks:
-        return text, []
+        return [], "", [], []
     header = text[:marks[0].start()]
     bodies = [text[m.end():(marks[i + 1].start() if i + 1 < len(marks) else len(text))]
               for i, m in enumerate(marks)]
@@ -325,12 +331,63 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None):
         for lemma in {c[0] for c in lst}:
             seen[lemma] = seen.get(lemma, 0) + 1
     constant = {l for l, n in seen.items() if n >= need} | header_lemmas
+    return marks, header, parts, [[c for c in lst if c[0] not in constant] for lst in cands]
+
+
+def shot_key(picture):
+    """A stable name for a shot's content: the same whatever cut opener, view or camera sentence
+    was added, so a choice made about a shot still finds it after the prompt is regenerated."""
+    import hashlib
+    body = own_words_removed(picture or "")
+    body = re.sub(r"\s+", " ", body).strip().lower()
+    return hashlib.md5(body.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def focus_options(text, prior=None):
+    """What the camera could aim at in each `[Shot N]`, for a person to choose from.
+    -> [{"shot", "key", "already", "candidates": [{"lemma", "text", "score"}], "auto": str|None}]
+    `auto` is what the rewriter would pick with no say from anyone (its plain, top choice)."""
+    marks, _header, parts, pools = _analyse(text)
+    out = []
+    for i, m in enumerate(marks):
+        picture = parts[i][0]
+        pool = pools[i]
+        opts, seen = [], set()
+        for c in sorted(pool, key=lambda c: -_score(c, prior)):
+            if c[0] in seen or _score(c) <= 0.5:
+                continue
+            seen.add(c[0])
+            opts.append({"lemma": c[0], "text": _name(c), "score": round(_score(c, prior), 2)})
+        auto = None
+        if opts and not CAMERA.search(CUT.sub("", picture)):
+            auto = _plan(pool, None, None, prior)[1]
+        out.append({"shot": int(m.group(1)), "key": shot_key(picture),
+                    "auto_lemma": opts[0]["lemma"] if opts else None,
+                    "already": bool(CAMERA.search(CUT.sub("", picture))),
+                    "candidates": opts, "auto": auto})
+    return out
+
+
+def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None):
+    """-> (new prompt, [per-shot report dicts]). Unchanged when there is no `[Shot N]`.
+
+    `seed=None`: one plain move per shot (deterministic). With a `seed`, each shot is left
+    alone with probability 1 - `chance`, and otherwise gets one to three moves, drawn per
+    shot from the seed, so the same prompt and seed always give the same text."""
+    marks, header, parts, pools = _analyse(text)
+    if not marks:
+        return text, []
     report, out, last = [], [header], None
     for i, m in enumerate(marks):
         picture, sound = parts[i]
-        entry = {"shot": int(m.group(1)), "move": None, "target": None, "why": "", "lemmas": []}
+        entry = {"shot": int(m.group(1)), "move": None, "target": None, "why": "", "lemmas": [],
+                 "key": shot_key(picture)}
         rng = random.Random(f"{seed}:{i}") if seed is not None else None
-        pool = [c for c in cands[i] if c[0] not in constant]
+        pool = pools[i]
+        # What the person said about this shot, if anything: "none", or a target and/or a mode.
+        said = (choices or {}).get(entry["key"]) or {}
+        mode = said.get("mode") or "auto"
+        force = next((c for c in pool if c[0] == said.get("lemma")), None) if said.get("lemma") else None
         entry["lemmas"] = [c[0] for c in pool if _score(c) > 0.5]      # the words this shot dwells on
         # A word the shot keeps coming back to is what it is about: a small lift per extra mention.
         mentions = {}
@@ -343,10 +400,12 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None):
             entry["why"] = "already has a camera move"
         elif not pool:
             entry["why"] = "nothing specific to aim at"
-        elif rng is not None and rng.random() >= chance:
+        elif mode == "none":
+            entry["why"] = "no move, as you chose"
+        elif rng is not None and mode == "auto" and force is None and rng.random() >= chance:
             entry["why"] = "left as written by chance"
         else:
-            moves, desc, opening = _plan(pool, last, rng, shot_prior)
+            moves, desc, opening = _plan(pool, last, rng, shot_prior, force=force, mode=mode)
             entry.update(move=moves, target=desc)
             last = opening
             core = picture.rstrip()

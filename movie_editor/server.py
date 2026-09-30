@@ -3104,6 +3104,48 @@ if web is not None and PromptServer is not None:
             raise web.HTTPInternalServerError(reason=f"Could not render the card: {e}")
         return web.Response(body=png, content_type="image/png")
 
+    # ── Reactive focus: the camera targets of every [Shot N], for a person to choose from
+    # BEFORE Generate. The options come from the same text the camera-move step will see.
+    @routes.post(UI_PREFIX + "/api/projects/{pid}/focus_options")
+    async def _focus_options(req):
+        import asyncio
+        pid = req.match_info["pid"]
+        body = await req.json() if req.can_read_body else {}
+        p = _project_or_404(pid)
+        scene_ids = body.get("scene_ids")
+        target = _segment(p, scene_ids) if scene_ids else p
+
+        def _build():
+            seg = build_generation_scene_segments(target)
+            texts = bridge._funpack_attr("conditioning", "focus_scene_texts")(
+                seg, list(target.variables or []), "start")
+            sc = bridge._funpack_attr("shot_camera", "focus_options")
+            prior = bridge._funpack_attr("focus_memory", "prior")()
+            out = []
+            for i, text in enumerate(texts):
+                shots = sc(text, prior)
+                if shots:
+                    out.append({"index": i, "preview": " ".join(text.split())[:80], "shots": shots})
+            return out
+
+        try:
+            scenes = await asyncio.to_thread(_build)
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": f"Could not list camera targets: {e}"}, status=500)
+        return web.json_response({"scenes": scenes})
+
+    @routes.post(UI_PREFIX + "/api/focus/learn")
+    async def _focus_learn(req):
+        import asyncio
+        body = await req.json() if req.can_read_body else {}
+        decisions = [d for d in (body.get("decisions") or []) if isinstance(d, dict)]
+        learn = bridge._funpack_attr("focus_memory", "learn")
+        try:
+            n = await asyncio.to_thread(learn, decisions)
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": f"Could not remember the choices: {e}"}, status=500)
+        return web.json_response({"remembered": n})
+
     @routes.get(UI_PREFIX + "/api/git/status")
     async def _git_status(_req):
         return web.json_response(git_update.status())
