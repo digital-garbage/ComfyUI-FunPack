@@ -191,3 +191,20 @@ def test_real_camera_moves_are_still_found(text):
 
 def test_a_cut_alone_is_not_a_camera_move():
     assert not sc.CAMERA.search(sc.CUT.sub("", "At 00:03.500, the camera cuts to <Subject 2>."))
+
+
+def test_a_noun_shared_by_two_of_three_shots_is_still_a_target():
+    """Only a noun in (nearly) every shot is a constant. Two of three is a shared topic."""
+    pytest.importorskip("spacy")
+    p = (HEAD + "[Shot 1] <Subject 1> holds the rose near the door. "
+         "[Shot 2] <Subject 2> smells the rose beside a window. "
+         "[Shot 3] <Subject 1> closes the door behind a curtain.")
+    _out, rep = sc.add_camera_moves(p)
+    assert all(r["move"] for r in rep), [r["why"] for r in rep]
+
+
+def test_a_noun_in_every_shot_is_still_a_constant():
+    pytest.importorskip("spacy")
+    p = (HEAD + "[Shot 1] <Subject 1> holds the rose. [Shot 2] <Subject 2> smells the rose. "
+         "[Shot 3] <Subject 1> drops the rose.")
+    assert [r["move"] for r in sc.add_camera_moves(p)[1]] == [None, None, None]

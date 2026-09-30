@@ -234,7 +234,9 @@ def add_camera_moves(text, seed=None, chance=1.0):
     parts = [_split_sound(b) for b in bodies]
     cands = [candidates(p[0]) for p in parts]
     header_lemmas = {c[0] for c in candidates(header)}
-    need = max(2, math.ceil(0.6 * len(bodies))) if len(bodies) > 1 else 10 ** 9
+    # In (nearly) every shot = about the whole prompt, not this shot. 70%: with three shots a
+    # noun shared by two of them is still a topic of those two, only all three is a constant.
+    need = max(2, math.ceil(0.7 * len(bodies))) if len(bodies) > 1 else 10 ** 9
     seen = {}
     for lst in cands:
         for lemma in {c[0] for c in lst}:
