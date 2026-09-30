@@ -3349,7 +3349,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "camera_zoom": ("FLOAT", {
                     "default": 1.0, "min": 0.5, "max": 2.0, "step": 0.05,
-                    "tooltip": "Scale reached by the end of the clip. Above 1 = camera moves in, below 1 = out, 1 = none.",
+                    "tooltip": "Scale reached by the end of the clip. Above 1 = camera moves in, below 1 = out, 1 = none. Zooming in stretches the noise, which makes neighbouring values alike; keep it modest (under 1.5) until you have seen it work.",
                 }),
                 "camera_focus_x": ("FLOAT", {
                     "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
@@ -5280,6 +5280,8 @@ class FunPackLTXAVSceneChainSampler:
                 cand_noise = comfy.sample.prepare_noise(samples, cand_seed)
                 if getattr(self, "_shot_memory", None) is not None:
                     cand_noise = self._shot_memory.shape(cand_noise, samples, _raw_cond(positive))
+                if getattr(self, "_camera_move", None) is not None:
+                    cand_noise, _ = _camera.shape(cand_noise, samples, self._camera_move, cand_seed)
                 comfy.sample.sample_custom(
                     model, cand_noise, float(cfg), sampler, probe_sigmas, positive, negative,
                     samples, noise_mask=probe_latent.get("noise_mask"), seed=cand_seed,
@@ -9777,11 +9779,16 @@ class FunPackLTXAVSceneChainSampler:
         self._camera_move, self._camera_said = None, set()
         if camera_noise != "off":
             self._camera_move = _camera.Move(
-                pan_x=float(camera_pan_x), pan_y=float(camera_pan_y),
+                pan_x=_camera.clamp_pan(camera_pan_x), pan_y=_camera.clamp_pan(camera_pan_y),
                 zoom=min(max(float(camera_zoom), 0.5), 2.0),
                 focus_x=min(max(float(camera_focus_x), 0.0), 1.0),
                 focus_y=min(max(float(camera_focus_y), 0.0), 1.0),
                 amount=float(camera_amount))
+            if context_windows and context_window_freenoise:
+                print("[FunPackSceneChain] camera noise: Inactive beyond the first context window | "
+                      "FreeNoise refills the later windows with shuffled earlier noise after this, "
+                      "so a scene longer than one window loses the move there; switch "
+                      "context_window_freenoise off to keep it")
         if (shot_memory != "off" or tsr == "learned" or late_guidance == "learned"
                 or stas == "learned"):
             if not refinement_key_input:

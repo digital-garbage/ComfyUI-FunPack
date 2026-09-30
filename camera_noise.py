@@ -15,6 +15,11 @@ audio noise is never touched.
 All values are unit-free: pan is the fraction of the frame the noise travels over the clip
 (x positive = camera moves right, so the picture moves left; y positive = camera moves down),
 zoom is the end scale (above 1 = camera moves in), focus is where the zoom aims, 0..1.
+
+Known cost: zooming in copies each source cell into several neighbours, so neighbouring
+values become alike (adjacent correlation ~0.34 at zoom 1.5, ~0.51 at 2.0 in the travelling
+part, roughly 0.2 to 0.3 after the default blend). Every value is still N(0, 1); whether the
+model minds that blockiness is a question for the GPU.
 """
 
 import math
@@ -24,6 +29,12 @@ import torch
 
 MODES = ("off", "manual")
 AMOUNT_MAX = 0.95
+
+
+def clamp_pan(v):
+    """A pan share in [-1, 1]; anything unreadable (NaN) is no pan."""
+    v = float(v)
+    return 0.0 if v != v else min(max(v, -1.0), 1.0)
 
 
 @dataclass(frozen=True)

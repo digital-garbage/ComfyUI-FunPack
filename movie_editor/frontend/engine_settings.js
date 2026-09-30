@@ -343,7 +343,7 @@
     { name: "camera_pan_y", label: "Pan up / down", kind: "float", default: 0.0, min: -1.0, max: 1.0, step: 0.05, dependsOn: "camera_noise", dependsValue: "manual",
       hint: "Share of the frame height travelled over the clip. Positive: camera moves down." },
     { name: "camera_zoom", label: "Zoom (in / out)", kind: "float", default: 1.0, min: 0.5, max: 2.0, step: 0.05, dependsOn: "camera_noise", dependsValue: "manual",
-      hint: "Scale reached by the end. Above 1 the camera moves in, below 1 out." },
+      hint: "Scale reached by the end. Above 1 the camera moves in, below 1 out. Zooming in stretches the noise, so keep it under 1.5 at first." },
     { name: "camera_focus_x", label: "Zoom aims at (left to right)", kind: "float", default: 0.5, min: 0.0, max: 1.0, step: 0.05, dependsOn: "camera_noise", dependsValue: "manual",
       hint: "The point that stays put while everything else grows or shrinks around it." },
     { name: "camera_focus_y", label: "Zoom aims at (top to bottom)", kind: "float", default: 0.5, min: 0.0, max: 1.0, step: 0.05, dependsOn: "camera_noise", dependsValue: "manual",

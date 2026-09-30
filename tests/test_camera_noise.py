@@ -113,3 +113,32 @@ def test_audio_noise_is_never_touched(monkeypatch):
 def test_describe_reads_back_the_move():
     m = cn.Move(pan_x=-0.3, zoom=1.5, focus_x=0.2, amount=0.8)
     assert m.describe() == "pan left 0.30, zoom in x1.50 toward (0.20, 0.50), 80% carried"
+
+
+def _adjacent_correlation(x):
+    a, b = x[..., :-1], x[..., 1:]
+    return float((a * b).mean() / (x.std() ** 2))
+
+
+def test_zoom_in_makes_neighbours_alike_but_pan_and_zoom_out_do_not():
+    """The cost is stated in the docstring and tooltip; this pins its size."""
+    last = lambda m: _travel(m, t=5, h=48, w=84, c=8)[:, -1]
+    assert abs(_adjacent_correlation(last(cn.Move(pan_x=0.5)))) < 0.05
+    assert abs(_adjacent_correlation(last(cn.Move(zoom=0.5)))) < 0.05
+    assert 0.2 < _adjacent_correlation(last(cn.Move(zoom=1.5))) < 0.5
+
+
+def test_pan_is_clamped_and_nan_is_no_pan():
+    assert cn.clamp_pan(7) == 1.0 and cn.clamp_pan(-7) == -1.0
+    assert cn.clamp_pan(float("nan")) == 0.0 and cn.clamp_pan(0.25) == 0.25
+
+
+def test_the_sampler_inputs_agree_with_the_editor_defaults():
+    import samplers
+    from movie_editor.backend import settings_card
+    opt = samplers.FunPackLTXAVSceneChainSampler.INPUT_TYPES()["optional"]
+    names = ["camera_noise", "camera_pan_x", "camera_pan_y", "camera_zoom",
+             "camera_focus_x", "camera_focus_y", "camera_amount"]
+    for name in names:
+        assert opt[name][1]["default"] == settings_card._EDITOR_DEFAULTS[name], name
+    assert opt["camera_noise"][1]["default"] == "off" and settings_card._EDITOR_DEFAULTS["camera_noise"] == "off"
