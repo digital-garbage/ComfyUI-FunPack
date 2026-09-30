@@ -33,6 +33,8 @@ PLACES = {"room", "street", "kitchen", "bedroom", "bed", "table", "floor", "stag
           "garden", "beach", "forest", "city", "car", "office", "bathroom", "field"}
 MOVES_DETAIL = ("Close-up on {x}.", "Focus at {x}.", "Zoom in at {x}.")
 MOVES_OTHER = ("Zoom in at {x}.", "Move around {x}.", "Rotate the camera to {x}.")
+MOVES_TRAVEL = ("Camera moves from {x} to {y}.", "Pan from {x} to {y}.",
+                "Focus shifts from {x} to {y}.")
 DETERMINERS = {"the", "a", "an", "this", "that", "these", "those"}
 POSSESSIVE_PRONOUNS = {"his", "her", "their", "its", "my", "your", "our"}
 
@@ -132,6 +134,25 @@ def _score(c):
             - pos * 1e-4)
 
 
+def _name(c):
+    """The phrase of candidate `c` as it reads in the prompt, tags restored, with an article."""
+    text = _show(c[1])
+    if not re.match(r"(?:the|a|an|<Subject|his|her|their)\b", text, re.I) and "'s " not in text:
+        text = "the " + text
+    return text
+
+
+def _topics(pool):
+    """The distinct things a shot dwells on, in the order the text reaches them. Only things
+    with a role beyond being the doer (owned parts, objects of a verb or preposition)."""
+    seen, out = set(), []
+    for c in sorted(pool, key=lambda c: c[3]):
+        if _score(c) > 0.5 and c[0] not in seen:
+            seen.add(c[0])
+            out.append(c)
+    return out
+
+
 def add_camera_moves(text):
     """-> (new prompt, [per-shot report dicts]). Unchanged when there is no `[Shot N]`."""
     marks = list(SHOT.finditer(text or ""))
@@ -159,15 +180,17 @@ def add_camera_moves(text):
         elif not pool:
             entry["why"] = "nothing specific to aim at"
         else:
-            best = max(pool, key=_score)
-            detail = best[2] or best[0] in PARTS
-            moves = MOVES_DETAIL if detail else MOVES_OTHER
-            move = next((mv for mv in moves if mv != last), moves[0])
-            target = _show(best[1])
-            if not re.match(r"(?:the|a|an|<Subject|his|her|their)\b", target, re.I) \
-                    and "'s " not in target:
-                target = "the " + target
-            entry.update(move=move.format(x=target), target=target)
+            topics = _topics(pool)
+            if len(topics) >= 2:
+                x, y = _name(topics[0]), _name(topics[-1])
+                move = next((mv for mv in MOVES_TRAVEL if mv != last), MOVES_TRAVEL[0])
+                entry.update(move=move.format(x=x, y=y), target=f"{x} -> {y}")
+            else:
+                best = max(pool, key=_score)
+                moves = MOVES_DETAIL if (best[2] or best[0] in PARTS) else MOVES_OTHER
+                move = next((mv for mv in moves if mv != last), moves[0])
+                target = _name(best)
+                entry.update(move=move.format(x=target), target=target)
             last = move
             core = picture.rstrip()
             gap = picture[len(core):] or (" " if sound else "")

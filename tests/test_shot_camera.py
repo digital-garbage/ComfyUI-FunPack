@@ -100,3 +100,20 @@ def test_refiner_wrapper_never_breaks_a_run(monkeypatch, capsys):
     monkeypatch.setattr(sc, "add_camera_moves", lambda t: 1 / 0)
     assert conditioning.FunPackVideoRefinerV2._v2_camera_moves(PROMPT, "prompt") == PROMPT
     assert "camera moves: failed" in capsys.readouterr().out
+
+
+def test_two_topics_in_a_shot_become_a_move_from_the_first_to_the_last():
+    pytest.importorskip("spacy")
+    p = HEAD + "[Shot 1] <Subject 1> touches <Subject 1>'s chin, then reaches for the lamp."
+    _out, rep = sc.add_camera_moves(p)
+    assert "<Subject 1>'s chin" in rep[0]["move"] and "the lamp" in rep[0]["move"]
+    assert rep[0]["move"].index("chin") < rep[0]["move"].index("lamp")
+    assert " from " in rep[0]["move"]
+
+
+def test_three_topics_go_from_the_first_to_the_last():
+    pytest.importorskip("spacy")
+    p = (HEAD + "[Shot 1] <Subject 1> touches <Subject 1>'s chin, picks up the lamp, "
+         "then opens the window.")
+    _out, rep = sc.add_camera_moves(p)
+    assert "chin" in rep[0]["move"] and "window" in rep[0]["move"] and "lamp" not in rep[0]["move"]
