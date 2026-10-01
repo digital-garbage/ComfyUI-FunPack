@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- `decode_tile_size` now works on MiniMax H3: it sets H3's spatial decode tile (min 256, larger is faster) through H3's own decoder, instead of being ignored. Ported from Tr1dae/ComfyUI-MiniMaxH3_LatentUpscaler's Fast VAE Decode.
 - Decisiveness now rescales after embed guidance, score slider and DynaShift, so it acts on their combined result.
 
 ### Fixed

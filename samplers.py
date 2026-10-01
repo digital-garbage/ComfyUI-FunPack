@@ -2940,7 +2940,7 @@ class FunPackLTXAVSceneChainSampler:
                 # (the combo value lands on decode_tile_size -> NaN/"relative" in the INT field).
                 "decode_tile_size": ("INT", {
                     "default": 0, "min": 0, "max": 4096, "step": 64,
-                    "tooltip": "Tile size for VAE decode (0 = no tiling). Set to e.g. 512 if decode OOMs.",
+                    "tooltip": "Tile size for VAE decode (0 = no tiling). Set to e.g. 512 if decode OOMs. On MiniMax H3 this sets the spatial tile (min 256, larger = faster decode, more VRAM; overlap scales to match).",
                 }),
                 "decode_noise_scale": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.005,
@@ -10987,9 +10987,19 @@ class FunPackLTXAVSceneChainSampler:
                 pass
             if decode_tile_size > 0:
                 try:
-                    _tile = self._decode_tile_latent(vae, decode_tile_size)
-                    decoded = vae.decode_tiled(video_tensor, tile_x=_tile, tile_y=_tile)
-                except Exception:
+                    try:
+                        from .minimax_h3 import is_h3_video_vae, decode_fast
+                    except ImportError:
+                        from minimax_h3 import is_h3_video_vae, decode_fast
+                    if is_h3_video_vae(vae):
+                        # decode_tiled ignores tile size on H3; go through its own decoder.
+                        decoded = decode_fast(vae, video_tensor, decode_tile_size)
+                    else:
+                        _tile = self._decode_tile_latent(vae, decode_tile_size)
+                        decoded = vae.decode_tiled(video_tensor, tile_x=_tile, tile_y=_tile)
+                except Exception as _e:
+                    print(f"[FunPackSceneChain] tiled decode failed ({type(_e).__name__}: {_e}); "
+                          f"falling back to a plain decode")
                     decoded = vae.decode(video_tensor)
             else:
                 decoded = vae.decode(video_tensor)

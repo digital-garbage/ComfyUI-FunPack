@@ -204,6 +204,36 @@ def is_h3_video_vae(vae) -> bool:
         return False
 
 
+def decode_fast(vae, video, tile_px: int):
+    """Decode an H3 video latent with `tile_px`-pixel spatial tiles, straight through H3's decoder.
+
+    Stock decode_tiled ignores tile kwargs on H3, and Comfy's OOM fallback is a generic 3D tiler
+    that ignores H3's blend rules. Here the VAE's own tile flags are set for the one call and
+    restored. Overlap keeps the stock 64/256 ratio (bigger tiles with 64px overlap show a block
+    grid). Ported from Tr1dae/ComfyUI-MiniMaxH3_LatentUpscaler's Fast VAE Decode.
+    Returns IMAGES (B,T,H,W,C) on the intermediate device.
+    """
+    import comfy.model_management as mm
+    inner = vae.first_stage_model
+    tile = max(256, (int(tile_px) // 16) * 16)       # 16 = spatial VAE ratio; split_tiles assumes it
+    overlap = max(16, (tile * 64 // 256 // 16) * 16)
+    saved = (inner.tiling, inner.tile_size, inner.tile_overlap_min)
+    vae.throw_exception_if_invalid()
+    try:
+        inner.tiling, inner.tile_size, inner.tile_overlap_min = True, tile, overlap
+        with mm.cuda_device_context(vae.device):
+            mm.load_models_gpu([vae.patcher],
+                               memory_required=vae.memory_used_decode(video.shape, vae.vae_dtype),
+                               force_full_load=vae.disable_offload)
+            out = torch.empty(inner.decode_output_shape(video.shape),
+                              device=mm.intermediate_device(), dtype=vae.vae_output_dtype())
+            inner.decode(video.to(device=vae.device, dtype=vae.vae_dtype), output_buffer=out)
+            vae.process_output(out)
+    finally:
+        inner.tiling, inner.tile_size, inner.tile_overlap_min = saved
+    return out.movedim(1, -1)
+
+
 def is_h3_audio_vae(vae) -> bool:
     if vae is None:
         return False
