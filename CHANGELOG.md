@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- The MiniMax H3 X2 Detail VAE works as the Chain Sampler's video VAE: its packed output is detected and decoded to 2x frames (final decode, previews, continuation anchors, detailing detection).
+
 ### Changed
 - `decode_tile_size` now works on MiniMax H3: it sets H3's spatial decode tile (min 256, larger is faster) through H3's own decoder, instead of being ignored. Ported from Tr1dae/ComfyUI-MiniMaxH3_LatentUpscaler's Fast VAE Decode.
 - Decisiveness now rescales after embed guidance, score slider and DynaShift, so it acts on their combined result.

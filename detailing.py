@@ -330,7 +330,12 @@ def _decode_detection_frames(vae, video, count, debug=False):
     idxs = sorted({min(f - 1, round(i * (f - 1) / max(1, count - 1))) for i in range(max(1, count))})
     for i in idxs:
         try:
-            decoded = vae.decode(video[:, :, i:i + 1])
+            try:
+                from .minimax_h3 import x2_ratio, decode_fast
+            except ImportError:
+                from minimax_h3 import x2_ratio, decode_fast
+            one = video[:, :, i:i + 1]
+            decoded = decode_fast(vae, one, 256) if x2_ratio(vae) > 1 else vae.decode(one)
         except Exception as exc:
             _log(debug, f"keyframe {i} decode failed ({exc}); skipping")
             continue

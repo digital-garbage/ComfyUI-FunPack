@@ -204,33 +204,61 @@ def is_h3_video_vae(vae) -> bool:
         return False
 
 
+def x2_ratio(vae) -> int:
+    """PixelShuffle factor of an H3 video VAE whose decoder emits packed RGB (1 = stock VAE, 2 = X2 Detail VAE)."""
+    try:
+        d = vae.first_stage_model.decoder
+        rows = int(d.proj_out.weight.shape[0])
+        packed = rows // (int(d.patch_size_t) * int(d.patch_size) ** 2) // 3
+        r = math.isqrt(packed)
+        return r if r >= 1 and r * r == packed and rows % 3 == 0 else 1
+    except Exception:
+        return 1
+
+
 def decode_fast(vae, video, tile_px: int):
     """Decode an H3 video latent with `tile_px`-pixel spatial tiles, straight through H3's decoder.
 
     Stock decode_tiled ignores tile kwargs on H3, and Comfy's OOM fallback is a generic 3D tiler
     that ignores H3's blend rules. Here the VAE's own tile flags are set for the one call and
     restored. Overlap keeps the stock 64/256 ratio (bigger tiles with 64px overlap show a block
-    grid). Ported from Tr1dae/ComfyUI-MiniMaxH3_LatentUpscaler's Fast VAE Decode.
-    Returns IMAGES (B,T,H,W,C) on the intermediate device.
+    grid). An X2 Detail VAE (packed 12-channel output) is PixelShuffled to 2x frames; stock
+    decode cannot read it. Ported from TripleHeadedMonkey/ComfyUI-MiniMaxH3_LatentUpscaler's
+    VAE Decode (fast). Returns IMAGES (B,T,H,W,C) on the intermediate device.
     """
+    import torch.nn.functional as F
     import comfy.model_management as mm
     inner = vae.first_stage_model
+    up = x2_ratio(vae)
     tile = max(256, (int(tile_px) // 16) * 16)       # 16 = spatial VAE ratio; split_tiles assumes it
     overlap = max(16, (tile * 64 // 256 // 16) * 16)
-    saved = (inner.tiling, inner.tile_size, inner.tile_overlap_min)
+    saved = (inner.tiling, inner.tile_size, inner.tile_overlap_min,
+             inner.decoder.out_channels, inner.pixel_mean, inner.pixel_std)
     vae.throw_exception_if_invalid()
     try:
         inner.tiling, inner.tile_size, inner.tile_overlap_min = True, tile, overlap
+        if up > 1:
+            inner.decoder.out_channels = 3 * up * up
         with mm.cuda_device_context(vae.device):
             mm.load_models_gpu([vae.patcher],
                                memory_required=vae.memory_used_decode(video.shape, vae.vae_dtype),
                                force_full_load=vae.disable_offload)
+            if up > 1:
+                # After the load: a (dynamic) load can restore the checkpoint's 3-channel stats.
+                # Layout is R phases, G phases, B phases, so repeat each channel consecutively.
+                inner.pixel_mean = inner.pixel_mean.repeat_interleave(up * up, dim=1)
+                inner.pixel_std = inner.pixel_std.repeat_interleave(up * up, dim=1)
             out = torch.empty(inner.decode_output_shape(video.shape),
                               device=mm.intermediate_device(), dtype=vae.vae_output_dtype())
             inner.decode(video.to(device=vae.device, dtype=vae.vae_dtype), output_buffer=out)
             vae.process_output(out)
     finally:
-        inner.tiling, inner.tile_size, inner.tile_overlap_min = saved
+        (inner.tiling, inner.tile_size, inner.tile_overlap_min,
+         inner.decoder.out_channels, inner.pixel_mean, inner.pixel_std) = saved
+    if up > 1:
+        b, c, t, h, w = out.shape
+        out = F.pixel_shuffle(out.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w), up)
+        out = out.reshape(b, t, c // (up * up), h * up, w * up).permute(0, 2, 1, 3, 4)
     return out.movedim(1, -1)
 
 

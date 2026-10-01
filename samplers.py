@@ -5132,7 +5132,11 @@ class FunPackLTXAVSceneChainSampler:
             if n < 1:
                 return None
             last = self._time_slice(tensors[0], n - 1, None)
-            decoded = vae.decode(last)
+            try:
+                from .minimax_h3 import x2_ratio, decode_fast
+            except ImportError:
+                from minimax_h3 import x2_ratio, decode_fast
+            decoded = decode_fast(vae, last, 256) if x2_ratio(vae) > 1 else vae.decode(last)
             if decoded is None:
                 return None
             if decoded.dim() == 5:
@@ -10985,7 +10989,18 @@ class FunPackLTXAVSceneChainSampler:
                 comfy.model_management.soft_empty_cache()
             except Exception:  # noqa: BLE001
                 pass
-            if decode_tile_size > 0:
+            try:
+                from .minimax_h3 import x2_ratio as _x2r
+            except ImportError:
+                from minimax_h3 import x2_ratio as _x2r
+            if _x2r(vae) > 1:
+                # X2 Detail VAE: packed output only the H3 fast path can read, tiled or not.
+                try:
+                    from .minimax_h3 import decode_fast as _df
+                except ImportError:
+                    from minimax_h3 import decode_fast as _df
+                decoded = _df(vae, video_tensor, decode_tile_size)
+            elif decode_tile_size > 0:
                 try:
                     try:
                         from .minimax_h3 import is_h3_video_vae, decode_fast
@@ -11336,7 +11351,13 @@ class FunPackLTXAVSceneChainSampler:
     def _decode_for_preview(self, vae, latent, decode_tile_size=0):
         video_tensor = self._latent_tensors(latent)[0]
         try:
-            if decode_tile_size > 0:
+            from .minimax_h3 import x2_ratio, decode_fast
+        except ImportError:
+            from minimax_h3 import x2_ratio, decode_fast
+        try:
+            if x2_ratio(vae) > 1:
+                decoded = decode_fast(vae, video_tensor, decode_tile_size)
+            elif decode_tile_size > 0:
                 _tile = self._decode_tile_latent(vae, decode_tile_size)
                 decoded = vae.decode_tiled(video_tensor, tile_x=_tile, tile_y=_tile)
             else:
