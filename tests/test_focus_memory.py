@@ -305,3 +305,41 @@ def test_what_is_remembered_can_be_read_and_taken_back(tmp_path, monkeypatch):
     assert not fm.forget("word", "never-heard-of-it")
     fm.forget("all")
     assert fm.summary()["words"] == [] and fm.summary()["shots"] == 0
+
+
+# ── ratings teach moves, styles, targets and splits ──────────────────────────────────
+def test_ratings_teach_the_camera_its_own_choices(store):
+    assert fm.effective_chance(0.5) == 0.5 and fm.split_chance(0.5) == 0.5 and fm.prior() == {}
+    for _ in range(4):
+        fm.rate_arms(["move:yes", "style:hold", "word:lamp", "split:no"], 1)
+        fm.rate_arms(["move:no", "word:door", "split:yes"], -1)
+    assert fm.effective_chance(0.5) > 0.5 and fm.split_chance(0.5) < 0.5
+    p = fm.prior()
+    assert p["lamp"] > 0 > p["door"]
+    assert fm.split_chance(0.0) == 0.0                         # a chance the user turned off stays off
+    assert fm.forget("word", "lamp") and "lamp" not in fm.prior()
+
+
+def test_plan_reports_what_it_drew_and_a_liked_style_is_drawn_more():
+    P = "[Shot 1] A woman raises the lamp. Her hand holds a cup near the window."
+    rep = sc.add_camera_moves(P, seed=3, chance=1.0)[1][0]
+    assert "move:yes" in rep["arms"] and any(a.startswith("word:") for a in rep["arms"])
+    assert sc.add_camera_moves(P, seed=3, chance=0.0)[1][0]["arms"] == ["move:no"]
+    forced = {sc.shot_key(P.split("]", 1)[1]): {"mode": "move"}}
+    assert sc.add_camera_moves(P, seed=3, chance=1.0, choices=forced)[1][0]["arms"] == []   # a person's call is not learned
+    like = {"style:hold": (20.0, 0.0), "style:k1": (0.0, 20.0)}
+    holds = sum("style:hold" in sc.add_camera_moves(P, seed=s, chance=1.0, arms=like)[1][0]["arms"] for s in range(60))
+    plain = sum("style:hold" in sc.add_camera_moves(P, seed=s, chance=1.0)[1][0]["arms"] for s in range(60))
+    assert holds > plain
+
+
+def test_a_rating_reaches_the_camera_choices_the_run_made(tmp_path, monkeypatch):
+    import conditioning
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    run = {"shot_arms": ["move:yes", "word:lamp"]}
+    rate = conditioning.FunPackVideoRefinerV2._v2_rate_shot_views
+    rate(run, {"reward": -0.9, "axis": "image"})
+    assert fm.arm_stats() == {}
+    rate(run, {"reward": -0.9, "axis": "composition"})
+    rate(run, {"reward": 1.0})
+    assert fm.arm_stats()["word:lamp"] == (0.5, 0.5)

@@ -21,6 +21,7 @@ MAX_HASHES = 300
 PICK_W = 0.9            # bonus a word the user has chosen grows toward (tanh of picks)
 REJECT_W = 0.6          # penalty a word the rewriter proposed and the user replaced grows toward
 MIN_SHOTS_FOR_RATE = 10 # shots reviewed before "how often the user wants a move" is trusted
+WORD_RATE_W = 0.5       # max bonus/penalty a word earns from the ratings of runs that aimed at it
 
 
 def _path():
@@ -59,6 +60,10 @@ def prior():
         out[lemma] = out.get(lemma, 0.0) + PICK_W * math.tanh(n / 2.0)
     for lemma, n in (data.get("rejects") or {}).items():
         out[lemma] = out.get(lemma, 0.0) - REJECT_W * math.tanh(n / 2.0)
+    for key, (g, b) in arm_stats().items():       # what ratings taught about aiming at a word
+        if key.startswith("word:"):
+            lemma = key[5:]
+            out[lemma] = out.get(lemma, 0.0) + WORD_RATE_W * 2.0 * (arm_rate(key) - 0.5)
     return out
 
 
@@ -135,6 +140,37 @@ def learn_views(decisions):
     return n
 
 
+def arm_stats():
+    """{arm: (good, bad)} for what ratings taught about the camera's own choices: "move:yes" /
+    "move:no" (a shot got a move / was left alone), "style:hold|travel|k1|k2|k3", "word:<lemma>",
+    "split:yes|no" (a shot whose point changes was cut in two / kept whole)."""
+    return {k: (float(v[0]), float(v[1])) for k, v in (_read().get("arms") or {}).items()
+            if isinstance(v, (list, tuple)) and len(v) == 2}
+
+
+def arm_rate(key, stats=None):
+    """Smoothed good-rate of one arm: 0.5 until rated."""
+    g, b = (stats if stats is not None else arm_stats()).get(key, (0.0, 0.0))
+    return (g + 1.0) / (g + b + 2.0)
+
+
+def rate_arms(used, sign):
+    """A rated generation: every choice the camera made in it shares the credit (sign > 0) or
+    the blame (sign < 0), so a run with many choices does not punish each as hard as a run with
+    one. `used`: [arm key]. -> arms rated."""
+    used = [u for u in used or [] if isinstance(u, str) and u]
+    if not used or not sign:
+        return 0
+    data = _read()
+    arms = data.setdefault("arms", {})
+    share = 1.0 / len(used)
+    for u in used:
+        g, b = arms.get(u, [0.0, 0.0])
+        arms[u] = [round(g + (share if sign > 0 else 0.0), 4), round(b + (share if sign < 0 else 0.0), 4)]
+    _save(data)
+    return len(used)
+
+
 def summary(limit=40):
     """What is remembered, for the person to read and prune: words (picked / replaced / merely
     recurring) and views (good / bad, with the per-trait rows folded under their view)."""
@@ -161,6 +197,7 @@ def forget(kind, name=None):
         existed = any(name in (data.get(k) or {}) for k in ("picks", "rejects", "seen"))
         for k in ("picks", "rejects", "seen"):
             (data.get(k) or {}).pop(name, None)
+        existed = existed or (data.get("arms") or {}).pop(f"word:{name}", None) is not None
     elif kind == "view":
         views = data.get("views") or {}
         gone = [k for k in views if k == name or k.startswith(f"{name}@")]
@@ -178,9 +215,21 @@ def effective_chance(chance):
     (of the shots they reviewed) once enough were reviewed."""
     data = _read()
     total, kept = int(data.get("shots", 0)), int(data.get("kept", 0))
-    if total < MIN_SHOTS_FOR_RATE:
-        return chance
-    return max(0.05, min(1.0, (chance + kept / total) / 2.0))
+    if total >= MIN_SHOTS_FOR_RATE:
+        chance = (chance + kept / total) / 2.0
+    return max(0.05, min(1.0, chance * _lean("move:yes", "move:no")))
+
+
+def _lean(yes, no):
+    """Factor (0.5-2) that tilts an odds toward the arm the ratings liked more, 1 when unrated."""
+    stats = arm_stats()
+    ry, rn = arm_rate(yes, stats), arm_rate(no, stats)
+    return 2.0 * ry / (ry + rn)
+
+
+def split_chance(chance):
+    """The chance of cutting a shot in two, tilted by whether split runs were liked."""
+    return max(0.0, min(1.0, chance * _lean("split:yes", "split:no")))
 
 
 def _save(data):

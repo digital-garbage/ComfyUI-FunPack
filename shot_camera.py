@@ -263,10 +263,18 @@ def _draw(cands, prior, rng, n):
     return chosen
 
 
-def _plan(pool, last, rng, prior=None, force=None, mode="auto"):
-    """-> (moves text, target description, opening template). Fixed and minimal without
+def _tilt(base, key, arms):
+    """`base` odds tilted by how the ratings treated arm `key` (0.5-1.5x; 1 when unrated)."""
+    g, b = (arms or {}).get(key, (0.0, 0.0))
+    return base * (0.5 + (g + 1.0) / (g + b + 2.0))
+
+
+def _plan(pool, last, rng, prior=None, force=None, mode="auto", arms=None):
+    """-> (moves text, target description, opening template, style). Fixed and minimal without
     `rng` (one move, X -> Y when the shot has two topics); with it, how many moves, whether
-    they travel and which words are all drawn, so no shot pattern repeats by construction."""
+    they travel and which words are all drawn, so no shot pattern repeats by construction.
+    `arms`: {"style:hold": (good, bad), ...} what ratings taught; tilts those draws. `style` is
+    the arm that was drawn ("hold", "travel", "k1".."k3"), None when a person decided."""
     topics = _topics(pool)
     best = _draw(pool, prior, rng, 1)[0]
     if prior and len(topics) > 2:                 # two of them, weighted by habit, in text order
@@ -276,28 +284,28 @@ def _plan(pool, last, rng, prior=None, force=None, mode="auto"):
     if mode == "hold":
         hold = _pick(MOVES_HOLD, last, rng)
         target = _name(best)
-        return hold.format(x=target), target, hold
+        return hold.format(x=target), target, hold, None
     if force and len(force) >= 2:
         # "from here to there (and on to...)": the camera visits the picks in the order given.
         move = _pick(MOVES_TRAVEL, last, rng)
         sentences = [move.format(x=_name(force[0]), y=_name(force[1]))]
         sentences += [_pick(MOVES_THEN, None, rng).format(y=_name(c)) for c in force[2:]]
-        return " ".join(sentences), " -> ".join(_name(c) for c in force), move
+        return " ".join(sentences), " -> ".join(_name(c) for c in force), move, None
     if mode == "move":
         k, travel = 1, False
     elif rng is None:
         k, travel = 1, len(topics) >= 2
     else:
-        k = rng.choices((1, 2, 3), COUNT_WEIGHTS)[0]
-        travel = k == 1 and len(topics) >= 2 and rng.random() < TRAVEL_SHARE
+        k = rng.choices((1, 2, 3), [_tilt(w, f"style:k{n}", arms) for n, w in zip((1, 2, 3), COUNT_WEIGHTS)])[0]
+        travel = k == 1 and len(topics) >= 2 and rng.random() < _tilt(TRAVEL_SHARE, "style:travel", arms)
     if travel:
         x, y = _name(topics[0]), _name(topics[-1])
         move = _pick(MOVES_TRAVEL, last, rng)
-        return move.format(x=x, y=y), f"{x} -> {y}", move
-    if rng is not None and k == 1 and rng.random() < HOLD_SHARE:
+        return move.format(x=x, y=y), f"{x} -> {y}", move, "travel" if rng else None
+    if rng is not None and k == 1 and rng.random() < _tilt(HOLD_SHARE, "style:hold", arms):
         hold = _pick(MOVES_HOLD, last, rng)              # some shots want one fixed focus
         target = _name(best)
-        return hold.format(x=target), target, hold
+        return hold.format(x=target), target, hold, "hold"
     first = topics[0] if (k > 1 and topics) else best
     moves = MOVES_DETAIL if (first[2] or first[0] in PARTS) else MOVES_OTHER
     opening = _pick(moves, last, rng)
@@ -313,7 +321,7 @@ def _plan(pool, last, rng, prior=None, force=None, mode="auto"):
             sentences.append(_pick(MOVES_FINISH, None, rng))
     if k > 2 and len(topics) >= 2:
         sentences.append(_pick(MOVES_FINISH, None, rng))
-    return " ".join(sentences), desc, opening
+    return " ".join(sentences), desc, opening, (f"k{k}" if rng is not None and mode == "auto" else None)
 
 
 def _analyse(text):
@@ -374,12 +382,14 @@ def focus_options(text, prior=None):
     return out
 
 
-def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None):
+def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None, arms=None):
     """-> (new prompt, [per-shot report dicts]). Unchanged when there is no `[Shot N]`.
 
     `seed=None`: one plain move per shot (deterministic). With a `seed`, each shot is left
     alone with probability 1 - `chance`, and otherwise gets one to three moves, drawn per
-    shot from the seed, so the same prompt and seed always give the same text."""
+    shot from the seed, so the same prompt and seed always give the same text.
+    `arms`: what ratings taught (see _plan); each report entry's "arms" lists the choices drawn
+    on their own for the rating that follows ("move:yes"/"move:no", a style, "word:<lemma>")."""
     marks, header, parts, pools = _analyse(text)
     if not marks:
         return text, []
@@ -387,7 +397,7 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None):
     for i, m in enumerate(marks):
         picture, sound = parts[i]
         entry = {"shot": int(m.group(1)), "move": None, "target": None, "why": "", "lemmas": [],
-                 "key": shot_key(picture)}
+                 "key": shot_key(picture), "arms": []}
         rng = random.Random(f"{seed}:{i}") if seed is not None else None
         pool = pools[i]
         # What the person said about this shot, if anything: "none", or a target and/or a mode.
@@ -411,9 +421,14 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None):
             entry["why"] = "no move, as you chose"
         elif rng is not None and mode == "auto" and not force and rng.random() >= chance:
             entry["why"] = "left as written by chance"
+            entry["arms"] = ["move:no"]
         else:
-            moves, desc, opening = _plan(pool, last, rng, shot_prior, force=force, mode=mode)
+            moves, desc, opening, style = _plan(pool, last, rng, shot_prior, force=force, mode=mode, arms=arms)
             entry.update(move=moves, target=desc)
+            if rng is not None and mode == "auto" and not force:    # only what nobody dictated is learned
+                entry["arms"] = ["move:yes"] + ([f"style:{style}"] if style else [])
+                names = desc.split(" -> ")
+                entry["arms"] += [f"word:{c[0]}" for c in {c[0]: c for c in pool if _name(c) in names}.values()]
             last = opening
             core = picture.rstrip()
             gap = picture[len(core):] or (" " if sound else "")
@@ -470,7 +485,7 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
     so with none given nothing is split (times are still added).
     info = {"before", "after", "times": [...], "why": str}."""
     marks = list(SHOT.finditer(text or ""))
-    info = {"before": len(marks), "after": len(marks), "times": [], "why": ""}
+    info = {"before": len(marks), "after": len(marks), "times": [], "why": "", "arms": []}
     if not marks:
         return text, info
     if not seconds or seconds < MIN_SHOT_SECONDS:
@@ -495,7 +510,10 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
     for i, (picture, sound) in enumerate(parts):
         rng = random.Random(f"{seed}:cut:{i}")
         j, sentences = _switch_point(picture, constant, pieces)
-        if j is not None and rng.random() < chance:
+        split = j is not None and rng.random() < chance
+        if j is not None:
+            info["arms"].append("split:yes" if split else "split:no")
+        if split:
             first, second = "".join(sentences[:j]), "".join(sentences[j:])
             blocks.append([first.rstrip() + " ", ""])
             second = re.sub(r"^\s*(?:then|next|after that|afterwards),?\s+", "", second, flags=re.I)
@@ -504,6 +522,7 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
             blocks.append([picture, sound])
     if len(blocks) > len(marks) and (len(blocks) > seconds or seconds / len(blocks) < MIN_SHOT_SECONDS):
         blocks = [[p, s] for p, s in parts]         # not enough seconds for the splits
+        info["arms"] = []
     # Equal shares of the scene, rounded to whole seconds, no shot shorter than MIN_SHOT_SECONDS
     # (a shortcut's text length says nothing about how long its beat should last: weighting by
     # it gave one-second shots next to five-second ones).
@@ -517,6 +536,7 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
         times.append(t)
     if len(blocks) > 1 and times[-1] >= seconds:
         info["why"] = f"{len(blocks)} shots do not fit in {seconds}s at whole seconds"
+        info["arms"] = []
         return text, info
     out = [header]
     for k, (picture, sound) in enumerate(blocks):

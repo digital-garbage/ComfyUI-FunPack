@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Camera moves and shot cuts now learn from your ratings on their own, no Reactive focus needed: how often a shot gets a move, whether it holds / travels / chains moves, which words it aims at, and whether a shot whose point changes gets split. Liked runs raise those choices, disliked ones lower them (picture-only dislikes teach nothing).
 - The MiniMax H3 X2 Detail VAE works as the Chain Sampler's video VAE: its packed output is detected and decoded to 2x frames (final decode, previews, continuation anchors, detailing detection).
 
 ### Changed

@@ -776,6 +776,7 @@ def split_prompt_by_transitions(prompt, placement="start"):
 
 
 _RUN_VIEWS = []     # the views this run added, for the rating that follows it
+_RUN_ARMS = []      # camera-move / split choices this run drew on its own, same purpose
 
 
 def focus_scene_raw(scene_segments, variables=None):
@@ -8819,25 +8820,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
     @staticmethod
     def _v2_rate_shot_views(previous_run, profile):
-        """The rating of the last generation, passed on to the views it carried: liked = good,
-        disliked = bad. A picture-only dislike and the neutral 'Wrong ...' ratings say nothing
-        about a view, so they teach nothing."""
+        """The rating of the last generation, passed on to what the camera chose in it (views,
+        whether a shot got a move, its style and target, splits): liked = good, disliked = bad.
+        A picture-only dislike and the neutral 'Wrong ...' ratings say nothing about a camera
+        choice, so they teach nothing."""
         used = (previous_run or {}).get("shot_views") or []
+        arms = (previous_run or {}).get("shot_arms") or []
         reward = float(profile.get("reward", 0.0) or 0.0)
-        if (not used or profile.get("skip_learning") or profile.get("skip_value_function")
+        if ((not used and not arms) or profile.get("skip_learning") or profile.get("skip_value_function")
                 or profile.get("axis") == "image" or abs(reward) < 0.05):
             return
+        sign = 1 if reward > 0 else -1
         try:
             try:
                 from . import focus_memory as _fm
             except ImportError:
                 import focus_memory as _fm
-            n = _fm.rate_views(used, 1 if reward > 0 else -1)
+            n = _fm.rate_views(used, sign) + _fm.rate_arms(arms, sign)
             if n:
-                print(f"[FunPackVideoRefinerV2] shot views: rated {n} view(s) "
-                      f"{'good' if reward > 0 else 'bad'} ({profile.get('label') or profile.get('key')})")
+                print(f"[FunPackVideoRefinerV2] shot camera: rated {n} choice(s) "
+                      f"{'good' if sign > 0 else 'bad'} ({profile.get('label') or profile.get('key')})")
         except Exception as e:  # noqa: BLE001
-            print(f"[FunPackVideoRefinerV2] shot views: could not rate | {e}")
+            print(f"[FunPackVideoRefinerV2] shot camera: could not rate | {e}")
 
     def _v2_rating_is_discard(self, learning_profile):
         """True when the run must leave NO trace in refiner state — the user's
@@ -9409,8 +9413,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 from . import shot_camera as _sc
             except ImportError:
                 import shot_camera as _sc
+            try:
+                from . import focus_memory as _fm
+            except ImportError:
+                import focus_memory as _fm
+            try:
+                chance = _fm.split_chance(chance)           # tilted by how split runs were rated
+            except Exception:  # noqa: BLE001
+                pass
             out, info = _sc.add_shot_cuts(text, seconds, seed=seed, chance=chance,
                                           pieces=_shortcut_texts() if chance > 0 else ())
+            _RUN_ARMS.extend(info.get("arms", []))
         except Exception as e:  # noqa: BLE001
             print(f"[FunPackVideoRefinerV2] shot cuts: failed | {where}: {e}; prompt left as written")
             return text
@@ -9446,8 +9459,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 chance = _fm.effective_chance(chance)       # pulled toward how often moves are kept
             except Exception:  # noqa: BLE001
                 pass
-            out, report = _sc.add_camera_moves(text, seed=seed, chance=chance, prior=prior,
+            try:
+                arms = _fm.arm_stats()
+            except Exception:  # noqa: BLE001
+                arms = {}
+            out, report = _sc.add_camera_moves(text, seed=seed, chance=chance, prior=prior, arms=arms,
                                                choices=choices if isinstance(choices, dict) else None)
+            _RUN_ARMS.extend(a for r in report for a in r.get("arms", []))
             if report:
                 try:
                     _fm.observe(_sc.content_fingerprint(text),
@@ -10468,6 +10486,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("bad_dir", {})
         global_state.setdefault("successful_seed_memory", {})
         _RUN_VIEWS.clear()
+        _RUN_ARMS.clear()
         previous_run = state.get("last_run")
         previous_run_refusal = self._v2_run_looks_like_refusal(previous_run)
         has_previous_run = isinstance(previous_run, dict) and not previous_run_refusal
@@ -11435,6 +11454,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "scene_refinement_keys": [sorted(s) for s in scene_refinement_keys],
                 "gen_context": current_gen_context,
                 "shot_views": list(_RUN_VIEWS),
+                "shot_arms": list(_RUN_ARMS),
             }
         # "-Just forget it-" ("Just ignore it") and auto-discarded refusals must leave NO
         # trace: skip the feedback-learning sinks too, not only the rating-learning ones above.
