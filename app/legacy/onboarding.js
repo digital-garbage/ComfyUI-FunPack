@@ -791,7 +791,13 @@
     // A layer open above the wizard (Settings, a floating window, the restart overlay) owns Esc.
     if (document.querySelector(".restart-overlay, .sw-overlay, .fw:not([hidden])")) return;
     const t = document.activeElement;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+    if (t && t.tagName === "SELECT") return;
+    // Typed text is not thrown away by a stray Esc: the first one leaves the field, the next closes.
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA") && String(t.value || "").trim()) {
+      e.preventDefault();
+      t.blur();
+      return;
+    }
     e.preventDefault();
     leave();
   }
@@ -843,6 +849,7 @@
     const saved = (resume || carry) ? restore() : null;
     if (saved && resume && saved.resumable) {
       Object.assign(ctx, saved.ctx || {});
+      save(false);                                      // resumed: from here an ordinary run, closable for good
       idx = Math.min(Math.max(saved.idx || 0, 0), steps.length - 1);
       // The project survived the restart; the in-memory handle did not.
       const pid = saved.ctx?.projectId;

@@ -124,3 +124,15 @@ def test_a_damaged_zip_and_an_empty_key_are_sentences_not_500s(server):  # noqa:
     status, out = _raw(server, "GET", "/funpack/api/m/taste/keys/fox/export")
     assert status == 400 and b"nothing to export" in out
     assert not store.valid("a ")
+
+
+def test_reserved_names_shapes_and_missing_prompt_ids_are_refused(server):  # noqa: F811
+    good = {"rows": [{"prompt_id": "p", "reward": 1.0, "rows": {"1": torch.ones(2)}}]}
+    assert _raw(server, "POST", "/funpack/api/m/taste/keys/import?name=latest.json", _zip_of({"reins.pt": _torch_bytes(good)}))[0] == 400
+    mixed = {"rows": [{"prompt_id": "p", "reward": 1.0, "rows": {"1": torch.ones(2)}},
+                      {"prompt_id": "q", "reward": -1.0, "rows": {"1": torch.ones(3)}}]}
+    assert _raw(server, "POST", "/funpack/api/m/taste/keys/import?name=x", _zip_of({"reins.pt": _torch_bytes(mixed)}))[0] == 400
+    nopid = {"rows": [{"reward": 1.0, "rows": {"1": torch.ones(2)}}]}
+    assert _raw(server, "POST", "/funpack/api/m/taste/keys/import?name=x", _zip_of({"reins.pt": _torch_bytes(nopid)}))[0] == 400
+    status, out = _request(server, "POST", "/funpack/api/m/taste/rate", {"rating": "liked"})
+    assert status == 400

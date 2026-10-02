@@ -46,7 +46,8 @@ MAX_ROWS = 200
 
 
 def valid(key) -> bool:
-    return isinstance(key, str) and bool(_KEY.match(key)) and not key.endswith((".", " "))
+    return isinstance(key, str) and bool(_KEY.match(key)) and not key.endswith((".", " ")) \
+        and not key.lower().endswith(".json")      # `latest.json` lives beside the keys: a key cannot share its name
 
 
 def _dir(key):
@@ -165,6 +166,8 @@ def rate(prompt_id, rating, axis=None):
     `rating` None clears: the row is removed, nothing is learned from that clip.
     `axis` only goes with "disliked" (see AXES); any other rating drops it.
     """
+    if not isinstance(prompt_id, str) or not prompt_id:
+        raise ValueError("a rating names the clip it is about (no prompt id was given)")
     if rating is not None and rating not in REWARD:
         raise ValueError(f"{rating!r} is not a rating")
     if axis is not None and axis not in AXES:
@@ -293,14 +296,22 @@ def _sound_rows(data):
     the wrong shape would break every later rating."""
     if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
         return False
+    shapes = {}
     for row in data["rows"]:
         if not isinstance(row, dict) or isinstance(row.get("reward"), bool) or not isinstance(row.get("reward"), (int, float)):
+            return False
+        if not isinstance(row.get("prompt_id"), str) or not row["prompt_id"]:
             return False
         if row.get("axis") not in (None, *AXES):
             return False
         captured = row.get("rows")
         if not isinstance(captured, dict) or not all(isinstance(v, torch.Tensor) for v in captured.values()):
             return False
+        # What is stacked later must agree: one name, one shape (a key trained across two model
+        # families would otherwise abort every sampling that reads it).
+        for name, v in captured.items():
+            if shapes.setdefault(name, tuple(v.shape)) != tuple(v.shape):
+                return False
     return True
 
 
