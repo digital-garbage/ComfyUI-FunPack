@@ -323,7 +323,16 @@
           unwired[body.slot] = unwired[body.slot].filter((k) => k !== body.input);
           if (!unwired[body.slot].length) delete unwired[body.slot];
         }
-        if (body.action === "remove") delete unwired[body.slot];
+        if (body.action === "remove") { delete unwired[body.slot]; delete groupEdits[body.slot]; }
+        // A default slot that was swapped for the same node, or taken out and put back, starts empty:
+        // none of the default's links may come back over it when the project is opened again.
+        const fresh = body.action === "replace" ? [body.slot] : body.action === "add" ? (res.slots || []).map((s) => s.id) : [];
+        fresh.forEach((id) => {
+          const def = offered.find((s) => s.id === id);
+          if (!def) return;
+          const links = Object.keys(def.inputs || {}).filter((k) => Array.isArray(def.inputs[k]));
+          if (links.length) unwired[id] = [...new Set([...(unwired[id] || []), ...links])];
+        });
         try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
         _changed();
       }
@@ -350,7 +359,8 @@
     if (!(slots || []).some((s) => s.id === slotId)) return Promise.resolve();
     groupEdits[slotId] = String(group || "").trim();
     applyGroups();
-    return save({}).then(() => { if (!saving) groupEdits = {}; });
+    const mine = groupEdits[slotId];
+    return save({}).then(() => { if (groupEdits[slotId] === mine) delete groupEdits[slotId]; });
   }
 
   // Whoever keeps the pipeline with the project hears every landed edit.
@@ -373,8 +383,10 @@
   async function _adopt(saved, removedIds, unwiredMap) {
     // Not loaded (ComfyUI unreachable): remember what the project holds and put it in the moment a
     // load succeeds, so the default is never what the next edit is built on.
-    if (slots === null) { if (Array.isArray(saved) && saved.length) { deferred = saved; deferredRemoved = removedIds; deferredUnwired = unwiredMap; } return !(Array.isArray(saved) && saved.length); }
-    if (!Array.isArray(saved) || !saved.length) return true;
+    const hadSomething = (Array.isArray(saved) && saved.length) || (Array.isArray(removedIds) && removedIds.length);
+    if (slots === null) { if (hadSomething) { deferred = saved; deferredRemoved = removedIds; deferredUnwired = unwiredMap; } return !hadSomething; }
+    if (!hadSomething) return true;
+    if (!Array.isArray(saved)) saved = [];
     // A saved slot is only what the server would accept: a project file outlives the code that
     // wrote it (v4 files name the node differently), and one bad slot refuses every later edit.
     const sound = (s) => s && typeof s.id === "string" && typeof s.node === "string"

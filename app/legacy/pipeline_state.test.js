@@ -179,3 +179,35 @@ test("a group moved while a save is in flight is still moved when it lands", asy
   await inflight;
   assert.strictEqual(PS.slots().find((s) => s.id === "gen").group, "Mine");
 });
+
+test("a default slot swapped for the same node, or removed and added back, does not get its links back on reopen", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const API = global.window.MovieEditorAPI;
+  API.editPipeline = async (body) => ({ refused: [], incomplete: [], queueable: true,
+    slots: body.slots.map((s) => (s.id === "gen" ? { ...s, inputs: {} } : s)) });
+  await PS.edit({ action: "replace", slot: "gen", node: "Gen" });
+  assert.deepStrictEqual(PS.unwiredMap(), { gen: ["model"] });
+  const saved = JSON.parse(JSON.stringify(PS.slots()));
+  const again = load([]);
+  await again.adopt(saved, [], PS.unwiredMap());
+  assert.strictEqual("model" in again.slots().find((s) => s.id === "gen").inputs, false);
+});
+
+test("a project with every slot removed does not get the default back", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.adopt([], ["model", "gen"]);
+  assert.ok(posts.length > 0);
+  assert.deepStrictEqual(posts.at(-1).slots, []);
+});
+
+test("a group change queued behind a save in flight is not re-stamped over a later group", async () => {
+  const PS = load([], { delay: 20 });
+  await PS.ensureLoaded();
+  const inflight = PS.save({ inputs: { model: { file: "z" } } });
+  const first = PS.setGroup("gen", "Mine");
+  await Promise.all([inflight, first]);
+  await PS.setGroup("gen", "Other");
+  assert.strictEqual(PS.slots().find((s) => s.id === "gen").group, "Other");
+});
