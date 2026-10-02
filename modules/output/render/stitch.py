@@ -67,7 +67,8 @@ def build_filter(clips: list[dict], tracks: list[dict] | None = None, *, keep_or
                 vf = effects.clip_filters(c.get("fx") or {}, cw, ch, fps, dur)
             except ValueError as exc:
                 raise RenderError(f"Clip {i + 1}: {exc}") from exc
-            parts.append(f"[{i}:v:0]{','.join(vf)}[v{i}]")
+            # One timebase for every clip: xfade refuses to join a concat result to a 1/fps stream.
+            parts.append(f"[{i}:v:0]{','.join(vf)},settb=AVTB[v{i}]")
             if keep_original:
                 parts.append(_clip_audio(i, c, dur))
         acc_v, acc_a = "[v0]", "[a0]"
@@ -76,7 +77,7 @@ def build_filter(clips: list[dict], tracks: list[dict] | None = None, *, keep_or
             prev, dur_i = clips[i - 1], _f(clips[i].get("dur"))
             gap = _f(prev.get("gap_after"))
             if gap > 0.001:
-                parts.append(f"color=c=black:s={cw}x{ch}:r={fps:g}:d={gap:.3f},format=yuv420p,setsar=1[vgap{i}]")
+                parts.append(f"color=c=black:s={cw}x{ch}:r={fps:g}:d={gap:.3f},format=yuv420p,setsar=1,settb=AVTB[vgap{i}]")
                 parts.append(f"{acc_v}[vgap{i}]concat=n=2:v=1:a=0[vcgap{i}]")
                 acc_v, acc_dur = f"[vcgap{i}]", acc_dur + gap
                 if keep_original:
@@ -179,12 +180,19 @@ def _audio_tracks(project, clips_by_scene: dict, resolve) -> list[dict]:
     return out
 
 
-def _track_end(t: dict) -> float:
+def _file_seconds(t: dict):
+    """The length of a lane's own file, for a lane whose editor never recorded one."""
+    ref = t.get("media_ref")
+    found = media.path_for(ref) if isinstance(ref, str) and media.is_id(ref) else None
+    return files.duration(str(found)) if found else None
+
+
+def _track_end(t: dict, probed=None) -> float:
     start = _f(t.get("start_sec"))
     for key in ("source_dur", "pinned_dur"):
         if t.get(key) is not None:
             return start + _f(t[key])
-    return start + 1.0
+    return start + (probed if probed else 1.0)
 
 
 def graphics_duration(project) -> float:
@@ -193,7 +201,7 @@ def graphics_duration(project) -> float:
     for ov in project.overlay_tracks:
         end = max(end, _f(ov.get("start_sec")) + _f(ov.get("duration_sec")))
     for t in project.audio_tracks:
-        end = max(end, _track_end(t))
+        end = max(end, _track_end(t, _file_seconds(t)))
     return max(end, 0.01)
 
 
@@ -228,8 +236,13 @@ def render(project, clips: list[dict]) -> dict:
     if clips:
         cw, ch = int(_f(clips[0].get("w")) or cw), int(_f(clips[0].get("h")) or ch)
         fps = _f(clips[0].get("fps")) or fps
-        for c, p in zip(clips, paths):
+        for i, (c, p) in enumerate(zip(clips, paths)):
             c["has_audio"] = files.has_audio(p)
+            have, want = files.duration(p), _f(c.get("dur"))
+            have = None if have is None else have - _f(c.get("in"))
+            if have is not None and want > 0 and have < want - max(0.5, 0.1 * want):
+                raise RenderError(f"Clip {i + 1}'s render has {max(have, 0):.1f}s of picture where the timeline "
+                                  f"expects {want:.1f}s: generate it again, then render.")
         blank_canvas = None
     else:
         cw, ch = cw - cw % 2, ch - ch % 2

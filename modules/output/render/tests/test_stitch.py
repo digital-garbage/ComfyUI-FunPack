@@ -263,3 +263,32 @@ def test_a_render_says_what_it_left_out(comfy):
                             audio_tracks=[{"id": "t1", "media_ref": "bbbbbbbbbbbb", "start_sec": 0}])
     out = stitch.render(proj, [clip("a.mp4", dur=1.0)])
     assert len(out["warnings"]) == 2 and "overlay" in out["warnings"][0] and "audio" in out["warnings"][1]
+
+
+@needs_ffmpeg
+def test_a_crossfade_after_a_hard_cut_or_a_gap_renders(comfy):
+    make_clip(comfy.output / "a.mp4", 2.0, size="160x120")
+    c = lambda **k: clip("a.mp4", dur=2.0, **k)            # noqa: E731
+    for first in ({}, {"gap_after": 0.5}):
+        out = stitch.render(projects.Project(width=160, height=120),
+                            [c(**first), c(transition="crossfade", tdur=0.5), c()])
+        assert probe(comfy.temp / out["media"]["filename"])[0] > 5.0
+
+
+@needs_ffmpeg
+def test_a_clip_whose_render_is_shorter_than_its_window_is_refused(comfy):
+    make_clip(comfy.output / "a.mp4", 1.0)
+    with pytest.raises(stitch.RenderError, match="Clip 1's render has"):
+        stitch.render(projects.Project(width=160, height=120), [clip("a.mp4", dur=2.0)])
+
+
+@needs_ffmpeg
+def test_an_audio_lane_with_no_recorded_length_renders_as_long_as_its_file(comfy, monkeypatch):
+    import subprocess
+    from core import media
+    wav = comfy.root / "song.wav"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=duration=3", str(wav)], check=True, capture_output=True)
+    monkeypatch.setattr(media, "path_for", lambda ref: wav)
+    monkeypatch.setattr(media, "is_id", lambda ref: True)
+    proj = projects.Project(width=160, height=120, audio_tracks=[{"id": "t", "media_ref": "aaaaaaaaaaaa", "start_sec": 1.0}])
+    assert stitch.graphics_duration(proj) == pytest.approx(4.0, abs=0.2)

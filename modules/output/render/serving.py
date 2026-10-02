@@ -250,7 +250,7 @@ async def segment(request, project) -> "web.StreamResponse":
                 os.remove(out)
                 return web.json_response({"detail": "This clip's window starts past the end of its render: "
                                                     "generate it again."}, status=400)
-        except files.ClipError as exc:
-            return web.json_response({"detail": str(exc)}, status=503)
+        except files.ClipError as exc:         # ffmpeg itself failed: not "still being written", so not a retry
+            return web.json_response({"detail": str(exc)}, status=502)
         _segments.put(key, (None, out))
     return web.FileResponse(out, headers={"Cache-Control": "private, max-age=3600"})
