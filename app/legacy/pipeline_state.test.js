@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 
-function load(posts) {
+function load(posts, opts = {}) {
   const defaults = [
     { id: "model", node: "Loader", group: "Loaders", inputs: { file: "", dtype: "bf16" } },
     { id: "gen", node: "Gen", group: "Sampling", inputs: { steps: 8, model: ["model", 0] } },
@@ -10,7 +10,12 @@ function load(posts) {
   global.window = {
     MovieEditorAPI: {
       pipeline: async () => ({ slots: JSON.parse(JSON.stringify(defaults)), incomplete: [], refused: [], queueable: true }),
-      editPipeline: async (body) => { posts.push(body); return { slots: body.slots, incomplete: [], refused: [], queueable: true }; },
+      editPipeline: async (body) => {
+        posts.push(body);
+        if (opts.delay) await new Promise((r) => setTimeout(r, opts.delay));
+        const bad = (body.slots || []).findIndex((s) => typeof s.node !== "string");
+        if (bad >= 0) { const e = new Error(`slot ${bad} has no node`); throw e; } for (const [id, edits] of Object.entries(body.inputs || {})) { const sl = body.slots.find((x) => x.id === id); if (sl) sl.inputs = { ...sl.inputs, ...edits }; }
+        return { slots: body.slots, incomplete: [], refused: [], queueable: true }; },
       modules: async () => ({ modules: [] }),
       probeFamily: async () => ({}),
     },
@@ -52,4 +57,37 @@ test("nothing saved leaves the session's pipeline as it is", async () => {
   const before = JSON.stringify(PS.slots());
   await PS.adopt([]);
   assert.strictEqual(JSON.stringify(PS.slots()), before);
+});
+
+test("a v4-shaped or hostile saved slot cannot brick the pipeline", async () => {
+  const PS = load([]);
+  await PS.adopt([
+    { id: "model", node: "Loader", inputs: { file: "h3.safetensors" } },
+    { id: "abc123", node_class: "OldV4Node", inputs: {} },
+    { id: "bad", node: "X", inputs: [1, 2] },
+  ]);
+  assert.deepStrictEqual(PS.slots().map((s) => s.id), ["model", "gen"]);
+  assert.strictEqual(PS.slots()[0].inputs.file, "h3.safetensors");
+  await PS.save({ inputs: { model: { file: "new" } } });
+  assert.strictEqual(PS.slots()[0].inputs.file, "new");
+});
+
+test("an answer about the previous project's pipeline does not overwrite the one just opened", async () => {
+  const PS = load([], { delay: 30 });
+  await PS.ensureLoaded();
+  const inflight = PS.save({ inputs: { model: { file: "A-file" } } });
+  await new Promise((r) => setTimeout(r, 5));
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "B-file" } }]);
+  await inflight;
+  assert.strictEqual(PS.slots()[0].inputs.file, "B-file");
+});
+
+test("nothing loaded (ComfyUI unreachable) leaves slots null, never an empty pipeline", async () => {
+  const PS = load([]);
+  global.window.MovieEditorAPI.pipeline = async () => { throw new Error("down"); };
+  delete require.cache[require.resolve("./pipeline_state.js")];
+  require("./pipeline_state.js");
+  const P2 = global.window.PipelineState;
+  await P2.adopt([{ id: "model", node: "Loader", inputs: {} }]);
+  assert.strictEqual(P2.slots(), null);
 });

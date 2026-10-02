@@ -4699,12 +4699,19 @@
   // copy of it (project.models) so a model pick and every node value travel with the project to
   // a new rental. Opening a project puts ITS pipeline over the session's; a project with none
   // yet inherits the session's.
+  let _modelsRetries = 0;
+  let _pipelineSaveTimer = null;
   async function loadModels() {
     const saved = (state.project && state.project.models && state.project.models.slots) || [];
     const p = (async () => {
       try {
         await window.PipelineState.adopt(saved);
-        state.models = { slots: JSON.parse(JSON.stringify(window.PipelineState.slots() || [])) };
+        const live = window.PipelineState.slots();
+        // Not loaded (ComfyUI unreachable): the project's own copy stays exactly as it was -- an
+        // empty live pipeline must never be mistaken for "no pipeline" and saved over it. Tried again.
+        state.models = { slots: live ? JSON.parse(JSON.stringify(live)) : saved };
+        if (!live && _modelsRetries++ < 3) setTimeout(loadModels, 5000);
+        else if (live) _modelsRetries = 0;
       } catch (_) { state.models = { slots: saved }; }
     })();
     _modelsLoad = p;
@@ -5008,7 +5015,10 @@
     window.PipelineState.subscribe((slots) => {
       if (!state.project) return;
       state.models = { slots: JSON.parse(JSON.stringify(slots || [])) };
-      scheduleSaveSilent();
+      // Soon, and past a Settings window's hold: a model pick must survive the reload that follows it.
+      _localDirty = true;
+      clearTimeout(_pipelineSaveTimer);
+      _pipelineSaveTimer = setTimeout(() => { _pipelineSaveTimer = null; flushSave(); }, 800);
     });
     await refreshProjectList();
     // Re-attach to a generation already running in ComfyUI (UI was reloaded mid-run) is

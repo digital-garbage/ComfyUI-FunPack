@@ -65,6 +65,7 @@
   let queueable = false;
   let loading = false;
   let loadError = null;
+  let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
   let saving = false;
   let pending = false;
   let pendingBody = null;
@@ -174,8 +175,12 @@
       pending = false;
       const toSend = { slots, ...pendingBody };
       pendingBody = null;
+      const mine = epoch;
       try {
         const res = await API.editPipeline(toSend);
+        // A different pipeline was put in while this was in flight (another project opened):
+        // this answer is about the old one and must not overwrite the new.
+        if (mine !== epoch) continue;
         if (res && res.slots) slots = res.slots;
         incomplete = (res && res.incomplete) || [];
         refused = (res && res.refused) || [];
@@ -289,20 +294,37 @@
   async function adopt(saved) {
     await ensureLoaded();
     if (slots === null || !Array.isArray(saved) || !saved.length) return;
-    const byId = new Map(saved.filter((s) => s && typeof s.id === "string").map((s) => [s.id, s]));
+    // A saved slot is only what the server would accept: a project file outlives the code that
+    // wrote it (v4 files name the node differently), and one bad slot refuses every later edit.
+    const sound = (s) => s && typeof s.id === "string" && typeof s.node === "string"
+      && s.inputs && typeof s.inputs === "object" && !Array.isArray(s.inputs);
+    const byId = new Map(saved.filter(sound).map((s) => [s.id, s]));
     const have = new Set(offered.map((s) => s.id));
-    const merged = offered.map((def) => {
+    const lay = (extras) => offered.map((def) => {
       const mine = byId.get(def.id);
-      if (!mine || mine.node !== def.node) return def;
-      const out = { ...def, inputs: { ...(def.inputs || {}), ...(mine.inputs || {}) } };
-      if (mine.group) out.group = mine.group;
-      if (mine.bypassed !== undefined) out.bypassed = mine.bypassed;
+      if (!mine || mine.node !== def.node) return JSON.parse(JSON.stringify(def));
+      const out = { ...def, inputs: { ...(def.inputs || {}), ...mine.inputs } };
+      if (typeof mine.group === "string" && mine.group) out.group = mine.group;
+      if (typeof mine.bypassed === "boolean") out.bypassed = mine.bypassed;
       return out;
-    }).concat(saved.filter((s) => s && typeof s.id === "string" && !have.has(s.id)));
-    slots = merged;
-    const quiet = new Set(listeners);
-    listeners.clear();
-    try { await save({}); } finally { quiet.forEach((fn) => listeners.add(fn)); }
+    }).concat(extras ? saved.filter((s) => sound(s) && !have.has(s.id)) : []);
+    // Replaces whatever pipeline was live: nothing queued for the old one may land on the new.
+    epoch++;
+    pendingBody = null; pending = false;
+    while (saving) await new Promise((r) => setTimeout(r, 20));
+    for (const extras of [true, false]) {
+      try {
+        const res = await API.editPipeline({ slots: lay(extras) });
+        if (res && res.slots && !(res.refused || []).length) {
+          slots = res.slots;
+          incomplete = res.incomplete || []; refused = []; queueable = !!res.queueable;
+          saveNotes = res.notes || [];
+          return;
+        }
+      } catch (_) { /* this layering was refused; try the next */ }
+    }
+    slots = JSON.parse(JSON.stringify(offered));        // nothing saved was usable: the default, said
+    saveNotes = ["This project's saved pipeline could not be loaded, so the default is in use."];
   }
 
   window.PipelineState = {
