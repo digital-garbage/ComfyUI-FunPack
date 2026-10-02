@@ -149,17 +149,40 @@ def test_an_empty_prompt_is_skipped_not_sent():
     assert out == "   " and "empty" in status and clip.seen == {}
 
 
-def test_a_clip_that_does_not_take_the_newer_arguments_still_works():
-    class Old(FakeClip):
-        def tokenize(self, text, image=None):
-            self.seen = {"text": text}
-            return "tok"
+class _Tok:
+    """ComfyUI's H3 tokenizer shape: takes `images`, swallows everything else."""
+    def tokenize_with_weights(self, text, return_word_ids=False, images=[], **kwargs):
+        return []
 
-        def generate(self, tokens, **kw):
-            if "no_repeat_ngram_size" in kw:
-                raise TypeError("nope")
-            return "ids"
-    assert en().enhance(Old("A fox."), "fox")[0] == "A fox."
+
+class RealShapeClip(FakeClip):
+    """sd.CLIP.generate's real signature: no no_repeat_ngram_size, seed=None default."""
+    tokenizer = _Tok()
+
+    def generate(self, tokens, do_sample=True, max_length=256, temperature=1.0, top_k=50, top_p=0.95,
+                 min_p=0.0, repetition_penalty=1.0, seed=None, presence_penalty=0.0):
+        assert seed is not None or not do_sample, "torch.Generator.manual_seed(None) raises"
+        self.seen["gen"] = dict(do_sample=do_sample, seed=seed, temperature=temperature)
+        return "ids"
+
+
+def test_the_real_generate_signature_gets_a_seed_and_no_unknown_arguments():
+    clip = RealShapeClip("A fox runs.")
+    out, status, info = en().enhance(clip, "fox", seed=0)
+    assert out == "A fox runs." and info["ok"] and clip.seen["gen"]["seed"]
+    assert en().enhance(RealShapeClip("A fox runs."), "fox", seed=7)[2]["ok"]
+
+
+def test_temperature_zero_is_greedy_not_a_crash():
+    clip = RealShapeClip("A fox runs.")
+    assert en().enhance(clip, "fox", temperature=0.0)[2]["ok"] and clip.seen["gen"]["do_sample"] is False
+
+
+def test_a_tokenizer_without_picture_or_template_input_says_so():
+    clip = RealShapeClip("A fox runs.")
+    _, status, _ = en().enhance(clip, "fox", image=object())
+    assert "takes no picture" in status and "no chat template" in status
+    assert "image" not in clip.seen and "skip_template" not in clip.seen
 
 
 def test_chat_revision_goes_in_the_system_turn_and_an_echo_is_cut():
@@ -217,3 +240,11 @@ def test_the_readout_routes_are_provided_and_answer():
             return d
     mod.routes(T(), "/m", W)
     assert set(table) == {"/m/defaults", "/m/runs"}
+
+
+def test_chat_comments_apply_only_to_the_prompt_they_were_about():
+    e = en()
+    chat = [{"rewrites": {"whole": "A knight walks."}, "comment": "rain", "original": "a knight"},
+            {"rewrites": {}, "comment": "any", }]
+    assert [r["comment"] for r in e.chat_for(chat, " a knight ")] == ["rain", "any"]
+    assert [r["comment"] for r in e.chat_for(chat, "a dragon")] == ["any"]

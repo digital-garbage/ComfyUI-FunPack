@@ -180,6 +180,8 @@ def _clean_templates(raw) -> list:
             item["scenes"] = [s if isinstance(s, str) else "" for s in scenes]
         if isinstance(t.get("prompt"), str):
             item["prompt"] = t["prompt"]
+        if "scenes" not in item and "prompt" not in item:
+            continue                  # holds no text: applying it would wipe the Story
         out.pop(name, None)
         out[name] = item
     return list(out.values())

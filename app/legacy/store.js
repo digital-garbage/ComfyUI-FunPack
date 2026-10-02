@@ -1142,7 +1142,12 @@
     if (!state.project) return;
     const nm = String(name || "").trim();
     if (!nm) return;
-    await flushGlobalPromptApply();      // what was just typed counts
+    try { await flushGlobalPromptApply(); }      // what was just typed counts
+    catch (e) {
+      state.notice = "The template was not saved: the Story text could not be split (" + (e && e.message || e) + ").";
+      notify();
+      return;
+    }
     const snapshot = {
       name: nm,
       anchor: state.project.anchor || "",
@@ -1180,14 +1185,20 @@
     if (!state.project) return;
     const tpl = (state.project.prompt_templates || []).find((t) => t && t.name === name);
     if (!tpl) return;
+    _historyRecord();                    // before anything changes, so undo restores anchor and variables too
     // Restore the saved variables first, then distribute the scenes (re-splits the timeline).
     patchProjectQuiet({
       variables: JSON.parse(JSON.stringify(tpl.variables || [])),
       active_prompt_template: name,
       ...(typeof tpl.anchor === "string" ? { anchor: tpl.anchor } : {}),
     });
-    if (!Array.isArray(tpl.scenes)) return applyGlobalPromptQuiet(tpl.prompt || "");   // a v4 template
-    _historyRecord();
+    if (!Array.isArray(tpl.scenes)) {
+      // A v4 template is one prompt with no scene cuts, and its anchor is inside the text.
+      state.notice = "This template was saved by an older version as one prompt: it applies as a single scene "
+        + "(its anchor stays inside the text). Split it with a cut word to get scenes.";
+      notify();
+      return applyGlobalPromptQuiet(tpl.prompt || "");
+    }
     const text = tpl.scenes.join(`\n${_storyMarker}\n`);
     await _distributeGlobalPrompt(text, { parsed_verbatim: { scenes: tpl.scenes.map((t) => ({ text: t })) } });
     scheduleSaveSilent();
@@ -3689,6 +3700,13 @@
     const chat = state.project && state.project.editor_settings && state.project.editor_settings.enhance_chat;
     if (enhancer && Array.isArray(chat) && chat.length) {
       raw[enhancer.id] = { ...(raw[enhancer.id] || {}), chat: JSON.stringify(chat) };
+    }
+    // A run of several scenes in one prompt is one combined text: a rewrite would turn
+    // the cut words into prose and merge the scenes, so the enhancer sits this one out.
+    if (enhancer && targetSceneIds.length > 1 && (enhancer.inputs || {}).enabled === true) {
+      raw[enhancer.id] = { ...(raw[enhancer.id] || {}), enabled: false };
+      const note = "Several scenes go out as one prompt, so the prompt enhancer was skipped for this run.";
+      unwiredNotice = unwiredNotice ? `${unwiredNotice} ${note}` : note;
     }
 
     const found = GB.slotForRole("generation.prompt");

@@ -97,9 +97,16 @@ class FunPackEnhancePrompt(io.ComfyNode):
         except ValueError:
             rounds = []
             log.warning("FunPack Prompt enhancer", "the Chat comments are not readable; ignored")
+        if not isinstance(rounds, list):
+            rounds = []
+        mine = en.chat_for(rounds, text)
+        if len(mine) < len(rounds):
+            log.warning("FunPack Prompt enhancer",
+                        f"{len(rounds) - len(mine)} Chat comment(s) belong to a different prompt "
+                        "(another scene, or the text changed) and were left out")
         out, status, info = en.enhance(
             clip, text, system=instructions,
-            reference_text=en.reference(text, groups, reference_intro), chat=en.chat_block(rounds),
+            reference_text=en.reference(text, groups, reference_intro), chat=en.chat_block(mine),
             seed=seed, image=image if use_image else None, thinking=thinking, max_length=max_length,
             temperature=temperature, top_p=top_p, top_k=top_k, min_p=min_p,
             repetition_penalty=repetition_penalty, presence_penalty=presence_penalty,

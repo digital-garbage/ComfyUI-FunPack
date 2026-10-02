@@ -165,7 +165,10 @@
       if (rw) log.append(el("div", "enh-bubble enh-model", rw));
       log.append(el("div", "enh-bubble enh-user", r.comment));
     });
-    if (last && last.ok) log.append(el("div", "enh-bubble enh-model enh-last", last.after));
+    if (last && last.ok) {
+      log.append(el("div", "insp-hint", "Last rewrite of: " + String(last.before || "").slice(0, 80)));
+      log.append(el("div", "enh-bubble enh-model enh-last", last.after));
+    }
     if (!list.length && !(last && last.ok)) log.append(el("div", "insp-hint", "Generate once with the enhancer on, then comment here."));
     wrap.append(log);
 
@@ -176,8 +179,12 @@
       if (!comment) return;
       // The rewrite this comment is about; {} when nothing new ran since the last comment.
       const prev = list.length ? Object.values(list[list.length - 1].rewrites || {})[0] : null;
-      const rewrites = last && last.ok && last.after !== prev ? { whole: last.after } : {};
-      saveRounds([...list, { rewrites, comment }]);
+      const fresh = last && last.ok && last.after !== prev;
+      const rewrites = fresh ? { whole: last.after } : {};
+      // The prompt the rewrite answered: comments only apply to that same prompt.
+      const tail = list.length ? list[list.length - 1].original : undefined;
+      const original = fresh ? last.before : tail;
+      saveRounds([...list, original === undefined ? { rewrites, comment } : { rewrites, comment, original }]);
       host();
     };
     const reset = el("button", "btn ghost tiny", "Reset");

@@ -7,7 +7,9 @@ prompt would render a blank video and blame the model.
 
 from __future__ import annotations
 
+import inspect
 import json
+import random
 import re
 import time
 
@@ -157,6 +159,16 @@ def reference(text, groups, intro="") -> str:
 
 # --- chat --------------------------------------------------------------------
 
+def chat_for(chat, original):
+    """The rounds that are about THIS prompt. A round remembers the prompt its rewrite
+    answered; comments on another prompt (another scene, or text edited since) would
+    otherwise start the rewrite from the wrong text. Rounds from before that was
+    recorded have no prompt and apply to any."""
+    original = str(original or "").strip()
+    return [r for r in (chat or []) if isinstance(r, dict)
+            and (r.get("original") is None or str(r["original"]).strip() == original)]
+
+
 def chat_block(chat, scene=None) -> str:
     """The user's comments on earlier rewrites as the labelled part of the message:
     the LATEST rewrite of this prompt and every comment since Reset, oldest first.
@@ -267,6 +279,18 @@ def generation_device(clip) -> str:
     return "an unreported device"
 
 
+def _accepted(fn, swallows=False):
+    """Names `fn` takes, or None when it cannot be read. A **kwargs catch-all counts as
+    taking anything, unless `swallows`: a tokenizer's **kwargs ignores what it is given."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return None
+    if not swallows and any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        return None
+    return set(params)
+
+
 def generate(clip, system, user, *, seed=None, image=None, thinking=False, max_length=400,
              temperature=0.7, top_p=0.92, top_k=50, min_p=0.05, repetition_penalty=1.3,
              presence_penalty=0.0, do_sample=True):
@@ -279,25 +303,47 @@ def generate(clip, system, user, *, seed=None, image=None, thinking=False, max_l
                     "generation-capable text encoder")
     max_length = max(32, int(max_length or 400))
     started = time.time()
+    notes = []
     try:
         merged = f"{system}\n\n{user}" if str(system).strip() else str(user)
+        outer = getattr(clip, "tokenizer", None)
+        # The stock SD1Tokenizer forwards its kwargs to the per-encoder tokenizer, which then
+        # decides; a model that overrides it (MiniMax H3) is the one that decides.
+        stock = getattr(getattr(outer, "tokenize_with_weights", None), "__qualname__", "").startswith("SD1Tokenizer.")
+        inner = (getattr(outer, getattr(outer, "clip", None) or "", None) if stock else None) or outer
+        takes = _accepted(getattr(inner, "tokenize_with_weights", None), swallows=True)
+        # Only what this encoder's tokenizer really takes: the others swallow unknown kwargs
+        # silently, so a picture or chat template would be dropped while the status said "generated".
+        tk = {"min_length": 1}                       # Gemma pads to 1024 otherwise
+        for name, value in (("skip_template", False), ("thinking", bool(thinking))):
+            if takes is None or name in takes:
+                tk[name] = value
+        if image is not None:
+            if takes is None or "image" in takes:
+                tk["image"] = image
+            else:
+                notes.append("this text encoder takes no picture, so only the text was sent")
+        if takes is not None and "skip_template" not in takes:
+            notes.append("this text encoder has no chat template, so the instructions went in as raw text")
         try:
-            tokens = clip.tokenize(merged, image=image, skip_template=False, min_length=1,
-                                   thinking=bool(thinking))      # min_length=1: Gemma pads to 1024 otherwise
-        except TypeError:
-            tokens = clip.tokenize(merged, image=image)
-        kwargs = dict(do_sample=bool(do_sample), max_length=max_length, temperature=float(temperature),
+            tokens = clip.tokenize(merged, **tk)
+        except TypeError:                            # a CLIP wrapper with a fixed signature
+            tokens = clip.tokenize(merged, **({"image": image} if image is not None else {}))
+        sampling = bool(do_sample) and float(temperature) > 0     # temperature 0 would divide by zero
+        kwargs = dict(do_sample=sampling, max_length=max_length, temperature=max(float(temperature), 0.01),
                       top_k=int(top_k), top_p=float(top_p), min_p=float(min_p),
                       repetition_penalty=float(repetition_penalty), no_repeat_ngram_size=5,
-                      presence_penalty=float(presence_penalty), seed=seed if seed else None)
-        try:
-            ids = clip.generate(tokens, **kwargs)
-        except TypeError:
-            kwargs.pop("no_repeat_ngram_size")
-            ids = clip.generate(tokens, **kwargs)
+                      presence_penalty=float(presence_penalty),
+                      # ComfyUI seeds a torch Generator with this when sampling: None raises
+                      seed=int(seed) if seed else random.randrange(1, 2 ** 31))
+        accepted = _accepted(getattr(clip, "generate", None))
+        if accepted is not None:
+            kwargs = {k: v for k, v in kwargs.items() if k in accepted}
+        ids = clip.generate(tokens, **kwargs)
         text = str(clip.decode(ids, skip_special_tokens=True) or "").strip()
         return text, (f"generated {len(text)} chars in {time.time() - started:.1f}s on "
-                      f"{generation_device(clip)} (cap {max_length} tokens)")
+                      f"{generation_device(clip)} (cap {max_length} tokens)"
+                      + "".join(f"; {n}" for n in notes))
     except Exception as exc:                                    # noqa: BLE001
         return "", f"generation failed: {exc}"
 

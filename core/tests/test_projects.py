@@ -515,3 +515,10 @@ def test_templates_and_editor_settings_survive_a_save_and_bad_entries_do_not():
     assert names["A"]["scenes"] == ["later wins"] and names["V4"]["prompt"] == "old"
     assert d["editor_settings"] == {"autocomplete": False} and d["active_prompt_template"] == "A"
     assert Project.from_dict(d).to_dict() == d
+
+
+def test_a_template_with_no_text_is_dropped_not_kept_as_a_wipe():
+    from core import projects
+    kept = projects._clean_templates([{"name": "empty"}, {"name": "v4", "prompt": "x"},
+                                      {"name": "new", "scenes": ["a"]}])
+    assert [t["name"] for t in kept] == ["v4", "new"]

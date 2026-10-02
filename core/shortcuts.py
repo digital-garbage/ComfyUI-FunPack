@@ -25,6 +25,9 @@ from dataclasses import asdict, dataclass, field
 from . import config
 
 _LOCK = threading.Lock()
+# One draw-and-save at a time: two Generates (or a Generate and a toggle) must not read the
+# same cycle position, nor let a stale copy write the old settings back.
+_REVOLVER_LOCK = threading.RLock()
 
 MAX_NAME = 120
 MAX_ITEM = 4096
@@ -264,7 +267,7 @@ def revolver_settings() -> dict:
 def set_revolver_settings(enabled=None, random_order=None) -> dict:
     """Any real change restarts every cycle: an order made under one mode means
     nothing under the other. A value that is not a real bool is ignored."""
-    with _LOCK:
+    with _REVOLVER_LOCK:
         d = load_revolver()
         changed = False
         for key, new in (("enabled", enabled), ("random", random_order)):
@@ -367,6 +370,11 @@ def _cleanup_removed_phrases(text: str) -> str:
 
 
 def expand(text: str, shortcuts: list[Shortcut] | None = None, seed: int = 0, commit: bool = False) -> str:
+    with _REVOLVER_LOCK:
+        return _expand(text, shortcuts, seed, commit)
+
+
+def _expand(text: str, shortcuts, seed: int, commit: bool) -> str:
     """Every enabled shortcut's trigger, replaced with one of its
     replacements (random when there is more than one). Deterministic: the
     pick is seeded from `seed`, or from the text itself when seed is 0 --
