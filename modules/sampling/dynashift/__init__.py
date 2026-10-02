@@ -184,6 +184,7 @@ def install(patcher, values, key):
 
     captured = taste.collect(patcher, key, KIND, keep=4 * BANK, fresh=fresh)
     steer = input_steer.Steer("DynaShift")
+    steer.attach(patcher, key)
 
     def apply_model(executor, x, t, *args, **kwargs):
         named = streams.model_args(args, kwargs)

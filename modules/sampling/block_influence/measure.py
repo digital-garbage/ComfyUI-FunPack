@@ -145,16 +145,27 @@ def _kind(key):
     return kind
 
 
+def resolve(key):
+    """The key to show. The panel asks for a placeholder ("default") when it does not know
+    which Taste key the runs write to, so a key with nothing recorded falls back to the key
+    the latest capture went to -- and the answer says which one it is."""
+    if _kind(key).path().exists():
+        return key
+    latest = registry.current().ask("taste_latest_key")
+    return latest if latest and _kind(latest).path().exists() else key
+
+
 def state(key) -> dict:
     """What Settings > Refinement & Taste shows for one key."""
+    key = resolve(key)
     rows = _kind(key).rows()
     return {"key": key, "enabled": enabled(), "runs": len(rows), "min_per_group": MIN_PER_GROUP,
             **profile(rows)}
 
 
 def clear(key):
-    _kind(key).clear()
+    _kind(resolve(key)).clear()
 
 
 def path_of(key):
-    return _kind(key).path()
+    return _kind(resolve(key)).path()

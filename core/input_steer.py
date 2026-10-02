@@ -24,6 +24,9 @@ that step: pushes are filed by the step that made them. A schedule that restarts
 
 from . import dit_hooks, log
 
+# Below this share of the input it joins, a push is reported as barely acting (v4: 3%).
+FLOOR = 0.03
+
 
 
 class Call:
@@ -41,13 +44,29 @@ class Call:
 class Steer:
     def __init__(self, what: str):
         self.what = what
+        self.reset()
+
+    def reset(self):
+        """A run starts (or ends): nothing held, nothing counted."""
         self._pushes = {}       # key -> {step: delta}
         self._seen = {}         # key -> last step index fed
-        self._edit, self._edits = 0.0, 0
+        self._made, self._delivered = 0, 0
+        self._reach = 0.0       # largest delivered push, as a share of the input it joined
 
-    def effect(self):
-        """Mean size of the edits made, relative to the answer, or None when none were."""
-        return self._edit / self._edits if self._edits else None
+    def attach(self, patcher, key):
+        """Reset around every sampling call. The node that installs the modifier is cached
+        by ComfyUI, so this object outlives a run; without this a run that made no edit
+        would report the previous run's."""
+        from comfy.patcher_extension import WrappersMP
+
+        def outer(executor, *args, **kwargs):
+            self.reset()
+            try:
+                return executor(*args, **kwargs)
+            finally:
+                self._pushes = {}           # latent-sized tensors must not outlive the run
+
+        patcher.add_wrapper_with_key(WrappersMP.OUTER_SAMPLE, key, outer)
 
     def _say(self, level, message, key):
         log.once(f"input steer {self.what}:{key}", level, f"FunPack {self.what}", message)
@@ -81,10 +100,13 @@ class Steer:
         if i < self._seen.get(key, 0):      # a new sampling pass: nothing carries over
             held.clear()
         self._seen[key] = i
-        push = held.get(i - 1)
+        push = held.pop(i - 1, None)       # delivered once; a repeated sigma cannot re-deliver it
         if push is not None:
             if tuple(push.shape) == tuple(x.shape):
-                x = x + (1.0 - float(t.max())) * push.to(x.device, x.dtype)
+                add = (1.0 - float(t.max())) * push.to(x.device, x.dtype)
+                self._delivered += 1
+                self._reach = max(self._reach, float(add.norm() / x.norm().clamp(min=1e-8)))
+                x = x + add
             else:
                 self._say(log.WARNING, "Inactive | the latent changed size between steps, "
                                        "so that step went unsteered", "resized")
@@ -95,20 +117,25 @@ class Steer:
             return Call(x, 0.0, final=True, keep=lambda out, _steered: out)
 
         def keep(out, steered):
-            try:
-                self._edit += float((steered - out).norm() / out.norm().clamp(min=1e-8))
-                self._edits += 1
-            except Exception:               # noqa: BLE001 -- a measurement must never break sampling
-                pass
+            self._made += 1
             held[i] = (steered - out).detach()
             return out
 
         return Call(x, dit_hooks.late_half(to, ahead=1), keep=keep)
 
     def _report(self):
-        size = self.effect()
-        if size is None:
+        """Said on the last step. Reach is what counts: an edit made is not an edit that
+        arrived, and one that is a sliver of the input it joins changes nothing the
+        model can feel."""
+        if not self._made:
             self._say(log.ALERT, "Inactive | no step made an edit this run", "result")
+        elif not self._delivered:
+            self._say(log.ALERT, f"Inactive | {self._made} edit(s) made but none reached a later "
+                                 f"step's input", "result")
+        elif self._reach < FLOOR:
+            self._say(log.ALERT, f"Inactive | barely acts: the largest push was {self._reach:.1%} of "
+                                 f"the input it joined (under {FLOOR:.0%}); more steps or a "
+                                 f"higher strength would let it be felt", "result")
         else:
-            self._say(log.INFO, f"Active | edits averaged {size:.1%} of the picture's size, "
-                                f"each carried into the next step's input", "result")
+            self._say(log.INFO, f"Active | {self._delivered} push(es) carried into later steps, the "
+                                f"largest {self._reach:.1%} of the input it joined", "result")

@@ -107,15 +107,20 @@ def routes(table, base, web):
     @table.post(base + "/enabled")
     async def _enabled(req):
         body = await req.json()
+        try:
+            state = measure.state(key_of(req, body))     # refuse BEFORE flipping the switch
+        except ValueError as exc:
+            return web.json_response({"why": str(exc)}, status=400)
         measure.set_enabled(bool(body.get("enabled")))
-        return web.json_response(measure.state(key_of(req, body)))
+        return web.json_response({**state, "enabled": measure.enabled()})
 
     @table.post(base + "/clear")
     async def _clear(req):
         body = await req.json()
         try:
-            measure.clear(key_of(req, body))
-            return web.json_response(measure.state(key_of(req, body)))
+            key = measure.resolve(key_of(req, body))
+            measure.clear(key)
+            return web.json_response(measure.state(key))
         except ValueError as exc:
             return web.json_response({"why": str(exc)}, status=400)
 

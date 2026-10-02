@@ -70,6 +70,7 @@ def install(patcher, values, key):
 
     captured = taste.collect(patcher, key, KIND, fresh=fresh)
     steer = input_steer.Steer("Taste guidance")
+    steer.attach(patcher, key)
 
     def apply_model(executor, x, t, *args, **kwargs):
         named = streams.model_args(args, kwargs)

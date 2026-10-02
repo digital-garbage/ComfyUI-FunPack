@@ -68,10 +68,11 @@ def test_late_steps_combine_three_passes_on_the_picture_words_only(tiny_h3):
             o(lambda: None)
 
     audio = torch.randn(1, 3, 5)
-    seen = []
+    seen, flags = [], []
 
     def executor(x, t, c_concat=None, c_crossattn=None, control=None, transformer_options=None, **kw):
         seen.append(c_crossattn.clone())
+        flags.append(bool((transformer_options or {}).get("funpack_probe")))
         return packed_av(torch.full((1, 2, 1, 2, 2), float(c_crossattn[0, :, 0].sum())), audio)[0]
 
     c = torch.ones(1, 4, dim)
@@ -93,6 +94,7 @@ def test_late_steps_combine_three_passes_on_the_picture_words_only(tiny_h3):
     seen.clear()
     answer = call(2)                                    # the one gated push (lands on step 4)
     assert len(seen) == 3
+    assert flags[-3:] == [False, True, True]            # the +/- passes are marked: not the clip's own
     plus = seen[1]
     assert torch.equal(plus[0, 2], c[0, 2]) and not torch.equal(plus[0, 0], c[0, 0])
     assert torch.equal(answer, x0)                      # the model's own answer comes back

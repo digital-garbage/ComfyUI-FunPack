@@ -660,7 +660,7 @@
       rows.append(infoRow(
         recording ? "Rated generations recorded (this key)"
                   : "Recorded earlier (not recording now)",
-        biState ? `${runs} (${biState.n_liked} liked / ${biState.n_disliked} disliked)`
+        biState ? `${runs} (${biState.n_liked} liked / ${biState.n_disliked} disliked) on key '${biState.key}'`
                 : "0", recording && runs > 0 ? true : null));
       rows.append(actionRow("Save this key's measurement",
         "Downloads every recorded profile as one file. A rental gets replaced and "
@@ -702,8 +702,8 @@
     paint();
     if (window.MovieEditorAPI) {
       window.MovieEditorAPI.blockInfluenceStatus(key)
-        .then((s) => { biState = s; paint(); })
-        .catch(() => {});
+        .then((s) => { biState = s; biError = ""; paint(); })
+        .catch((e) => { biState = null; biError = String(e.message || e); paint(); });
     }
     return box;
   }

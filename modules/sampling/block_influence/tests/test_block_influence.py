@@ -173,3 +173,48 @@ def test_the_panel_routes_read_toggle_clear_and_export(tiny_h3):
     assert json.loads(out.text)["runs"] == 0
     assert call("GET", "/b/export")[0] == 404
     assert call("GET", "/b/status", key="no/slash")[0] == 400
+
+
+def test_a_bad_key_is_refused_before_the_switch_flips_and_a_placeholder_finds_the_real_key(tiny_h3):
+    from aiohttp import web
+    from modules.sampling import block_influence as mod
+    from modules.sampling.block_influence import measure
+    from modules.system.taste import store
+    import json
+    handlers = {}
+
+    class Table:
+        def get(self, path):
+            return lambda fn: handlers.setdefault(("GET", path), fn)
+
+        def post(self, path):
+            return lambda fn: handlers.setdefault(("POST", path), fn)
+
+    mod.routes(Table(), "/b", web)
+
+    class Req:
+        def __init__(self, body=None, key="default"):
+            self._body, self.rel_url = body, type("U", (), {"query": {"key": key}})()
+
+        async def json(self):
+            return self._body
+
+    out = asyncio.run(handlers[("POST", "/b/enabled")](Req({"enabled": True, "key": "no/slash"})))
+    assert out.status == 400 and not measure.enabled()
+    patched, _ = _load(tiny_h3, key="mystyle")
+    measure.set_enabled(True)
+    tiny_h3.sample(patched)
+    store.rate("run-1", "liked")
+    state = json.loads(asyncio.run(handlers[("GET", "/b/status")](Req())).text)
+    assert state["key"] == "mystyle" and state["runs"] == 1       # "default" had nothing: the real key
+
+
+def test_the_sliders_perturbed_passes_are_not_measured(tiny_h3):
+    from modules.sampling.block_influence import measure
+    from core import dit_hooks
+    patched, _ = _load(tiny_h3)
+    measure.set_enabled(True)
+    patched.model_options.setdefault("transformer_options", {})[dit_hooks.PROBE] = True
+    tiny_h3.sample(patched)                           # same flag the slider sets on its +/- passes
+    from modules.system.taste import store
+    assert not (store.ROOT / "fox" / "block_influence.pending.pt").exists()

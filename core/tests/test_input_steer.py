@@ -105,3 +105,38 @@ def test_a_one_step_schedule_says_there_is_nothing_to_carry_into():
     s, x = input_steer.Steer("t"), _x()
     step = s.begin(x, _t(0, 1), _to(0, 1))
     assert step.final and any("1-step" in r["message"] for r in log.history())
+
+
+def _said(text):
+    return any(text in r["message"] for r in log.history())
+
+
+def test_a_sliver_of_a_push_is_reported_as_barely_acting_and_a_real_one_as_active():
+    x, out = _x(), _x()
+    for size, word in ((1e-4, "barely acts"), (1.0, "Active |")):
+        log._reset()
+        s = input_steer.Steer("t")
+        _edit(s, 2, x, out, torch.ones(1, 1, 12) * size)
+        s.begin(x, _t(3), _to(3))
+        assert _said(word), (size, [r["message"] for r in log.history()])
+
+
+def test_a_second_run_on_the_same_object_does_not_report_the_first_runs_edits():
+    log._reset()
+    s, x, out = input_steer.Steer("t"), _x(), _x()
+    _edit(s, 2, x, out, torch.ones(1, 1, 12))
+    s.begin(x, _t(3), _to(3))
+    s.reset()                                           # what the sampling wrapper does per run
+    log._reset()
+    s.begin(x, _t(3), _to(3))
+    assert _said("Inactive | no step made an edit") and not _said("Active |")
+
+
+def test_a_repeated_sigma_cannot_count_an_edit_that_never_arrived():
+    s, x, out = input_steer.Steer("t"), _x(), _x()
+    sched = torch.tensor([1.0, 0.8, 0.8, 0.5, 0.0])
+    to = lambda i: {"sample_sigmas": sched, "sigmas": sched[i:i + 1]}
+    s.begin(x, sched[2:3], to(2)).keep(out, out + 1)    # index reads 1, the first match: gate 0, no edit
+    log._reset()
+    s.begin(x, sched[3:4], to(3))
+    assert not _said("Active |")

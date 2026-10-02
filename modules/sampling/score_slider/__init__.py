@@ -98,6 +98,7 @@ def install(patcher, values, key):
 
     captured = taste.collect(patcher, key, KIND, fresh=fresh)
     steer = input_steer.Steer("Taste slider")
+    steer.attach(patcher, key)
 
     def apply_model(executor, x, t, *args, **kwargs):
         named = streams.model_args(args, kwargs)
@@ -128,8 +129,11 @@ def install(patcher, values, key):
         if split is None:
             _say("off this run: could not find the picture in this model's latent")
             return base
-        plus = streams.video_of(executor(x, t, **{**named, "c_crossattn": c + nudge}), named)
-        minus = streams.video_of(executor(x, t, **{**named, "c_crossattn": c - nudge}), named)
+        # Perturbed-text passes are not the clip's own forward: measuring probes skip them.
+        aside = {**named, "transformer_options": {**(named.get("transformer_options") or {}),
+                                                  dit_hooks.PROBE: True}}
+        plus = streams.video_of(executor(x, t, **{**aside, "c_crossattn": c + nudge}), named)
+        minus = streams.video_of(executor(x, t, **{**aside, "c_crossattn": c - nudge}), named)
         video, rebuild = split
         return step.keep(base, rebuild(video + (plus[0] - minus[0]) * amount))
 
