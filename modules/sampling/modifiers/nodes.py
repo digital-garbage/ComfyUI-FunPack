@@ -39,6 +39,11 @@ from ..._core import (log, patching, registry as registry_mod,
 
 CAPABILITY = "modifier"
 
+# A module whose install depends on something outside the node's inputs (a switch in Settings)
+# answers this with a value that changes when that does: ComfyUI re-runs this node, and the
+# modifier is installed or removed, instead of the cached model being handed back.
+CACHE_KEY = "cache_key"
+
 # Anything answering this decides whether the foundation's guards step aside.
 GUARDS_OFF = "guards_off"
 
@@ -184,6 +189,11 @@ class FunPackLoadModifiers(io.ComfyNode):
                 io.String.Output(display_name="status"),
             ],
         )
+
+    @classmethod
+    def fingerprint_inputs(cls, **_):
+        return "|".join(f"{spec.id}={answer()}"
+                        for spec, answer in registry_mod.current().providers(CACHE_KEY))
 
     @classmethod
     def execute(cls, model, settings=None) -> io.NodeOutput:

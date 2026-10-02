@@ -19,10 +19,10 @@ def root(tmp_path, monkeypatch):
 PHRASES = {"base": 0, "cond_len": 5, "spans": [(1, 3), (3, 5)]}
 
 
-def _load(tiny):
+def _load(tiny, settings=None):
     from comfy.patcher_extension import WrappersMP
     from modules.sampling.modifiers.nodes import FunPackLoadModifiers
-    patched, status = FunPackLoadModifiers.execute(tiny.patcher, {}).result
+    patched, status = FunPackLoadModifiers.execute(tiny.patcher, settings or {}).result
     wraps = [w for ws in patched.wrappers.get(WrappersMP.APPLY_MODEL, {}).values() for w in ws]
     outer = [w for ws in patched.wrappers.get(WrappersMP.OUTER_SAMPLE, {}).values() for w in ws]
     return patched, (wraps[-1] if wraps else None), outer
@@ -142,3 +142,48 @@ def test_phrases_are_placed_by_the_markup_nodes_published_spans():
     assert measure.phrases_of({"base": 10, "cond_len": 30, "spans": [(0, 3), (0, 3), (5, 8), (20, 30)]}) \
         == [(10, 13), (15, 18)]                                       # deduped; (30..40) does not fit
     assert measure.phrases_of(None) == [] and measure.phrases_of({"spans": "x"}) == []
+
+
+def test_the_switch_is_part_of_what_re_runs_the_modifiers_node(tiny_h3):
+    """ComfyUI caches the node that installs modifiers: flipping the switch must change its fingerprint."""
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    from modules.sampling.phrase_probe import measure
+    off = FunPackLoadModifiers.fingerprint_inputs(model=None)
+    measure.set_enabled(True)
+    assert FunPackLoadModifiers.fingerprint_inputs(model=None) != off
+
+
+def test_another_features_extra_forward_is_not_measured_as_the_picture(tiny_h3, tmp_path, monkeypatch):
+    """Late-branch guidance runs a weakened copy of every step: it must pass through untouched."""
+    from comfy.patcher_extension import WrappersMP
+    from modules.sampling.phrase_probe import measure
+    from modules.system.taste import store
+    monkeypatch.setattr(store, "ROOT", tmp_path / "taste")
+    monkeypatch.setattr(store, "current_prompt_id", lambda: "r1")
+    seen = []
+    real = measure.block_hook
+
+    def spy(state, block):
+        inner = real(state, block)
+
+        def hook(args, extra):
+            seen.append((state.mode, bool((args.get("transformer_options") or {}).get("funpack_weak_branch"))))
+            return inner(args, extra)
+        return hook
+    monkeypatch.setattr(measure, "block_hook", spy)
+    measure.set_enabled(True)
+    patched, _w, outer = _load(tiny_h3, {"taste": {"key": "fox"}, "late_branch": {
+        "enabled": True, "block": 2, "mode": "manual", "strength": 1.0}})
+    order = [k for k, ws in patched.wrappers[WrappersMP.APPLY_MODEL].items() for _ in ws]
+    assert order[-1] == "funpack.phrase_probe", order           # innermost: sees real forwards only
+    from conftest import packed_av
+    x0, shapes = packed_av(tiny_h3.video, tiny_h3.audio)
+    chain = _executor(tiny_h3, patched, [])
+    for ws in reversed(list(patched.wrappers[WrappersMP.APPLY_MODEL].values())):
+        for w in reversed(ws):
+            chain = (lambda w, inner: (lambda x, t, *a, **k: w(inner, x, t, *a, **k)))(w, chain)
+    s = torch.tensor([1.0, 0.5, 0.0])
+    _run(outer, lambda: [chain(x0, torch.tensor([[1.0, 0.5][i]]), None, None, None,
+                               {"sample_sigmas": s, "sigmas": s[i:i + 1], "cond_or_uncond": [0],
+                                "funpack_markup_phrases": PHRASES}, latent_shapes=shapes) for i in range(2)])
+    assert seen and not any(weak for _mode, weak in seen)

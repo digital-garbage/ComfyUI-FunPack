@@ -21,14 +21,14 @@ from . import measure
 ID = "phrase_probe"
 TITLE = "Phrase probe"
 MOUNT = "generation.sampling"
-STAGE = "sampling"
+STAGE = "post"
 CATEGORY = "system"
 STATUS = "experimental"
 REQUIRES = ["dit_block_hooks"]
-# After the features that change a block, so this sees what the backend sees; the masked
-# forwards are marked as probes, so none of them learns from one.
-AFTER = ["reins", "block_repeat", "shadow_negative", "q_steer", "attention_temperature",
-         "block_influence"]
+# Innermost on the model, so every call it sees is a real forward: the extra forwards of
+# late-branch guidance and the taste slider (flagged as probes) pass through it untouched
+# instead of being measured as the picture.
+AFTER = ["video_detail", "late_branch", "score_slider", "sharpen"]
 
 
 def _say(message):
@@ -145,12 +145,14 @@ def routes(table, base, web):
         except Exception:                             # noqa: BLE001
             body = {}
         on = measure.set_enabled((body or {}).get("enabled") is True)
-        return web.json_response({"enabled": on, "problem": measure.problem, "latest": measure.latest()})
+        return web.json_response({"enabled": on, "problem": measure.problem, "latest": measure.latest(),
+                                  "peaks": measure.peaks(measure.latest())})
 
     @table.post(base + "/clear")
     async def _clear(_req):
         measure.clear()
-        return web.json_response({"enabled": measure.enabled(), "latest": None})
+        return web.json_response({"enabled": measure.enabled(), "problem": measure.problem, "latest": None,
+                                  "peaks": []})
 
     @table.get(base + "/export")
     async def _export(_req):
@@ -161,4 +163,9 @@ def routes(table, base, web):
                                                'attachment; filename="phrase_probe.json"'})
 
 
-PROVIDES = {"modifier": install, "routes": routes}
+def cache_key():
+    # The node that installs this is cached by ComfyUI: the switch must be part of what re-runs it.
+    return "on" if measure.enabled() else "off"
+
+
+PROVIDES = {"modifier": install, "routes": routes, "cache_key": cache_key}

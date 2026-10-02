@@ -209,6 +209,18 @@ class Scene:
     #: Gone from the plan but its generated clip stays on the timeline.
     removed_from_plan: bool = False
 
+    def eff_frames(self, project: "Project") -> int:
+        """How many frames this clip runs. Only the "timeline"/"custom" modes use the scene's
+        own number: in "project" mode a stale `frames` is ignored so the clip tracks the project."""
+        if self.frames_mode in ("timeline", "custom") and self.frames is not None:
+            return self.frames
+        return project.num_frames_per_scene
+
+    def eff_fps(self, project: "Project") -> int:
+        if self.fps_mode in ("timeline", "custom") and self.fps is not None:
+            return self.fps
+        return project.frame_rate
+
     @staticmethod
     def from_dict(d) -> "Scene":
         d = d if isinstance(d, dict) else {}

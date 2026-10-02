@@ -242,9 +242,13 @@ def test_the_readout_routes_are_provided_and_answer():
     assert set(table) == {"/m/defaults", "/m/runs"}
 
 
-def test_chat_comments_apply_only_to_the_prompt_they_were_about():
-    e = en()
-    chat = [{"rewrites": {"whole": "A knight walks."}, "comment": "rain", "original": "a knight"},
-            {"rewrites": {}, "comment": "any", }]
-    assert [r["comment"] for r in e.chat_for(chat, " a knight ")] == ["rain", "any"]
-    assert [r["comment"] for r in e.chat_for(chat, "a dragon")] == ["any"]
+def test_a_tokenizer_that_reads_the_picture_out_of_kwargs_gets_it():
+    class Qwen:                      # Qwen3-VL's shape: names only `images`, reads kwargs.get("image")
+        def tokenize_with_weights(self, text, return_word_ids=False, images=[], **kwargs):
+            return kwargs.get("image")
+
+    class Clip(RealShapeClip):
+        tokenizer = Qwen()
+    clip = Clip("A fox runs.")
+    _, status, _ = en().enhance(clip, "fox", image=object())
+    assert "takes no picture" not in status and "image" in clip.seen

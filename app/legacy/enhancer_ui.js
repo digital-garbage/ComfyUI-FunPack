@@ -183,7 +183,8 @@
       const rewrites = fresh ? { whole: last.after } : {};
       // The prompt the rewrite answered: comments only apply to that same prompt.
       const tail = list.length ? list[list.length - 1].original : undefined;
-      const original = fresh ? last.before : tail;
+      // Typed text of the Generate that made this rewrite: the key comments are matched on.
+      const original = fresh ? S.get().lastEnhanceTyped : tail;
       saveRounds([...list, original === undefined ? { rewrites, comment } : { rewrites, comment, original }]);
       host();
     };

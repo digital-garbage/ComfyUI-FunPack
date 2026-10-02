@@ -3697,9 +3697,20 @@
 
     // The Chat comments ride with the project and reach the enhancer for this run.
     const enhancer = (window.PipelineState.slots() || []).find((s) => s.node === "FunPackEnhancePrompt");
+    // The prompt as TYPED (shortcuts not yet expanded): what a comment is about. The expanded
+    // text differs every run whenever a shortcut has several replacements.
+    const typed = targetSceneIds.length > 1
+      ? buildGlobalPromptFromTimeline(state.project)
+      : ((primary && primary.text) || "").trim();
+    state.lastEnhanceTyped = typed;
     const chat = state.project && state.project.editor_settings && state.project.editor_settings.enhance_chat;
-    if (enhancer && Array.isArray(chat) && chat.length) {
-      raw[enhancer.id] = { ...(raw[enhancer.id] || {}), chat: JSON.stringify(chat) };
+    const mine = Array.isArray(chat) ? chat.filter((r) => r && (r.original === undefined || r.original === typed)) : [];
+    if (enhancer && Array.isArray(chat) && mine.length < chat.length) {
+      const note = `${chat.length - mine.length} Chat comment(s) are about a different prompt and were left out of this run.`;
+      unwiredNotice = unwiredNotice ? `${unwiredNotice} ${note}` : note;
+    }
+    if (enhancer && mine.length) {
+      raw[enhancer.id] = { ...(raw[enhancer.id] || {}), chat: JSON.stringify(mine) };
     }
     // A run of several scenes in one prompt is one combined text: a rewrite would turn
     // the cut words into prose and merge the scenes, so the enhancer sits this one out.

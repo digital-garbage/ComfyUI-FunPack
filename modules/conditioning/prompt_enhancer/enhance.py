@@ -159,16 +159,6 @@ def reference(text, groups, intro="") -> str:
 
 # --- chat --------------------------------------------------------------------
 
-def chat_for(chat, original):
-    """The rounds that are about THIS prompt. A round remembers the prompt its rewrite
-    answered; comments on another prompt (another scene, or text edited since) would
-    otherwise start the rewrite from the wrong text. Rounds from before that was
-    recorded have no prompt and apply to any."""
-    original = str(original or "").strip()
-    return [r for r in (chat or []) if isinstance(r, dict)
-            and (r.get("original") is None or str(r["original"]).strip() == original)]
-
-
 def chat_block(chat, scene=None) -> str:
     """The user's comments on earlier rewrites as the labelled part of the message:
     the LATEST rewrite of this prompt and every comment since Reset, oldest first.
@@ -280,15 +270,24 @@ def generation_device(clip) -> str:
 
 
 def _accepted(fn, swallows=False):
-    """Names `fn` takes, or None when it cannot be read. A **kwargs catch-all counts as
-    taking anything, unless `swallows`: a tokenizer's **kwargs ignores what it is given."""
+    """Names `fn` takes, or None when it cannot be read or takes anything. A **kwargs
+    catch-all counts as taking anything, unless `swallows`: a tokenizer's **kwargs ignores
+    what it is given -- except the names its body reads back out of it (Qwen3-VL reads
+    `kwargs.get("image")`), which count."""
     try:
         params = inspect.signature(fn).parameters
     except (TypeError, ValueError):
         return None
-    if not swallows and any(p.kind is p.VAR_KEYWORD for p in params.values()):
-        return None
-    return set(params)
+    names = set(params)
+    if any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        if not swallows:
+            return None
+        try:
+            names |= set(re.findall(r"""\bkwargs\.get\(\s*["'](\w+)["']""", inspect.getsource(fn)))
+            names |= set(re.findall(r"""\bkwargs\[\s*["'](\w+)["']\s*\]""", inspect.getsource(fn)))
+        except (OSError, TypeError):
+            pass
+    return names
 
 
 def generate(clip, system, user, *, seed=None, image=None, thinking=False, max_length=400,
