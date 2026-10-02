@@ -29,6 +29,7 @@
         }).filter(Boolean);
         if (parts.length) return parts.join("; ");
       }
+      if (payload.why) return String(payload.why);
       if (payload.error) return String(payload.error);
       if (Array.isArray(payload.problems) && payload.problems.length) return payload.problems.join("; ");
       // /api/pipeline's malformed-request 400 (core/routes.py's shape_problems
@@ -257,10 +258,26 @@
     reinsRateSlot: () => unsupported("REINS is LOW priority, not built yet"),
     reinsDiscardSlot: () => unsupported("REINS is LOW priority, not built yet"),
     reinsExport: async () => { throw new Error("REINS is LOW priority, not built yet"); },
-    blockInfluenceStatus: () => unsupported("block influence probe is LOW priority, not built yet"),
-    blockInfluenceSetEnabled: () => unsupported("block influence probe is LOW priority, not built yet"),
-    blockInfluenceClear: () => unsupported("block influence probe is LOW priority, not built yet"),
-    blockInfluenceExport: async () => { throw new Error("block influence probe is LOW priority, not built yet"); },
+    blockInfluenceStatus: (key) => j("GET", API("/api/m/block_influence/status") + `?key=${encodeURIComponent(key || "default")}`),
+    blockInfluenceSetEnabled: (key, enabled) => j("POST", API("/api/m/block_influence/enabled"), { key: key || "default", enabled: !!enabled }),
+    blockInfluenceClear: (key) => j("POST", API("/api/m/block_influence/clear"), { key: key || "default" }),
+    async blockInfluenceExport(key) {
+      const k = key || "default";
+      const res = await fetch(API("/api/m/block_influence/export") + `?key=${encodeURIComponent(k)}&t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) {
+        let payload = null;
+        try { payload = await res.json(); } catch (_) {}
+        throw new Error(readApiError(res, payload));
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${k}.block_influence.pt`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    },
     detailProbeStatus: () => unsupported("detail probe is LOW priority, not built yet"),
     detailProbeSetEnabled: () => unsupported("detail probe is LOW priority, not built yet"),
     detailProbeClear: () => unsupported("detail probe is LOW priority, not built yet"),

@@ -41,6 +41,10 @@ def _teach(kind, names):
         store.rate(f"t{i}", "liked" if sign > 0 else "disliked")
 
 
+def _t(index, steps=4):
+    return torch.linspace(1.0, 0.0, steps + 1)[index:index + 1]
+
+
 def _x0():
     from conftest import packed_av
     torch.manual_seed(3)
@@ -65,7 +69,19 @@ def test_late_guidance_banks_the_final_picture_and_steers_only_late(tiny_h3, mon
     wrap, outer = _load(tiny_h3, "output_guidance")
     _start(outer)
     from conftest import unpacked
-    assert wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(1), latent_shapes=shapes) is x0
-    late = wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(3), latent_shapes=shapes)
-    assert not torch.allclose(unpacked(late, shapes)[0], unpacked(x0, shapes)[0])
-    assert torch.equal(unpacked(late, shapes)[1], unpacked(x0, shapes)[1])
+    seen = []
+
+    def model(x, *a, **k):
+        seen.append(x)
+        return x0
+
+    def call(i):
+        return wrap(model, x0, _t(i), None, None, None, _to(i), latent_shapes=shapes)
+
+    assert call(1) is x0 and call(2) is x0                  # the model's own answer, never the edit
+    assert torch.equal(seen[0], x0)                         # step 1: no push yet
+    assert call(3) is x0
+    push = seen[-1] - x0                                    # the late step's input carries it
+    assert not torch.allclose(unpacked(push, shapes)[0], torch.zeros_like(unpacked(x0, shapes)[0]))
+    assert torch.equal(unpacked(push, shapes)[1], torch.zeros_like(unpacked(x0, shapes)[1]))   # sound untouched
+    assert len(seen) == 3 and torch.equal(seen[1], x0)      # step 2's input had no push

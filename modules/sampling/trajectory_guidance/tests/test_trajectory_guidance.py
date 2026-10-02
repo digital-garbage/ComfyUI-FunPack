@@ -41,6 +41,10 @@ def _teach(kind, names):
         store.rate(f"t{i}", "liked" if sign > 0 else "disliked")
 
 
+def _t(index, steps=4):
+    return torch.linspace(1.0, 0.0, steps + 1)[index:index + 1]
+
+
 def _x0():
     from conftest import packed_av
     torch.manual_seed(3)
@@ -59,15 +63,26 @@ def test_early_guidance_steers_in_the_first_quarter_and_banks_every_quarter(tiny
     x0, shapes = _x0()
     wrap, outer = _load(tiny_h3, "trajectory_guidance")
 
-    def run():
-        return [wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(i), latent_shapes=shapes) for i in range(4)]
+    seen = []
 
-    results = {}
-    for o in outer:
-        o(lambda: results.setdefault("steps", run()))
-    first = results["steps"][0]
-    assert not torch.allclose(first[..., :4 * 3 * 8 * 8], x0[..., :4 * 3 * 8 * 8])
-    assert torch.equal(first[..., 4 * 3 * 8 * 8:], x0[..., 4 * 3 * 8 * 8:])
+    def model(x, *a, **k):
+        seen.append(x)
+        return x0
+
+    def run():
+        return [wrap(model, x0, _t(i), None, None, None, _to(i), latent_shapes=shapes) for i in range(4)]
+
+    call = run
+    for o in outer:                                         # nested, as one sampling call is
+        call = (lambda w, inner: (lambda: w(lambda: inner())))(o, call)
+    results = {"steps": call()}
+    assert all(r is x0 for r in results["steps"])           # the model's own answer every step
+    assert torch.equal(seen[0], x0)
+    push = seen[1] - x0                                     # step 1's edit rode into step 2
+    video = 4 * 3 * 8 * 8
+    assert not torch.allclose(push[..., :video], torch.zeros_like(push[..., :video]))
+    assert torch.equal(push[..., video:], torch.zeros_like(push[..., video:]))
+    assert torch.equal(seen[3] - x0, torch.zeros_like(x0)) is False   # steps keep carrying
     pending = torch.load(store.ROOT / "fox" / "x0_quarters.pending.pt")["rows"]
     assert sorted(pending) == ["q0", "q1", "q2", "q3"]
 

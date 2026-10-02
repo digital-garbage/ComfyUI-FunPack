@@ -20,6 +20,10 @@ def _to(index, steps=4):
     return {"sample_sigmas": sched, "sigmas": sched[index:index + 1]}
 
 
+def _t(index, steps=4):
+    return torch.linspace(1.0, 0.0, steps + 1)[index:index + 1]
+
+
 def test_the_gate_opens_over_the_last_half_only():
     from core.dit_hooks import late_half as gate
     assert [gate(_to(i)) for i in range(4)] == [0.0, 0.0, 0.0, 0.5]
@@ -80,8 +84,19 @@ def test_it_banks_the_last_step_and_steers_once_rated(tiny_h3, monkeypatch):
     for o in outer:
         o(lambda: None)                                     # a run starts: the bank is read
     assert any("2 disliked, 0 liked banked" in e["message"] for e in log.history())
-    early = wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(1), latent_shapes=shapes)
-    assert early is x0                                      # first half: untouched
-    late = wrap(lambda *a, **k: x0, x0, None, None, None, None, _to(3), latent_shapes=shapes)
-    assert not torch.allclose(unpacked(late, shapes)[0], bad)
-    assert torch.equal(unpacked(late, shapes)[1], audio)     # sound untouched
+    seen = []
+
+    def model(x, *a, **k):
+        seen.append(x)
+        return x0
+
+    def call(i):
+        return wrap(model, x0, _t(i), None, None, None, _to(i), latent_shapes=shapes)
+
+    assert call(1) is x0                                    # first half: untouched
+    assert call(2) is x0                                    # the model's own answer, never the edit
+    assert call(3) is x0
+    push = unpacked(seen[-1] - x0, shapes)                  # the edit rode into the last step's input
+    assert not torch.allclose(push[0], torch.zeros_like(push[0]))
+    assert torch.equal(push[1], torch.zeros_like(push[1]))   # sound untouched
+    assert torch.equal(seen[1], x0)                         # nothing was pushed into step 2

@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 from comfy.patcher_extension import WrappersMP
 
-from ..._core import dit_hooks, log, registry, streams
+from ..._core import dit_hooks, input_steer, log, registry, streams
 
 ID = "dynashift"
 TITLE = "DynaShift"
@@ -183,11 +183,13 @@ def install(patcher, values, key):
         log.once(f"{ID}:state", log.INFO, "FunPack DynaShift", f"key {taste.key!r}: {summary}")
 
     captured = taste.collect(patcher, key, KIND, keep=4 * BANK, fresh=fresh)
+    steer = input_steer.Steer("DynaShift")
 
     def apply_model(executor, x, t, *args, **kwargs):
-        out = executor(x, t, *args, **kwargs)
         named = streams.model_args(args, kwargs)
         to = named.get("transformer_options")
+        step = steer.begin(x, t, to)
+        out = executor(step.x, t, *args, **kwargs)
         split = streams.video_of(out, named)
         if split is None:
             _say("off this run: could not find the picture in this model's latent")
@@ -198,11 +200,11 @@ def install(patcher, values, key):
             cond = _pooled(named.get("c_crossattn"))
             if cond is not None:
                 captured["cond"] = cond
-        amount = strength * dit_hooks.late_half(to)
+        amount = strength * step.gate
         if amount <= 0.0:
             return out
         shifted = shift(video, live["bank"], amount, threshold, named.get("c_crossattn"))
-        return out if shifted is None else rebuild(shifted)
+        return out if shifted is None else step.keep(out, rebuild(shifted))
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)
     if strength <= 0.0:

@@ -20,6 +20,10 @@ def _to(index, steps=4):
     return {"sample_sigmas": sched, "sigmas": sched[index:index + 1]}
 
 
+def _t(index, steps=4):
+    return torch.linspace(1.0, 0.0, steps + 1)[index:index + 1]
+
+
 def _rows(vectors):
     return [{"reward": w, "rows": {"pooled": v}} for v, w in vectors]
 
@@ -74,14 +78,26 @@ def test_late_steps_combine_three_passes_on_the_picture_words_only(tiny_h3):
     tags = torch.tensor([1, 1, 0, 1])                  # row 2: a reference image's token
     x0 = executor(None, None, c_crossattn=c)
     shapes = packed_av(torch.zeros(1, 2, 1, 2, 2), audio)[1]
-    seen.clear()
-    early = wrap(executor, x0, None, None, c, None, _to(0), minimax_payload={"text_token_tags": tags}, latent_shapes=shapes)
-    assert len(seen) == 1 and torch.equal(early, x0)
+    inputs = []
+
+    def call(i):
+        def run(x, *a, **k):
+            inputs.append(x)
+            return executor(x, *a, **k)
+        return wrap(run, x0, _t(i), None, c, None, _to(i),
+                    minimax_payload={"text_token_tags": tags}, latent_shapes=shapes)
 
     seen.clear()
-    late = wrap(executor, x0, None, None, c, None, _to(3), minimax_payload={"text_token_tags": tags}, latent_shapes=shapes)
+    assert len(seen) == 0 and torch.equal(call(0), x0) and len(seen) == 1     # step 1: one pass, no push
+
+    seen.clear()
+    answer = call(2)                                    # the one gated push (lands on step 4)
     assert len(seen) == 3
     plus = seen[1]
     assert torch.equal(plus[0, 2], c[0, 2]) and not torch.equal(plus[0, 0], c[0, 0])
-    assert not torch.equal(unpacked(late, shapes)[0], unpacked(x0, shapes)[0])
-    assert torch.equal(unpacked(late, shapes)[1], audio)
+    assert torch.equal(answer, x0)                      # the model's own answer comes back
+    seen.clear()
+    assert torch.equal(call(3), x0) and len(seen) == 1  # the last step runs once, steers nothing
+    push = inputs[-1] - x0
+    assert not torch.equal(unpacked(push, shapes)[0], torch.zeros_like(unpacked(push, shapes)[0]))
+    assert torch.equal(unpacked(push, shapes)[1], torch.zeros_like(unpacked(push, shapes)[1]))

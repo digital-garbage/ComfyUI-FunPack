@@ -14,7 +14,7 @@ A quarter with too few ratings just doesn't act; the run says which do.
 
 from comfy.patcher_extension import WrappersMP
 
-from ..._core import dit_hooks, log, registry, streams
+from ..._core import dit_hooks, input_steer, log, registry, streams
 
 ID = "trajectory_guidance"
 TITLE = "Early taste guidance"
@@ -75,10 +75,12 @@ def install(patcher, values, key):
                                             "each quarter steers from 10 rated clips)"))
 
     captured = taste.collect(patcher, key, KIND, fresh=fresh)
+    steer = input_steer.Steer("Early taste guidance")
 
     def apply_model(executor, x, t, *args, **kwargs):
-        out = executor(x, t, *args, **kwargs)
         named = streams.model_args(args, kwargs)
+        step = steer.begin(x, t, named.get("transformer_options"))
+        out = executor(step.x, t, *args, **kwargs)
         if dit_hooks.probing(named.get("transformer_options")):
             return out                           # a discarded candidate: learn and steer nothing
         q = quarter(named.get("transformer_options"))
@@ -97,9 +99,9 @@ def install(patcher, values, key):
         live["sums"][q] = (total + d, count + 1)
         captured[f"q{q}"] = (total + d) / (count + 1)
         judge = live["judges"].get(q)
-        if judge is None or strength <= 0.0:
+        if judge is None or strength <= 0.0 or step.final:
             return out
-        return rebuild(judge.nudge(video, strength))
+        return step.keep(out, rebuild(judge.nudge(video, strength)))
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)
     return (f"strength {strength:g}, every step by quarter; learns every run, "

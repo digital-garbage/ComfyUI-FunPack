@@ -20,7 +20,7 @@ import torch
 import torch.nn.functional as F
 from comfy.patcher_extension import WrappersMP
 
-from ..._core import dit_hooks, log, registry, streams
+from ..._core import dit_hooks, input_steer, log, registry, streams
 
 ID = "score_slider"
 TITLE = "Taste slider"
@@ -97,9 +97,12 @@ def install(patcher, values, key):
         live.clear()
 
     captured = taste.collect(patcher, key, KIND, fresh=fresh)
+    steer = input_steer.Steer("Taste slider")
 
     def apply_model(executor, x, t, *args, **kwargs):
         named = streams.model_args(args, kwargs)
+        step = steer.begin(x, t, named.get("transformer_options"))
+        x = step.x
         c = named.get("c_crossattn")
         if not torch.is_tensor(c) or c.dim() != 3:
             _say("off this run: no text conditioning reached the model")
@@ -115,20 +118,20 @@ def install(patcher, values, key):
             live["dir"], how = direction(taste.rows(KIND), pooled, similar)
             log.once(f"{ID}:state", log.INFO, "FunPack Taste slider", f"key {taste.key!r}: {how}")
         base = executor(x, t, *args, **kwargs)
-        amount = eta * dit_hooks.late_half(named.get("transformer_options"))
+        amount = eta * step.gate
         d = live["dir"]
         if d is None or amount == 0.0 or d.numel() != c.shape[-1]:
             return base
         size = torch.linalg.vector_norm(c[:, words], dim=-1, dtype=torch.float32).mean()
-        step = (d.to(c.device) * STEP * size).to(c.dtype) * words.view(1, -1, 1)
+        nudge = (d.to(c.device) * STEP * size).to(c.dtype) * words.view(1, -1, 1)
         split = streams.video_of(base, named)
         if split is None:
             _say("off this run: could not find the picture in this model's latent")
             return base
-        plus = streams.video_of(executor(x, t, **{**named, "c_crossattn": c + step}), named)
-        minus = streams.video_of(executor(x, t, **{**named, "c_crossattn": c - step}), named)
+        plus = streams.video_of(executor(x, t, **{**named, "c_crossattn": c + nudge}), named)
+        minus = streams.video_of(executor(x, t, **{**named, "c_crossattn": c - nudge}), named)
         video, rebuild = split
-        return rebuild(video + (plus[0] - minus[0]) * amount)
+        return step.keep(base, rebuild(video + (plus[0] - minus[0]) * amount))
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)
     if eta == 0.0:

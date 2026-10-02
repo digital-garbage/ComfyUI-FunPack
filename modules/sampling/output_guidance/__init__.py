@@ -17,7 +17,7 @@ averaged with its own opposite).
 
 from comfy.patcher_extension import WrappersMP
 
-from ..._core import dit_hooks, log, registry, streams
+from ..._core import dit_hooks, input_steer, log, registry, streams
 
 ID = "output_guidance"
 TITLE = "Taste guidance"
@@ -69,11 +69,13 @@ def install(patcher, values, key):
                                             "steers from 10 rated clips with both kinds)"))
 
     captured = taste.collect(patcher, key, KIND, fresh=fresh)
+    steer = input_steer.Steer("Taste guidance")
 
     def apply_model(executor, x, t, *args, **kwargs):
-        out = executor(x, t, *args, **kwargs)
         named = streams.model_args(args, kwargs)
         to = named.get("transformer_options")
+        step = steer.begin(x, t, to)
+        out = executor(step.x, t, *args, **kwargs)
         split = streams.video_of(out, named)
         if split is None:
             _say("off this run: could not find the picture in this model's latent")
@@ -84,10 +86,10 @@ def install(patcher, values, key):
             return out
         if dit_hooks.last_step(to):
             captured[NAME] = taste.describe(video.detach())
-        amount = strength * dit_hooks.late_half(to)
+        amount = strength * step.gate
         if live["judge"] is None or amount <= 0.0:
             return out
-        return rebuild(live["judge"].nudge(video, amount))
+        return step.keep(out, rebuild(live["judge"].nudge(video, amount)))
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)
     return (f"strength {strength:g}, last half of steps; learns every run, "
