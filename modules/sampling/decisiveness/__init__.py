@@ -126,7 +126,7 @@ def install(patcher, values, key):
     steer.attach(patcher, key)
 
     def fresh():
-        live.update(checked=False, acts=False, steps=0, rows=None if manual else taste.rows(KIND))
+        live.update(checked=False, acts=False, steps=0, rows=None if manual else taste.rows(KIND, blind_to="image"))
         live["k"] = float(values.get("k", 1.0)) if manual else 1.0
         if manual:
             log.once(f"{ID}:state", log.INFO, "FunPack Decisiveness", f"manual k {live['k']:.3f}")

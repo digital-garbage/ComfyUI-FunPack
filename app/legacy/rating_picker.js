@@ -57,6 +57,8 @@
   const H3_SCALE = [
     { label: "10", display: "Liked", reward: "+", hint: "This generation was good." },
     { label: "1", display: "Disliked", reward: "−", hint: "This generation was not." },
+    { label: "Disliked: bad image", display: "Disliked — bad image", reward: "−", hint: "Composition was fine; the picture itself was ruined." },
+    { label: "Disliked: bad composition", display: "Disliked — bad composition", reward: "−", hint: "Well drawn, but the shots/layout/movement were wrong." },
   ];
 
   // canonical label -> display name, for rendering a stored value (scene button, chips).
@@ -66,7 +68,7 @@
   const displayName = (label) => DISPLAY_NAMES[label] || label;
 
   const NO_LOVED = new Set([
-    "Perfect", "Nailed it", "Awful", FORGET_LABEL,
+    "Perfect", "Nailed it", "Awful", FORGET_LABEL, "Disliked: bad image", "Disliked: bad composition",
     "Missing quality", "Missing details + quality", "Missing action + quality", "Wrong action + quality",
     // H3 scale (1-10): a bare number never reaches the label branch that applies the loved
     // boost (normalize_refiner_v2_rating), so the heart would silently do nothing. 10 already
@@ -251,5 +253,22 @@
     setTimeout(() => document.addEventListener("mousedown", onOutside, true), 0);
   }
 
-  window.MovieRatingPicker = { open, close: closePicker, formatLabel, buttonLabel, FORGET_LABEL };
+  // What a picked label teaches the taste key. v5's ratings are liked / disliked (a dislike may
+  // name the axis); the sign of a category's reward decides, as v4's learners only ever read it.
+  // null = teaches nothing (a neutral label); clear = forget what this clip taught.
+  const ALL = [...CATEGORIES.flatMap((c) => c.ratings), ...NUCLEAR, ...H3_SCALE];
+  function tasteOf(value) {
+    const v = String(value || "").replace(/\|loved$/, "").trim();
+    if (!v) return "clear";
+    if (v === FORGET_LABEL) return "clear";
+    if (v === "Disliked: bad image") return { rating: "disliked", axis: "image" };
+    if (v === "Disliked: bad composition") return { rating: "disliked", axis: "composition" };
+    if (/^\d+$/.test(v)) return { rating: Number(v) >= 6 ? "liked" : "disliked", axis: null };
+    const hit = ALL.find((r) => r.label === v);
+    const n = hit && parseFloat(String(hit.reward).replace("−", "-"));
+    if (!n || Number.isNaN(n)) return null;
+    return { rating: n > 0 ? "liked" : "disliked", axis: null };
+  }
+
+  window.MovieRatingPicker = { open, close: closePicker, formatLabel, buttonLabel, tasteOf, FORGET_LABEL };
 })();

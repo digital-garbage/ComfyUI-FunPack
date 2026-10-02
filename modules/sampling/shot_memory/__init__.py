@@ -210,7 +210,7 @@ def install(patcher, values, key):
     live = {"rows": [], "plan": None}
 
     def fresh():
-        live["rows"], live["plan"] = shots(taste.rows(KIND)), None
+        live["rows"], live["plan"] = shots(taste.rows(KIND, blind_to="image")), None
         liked = sum(1 for r in live["rows"] if r["reward"] > 0)
         log.once(f"{ID}:state", log.INFO, "FunPack Shot memory",
                  f"key {taste.key!r}: {liked} liked shot(s) of {len(live['rows'])} rated")

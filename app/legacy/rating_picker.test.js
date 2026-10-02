@@ -31,3 +31,15 @@ test("forget and empty still render as nothing / the prompt", () => {
   assert.strictEqual(Picker.formatLabel(Picker.FORGET_LABEL), "");
   assert.strictEqual(Picker.buttonLabel(""), "Rate scene…");
 });
+
+test("what a label teaches the taste key: sign decides, a dislike may name its axis", () => {
+  assert.deepStrictEqual(Picker.tasteOf("10"), { rating: "liked", axis: null });
+  assert.deepStrictEqual(Picker.tasteOf("1"), { rating: "disliked", axis: null });
+  assert.deepStrictEqual(Picker.tasteOf("Disliked: bad image"), { rating: "disliked", axis: "image" });
+  assert.deepStrictEqual(Picker.tasteOf("Disliked: bad composition"), { rating: "disliked", axis: "composition" });
+  assert.deepStrictEqual(Picker.tasteOf("Perfect|loved"), { rating: "liked", axis: null });
+  assert.deepStrictEqual(Picker.tasteOf("Awful"), { rating: "disliked", axis: null });
+  assert.strictEqual(Picker.tasteOf("Wrong appearance"), null);
+  assert.strictEqual(Picker.tasteOf(""), "clear");
+  assert.strictEqual(Picker.tasteOf(Picker.FORGET_LABEL), "clear");
+});

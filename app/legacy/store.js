@@ -4968,8 +4968,10 @@
       patchScene(id, { rating: v || "" });
       if (window.Timeline?.syncClipRatings) window.Timeline.syncClipRatings(get());
       const promptId = state.sceneRenders[id]?.promptId;
-      if (promptId) {
-        API.rateTaste(promptId, v || null).then((r) => {
+      const taste = window.MovieRatingPicker?.tasteOf(v);      // null: a label that teaches nothing
+      if (promptId && taste !== null) {
+        const t = taste === "clear" || taste === undefined ? { rating: null, axis: null } : taste;
+        API.rateTaste(promptId, t.rating, t.axis).then((r) => {
           if (r?.why) set({ notice: `Taste key not taught: ${r.why}.` });
         }).catch(() => {});                       // no taste module: rating stays a label
       }

@@ -315,7 +315,7 @@
     previewSegmentUrl: unsupportedUrl,
 
     // --- taste keys: modules/system/taste --------------------------------------
-    rateTaste: (prompt_id, rating) => j("POST", API("/api/m/taste/rate"), { prompt_id, rating }),
+    rateTaste: (prompt_id, rating, axis) => j("POST", API("/api/m/taste/rate"), { prompt_id, rating, axis: axis || null }),
     tasteKeys: () => j("GET", API("/api/m/taste/keys")),
 
     // --- refinement keys / absolute taste store (c) -- not built in v5 -------

@@ -172,7 +172,7 @@ def install(patcher, values, key):
     live = {"bank": Bank([])}
 
     def fresh():
-        bank = live["bank"] = Bank(taste.rows(KIND))
+        bank = live["bank"] = Bank(taste.rows(KIND, blind_to="composition"))
         if not bank.negatives:
             summary = "learning: nothing disliked banked yet"
         else:

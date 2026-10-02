@@ -102,7 +102,7 @@ def install(patcher, values, key):
         if manual:
             return log.once(f"{ID}:state", log.INFO, "FunPack Late-branch guidance",
                             f"manual strength {live['w']:.2f}, branch at block {branch}")
-        live["w"], centre, held = DIAL.pick(rated_dial.history(taste.rows(KIND), {"b": branch}))
+        live["w"], centre, held = DIAL.pick(rated_dial.history(taste.rows(KIND, blind_to="image"), {"b": branch}))
         log.once(f"{ID}:state", log.INFO, "FunPack Late-branch guidance",
                  f"key {taste.key!r}: learned {centre:.2f} from {held} rating(s), trying "
                  f"{live['w']:.2f}, branch at block {branch}")
