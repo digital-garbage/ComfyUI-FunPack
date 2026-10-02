@@ -509,15 +509,31 @@
     _body.append(content);
     _mounted = { content };
     if (ctx && ctx.sub && ctx.sub.startsWith("node:")) openNodeId = ctx.sub.slice(5);
+    let snap = null;                       // the pipeline as it was when this window opened
     if (ctx && ctx.setActions) {
       const card = el("button", "btn ghost tiny", "🖼 Export settings…");
       card.title = "Render this pipeline as a PNG — loaders, typed-in node values, "
                  + "and the host's torch / CUDA / attention";
       card.onclick = openSettingsCard;
-      ctx.setActions([card]);
+      // Changes apply as they are made (the pipeline is the live one); Cancel puts back what was here
+      // when the window opened, Save keeps it and closes.
+      const cancel = el("button", "btn ghost tiny", "Cancel");
+      cancel.title = "Undo everything changed in this window since it opened";
+      cancel.onclick = async () => {
+        if (snap) {
+          const res = await PS.restore(snap);
+          if (res.refused.length) { alert(res.refused[0]); return; }
+        }
+        window.SettingsWindow.close();
+      };
+      const save = el("button", "btn primary tiny", "Save");
+      save.title = "Keep the changes and close";
+      save.onclick = () => window.SettingsWindow.close();
+      ctx.setActions([card, cancel, save]);
     }
     render();
     PS.ensureLoaded().then(() => {
+      snap = PS.snapshot();
       if (openNodeId) {
         const slot = (PS.slots() || []).find((s) => s.id === openNodeId);
         if (slot) group = slot.group || "Other";

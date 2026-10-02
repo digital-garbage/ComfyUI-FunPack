@@ -345,6 +345,42 @@
     return { refused: refusedNow };
   }
 
+  // The pipeline as it stands, to come back to: Models & Pipeline's Cancel puts this back.
+  function snapshot() {
+    if (slots === null) return null;
+    return { slots: JSON.parse(JSON.stringify(slots)), removed: [...removed], unwired: JSON.parse(JSON.stringify(unwired)) };
+  }
+  // -> {refused: [...]}; empty when the snapshot is back. Announced as a change, so the project follows.
+  async function restore(snap) {
+    if (!snap || !Array.isArray(snap.slots)) return { refused: ["Nothing to go back to."] };
+    if (adoptGate) await adoptGate;
+    for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+    if (saving) return { refused: ["A save is still in progress: try again in a moment."] };
+    const mine = epoch;
+    saving = true;
+    let refusedNow = [];
+    try {
+      const res = await API.editPipeline({ slots: JSON.parse(JSON.stringify(snap.slots)) });
+      if (mine !== epoch) return { refused: ["The project was changed while this was being sent."] };
+      refusedNow = (res && res.refused) || [];
+      if (res && res.slots && !refusedNow.length) {
+        slots = res.slots;
+        removed = new Set(snap.removed || []);
+        unwired = JSON.parse(JSON.stringify(snap.unwired || {}));
+        groupEdits = {}; pendingValues = {}; pendingBody = null; pending = false;
+        incomplete = res.incomplete || []; refused = []; queueable = !!res.queueable;
+        saveNotes = res.notes || [];
+        try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
+        _changed();
+      }
+    } catch (e) {
+      refusedNow = [e && e.message ? e.message : String(e)];
+    } finally {
+      saving = false;
+    }
+    return { refused: refusedNow };
+  }
+
   // A slot's group is the person's own to name (any node in any group).
   // Kept until it has landed: a save already in flight answers with the slots as they were when
   // it left, and would otherwise put the old group back.
@@ -444,7 +480,7 @@
   }
 
   window.PipelineState = {
-    ensureLoaded, save, edit, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
+    ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     removedIds: () => [...removed],
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),

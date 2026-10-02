@@ -211,3 +211,31 @@ test("a group change queued behind a save in flight is not re-stamped over a lat
   await PS.setGroup("gen", "Other");
   assert.strictEqual(PS.slots().find((s) => s.id === "gen").group, "Other");
 });
+
+test("restore puts back the pipeline as snapshotted: slots, removed, unwired, and tells the project", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const snap = PS.snapshot();
+  await PS.save({ inputs: { model: { file: "changed" } } });
+  global.window.MovieEditorAPI.editPipeline = async (body) => ({ refused: [], incomplete: [], queueable: true, slots: body.slots });
+  await PS.edit({ action: "remove", slot: "gen" });
+  assert.deepStrictEqual(PS.removedIds(), ["gen"]);
+  let heard = 0;
+  PS.subscribe(() => { heard++; });
+  const res = await PS.restore(snap);
+  assert.deepStrictEqual(res.refused, []);
+  assert.deepStrictEqual(PS.slots(), snap.slots);
+  assert.deepStrictEqual(PS.removedIds(), []);
+  assert.strictEqual(heard, 1);
+});
+
+test("a refused restore leaves the pipeline as it is", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const snap = PS.snapshot();
+  await PS.save({ inputs: { model: { file: "changed" } } });
+  global.window.MovieEditorAPI.editPipeline = async () => ({ refused: ["no"], slots: [] });
+  const res = await PS.restore(snap);
+  assert.deepStrictEqual(res.refused, ["no"]);
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "changed");
+});
