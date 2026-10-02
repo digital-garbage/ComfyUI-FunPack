@@ -166,12 +166,18 @@ def install(patcher, values, key):
             weak = executor(step.x, t, *weak_args, **weak_kwargs)
         finally:
             saved.pop("h", None)
-        split_n, split_w = streams.video_of(normal, named), streams.video_of(weak, named)
-        if split_n is None or split_w is None:
-            _say("off this run: could not find the picture in this model's latent")
+        try:
+            split_n, split_w = streams.video_of(normal, named), streams.video_of(weak, named)
+            if split_n is None or split_w is None:
+                _say("off this run: could not find the picture in this model's latent")
+                return normal
+            video, rebuild = split_n
+            return step.keep(normal, rebuild(mix(video, split_w[0], live["w"]).to(video.dtype)))
+        except Exception as exc:                  # noqa: BLE001
+            # The guard answers with the LAST model call, which is the weakened copy: hand
+            # back the model's own answer before it can.
+            log.broke("FunPack Late-branch guidance", exc, "mixing the weak copy")
             return normal
-        video, rebuild = split_n
-        return step.keep(normal, rebuild(mix(video, split_w[0], live["w"]).to(video.dtype)))
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)
     return (("manual" if manual else "learned") + f" strength, weak copy left out at block {branch}, "

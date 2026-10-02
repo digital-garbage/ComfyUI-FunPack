@@ -157,3 +157,21 @@ def test_a_probe_call_is_neither_moved_nor_counted_as_a_step(tiny_h3):
     outs, _ = _steps(sample, wrap, x0, shapes, to=lambda i, n: {**_to(i, n), "funpack_probe": True},
                      executor=lambda x, *a, **k: (seen.append(x), x)[1])
     assert all(torch.equal(s, x0) for s in seen)
+
+
+def test_a_repeated_step_never_logs_both_active_and_inactive(tiny_h3):
+    from core import log
+    sample, wrap, _ = _load(tiny_h3, step=1)
+    x0, shapes = _packed()
+    sched = torch.linspace(1.0, 0.0, 5)
+
+    class Ex:                                           # the sampler: runs the steps inside the call
+        def __call__(self, *a, **k):
+            for i in (0, 1, 1, 2):
+                wrap(lambda x, *a, **k: x, x0, sched[i:i + 1], None, None, None, _to(i), latent_shapes=shapes)
+            return a[4]
+
+    log.new_run()
+    sample(Ex(), Guider(), None, {"seed": 1}, None, x0, torch.zeros_like(x0), None, True)
+    msgs = [e["message"] for e in log.history() if e["source"] == "FunPack Camera move"]
+    assert any("more than once" in m for m in msgs) and not any(m.startswith("Active") for m in msgs)

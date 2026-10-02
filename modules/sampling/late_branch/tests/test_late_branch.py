@@ -170,3 +170,12 @@ def test_a_branch_block_outside_the_model_is_refused_and_said(tiny_h3):
         "taste": {"key": "fox"}, "late_branch": {"enabled": True, "block": 43}}).result
     assert any("not a branch point" in e["message"] for e in log.history())
     assert not patched.wrappers.get(WrappersMP.APPLY_MODEL)
+
+
+def test_a_failure_after_the_weak_copy_returns_the_models_own_answer_not_the_weak_one(tiny_h3, monkeypatch):
+    from modules.sampling import late_branch
+    patched, wrap, outer, x0, shapes, executor, calls = _setup(tiny_h3, mode="manual", strength=1.0)
+    plain = executor(x0, torch.tensor([0.5]))
+    monkeypatch.setattr(late_branch, "mix", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    out = _run(outer, lambda: wrap(executor, x0, torch.tensor([0.5]), None, None, None, _to(1), latent_shapes=shapes))
+    assert torch.equal(out, plain)

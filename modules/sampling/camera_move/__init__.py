@@ -68,10 +68,12 @@ SETTINGS = {
     "focus_x": {
         "type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
         "label": "Zoom aims at (x)", "ui": "slider", "when": {"enabled": True},
+        "hint": "Only matters when Zoom is not 1.",
     },
     "focus_y": {
         "type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
         "label": "Zoom aims at (y)", "ui": "slider", "when": {"enabled": True},
+        "hint": "Only matters when Zoom is not 1.",
     },
     "step": {
         "type": "int", "default": 3, "min": 1, "max": 20,
@@ -190,7 +192,7 @@ def install(patcher, values, key):
                  "so the picture is not moved")
         out = executor(model_wrap, sigmas, extra_args, callback, noise,
                        latent_image, denoise_mask, disable_pbar)
-        if live["moved"]:
+        if live["moved"] and not live["multi"]:
             log.once(f"{ID}:result", log.INFO, "FunPack Camera move",
                      f"Active | {move.describe()}, from step {move.step}; moved {live['moved']} call(s)")
         return out
