@@ -224,3 +224,14 @@ def test_after_a_multi_call_verdict_nothing_is_held_or_steered_for_the_run():
     s.begin(x, sched[1:2], to(1))                       # same index twice: the verdict
     later = s.begin(x, sched[2:3], to(2))
     assert later.gate == 0.0 and later.keep(out, out + 1) is out and not any(s._pushes.values())
+
+
+def test_each_run_says_its_own_result_not_just_the_first_of_the_prompt():
+    s, x = input_steer.Steer("t"), _x()
+    log._reset()
+    s.begin(x, _t(3), _to(3))
+    assert _said("Inactive | no step made")
+    seen = len([r for r in log.history() if "no step made" in r["message"]])
+    s.reset()
+    s.begin(x, _t(3), _to(3))                           # run 2, same prompt: log.once not cleared
+    assert len([r for r in log.history() if "no step made" in r["message"]]) == seen + 1

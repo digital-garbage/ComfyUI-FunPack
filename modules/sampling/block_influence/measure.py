@@ -9,7 +9,7 @@ MIN_PER_GROUP = 2           # liked AND disliked before a difference is one
 SWITCH = config.ROOT / "block_influence.enabled"   # on disk: a fresh rental resumes recording
 
 
-# Why the last recording run stored nothing, for the panel (cleared by a run that did store).
+# (key, why) the last recording run stored nothing, for the panel; cleared by any later run.
 problem = None
 
 
@@ -165,7 +165,8 @@ def state(key, fallback=True) -> dict:
     key = resolve(key) if fallback else key
     rows = _kind(key).rows()
     prof = profile(rows)
-    return {"key": key, "enabled": enabled(), "runs": len(rows), "problem": problem,
+    shown = problem[1] if problem and problem[0] == key and enabled() else None
+    return {"key": key, "enabled": enabled(), "runs": len(rows), "problem": shown,
             "skipped": len(rows) - prof["used"], "min_per_group": MIN_PER_GROUP,
             **prof}
 

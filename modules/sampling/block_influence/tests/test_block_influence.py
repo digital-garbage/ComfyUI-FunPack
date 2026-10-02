@@ -292,7 +292,7 @@ def test_a_run_that_measured_nothing_says_so_in_the_panel_state_too(tiny_h3, mon
     measure.set_enabled(True)
     monkeypatch.setattr(dit_hooks, "target_rows", lambda *a: None)
     tiny_h3.sample(patched)
-    assert "measured nothing" in measure.state("fox")["problem"]
+    assert "measured nothing" in measure.state("fox")["problem"] and measure.state("other")["problem"] is None
     monkeypatch.undo()
     measure.problem = None
 
@@ -309,3 +309,31 @@ def test_clearing_one_key_never_answers_with_another_keys_state(tiny_h3, monkeyp
     measure.clear("a")
     assert measure.state("a", fallback=False)["runs"] == 0
     assert measure.state("a")["key"] == "b"             # the placeholder lookup still resolves
+
+
+def test_recording_on_with_no_taste_key_says_so(tiny_h3):
+    from core import log
+    from modules.sampling.block_influence import measure
+    measure.set_enabled(True)
+    log.new_run()
+    _load(tiny_h3, key=None)
+    assert any("no Taste key is set" in e["message"] for e in log.history())
+
+
+def test_the_panel_banner_goes_away_when_recording_does(tiny_h3, monkeypatch):
+    from core import dit_hooks
+    from modules.sampling.block_influence import measure
+    patched, _ = _load(tiny_h3)
+    measure.set_enabled(True)
+    with monkeypatch.context() as m:
+        m.setattr(dit_hooks, "target_rows", lambda *a: None)
+        tiny_h3.sample(patched)
+    assert measure.state("fox")["problem"]
+    tiny_h3.sample(patched)                           # a good run clears it
+    assert measure.state("fox")["problem"] is None
+    with monkeypatch.context() as m:
+        m.setattr(dit_hooks, "target_rows", lambda *a: None)
+        tiny_h3.sample(patched)
+    measure.set_enabled(False)
+    tiny_h3.sample(patched)                           # recording off: nothing to complain about
+    assert measure.state("fox")["problem"] is None

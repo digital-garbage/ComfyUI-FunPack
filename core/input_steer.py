@@ -52,6 +52,7 @@ class Steer:
         """A run starts (or ends): nothing held, nothing counted."""
         self._pushes = {}       # key -> {step: delta}
         self._seen = {}         # key -> last step index fed
+        self._runs = getattr(self, "_runs", 0) + 1     # a result line is said once per RUN
         self._multi = False     # the sampler calls the model more than once per step
         self._made, self._delivered = 0, 0
         self._reach = 0.0       # largest delivered push, as a share of the input it joined
@@ -72,7 +73,7 @@ class Steer:
         patcher.add_wrapper_with_key(WrappersMP.OUTER_SAMPLE, key, outer)
 
     def _say(self, level, message, key):
-        log.once(f"input steer {self.what}:{key}", level, f"FunPack {self.what}", message)
+        log.once(f"input steer {self.what}:{key}:{self._runs}", level, f"FunPack {self.what}", message)
 
     @staticmethod
     def _packed(x):

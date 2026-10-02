@@ -48,6 +48,9 @@ def _say(message):
 def install(patcher, values, key):
     taste = registry.current().ask("taste_store", patcher)
     if taste is None:
+        if measure.enabled():
+            _say("recording is on but no Taste key is set, so nothing is measured or kept: "
+                 "set a Taste key")
         return None                              # no key: nothing to pair a profile with
     n = dit_hooks.block_count(patcher)
     if n == 0:
@@ -76,8 +79,8 @@ def install(patcher, values, key):
             rows = live["tally"].rows()
             measure.problem = None
             if rows is None:
-                measure.problem = ("recording is on but the last run measured nothing (no picture "
-                                   "rows found in any block)")
+                measure.problem = (taste.key, "the last recording run measured nothing (no picture "
+                                              "rows found in any block)")
                 log.warning("FunPack Block influence",
                             "recording is on but nothing was measured this run (no picture rows "
                             "found in any block); this run teaches nothing")
@@ -87,6 +90,7 @@ def install(patcher, values, key):
                          f"Active | measured {live['tally'].blocks_seen()} of {n} blocks on key "
                          f"{taste.key!r}; rate the clip to keep it")
         else:
+            measure.problem = None
             log.once(f"{ID}:off", log.INFO, "FunPack Block influence",
                      "Inactive | recording is off (Settings > Refinement & Taste turns it on)")
         return out
@@ -114,7 +118,7 @@ def routes(table, base, web):
             state = measure.state(key_of(req, body))     # refuse BEFORE flipping the switch
         except ValueError as exc:
             return web.json_response({"why": str(exc)}, status=400)
-        measure.set_enabled(bool(body.get("enabled")))
+        measure.set_enabled(body.get("enabled") is True)
         return web.json_response({**state, "enabled": measure.enabled()})
 
     @table.post(base + "/clear")
