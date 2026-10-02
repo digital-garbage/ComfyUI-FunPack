@@ -64,6 +64,7 @@ FROZEN = {
     "FunPackLatentResample": ["latent", "upscaler", "operation", "scale", "positive", "negative"],
     "FunPackModifierSettings": ["settings"],
     "FunPackDecode": ["samples", "vae", "model", "audio_vae", "tile_size"],
+    "FunPackUpscaleVideo": ["filename", "subfolder", "type", "upscale_model"],
     "FunPackEmptyLatent": ["model", "width", "height", "length", "batch_size"],
     "FunPackDiffusionModelLoader": [
         "model_name", "weight_dtype", "compute_dtype", "attention", "fp16_accumulation",
