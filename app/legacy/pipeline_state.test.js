@@ -103,3 +103,32 @@ test("a project's pipeline waits out an unreachable server and goes in on the fi
   await PS.ensureLoaded();
   assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "h3.safetensors");
 });
+
+test("adopt says so when the project's pipeline could not go in", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  global.window.MovieEditorAPI.editPipeline = async () => { throw new Error("tunnel"); };
+  assert.strictEqual(await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } }]), false);
+  assert.strictEqual(await PS.adopt([]), true);
+});
+
+test("an edit made while a project's pipeline goes in lands on that pipeline", async () => {
+  const PS = load([], { delay: 30 });
+  await PS.ensureLoaded();
+  const adopting = PS.adopt([{ id: "model", node: "Loader", inputs: { file: "B-file", dtype: "fp8" } }]);
+  const edit = PS.save({ inputs: { model: { dtype: "int8" } } });
+  await Promise.all([adopting, edit]);
+  const model = PS.slots().find((s) => s.id === "model");
+  assert.deepStrictEqual([model.inputs.file, model.inputs.dtype], ["B-file", "int8"]);
+});
+
+test("a failed module-list fetch is retried on the next save, not remembered as done", async () => {
+  const posts = [];
+  const PS = load(posts);
+  let calls = 0;
+  global.window.MovieEditorAPI.modules = async () => { if (++calls === 1) throw new Error("down"); return { modules: [{ id: "m" }] }; };
+  await PS.ensureLoaded();
+  assert.deepStrictEqual(Object.keys(PS.modulesById()), []);
+  await PS.save({ inputs: { model: { file: "z.safetensors" } } });
+  assert.deepStrictEqual(Object.keys(PS.modulesById()), ["m"]);
+});

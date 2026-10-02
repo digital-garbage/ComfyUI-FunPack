@@ -49,22 +49,23 @@
   // still name the same file has nothing new to learn -- re-probing on every
   // unrelated edit (a prompt, a slider) would mean one extra round trip per
   // keystroke-driven save for no reason.
-  let lastProbedFile = null;
+  let lastProbedFile;         // undefined = never probed (a pipeline with no model file is null, and still needs its first probe)
 
   async function refreshManifest() {
     const file = currentModelFile(slots);
     if (file === lastProbedFile) return;
-    lastProbedFile = file;
     const traits = await probeModelTraits(slots);
     const manifest = await API.modules(traits ? traits.join(",") : undefined);
     modulesById = {};
     (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
+    lastProbedFile = file;                              // only once it worked: a failed probe is tried again
   }
   let incomplete = [];
   let refused = [];
   let queueable = false;
   let loading = false;
   let loadError = null;
+  let adoptGate = null;       // a promise while a project's pipeline is being put in
   let deferred = null;        // a project's saved pipeline waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
   let saving = false;
@@ -170,6 +171,7 @@
   // retry-after-in-flight shape exists (a same-panel double-edit dropped
   // one edit before this).
   async function save(body) {
+    if (adoptGate) await adoptGate;                     // an edit made while a project's pipeline goes in lands on THAT pipeline
     pendingBody = mergeBodies(pendingBody, body);
     if (saving) { pending = true; return; }
     saving = true;
@@ -293,12 +295,19 @@
   // default still has; slots they added are kept. The server's own defaults fill in whatever
   // the saved copy predates, so an update's new settings are not lost to an old project.
   // Not announced as a change: it IS the project's own copy.
+  // True when the project's pipeline is in (or it had none to put in); false when it could not be.
   async function adopt(saved) {
-    await ensureLoaded();
+    let open;
+    const gate = new Promise((r) => { open = r; });
+    adoptGate = gate;                                   // before anything awaits: an edit right behind this waits too
+    try { await ensureLoaded(); return await _adopt(saved); } finally { if (adoptGate === gate) adoptGate = null; open(); }
+  }
+
+  async function _adopt(saved) {
     // Not loaded (ComfyUI unreachable): remember what the project holds and put it in the moment a
     // load succeeds, so the default is never what the next edit is built on.
-    if (slots === null) { if (Array.isArray(saved) && saved.length) deferred = saved; return; }
-    if (!Array.isArray(saved) || !saved.length) return;
+    if (slots === null) { if (Array.isArray(saved) && saved.length) deferred = saved; return !(Array.isArray(saved) && saved.length); }
+    if (!Array.isArray(saved) || !saved.length) return true;
     // A saved slot is only what the server would accept: a project file outlives the code that
     // wrote it (v4 files name the node differently), and one bad slot refuses every later edit.
     const sound = (s) => s && typeof s.id === "string" && typeof s.node === "string"
@@ -320,7 +329,7 @@
     for (const extras of [true, false]) {
       try {
         const res = await API.editPipeline({ slots: lay(extras) });
-        if (mine !== epoch) return;                     // a later project was opened meanwhile
+        if (mine !== epoch) return true;                // a later project was opened meanwhile: not this one's to report
         if (res && res.slots && !(res.refused || []).length) {
           slots = res.slots;
           incomplete = res.incomplete || []; refused = []; queueable = !!res.queueable;
@@ -328,12 +337,15 @@
           // The modules offered depend on the model this pipeline names, which may differ from the
           // previous project's: refresh, or the next settings edit drops this project's modules.
           try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
-          return;
+          return true;
         }
       } catch (_) { /* this layering was refused; try the next */ }
     }
-    slots = JSON.parse(JSON.stringify(offered));        // nothing saved was usable: the default, said
-    saveNotes = ["This project's saved pipeline could not be loaded, so the default is in use."];
+    // Nothing saved was accepted (a failed request, or a file the server refuses): the default
+    // runs, said, and the caller must NOT save it over the project's own copy.
+    slots = JSON.parse(JSON.stringify(offered));
+    saveNotes = ["This project's saved pipeline could not be loaded, so the default is in use and edits are not being saved."];
+    return false;
   }
 
   window.PipelineState = {

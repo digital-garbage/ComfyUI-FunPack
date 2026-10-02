@@ -4701,21 +4701,23 @@
   // a new rental. Opening a project puts ITS pipeline over the session's; a project with none
   // yet inherits the session's.
   let _modelsRetries = 0;
+  let _modelsAdopted = true;      // false while the open project's pipeline is not the live one: its copy is not rewritten
   let _pipelineSaveTimer = null;
   async function loadModels() {
     const saved = (state.project && state.project.models && state.project.models.slots) || [];
     const p = (async () => {
       try {
         // Bounded: a hung request must not hold every later project save behind it.
-        await Promise.race([window.PipelineState.adopt(saved), new Promise((r) => setTimeout(r, 20000))]);
+        const ok = await Promise.race([window.PipelineState.adopt(saved), new Promise((r) => setTimeout(() => r(false), 20000))]);
         const live = window.PipelineState.slots();
-        // Not loaded (ComfyUI unreachable): the project's own copy stays exactly as it was -- an
-        // empty live pipeline must never be mistaken for "no pipeline" and saved over it. Tried again.
-        // Everything else the project keeps beside the slots (model family...) stays as it was.
-        state.models = { ...((state.project && state.project.models) || {}),
-                         slots: live ? JSON.parse(JSON.stringify(live)) : saved };
-        if (!live && _modelsRetries++ < 3) setTimeout(loadModels, 5000);
-        else if (live) _modelsRetries = 0;
+        // The project's pipeline is not in (ComfyUI unreachable, slow, or it refused the file): the
+        // project's own copy stays exactly as it was and is not rewritten from whatever is live --
+        // neither the default nor the previous project's. Tried again a few times.
+        _modelsAdopted = !!(ok && live);
+        const base = (state.project && state.project.models) || {};
+        state.models = { ...base, slots: _modelsAdopted ? JSON.parse(JSON.stringify(live)) : saved };
+        if (!_modelsAdopted && _modelsRetries++ < 3) setTimeout(loadModels, 5000);
+        else if (_modelsAdopted) _modelsRetries = 0;
       } catch (_) { state.models = { slots: saved }; }
     })();
     _modelsLoad = p;
@@ -5017,7 +5019,7 @@
     window.addEventListener("funpack-models-changed", loadModels);
     // Every landed pipeline edit is the project's copy now; one writer (PipelineState), no snapshot of its own.
     window.PipelineState.subscribe((slots) => {
-      if (!state.project) return;
+      if (!state.project || !_modelsAdopted) return;
       state.models = { ...(state.models || {}), slots: JSON.parse(JSON.stringify(slots || [])) };
       // Soon, and past a Settings window's hold: a model pick must survive the reload that follows it.
       _localDirty = true;
