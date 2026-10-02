@@ -263,21 +263,28 @@
     } catch (_) { return; }
     // Changed elsewhere (another tab): the box still holds the old separator, and the
     // next edit would merge every scene. Rewrite it from the scenes.
-    if (before !== _storyMarker && state.project) syncGlobalPromptFromTimeline();
+    if (before !== _storyMarker && state.project && !globalPromptApplyPending()) syncGlobalPromptFromTimeline();
   }
   // A scene whose own text holds a cut word makes the Story show one scene more than
   // the timeline has. Said where the person looks; it cannot be prevented, only seen.
   function _storyClash(project) {
     const re = new RegExp("(?<![\\p{L}\\p{N}_])(?:" + _storyWords.map((w) => w.trim().split(/\s+/)
       .map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")).join("|") + ")(?![\\p{L}\\p{N}_])", "iu");
-    return (project.scenes || []).find((s) => !s.excluded && re.test(s.text || ""));
+    return _storyRoots(project).find((s) => re.test(s.text || ""));
   }
   // Another tab or window may have changed the words; the box must write the server's.
   window.addEventListener("focus", () => loadStoryMarkers());
+  // The scenes the Story shows: one root per generation unit, never video clips or sub-clips.
+  function _storyRoots(project) {
+    const active = (project.scenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
+    return _groupGenerativeUnits(active).map(([, group]) => _rootFromGroup(group)).filter(Boolean);
+  }
+  const CLASH_NOTICE = "A scene's own text contains a cut word";
+  const SPLIT_NOTICE = "Could not split the Story";
+  const dropNotice = (prefix) => { if ((state.notice || "").startsWith(prefix)) state.notice = ""; };
   function buildGlobalPromptFromTimeline(project) {
     if (!project) return "";
-    const active = (project.scenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
-    const texts = _groupGenerativeUnits(active).map(([, group]) => (_rootFromGroup(group)?.text || "").trim());
+    const texts = _storyRoots(project).map((r) => (r.text || "").trim());
     return texts.join(`\n${_storyMarker}\n`);
   }
 
@@ -312,11 +319,14 @@
     if (!state.project) return;
     _pinnedGlobalPrompt = null;
     const built = buildGlobalPromptFromTimeline(state.project);
+    _failedText = null;
+    dropNotice(SPLIT_NOTICE);
+    const clash = _storyClash(state.project);
+    if (clash && !state.notice) state.notice = `${CLASH_NOTICE} (${_storyWords.join(", ")}), so the Story shows it as two scenes. Remove the word from that scene.`;
+    else if (!clash) dropNotice(CLASH_NOTICE);
     const prev = state.project.global_prompt || "";
     if (built === prev && (state.preview?.display_prompt || "") === built) return;
     state.project.global_prompt = built;
-    const clash = _storyClash(state.project);
-    if (clash) state.notice = `A scene's own text contains a cut word (${_storyWords.join(", ")}), so the Story shows it as two scenes. Remove the word from that scene.`;
     state.preview = {
       ...(state.preview || {}),
       display_prompt: built,
@@ -651,7 +661,7 @@
         console.warn("Global prompt parse failed:", e);
         if (seq === _applySeq) {
           _failedText = trimmed;
-          state.notice = "Could not split the Story into scenes — the scenes were not updated. Check the connection and keep typing, or Generate will retry.";
+          state.notice = SPLIT_NOTICE + " into scenes — the scenes were not updated. Check the connection and keep typing, or Generate will retry.";
           notify();
         }
         return false;
@@ -662,6 +672,7 @@
       if (seq !== _applySeq || _pendingGlobalPromptText != null) return false;
       if (!await _distributeGlobalPrompt(trimmed, res)) return false;
       _failedText = null;
+      dropNotice(SPLIT_NOTICE);
       clearTimeout(saveTimer);
       saveTimer = null;
       _localDirty = true;
