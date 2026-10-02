@@ -135,3 +135,13 @@ def test_an_encoder_no_model_module_knows_is_refused_out_loud(tiny_h3):
     model, pos, status = FunPackApplyPromptMarkup.execute(
         tiny_h3.patcher, OtherClip(), positive, {"samples": tiny_h3.video}, markup).result
     assert status.startswith("not applied") and pos is positive
+
+
+def test_the_phrases_it_placed_are_published_for_anything_that_wants_to_look_at_them(tiny_h3):
+    from modules.conditioning.prompt_markup.nodes import PHRASES
+    model, _p, _s, pos = _apply(tiny_h3, "a (red:1.5) car [drives@0.05-0.2]")
+    published = model.model_options["transformer_options"][PHRASES]
+    assert published["cond_len"] == int(pos[0][0].shape[1])
+    assert [b - a for a, b in published["spans"]] == [1, 1]          # "red" and "drives": one token each
+    plain, *_ = _apply(tiny_h3, "a red car drives")
+    assert PHRASES not in plain.model_options.get("transformer_options", {})

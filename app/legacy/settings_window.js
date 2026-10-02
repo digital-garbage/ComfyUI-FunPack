@@ -715,6 +715,62 @@
     return box;
   }
 
+  // Phrase probe: where the model reads a marked phrase, and where it matters. Anonymous
+  // (numbered phrases, token counts) -- the saved file holds no prompt text.
+  function phraseProbeRows() {
+    const box = el("div", "sw-stack");
+    let state = null, error = "";
+    const paint = () => {
+      clear(box);
+      const rows = el("div", "sw-rows");
+      const row = el("div", "sw-row");
+      const main = el("div", "sw-row-main");
+      main.append(el("div", "sw-row-title", "Record where marked phrases are read"));
+      main.append(el("div", "sw-row-hint",
+        "Off by default. Recording only — nothing about your generations changes. Needs a (word:1.5) or "
+        + "[phrase@2-4] in the prompt, and costs one extra model pass per phrase per step while on."));
+      row.append(main);
+      const lbl = el("label", "chk es-toggle");
+      const cb = el("input"); cb.type = "checkbox"; cb.checked = !!(state && state.enabled);
+      cb.onchange = async () => {
+        error = "";
+        try { state = await window.MovieEditorAPI.phraseProbeSetEnabled(cb.checked); }
+        catch (e) { error = String(e.message || e); }
+        paint();
+      };
+      lbl.append(cb, el("span", null, ""));
+      row.append(lbl); rows.append(row);
+      const latest = state && state.latest;
+      rows.append(infoRow("Last recording",
+        latest ? `${latest.phrases.length} phrase(s), ${latest.model_calls} model call(s), ${latest.when}` : "none",
+        latest ? true : null));
+      rows.append(actionRow("Save the last recording", "Downloads the maps as one file.", "Download", () => {
+        const a = document.createElement("a");
+        a.href = window.MovieEditorAPI.phraseProbeExportUrl(); a.download = "phrase_probe.json"; a.click();
+      }, { disabled: !latest }));
+      rows.append(actionRow("Start fresh", "Throws the last recording away.", "Clear…", async () => {
+        if (!window.confirm("Throw away the last phrase recording?")) return;
+        error = "";
+        try { state = await window.MovieEditorAPI.phraseProbeClear(); } catch (e) { error = String(e.message || e); }
+        paint();
+      }, { disabled: !latest, danger: true }));
+      box.append(rows);
+      (state && state.peaks || []).forEach((p) => {
+        const read = p.read_top.map(([b, v]) => `b${b} ${(v * 100).toFixed(1)}%`).join(", ") || "n/a";
+        const grow = p.response_growth_top.map(([b, v]) => `b${b} +${v.toFixed(3)}`).join(", ") || "n/a";
+        box.append(el("div", "sw-hint",
+          `Phrase ${p.phrase} (${p.tokens} tokens): read most at ${read}; response grows most at ${grow}.`));
+      });
+      if (state && state.enabled && state.problem) box.append(el("div", "sw-hint", state.problem));
+      if (error) box.append(el("div", "sw-hint", error));
+    };
+    paint();
+    window.MovieEditorAPI.phraseProbeStatus()
+      .then((s) => { state = s; paint(); })
+      .catch((e) => { error = String(e.message || e); paint(); });
+    return box;
+  }
+
   function reinsSweepTable(sweep) {
     const entries = Object.entries(sweep || {}).sort((a, b) => a[1].p_value - b[1].p_value);
     if (!entries.length) return null;
@@ -976,6 +1032,9 @@
 
         wrap.append(el("div", "sw-rows-label", "Block influence (measurement only)"));
         wrap.append(blockInfluenceRows(st.project?.refinement_key || "default"));
+
+        wrap.append(el("div", "sw-rows-label", "Phrase probe (measurement only)"));
+        wrap.append(phraseProbeRows());
 
         wrap.append(el("div", "sw-rows-label",
           "Detail check — did a change sharpen the picture, or just alter it?"));

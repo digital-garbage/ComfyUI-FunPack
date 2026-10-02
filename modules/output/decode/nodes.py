@@ -27,6 +27,23 @@ from ..._core import log, registry as registry_mod
 CAPABILITY = "decode"
 
 
+def _plain_decode(vae, latent, tile_size):
+    """The ordinary decode, tiled the way ComfyUI's own VAE Decode (Tiled) does it when
+    asked: a quarter-tile overlap, 64-frame temporal tiles with an 8-frame overlap."""
+    if not tile_size or tile_size <= 0:
+        return vae.decode(latent)
+    overlap = tile_size // 4
+    t_size, t_overlap = 64, 8
+    t_comp = vae.temporal_compression_decode()
+    if t_comp is not None:
+        t_size, t_overlap = max(2, t_size // t_comp), max(1, min(t_size // t_comp // 2, t_overlap // t_comp))
+    else:
+        t_size = t_overlap = None
+    c = vae.spacial_compression_decode()
+    return vae.decode_tiled(latent, tile_x=tile_size // c, tile_y=tile_size // c, overlap=overlap // c,
+                            tile_t=t_size, overlap_t=t_overlap)
+
+
 class FunPackDecode(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -43,6 +60,10 @@ class FunPackDecode(io.ComfyNode):
                                        "model has its own way of being decoded."),
                 io.Vae.Input("audio_vae", optional=True,
                              tooltip="Only for models that generate sound alongside the video."),
+                io.Int.Input("tile_size", default=0, min=0, max=4096, step=64, optional=True,
+                             tooltip="Decode in tiles of this many pixels, to fit less VRAM. 0 = in one "
+                                     "piece. Bigger = faster and more VRAM. An X2 Detail VAE is always "
+                                     "tiled (256 at least)."),
             ],
             outputs=[
                 io.Image.Output(display_name="images"),
@@ -52,12 +73,12 @@ class FunPackDecode(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, samples, vae, model=None, audio_vae=None) -> io.NodeOutput:
+    def execute(cls, samples, vae, model=None, audio_vae=None, tile_size=0) -> io.NodeOutput:
         latent = samples["samples"]
 
         for spec, decode in registry_mod.current().providers(CAPABILITY):
             try:
-                claimed = decode(latent, model=model, vae=vae, audio_vae=audio_vae)
+                claimed = decode(latent, model=model, vae=vae, audio_vae=audio_vae, tile_size=tile_size)
             except Exception as exc:             # noqa: BLE001
                 # Same protocol as the empty latent: returning None means "not my
                 # model", so getting this far means it WAS and it broke. Falling
@@ -82,7 +103,7 @@ class FunPackDecode(io.ComfyNode):
                    " The model input is not wired, so no module could recognise it.")
                 + " The module for this model is missing.")
 
-        images = vae.decode(latent)
+        images = _plain_decode(vae, latent, tile_size)
         if len(images.shape) == 5:               # a batch of clips -> a strip of frames
             images = images.reshape(-1, *images.shape[-3:])
         return io.NodeOutput(images, None, "decoded as a single latent")

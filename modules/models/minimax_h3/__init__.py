@@ -26,7 +26,8 @@ import torch
 from comfy.nested_tensor import NestedTensor
 from comfy_extras.nodes_minimax_h3 import temporal_shape
 
-from ..._core import traits as _traits
+from ..._core import log, traits as _traits
+from . import vae_decode as _decode
 from .pipeline import presets as _pipeline_presets
 from .anchor import anchor_pin as _anchor_pin
 from .anchor import rescale_pins as _rescale_pins
@@ -135,7 +136,7 @@ def traits(model):
     return found
 
 
-def decode(latent, model=None, vae=None, audio_vae=None):
+def decode(latent, model=None, vae=None, audio_vae=None, tile_size=0):
     """H3's two branches, each through the VAE that understands it.
 
     Claims by IDENTITY, not by shape. "Two parts" describes plenty of models that
@@ -155,7 +156,7 @@ def decode(latent, model=None, vae=None, audio_vae=None):
             f"expected a video and an audio branch, got {len(parts)} parts")
     video_latent, audio_latent = parts
 
-    images = vae.decode(video_latent)
+    images = _video_images(vae, video_latent, tile_size)
     if len(images.shape) == 5:
         images = images.reshape(-1, *images.shape[-3:])
 
@@ -168,6 +169,28 @@ def decode(latent, model=None, vae=None, audio_vae=None):
     from comfy_extras.nodes_audio import vae_decode_audio
     audio = vae_decode_audio(audio_vae, {"samples": audio_latent})
     return images, audio
+
+
+def _video_images(vae, video_latent, tile_size):
+    """The picture branch. An X2 Detail VAE can only be read by the tiled decoder
+    (its output is packed), so it always goes that way -- and has no stock path to fall
+    back to, so a failure there is raised, naming the VAE. For a stock VAE, tiles are
+    asked for by `tile_size` and, if the tiled decode fails, said once and decoded plain."""
+    x2 = _decode.x2_ratio(vae)
+    if x2 > 1:
+        try:
+            return _decode.decode_fast(vae, video_latent, tile_size or 256)
+        except Exception as exc:                            # noqa: BLE001
+            raise RuntimeError(
+                f"this VAE is an X2 Detail VAE (x{x2} packed output) and only the tiled decoder "
+                f"can read it, and that failed: {type(exc).__name__}: {exc}") from exc
+    if tile_size and tile_size > 0:
+        try:
+            return _decode.decode_fast(vae, video_latent, tile_size)
+        except Exception as exc:                            # noqa: BLE001
+            log.once(f"h3_decode_tiles:{type(exc).__name__}:{exc}", log.ALERT, "FunPack H3 decode",
+                     f"the tiled decode failed ({type(exc).__name__}: {exc}); decoded in one piece instead")
+    return vae.decode(video_latent)
 
 
 def empty_latent(model, width, height, length, batch_size=1):

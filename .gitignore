@@ -41,3 +41,7 @@ app/playwright-report/
 
 # Taste keys: what your ratings taught, per rental
 taste/
+/block_influence.enabled
+/block_influence.latest.json
+/phrase_probe.enabled
+/phrase_probe.latest.json

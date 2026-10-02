@@ -38,6 +38,13 @@ def _transformer_options(patcher) -> dict:
     return to
 
 
+def publish(patcher, name: str, value) -> None:
+    """Leave `value` in this model's transformer_options under `name`, where every
+    hook and wrapper of the run can read it. How one module tells another something
+    it knows (where the prompt's phrases sit) without either importing the other."""
+    _transformer_options(patcher)[name] = value
+
+
 def _guard(patcher, fn, neutral):
     """Guarded when the patcher can guard (it is always a GuardedPatcher inside a
     run); a bare patcher -- tests, a direct call -- gets the hook unchanged."""

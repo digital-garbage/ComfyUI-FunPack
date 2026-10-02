@@ -185,3 +185,27 @@ def test_a_claiming_module_that_breaks_stops_the_decode(monkeypatch):
     nested = NestedTensor((torch.zeros(1, 24, 2, 8, 8), torch.zeros(1, 32, 2, 16)))
     with pytest.raises(RuntimeError, match="Refusing to decode"):
         FunPackDecode.execute({"samples": nested}, _Vae())
+
+
+def test_tiles_on_an_ordinary_vae_follow_comfyuis_own_tiled_decode():
+    from modules.output.decode.nodes import _plain_decode
+
+    class Vae:
+        seen = None
+
+        def temporal_compression_decode(self):
+            return 4
+
+        def spacial_compression_decode(self):
+            return 8
+
+        def decode(self, latent):
+            raise AssertionError("tiles were asked for")
+
+        def decode_tiled(self, latent, **kw):
+            Vae.seen = kw
+            import torch
+            return torch.zeros(1, 2, 4, 4, 3)
+
+    _plain_decode(Vae(), object(), 512)
+    assert Vae.seen == {"tile_x": 64, "tile_y": 64, "overlap": 16, "tile_t": 16, "overlap_t": 2}

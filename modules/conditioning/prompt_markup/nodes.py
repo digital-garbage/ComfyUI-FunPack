@@ -9,6 +9,7 @@ from . import markup as mk
 
 MARKUP = io.Custom("FUNPACK_MARKUP")
 KEY = "funpack_markup.prompt"
+PHRASES = "funpack_markup_phrases"   # the transformer_options key the phrase probe reads
 
 
 def _ask(capability, *args):
@@ -140,6 +141,10 @@ class FunPackApplyPromptMarkup(io.ComfyNode):
             t_spans.append((tok0, tok1, w, window))
         if w_spans or t_spans:
             cls._install(patched, w_spans, t_spans, base, cond_len)
+            # Where the phrases sit, for anything that wants to look at them (the phrase probe).
+            dit_hooks.publish(patched, PHRASES, {
+                "base": base, "cond_len": cond_len,
+                "spans": [(a, b) for a, b, *_ in w_spans] + [(a, b) for a, b, *_ in t_spans]})
             if w_spans:
                 said.append(f"{len(w_spans)} weight(s)")
             if t_spans:
