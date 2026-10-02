@@ -646,7 +646,7 @@
       cb.checked = !!(biState && biState.enabled);
       cb.onchange = async () => {
         biError = "";
-        try { biState = await window.MovieEditorAPI.blockInfluenceSetEnabled(key, cb.checked); }
+        try { biState = await window.MovieEditorAPI.blockInfluenceSetEnabled(biState?.key || key, cb.checked); }
         catch (e) { biError = String(e.message || e); }
         paint();
       };
@@ -667,17 +667,18 @@
         + "refinements/ is not in git, so without this the count restarts on the next box.",
         "Download", async () => {
           biError = "";
-          try { await window.MovieEditorAPI.blockInfluenceExport(key); }
+          try { await window.MovieEditorAPI.blockInfluenceExport(biState?.key || key); }
           catch (e) { biError = String(e.message || e); paint(); }
         }, { disabled: !runs }));
       rows.append(actionRow("Start fresh",
         "Throws away every recorded profile for this key. Recording stays on. Cannot be "
         + "undone — download first if you want to keep it.",
         "Clear…", async () => {
-          if (!window.confirm(`Throw away ${runs} recorded profile(s) for '${key}'?\n\nThis `
+          const shown = biState?.key || key;
+          if (!window.confirm(`Throw away ${runs} recorded profile(s) for '${shown}'?\n\nThis `
               + "cannot be undone. Download it first if you want to keep it.")) return;
           biError = "";
-          try { biState = await window.MovieEditorAPI.blockInfluenceClear(key); }
+          try { biState = await window.MovieEditorAPI.blockInfluenceClear(shown); }
           catch (e) { biError = String(e.message || e); }
           paint();
         }, { disabled: !runs, danger: true }));

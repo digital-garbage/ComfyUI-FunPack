@@ -218,3 +218,47 @@ def test_the_sliders_perturbed_passes_are_not_measured(tiny_h3):
     tiny_h3.sample(patched)                           # same flag the slider sets on its +/- passes
     from modules.system.taste import store
     assert not (store.ROOT / "fox" / "block_influence.pending.pt").exists()
+
+
+def test_each_run_starts_a_fresh_tally_and_the_toggle_off_stores_nothing(tiny_h3):
+    from modules.sampling.block_influence import measure
+    from modules.system.taste import store
+    patched, _ = _load(tiny_h3)
+    measure.set_enabled(True)
+    tiny_h3.sample(patched)
+    first = torch.load(store.ROOT / "fox" / "block_influence.pending.pt")["rows"]["raw"]
+    tiny_h3.sample(patched)
+    second = torch.load(store.ROOT / "fox" / "block_influence.pending.pt")["rows"]["raw"]
+    assert torch.allclose(first, second, rtol=1e-4)     # one run's mean, not two runs summed or merged
+
+
+def test_the_novelty_pairing_never_crosses_a_step_boundary():
+    from core import dit_hooks
+    from modules.sampling.block_influence.measure import Tally
+    import unittest.mock as mock
+    t = Tally(3)
+
+    def block(args):
+        args["img"] = args["img"] + torch.randn_like(args["img"])
+        return {"img": args["img"]}
+
+    with mock.patch.object(dit_hooks, "target_rows", lambda *a: torch.ones(6, dtype=torch.bool)):
+        for b in (0, 1, 2, 0, 1, 2):                    # two steps
+            t.measure(b, {"img": torch.randn(6, 4)}, block)
+    assert t._count["novelty"] == [0, 2, 2]             # block 0 of step 2 has no predecessor
+
+
+def test_clear_and_export_act_on_exactly_the_key_named_never_a_fallback(tiny_h3, monkeypatch):
+    from modules.sampling.block_influence import measure
+    from modules.system.taste import store
+    for key in ("a", "b"):
+        monkeypatch.setattr(store, "current_prompt_id", lambda key=key: f"run-{key}")
+        patched, _ = _load(tiny_h3, key=key)
+        measure.set_enabled(True)
+        tiny_h3.sample(patched)
+        store.rate(f"run-{key}", "liked")
+    assert measure.state("default")["key"] == "b"       # the panel's placeholder resolves to the latest
+    measure.clear("default")                            # ...but a clear of "default" touches neither
+    assert measure.path_of("a").exists() and measure.path_of("b").exists()
+    measure.clear("b")
+    assert measure.path_of("a").exists() and not measure.path_of("b").exists()

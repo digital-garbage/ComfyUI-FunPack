@@ -118,7 +118,7 @@ def routes(table, base, web):
     async def _clear(req):
         body = await req.json()
         try:
-            key = measure.resolve(key_of(req, body))
+            key = key_of(req, body)                      # exactly the key named: never a fallback
             measure.clear(key)
             return web.json_response(measure.state(key))
         except ValueError as exc:

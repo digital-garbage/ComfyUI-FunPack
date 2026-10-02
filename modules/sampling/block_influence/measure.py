@@ -164,8 +164,8 @@ def state(key) -> dict:
 
 
 def clear(key):
-    _kind(resolve(key)).clear()
+    _kind(key).clear()
 
 
 def path_of(key):
-    return _kind(resolve(key)).path()
+    return _kind(key).path()

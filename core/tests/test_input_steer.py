@@ -140,3 +140,69 @@ def test_a_repeated_sigma_cannot_count_an_edit_that_never_arrived():
     log._reset()
     s.begin(x, sched[3:4], to(3))
     assert not _said("Active |")
+
+
+class _Patcher:
+    def __init__(self):
+        self.wrappers = []
+
+    def add_wrapper_with_key(self, _what, _key, fn):
+        self.wrappers.append(fn)
+
+
+def test_the_sampling_wrapper_resets_each_run_and_drops_pushes_even_on_an_interrupt():
+    s, x, out, p = input_steer.Steer("t"), _x(), _x(), _Patcher()
+    s.attach(p, "k")
+    _edit(s, 2, x, out, torch.ones(1, 1, 12))
+    assert s._pushes                                    # held mid-run
+    outer = p.wrappers[0]
+
+    def boom():
+        raise KeyboardInterrupt
+
+    try:
+        outer(lambda: (_edit(s, 2, x, out, torch.ones(1, 1, 12)), boom()))
+    except KeyboardInterrupt:
+        pass
+    assert not any(s._pushes.values())                  # nothing latent-sized outlives the run
+    s._made = 5
+    outer(lambda: None)
+    assert s._made == 0                                 # a new run counts from zero
+
+
+def test_a_new_pass_inside_one_run_drops_what_was_held():
+    s, x, out, d = input_steer.Steer("t"), _x(), _x(), torch.ones(1, 1, 12)
+    _edit(s, 2, x, out, d)
+    s.begin(x, _t(1), _to(1))                           # index went backwards
+    assert not s._pushes[s._key(_to(1))]
+
+
+def test_a_push_of_the_wrong_size_is_not_added_and_says_so():
+    log._reset()
+    s, x, out = input_steer.Steer("t"), _x(), _x()
+    _edit(s, 2, x, out, torch.ones(1, 1, 12))
+    bigger = torch.randn(1, 1, 20)
+    assert torch.equal(s.begin(bigger, _t(3), _to(3)).x, bigger)
+    assert _said("changed size")
+
+
+def test_a_push_is_delivered_once():
+    s, x, out = input_steer.Steer("t"), _x(), _x()
+    _edit(s, 2, x, out, torch.ones(1, 1, 12))
+    s.begin(x, _t(3), _to(3))
+    assert s._delivered == 1
+    s.begin(x, _t(3), _to(3))                           # same index again: multi-call, nothing re-delivered
+    assert s._delivered == 1
+
+
+def test_a_sampler_that_calls_twice_per_step_is_declared_and_left_alone():
+    log._reset()
+    s, x, out = input_steer.Steer("t"), _x(), _x()
+    sched = torch.tensor([1.0, 0.9, 0.7, 0.4, 0.0])
+    to = lambda i: {"sample_sigmas": sched, "sigmas": sched[i:i + 1]}
+    # heun: step 1 calls at sigma_1 then sigma_2; step 2 calls at sigma_2 again, then sigma_3
+    s.begin(x, sched[1:2], to(1))
+    s.begin(x, sched[2:3], to(2))
+    second = s.begin(x, sched[2:3], to(2))
+    assert second.gate == 0.0 and second.keep(out, out + 1) is out
+    assert _said("more than once per step") and not _said("Active |")

@@ -50,6 +50,7 @@ class Steer:
         """A run starts (or ends): nothing held, nothing counted."""
         self._pushes = {}       # key -> {step: delta}
         self._seen = {}         # key -> last step index fed
+        self._multi = False     # the sampler calls the model more than once per step
         self._made, self._delivered = 0, 0
         self._reach = 0.0       # largest delivered push, as a share of the input it joined
 
@@ -92,6 +93,18 @@ class Steer:
                                  "(a midpoint sampler?), so it is not steered", "off schedule")
             return Call(x, 0.0, keep=lambda out, _steered: out)
         i, n = where
+        if self._multi:
+            return Call(x, 0.0, keep=lambda out, _steered: out)
+        if i == self._seen.get(self._key(to)) and n > 1:
+            # The same step index twice in a row for one conditioning: a corrector call
+            # (heun, dpm_2 ...) or a split batch. A push cannot be placed on the right call,
+            # so it is dropped and nothing is steered for the rest of the run.
+            self._multi = True
+            self._pushes = {}
+            self._say(log.ALERT, "Inactive | the sampler calls the model more than once per "
+                                 "step (a second-order sampler?), so edits are not carried; "
+                                 "use euler-style sampling", "multi call")
+            return Call(x, 0.0, keep=lambda out, _steered: out)
         if n <= 1:
             self._say(log.ALERT, "Inactive | a 1-step schedule has no step before the output "
                                  "to carry an edit into", "one step")
@@ -127,8 +140,12 @@ class Steer:
         """Said on the last step. Reach is what counts: an edit made is not an edit that
         arrived, and one that is a sliver of the input it joins changes nothing the
         model can feel."""
+        if self._multi:
+            return
         if not self._made:
-            self._say(log.ALERT, "Inactive | no step made an edit this run", "result")
+            self._say(log.INFO, "Inactive | no step made an edit this run (nothing learned yet "
+                                "to steer with, strength 0, or a schedule too short for the "
+                                "late-step gate to open)", "result")
         elif not self._delivered:
             self._say(log.ALERT, f"Inactive | {self._made} edit(s) made but none reached a later "
                                  f"step's input", "result")
