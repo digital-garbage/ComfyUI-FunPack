@@ -159,8 +159,6 @@
   // stale optimistic DOM (scene prompt text could read blank until reload/regenerate).
   let _renderAfterSave = false;
   let _selectionAnchorId = null;  // shift-click range anchor
-  let _modelsSaveTimer = null;    // debounce exposed-control (node input) saves
-  let _modelsSaveDirty = false;
   // Autosave suspension, held while a settings surface is open (see suspendSave). A
   // debounce firing mid-session saves a half-edited value and echoes it back over
   // state.project — "I set 0.5 and it went back to 1.0". Counted: surfaces nest.
@@ -4697,9 +4695,17 @@
   }
 
   // ── pluggable models / exposed controls ──────────────────────────────────────
+  // The pipeline lives in PipelineState (one copy shared by every panel); the project keeps a
+  // copy of it (project.models) so a model pick and every node value travel with the project to
+  // a new rental. Opening a project puts ITS pipeline over the session's; a project with none
+  // yet inherits the session's.
   async function loadModels() {
+    const saved = (state.project && state.project.models && state.project.models.slots) || [];
     const p = (async () => {
-      try { state.models = await API.getModels(state.project?.id); } catch (_) { state.models = { slots: [] }; }
+      try {
+        await window.PipelineState.adopt(saved);
+        state.models = { slots: JSON.parse(JSON.stringify(window.PipelineState.slots() || [])) };
+      } catch (_) { state.models = { slots: saved }; }
     })();
     _modelsLoad = p;
     await p;
@@ -4719,59 +4725,16 @@
     notify();
   }
 
-  // Persisting a node input hits the server; typing a weight used to fire one save PER
-  // KEYSTROKE and notify twice (before + after the await), which rebuilt the inspector and
-  // yanked the field. Now: update in place + notify once (cheap, and the field is data-k
-  // protected from rebuild), and DEBOUNCE the network save. flushModelsSave() runs on field
-  // blur and before generate (via flushSave / _flushSaveForGenerate).
-  function _scheduleModelsSave() {
-    _modelsSaveDirty = true;
-    clearTimeout(_modelsSaveTimer);
-    _modelsSaveTimer = setTimeout(() => { _modelsSaveTimer = null; flushModelsSave(); }, 500);
-  }
-  async function flushModelsSave() {
-    if (!_modelsSaveTimer && !_modelsSaveDirty) return;
-    clearTimeout(_modelsSaveTimer); _modelsSaveTimer = null; _modelsSaveDirty = false;
-    try {
-      const saved = await API.saveModels(state.project?.id, state.models);
-      // Same guard commit() has: an edit made during this write is newer than the echo,
-      // so adopting the echo would roll it back. Keep local; the queued save wins.
-      if (!_modelsSaveDirty) state.models = saved;
-      notify();
-    } catch (e) { console.error("saveModels failed", e); }
-  }
-
-  // Edit a configured node input from the main editor (an "exposed" control) and persist.
+  // A node input edited from the main editor (an "exposed" control): the pipeline's one live
+  // copy takes it (PipelineState validates it server-side); the project's copy follows on its own.
   function setModelInput(slotId, name, value) {
-    const slot = (state.models.slots || []).find((s) => s.id === slotId);
-    if (!slot) return;
-    slot.inputs = slot.inputs || {}; slot.inputs[name] = value;
-    notify();
-    _scheduleModelsSave();
+    return window.PipelineState.save({ inputs: { [slotId]: { [name]: value } } });
   }
-
-  // Edit a slot's bypass flag from the main editor (an "exposed" control) and persist.
-  // Top-level on the slot, not slot.inputs, so it never gets sent to ComfyUI as a fake widget.
-  function setModelBypass(slotId, value) {
-    const slot = (state.models.slots || []).find((s) => s.id === slotId);
-    if (!slot) return;
-    slot.bypassed = !!value;
-    notify();
-    _scheduleModelsSave();
-  }
-
-  // Set a linked control's shared value (writes through to all member inputs) and persist.
-  function setModelLink(linkId, value) {
-    const link = (state.models.links || []).find((l) => l.id === linkId);
-    if (!link) return;
-    link.value = value;
-    (link.members || []).forEach((m) => {
-      const s = (state.models.slots || []).find((x) => x.id === m.slotId);
-      if (s) { s.inputs = s.inputs || {}; s.inputs[m.input] = value; }
-    });
-    notify();
-    _scheduleModelsSave();
-  }
+  // v4's per-slot bypass and shared "linked input" controls have no v5 counterpart: a node is
+  // swapped, removed (its neighbours rewired) or wired, never silently skipped. Nothing offers them.
+  function setModelBypass() { console.warn("[FunPack] bypass is not part of v5 pipelines"); }
+  function setModelLink() { console.warn("[FunPack] linked inputs are wired in Models & Pipeline in v5"); }
+  async function flushModelsSave() {}
 
   // ── media bin + libraries ─────────────────────────────────────────────────────
   async function loadMedia() { try { state.mediaBin = (await API.listMedia()).media || []; } catch (_) { state.mediaBin = []; } notify(); }
@@ -5041,6 +5004,12 @@
     try { state.ratingLabels = (await API.ratingLabels()).labels || []; } catch (_) { state.ratingLabels = []; }
     await loadModels();
     window.addEventListener("funpack-models-changed", loadModels);
+    // Every landed pipeline edit is the project's copy now; one writer (PipelineState), no snapshot of its own.
+    window.PipelineState.subscribe((slots) => {
+      if (!state.project) return;
+      state.models = { slots: JSON.parse(JSON.stringify(slots || [])) };
+      scheduleSaveSilent();
+    });
     await refreshProjectList();
     // Re-attach to a generation already running in ComfyUI (UI was reloaded mid-run) is
     // GenerateBridge's own job (generate_bridge.js, over app/shell/session.js's wire()) --

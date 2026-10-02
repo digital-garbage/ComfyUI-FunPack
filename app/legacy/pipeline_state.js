@@ -43,6 +43,7 @@
   }
 
   let modulesById = {};
+  let offered = null;         // the server's default pipeline, as first fetched: what a project's saved copy is laid over
   let slots = null;           // null = never loaded this session; loaded exactly once
   // The model file `modulesById` was last filtered for. A save() whose slots
   // still name the same file has nothing new to learn -- re-probing on every
@@ -115,6 +116,7 @@
         // reads `slots`, so it has to be set first.
         const pipe = await API.pipeline();
         slots = pipe.slots || [];
+        offered = JSON.parse(JSON.stringify(slots));
         incomplete = pipe.incomplete || [];
         refused = pipe.refused || [];
         queueable = !!pipe.queueable;
@@ -179,6 +181,7 @@
         refused = (res && res.refused) || [];
         queueable = !!(res && res.queueable);
         saveNotes = (res && res.notes) || [];
+        _changed();
         // A no-op for the common case (same file as last time) -- see
         // refreshManifest()'s own guard. Only a Models & Pipeline edit that
         // actually changes the loader's file does a second round trip here.
@@ -274,8 +277,36 @@
     return save({ values }).then(_reconcilePending);
   }
 
+  // Whoever keeps the pipeline with the project hears every landed edit.
+  const listeners = new Set();
+  function _changed() { listeners.forEach((fn) => { try { fn(slots); } catch (e) { console.error(e); } }); }
+
+  // Put a project's saved pipeline over the one the server offers: the person's inputs (model
+  // files, node values, the module-settings blob), group and bypass win on every slot the
+  // default still has; slots they added are kept. The server's own defaults fill in whatever
+  // the saved copy predates, so an update's new settings are not lost to an old project.
+  // Not announced as a change: it IS the project's own copy.
+  async function adopt(saved) {
+    await ensureLoaded();
+    if (slots === null || !Array.isArray(saved) || !saved.length) return;
+    const byId = new Map(saved.filter((s) => s && typeof s.id === "string").map((s) => [s.id, s]));
+    const have = new Set(offered.map((s) => s.id));
+    const merged = offered.map((def) => {
+      const mine = byId.get(def.id);
+      if (!mine || mine.node !== def.node) return def;
+      const out = { ...def, inputs: { ...(def.inputs || {}), ...(mine.inputs || {}) } };
+      if (mine.group) out.group = mine.group;
+      if (mine.bypassed !== undefined) out.bypassed = mine.bypassed;
+      return out;
+    }).concat(saved.filter((s) => s && typeof s.id === "string" && !have.has(s.id)));
+    slots = merged;
+    const quiet = new Set(listeners);
+    listeners.clear();
+    try { await save({}); } finally { quiet.forEach((fn) => listeners.add(fn)); }
+  }
+
   window.PipelineState = {
-    ensureLoaded, save, valuesAlreadyPlaced, currentValues, setModuleValue,
+    ensureLoaded, save, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     slots: () => slots,
     incomplete: () => incomplete,
