@@ -254,8 +254,23 @@
   // is the split; this is the same layout `join` writes). The anchor is its own field
   // and is not in here. Empty scenes stay -- a story is exactly its scenes.
   let _storyMarker = "qcut";
+  let _storyWords = ["qcut"];
   async function loadStoryMarkers() {
-    try { _storyMarker = ((await API.storyMarkers()).markers || [])[0] || "qcut"; } catch (_) {}
+    const before = _storyMarker;
+    try {
+      _storyWords = (await API.storyMarkers()).markers || _storyWords;
+      _storyMarker = _storyWords[0] || "qcut";
+    } catch (_) { return; }
+    // Changed elsewhere (another tab): the box still holds the old separator, and the
+    // next edit would merge every scene. Rewrite it from the scenes.
+    if (before !== _storyMarker && state.project) syncGlobalPromptFromTimeline();
+  }
+  // A scene whose own text holds a cut word makes the Story show one scene more than
+  // the timeline has. Said where the person looks; it cannot be prevented, only seen.
+  function _storyClash(project) {
+    const re = new RegExp("(?<![\\p{L}\\p{N}_])(?:" + _storyWords.map((w) => w.trim().split(/\s+/)
+      .map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")).join("|") + ")(?![\\p{L}\\p{N}_])", "iu");
+    return (project.scenes || []).find((s) => !s.excluded && re.test(s.text || ""));
   }
   // Another tab or window may have changed the words; the box must write the server's.
   window.addEventListener("focus", () => loadStoryMarkers());
@@ -300,6 +315,8 @@
     const prev = state.project.global_prompt || "";
     if (built === prev && (state.preview?.display_prompt || "") === built) return;
     state.project.global_prompt = built;
+    const clash = _storyClash(state.project);
+    if (clash) state.notice = `A scene's own text contains a cut word (${_storyWords.join(", ")}), so the Story shows it as two scenes. Remove the word from that scene.`;
     state.preview = {
       ...(state.preview || {}),
       display_prompt: built,
@@ -322,7 +339,7 @@
   // any funpack-global-prompt-updated dispatch would carry STALE text (the last completed
   // apply), so consumers (Composer textarea) must not overwrite the user's draft with it.
   function globalPromptApplyPending() {
-    return _pendingGlobalPromptText != null || !!_globalApplyTimer || _applyInFlight > 0;
+    return _pendingGlobalPromptText != null || !!_globalApplyTimer || _applyInFlight > 0 || _failedText != null;
   }
 
   function scheduleGlobalPromptApply(text) {
@@ -347,7 +364,8 @@
     // A split already in flight (its debounce fired before Generate) is not "pending" any
     // more -- wait for it, or Generate would run the scenes the box no longer shows.
     await _lastApply.catch(() => {});
-    if (_applyFailed) throw new Error("The Story could not be split into scenes (is the server reachable?) -- the scenes were not updated, so nothing was generated.");
+    if (_failedText != null) await applyGlobalPromptQuiet(_failedText).catch(() => {});
+    if (_failedText != null) throw new Error("The Story could not be split into scenes (is the server reachable?) -- the scenes were not updated, so nothing was generated.");
   }
 
   function _normalizeSceneText(t) {
@@ -605,7 +623,7 @@
   }
 
   let _lastApply = Promise.resolve();
-  let _applyFailed = false;
+  let _failedText = null;   // the last typed Story whose split failed, kept so Generate can retry it
   function applyGlobalPromptQuiet(text) {
     const p = _applyGlobalPromptQuiet(text);
     _lastApply = p;
@@ -622,7 +640,7 @@
     if (window.__FUNPACK_TOUR__) return false;
     if (!state.project) return false;
     const trimmed = String(text || "").trim();
-    if (trimmed === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) { _applyFailed = false; return true; }
+    if (trimmed === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) { _applySeq++; _failedText = null; return true; }
     const seq = ++_applySeq;
     _applyInFlight++;
     try {
@@ -631,15 +649,19 @@
       try { res = await API.parsePrompt(state.project.id, trimmed); }
       catch (e) {
         console.warn("Global prompt parse failed:", e);
-        _applyFailed = true;
+        if (seq === _applySeq) {
+          _failedText = trimmed;
+          state.notice = "Could not split the Story into scenes — the scenes were not updated. Check the connection and keep typing, or Generate will retry.";
+          notify();
+        }
         return false;
       }
-      _applyFailed = false;
       // The user typed more while this parse was in flight: a newer apply is scheduled (or
       // already running). Distributing this OLDER text now would re-split the timeline to a
       // stale prompt and dispatch a stale updated event — drop it and let the newer one win.
       if (seq !== _applySeq || _pendingGlobalPromptText != null) return false;
       if (!await _distributeGlobalPrompt(trimmed, res)) return false;
+      _failedText = null;
       clearTimeout(saveTimer);
       saveTimer = null;
       _localDirty = true;
@@ -797,6 +819,7 @@
       return;
     }
     state.project = loaded;
+    _failedText = null;
     state.notice = "";
     _applyProjectEditorSettings(loaded);
     const first = state.project.scenes[0]?.id || null;
@@ -1149,10 +1172,8 @@
     });
     await applyGlobalPromptQuiet(tpl.prompt || "");
   }
-  // Back to no template. applyGlobalPromptQuiet REFUSES empty text (an empty parse would
-  // wipe the timeline as a side effect of a stray keystroke), which is why clearing the
-  // box by hand never did anything — the scene texts it is built from stayed put. Clearing
-  // is therefore its own deliberate operation, and it is recorded for undo.
+  // Back to no template. An emptied Story applies like any other text (one empty scene,
+  // recorded for undo); this is the deliberate operation that also drops the pin.
   function clearGlobalPrompt() {
     if (!state.project) return false;
     // Drop any debounced edit first. It carries the text that is being cleared, and would
