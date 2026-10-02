@@ -92,8 +92,8 @@ class Steer:
             return Call(x, 0.0, keep=lambda out, _steered: out)   # a discarded candidate
         where = dit_hooks.current_step(to)
         if where is None:
-            self._say(log.ALERT, "Inactive | this call is not a step of the schedule "
-                                 "(a midpoint sampler?), so it is not steered", "off schedule")
+            self._say(log.ALERT, "this call is not a step of the schedule (a midpoint call), so "
+                                 "it is left unsteered; other calls still are", "off schedule")
             return Call(x, 0.0, keep=lambda out, _steered: out)
         i, n = where
         if self._multi:

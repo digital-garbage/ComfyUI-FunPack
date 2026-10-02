@@ -48,14 +48,16 @@ def _say(message):
 def install(patcher, values, key):
     taste = registry.current().ask("taste_store", patcher)
     if taste is None:
+        measure.problem = "no Taste key is set, so nothing is measured or kept: set a Taste key"
         if measure.enabled():
-            _say("recording is on but no Taste key is set, so nothing is measured or kept: "
-                 "set a Taste key")
+            _say("recording is on but " + measure.problem)
         return None                              # no key: nothing to pair a profile with
     n = dit_hooks.block_count(patcher)
     if n == 0:
-        _say("off: this model's blocks can't be read")
+        measure.problem = "this model's blocks can't be read, so nothing is measured"
+        _say("off: " + measure.problem)
         return None
+    measure.problem = None
     live = {"on": False, "tally": measure.Tally(n)}
 
     def hook_for(block):
@@ -79,8 +81,8 @@ def install(patcher, values, key):
             rows = live["tally"].rows()
             measure.problem = None
             if rows is None:
-                measure.problem = (taste.key, "the last recording run measured nothing (no picture "
-                                              "rows found in any block)")
+                measure.problem = (f"the last recording run (key {taste.key!r}) measured nothing: no "
+                                   "picture rows found in any block")
                 log.warning("FunPack Block influence",
                             "recording is on but nothing was measured this run (no picture rows "
                             "found in any block); this run teaches nothing")

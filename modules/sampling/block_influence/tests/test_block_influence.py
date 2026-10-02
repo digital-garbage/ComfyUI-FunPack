@@ -292,7 +292,7 @@ def test_a_run_that_measured_nothing_says_so_in_the_panel_state_too(tiny_h3, mon
     measure.set_enabled(True)
     monkeypatch.setattr(dit_hooks, "target_rows", lambda *a: None)
     tiny_h3.sample(patched)
-    assert "measured nothing" in measure.state("fox")["problem"] and measure.state("other")["problem"] is None
+    assert "measured nothing" in measure.state("fox")["problem"] and "fox" in measure.state("default")["problem"]
     monkeypatch.undo()
     measure.problem = None
 
@@ -337,3 +337,12 @@ def test_the_panel_banner_goes_away_when_recording_does(tiny_h3, monkeypatch):
     measure.set_enabled(False)
     tiny_h3.sample(patched)                           # recording off: nothing to complain about
     assert measure.state("fox")["problem"] is None
+
+
+def test_the_panel_says_a_taste_key_is_needed_even_when_toggled_on_after_install(tiny_h3):
+    from modules.sampling.block_influence import measure
+    _load(tiny_h3, key=None)                          # installed with recording still off
+    measure.set_enabled(True)
+    assert "Taste key" in measure.state("default")["problem"]
+    _load(tiny_h3)                                    # a key is set: the banner goes
+    assert measure.state("default")["problem"] is None
