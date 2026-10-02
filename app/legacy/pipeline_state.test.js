@@ -91,3 +91,15 @@ test("nothing loaded (ComfyUI unreachable) leaves slots null, never an empty pip
   await P2.adopt([{ id: "model", node: "Loader", inputs: {} }]);
   assert.strictEqual(P2.slots(), null);
 });
+
+test("a project's pipeline waits out an unreachable server and goes in on the first successful load", async () => {
+  const PS = load([]);
+  const good = global.window.MovieEditorAPI.pipeline;
+  let up = false;
+  global.window.MovieEditorAPI.pipeline = async () => { if (!up) throw new Error("down"); return good(); };
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "h3.safetensors" } }]);
+  assert.strictEqual(PS.slots(), null);
+  up = true;
+  await PS.ensureLoaded();
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "h3.safetensors");
+});

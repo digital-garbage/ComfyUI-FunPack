@@ -3741,7 +3741,8 @@
     if (input === "length") {
       // The PROJECT's length per scene, never the scene's own: a scene cropped on the timeline
       // regenerates at the project length (the crop was a timeline decision; a regenerate is new).
-      const n = (targetSceneIds || []).filter((id) => scene(id)).length || 1;
+      // Story scenes, not scene rows: a split clip is one story scene in two rows.
+      const n = new Set((targetSceneIds || []).map((id) => scene(id)).filter(Boolean).map((sc) => genUnitId(sc))).size || 1;
       return n * p.num_frames_per_scene;
     }
     return undefined;
@@ -4705,11 +4706,14 @@
     const saved = (state.project && state.project.models && state.project.models.slots) || [];
     const p = (async () => {
       try {
-        await window.PipelineState.adopt(saved);
+        // Bounded: a hung request must not hold every later project save behind it.
+        await Promise.race([window.PipelineState.adopt(saved), new Promise((r) => setTimeout(r, 20000))]);
         const live = window.PipelineState.slots();
         // Not loaded (ComfyUI unreachable): the project's own copy stays exactly as it was -- an
         // empty live pipeline must never be mistaken for "no pipeline" and saved over it. Tried again.
-        state.models = { slots: live ? JSON.parse(JSON.stringify(live)) : saved };
+        // Everything else the project keeps beside the slots (model family...) stays as it was.
+        state.models = { ...((state.project && state.project.models) || {}),
+                         slots: live ? JSON.parse(JSON.stringify(live)) : saved };
         if (!live && _modelsRetries++ < 3) setTimeout(loadModels, 5000);
         else if (live) _modelsRetries = 0;
       } catch (_) { state.models = { slots: saved }; }
@@ -5014,7 +5018,7 @@
     // Every landed pipeline edit is the project's copy now; one writer (PipelineState), no snapshot of its own.
     window.PipelineState.subscribe((slots) => {
       if (!state.project) return;
-      state.models = { slots: JSON.parse(JSON.stringify(slots || [])) };
+      state.models = { ...(state.models || {}), slots: JSON.parse(JSON.stringify(slots || [])) };
       // Soon, and past a Settings window's hold: a model pick must survive the reload that follows it.
       _localDirty = true;
       clearTimeout(_pipelineSaveTimer);

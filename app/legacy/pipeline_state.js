@@ -65,6 +65,7 @@
   let queueable = false;
   let loading = false;
   let loadError = null;
+  let deferred = null;        // a project's saved pipeline waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
   let saving = false;
   let pending = false;
@@ -127,6 +128,7 @@
       }
       loading = false;
       loadPromise = null;
+      if (slots !== null && deferred) { const d = deferred; deferred = null; await adopt(d); }
     })();
     return loadPromise;
   }
@@ -293,7 +295,10 @@
   // Not announced as a change: it IS the project's own copy.
   async function adopt(saved) {
     await ensureLoaded();
-    if (slots === null || !Array.isArray(saved) || !saved.length) return;
+    // Not loaded (ComfyUI unreachable): remember what the project holds and put it in the moment a
+    // load succeeds, so the default is never what the next edit is built on.
+    if (slots === null) { if (Array.isArray(saved) && saved.length) deferred = saved; return; }
+    if (!Array.isArray(saved) || !saved.length) return;
     // A saved slot is only what the server would accept: a project file outlives the code that
     // wrote it (v4 files name the node differently), and one bad slot refuses every later edit.
     const sound = (s) => s && typeof s.id === "string" && typeof s.node === "string"
@@ -309,16 +314,20 @@
       return out;
     }).concat(extras ? saved.filter((s) => sound(s) && !have.has(s.id)) : []);
     // Replaces whatever pipeline was live: nothing queued for the old one may land on the new.
-    epoch++;
+    const mine = ++epoch;
     pendingBody = null; pending = false;
-    while (saving) await new Promise((r) => setTimeout(r, 20));
+    for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     for (const extras of [true, false]) {
       try {
         const res = await API.editPipeline({ slots: lay(extras) });
+        if (mine !== epoch) return;                     // a later project was opened meanwhile
         if (res && res.slots && !(res.refused || []).length) {
           slots = res.slots;
           incomplete = res.incomplete || []; refused = []; queueable = !!res.queueable;
           saveNotes = res.notes || [];
+          // The modules offered depend on the model this pipeline names, which may differ from the
+          // previous project's: refresh, or the next settings edit drops this project's modules.
+          try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
           return;
         }
       } catch (_) { /* this layering was refused; try the next */ }
