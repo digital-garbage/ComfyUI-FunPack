@@ -116,11 +116,11 @@
     // --- prompt shortcuts (a/b) ---------------------------------------------
     shortcuts: () => j("GET", API("/api/shortcuts")), // {shortcuts:[...]} -- callers unwrap .shortcuts themselves
     suggestionStats: () => unsupported("no revolver in v5 yet"),
-    saveCategory: () => unsupported("shortcut categories are per-shortcut fields in v5, not a separate CRUD"),
+    saveCategory: (item) => j("POST", API("/api/shortcuts/category"), item),
     saveShortcut: (item) => j("POST", API("/api/shortcuts"), item),
     deleteShortcut: (name) => j("DELETE", API(`/api/shortcuts/${encodeURIComponent(name)}`)),
-    exportShortcutsUrl: unsupportedUrl,
-    importShortcuts: () => unsupported("no import route in v5 yet"),
+    exportShortcutsUrl: () => API("/api/shortcuts/export"),
+    importShortcuts: (data, mode) => j("POST", API("/api/shortcuts/import"), { data, mode }),
     clearShortcuts: () => j("POST", API("/api/shortcuts/clear"), {}),
     revolverSettings: () => unsupported("no revolver in v5 yet"),
     setRevolverSettings: () => unsupported("no revolver in v5 yet"),

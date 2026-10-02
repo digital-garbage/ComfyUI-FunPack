@@ -29,6 +29,9 @@ MEDIA_DIR = ROOT / "media"
 # a shortcut is reused across every project, not redefined in each one, so it
 # lives beside PROJECTS_DIR rather than inside any one project file.
 SHORTCUTS_FILE = ROOT / "shortcuts.json"
+# Categories a person made before putting anything in them (the picker offers
+# them); ones a shortcut already names need no entry here.
+SHORTCUT_CATEGORIES_FILE = ROOT / "shortcut_categories.json"
 
 # The words that cut a story into scenes (core/story.py). Global for the same
 # reason the shortcut library is.

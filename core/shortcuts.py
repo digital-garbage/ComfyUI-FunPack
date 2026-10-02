@@ -71,12 +71,13 @@ class Shortcut:
     @staticmethod
     def from_dict(d) -> "Shortcut":
         d = d if isinstance(d, dict) else {}
-        triggers = _clean_list(d.get("triggers"))
+        # v4 files spelled these differently; an import must read them.
+        triggers = _clean_list(d.get("triggers", d.get("activation_words", d.get("activation"))))
         name = str(d.get("name") or "").strip()[:MAX_NAME] or (triggers[0] if triggers else "")
         return Shortcut(
             name=name,
             triggers=triggers,
-            replacements=_clean_list(d.get("replacements"), keep_empty=True),
+            replacements=_clean_list(d.get("replacements", d.get("replacement")), keep_empty=True),
             enabled=bool(d.get("enabled", True)),
             category=str(d.get("category") or "").strip()[:MAX_NAME],
             sub_category=str(d.get("sub_category") or "").strip()[:MAX_NAME],
@@ -142,7 +143,111 @@ def delete(name: str) -> list[Shortcut]:
 def clear() -> list[Shortcut]:
     with _LOCK:
         _save_all([])
+        _save_categories([])
         return []
+
+
+# --- categories --------------------------------------------------------------
+
+def _label(v) -> str:
+    return re.sub(r"\s+", " ", str(v or "").strip())[:MAX_NAME]
+
+
+def _union(cats: list[dict], name, sub="") -> None:
+    name, sub = _label(name), _label(sub)
+    if not name:
+        return
+    entry = next((c for c in cats if c["name"].lower() == name.lower()), None)
+    if entry is None:
+        entry = {"name": name, "sub_categories": []}
+        cats.append(entry)
+    if sub and sub.lower() not in (s.lower() for s in entry["sub_categories"]):
+        entry["sub_categories"].append(sub)
+
+
+def _saved_categories() -> list[dict]:
+    try:
+        data = json.loads(config.SHORTCUT_CATEGORIES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return []
+    out: list[dict] = []
+    for e in data if isinstance(data, list) else []:
+        if isinstance(e, str):
+            e = {"name": e}
+        if isinstance(e, dict):
+            _union(out, e.get("name"))
+            for s in e.get("sub_categories") or []:
+                _union(out, e.get("name"), s)
+    return out
+
+
+def _save_categories(cats: list[dict]) -> None:
+    config.ROOT.mkdir(parents=True, exist_ok=True)
+    tmp = config.SHORTCUT_CATEGORIES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cats, indent=2), encoding="utf-8")
+    tmp.replace(config.SHORTCUT_CATEGORIES_FILE)
+
+
+def categories() -> list[dict]:
+    """[{name, sub_categories}] -- the ones a person made plus every one a
+    shortcut names, so a grouping in use can never be missing from the picker."""
+    cats = _saved_categories()
+    for it in listing():
+        _union(cats, it.category, it.sub_category)
+    return cats
+
+
+def add_category(name, sub_category="") -> list[dict]:
+    if not _label(name):
+        raise ValueError("a category needs a name")
+    with _LOCK:
+        cats = _saved_categories()
+        _union(cats, name, sub_category)
+        _save_categories(cats)
+    return categories()
+
+
+# --- export / import ---------------------------------------------------------
+
+def export_payload() -> dict:
+    return {"version": 2, "shortcuts": [s.to_dict() for s in listing()], "categories": categories()}
+
+
+def import_payload(data, mode: str = "merge") -> int:
+    """Read a file written by export_payload() or by v4 (shortcuts as a list or a
+    name-keyed object, plus categories). `merge` keeps what is here and
+    replaces same-named entries; `replace` starts from the file alone.
+    Entries without a trigger are skipped, not fatal -- one bad row in a
+    long library is not a reason to refuse the rest. Returns how many were read."""
+    if mode not in ("merge", "replace"):
+        raise ValueError("mode is merge or replace")
+    raw = data.get("shortcuts") if isinstance(data, dict) else data
+    if isinstance(raw, dict):
+        raw = [dict({"name": k}, **v) if isinstance(v, dict) else v for k, v in raw.items()]
+    if not isinstance(raw, list):
+        raise ValueError("that file holds no shortcuts")
+    read = [s for s in (Shortcut.from_dict(r) for r in raw) if s.triggers]
+    if not read:
+        raise ValueError("that file holds no shortcut with a trigger")
+    with _LOCK:
+        items = [] if mode == "replace" else listing()
+        for s in read:
+            i = next((i for i, it in enumerate(items) if it.name.lower() == s.name.lower()), None)
+            if i is None:
+                items.append(s)
+            else:
+                items[i] = s
+        _save_all(items)
+        cats = [] if mode == "replace" else _saved_categories()
+        for c in (data.get("categories") if isinstance(data, dict) else None) or []:
+            if isinstance(c, str):
+                c = {"name": c}
+            if isinstance(c, dict):
+                _union(cats, c.get("name"))
+                for sub in c.get("sub_categories") or []:
+                    _union(cats, c.get("name"), sub)
+        _save_categories(cats)
+    return len(read)
 
 
 # --- shortcut expansion ------------------------------------------------------

@@ -630,28 +630,14 @@
       }
       paintGrouping();
 
-      // Per-shortcut refinement key: firing this shortcut marks the named key as training.
-      const existingKey = String(item.refinement_key || "").trim();
-      const useKey = checkRow("Use non-default refinement key", !!existingKey);
-      const keyField = labeled("Refinement key", (() => {
-        const i = el("input", "lib-in"); i.placeholder = "key name"; i.value = existingKey; return i;
-      })());
-      const keyInput = keyField.querySelector("input");
-      keyField.style.display = existingKey ? "" : "none";
-      useKey._cb.onchange = () => { keyField.style.display = useKey._cb.checked ? "" : "none"; if (useKey._cb.checked) keyInput.focus(); };
-      box.append(useKey, keyField);
-
       const actions = el("div", "lib-form-actions");
       const save = el("button", "btn primary tiny", "Save");
       save.onclick = async () => {
         const triggers = splitTriggers(trig.value);
         if (!triggers.length) { alert("At least one trigger is required."); return; }
-        const refKey = useKey._cb.checked ? (keyInput.value || "").trim() : "";
-        if (useKey._cb.checked && !refKey) { alert("Enter a refinement key name, or uncheck the box."); return; }
         await S.saveShortcut({
           name: name.value.trim() || triggers[0], triggers,
           replacements: splitReplacements(reps.value), enabled: en._cb.checked,
-          refinement_key: refKey,
           category: grouping.category, sub_category: grouping.sub_category,
           original_name: item.name || undefined,
         });
@@ -768,90 +754,8 @@
     return wrap;
   }
 
-  // ── files (FunPack on-disk file manager) ────────────────────────────────────────
-  // A read/purge view over the files FunPack writes: the prompt library JSONs and the
-  // refinement-key store (keys + sidecars + value/latent tensors). Lets the user audit
-  // and delete them without leaving the editor. Fetched on demand, not held in the store.
-  let filesData = null;
-  let filesLoading = false;
-
-  function fmtBytes(n) {
-    n = Number(n) || 0;
-    if (n < 1024) return n + " B";
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
-    return (n / (1024 * 1024)).toFixed(1) + " MB";
-  }
-
-  async function loadFiles() {
-    filesLoading = true;
-    try { filesData = await API.listFiles(); }
-    catch (e) { filesData = { groups: [], error: e.message }; }
-    filesLoading = false;
-    if (tab === "Files") render();
-  }
-
-  // After a file mutation that could touch the prompt-library JSONs, re-pull the
-  // Shortcuts/Splits state so those tabs never show entries whose file is now gone.
-  function refreshLibraryAfterFileChange() {
-    if (S.loadShortcuts) S.loadShortcuts();
-    if (S.loadTransitions) S.loadTransitions();
-  }
-
-  function filesTab() {
-    const wrap = el("div", "bin");
-    const toolbar = el("div", "bin-toolbar");
-    const refresh = el("button", "btn ghost tiny", "↻ Refresh"); refresh.onclick = () => loadFiles();
-    toolbar.append(refresh);
-    wrap.append(toolbar);
-
-    if (filesData == null) { if (!filesLoading) loadFiles(); wrap.append(el("div", "pj-meta", "Loading…")); return wrap; }
-    if (filesData.error) wrap.append(el("div", "pj-meta", "Error: " + filesData.error));
-
-    (filesData.groups || []).forEach((g) => {
-      const sec = el("div", "files-group");
-      const head = el("div", "files-group-head");
-      head.append(el("div", "files-group-title", g.label));
-      if (g.files.length) {
-        const clr = el("button", "btn danger tiny", "✕ Delete all");
-        clr.title = "Delete every file in this group";
-        clr.onclick = async () => {
-          if (!confirm(`Delete ALL ${g.files.length} file(s) under "${g.label}"? This cannot be undone.`)) return;
-          try { filesData = await API.clearFiles(g.id); refreshLibraryAfterFileChange(); render(); }
-          catch (e) { alert("Delete-all failed: " + e.message); }
-        };
-        head.append(clr);
-      }
-      sec.append(head);
-      sec.append(el("div", "files-dir", g.dir));
-
-      const list = el("div", "files-list");
-      if (!g.files.length) {
-        list.append(el("div", "pj-meta", "No files."));
-      } else {
-        g.files.forEach((f) => {
-          const row = el("div", "files-row");
-          const main = el("div", "files-main");
-          main.append(el("div", "files-name", f.name));
-          const meta = [fmtBytes(f.size), f.kind || ""].filter(Boolean).join(" · ");
-          main.append(el("div", "files-meta", meta));
-          row.append(main);
-          const del = el("button", "ic-btn danger", "✕"); del.title = "Delete file";
-          del.onclick = async () => {
-            if (!confirm(`Delete "${f.name}"? This cannot be undone.`)) return;
-            try { filesData = await API.deleteFile(g.id, f.name); refreshLibraryAfterFileChange(); render(); }
-            catch (e) { alert("Delete failed: " + e.message); }
-          };
-          row.append(del); list.append(row);
-        });
-      }
-      sec.append(list);
-      wrap.append(sec);
-    });
-    return wrap;
-  }
-
   // ── window + tabs ────────────────────────────────────────────────────────────────
-  const TABS = ["Story", "Shortcuts", "Cuts", "Files"];
+  const TABS = ["Story", "Shortcuts", "Cuts"];
   function render() {
     if (!win) return;
     const st = S.get();
@@ -863,11 +767,10 @@
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
       b.title = name === "Cuts" ? "The words that cut the story into scenes"
         : name === "Story" ? "Every scene as one text"
-          : name === "Files" ? "FunPack files on disk — audit & purge" : name;
+          : name;
       b.onclick = () => {
         if (tab === name) return;
         tab = name; closeModal();
-        if (name === "Files") filesData = null;   // re-fetch fresh on every open
         render();
       };
       tabs.append(b);
@@ -877,8 +780,7 @@
     scroll.append(
       tab === "Story" ? composeTab(st)
         : tab === "Shortcuts" ? shortcutsTab(st)
-          : tab === "Cuts" ? splitMarkersTab()
-            : filesTab(),
+          : splitMarkersTab(),
     );
     shell.append(scroll);
     root.append(shell);

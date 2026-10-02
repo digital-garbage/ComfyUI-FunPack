@@ -3680,10 +3680,10 @@
     const text = targetSceneIds.length > 1
       ? buildGlobalPromptFromTimeline(state.project)
       : (() => {
+          // The scene's own words only: /api/prompt/expand puts the anchor and postfix
+          // around them, and sending the anchor here as well wrote it into the prompt twice.
           const sc = scene(targetSceneIds[0]);
-          const anchor = (state.project.anchor || "").trim();
-          const own = ((sc && sc.text) || "").trim();
-          return [anchor, own].filter(Boolean).join(" ");
+          return ((sc && sc.text) || "").trim();
         })();
     if (text == null) return raw;
     try {

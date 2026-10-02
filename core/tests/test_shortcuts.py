@@ -12,6 +12,7 @@ from core import config, shortcuts
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SHORTCUTS_FILE", tmp_path / "shortcuts.json")
+    monkeypatch.setattr(config, "SHORTCUT_CATEGORIES_FILE", tmp_path / "cats.json")
     return tmp_path
 
 
@@ -195,3 +196,49 @@ def test_a_leading_dollar_in_the_declared_name_is_ignored():
 
 def test_no_variables_declared_returns_text_unchanged():
     assert shortcuts.resolve_variables("plain $x text", []) == "plain $x text"
+
+
+# ── categories, export, import ───────────────────────────────────────────
+
+def test_a_made_category_survives_empty_and_a_used_one_needs_no_entry(store):
+    shortcuts.add_category("Camera", "Moves")
+    shortcuts.save({"name": "x", "triggers": ["x"], "replacements": ["y"], "category": "Light"})
+    assert shortcuts.categories() == [
+        {"name": "Camera", "sub_categories": ["Moves"]}, {"name": "Light", "sub_categories": []}]
+    with pytest.raises(ValueError):
+        shortcuts.add_category("  ")
+    shortcuts.clear()
+    assert shortcuts.categories() == []
+
+
+def test_export_then_replace_import_is_the_same_library(store):
+    shortcuts.save({"name": "Fox", "triggers": ["fox", "vixen"], "replacements": ["red fox", ""],
+                    "category": "Animals", "sub_category": "Wild"})
+    shortcuts.add_category("Empty")
+    payload = shortcuts.export_payload()
+    shortcuts.clear()
+    assert shortcuts.import_payload(payload, "replace") == 1
+    assert [s.to_dict() for s in shortcuts.listing()] == payload["shortcuts"]
+    assert shortcuts.categories() == payload["categories"]
+
+
+def test_import_reads_a_v4_file_and_merge_keeps_what_is_here(store):
+    shortcuts.save({"name": "Keep", "triggers": ["keep"], "replacements": ["k"]})
+    v4 = {"version": 1, "shortcuts": {"fox": {"name": "Fox", "activation_words": ["fox"],
+          "replacement": ["red fox"], "refinement_key": "k1", "category": "Animals"},
+          "bad": {"name": "NoTrigger"}}, "categories": [{"name": "Animals", "sub_categories": ["Wild"]}]}
+    assert shortcuts.import_payload(v4, "merge") == 1
+    assert sorted(s.name for s in shortcuts.listing()) == ["Fox", "Keep"]
+    assert shortcuts.categories() == [{"name": "Animals", "sub_categories": ["Wild"]}]
+    shortcuts.import_payload(v4, "merge")
+    assert len(shortcuts.listing()) == 2          # same name replaces, never duplicates
+
+
+def test_import_refuses_what_holds_nothing_and_changes_nothing(store):
+    shortcuts.save({"name": "Keep", "triggers": ["keep"], "replacements": ["k"]})
+    for bad in ({"shortcuts": {"a": {"name": "no trigger"}}}, "nope", {"shortcuts": 5}):
+        with pytest.raises(ValueError):
+            shortcuts.import_payload(bad, "replace")
+    with pytest.raises(ValueError):
+        shortcuts.import_payload([{"triggers": ["a"]}], "bogus")
+    assert [s.name for s in shortcuts.listing()] == ["Keep"]

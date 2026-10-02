@@ -800,35 +800,72 @@ def register(routes, prefix=None):
     # see core/shortcuts.py. CRUD here; the expansion itself is stateless
     # (below), not tied to saving or loading a shortcut.
 
-    @routes.get(P + "/api/shortcuts")
-    async def _shortcuts_list(_req):
-        return web.json_response({"shortcuts": [s.to_dict() for s in shortcuts_mod.listing()]})
+    def _library():
+        return web.json_response({"shortcuts": [s.to_dict() for s in shortcuts_mod.listing()],
+                                  "categories": shortcuts_mod.categories()})
 
-    @routes.post(P + "/api/shortcuts")
-    async def _shortcuts_save(req):
+    async def _body(req):
         try:
             body = await req.json()
         except Exception:  # noqa: BLE001
-            return web.json_response({"problems": ["that is not JSON"]}, status=400)
-        if not isinstance(body, dict):
-            return web.json_response(
-                {"problems": [f"a shortcut is an object, not a {type(body).__name__}"]}, status=400)
+            return None
+        return body if isinstance(body, dict) else None
+
+    @routes.get(P + "/api/shortcuts")
+    async def _shortcuts_list(_req):
+        return _library()
+
+    @routes.post(P + "/api/shortcuts")
+    async def _shortcuts_save(req):
+        body = await _body(req)
+        if body is None:
+            return web.json_response({"problems": ["a shortcut is a JSON object"]}, status=400)
         original_name = body.get("original_name")
         try:
-            items = shortcuts_mod.save(body, original_name if isinstance(original_name, str) else None)
+            shortcuts_mod.save(body, original_name if isinstance(original_name, str) else None)
         except ValueError as exc:
             return web.json_response({"problems": [str(exc)]}, status=400)
-        return web.json_response({"shortcuts": [s.to_dict() for s in items]})
+        return _library()
 
     @routes.delete(P + "/api/shortcuts/{name}")
     async def _shortcuts_delete(req):
-        items = shortcuts_mod.delete(req.match_info["name"])
-        return web.json_response({"shortcuts": [s.to_dict() for s in items]})
+        shortcuts_mod.delete(req.match_info["name"])
+        return _library()
 
     @routes.post(P + "/api/shortcuts/clear")
     async def _shortcuts_clear(_req):
         shortcuts_mod.clear()
-        return web.json_response({"shortcuts": []})
+        return _library()
+
+    @routes.post(P + "/api/shortcuts/category")
+    async def _shortcuts_category(req):
+        body = await _body(req)
+        if body is None:
+            return web.json_response({"problems": ["send {category, sub_category}"]}, status=400)
+        try:
+            shortcuts_mod.add_category(body.get("category"), body.get("sub_category") or "")
+        except ValueError as exc:
+            return web.json_response({"problems": [str(exc)]}, status=400)
+        return _library()
+
+    @routes.get(P + "/api/shortcuts/export")
+    async def _shortcuts_export(_req):
+        return web.Response(
+            text=json.dumps(shortcuts_mod.export_payload(), indent=2), content_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="funpack_shortcuts.json"'})
+
+    @routes.post(P + "/api/shortcuts/import")
+    async def _shortcuts_import(req):
+        body = await _body(req)
+        if body is None or "data" not in body:
+            return web.json_response({"problems": ["send {data, mode}"]}, status=400)
+        try:
+            n = shortcuts_mod.import_payload(body["data"], body.get("mode") or "merge")
+        except ValueError as exc:
+            return web.json_response({"problems": [str(exc)]}, status=400)
+        lib = json.loads(_library().text)
+        lib["imported"] = n
+        return web.json_response(lib)
 
     # ── story ─────────────────────────────────────────────────────────────
     # All scenes as one box, cut by marker words -- see core/story.py. Split

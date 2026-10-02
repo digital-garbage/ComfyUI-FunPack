@@ -18,6 +18,7 @@ from core import config, routes  # noqa: E402
 def server(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SHORTCUTS_FILE", tmp_path / "shortcuts.json")
     monkeypatch.setattr(config, "MARKERS_FILE", tmp_path / "markers.json")
+    monkeypatch.setattr(config, "SHORTCUT_CATEGORIES_FILE", tmp_path / "cats.json")
     from aiohttp import web as aioweb
 
     app = aioweb.Application()
@@ -134,3 +135,17 @@ def test_story_rejects_bad_bodies_and_an_empty_marker_list(server):
     assert _request(server, "POST", "/funpack/api/story/markers", {"markers": []})[0] == 400
     assert _request(server, "POST", "/funpack/api/story/split", {"text": 5})[0] == 400
     assert _request(server, "POST", "/funpack/api/story/join", {"scenes": [1]})[0] == 400
+
+
+def test_categories_export_import_over_http(server):
+    _, r = _request(server, "POST", "/funpack/api/shortcuts/category", {"category": "Camera", "sub_category": "Moves"})
+    assert r["categories"] == [{"name": "Camera", "sub_categories": ["Moves"]}]
+    assert _request(server, "POST", "/funpack/api/shortcuts/category", {"category": ""})[0] == 400
+    _request(server, "POST", "/funpack/api/shortcuts", {"name": "Fox", "triggers": ["fox"], "replacements": ["red fox"]})
+    status, exported = _request(server, "GET", "/funpack/api/shortcuts/export")
+    assert status == 200 and [s["name"] for s in exported["shortcuts"]] == ["Fox"]
+    _request(server, "POST", "/funpack/api/shortcuts/clear")
+    status, back = _request(server, "POST", "/funpack/api/shortcuts/import", {"data": exported, "mode": "replace"})
+    assert status == 200 and back["imported"] == 1 and back["categories"] == exported["categories"]
+    assert _request(server, "POST", "/funpack/api/shortcuts/import", {"data": {"shortcuts": 5}})[0] == 400
+    assert _request(server, "POST", "/funpack/api/shortcuts/import", {"mode": "merge"})[0] == 400
