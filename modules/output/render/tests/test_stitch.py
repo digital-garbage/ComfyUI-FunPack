@@ -292,3 +292,28 @@ def test_an_audio_lane_with_no_recorded_length_renders_as_long_as_its_file(comfy
     monkeypatch.setattr(media, "is_id", lambda ref: True)
     proj = projects.Project(width=160, height=120, audio_tracks=[{"id": "t", "media_ref": "aaaaaaaaaaaa", "start_sec": 1.0}])
     assert stitch.graphics_duration(proj) == pytest.approx(4.0, abs=0.2)
+
+
+def _video_seconds(path):
+    import subprocess
+    return float(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                 "stream=duration", "-of", "default=nw=1:nk=1", str(path)],
+                                capture_output=True, text=True).stdout.split()[0])
+
+
+@needs_ffmpeg
+def test_picture_and_sound_stay_together_when_a_render_runs_a_little_short(comfy):
+    make_clip(comfy.output / "a.mp4", 1.6)
+    c = lambda **k: clip("a.mp4", dur=2.0, **k)            # noqa: E731
+    out = stitch.render(projects.Project(width=160, height=120), [c(), c(), c()])
+    path = comfy.temp / out["media"]["filename"]
+    assert _video_seconds(path) == pytest.approx(6.0, abs=0.1)
+    assert _audio_seconds(path) == pytest.approx(6.0, abs=0.1)
+
+
+@needs_ffmpeg
+def test_an_audio_lane_whose_file_has_no_sound_is_left_out_and_said(comfy):
+    make_clip(comfy.output / "quiet.mp4", 1.0, audio=False)
+    proj = projects.Project(width=160, height=120, audio_tracks=[{"id": "t", "kind": "separated", "scene_id": "s1"}])
+    out = stitch.render(proj, [clip("quiet.mp4", dur=1.0, scene_id="s1")])
+    assert any("audio lane" in w for w in out["warnings"])

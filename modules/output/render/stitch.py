@@ -68,7 +68,10 @@ def build_filter(clips: list[dict], tracks: list[dict] | None = None, *, keep_or
             except ValueError as exc:
                 raise RenderError(f"Clip {i + 1}: {exc}") from exc
             # One timebase for every clip: xfade refuses to join a concat result to a 1/fps stream.
-            parts.append(f"[{i}:v:0]{','.join(vf)},settb=AVTB[v{i}]")
+            # Exactly `dur` of picture (hold the last frame if the file runs a little short, cut if
+            # whole-frame rounding ran long), so seam offsets and the sound stay on one clock.
+            fit = f",tpad=stop_mode=clone:stop_duration=1000,trim=duration={dur:.3f},setpts=PTS-STARTPTS" if dur > 0 else ""
+            parts.append(f"[{i}:v:0]{','.join(vf)}{fit},settb=AVTB[v{i}]")
             if keep_original:
                 parts.append(_clip_audio(i, c, dur))
         acc_v, acc_a = "[v0]", "[a0]"
@@ -161,7 +164,7 @@ def _audio_tracks(project, clips_by_scene: dict, resolve) -> list[dict]:
                 path = str(found) if found else None
             if (not path or not os.path.isfile(path)) and clip:
                 path = resolve(clip)
-            if not path or not os.path.isfile(path):
+            if not path or not os.path.isfile(path) or not files.has_audio(path):
                 continue
             src_in = t.get("pinned_in_sec", t.get("source_in_sec"))
             src_dur = t.get("pinned_dur", t.get("source_dur"))
@@ -171,7 +174,7 @@ def _audio_tracks(project, clips_by_scene: dict, resolve) -> list[dict]:
             continue
         ref = t.get("media_ref")
         found = media.path_for(ref) if isinstance(ref, str) and media.is_id(ref) else None
-        if found is None:
+        if found is None or not files.has_audio(str(found)):
             continue
         entry = {"path": str(found), "start_sec": start, "volume": vol}
         if t.get("source_in_sec") is not None and t.get("source_dur") is not None:
@@ -264,7 +267,7 @@ def render(project, clips: list[dict]) -> dict:
         for c, path in zip(clips, paths):
             if c.get("in") is not None:
                 cmd += ["-ss", f"{_f(c['in']):.3f}"]
-            if c.get("dur") is not None:
+            if _f(c.get("dur")) > 0:
                 cmd += ["-t", f"{_f(c['dur']):.3f}"]
             cmd += ["-i", path]
     base = 1 if blank else len(clips)
@@ -283,7 +286,7 @@ def render(project, clips: list[dict]) -> dict:
     if len(drawn) < len(project.overlay_tracks):
         warnings.append(f"{len(project.overlay_tracks) - len(drawn)} overlay(s) left out: their picture is gone from the media library.")
     if len(tracks) < len(project.audio_tracks):
-        warnings.append(f"{len(project.audio_tracks) - len(tracks)} audio lane(s) left out: their file is gone.")
+        warnings.append(f"{len(project.audio_tracks) - len(tracks)} audio lane(s) left out: their file is gone or has no sound.")
     for path in pictures:
         cmd += ["-i", path]
     graph, has_audio = build_filter(clips, tracks, keep_original=keep, base_input=base, blank=blank_canvas)
