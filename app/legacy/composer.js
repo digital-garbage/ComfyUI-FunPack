@@ -1,4 +1,4 @@
-// Composer: the home for prompt-craft tools — Compose (global prompt), Shortcuts, Split markers.
+// Composer: the home for prompt-craft tools — Story (every scene as one text), Shortcuts, Cuts.
 // Lives in a draggable FloatingWindow, toggled by the "Composer" button next to the panel tabs.
 (function () {
   const { el, clear } = window.dom;
@@ -6,8 +6,8 @@
   const API = window.MovieEditorAPI;
 
   let win = null;                 // FloatingWindow instance (lazy)
-  let tab = "Compose";
-  let q = { Shortcuts: "", Splits: "" };
+  let tab = "Story";
+  let q = { Shortcuts: "" };
   let gpDraft = null;             // in-progress global-prompt text (Compose tab), or null
   let _modal = null;
 
@@ -195,7 +195,7 @@
     wrap.append(composeTemplatesBar());
 
     const titleRow = el("div", "compose-head");
-    titleRow.append(el("div", "lib-form-title", "Global prompt"));
+    titleRow.append(el("div", "lib-form-title", "Story"));
     const addSc = el("button", "btn ghost tiny", "＋ Add shortcut");
     addSc.title = "Insert a shortcut trigger — browse by category";
     addSc.onclick = () => openShortcutPicker((trig) => insertIntoCompose(trig));
@@ -204,13 +204,13 @@
 
     const ta = el("textarea", "lib-in compose-ta"); ta.rows = 14; ta.value = val;
     ta.placeholder = st.project
-      ? "Anchor, scene texts, and split markers — one combined montage prompt for generation."
-      : "Open a project to edit its global prompt.";
+      ? "Every scene, one after another. Type a cut word to start a new scene."
+      : "Open a project to write its story.";
     ta.disabled = !st.project;
     ta.oninput = () => { gpDraft = ta.value; S.scheduleGlobalPromptApply(ta.value); updateVarHint(); };
     wrap.append(ta);
     wrap.append(el("div", "insp-hint",
-      "Edits apply automatically and stay in sync with the timeline's per-scene prompts. Shortcuts expand at generation time."));
+      "Edits apply to the scenes as you type, and scene edits show here. The anchor is its own field. Shortcuts expand at generation time."));
     composeTextarea = ta;
     if (window.ShortcutAutocomplete) window.ShortcutAutocomplete.attach(ta);
     if (st.project && window.ShortcutSuggest) titleRow.append(window.ShortcutSuggest.bulb(ta));
@@ -722,88 +722,40 @@
   // Rebuilds just the Shortcuts/Splits list rows for the current filter text — assigned by
   // the tab builders so searchRow can refresh results without a focus-dropping full render.
   let fillShortcutList = () => {};
-  let fillSplitList = () => {};
-
-  // ── split markers (generation prompt splits) ────────────────────────────────────
-  const PLACEMENTS = ["global", "start", "end", "silent"];
-  function openSplitMarkerEditor(item) {
-    const isNew = !item.name && !item.trigger;
-    openModal(isNew ? "New split marker" : `Edit “${item.name || item.trigger}”`, (content, close) => {
-      const box = el("div", "lib-form lib-form-modal");
-      const name = el("input", "lib-in"); name.placeholder = "Name"; name.value = item.name || "";
-      const trig = el("input", "lib-in"); trig.placeholder = "Trigger phrase (what appears in the prompt)"; trig.value = item.trigger || "";
-      const place = selectFrom(PLACEMENTS, item.placement || "global");
-      const en = checkRow("Enabled", item.enabled !== false);
-      box.append(labeled("Name", name), labeled("Trigger", trig), labeled("Placement", place), en);
-      box.append(el("div", "insp-hint", "Splits the generation prompt only — not a video dissolve on the timeline."));
-      const actions = el("div", "lib-form-actions");
-      const save = el("button", "btn primary tiny", "Save");
-      save.onclick = async () => {
-        const trigger = trig.value.trim();
-        if (!trigger) { alert("A trigger phrase is required."); return; }
-        await S.saveTransition({
-          name: name.value.trim() || trigger, trigger,
-          placement: place.value, enabled: en._cb.checked,
-          original_name: item.name || undefined,
-        });
-        close(); render();
-      };
-      const cancel = el("button", "btn ghost tiny", "Cancel"); cancel.onclick = close;
-      actions.append(save, cancel); box.append(actions);
-      content.append(box);
-    });
-  }
-
-  function splitMarkersTab(st) {
+  // ── cut words (what splits the Story into scenes) ───────────────────────────────
+  // core/story.py owns the list. The FIRST word is the one the app writes when it lays
+  // scenes out as a story; every word cuts when typed. Only typed words cut -- a shortcut
+  // that expands to one never moves a boundary.
+  function splitMarkersTab() {
     const wrap = el("div", "bin");
-    wrap.append(searchRow("Splits", "Filter split markers…", () => fillSplitList()));
-    const toolbar = el("div", "bin-toolbar");
-    const addBtn = el("button", "btn ghost tiny", "＋ Add"); addBtn.onclick = () => openSplitMarkerEditor({});
-    const expBtn = el("a", "btn ghost tiny", "↑ Export");
-    expBtn.href = API.exportTransitionsUrl(); expBtn.download = "funpack_promptsplit.json"; expBtn.title = "Download split markers as JSON";
-    const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
-    impFile.onchange = () => {
-      const file = impFile.files[0]; impFile.value = "";
-      if (!file) return;
-      chooseImportMode("split markers", async (mode) => {
-        const n = await S.importTransitions(file, mode);
-        if (n != null) alert(`Imported ${n} split marker(s)${mode === "replace" ? " (replaced existing)" : ""}.`);
-      });
-    };
-    const impBtn = el("button", "btn ghost tiny", "↓ Import"); impBtn.title = "Import split markers from JSON";
-    impBtn.onclick = () => impFile.click();
-    const delAll = el("button", "btn danger tiny", "✕ Delete all");
-    delAll.title = "Delete every split marker";
-    delAll.onclick = async () => {
-      if (!(st.transitions || []).length) { alert("No split markers to delete."); return; }
-      if (confirm("Delete ALL split markers? This cannot be undone.")) await S.clearTransitions();
-    };
-    toolbar.append(addBtn, expBtn, impBtn, delAll, impFile); wrap.append(toolbar);
-
+    wrap.append(el("div", "lib-form-title", "Cut words"));
+    wrap.append(el("div", "insp-hint",
+      "Type one of these words in the Story to start a new scene. The first is the one written between scenes for you."));
     const list = el("div", "lib-list");
-    fillSplitList = () => {
+    wrap.append(list);
+    let words = null;
+    const save = async (next) => {
+      try { words = (await API.saveStoryMarkers(next)).markers; await S.loadStoryMarkers(); S.syncGlobalPromptFromTimeline(); }
+      catch (e) { alert(e.message); }
+      paint();
+    };
+    const paint = () => {
       clear(list);
-      const items = filtered(st.transitions || [], q.Splits, (t) => `${t.name || ""} ${t.trigger || ""} ${t.placement || ""}`);
-      items.forEach((t) => {
-        const trig = t.trigger || t.name || t.key;
+      (words || []).forEach((w, i) => {
         const row = el("div", "lib-row");
         const main = el("div", "lib-main");
-        main.append(el("div", "lib-name", (t.name || trig) + (t.enabled === false ? " (off)" : "")));
-        const sub = [t.trigger && t.trigger !== (t.name || "") ? `"${t.trigger}"` : "",
-                     t.placement && t.placement !== "global" ? t.placement : ""].filter(Boolean).join(" · ");
-        if (sub) main.append(el("div", "lib-sub", sub));
+        main.append(el("div", "lib-name", w), ...(i ? [] : [el("div", "lib-sub", "written between scenes")]));
         row.append(main);
-        const apply = el("button", "btn ghost tiny", "apply"); apply.title = "Set as split marker before the selected scene (generation prompt)";
-        apply.onclick = () => { if (!S.applySplitMarkerToSelection(trig)) alert("Select a scene first."); };
-        const edit = el("button", "ic-btn", "✎"); edit.title = "Edit split marker"; edit.onclick = () => openSplitMarkerEditor(t);
-        const del = el("button", "ic-btn danger", "✕"); del.title = "Delete split marker";
-        del.onclick = () => { if (confirm(`Delete split marker "${t.name || trig}"?`)) S.deleteTransition(t.name || trig); };
-        row.append(apply, edit, del); list.append(row);
+        if (i) { const up = el("button", "ic-btn", "↑"); up.title = "Make this the written word"; up.onclick = () => save([w, ...words.filter((x) => x !== w)]); row.append(up); }
+        const del = el("button", "ic-btn danger", "✕"); del.title = "Remove";
+        del.onclick = () => save(words.filter((x) => x !== w));
+        row.append(del); list.append(row);
       });
-      if (!items.length) list.append(el("div", "pj-meta", (st.transitions || []).length ? "No match." : "No split markers yet."));
     };
-    fillSplitList();
-    wrap.append(list);
+    const add = el("input", "lib-in"); add.placeholder = "New cut word, then Enter";
+    add.onkeydown = (e) => { if (e.key === "Enter" && add.value.trim()) { const v = add.value; add.value = ""; save([...words, v]); } };
+    wrap.append(add);
+    API.storyMarkers().then((r) => { words = r.markers; paint(); }).catch((e) => list.append(el("div", "pj-meta", e.message)));
     return wrap;
   }
 
@@ -890,7 +842,7 @@
   }
 
   // ── window + tabs ────────────────────────────────────────────────────────────────
-  const TABS = ["Compose", "Shortcuts", "Splits", "Files"];
+  const TABS = ["Story", "Shortcuts", "Cuts", "Files"];
   function render() {
     if (!win) return;
     const st = S.get();
@@ -900,8 +852,8 @@
     const tabs = el("div", "bin-tabs composer-tabs");
     TABS.forEach((name) => {
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
-      b.title = name === "Splits" ? "Split markers (generation prompt)"
-        : name === "Compose" ? "Global prompt — the whole montage"
+      b.title = name === "Cuts" ? "The words that cut the story into scenes"
+        : name === "Story" ? "Every scene as one text"
           : name === "Files" ? "FunPack files on disk — audit & purge" : name;
       b.onclick = () => {
         if (tab === name) return;
@@ -914,9 +866,9 @@
     shell.append(tabs);
     const scroll = el("div", "composer-scroll");
     scroll.append(
-      tab === "Compose" ? composeTab(st)
+      tab === "Story" ? composeTab(st)
         : tab === "Shortcuts" ? shortcutsTab(st)
-          : tab === "Splits" ? splitMarkersTab(st)
+          : tab === "Cuts" ? splitMarkersTab()
             : filesTab(),
     );
     shell.append(scroll);
@@ -985,7 +937,7 @@
   // Keep the Compose textarea in sync with timeline-driven global-prompt changes,
   // but never clobber what the user is actively typing.
   window.addEventListener("funpack-global-prompt-updated", (e) => {
-    if (tab !== "Compose" || !composeTextarea) return;
+    if (tab !== "Story" || !composeTextarea) return;
     if (document.activeElement === composeTextarea) return;
     // Never rewind the draft while the user's newest text is still debouncing/mid-parse —
     // the event would carry the previous apply's text and eat their last keystrokes.

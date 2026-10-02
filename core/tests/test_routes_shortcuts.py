@@ -17,6 +17,7 @@ from core import config, routes  # noqa: E402
 @pytest.fixture
 def server(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SHORTCUTS_FILE", tmp_path / "shortcuts.json")
+    monkeypatch.setattr(config, "MARKERS_FILE", tmp_path / "markers.json")
     from aiohttp import web as aioweb
 
     app = aioweb.Application()
@@ -116,3 +117,20 @@ def test_prompt_expand_with_variables_and_postfix_disabled(server):
 def test_prompt_expand_on_a_non_object_body_is_a_400(server):
     status, resp = _request(server, "POST", "/funpack/api/prompt/expand", ["nope"])
     assert status == 400 and resp["problems"]
+
+
+def test_story_split_join_and_markers_over_http(server):
+    _, joined = _request(server, "POST", "/funpack/api/story/join", {"scenes": ["a", "", "b"]})
+    status, split = _request(server, "POST", "/funpack/api/story/split", {"text": joined["text"]})
+    assert status == 200 and split["scenes"] == ["a", "", "b"]
+
+    status, saved = _request(server, "POST", "/funpack/api/story/markers", {"markers": ["cut"]})
+    assert status == 200 and saved["markers"] == ["cut"]
+    _, split = _request(server, "POST", "/funpack/api/story/split", {"text": "x cut y qcut z"})
+    assert split["scenes"] == ["x", "y qcut z"]
+
+
+def test_story_rejects_bad_bodies_and_an_empty_marker_list(server):
+    assert _request(server, "POST", "/funpack/api/story/markers", {"markers": []})[0] == 400
+    assert _request(server, "POST", "/funpack/api/story/split", {"text": 5})[0] == 400
+    assert _request(server, "POST", "/funpack/api/story/join", {"scenes": [1]})[0] == 400

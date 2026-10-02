@@ -43,7 +43,7 @@
   // has to be set by hand again. Opening a project restores what it remembers.
   const EDITOR_SETTINGS_KEY = "funpack_editor_settings";
   const EDITOR_SETTINGS_DEFAULTS = {
-    autocomplete: true, suggestions: true, anchorEnabled: true,
+    autocomplete: true, suggestions: true,
     // "Anchor as guide" i2v bypass: declare a custom i2v node so it can be forced
     // to a state (value-only) on anchor_guide runs. anchorGuideBypass = {node, input, value}.
     anchorGuideHasI2v: false, anchorGuideBypass: null,
@@ -87,12 +87,6 @@
     _editorSettings = { ..._editorSettings, [key]: val };
     _persistEditorSettings();
     notify();
-    // Anchor toggle changes how the global prompt maps onto the timeline — re-split now.
-    if (key === "anchorEnabled" && state.project) {
-      const cur = (state.project.global_prompt
-        || state.preview?.display_prompt || state.preview?.combined_prompt || "").trim();
-      if (cur) { _pinnedGlobalPrompt = cur; applyGlobalPromptQuiet(cur).catch(() => {}); }
-    }
   }
 
   /** Put a freshly-opened project's remembered preferences back in force.
@@ -256,29 +250,18 @@
     return (group || []).find((s) => !isGenSubclip(s)) || group[0] || null;
   }
 
-  // Verbatim montage text rebuilt from timeline fields (display mode — transitions between scenes).
+  // The Story box's text: every scene, one marker word between each (core/story.py
+  // is the split; this is the same layout `join` writes). The anchor is its own field
+  // and is not in here. Empty scenes stay -- a story is exactly its scenes.
+  let _storyMarker = "qcut";
+  async function loadStoryMarkers() {
+    try { _storyMarker = ((await API.storyMarkers()).markers || [])[0] || "qcut"; } catch (_) {}
+  }
   function buildGlobalPromptFromTimeline(project) {
     if (!project) return "";
-    const parts = [];
-    const anchor = (project.anchor || "").trim();
-    if (anchor) parts.push(anchor);
     const active = (project.scenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
-    const units = _groupGenerativeUnits(active);
-    units.forEach(([, group], i) => {
-      const root = _rootFromGroup(group);
-      if (!root) return;
-      if (i === 0) {
-        const intro = (project.intro_transition || "").trim();
-        if (intro && anchor) parts.push(intro);
-      } else {
-        const prevRoot = _rootFromGroup(units[i - 1][1]);
-        const tr = (prevRoot?.transition_to_next || "").trim();
-        if (tr) parts.push(tr);
-      }
-      const text = (root.text || "").trim();
-      if (text) parts.push(text);
-    });
-    return parts.join(" ").trim();
+    const texts = _groupGenerativeUnits(active).map(([, group]) => (_rootFromGroup(group)?.text || "").trim());
+    return texts.join(`\n${_storyMarker}\n`);
   }
 
   function _patchAffectsCombinedPrompt(patch) {
@@ -562,29 +545,9 @@
     return { next: merged, ghosts: ghostsOut, usedGhost };
   }
 
-  function _normalizeGlobalPromptParse(trimmed, v) {
-    v = v || {};
-    const text = String(trimmed || "").trim();
-    const anchor = String(v.anchor || "").trim();
-    const scenes = Array.isArray(v.scenes) ? v.scenes : [];
-    const transitions = v.transitions || [];
-    const hasSceneText = scenes.some((s) => String(s.text || "").trim());
-
-    // No split markers / shortcuts detected: the whole global prompt is one scene.
-    if (!hasSceneText && text) {
-      return { anchor: "", scenes: [{ text }], transitions: [] };
-    }
-    // Parser kept everything in anchor with no scene chunks — fold into one scene.
-    if (!hasSceneText && anchor) {
-      return { anchor: "", scenes: [{ text: anchor }], transitions: [] };
-    }
-    // Anchor disabled (editor setting): the leading pre-first-split text is Scene 1,
-    // not a shared anchor. Fold it in as the first scene; the split trigger that began
-    // the old Scene 1 becomes the seam between new Scene 1 and Scene 2 (inferred from text).
-    if (!_editorSettings.anchorEnabled && anchor) {
-      return { anchor: "", scenes: [{ text: anchor }, ...scenes], transitions };
-    }
-    return { anchor: v.anchor || "", scenes, transitions };
+  function _normalizeGlobalPromptParse(_trimmed, v) {
+    const scenes = Array.isArray(v?.scenes) ? v.scenes : [];
+    return { scenes: scenes.length ? scenes : [{ text: "" }], transitions: [] };
   }
 
   function _afterTimelineStructureChange() {
@@ -600,7 +563,6 @@
     if (!(v.scenes || []).length) return false;
     _pinnedGlobalPrompt = trimmed;
     state.project.global_prompt = trimmed;
-    state.project.anchor = v.anchor || "";
     const old = state.project.scenes || [];
     const ghosts = state.sceneGhosts || [];
     const { next, ghosts: ghostsOut } = _alignScenesFromParsed(old, v.scenes, ghosts);
@@ -637,8 +599,7 @@
 
   async function applyGlobalPromptQuiet(text) {
     // Same shape as commit()'s guard above, and needed for the same reason:
-    // this has TWO internal closure-scoped callers (setEditorSetting's
-    // anchorEnabled toggle, applyPromptTemplate) besides its exported
+    // this has an internal closure-scoped caller (applyPromptTemplate) besides its exported
     // property, so blocking Store.applyGlobalPromptQuiet from tour.js alone
     // would miss both. It reaches a real, unmocked API.parsePrompt network
     // call, so it needs its own gate here rather than relying on
@@ -821,8 +782,6 @@
     }
     state.project = loaded;
     state.notice = "";
-    // Before anything reads a preference: anchorEnabled decides how the global prompt
-    // splits into scenes, and syncGlobalPromptFromTimeline() below runs on that answer.
     _applyProjectEditorSettings(loaded);
     const first = state.project.scenes[0]?.id || null;
     state.selectedSceneId = first;
@@ -2983,7 +2942,6 @@
     const parsedScenes = v.scenes || [];
     if (!parsedScenes.length) return;
 
-    state.project.anchor = v.anchor || "";
     const { next, ghosts: ghostsOut } = _alignScenesFromParsed(
       state.project.scenes, parsedScenes, state.sceneGhosts
     );
@@ -4852,6 +4810,7 @@
     try { const t = await API.transitions(); state.transitions = t.transitions || []; } catch (_) { state.transitions = []; }
     await loadNleLibrary();
     await loadShortcuts();
+    await loadStoryMarkers();
     await loadMedia();
     try { state.ratingLabels = (await API.ratingLabels()).labels || []; } catch (_) { state.ratingLabels = []; }
     await loadModels();
@@ -4910,7 +4869,7 @@
     renamePromptTemplate, clearGlobalPrompt,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
-    loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, clearShortcuts, addCategory,
+    loadShortcuts, loadStoryMarkers, saveShortcut, deleteShortcut, importShortcuts, clearShortcuts, addCategory,
     getEditorSettings, getEditorSetting, setEditorSetting,
     loadTransitions, saveTransition, deleteTransition, importTransitions, clearTransitions,
     loadNleLibrary, applyNleEffect, applyNleVideoTransition,

@@ -13,6 +13,7 @@ from . import (backend_log, config, graph as graph_mod, log, media, nodes_manage
                prompt_build,
                settings_card,
                shortcuts as shortcuts_mod,
+               story,
                sysinfo,
                temp_files,
                update as update_mod,
@@ -828,6 +829,47 @@ def register(routes, prefix=None):
     async def _shortcuts_clear(_req):
         shortcuts_mod.clear()
         return web.json_response({"shortcuts": []})
+
+    # ── story ─────────────────────────────────────────────────────────────
+    # All scenes as one box, cut by marker words -- see core/story.py. Split
+    # and join live here, not in the browser, so there is one implementation.
+
+    @routes.get(P + "/api/story/markers")
+    async def _story_markers(_req):
+        return web.json_response({"markers": story.markers()})
+
+    @routes.post(P + "/api/story/markers")
+    async def _story_markers_save(req):
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"problems": ["that is not JSON"]}, status=400)
+        try:
+            saved = story.save_markers(body.get("markers") if isinstance(body, dict) else None)
+        except ValueError as exc:
+            return web.json_response({"problems": [str(exc)]}, status=400)
+        return web.json_response({"markers": saved})
+
+    @routes.post(P + "/api/story/split")
+    async def _story_split(req):
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"problems": ["that is not JSON"]}, status=400)
+        if not isinstance(body, dict) or not isinstance(body.get("text", ""), str):
+            return web.json_response({"problems": ["send {text: string}"]}, status=400)
+        return web.json_response({"scenes": story.split(body.get("text", ""))})
+
+    @routes.post(P + "/api/story/join")
+    async def _story_join(req):
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"problems": ["that is not JSON"]}, status=400)
+        scenes = body.get("scenes") if isinstance(body, dict) else None
+        if not isinstance(scenes, list) or not all(isinstance(x, str) for x in scenes):
+            return web.json_response({"problems": ["send {scenes: [string, ...]}"]}, status=400)
+        return web.json_response({"text": story.join(scenes)})
 
     @routes.post(P + "/api/prompt/expand")
     async def _prompt_expand(req):

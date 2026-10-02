@@ -223,10 +223,6 @@
       "Shortcut ideas",
       "A 💡 next to prompt fields lights up when shortcut categories in your library (camera moves, sub-actions…) aren't used in the prompt. Click it for insertable ideas — it never pops up on its own.",
       "suggestions"));
-    content.append(toggleRow(
-      "Use anchor",
-      "Text before the first split trigger is a shared anchor prepended to every scene. Turn off to make that leading text Scene 1 instead.",
-      "anchorEnabled"));
     content.append(revolverSection());
     content.append(anchorGuideSection());
     body.append(content);

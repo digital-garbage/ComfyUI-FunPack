@@ -95,19 +95,15 @@
     // v4's `preview()` rendered a whole scene-by-scene montage plan server
     // side; v5 has no render/stitch stage yet (HIGH #2, not built). Stub.
     preview: () => unsupported("no render/stitch stage yet"),
-    // `parsePrompt` becomes an adapter onto /api/prompt/expand: fetch the
-    // project for its anchor/postfix/variables, then expand THIS text the
-    // same way generation would.
-    async parsePrompt(id, prompt) {
-      const project = await ClientAPI.getProject(id).catch(() => null);
-      return j("POST", API("/api/prompt/expand"), {
-        text: prompt,
-        anchor: project?.anchor || "",
-        postfix: project?.postfix || "",
-        postfix_enabled: project?.postfix_enabled !== false,
-        variables: project?.variables || [],
-      });
+    // The Story box's text, cut into scenes by the marker words (core/story.py).
+    // The split is the server's -- one implementation -- and the anchor is NOT
+    // part of a story, so it is never reported back: store.js leaves it alone.
+    async parsePrompt(_id, prompt) {
+      const { scenes } = await j("POST", API("/api/story/split"), { text: prompt });
+      return { parsed_verbatim: { anchor: "", scenes: scenes.map((text) => ({ text })), transitions: [] } };
     },
+    storyMarkers: () => j("GET", API("/api/story/markers")),            // {markers:[...]}
+    saveStoryMarkers: (markers) => j("POST", API("/api/story/markers"), { markers }),
 
     // --- transitions library (c) -- no equivalent in v5 --------------------
     transitions: () => unsupported("no transitions library in v5 yet"),
