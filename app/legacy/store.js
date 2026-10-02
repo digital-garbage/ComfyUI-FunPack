@@ -3684,6 +3684,13 @@
       }
     }
 
+    // The Chat comments ride with the project and reach the enhancer for this run.
+    const enhancer = (window.PipelineState.slots() || []).find((s) => s.node === "FunPackEnhancePrompt");
+    const chat = state.project && state.project.editor_settings && state.project.editor_settings.enhance_chat;
+    if (enhancer && Array.isArray(chat) && chat.length) {
+      raw[enhancer.id] = { ...(raw[enhancer.id] || {}), chat: JSON.stringify(chat) };
+    }
+
     const found = GB.slotForRole("generation.prompt");
     if (!found) return { raw, unwiredNotice };
     const text = targetSceneIds.length > 1

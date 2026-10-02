@@ -79,9 +79,17 @@ def h3_reference_to_video():
             "invert_crop": "disabled",
             "bboxes": ""}},
 
+        # Off by default: the prompt passes straight through and the model never
+        # runs. Before the markup node because a rewrite changes the words the
+        # markup points at -- (word:1.5) typed with this on is sent to the model
+        # as text, and the node says so.
+        {"id": "enhance", "group": "Preparation", "node": "FunPackEnhancePrompt",
+         "roles": [{"at": "generation.prompt", "input": "text", "label": "Prompt"},
+                   {"at": "generation.prompt", "input": "enabled", "label": "Enhance prompt"}],
+         "inputs": {"clip": ["clip", 0], "text": "", "enabled": False,
+                    "image": ["source_image", 0]}},
         {"id": "markup", "group": "Preparation", "node": "FunPackPromptMarkup",
-         "roles": [{"at": "generation.prompt", "input": "text", "label": "Prompt"}],
-         "inputs": {"text": ""}},
+         "inputs": {"text": ["enhance", 0]}},
         {"id": "r2v", "group": "Preparation", "node": "MiniMaxH3ReferenceToVideo",
          "roles": [{"at": "project.video", "input": "length", "label": "Length"}],
          "inputs": {

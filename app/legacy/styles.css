@@ -2903,3 +2903,14 @@ body.tour-mode { overflow: hidden; }
 .sp-macro-val, .ov-range-val, .pin-slot-pos,
 .zone-head-right, .project-row .pj-meta,
 input[type=number] { font-variant-numeric: tabular-nums; }
+
+/* Composer > Enhance / Chat */
+.enh-bin { display: flex; flex-direction: column; gap: 8px; }
+.enh-shortcuts { display: flex; flex-direction: column; gap: 2px; max-height: 160px; overflow: auto; }
+.enh-chat { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; }
+.enh-bubble { padding: 6px 9px; border-radius: 8px; font-size: 12px; white-space: pre-wrap; max-width: 90%; }
+.enh-model { align-self: flex-start; background: rgba(255,255,255,0.05); }
+.enh-last { border: 1px dashed rgba(255,255,255,0.25); background: transparent; }
+.enh-user { align-self: flex-end; background: rgba(106,169,255,0.18); }
+.enh-readout { border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px; }
+.enh-after { font-size: 12px; margin-top: 4px; }

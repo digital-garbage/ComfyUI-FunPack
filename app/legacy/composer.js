@@ -753,7 +753,7 @@
   }
 
   // ── window + tabs ────────────────────────────────────────────────────────────────
-  const TABS = ["Story", "Shortcuts", "Cuts"];
+  const TABS = ["Story", "Shortcuts", "Cuts", "Enhance", "Chat"];
   function render() {
     if (!win) return;
     const st = S.get();
@@ -765,6 +765,8 @@
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
       b.title = name === "Cuts" ? "The words that cut the story into scenes"
         : name === "Story" ? "Every scene as one text"
+          : name === "Enhance" ? "A language model rewrites the prompt before it is encoded"
+            : name === "Chat" ? "Comment on the last rewrite"
           : name;
       b.onclick = () => {
         if (tab === name) return;
@@ -778,10 +780,21 @@
     scroll.append(
       tab === "Story" ? composeTab(st)
         : tab === "Shortcuts" ? shortcutsTab(st)
-          : splitMarkersTab(),
+          : tab === "Cuts" ? splitMarkersTab()
+            : paneFromEnhancer(),
     );
     shell.append(scroll);
     root.append(shell);
+  }
+
+  // Enhance / Chat live in enhancer_ui.js; they repaint themselves through render().
+  function paneFromEnhancer() {
+    const ui = window.EnhancerUI;
+    if (!ui) return el("div", "insp-hint", "The enhancer panel did not load.");
+    const pane = tab === "Chat" ? ui.chatTab : ui.enhanceTab;
+    // `ready` fetches the defaults and the last run once, then repaints.
+    if (!paneFromEnhancer.ready) { paneFromEnhancer.ready = true; ui.ready().then(render); }
+    return pane(render);
   }
 
   function ensureWin() {

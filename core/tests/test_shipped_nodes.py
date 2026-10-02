@@ -55,6 +55,11 @@ FROZEN = {
     "FunPackLatentUpscalerLoader": ["upscaler_name"],
     "FunPackCutOpening": ["images", "frames", "fps", "audio"],
     "FunPackPromptMarkup": ["text"],
+    "FunPackEnhancePrompt": [
+        "clip", "text", "enabled", "instructions", "max_length", "greedy", "temperature", "top_p",
+        "top_k", "min_p", "repetition_penalty", "presence_penalty", "seed", "thinking", "image", "use_image",
+        "shortcuts", "lorebooks", "reference_intro", "chat",
+    ],
     "FunPackApplyPromptMarkup": ["model", "clip", "positive", "latent", "markup"],
     "FunPackLatentResample": ["latent", "upscaler", "operation", "scale", "positive", "negative"],
     "FunPackModifierSettings": ["settings"],
