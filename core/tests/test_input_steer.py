@@ -206,3 +206,21 @@ def test_a_sampler_that_calls_twice_per_step_is_declared_and_left_alone():
     second = s.begin(x, sched[2:3], to(2))
     assert second.gate == 0.0 and second.keep(out, out + 1) is out
     assert _said("more than once per step") and not _said("Active |")
+
+
+def test_a_schedule_that_repeats_a_sigma_is_blamed_on_the_schedule_not_the_sampler():
+    log._reset()
+    s, x = input_steer.Steer("t"), _x()
+    sched = torch.tensor([1.0, 0.8, 0.8, 0.5, 0.0])
+    step = s.begin(x, sched[1:2], {"sample_sigmas": sched, "sigmas": sched[1:2]})
+    assert step.gate == 0.0 and _said("repeats a sigma") and not _said("second-order")
+
+
+def test_after_a_multi_call_verdict_nothing_is_held_or_steered_for_the_run():
+    s, x, out = input_steer.Steer("t"), _x(), _x()
+    sched = torch.tensor([1.0, 0.9, 0.7, 0.4, 0.0])
+    to = lambda i: {"sample_sigmas": sched, "sigmas": sched[i:i + 1]}
+    s.begin(x, sched[1:2], to(1))
+    s.begin(x, sched[1:2], to(1))                       # same index twice: the verdict
+    later = s.begin(x, sched[2:3], to(2))
+    assert later.gate == 0.0 and later.keep(out, out + 1) is out and not any(s._pushes.values())

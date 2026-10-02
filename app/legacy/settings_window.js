@@ -692,6 +692,12 @@
           `Needs ${biState.min_per_group}+ liked and ${biState.min_per_group}+ disliked `
           + "before it can say which blocks run hotter on the ones you liked."));
       }
+      if (biState && biState.problem) box.append(el("div", "sw-hint", biState.problem));
+      if (biState && biState.skipped > 0) {
+        box.append(el("div", "sw-hint",
+          `${biState.skipped} of ${runs} recorded run(s) are left out of the table: they were `
+          + "made on a model with a different number of blocks."));
+      }
       if (biError) box.append(el("div", "sw-hint", biError));
       const tbl = biProfileTable(biState);
       if (tbl) {

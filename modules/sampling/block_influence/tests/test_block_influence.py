@@ -262,3 +262,50 @@ def test_clear_and_export_act_on_exactly_the_key_named_never_a_fallback(tiny_h3,
     assert measure.path_of("a").exists() and measure.path_of("b").exists()
     measure.clear("b")
     assert measure.path_of("a").exists() and not measure.path_of("b").exists()
+
+
+def test_every_run_builds_its_own_tally_and_turning_recording_off_stops_it(tiny_h3, monkeypatch):
+    from modules.sampling.block_influence import measure
+    from modules.system.taste import store
+    made = []
+    real = measure.Tally
+    monkeypatch.setattr(measure, "Tally", lambda n: made.append(1) or real(n))
+    patched, _ = _load(tiny_h3)
+    made.clear()
+    measure.set_enabled(True)
+    monkeypatch.setattr(store, "current_prompt_id", lambda: "run-1")
+    tiny_h3.sample(patched)
+    monkeypatch.setattr(store, "current_prompt_id", lambda: "run-2")
+    tiny_h3.sample(patched)
+    assert len(made) == 2                               # a fresh tally per run
+    assert torch.load(store.ROOT / "fox" / "block_influence.pending.pt")["prompt_id"] == "run-2"
+    measure.set_enabled(False)
+    monkeypatch.setattr(store, "current_prompt_id", lambda: "run-3")
+    tiny_h3.sample(patched)
+    assert torch.load(store.ROOT / "fox" / "block_influence.pending.pt")["prompt_id"] == "run-2"
+
+
+def test_a_run_that_measured_nothing_says_so_in_the_panel_state_too(tiny_h3, monkeypatch):
+    from core import dit_hooks
+    from modules.sampling.block_influence import measure
+    patched, _ = _load(tiny_h3)
+    measure.set_enabled(True)
+    monkeypatch.setattr(dit_hooks, "target_rows", lambda *a: None)
+    tiny_h3.sample(patched)
+    assert "measured nothing" in measure.state("fox")["problem"]
+    monkeypatch.undo()
+    measure.problem = None
+
+
+def test_clearing_one_key_never_answers_with_another_keys_state(tiny_h3, monkeypatch):
+    from modules.sampling.block_influence import measure
+    from modules.system.taste import store
+    for key in ("a", "b"):
+        monkeypatch.setattr(store, "current_prompt_id", lambda key=key: f"run-{key}")
+        patched, _ = _load(tiny_h3, key=key)
+        measure.set_enabled(True)
+        tiny_h3.sample(patched)
+        store.rate(f"run-{key}", "liked")
+    measure.clear("a")
+    assert measure.state("a", fallback=False)["runs"] == 0
+    assert measure.state("a")["key"] == "b"             # the placeholder lookup still resolves

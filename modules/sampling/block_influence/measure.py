@@ -9,6 +9,10 @@ MIN_PER_GROUP = 2           # liked AND disliked before a difference is one
 SWITCH = config.ROOT / "block_influence.enabled"   # on disk: a fresh rental resumes recording
 
 
+# Why the last recording run stored nothing, for the panel (cleared by a run that did store).
+problem = None
+
+
 def enabled() -> bool:
     try:
         return SWITCH.read_text().strip() == "1"
@@ -107,7 +111,7 @@ def profile(rows) -> dict:
     adds something new, negative it partly undoes it.
     """
     rows = [r for r in rows if {"ratio", "raw", "novelty"} <= set(r["rows"])]
-    empty = {"overall": {}, "difference": None, "share": {}, "novelty": {}, "mean_novelty": None,
+    empty = {"used": 0, "overall": {}, "difference": None, "share": {}, "novelty": {}, "mean_novelty": None,
              "flatness": None, "n_liked": 0, "n_disliked": 0}
     if not rows:
         return empty
@@ -133,7 +137,7 @@ def profile(rows) -> dict:
     vals = overall[torch.isfinite(overall)]
     flat = float(vals.std(unbiased=False) / vals.mean()) if len(vals) and abs(float(vals.mean())) > 1e-12 else None
     nov = novelty[torch.isfinite(novelty)]
-    return {"overall": table(overall), "difference": difference, "share": share,
+    return {"used": len(rows), "overall": table(overall), "difference": difference, "share": share,
             "novelty": table(novelty), "mean_novelty": float(nov.mean()) if len(nov) else None,
             "flatness": flat, "n_liked": int(liked.sum()), "n_disliked": int(disliked.sum())}
 
@@ -155,12 +159,15 @@ def resolve(key):
     return latest if latest and _kind(latest).path().exists() else key
 
 
-def state(key) -> dict:
-    """What Settings > Refinement & Taste shows for one key."""
-    key = resolve(key)
+def state(key, fallback=True) -> dict:
+    """What Settings > Refinement & Taste shows for one key. `fallback` False answers for
+    exactly that key (after a Clear, which must not show another key's data)."""
+    key = resolve(key) if fallback else key
     rows = _kind(key).rows()
-    return {"key": key, "enabled": enabled(), "runs": len(rows), "min_per_group": MIN_PER_GROUP,
-            **profile(rows)}
+    prof = profile(rows)
+    return {"key": key, "enabled": enabled(), "runs": len(rows), "problem": problem,
+            "skipped": len(rows) - prof["used"], "min_per_group": MIN_PER_GROUP,
+            **prof}
 
 
 def clear(key):

@@ -74,7 +74,10 @@ def install(patcher, values, key):
         out = executor(*args, **kwargs)
         if live["on"]:
             rows = live["tally"].rows()
+            measure.problem = None
             if rows is None:
+                measure.problem = ("recording is on but the last run measured nothing (no picture "
+                                   "rows found in any block)")
                 log.warning("FunPack Block influence",
                             "recording is on but nothing was measured this run (no picture rows "
                             "found in any block); this run teaches nothing")
@@ -120,7 +123,7 @@ def routes(table, base, web):
         try:
             key = key_of(req, body)                      # exactly the key named: never a fallback
             measure.clear(key)
-            return web.json_response(measure.state(key))
+            return web.json_response(measure.state(key, fallback=False))
         except ValueError as exc:
             return web.json_response({"why": str(exc)}, status=400)
 

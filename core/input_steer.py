@@ -22,6 +22,8 @@ that step: pushes are filed by the step that made them. A schedule that restarts
 (index goes backwards) drops everything held.
 """
 
+import torch
+
 from . import dit_hooks, log
 
 # Below this share of the input it joins, a push is reported as barely acting (v4: 3%).
@@ -95,15 +97,23 @@ class Steer:
         i, n = where
         if self._multi:
             return Call(x, 0.0, keep=lambda out, _steered: out)
+        sched = to["sample_sigmas"]
+        if len(torch.unique(sched[:-1])) < n:
+            # current_step finds a step by its sigma: a repeated one is two steps with one name.
+            self._multi = True
+            self._say(log.ALERT, "Inactive | this schedule repeats a sigma value, so steps cannot "
+                                 "be told apart and edits are not carried; use a schedule with "
+                                 "distinct sigmas", "repeated sigma")
+            return Call(x, 0.0, keep=lambda out, _steered: out)
         if i == self._seen.get(self._key(to)) and n > 1:
             # The same step index twice in a row for one conditioning: a corrector call
             # (heun, dpm_2 ...) or a split batch. A push cannot be placed on the right call,
             # so it is dropped and nothing is steered for the rest of the run.
             self._multi = True
             self._pushes = {}
-            self._say(log.ALERT, "Inactive | the sampler calls the model more than once per "
-                                 "step (a second-order sampler?), so edits are not carried; "
-                                 "use euler-style sampling", "multi call")
+            self._say(log.ALERT, "Inactive | the model is called more than once per step "
+                                 "(a second-order sampler, or a conditioning split across "
+                                 "calls), so edits are not carried; use euler-style sampling", "multi call")
             return Call(x, 0.0, keep=lambda out, _steered: out)
         if n <= 1:
             self._say(log.ALERT, "Inactive | a 1-step schedule has no step before the output "
