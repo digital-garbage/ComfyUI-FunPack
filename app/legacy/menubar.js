@@ -20,13 +20,13 @@
 
   const refinementKeyImportInput = (function () {
     const inp = document.createElement("input");
-    inp.type = "file"; inp.accept = ".json,application/json"; inp.style.display = "none";
+    inp.type = "file"; inp.accept = ".zip,application/zip"; inp.style.display = "none";
     inp.onchange = async () => {
       const file = inp.files?.[0];
       inp.value = "";
       if (!file) return;
       try {
-        const data = JSON.parse(await file.text());
+        const data = file;
         let res;
         try {
           res = await window.MovieEditorAPI.importRefinementKey(data);
@@ -49,15 +49,7 @@
   })();
 
   function _projectRefinementKey() {
-    const st = S.get();
-    const raw = st.project?.studio_inputs?.studio_settings;
-    if (!raw) return "";
-    try {
-      const parsed = JSON.parse(raw);
-      return String(parsed?.refinement_key || "").trim();
-    } catch (_) {
-      return "";
-    }
+    return String(S.get().project?.refinement_key || "").trim();
   }
 
   async function exportRefinementKey() {
@@ -98,7 +90,7 @@
         // Atomic: removes the key AND its sidecars (value function, blessed
         // attention/K-V banks, creativity latent, velocity memory). Deleting only
         // <key>.json by hand orphans those and they keep steering future runs.
-        if (!confirm(`Delete refinement key "${key}"?\n\nThis removes its learned state AND all sidecars (value function, blessed attention/K-V banks, creativity latent, velocity memory). This cannot be undone.`)) {
+        if (!confirm(`Delete refinement key "${key}"?\n\nThis removes everything learned under it. This cannot be undone.`)) {
           return;
         }
         try {

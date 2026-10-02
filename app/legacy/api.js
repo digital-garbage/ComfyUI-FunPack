@@ -395,10 +395,27 @@
     tasteKeys: () => j("GET", API("/api/m/taste/keys")),
 
     // --- refinement keys / absolute taste store (c) -- not built in v5 -------
-    refinementKeys: () => unsupported("refinement keys are not built in v5 yet"),
-    importRefinementKey: () => unsupported("refinement keys are not built in v5 yet"),
-    exportRefinementKeyFile: async () => { throw new Error("refinement keys are not built in v5 yet"); },
-    deleteRefinementKey: () => unsupported("refinement keys are not built in v5 yet"),
+    refinementKeys: () => j("GET", API("/api/m/taste/keys")),
+    // A key travels as a zip (the exported file), sent as the raw body: it can be tens of MB.
+    importRefinementKey: async (file, opts) => {
+      const name = String(file.name || "key").replace(/\.zip$/i, "").trim();
+      const q = new URLSearchParams({ name });
+      if (opts && opts.overwrite) q.set("overwrite", "1");
+      const res = await fetch(API("/api/m/taste/keys/import?" + q), { method: "POST", body: file });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { const e = new Error(body.why || `HTTP ${res.status}`); e.exists = !!body.exists; e.key = body.key; throw e; }
+      return body;
+    },
+    exportRefinementKeyFile: async (key) => {
+      const res = await fetch(API(`/api/m/taste/keys/${encodeURIComponent(key)}/export`));
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.why || `HTTP ${res.status}`); }
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement("a");
+      link.href = url; link.download = `${key}.zip`;
+      document.body.appendChild(link); link.click(); link.remove();
+      URL.revokeObjectURL(url);
+    },
+    deleteRefinementKey: (key) => j("DELETE", API(`/api/m/taste/keys/${encodeURIComponent(key)}`)),
     absoluteStoreInfo: () => unsupported("refinement keys are not built in v5 yet"),
     clearAbsoluteStore: () => unsupported("refinement keys are not built in v5 yet"),
   };

@@ -1002,7 +1002,7 @@
         clear(wrap);
         wrap.append(el("div", "sw-hint",
           "Refinement keys hold what FunPack has learned from your ratings for a named session. "
-          + "They are stored on this ComfyUI instance as <key>.json plus sidecar banks."));
+          + "They are stored on this ComfyUI instance as one folder per key."));
 
         const st = S ? S.get() : {};
         const studioOn = !!window.PipelineCaps?.usesFunpackStudio?.(st);
@@ -1020,8 +1020,8 @@
 
         wrap.append(el("div", "sw-rows-label", "Refinement keys"));
         const rows = el("div", "sw-rows");
-        rows.append(actionRow("Export refinement key", "Download a key as <key>.json.", "⬇ Export…", () => M.exportRefinementKey?.()));
-        rows.append(actionRow("Import refinement key", "Load a previously exported <key>.json onto this instance.", "Import…", () => M.importRefinementKeyFile?.()));
+        rows.append(actionRow("Export refinement key", "Download a key as <key>.zip.", "⬇ Export…", () => M.exportRefinementKey?.()));
+        rows.append(actionRow("Import refinement key", "Load a previously exported <key>.zip onto this instance.", "Import…", () => M.importRefinementKeyFile?.()));
         wrap.append(rows);
 
         wrap.append(el("div", "sw-rows-label", "Trajectory probe"));
@@ -1043,7 +1043,7 @@
         wrap.append(el("div", "sw-rows-label", "Danger zone"));
         const danger = el("div", "sw-rows");
         danger.append(actionRow("Delete refinement key",
-          "Removes a key AND all its sidecars (value function, blessed banks, creativity latent, velocity memory).",
+          "Removes a key and everything learned under it. This cannot be undone.",
           "Delete…", () => M.deleteRefinementKey?.(), { danger: true }));
         danger.append(actionRow("Clear global taste store",
           "Wipes the Absolute store pooled from every rated run (applied in absolute/both steer mode).",
