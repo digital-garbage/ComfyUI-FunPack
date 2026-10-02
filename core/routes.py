@@ -343,7 +343,12 @@ def register(routes, prefix=None):
                                   f"{type(from_output).__name__}"],
                      "queueable": False}, status=400)
 
-        if action == "replace":
+        if action == "add":
+            if not isinstance(body.get("node"), str):
+                return web.json_response(
+                    {"problems": ["a node is named by a string"], "queueable": False}, status=400)
+            slots, problems = graph_mod.add(slots, body.get("node"), body.get("group"))
+        elif action == "replace":
             slots, problems = graph_mod.replace(slots, slot_id, body.get("node"))
         elif action == "remove":
             slots, problems = graph_mod.remove(slots, slot_id)

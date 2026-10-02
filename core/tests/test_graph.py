@@ -551,3 +551,29 @@ def test_a_role_is_checked_for_shape_and_nothing_else():
     assert any("label must be text" in p for p in
                graph.shape_problems([{"id": "a", "node": "N",
                                       "roles": [{"at": "x", "input": "t", "label": 5}]}]))
+
+
+# --- adding ----------------------------------------------------------------
+
+def test_a_node_can_be_added_to_a_group_and_gets_its_own_id():
+    slots, problems = graph.add(pipeline(), "PrimitiveInt", "My group", SCHEMAS)
+    assert problems == [] and slots[-1] == {"id": "primitiveint", "node": "PrimitiveInt", "inputs": {}, "group": "My group"}
+    slots, _ = graph.add(slots, "PrimitiveInt", None, SCHEMAS)
+    assert [s["id"] for s in slots[-2:]] == ["primitiveint", "primitiveint_2"] and "group" not in slots[-1]
+
+
+def test_adding_what_is_not_installed_or_to_a_blank_group_is_refused():
+    slots, problems = graph.add(pipeline(), "Nope", None, SCHEMAS)
+    assert problems and len(slots) == len(pipeline())
+    assert graph.add(pipeline(), "Empty", "  ", SCHEMAS)[1]
+
+
+def test_a_new_node_can_be_wired_into_several_inputs_and_later_ones_added_to_the_same_link():
+    """The v4 'linked input' that froze once made: here it is one Primitive and ordinary wires."""
+    slots, _ = graph.add(pipeline(), "PrimitiveInt", None, SCHEMAS)
+    slots, _ = graph.add(slots, "Empty", None, SCHEMAS)
+    slots, problems = graph.wire(slots, "empty", "width", "primitiveint", 0, SCHEMAS)
+    assert problems == []
+    slots, _ = graph.add(slots, "Empty", None, SCHEMAS)
+    slots, problems = graph.wire(slots, "empty_2", "width", "primitiveint", 0, SCHEMAS)
+    assert problems == [] and graph.slots_by_id(slots)["empty_2"]["inputs"]["width"] == ["primitiveint", 0]

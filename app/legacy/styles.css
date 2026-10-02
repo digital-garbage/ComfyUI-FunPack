@@ -2950,3 +2950,9 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .enh-user { align-self: flex-end; background: rgba(106,169,255,0.18); }
 .enh-readout { border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px; }
 .enh-after { font-size: 12px; margin-top: 4px; }
+
+/* Models & Pipeline: shape editing (group, swap, remove, wiring) */
+.eng-structure { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; }
+.eng-structure-actions { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+.eng-wire { margin-top: 4px; }
+.eng-field-wrap { display: flex; flex-direction: column; }

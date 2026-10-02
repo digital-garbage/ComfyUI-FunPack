@@ -50,10 +50,156 @@
   }
 
   function setInput(slotId, name, value) {
+    lastRefusal = [];
     PS.save({ inputs: { [slotId]: { [name]: value } } }).then(render);
   }
 
+  // ── the pipeline's shape: groups, swapping, removing, wiring, adding ────────────
+  // Every structural change goes to the server, which refuses what would not build (a type
+  // that does not fit, a loop, a node whose output something still reads) and says why; the
+  // reason is shown here and nothing changes.
+  let lastRefusal = [];
+
+  async function structural(body) {
+    const res = await PS.edit(body);
+    lastRefusal = res.refused || [];
+    await ensureNodesLoaded();
+    render();
+    return !lastRefusal.length;
+  }
+
+  function otherGroups(slot) {
+    return groupsWithSlots().filter((g) => g !== (slot.group || "Other"));
+  }
+
+  function groupSelect(slot) {
+    const sel = el("select", "eng-select");
+    const here = slot.group || "Other";
+    [here, ...otherGroups(slot)].forEach((g) => { const o = el("option", "", g); o.value = g; sel.append(o); });
+    const add = el("option", "", "New group…"); add.value = "\u0000new"; sel.append(add);
+    sel.onchange = () => {
+      if (sel.value === "\u0000new") {
+        const name = (prompt("Name of the new group:", "") || "").trim();
+        if (!name) { sel.value = here; return; }
+        group = name;
+        PS.setGroup(slot.id, name).then(render);
+      } else {
+        PS.setGroup(slot.id, sel.value).then(render);
+      }
+    };
+    return sel;
+  }
+
+  // A search box over every installed node; `onPick(className)` gets the choice.
+  function pickNode(title, onPick) {
+    const overlay = el("div", "modal-overlay slot-picker-overlay");
+    const box = el("div", "modal slot-picker-modal");
+    box.append(el("div", "modal-title", title));
+    const input = el("input", "slot-picker-input");
+    input.type = "text"; input.placeholder = "Search installed nodes by name or category…";
+    const list = el("div", "slot-picker-list");
+    const note = el("div", "sw-row-hint", "");
+    let timer = null, ticket = 0;
+    const close = () => overlay.remove();
+    async function run() {
+      const mine = ++ticket;
+      let found;
+      try { found = await API.searchNodes(input.value, 40); }
+      catch (e) { clear(list); note.textContent = `Could not search: ${e.message || e}`; return; }
+      if (mine !== ticket) return;
+      clear(list);
+      (found.nodes || []).forEach((n) => {
+        const row = el("button", "slot-picker-row", n.title || n.node);
+        row.append(el("span", "slot-picker-hint", `${n.category || ""}${n.outputs && n.outputs.length ? " → " + n.outputs.join(", ") : ""}`));
+        row.onclick = () => { close(); onPick(n.node); };
+        list.append(row);
+      });
+      note.textContent = found.total > (found.nodes || []).length
+        ? `${found.nodes.length} of ${found.total} shown: type more to narrow it.` : (found.nodes || []).length ? "" : "Nothing matches.";
+    }
+    input.oninput = () => { clearTimeout(timer); timer = setTimeout(run, 200); };
+    const cancel = el("button", "btn ghost", "Cancel");
+    cancel.onclick = close;
+    box.append(input, note, list, cancel);
+    overlay.append(box);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    overlay.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
+    document.body.append(overlay);
+    input.focus();
+    run();
+  }
+
+  function structureRow(slot) {
+    const wrap = el("div", "eng-structure");
+    wrap.append(field("Group", groupSelect(slot), "Cards in the sidebar. Any node can live in any group."));
+    const actions = el("div", "eng-structure-actions");
+    const swap = el("button", "btn ghost tiny", "Swap node…");
+    swap.title = "Use a different node here. It must still produce what the nodes after it read.";
+    swap.onclick = () => pickNode(`Swap ${slotDisplayLabel(slot)} for…`, (cls) => structural({ action: "replace", slot: slot.id, node: cls }));
+    const rm = el("button", "btn ghost tiny danger", "Remove");
+    rm.title = "Take this node out; what it fed is rewired to what fed it, when that is unambiguous.";
+    rm.onclick = () => { if (confirm(`Remove ${slotDisplayLabel(slot)} from the pipeline?`)) structural({ action: "remove", slot: slot.id }); };
+    actions.append(swap, rm);
+    wrap.append(actions);
+    return wrap;
+  }
+
+  // Outputs of other slots that could feed an input of type `type`, as {value, label}.
+  function sourcesFor(slot, type) {
+    const out = [];
+    (PS.slots() || []).forEach((other) => {
+      if (other.id === slot.id) return;
+      const spec = nodesByClass[other.node];
+      if (!spec || !spec.outputs) return;
+      spec.outputs.forEach((kind, i) => {
+        if (kind !== type && kind !== "*" && type !== "*") return;
+        const name = (spec.output_names && spec.output_names[i]) || kind;
+        out.push({ value: `${other.id}\u0000${i}`, label: `${slotDisplayLabel(other)} · ${name}` });
+      });
+    });
+    return out;
+  }
+
+  function wiringControl(slot, input, type, current, allowValue) {
+    const sel = el("select", "eng-select");
+    const wired = Array.isArray(current);
+    const value = el("option", "", allowValue ? "A value (typed here)" : "Not connected"); value.value = "";
+    sel.append(value);
+    if (wired) {
+      const known = sourcesFor(slot, type).some((s) => s.value === `${current[0]}\u0000${current[1]}`);
+      if (!known) { const o = el("option", "", `${current[0]} · output ${current[1]}`); o.value = `${current[0]}\u0000${current[1]}`; sel.append(o); }
+    }
+    sourcesFor(slot, type).forEach((s) => { const o = el("option", "", `Fed by ${s.label}`); o.value = s.value; sel.append(o); });
+    sel.value = wired ? `${current[0]}\u0000${current[1]}` : "";
+    sel.onchange = () => {
+      if (!sel.value) { structural({ action: "unwire", slot: slot.id, input }); return; }
+      const [from, idx] = sel.value.split("\u0000");
+      structural({ action: "wire", slot: slot.id, input, from_slot: from, from_output: Number(idx) });
+    };
+    return sel;
+  }
+
   function controlForWidget(slot, widget) {
+    if (Array.isArray(slot.inputs && slot.inputs[widget.name])) {
+      return field(widget.name, wiringControl(slot, widget.name, widget.type, slot.inputs[widget.name], true),
+        "Fed by another node: change it there, or pick “A value” to type one here.");
+    }
+    const row = controlForPlainWidget(slot, widget);
+    // Another node can drive this value (one Primitive shared by several inputs is how a "link" is made).
+    if (widget.type !== "COMBO" || (widget.choices || []).length) {
+      const sources = sourcesFor(slot, widget.type);
+      if (sources.length) {
+        // Own row beneath the value: squeezed beside a text box it left the box a few pixels wide.
+        const both = document.createDocumentFragment();
+        both.append(row, field("↳ or take it from", wiringControl(slot, widget.name, widget.type, null, true),
+          "Another node's output can drive this value; one Primitive can drive several inputs."));
+        return both;
+      }
+    }
+    return row;
+  }
+
+  function controlForPlainWidget(slot, widget) {
     const current = slot.inputs && slot.inputs[widget.name] !== undefined
       ? slot.inputs[widget.name] : widget.default;
     const hint = widget.tooltip || "";
@@ -226,12 +372,17 @@
     const spec = nodesByClass[slot.node];
     const g = rowsGroup(pane, slotDisplayLabel(slot));
     if (spec === undefined) { g.append(hintEl("Loading…")); return; }
+    g.append(structureRow(slot));
     if (spec === null) {
-      g.append(hintEl(`${slot.node} is not installed — this slot can't be edited or run.`));
+      g.append(hintEl(`${slot.node} is not installed — this slot can't be edited or run. Swap it for another node, or remove it.`));
       return;
     }
+    (spec.sockets || []).forEach((socket) => {
+      g.append(field(socket.name, wiringControl(slot, socket.name, socket.type, slot.inputs && slot.inputs[socket.name], false),
+        socket.required ? `${socket.type} · needed` : socket.type));
+    });
     if (!spec.widgets || !spec.widgets.length) {
-      g.append(hintEl("Nothing to configure — every input on this node is wired from another slot."));
+      if (!(spec.sockets || []).length) g.append(hintEl("Nothing to configure on this node."));
       return;
     }
     spec.widgets.forEach((widget) => g.append(controlForWidget(slot, widget)));
@@ -241,7 +392,8 @@
     const incomplete = PS.incomplete();
     const refused = PS.refused();
     const notes = PS.saveNotes();
-    if (refused.length) pane.append(hintEl(`Could not save: ${refused.join(" ")}`));
+    if (lastRefusal.length) pane.append(hintEl(`Not changed: ${lastRefusal.join(" ")}`));
+    else if (refused.length) pane.append(hintEl(`Could not save: ${refused.join(" ")}`));
     if (notes.length) pane.append(hintEl(notes.join(" ")));
     if (incomplete.length) {
       const box = el("div", "sw-hint eng-detail");
@@ -265,6 +417,13 @@
     const groups = groupsWithSlots();
     if (!groups.length) { pane.append(hintEl("This pipeline has no slots.")); return; }
     if (!group || !groups.includes(group)) group = groups[0];
+
+    const addRow = el("div", "eng-structure-actions");
+    const addBtn = el("button", "btn ghost tiny", `＋ Add a node to ${group}`);
+    addBtn.title = "Put any installed node in this group, then wire it to the nodes around it.";
+    addBtn.onclick = () => pickNode(`Add a node to ${group}`, (cls) => structural({ action: "add", node: cls, group }));
+    addRow.append(addBtn);
+    pane.append(addRow);
 
     (PS.slots() || [])
       .filter((s) => (s.group || "Other") === group)

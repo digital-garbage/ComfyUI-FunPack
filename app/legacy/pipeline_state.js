@@ -65,6 +65,7 @@
   let queueable = false;
   let loading = false;
   let loadError = null;
+  let removed = new Set();    // default slots the person took out of this project's pipeline
   let adoptGate = null;       // a promise while a project's pipeline is being put in
   let deferred = null;        // a project's saved pipeline waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
@@ -286,6 +287,51 @@
     return save({ values }).then(_reconcilePending);
   }
 
+  // A change to the pipeline's SHAPE (add / replace / remove / wire / unwire), sent on its own: two
+  // of these folded into one request would lose the first. Waits for any value edit in flight and
+  // for a project's pipeline going in. -> {refused: [...]}; empty when it happened.
+  async function edit(body) {
+    await ensureLoaded();
+    if (slots === null) return { refused: ["The pipeline has not loaded: is ComfyUI reachable?"] };
+    if (adoptGate) await adoptGate;
+    for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+    if (saving) return { refused: ["A save is still in progress: try again in a moment."] };
+    const mine = epoch;
+    saving = true;
+    let refusedNow = [];
+    try {
+      const res = await API.editPipeline({ slots, ...body });
+      if (mine !== epoch) return { refused: ["The project was changed while this was being sent."] };
+      refusedNow = (res && res.refused) || [];
+      if (res && res.slots && !refusedNow.length) slots = res.slots;
+      incomplete = (res && res.incomplete) || [];
+      refused = refusedNow;
+      queueable = !!(res && res.queueable);
+      saveNotes = (res && res.notes) || [];
+      if (!refusedNow.length) {
+        if (body.action === "remove" && offered.some((s) => s.id === body.slot)) removed.add(body.slot);   // the person's own additions just go
+        if (body.action === "add") (res.slots || []).forEach((s) => removed.delete(s.id));
+        try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
+        _changed();
+      }
+    } catch (e) {
+      refusedNow = [e && e.message ? e.message : String(e)];
+    } finally {
+      saving = false;
+    }
+    if (pending) save({});                              // a value edit queued behind this one
+    return { refused: refusedNow };
+  }
+
+  // A slot's group is the person's own to name (any node in any group).
+  function setGroup(slotId, group) {
+    const slot = (slots || []).find((s) => s.id === slotId);
+    if (!slot) return Promise.resolve();
+    const name = String(group || "").trim();
+    if (name) slot.group = name; else delete slot.group;
+    return save({});
+  }
+
   // Whoever keeps the pipeline with the project hears every landed edit.
   const listeners = new Set();
   function _changed() { listeners.forEach((fn) => { try { fn(slots); } catch (e) { console.error(e); } }); }
@@ -296,14 +342,14 @@
   // the saved copy predates, so an update's new settings are not lost to an old project.
   // Not announced as a change: it IS the project's own copy.
   // True when the project's pipeline is in (or it had none to put in); false when it could not be.
-  async function adopt(saved) {
+  async function adopt(saved, removedIds) {
     let open;
     const gate = new Promise((r) => { open = r; });
     adoptGate = gate;                                   // before anything awaits: an edit right behind this waits too
-    try { await ensureLoaded(); return await _adopt(saved); } finally { if (adoptGate === gate) adoptGate = null; open(); }
+    try { await ensureLoaded(); return await _adopt(saved, removedIds); } finally { if (adoptGate === gate) adoptGate = null; open(); }
   }
 
-  async function _adopt(saved) {
+  async function _adopt(saved, removedIds) {
     // Not loaded (ComfyUI unreachable): remember what the project holds and put it in the moment a
     // load succeeds, so the default is never what the next edit is built on.
     if (slots === null) { if (Array.isArray(saved) && saved.length) deferred = saved; return !(Array.isArray(saved) && saved.length); }
@@ -314,9 +360,12 @@
       && s.inputs && typeof s.inputs === "object" && !Array.isArray(s.inputs);
     const byId = new Map(saved.filter(sound).map((s) => [s.id, s]));
     const have = new Set(offered.map((s) => s.id));
-    const lay = (extras) => offered.map((def) => {
+    // Slots the person took out stay out; ones whose node they swapped keep their swap.
+    const gone = new Set(Array.isArray(removedIds) ? removedIds.filter((x) => typeof x === "string") : []);
+    const lay = (extras) => offered.filter((def) => !gone.has(def.id)).map((def) => {
       const mine = byId.get(def.id);
-      if (!mine || mine.node !== def.node) return JSON.parse(JSON.stringify(def));
+      if (!mine) return JSON.parse(JSON.stringify(def));
+      if (mine.node !== def.node) return JSON.parse(JSON.stringify(mine));
       const out = { ...def, inputs: { ...(def.inputs || {}), ...mine.inputs } };
       if (typeof mine.group === "string" && mine.group) out.group = mine.group;
       if (typeof mine.bypassed === "boolean") out.bypassed = mine.bypassed;
@@ -324,6 +373,7 @@
     }).concat(extras ? saved.filter((s) => sound(s) && !have.has(s.id)) : []);
     // Replaces whatever pipeline was live: nothing queued for the old one may land on the new.
     const mine = ++epoch;
+    removed = new Set(gone);
     pendingBody = null; pending = false;
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     for (const extras of [true, false]) {
@@ -349,8 +399,9 @@
   }
 
   window.PipelineState = {
-    ensureLoaded, save, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
+    ensureLoaded, save, edit, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
+    removedIds: () => [...removed],
     slots: () => slots,
     incomplete: () => incomplete,
     refused: () => refused,

@@ -30,13 +30,13 @@ test("a project's saved pipeline lays its values over the server's default, keep
   const PS = load(posts);
   await PS.adopt([
     { id: "model", node: "Loader", group: "Mine", inputs: { file: "h3.safetensors" } },
-    { id: "gen", node: "OtherNode", inputs: { steps: 99 } },                 // a different node: not the same slot
+    { id: "gen", node: "OtherNode", inputs: { steps: 99 } },                 // a swapped node: the person's swap stays
     { id: "extra", node: "Added", inputs: { x: 1 } },                         // the person's own
   ]);
   const by = Object.fromEntries(PS.slots().map((s) => [s.id, s]));
   assert.deepStrictEqual(by.model.inputs, { file: "h3.safetensors", dtype: "bf16" });
   assert.strictEqual(by.model.group, "Mine");
-  assert.strictEqual(by.gen.inputs.steps, 8);
+  assert.deepStrictEqual([by.gen.node, by.gen.inputs.steps], ["OtherNode", 99]);
   assert.ok(by.extra);
 });
 
@@ -131,4 +131,26 @@ test("a failed module-list fetch is retried on the next save, not remembered as 
   assert.deepStrictEqual(Object.keys(PS.modulesById()), []);
   await PS.save({ inputs: { model: { file: "z.safetensors" } } });
   assert.deepStrictEqual(Object.keys(PS.modulesById()), ["m"]);
+});
+
+
+test("a slot the person removed stays removed when the project is opened again", async () => {
+  const PS = load([]);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: {} }], ["gen"]);
+  assert.deepStrictEqual(PS.slots().map((s) => s.id), ["model"]);
+  assert.deepStrictEqual(PS.removedIds(), ["gen"]);
+});
+
+test("a structural edit is sent on its own and its refusal is handed back", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.ensureLoaded();
+  global.window.MovieEditorAPI.editPipeline = async (body) => {
+    posts.push(body);
+    return { slots: body.slots, refused: ["nope"], incomplete: [], queueable: false };
+  };
+  const res = await PS.edit({ action: "remove", slot: "gen" });
+  assert.deepStrictEqual(res.refused, ["nope"]);
+  assert.strictEqual(posts.at(-1).action, "remove");
+  assert.deepStrictEqual(PS.removedIds(), []);                 // refused: nothing is remembered as removed
 });

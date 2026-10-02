@@ -23,6 +23,7 @@ into a field nothing rendered, so toggling it did nothing and said nothing --
 the user's word for it was "terrifying".
 """
 
+import re
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import comfy_types
@@ -544,6 +545,31 @@ def consumers(slots: Sequence[dict], slot_id: str) -> List[Tuple[str, str, int]]
             if is_link(value) and value[0] == slot_id:
                 found.append((slot["id"], name, value[1]))
     return found
+
+
+def add(slots: Sequence[dict], class_type: str, group: Optional[str] = None,
+        schemas: Optional[Schemas] = None) -> Tuple[List[dict], List[str]]:
+    """Put a new slot at the end, holding `class_type`, with nothing set and nothing wired.
+
+    The id is made from the node's name and is never one already taken, so adding the same
+    node twice gives two slots, not a collision. Wiring it in is a separate, checked step.
+    """
+    schemas = schemas or from_comfyui()
+    if schemas.of(class_type) is None:
+        return list(slots), [f"there is no node called {class_type!r} installed"]
+    if group is not None and (not isinstance(group, str) or not group.strip()):
+        return list(slots), ["a group is a name; leave it out to leave the slot ungrouped"]
+    taken = {slot["id"] for slot in slots}
+    stem = re.sub(r"[^a-z0-9]+", "_", class_type.lower()).strip("_") or "node"
+    n = 1
+    new_id = stem
+    while new_id in taken:
+        n += 1
+        new_id = f"{stem}_{n}"
+    slot = {"id": new_id, "node": class_type, "inputs": {}}
+    if group:
+        slot["group"] = group.strip()
+    return [dict(s) for s in slots] + [slot], []
 
 
 def replace(slots: Sequence[dict], slot_id: str, class_type: str,
