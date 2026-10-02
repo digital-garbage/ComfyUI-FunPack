@@ -35,6 +35,7 @@ app/playwright-report/
 /projects/
 /media/
 /shortcuts.json
+/markers.json
 
 # Taste keys: what your ratings taught, per rental
 taste/
