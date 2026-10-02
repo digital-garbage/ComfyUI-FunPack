@@ -1136,18 +1136,22 @@
     })) });
   }
   function promptTemplates() { return (state.project && state.project.prompt_templates) || []; }
-  function savePromptTemplate(name, promptText) {
+  // A template is the scenes themselves -- not the Story text, whose cut word may be gone
+  // by the time it is applied.
+  async function savePromptTemplate(name) {
     if (!state.project) return;
     const nm = String(name || "").trim();
     if (!nm) return;
+    await flushGlobalPromptApply();      // what was just typed counts
     const snapshot = {
       name: nm,
-      prompt: String(promptText != null ? promptText : (state.project.global_prompt || "")),
+      anchor: state.project.anchor || "",
+      scenes: _storyRoots(state.project).map((r) => (r.text || "").trim()),
       variables: JSON.parse(JSON.stringify(state.project.variables || [])),
     };
     const tpls = (state.project.prompt_templates || []).filter((t) => t && t.name !== nm);
     tpls.push(snapshot);
-    patchProject({ prompt_templates: tpls });
+    patchProject({ prompt_templates: tpls, active_prompt_template: nm });
   }
   function deletePromptTemplate(name) {
     if (!state.project) return;
@@ -1176,12 +1180,17 @@
     if (!state.project) return;
     const tpl = (state.project.prompt_templates || []).find((t) => t && t.name === name);
     if (!tpl) return;
-    // Restore the saved variables first, then distribute the prompt (re-splits the timeline).
+    // Restore the saved variables first, then distribute the scenes (re-splits the timeline).
     patchProjectQuiet({
       variables: JSON.parse(JSON.stringify(tpl.variables || [])),
       active_prompt_template: name,
+      ...(typeof tpl.anchor === "string" ? { anchor: tpl.anchor } : {}),
     });
-    await applyGlobalPromptQuiet(tpl.prompt || "");
+    if (!Array.isArray(tpl.scenes)) return applyGlobalPromptQuiet(tpl.prompt || "");   // a v4 template
+    _historyRecord();
+    const text = tpl.scenes.join(`\n${_storyMarker}\n`);
+    await _distributeGlobalPrompt(text, { parsed_verbatim: { scenes: tpl.scenes.map((t) => ({ text: t })) } });
+    scheduleSaveSilent();
   }
   // Back to no template. An emptied Story applies like any other text (one empty scene,
   // recorded for undo); this is the deliberate operation that also drops the pin.
@@ -3697,6 +3706,8 @@
           // queue gives real variety across separate Generate clicks, same
           // as app/boot.js's own queueInputs().
           seed: Math.floor(Math.random() * 2 ** 31) || 1,
+          // A real run moves each shortcut's revolver on; every other expansion only peeks.
+          commit: true,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -13,6 +13,7 @@ from core import config, shortcuts
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SHORTCUTS_FILE", tmp_path / "shortcuts.json")
     monkeypatch.setattr(config, "SHORTCUT_CATEGORIES_FILE", tmp_path / "cats.json")
+    monkeypatch.setattr(config, "REVOLVER_FILE", tmp_path / "rev.json")
     return tmp_path
 
 
@@ -292,3 +293,53 @@ def test_a_library_with_case_duplicates_edits_and_deletes_the_named_one(store):
     assert [s.name for s in shortcuts.listing()] == ["Fox"]
     shortcuts.delete("FOX")                      # no exact match: the case-insensitive one goes
     assert shortcuts.listing() == []
+
+
+# ── revolver ─────────────────────────────────────────────────────────────
+
+def _abc(store):
+    shortcuts.save({"name": "Letter", "triggers": ["lt"], "replacements": ["A", "B", "C"]})
+    shortcuts.save({"name": "Solo", "triggers": ["solo"], "replacements": ["only"]})
+
+
+def test_off_by_default_and_a_peek_never_saves(store):
+    _abc(store)
+    assert shortcuts.revolver_settings() == {"enabled": False, "random": False}
+    shortcuts.set_revolver_settings(enabled=True)
+    first = shortcuts.expand("lt lt lt solo", seed=1)
+    assert first == "A B C only"
+    assert shortcuts.expand("lt lt lt solo", seed=2) == "A B C only"       # peeked: same answer again
+
+
+def test_commit_advances_the_cycle_across_calls_and_wraps(store):
+    _abc(store)
+    shortcuts.set_revolver_settings(enabled=True)
+    got = [shortcuts.expand("lt", seed=i, commit=True) for i in range(1, 8)]
+    assert got == ["A", "B", "C", "A", "B", "C", "A"]
+
+
+def test_random_cycle_repeats_nothing_until_the_set_is_spent(store):
+    _abc(store)
+    shortcuts.set_revolver_settings(enabled=True, random_order=True)
+    for seed in (1, 2):
+        round_ = [shortcuts.expand("lt", seed=seed * 10 + i, commit=True) for i in range(3)]
+        assert sorted(round_) == ["A", "B", "C"]
+
+
+def test_editing_the_replacements_or_flipping_a_mode_restarts_the_cycle(store):
+    _abc(store)
+    shortcuts.set_revolver_settings(enabled=True)
+    shortcuts.expand("lt", commit=True)
+    shortcuts.save({"name": "Letter", "triggers": ["lt"], "replacements": ["X", "Y"]})
+    assert shortcuts.expand("lt", commit=True) == "X"
+    shortcuts.set_revolver_settings(random_order=True)
+    assert shortcuts.load_revolver()["state"] == {}
+    shortcuts.set_revolver_settings(random_order="yes")        # not a bool: ignored
+    assert shortcuts.revolver_settings()["random"] is True
+
+
+def test_a_corrupt_revolver_file_means_off_not_a_crash(store):
+    config.REVOLVER_FILE.write_text("{nope", encoding="utf-8")
+    assert shortcuts.revolver_settings() == {"enabled": False, "random": False}
+    _abc(store)
+    assert shortcuts.expand("lt", seed=3) in ("A", "B", "C")

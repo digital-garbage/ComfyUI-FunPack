@@ -13,6 +13,7 @@ from . import (backend_log, config, graph as graph_mod, log, media, nodes_manage
                prompt_build,
                settings_card,
                shortcuts as shortcuts_mod,
+               suggestions,
                story,
                sysinfo,
                temp_files,
@@ -804,13 +805,6 @@ def register(routes, prefix=None):
         return web.json_response({"shortcuts": [s.to_dict() for s in shortcuts_mod.listing()],
                                   "categories": shortcuts_mod.categories()})
 
-    async def _body(req):
-        try:
-            body = await req.json()
-        except Exception:  # noqa: BLE001
-            return None
-        return body if isinstance(body, dict) else None
-
     @routes.get(P + "/api/shortcuts")
     async def _shortcuts_list(_req):
         return _library()
@@ -847,6 +841,22 @@ def register(routes, prefix=None):
         except ValueError as exc:
             return web.json_response({"problems": [str(exc)]}, status=400)
         return _library()
+
+    @routes.get(P + "/api/shortcuts/revolver")
+    async def _revolver_get(_req):
+        return web.json_response(shortcuts_mod.revolver_settings())
+
+    @routes.post(P + "/api/shortcuts/revolver")
+    async def _revolver_set(req):
+        body = await _body(req)
+        if body is None:
+            return web.json_response({"problems": ["send {enabled, random}"]}, status=400)
+        return web.json_response(
+            shortcuts_mod.set_revolver_settings(body.get("enabled"), body.get("random")))
+
+    @routes.get(P + "/api/shortcuts/suggestion_stats")
+    async def _suggestion_stats(_req):
+        return web.json_response(await asyncio.to_thread(suggestions.stats))
 
     @routes.get(P + "/api/shortcuts/export")
     async def _shortcuts_export(_req):
@@ -933,6 +943,7 @@ def register(routes, prefix=None):
             postfix_enabled=body.get("postfix_enabled") is not False,
             variables=variables if isinstance(variables, list) else None,
             seed=seed if isinstance(seed, int) and not isinstance(seed, bool) else 0,
+            commit=body.get("commit") is True,
         )
         return web.json_response({"text": expanded})
 

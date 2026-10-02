@@ -501,3 +501,17 @@ def test_variables_that_are_not_a_list_read_back_empty():
 def test_entries_in_variables_that_are_not_objects_are_dropped():
     p = projects.Project.from_dict({"variables": ["nope", 5, {"name": "ok", "value": "1"}]})
     assert p.variables == [{"name": "ok", "value": "1"}]
+
+
+def test_templates_and_editor_settings_survive_a_save_and_bad_entries_do_not():
+    from core.projects import Project
+    p = Project.from_dict({
+        "prompt_templates": [
+            {"name": "A", "anchor": "x", "scenes": ["s1", 5], "variables": [{"name": "$v", "value": "1"}]},
+            {"name": "  "}, "junk", {"name": "A", "scenes": ["later wins"]}, {"name": "V4", "prompt": "old"}],
+        "active_prompt_template": "A", "editor_settings": {"autocomplete": False, 3: "x"}})
+    d = p.to_dict()
+    names = {t["name"]: t for t in d["prompt_templates"]}
+    assert names["A"]["scenes"] == ["later wins"] and names["V4"]["prompt"] == "old"
+    assert d["editor_settings"] == {"autocomplete": False} and d["active_prompt_template"] == "A"
+    assert Project.from_dict(d).to_dict() == d

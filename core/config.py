@@ -31,6 +31,9 @@ MEDIA_DIR = ROOT / "media"
 SHORTCUTS_FILE = ROOT / "shortcuts.json"
 # Categories a person made before putting anything in them (the picker offers
 # them); ones a shortcut already names need no entry here.
+# Shortcut revolver: its two switches and each shortcut's place in its cycle.
+# Beside the library but NOT in its export -- it is state, not content.
+REVOLVER_FILE = ROOT / "shortcut_revolver.json"
 SHORTCUT_CATEGORIES_FILE = ROOT / "shortcut_categories.json"
 
 # The words that cut a story into scenes (core/story.py). Global for the same

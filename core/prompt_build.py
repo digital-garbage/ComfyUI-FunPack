@@ -22,9 +22,10 @@ from . import shortcuts as shortcuts_mod
 
 
 def build(scene_text: str, *, anchor: str = "", postfix: str = "",
-          postfix_enabled: bool = True, variables=None, shortcuts=None, seed: int = 0) -> str:
+          postfix_enabled: bool = True, variables=None, shortcuts=None, seed: int = 0,
+          commit: bool = False) -> str:
     anchor = (anchor or "").strip()
     postfix = (postfix or "").strip() if postfix_enabled else ""
     combined = " ".join(p for p in (anchor, str(scene_text or "").strip(), postfix) if p)
-    expanded = shortcuts_mod.expand(combined, shortcuts=shortcuts, seed=seed)
+    expanded = shortcuts_mod.expand(combined, shortcuts=shortcuts, seed=seed, commit=commit)
     return shortcuts_mod.resolve_variables(expanded, variables)

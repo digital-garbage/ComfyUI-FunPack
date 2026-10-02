@@ -115,15 +115,15 @@
 
     // --- prompt shortcuts (a/b) ---------------------------------------------
     shortcuts: () => j("GET", API("/api/shortcuts")), // {shortcuts:[...]} -- callers unwrap .shortcuts themselves
-    suggestionStats: () => unsupported("no revolver in v5 yet"),
+    suggestionStats: () => j("GET", API("/api/shortcuts/suggestion_stats")),
     saveCategory: (item) => j("POST", API("/api/shortcuts/category"), item),
     saveShortcut: (item) => j("POST", API("/api/shortcuts"), item),
     deleteShortcut: (name) => j("DELETE", API(`/api/shortcuts/${encodeURIComponent(name)}`)),
     exportShortcutsUrl: () => API("/api/shortcuts/export"),
     importShortcuts: (data, mode) => j("POST", API("/api/shortcuts/import"), { data, mode }),
     clearShortcuts: () => j("POST", API("/api/shortcuts/clear"), {}),
-    revolverSettings: () => unsupported("no revolver in v5 yet"),
-    setRevolverSettings: () => unsupported("no revolver in v5 yet"),
+    revolverSettings: () => j("GET", API("/api/shortcuts/revolver")),
+    setRevolverSettings: (payload) => j("POST", API("/api/shortcuts/revolver"), payload),
 
     // --- Composer file manager / NLE library (c) ----------------------------
     listFiles: () => unsupported("the Composer file manager was retired with the composer shell"),

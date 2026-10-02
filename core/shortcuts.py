@@ -229,6 +229,68 @@ def add_category(name, sub_category="") -> list[dict]:
     return categories()
 
 
+# --- revolver ----------------------------------------------------------------
+# A shortcut with several replacements normally draws one at random, so the same
+# one can come up twice running. With the revolver on, each shortcut instead
+# walks its replacements in turn (first, second, ... or shuffled once per round)
+# and repeats none until all have been used.
+
+def _fingerprint(replacements) -> str:
+    return hashlib.md5(json.dumps(list(replacements), ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
+
+
+def load_revolver() -> dict:
+    try:
+        data = json.loads(config.REVOLVER_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    return {"enabled": data.get("enabled") is True, "random": data.get("random") is True,
+            "state": data["state"] if isinstance(data.get("state"), dict) else {}}
+
+
+def _save_revolver(data: dict) -> None:
+    config.ROOT.mkdir(parents=True, exist_ok=True)
+    tmp = config.REVOLVER_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(config.REVOLVER_FILE)
+
+
+def revolver_settings() -> dict:
+    d = load_revolver()
+    return {"enabled": d["enabled"], "random": d["random"]}
+
+
+def set_revolver_settings(enabled=None, random_order=None) -> dict:
+    """Any real change restarts every cycle: an order made under one mode means
+    nothing under the other. A value that is not a real bool is ignored."""
+    with _LOCK:
+        d = load_revolver()
+        changed = False
+        for key, new in (("enabled", enabled), ("random", random_order)):
+            if isinstance(new, bool) and new != d[key]:
+                d[key], changed = new, True
+        if changed:
+            d["state"] = {}
+            _save_revolver(d)
+        return {"enabled": d["enabled"], "random": d["random"]}
+
+
+def _draw(state: dict, key: str, replacements: list[str], shuffled: bool, rng) -> str:
+    fp = _fingerprint(replacements)
+    entry = state.get(key)
+    queue = []
+    if isinstance(entry, dict) and entry.get("fp") == fp and isinstance(entry.get("queue"), list):
+        queue = [i for i in entry["queue"] if isinstance(i, int) and 0 <= i < len(replacements)]
+    if not queue:
+        queue = list(range(len(replacements)))
+        if shuffled:
+            rng.shuffle(queue)
+    index = queue.pop(0)
+    state[key] = {"fp": fp, "queue": queue}
+    return replacements[index]
+
+
 # --- export / import ---------------------------------------------------------
 
 def export_payload() -> dict:
@@ -304,7 +366,7 @@ def _cleanup_removed_phrases(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", text)
 
 
-def expand(text: str, shortcuts: list[Shortcut] | None = None, seed: int = 0) -> str:
+def expand(text: str, shortcuts: list[Shortcut] | None = None, seed: int = 0, commit: bool = False) -> str:
     """Every enabled shortcut's trigger, replaced with one of its
     replacements (random when there is more than one). Deterministic: the
     pick is seeded from `seed`, or from the text itself when seed is 0 --
@@ -313,6 +375,11 @@ def expand(text: str, shortcuts: list[Shortcut] | None = None, seed: int = 0) ->
 
     Longest trigger wins first ("golden hour" is tried before "golden"), so
     a short trigger can never shadow a longer one that contains it.
+
+    With the revolver on, a multi-replacement shortcut takes the next one in
+    its cycle instead. A preview only PEEKS (reads the stored cycle, saves
+    nothing) so it shows exactly what the next generation will draw; only
+    `commit=True` -- a real generation -- moves the cycle on.
     """
     original = str(text or "")
     if not original:
@@ -325,28 +392,37 @@ def expand(text: str, shortcuts: list[Shortcut] | None = None, seed: int = 0) ->
         for trigger in sc.triggers:
             pattern = _trigger_pattern(trigger)
             if pattern:
-                candidates.append((trigger, pattern, sc.replacements))
+                candidates.append((trigger, pattern, sc.replacements, sc.name.lower()))
     if not candidates:
         return original
 
     candidates.sort(key=lambda c: len(c[0]), reverse=True)
-    combined = "|".join(f"(?P<t{i}>{p})" for i, (_, p, _) in enumerate(candidates))
+    combined = "|".join(f"(?P<t{i}>{p})" for i, (_, p, _, _) in enumerate(candidates))
+    revolver = load_revolver()
+    drew = False
     rng_seed = int(seed or 0) or int(hashlib.md5(original.encode("utf-8")).hexdigest()[:12], 16)
     rng = random.Random(rng_seed)
     removed = False
 
     def replace(m):
-        nonlocal removed
-        for i, (_, _, replacements) in enumerate(candidates):
+        nonlocal removed, drew
+        for i, (_, _, replacements, key) in enumerate(candidates):
             if m.group(f"t{i}") is None:
                 continue
-            choice = rng.choice(replacements)
+            if revolver["enabled"] and len(replacements) > 1:
+                choice = _draw(revolver["state"], key, replacements, revolver["random"], rng)
+                drew = True
+            else:
+                choice = rng.choice(replacements)
             if not choice:
                 removed = True
             return choice
         return m.group(0)  # unreachable: `combined` only matches a known group
 
     expanded = re.sub(combined, replace, original, flags=re.IGNORECASE | re.UNICODE)
+    if drew and commit:
+        with _LOCK:
+            _save_revolver(revolver)
     return _cleanup_removed_phrases(expanded) if removed else expanded
 
 

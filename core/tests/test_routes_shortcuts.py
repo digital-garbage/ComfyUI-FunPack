@@ -19,6 +19,7 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SHORTCUTS_FILE", tmp_path / "shortcuts.json")
     monkeypatch.setattr(config, "MARKERS_FILE", tmp_path / "markers.json")
     monkeypatch.setattr(config, "SHORTCUT_CATEGORIES_FILE", tmp_path / "cats.json")
+    monkeypatch.setattr(config, "REVOLVER_FILE", tmp_path / "rev.json")
     from aiohttp import web as aioweb
 
     app = aioweb.Application()
@@ -149,3 +150,13 @@ def test_categories_export_import_over_http(server):
     assert status == 200 and back["imported"] == 1 and back["categories"] == exported["categories"]
     assert _request(server, "POST", "/funpack/api/shortcuts/import", {"data": {"shortcuts": 5}})[0] == 400
     assert _request(server, "POST", "/funpack/api/shortcuts/import", {"mode": "merge"})[0] == 400
+
+
+def test_revolver_over_http_only_a_real_run_commits(server):
+    _request(server, "POST", "/funpack/api/shortcuts", {"name": "L", "triggers": ["lt"], "replacements": ["A", "B"]})
+    _, st = _request(server, "POST", "/funpack/api/shortcuts/revolver", {"enabled": True})
+    assert st == {"enabled": True, "random": False}
+    ask = lambda commit: _request(server, "POST", "/funpack/api/prompt/expand", {"text": "lt", "commit": commit})[1]["text"]
+    assert [ask(False), ask(False), ask(True), ask(True), ask(True)] == ["A", "A", "A", "B", "A"]
+    assert _request(server, "GET", "/funpack/api/shortcuts/revolver")[1]["enabled"] is True
+    assert _request(server, "POST", "/funpack/api/shortcuts/revolver", [])[0] == 400

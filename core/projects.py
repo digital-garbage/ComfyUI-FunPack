@@ -157,6 +157,41 @@ def _clean_variables(raw) -> list:
     return out
 
 
+def _clean_templates(raw) -> list:
+    """[{"name", "anchor", "scenes": [str], "variables": [{name, value}]}]. A template is
+    the scenes themselves, not a Story text: the cut word it was saved under
+    may no longer be one. A v4 template (a single `prompt` string) is kept as
+    it came, and read by whoever applies it. Nameless or non-object entries go;
+    a name twice keeps the last."""
+    if not isinstance(raw, list):
+        return []
+    out: dict[str, dict] = {}
+    for t in raw:
+        if not isinstance(t, dict):
+            continue
+        name = str(t.get("name") or "").strip()[:MAX_NAME]
+        if not name:
+            continue
+        item = {"name": name, "variables": _clean_variables(t.get("variables"))}
+        if isinstance(t.get("anchor"), str):
+            item["anchor"] = t["anchor"]
+        scenes = t.get("scenes")
+        if isinstance(scenes, list):
+            item["scenes"] = [s if isinstance(s, str) else "" for s in scenes]
+        if isinstance(t.get("prompt"), str):
+            item["prompt"] = t["prompt"]
+        out.pop(name, None)
+        out[name] = item
+    return list(out.values())
+
+
+def _clean_editor_settings(raw) -> dict:
+    """Editor preferences that travel with the project (a new rental has an
+    empty browser). Values are whatever the editor wrote -- bool, number,
+    string, small object -- so only the shape is checked: a string-keyed object."""
+    return {k: v for k, v in raw.items() if isinstance(k, str)} if isinstance(raw, dict) else {}
+
+
 @dataclass
 class Project:
     id: str = field(default_factory=_new_id)
@@ -195,6 +230,10 @@ class Project:
     #: and preserving it is what makes "the row I just added" stay at the
     #: bottom instead of jumping around alphabetically on the next save.
     variables: list = field(default_factory=list)
+    #: Saved prompts: the scenes + variables, reapplied in one pick.
+    prompt_templates: list = field(default_factory=list)
+    active_prompt_template: str = ""
+    editor_settings: dict = field(default_factory=dict)
     updated_at: float = 0.0
 
     @staticmethod
@@ -219,6 +258,9 @@ class Project:
             # v4's own default, not as "off" because nothing was there to say.
             postfix_enabled=postfix_enabled if isinstance(postfix_enabled, bool) else True,
             variables=_clean_variables(d.get("variables")),
+            prompt_templates=_clean_templates(d.get("prompt_templates")),
+            active_prompt_template=str(d.get("active_prompt_template") or "")[:MAX_NAME],
+            editor_settings=_clean_editor_settings(d.get("editor_settings")),
             updated_at=float(d.get("updated_at") or 0.0),
         )
 

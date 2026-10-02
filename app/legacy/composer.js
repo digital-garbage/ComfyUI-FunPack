@@ -278,14 +278,14 @@
       sel.append(o);
     });
     if (!known) ph.selected = true;
-    sel.title = "Apply a saved global prompt + its variables";
+    sel.title = "Apply a saved set of scenes + its variables";
     sel.onchange = () => {
       const n = sel.value;
       if (!n) return;
       if (n === TPL_NONE) {
         if (!confirm(
-          "Clear the global prompt and stop using the current template?\n\n"
-          + "Empties the anchor, the transitions and every scene's text. The postfix and "
+          "Clear the Story and stop using the current template?\n\n"
+          + "Empties the anchor and every scene's text. The postfix and "
           + "variables are separate settings and are left alone. Undo restores it."
         )) { render(); return; }
         S.clearGlobalPrompt();
@@ -296,9 +296,6 @@
     };
     bar.append(sel);
 
-    const currentText = () => (composeTextarea ? composeTextarea.value
-                                               : (S.get().project?.global_prompt || ""));
-
     // Saving under an existing name overwrites it, so pre-filling the applied template's
     // name makes "update this template" the default gesture rather than a hidden trick.
     const save = el("button", "btn ghost tiny", known ? "Update…" : "Save");
@@ -308,8 +305,7 @@
     save.onclick = () => {
       const name = (window.prompt("Template name:", known ? active : "") || "").trim();
       if (!name) return;
-      S.savePromptTemplate(name, currentText());
-      render();
+      S.savePromptTemplate(name).then(render);
     };
     bar.append(save);
 
