@@ -240,3 +240,62 @@ def test_a_non_multipart_body_is_refused(server):
 def test_media_for_a_bad_id_is_a_404(server):
     assert _request(server, "GET", "/funpack/api/media/../../etc/passwd/file")[0] in (400, 404)
     assert _request(server, "DELETE", "/funpack/api/media/0123456789ab")[0] == 404
+
+
+# ── names and thumbnails ──────────────────────────────────────────────────
+
+
+def test_a_rename_changes_the_name_not_the_file(store):
+    entry = media.save_upload("ref.png", b"\x89PNG")
+    renamed = media.rename(entry["id"], "  my   reference  ")
+    assert renamed["name"] == "my reference" and renamed["filename"] == entry["filename"]
+    assert media.get(entry["id"])["name"] == "my reference"
+    assert media.rename("aaaaaaaaaaaa", "x") is None
+    with pytest.raises(ValueError):
+        media.rename(entry["id"], "   ")
+
+
+def test_an_image_gets_a_small_cached_jpeg_and_delete_removes_it(store):
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (1000, 500), (200, 30, 30)).save(buf, "PNG")
+    entry = media.save_upload("big.png", buf.getvalue())
+    thumb = media.thumb_path_for(entry["id"])
+    assert thumb is not None and thumb.suffix == ".jpg"
+    assert max(Image.open(thumb).size) == media.THUMB_MAX_DIM and thumb.stat().st_size < len(buf.getvalue())
+    assert media.thumb_path_for(entry["id"]) == thumb                  # cached
+    assert media.delete(entry["id"]) and not thumb.exists()
+
+
+def test_audio_and_unreadable_files_have_no_thumbnail(store):
+    assert media.thumb_path_for(media.save_upload("a.wav", b"RIFF....")["id"]) is None
+    assert media.thumb_path_for(media.save_upload("broken.png", b"not a png")["id"]) is None
+    assert media.thumb_path_for("not-an-id") is None
+
+
+def test_a_video_thumbnail_comes_from_a_frame(store, tmp_path):
+    import shutil
+    import subprocess
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg is not installed")
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=640x360:rate=10",
+                    "-pix_fmt", "yuv420p", str(clip)], check=True, capture_output=True)
+    thumb = media.thumb_path_for(media.save_upload("c.mp4", clip.read_bytes())["id"])
+    assert thumb is not None and thumb.stat().st_size > 0
+
+
+def test_rename_and_thumb_over_http(server):
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64)).save(buf, "PNG")
+    mid = _upload(server, "p.png", buf.getvalue())[1]["media"][0]["id"]
+    status, body = _request(server, "PATCH", f"/funpack/api/media/{mid}", {"name": "renamed"})
+    assert status == 200 and body["media"]["name"] == "renamed"
+    assert _request(server, "PATCH", f"/funpack/api/media/{mid}", {"name": ""})[0] == 400
+    assert _request(server, "PATCH", "/funpack/api/media/aaaaaaaaaaaa", {"name": "x"})[0] == 404
+    status, jpg = _request(server, "GET", f"/funpack/api/media/{mid}/thumb")
+    assert status == 200 and jpg["raw"][:2] == b"\xff\xd8"
+    assert _request(server, "GET", "/funpack/api/media/aaaaaaaaaaaa/thumb")[0] == 404

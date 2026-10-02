@@ -129,7 +129,7 @@
     listFiles: () => unsupported("the Composer file manager was retired with the composer shell"),
     deleteFile: () => unsupported("the Composer file manager was retired with the composer shell"),
     clearFiles: () => unsupported("the Composer file manager was retired with the composer shell"),
-    nleLibrary: () => unsupported("no render/stitch stage yet"),
+    nleLibrary: () => j("GET", API("/api/m/render/library")),
 
     // --- node packs (a) ------------------------------------------------------
     customNodes: async () => (await j("GET", API("/api/packs"))),
@@ -142,14 +142,29 @@
     listMedia: () => j("GET", API("/api/media")), // {media:[...]} -- callers unwrap .media themselves
     mediaUrl: (id) => API(`/api/media/${encodeURIComponent(id)}/file`),
     deleteMedia: (id) => j("DELETE", API(`/api/media/${encodeURIComponent(id)}`)),
-    renameMedia: () => unsupported("media has no name field in v5 -- it is addressed by id"),
-    importClipToMediaBin: () => unsupported("no render/stitch stage yet, so there is no clip to import"),
-    async uploadMedia(file) {
-      const fd = new FormData(); fd.append("file", file, file.name);
-      const res = await fetch(API("/api/media"), { method: "POST", body: fd });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
-      const body = await res.json();
-      return body.media && body.media[0] ? body.media[0] : body;
+    renameMedia: (id, name) => j("PATCH", API(`/api/media/${encodeURIComponent(id)}`), { name }),
+    // A small server-cached JPEG (made on first request) instead of the full original: for grid
+    // thumbnails only, never for playback, preview or export.
+    mediaThumbUrl: (id) => API(`/api/media/${encodeURIComponent(id)}/thumb`),
+    importClipToMediaBin: (clip, name) => j("POST", API("/api/m/render/import-clip"), { clip, name: name || null }),
+    // XMLHttpRequest, not fetch: fetch has no cross-browser upload-progress event, and a multi-MB
+    // video over a slow connection is exactly where the caller most wants something moving.
+    // onProgress(loadedBytes, totalBytes) fires repeatedly; totalBytes is 0 if the browser cannot say.
+    uploadMedia(file, onProgress) {
+      return new Promise((resolve, reject) => {
+        const fd = new FormData(); fd.append("file", file, file.name);
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", API("/api/media"));
+        if (onProgress) xhr.upload.onprogress = (e) => onProgress(e.loaded, e.lengthComputable ? e.total : 0);
+        xhr.onload = () => {
+          let body = {};
+          try { body = JSON.parse(xhr.responseText || "{}"); } catch (_) { /* not JSON */ }
+          if (xhr.status >= 200 && xhr.status < 300) resolve(body.media && body.media[0] ? body.media[0] : body);
+          else reject(new Error((body.problems && body.problems.join("; ")) || body.detail || xhr.statusText || `HTTP ${xhr.status}`));
+        };
+        xhr.onerror = () => reject(new Error("Network error during upload"));
+        xhr.send(fd);
+      });
     },
 
     // --- models / node slots (b/c) -------------------------------------------
@@ -230,6 +245,36 @@
     // that is a UI-flow rewrite (the Generate button's click handler), not
     // an api.js body swap, and is tracked as its own step in the port plan.
     generate: () => unsupported("Generate is wired directly through session.js/run.js, not this seam -- pending the button rewrite"),
+    upscaleModels: () => j("GET", API("/api/m/render/upscale_models")),
+    // The upscale is an ordinary ComfyUI job: queued on /prompt, read back from /history.
+    queueUpscale: async (media, model) => {
+      const graph = { 1: { class_type: "FunPackUpscaleVideo", inputs: {
+        filename: media.filename, subfolder: media.subfolder || "",
+        type: media.type === "temp" ? "temp" : "output", upscale_model: model } } };
+      const res = await fetch("/prompt", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: graph }) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.prompt_id) {
+        const e = body.error || {};
+        const nodes = Object.values(body.node_errors || {}).flatMap((n) => (n.errors || []).map((x) => x.message));
+        throw new Error([e.message, ...nodes].filter(Boolean).join("; ") || `ComfyUI refused the job (HTTP ${res.status})`);
+      }
+      return body.prompt_id;
+    },
+    // null while it is still queued or running, else {error} or {videos}.
+    upscaleResult: async (promptId) => {
+      const res = await fetch(`/history/${encodeURIComponent(promptId)}`);
+      const entry = res.ok ? (await res.json())[promptId] : null;
+      if (!entry) return null;
+      const st = entry.status || {};
+      if (st.status_str === "error") {
+        const msg = (st.messages || []).find((m) => m[0] === "execution_error");
+        return { error: (msg && msg[1] && msg[1].exception_message) || "failed inside ComfyUI" };
+      }
+      if (!st.completed) return null;
+      const videos = Object.values(entry.outputs || {}).flatMap((o) => o.videos || []);
+      return videos.length ? { videos } : { error: "no video came out, check the ComfyUI terminal" };
+    },
     status: () => unsupported("no server-side run status in v5 -- see run.js"),
     progress: () => unsupported("no server-side run status in v5 -- see run.js"),
     active: () => unsupported("no server-side run status in v5 -- see run.js"),
@@ -300,19 +345,35 @@
       URL.revokeObjectURL(url);
     },
 
-    // --- render / stitch / export (c) -- HIGH #2, not built ------------------
-    renderFinal: () => unsupported("no render/stitch stage yet"),
-    renderFinalStatus: () => unsupported("no render/stitch stage yet"),
-    exportClip: () => unsupported("no render/stitch stage yet"),
-    exportClipsCombined: () => unsupported("no render/stitch stage yet"),
-    exportClipsStatus: () => unsupported("no render/stitch stage yet"),
-    // (b): v5 has no per-project /result route, but a finished output is just
-    // a file ComfyUI itself saved -- its own /view endpoint serves it exactly
-    // the way it serves a temp preview.
-    resultUrl: (_id, m) => "/view?" + new URLSearchParams({
+    // --- render / stitch / export: modules/output/render --------------------
+    renderFinal: (id, clips) => j("POST", API(`/api/m/render/projects/${id}/render`), { clips }),
+    renderFinalStatus: (id, jobId) => j("GET", API(`/api/m/render/projects/${id}/render/${encodeURIComponent(jobId)}`)),
+    exportClip: (id, clip) => j("POST", API(`/api/m/render/projects/${id}/export-clip`), { clip }),
+    exportClipsCombined: (id, clips) => j("POST", API(`/api/m/render/projects/${id}/export-clips`), { clips }),
+    exportClipsStatus: (id, jobId) => j("GET", API(`/api/m/render/projects/${id}/export-clips/${encodeURIComponent(jobId)}`)),
+    // Served by FunPack, not ComfyUI's /view: a render whose index is at the END of the file
+    // (what ComfyUI's own saver writes) cannot be seeked in a browser until it is remuxed.
+    resultUrl: (_id, m) => API("/api/m/render/result?" + new URLSearchParams({
       filename: m.filename, subfolder: m.subfolder || "", type: m.type || "output",
-    }).toString(),
-    previewSegmentUrl: unsupportedUrl,
+    }).toString()),
+    previewSegmentUrl: (id, sceneId, spec) => {
+      let u = API(`/api/m/render/projects/${id}/preview-segment/${encodeURIComponent(sceneId)}`);
+      const m = spec?.media;
+      if (m?.filename) {
+        const q = new URLSearchParams({
+          filename: m.filename, subfolder: m.subfolder || "", type: m.type || "output",
+          render_in: String(spec.renderIn != null ? spec.renderIn : 0),
+        });
+        // dur is in the URL for two reasons: a removed scene (a ghost) has no scene server-side, so
+        // its trim window must travel in the query; and segments are cached for an hour, so a
+        // timeline trim must produce a different URL. Anything else that changes the bytes
+        // (reverse) must be in the URL too, for the same reason.
+        if (spec.dur != null) q.set("dur", String(spec.dur));
+        if (spec.reverse) q.set("rev", "1");
+        u += "?" + q.toString();
+      }
+      return u;
+    },
 
     // --- taste keys: modules/system/taste --------------------------------------
     rateTaste: (prompt_id, rating, axis) => j("POST", API("/api/m/taste/rate"), { prompt_id, rating, axis: axis || null }),

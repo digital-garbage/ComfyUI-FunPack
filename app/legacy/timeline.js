@@ -486,13 +486,6 @@
       const sepTrack = sc && S.separatedTrackForScene ? S.separatedTrackForScene(sc.id) : null;
       rmSep.disabled = !sepTrack;
     }
-    const oldRating = bar.querySelector(".tl-rating-block");
-    const freshRating = toolbarRatingBlock(st, st.project);
-    if (oldRating) oldRating.replaceWith(freshRating);
-    else {
-      const spacer = bar.querySelector(".tl-spacer");
-      if (spacer) bar.insertBefore(freshRating, spacer);
-    }
   }
 
   function syncMetaSelection(st) {
@@ -1792,11 +1785,24 @@
   function toolbarRatingBlock(st, p) {
     const wrap = el("div", "tl-rating-block");
     const studioOn = window.PipelineCaps?.usesFunpackStudio(st);
-    const hasSel = !!st.selectedSceneId;
     const Picker = window.MovieRatingPicker;
-    if (!studioOn || !hasSel || !hasRender(st, st.selectedSceneId) || !Picker) return wrap;
-    const sc = S.scene(st.selectedSceneId);
+    // A selection is only meaningful to require when there's something to choose
+    // between -- with exactly one scene on the timeline there's no ambiguity, so rate
+    // it without making the user click it first.
+    const scenes = p?.scenes || [];
+    const sceneId = st.selectedSceneId || (scenes.length === 1 ? scenes[0].id : null);
+    if (!sceneId || !hasRender(st, sceneId)) return wrap;
+    const sc = S.scene(sceneId);
     if (!sc || !S.isGenerativeScene(sc)) return wrap;
+    if (S.getEditorSetting("upscaleMode") === "button") {
+      const busy = S.isUpscaling(sceneId);
+      const up = el("button", "btn ghost tiny tl-upscale-btn", busy ? "Upscaling…" : "Upscale");
+      up.title = "Upscale this video with the model picked in Settings ▸ Editor; it replaces the render";
+      up.disabled = busy;
+      up.onclick = (e) => { e.stopPropagation(); S.upscaleRender(sceneId); };
+      wrap.append(up);
+    }
+    if (!studioOn || !Picker) return wrap;
     const sceneNo = p.scenes.indexOf(sc) + 1;
     const raw = sceneRatingRaw(st, sc);
     const rlabel = el("span", "tl-keys", `Scene ${sceneNo}`);
@@ -1809,8 +1815,7 @@
         S.setSceneRating(sc.id, val);
       }, { h3: !!window.PipelineCaps?.isH3(st) });
     };
-    wrap.append(rlabel);
-    wrap.append(btn);
+    wrap.prepend(rlabel, btn);
     return wrap;
   }
 
@@ -1875,7 +1880,6 @@
     rmSepAud.disabled = !sepTrack;
     rmSepAud.onclick = () => { if (sepTrack) S.removeAudioTrack(sepTrack.id); };
     bar.append(split); bar.append(del); bar.append(selBadge); bar.append(exp); bar.append(saveBin); bar.append(sepAud); bar.append(rmSepAud);
-    bar.append(toolbarRatingBlock(st, p));
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
     const keys = el("span", "tl-keys", "J/K/L · S split · I/O in/out · +/- zoom");
@@ -1908,6 +1912,7 @@
     requestAutoFit() { _pendingAutoFit = true; },
     fit: () => fit(S.previewTotalSec ? S.previewTotalSec() : tlTotalSec),
     syncClipRatings,
+    ratingBlock: (st) => toolbarRatingBlock(st, st.project),
     openOverlaySettings: (track) => {
       if (!track) return;
       openOverlaySettingsModal(S.get(), track);

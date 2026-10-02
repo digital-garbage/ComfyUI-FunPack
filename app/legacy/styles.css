@@ -411,7 +411,10 @@ a.brand:hover .brand-sub { color: var(--accent-hi); }
 .log-actions { display: flex; gap: 6px; align-items: center; }
 .log-freeze-indicator { font-family: var(--font-ui); font-size: 10px; color: var(--faint); white-space: nowrap; }
 .log-body { flex: 1; margin: 0; padding: 8px 10px; overflow: auto; white-space: pre-wrap; word-break: break-word;
-  font-family: var(--font-ui); font-size: 11px; line-height: 1.45; color: var(--muted); background: var(--ink-void); }
+  font-family: var(--font-ui); font-size: 11px; line-height: 1.45; color: var(--text); background: var(--ink-void); }
+.log-body .log-error { color: var(--danger); }
+.log-body .log-warn { color: var(--warn); }
+.log-body .log-ok { color: var(--good); }
 
 /* ──────────── WORKSPACE — OpenCut-style NLE: Assets | Preview | Properties / Timeline ──────────── */
 /* (layout borrowed from OpenCut: three resizable columns over a full-width timeline) */
@@ -646,8 +649,14 @@ input[type=number] { font-family: var(--font-ui); }
   color: var(--faint); font-size: 12px; transition: border-color .15s, background .15s;
 }
 .mediabin.drag { border-color: var(--teal); background: var(--teal-soft); color: var(--teal); }
+.mediabin.uploading { border-style: solid; border-color: var(--accent); color: var(--text); cursor: default; }
 .mediabin .big { font-size: 26px; opacity: .5; margin-bottom: 8px; }
 .mediabin { cursor: pointer; padding: 18px 14px; }
+.media-upload-bar {
+  width: 100%; max-width: 220px; height: 5px; margin: 8px auto 4px;
+  background: var(--ink-2); border-radius: 3px; overflow: hidden;
+}
+.media-upload-bar-fill { height: 100%; background: var(--accent); transition: width .12s linear; }
 .soon { font-family: var(--font-ui); font-size: 10px; letter-spacing: 1px; color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
 
 /* bin tabs (Media / Shortcuts / Transitions) */
@@ -754,7 +763,12 @@ input[type=number] { font-family: var(--font-ui); }
   background: var(--ink-0); border: 1px solid var(--accent); border-radius: 4px; color: var(--text);
 }
 .media-card.picked { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
-.media-bin-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.media-bin-actions {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  position: sticky; top: 0; z-index: 4; padding: 4px 0;
+  background: color-mix(in srgb, var(--ink-0) 92%, transparent);
+  backdrop-filter: blur(6px);
+}
 .media-bin-footer { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; align-items: center; }
 .media-bin-controls { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 2px; }
 .media-bin-type { margin: 0; }
@@ -1642,6 +1656,14 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .compose-var-hint { margin-top: 4px; }
 .compose-var-hint.compose-var-warn { color: var(--accent); }
 .compose-var-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.compose-var-head { display: flex; gap: 8px; align-items: center; }
+.compose-var-head .compose-var-filter { flex: 1; min-width: 0; }
+.compose-var-head .btn { flex: 0 0 auto; }
+/* Open: prompt and list split the window, and the list scrolls on its own — the prompt
+   never scrolls out of sight while working through a long list. */
+.compose-bin.vars-open .compose-ta { flex: 1 1 0; min-height: 120px; }
+.compose-bin.vars-open .compose-vars { flex: 1 1 0; min-height: 180px; display: flex; flex-direction: column; }
+.compose-bin.vars-open .compose-var-list { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
 .compose-var-row { display: flex; gap: 6px; align-items: flex-start; }
 .compose-var-row > .compose-var-dollar, .compose-var-row > .compose-var-eq,
 .compose-var-row > .btn { margin-top: 5px; }
@@ -1650,6 +1672,8 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .compose-var-row .compose-var-name { flex: 0 0 30%; min-width: 0; }
 /* Value is an auto-growing textarea (JS sets the height) — no resize handle, no scrollbar. */
 .compose-var-row .compose-var-val { flex: 1; min-width: 0; resize: none; overflow: hidden; }
+/* At rest: exactly one unwrapped line, same height as the name field beside it. */
+.compose-var-row .compose-var-val:not(:focus) { white-space: nowrap; height: 30px; }
 .compose-var-row .btn { flex: 0 0 auto; }
 
 /* config validation banner */

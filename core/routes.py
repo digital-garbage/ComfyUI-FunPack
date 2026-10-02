@@ -790,6 +790,26 @@ def register(routes, prefix=None):
         return web.FileResponse(path, headers={
             "Content-Type": media.content_type(req.match_info["mid"])})
 
+    @routes.get(P + "/api/media/{mid}/thumb")
+    async def _media_thumb(req):
+        # to_thread: an ffmpeg frame grab, which must never run on the one event loop ComfyUI has
+        thumb = await asyncio.to_thread(media.thumb_path_for, req.match_info["mid"])
+        if thumb is None:
+            return web.json_response({"problems": ["no thumbnail"]}, status=404)
+        return web.FileResponse(thumb, headers={"Content-Type": "image/jpeg",
+                                                "Cache-Control": "public, max-age=31536000, immutable"})
+
+    @routes.patch(P + "/api/media/{mid}")
+    async def _media_rename(req):
+        body = await _body(req)
+        try:
+            entry = media.rename(req.match_info["mid"], (body or {}).get("name"))
+        except ValueError as exc:
+            return web.json_response({"problems": [str(exc)]}, status=400)
+        if entry is None:
+            return web.json_response({"problems": ["no such media"]}, status=404)
+        return web.json_response({"media": entry})
+
     @routes.delete(P + "/api/media/{mid}")
     async def _media_delete(req):
         if not media.delete(req.match_info["mid"]):

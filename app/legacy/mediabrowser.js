@@ -6,6 +6,30 @@
   const API = window.MovieEditorAPI;
   const body = document.getElementById("media-body");
 
+  // Every store change that touches this panel (e.g. toggling a reference mark) rebuilds
+  // the whole grid from scratch — cheap for the buttons/badges, but a fresh <img>/<video>
+  // per card meant every thumbnail visibly reloaded and every video re-decoded its first
+  // frame, just because an unrelated R button was clicked. Cache the already-built preview
+  // node per media id and re-append (move, not recreate) it into the new card instead.
+  const thumbCache = new Map();   // media id -> {url, node}
+  function _pruneThumbCache(bin) {
+    const ids = new Set(bin.map((m) => m.id));
+    for (const id of thumbCache.keys()) if (!ids.has(id)) thumbCache.delete(id);
+  }
+
+  // Drop-zone upload bar, patched in place on funpack-media-upload-progress (below) instead
+  // of rebuilding — a full render only happens once per file, at the fpMediabrowser fingerprint
+  // in view_bus.js's granularity (see mediaTab). Cleared whenever the zone isn't currently the
+  // "uploading" one, so a stale reference from a since-discarded render never gets written to.
+  let _uploadFillEl = null, _uploadPctEl = null;
+  window.addEventListener("funpack-media-upload-progress", (e) => {
+    if (!_uploadFillEl || !_uploadFillEl.isConnected) return;
+    const up = (e && e.detail) || {};
+    const pct = up.size > 0 ? Math.min(100, Math.round((up.loaded / up.size) * 100)) : null;
+    _uploadFillEl.style.width = (pct == null ? 0 : pct) + "%";
+    if (_uploadPctEl) _uploadPctEl.textContent = pct == null ? "uploading…" : `${pct}%`;
+  });
+
   const mediaSelected = new Set();   // media bin multi-select
   let mediaSelectMode = false;     // when off, click = preview; when on, click = toggle selection
   const MF_KEY = "fp_media_filter";
@@ -81,49 +105,53 @@
     return MEDIA_KIND_META[kind] || MEDIA_KIND_META.other;
   }
 
+  // Long edge of a cached thumbnail bitmap, in px. The grid cell itself never exceeds 240px
+  // (#media-zone .media-grid's --mb-cell clamp) -- this leaves headroom for retina without
+  // caching a full-resolution decode of every image/video forever, which is what a bin of
+  // real photos/4K clips was actually doing before (each `<img>`/video-frame canvas held its
+  // native-resolution bitmap in memory for the rest of the session, per card).
+  const THUMB_MAX_DIM = 320;
+
+  function _thumbScale(srcW, srcH, max) {
+    srcW = Math.max(1, srcW); srcH = Math.max(1, srcH);
+    if (srcW <= max && srcH <= max) return { w: srcW, h: srcH };
+    const scale = max / Math.max(srcW, srcH);
+    return { w: Math.max(1, Math.round(srcW * scale)), h: Math.max(1, Math.round(srcH * scale)) };
+  }
+
   function _appendMediaThumb(thumb, m) {
-    const url = API.mediaUrl(m.id);
-    if (m.kind === "image") {
-      const img = el("img");
-      img.src = url;
-      img.loading = "lazy";
-      // An <img> is natively draggable, and inside a draggable card it WINS: the browser
-      // starts its own image drag, whose dataTransfer carries a URL instead of our
-      // application/funpack-media id, so every drop target rejects it. It also has to
-      // decode and rasterize the full-size bitmap first, which is why big images felt like
-      // they "resisted" dragging. Opting the image out hands the drag back to the card.
-      img.draggable = false;
-      thumb.append(img);
-      return;
-    }
-    if (m.kind === "video") {
-      const ph = el("span", "media-icon media-vid-ph", "▶");
+    if (m.kind === "image" || m.kind === "video") {
+      // The server now generates and caches a small JPEG per media id (an ffmpeg frame-grab
+      // for video, a Pillow resize for images) instead of this loading the FULL original
+      // file just to show a 56-96px square -- was true even for a 4K photo or clip. A plain
+      // <img> would work now that the source is already small, but this still draws it to a
+      // canvas: a <canvas> isn't natively draggable, so the card's own drag-and-drop handling
+      // just works, instead of needing img.draggable=false to stop the browser's own image
+      // drag from hijacking it.
+      const url = API.mediaThumbUrl(m.id);
+      const cached = thumbCache.get(m.id);
+      if (cached && cached.url === url) { thumb.append(cached.node); return; }
+      const ph = el("span", "media-icon" + (m.kind === "video" ? " media-vid-ph" : ""),
+        m.kind === "video" ? "▶" : "◆");
       thumb.append(ph);
-      // Snapshot the first frame to a canvas and release the <video> immediately. A live
-      // <video> per bin item held its network connection open (Chrome stalls media fetches
-      // but keeps the socket) — with ~6 videos in the bin the per-origin connection pool
-      // was exhausted and every editor API call queued behind the thumbnails.
-      const vid = document.createElement("video");
-      vid.muted = true;
-      vid.preload = "metadata";
-      vid.playsInline = true;
-      vid.src = url;
-      const release = () => { try { vid.removeAttribute("src"); vid.load(); } catch (_) {} };
-      vid.onerror = release;
-      vid.onloadeddata = () => {
-        if (thumb.isConnected && !thumb.querySelector("canvas")) {
+      const img = new Image();
+      img.onload = () => {
+        if (!thumb.isConnected) return;
+        try {
+          const { w, h } = _thumbScale(img.naturalWidth, img.naturalHeight, THUMB_MAX_DIM);
           const canvas = document.createElement("canvas");
           canvas.className = "media-vid-thumb";
-          canvas.width = vid.videoWidth || 320;
-          canvas.height = vid.videoHeight || 180;
-          try {
-            canvas.getContext("2d").drawImage(vid, 0, 0, canvas.width, canvas.height);
-            ph.remove();
-            thumb.append(canvas);
-          } catch (_) {}
-        }
-        release();
+          canvas.width = w; canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+          ph.remove();
+          thumb.append(canvas);
+          thumbCache.set(m.id, { url, node: canvas });
+        } catch (_) {}
       };
+      // On failure (no ffmpeg, corrupt source, unsupported codec) the placeholder icon
+      // above just stays put -- no fallback to the full original file: that was the whole
+      // cost this endpoint exists to avoid, and a broken thumbnail is not worth paying it.
+      img.src = url;
       return;
     }
     if (m.kind === "audio") {
@@ -434,6 +462,7 @@
   function mediaTab(st) {
     const bin = st.mediaBin || [];
     _pruneMediaSelection(bin);
+    _pruneThumbCache(bin);
     const total = bin.length;
     const items = _sortMediaBin(_filterMediaBin(bin));
     const shown = items.length;
@@ -441,10 +470,33 @@
     const exportId = _exportableMediaId(st, items);
 
     const wrap = el("div", "bin" + (mediaSelectMode ? " media-select-mode" : ""));
-    const drop = el("div", "mediabin");
-    drop.append(el("div", "big", "🎞"));
-    drop.append(el("div", null, "Drop images, video & audio here"));
-    drop.append(el("div", "pj-meta", "or click to browse · drag onto a clip to set its anchor"));
+    const up = st.mediaUpload;
+    const drop = el("div", "mediabin" + (up ? " uploading" : ""));
+    if (up) {
+      // Was silent before: uploadMedia's own loop ran with no visible state at all, so a
+      // batch of photos or one big video over a slow connection just looked like the drop
+      // zone had eaten the files and done nothing.
+      const pct = up.size > 0 ? Math.min(100, Math.round((up.loaded / up.size) * 100)) : null;
+      drop.append(el("div", "big", "⬆"));
+      drop.append(el("div", null, up.total > 1
+        ? `Uploading ${up.current}/${up.total}: ${up.name}`
+        : `Uploading ${up.name}`));
+      const barWrap = el("div", "media-upload-bar");
+      const bar = el("div", "media-upload-bar-fill");
+      bar.style.width = (pct == null ? 0 : pct) + "%";
+      barWrap.append(bar);
+      drop.append(barWrap);
+      const pctEl = el("div", "pj-meta", pct == null ? "uploading…" : `${pct}%`);
+      drop.append(pctEl);
+      // Live-patched by the funpack-media-upload-progress listener above for every tick
+      // within this file — this render only happens once per file (see fpMediabrowser).
+      _uploadFillEl = bar; _uploadPctEl = pctEl;
+    } else {
+      _uploadFillEl = null; _uploadPctEl = null;
+      drop.append(el("div", "big", "🎞"));
+      drop.append(el("div", null, "Drop images, video & audio here"));
+      drop.append(el("div", "pj-meta", "or click to browse · drag onto a clip to set its anchor"));
+    }
     const file = el("input"); file.type = "file"; file.accept = "image/*,video/*,audio/*"; file.multiple = true; file.style.display = "none";
     file.onchange = () => { if (file.files.length) S.uploadMedia([...file.files]); file.value = ""; };
     drop.onclick = () => file.click();

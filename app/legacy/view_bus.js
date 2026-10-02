@@ -124,6 +124,21 @@
       pid: st.project?.id,
       sel: st.selectedSceneIds?.length,
       gen: st.gen?.state,
+      // The scene rating button lives in this zone too. It reads the FOCUSED selection
+      // (not just the multi-select count above), which scene has a render, and every
+      // scene's id+rating+type (id/rating for the rating value itself and because a
+      // single-scene project rates without a selection at all, so adding/removing
+      // scenes changes whether the button shows; type because a video clip can't be
+      // rated -- S.isGenerativeScene -- and converting a scene to/from one flips that
+      // without touching its rating). It also reads usesFunpackStudio(), which is
+      // `core` below PLUS project.conditioning_slot, not tracked anywhere else in this
+      // zone. Miss any of these and rating a scene, finishing a render, converting a
+      // scene, rewiring conditioning, or changing focus leaves a stale (or missing)
+      // button next to Auto Montage.
+      ratingSel: st.selectedSceneId,
+      renders: st.sceneRenders,
+      ratings: (st.project?.scenes || []).map((s) => [s.id, s.rating, s.source?.type]),
+      conditioning: st.project?.conditioning_slot,
       // The Best-FaceID warning chip lives in this zone, so everything its message
       // depends on has to be part of the fingerprint — otherwise setting the pin
       // leaves a stale warning sitting next to Generate.
@@ -161,6 +176,15 @@
       projects: st.projects?.length,
       media: st.mediaBin?.length,
       mediaPreview: st.mediaPreviewId,
+      // Only the file boundary (which file, 1-of-how-many) belongs in the fingerprint --
+      // that's rare enough to justify a full rebuild, which is what creates the "uploading"
+      // drop zone in the first place. `loaded` ticks many times a second and is deliberately
+      // left out: a full rebuild on every tick would tear down and rebuild the whole bin
+      // (thumbs, project list, any open <select> like "Sort by"). See the
+      // funpack-media-upload-progress listener in mediabrowser.js, which patches the drop
+      // zone's bar/percent in place instead, the same way funpack-gen-progress does for the
+      // player's readout.
+      upload: st.mediaUpload ? `${st.mediaUpload.current}/${st.mediaUpload.total}:${st.mediaUpload.name}` : null,
       // Continuity pin renders on gallery cards (📌 button state + thumb badge).
       pin: st.project?.continuity_settings?.identity_pin_ref,
       // Reference marks render the same way (R button + numbered badge), and their ORDER

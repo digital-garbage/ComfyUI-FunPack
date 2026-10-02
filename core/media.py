@@ -169,8 +169,71 @@ def delete(mid: str) -> bool:
         if removed is None:
             return False
         _save_index(keep)
-    try:
-        (config.MEDIA_DIR / removed["filename"]).unlink(missing_ok=True)
-    except OSError:
-        pass
+    for gone in (config.MEDIA_DIR / removed["filename"], _thumb_file(mid)):
+        try:
+            gone.unlink(missing_ok=True)
+        except OSError:
+            pass
     return True
+
+
+def rename(mid: str, name) -> dict | None:
+    """Change the display name only: the file on disk is addressed by id and never moves."""
+    name = " ".join(str(name or "").split())[:MAX_NAME]
+    if not name:
+        raise ValueError("a name is needed")
+    with _LOCK:
+        items = _load_index()
+        for it in items:
+            if it.get("id") == mid:
+                it["name"] = name
+                _save_index(items)
+                return it
+    return None
+
+
+#: Long edge of a grid thumbnail in px: headroom over the largest cell (240) for retina, and
+#: far below the 4K original the grid used to download and decode in full just to draw a square.
+THUMB_MAX_DIM = 320
+
+
+def _thumb_file(mid: str) -> Path:
+    return config.MEDIA_DIR / "thumbnails" / f"{mid}.jpg"
+
+
+def thumb_path_for(mid: str) -> Path | None:
+    """A small cached JPEG for an image or video, made on first request. None for audio, an
+    unreadable source, or no ffmpeg for a video: the grid then draws its placeholder. Blocking."""
+    it = get(mid)
+    src = path_for(mid) if it and it.get("kind") in ("image", "video") else None
+    if src is None:
+        return None
+    out = _thumb_file(mid)
+    try:
+        if out.is_file() and out.stat().st_mtime >= src.stat().st_mtime:
+            return out
+        out.parent.mkdir(parents=True, exist_ok=True)
+        # Unique per attempt: two requests for a not-yet-cached id must not interleave in one temp file.
+        tmp = out.with_name(f"{out.stem}.{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            if it["kind"] == "image":
+                from PIL import Image
+                img = Image.open(src)
+                img.thumbnail((THUMB_MAX_DIM, THUMB_MAX_DIM))      # in place, keeps aspect, never upscales
+                (img if img.mode in ("RGB", "L") else img.convert("RGB")).save(tmp, "JPEG", quality=82)
+            else:
+                import shutil
+                import subprocess
+                ff = shutil.which("ffmpeg")
+                if not ff:
+                    return None
+                box = f"scale='min({THUMB_MAX_DIM},iw)':'min({THUMB_MAX_DIM},ih)':force_original_aspect_ratio=decrease"
+                # -f mjpeg: the temp name's extension gives ffmpeg nothing to infer a container from
+                subprocess.run([ff, "-y", "-i", str(src), "-vframes", "1", "-vf", box, "-f", "mjpeg", str(tmp)],
+                               capture_output=True, check=True)
+            tmp.replace(out)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return out if out.is_file() else None
+    except Exception:                                  # noqa: BLE001 -- a thumbnail is never worth an error
+        return None

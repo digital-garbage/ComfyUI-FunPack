@@ -5,7 +5,10 @@
   const { el } = window.dom;
   const S = window.Store;
 
-  const DELIMS = /[,\n;]/;          // token boundaries — a trigger lives between delimiters
+  // Token boundaries — a trigger lives between delimiters. Brackets count: `(trigger:1.5)`
+  // and `[trigger@1-3]` wrap a trigger, and a query that starts with the bracket matches
+  // nothing (and accepting would have eaten the bracket).
+  const DELIMS = /[,\n;()\[\]]/;
   const MIN_QUERY = 2;
 
   function enabled() { return !!S.getEditorSetting("autocomplete"); }
@@ -99,7 +102,7 @@
       // This includes end-of-text — skip the space ONLY when a space/delimiter already
       // follows. (An earlier `$` here skipped the space at end-of-text, the common case,
       // which made the menu stick on the accepted trigger.)
-      const sep = /^(\s|[,;])/.test(after) ? "" : " ";
+      const sep = /^(\s|[,;)\]:@])/.test(after) ? "" : " ";
       ta.value = v.slice(0, span.start) + trig + sep + after;
       const caret = span.start + trig.length + sep.length;
       ta.setSelectionRange(caret, caret);

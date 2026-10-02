@@ -28,6 +28,7 @@
     models: { slots: [] },   // pluggable node config (shared with Models modal)
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
     mediaPreviewId: null,    // transient image preview in the player (not scene assignment)
+    mediaUpload: null,       // in-progress upload: {current,total,name,loaded,size} or null
     shortcuts: [],           // prompt shortcut library
     shortcutCategories: [],  // managed grouping list: [{name, sub_categories:[]}]
     imageTargets: [],        // where an image asset can be wired [{value,label}]
@@ -203,6 +204,16 @@
   function updateGenProgress(patch) {
     Object.assign(state.gen, patch);
     try { window.dispatchEvent(new CustomEvent("funpack-gen-progress", { detail: state.gen })); } catch (_) {}
+  }
+
+  // Same idea as updateGenProgress: XHR upload progress fires many times a second, and a
+  // full notify() would rebuild the whole media bin (thumbnails, project list, any open
+  // <select>) on every tick. Mutate quietly and let mediabrowser.js patch its own bar/percent
+  // in place instead.
+  function updateMediaUploadProgress(patch) {
+    if (!state.mediaUpload) return;
+    Object.assign(state.mediaUpload, patch);
+    try { window.dispatchEvent(new CustomEvent("funpack-media-upload-progress", { detail: state.mediaUpload })); } catch (_) {}
   }
   function get() { return state; }
 
@@ -3410,6 +3421,63 @@
     }
   }
 
+  // Post-render upscale (render/upscale.py): one ComfyUI job per file, then the upscaled file
+  // replaces the original under every scene and ghost that plays it (a chain run is one file).
+  const _upscaling = new Set();
+  const _mediaKey = (m) => `${m.type || "output"}/${m.subfolder || ""}/${m.filename}`;
+  function _swapRenderMedia(from, to) {
+    let n = 0;
+    const same = (m) => !!m && _mediaKey(m) === _mediaKey(from);
+    for (const id of Object.keys(state.sceneRenders || {})) {
+      const r = state.sceneRenders[id];
+      if (r && same(r.media)) { state.sceneRenders[id] = { ...r, media: to }; n++; }
+    }
+    state.sceneGhosts = (state.sceneGhosts || []).map((g) => (same(g.media) ? { ...g, media: to } : g));
+    if (n) { _validateRendersToken++; _syncEditorStateToProject(); scheduleSaveSilent(); }
+    return n;
+  }
+  async function upscaleMedia(media) {
+    const model = getEditorSetting("upscaleModel");
+    if (!media || !media.filename) return;
+    if (!model) {
+      set({ notice: "Upscale: pick a model in Settings ▸ Editor ▸ Upscale finished renders." });
+      return;
+    }
+    const key = _mediaKey(media);
+    const pid = state.project && state.project.id;
+    if (!pid || _upscaling.has(key)) return;
+    _upscaling.add(key);
+    set({ notice: `Upscaling with ${model}…` });
+    let notice = "";
+    try {
+      const promptId = await API.queueUpscale(media, model);
+      for (;;) {
+        await new Promise((res) => setTimeout(res, 2000));
+        const r = await API.upscaleResult(promptId);
+        if (!r) continue;
+        if (r.error) throw new Error(r.error);
+        const out = { ...r.videos[0], kind: "videos" };
+        if (state.project && state.project.id === pid && !_swapRenderMedia(media, out)) {
+          notice = "Upscaled, but that render was replaced meanwhile, so nothing was swapped.";
+        }
+        break;
+      }
+    } catch (e) {
+      notice = `Upscale failed: ${e && e.message ? e.message : e}`;
+    } finally {
+      _upscaling.delete(key);
+      set({ notice });
+    }
+  }
+  function upscaleRender(sceneId) {
+    const r = (state.sceneRenders || {})[sceneId];
+    return upscaleMedia(r && r.media);
+  }
+  function isUpscaling(sceneId) {
+    const m = ((state.sceneRenders || {})[sceneId] || {}).media;
+    return !!(m && _upscaling.has(_mediaKey(m)));
+  }
+
   function _recordSegment(mediaList, targetSceneIds, opts) {
     if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
     const completedScenes = opts?.completedScenes ?? targetSceneIds.length;
@@ -3611,6 +3679,7 @@
         const mediaList = [...(images || []), ...(audio || [])]
           .map((f) => ({ ...f, kind: _kindForFilename(f.filename) }));
         if (mediaList.length && _genRunSceneIds.length) _recordSegment(mediaList, _genRunSceneIds, { promptId });
+        if (getEditorSetting("upscaleMode") === "always") upscaleMedia(mediaList.find((m) => m.kind === "videos"));
         set({
           gen: {
             state: "done", promptId, media: mediaList,
@@ -4135,6 +4204,12 @@
 
   async function generate(onlyScene) {
     if (!state.project) return;
+    // Shown BEFORE the await below, not after: without it, clicking Generate produced no
+    // visible change at all until _flushSaveForGenerate/_generateRun got around to their own
+    // first `set()` -- normally near-instant, but on a flaky connection (an ambient autosave
+    // still mid-retry that _generateRun then waits on) that gap could stretch to tens of
+    // seconds with the button looking untouched and un-disabled the whole time.
+    set({ gen: { state: "queuing", promptId: null, media: [], msg: "Preparing to generate…", step: 0, maxStep: 0 } });
     try {
       await _flushSaveForGenerate();
     } catch (e) {
@@ -4154,6 +4229,7 @@
   // session reset applies to the FIRST run only.
   async function generateMontage() {
     if (!state.project) return;
+    set({ gen: { state: "queuing", promptId: null, media: [], msg: "Preparing to generate…", step: 0, maxStep: 0 } });
     try {
       await _flushSaveForGenerate();
     } catch (e) {
@@ -4181,6 +4257,7 @@
       set({ gen: { state: "error", promptId: null, media: [], msg: "No scenes selected." } });
       return;
     }
+    set({ gen: { state: "queuing", promptId: null, media: [], msg: "Preparing to generate…", step: 0, maxStep: 0 } });
     try {
       await _flushSaveForGenerate();
     } catch (e) {
@@ -4670,8 +4747,24 @@
 
   // ── media bin + libraries ─────────────────────────────────────────────────────
   async function loadMedia() { try { state.mediaBin = (await API.listMedia()).media || []; } catch (_) { state.mediaBin = []; } notify(); }
+  // state.mediaUpload: null when idle, else { current, total, name, loaded, size } -- the
+  // drop zone had no way to show this at all before, so a batch of photos/a big video
+  // uploading over a slow connection just looked like nothing was happening.
   async function uploadMedia(files) {
-    for (const f of files) { try { await API.uploadMedia(f); } catch (e) { console.error("upload failed", e); } }
+    const list = [...files];
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      // A full notify() here (once per file) is what builds the "uploading" drop zone in the
+      // first place -- see fpMediabrowser in view_bus.js. Progress WITHIN a file goes through
+      // updateMediaUploadProgress instead, which never touches the store's subscribers.
+      set({ mediaUpload: { current: i + 1, total: list.length, name: f.name, loaded: 0, size: f.size } });
+      try {
+        await API.uploadMedia(f, (loaded, total) => {
+          updateMediaUploadProgress({ loaded, size: total || f.size });
+        });
+      } catch (e) { console.error("upload failed", e); }
+    }
+    state.mediaUpload = null;
     await loadMedia();
   }
   async function deleteMedia(id) {
@@ -4942,6 +5035,8 @@
   });
 
   window.Store = {
+    upscaleRender,
+    isUpscaling,
     get, set, subscribe, notify, init,
     scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
