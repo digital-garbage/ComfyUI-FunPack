@@ -398,7 +398,9 @@
     refinementKeys: () => j("GET", API("/api/m/taste/keys")),
     // A key travels as a zip (the exported file), sent as the raw body: it can be tens of MB.
     importRefinementKey: async (file, opts) => {
-      const name = String(file.name || "key").replace(/\.zip$/i, "").trim();
+      // A downloaded copy may be "fox (1).zip": reduce it to a name a key can have.
+      const name = String(file.name || "key").replace(/\.zip$/i, "").replace(/[^A-Za-z0-9 _.-]+/g, "_")
+        .replace(/^[^A-Za-z0-9]+/, "").replace(/[. ]+$/, "").slice(0, 64) || "key";
       const q = new URLSearchParams({ name });
       if (opts && opts.overwrite) q.set("overwrite", "1");
       const res = await fetch(API("/api/m/taste/keys/import?" + q), { method: "POST", body: file });

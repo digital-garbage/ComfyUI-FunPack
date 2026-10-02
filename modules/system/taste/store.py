@@ -1,0 +1,351 @@
+"""Named taste keys on disk, and pairing a run's capture with its rating.
+
+Layout: `<pack>/taste/<key>/<kind>.pt` holds `{"rows": [{"prompt_id", "reward",
+"rows": {name: tensor}}]}`; `<kind>.pending.pt` holds the latest run's capture.
+A key is a folder, so deleting one is one folder and a kind is one file.
+
+"Latest only" (user's choice, 2026-09-27): each capture overwrites the pending
+one, so a rating can only teach from the most recent run -- but it is TAGGED with
+the ComfyUI prompt id it came from, so rating any other clip is refused and said,
+never paired with the wrong run. Changing your mind on a clip already recorded
+updates its row instead of adding a second one.
+
+Keys are disposable (retrained per rental), so there is no migration from v4's
+`refinements/` files.
+"""
+
+import json
+import os
+import re
+import shutil
+import tempfile
+import threading
+import zipfile
+import zlib
+from pathlib import Path
+
+import torch
+
+from ..._core import config
+
+ROOT = config.ROOT / "taste"
+_KEY = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}\Z")
+_LOCK = threading.RLock()
+REWARD = {"liked": 1.0, "disliked": -1.0}
+# Each rating's vote shrinks by this per later rating: half the vote sits in the
+# last ~7 (v4's RECENCY_DECAY; without it early ratings of one style outvoted a
+# new style until out-rated one-for-one).
+RECENCY_DECAY = 0.9
+# Two liked AND two disliked before a direction exists: one of each is two
+# points, not a direction.
+MIN_PER_GROUP = 2
+# A dislike can say WHICH half went wrong: "image" (the picture was bad) or "composition"
+# (the picture was fine, the shot plan was not). Plain disliked blames both.
+AXES = ("image", "composition")
+MAX_ROWS = 200
+
+
+def valid(key) -> bool:
+    return isinstance(key, str) and bool(_KEY.match(key)) and not key.endswith((".", " "))
+
+
+def _dir(key):
+    if not valid(key):
+        raise ValueError(f"{key!r} is not a usable taste key name")
+    return ROOT / key
+
+
+def keys():
+    if not ROOT.is_dir():
+        return []
+    return sorted(p.name for p in ROOT.iterdir() if p.is_dir() and valid(p.name))
+
+
+def _read(path, default):
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except FileNotFoundError:
+        return default
+
+
+def _write(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(data, tmp)
+    os.replace(tmp, path)
+
+
+_loaded = {}
+
+
+def load(key, kind):
+    """Rated rows of a kind. Re-read only when the file changed: features ask at
+    the start of every run, and a REINS log is tens of MB."""
+    path = _dir(key) / f"{kind}.pt"
+    try:
+        stamp = path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return {"rows": []}
+    hit = _loaded.get(path)
+    if hit is None or hit[0] != stamp:
+        hit = _loaded[path] = (stamp, _read(path, {"rows": []}))
+    return hit[1]
+
+
+def latest_key():
+    """The key the most recent capture went to, or None."""
+    return _read_latest().get("key")
+
+
+def kind_path(key, kind):
+    """Where a kind's rated rows live on disk (it may not exist yet)."""
+    return _dir(key) / f"{kind}.pt"
+
+
+def clear_kind(key, kind):
+    """Forget every rated row and the waiting capture of one kind."""
+    for path in (kind_path(key, kind), _dir(key) / f"{kind}.pending.pt"):
+        path.unlink(missing_ok=True)
+
+
+def current_prompt_id():
+    """The ComfyUI prompt running now -- set before any node executes."""
+    try:
+        from server import PromptServer
+        return getattr(PromptServer.instance, "last_prompt_id", None)
+    except Exception:                            # noqa: BLE001 -- tests, headless
+        return None
+
+
+def _latest_path():
+    return ROOT / "latest.json"
+
+
+def capture(key, kind, rows, prompt_id=None, keep=MAX_ROWS):
+    """This run's capture for `kind`, waiting for a rating. Overwrites the last.
+
+    Kept in the dtype given: a banked latent stays half precision. `keep` caps
+    how many rated rows this kind holds, oldest dropped first.
+    """
+    if not rows:
+        return
+    prompt_id = prompt_id or current_prompt_id()
+    clean = {str(k): v.detach().cpu() for k, v in rows.items()}
+    with _LOCK:
+        _write(_dir(key) / f"{kind}.pending.pt",
+               {"prompt_id": prompt_id, "rows": clean, "keep": int(keep)})
+        latest = _read_latest()
+        kinds = latest.get("kinds", []) if latest.get("prompt_id") == prompt_id \
+            and latest.get("key") == key else []
+        if kind not in kinds:
+            kinds.append(kind)
+        ROOT.mkdir(parents=True, exist_ok=True)
+        _latest_path().write_text(json.dumps({"key": key, "prompt_id": prompt_id,
+                                              "kinds": kinds}))
+
+
+def _read_latest():
+    try:
+        return json.loads(_latest_path().read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def blind(rows, to):
+    """`rows` as a learner that cannot judge the `to` axis sees them: a dislike blamed on
+    that axis alone is neutral (reward 0, so it counts as neither liked nor disliked)."""
+    if not to:
+        return rows
+    return [dict(r, reward=0.0) if r.get("axis") == to else r for r in rows]
+
+
+def rate(prompt_id, rating, axis=None):
+    """-> {"recorded": [kinds], "updated": [kinds], "why": str|None}.
+
+    `rating` None clears: the row is removed, nothing is learned from that clip.
+    `axis` only goes with "disliked" (see AXES); any other rating drops it.
+    """
+    if rating is not None and rating not in REWARD:
+        raise ValueError(f"{rating!r} is not a rating")
+    if axis is not None and axis not in AXES:
+        raise ValueError(f"{axis!r} is not a rating axis")
+    if axis is not None and rating != "disliked":
+        raise ValueError("only a dislike can name what went wrong")
+    out = {"recorded": [], "updated": [], "why": None}
+    with _LOCK:
+        # A clip already recorded: change or remove its row, in every key/kind.
+        for key in keys():
+            for path in _dir(key).glob("*.pt"):
+                if path.name.endswith(".pending.pt"):
+                    continue
+                data = _read(path, {"rows": []})
+                hit = [r for r in data["rows"] if r.get("prompt_id") == prompt_id]
+                if not hit:
+                    continue
+                if rating is None:
+                    data["rows"] = [r for r in data["rows"] if r.get("prompt_id") != prompt_id]
+                else:
+                    for r in hit:
+                        r["reward"] = REWARD[rating]
+                        r.pop("axis", None)
+                        if axis:
+                            r["axis"] = axis
+                _write(path, data)
+                out["updated"].append(path.stem)
+        if out["updated"]:
+            return out
+
+        latest = _read_latest()
+        if not prompt_id or latest.get("prompt_id") != prompt_id:
+            out["why"] = ("only the most recent generation can teach the taste key -- "
+                          "this clip's capture has been replaced by a newer run")
+            return out
+        if rating is None:
+            return out
+        key = latest["key"]
+        for kind in latest.get("kinds", []):
+            pending_path = _dir(key) / f"{kind}.pending.pt"
+            pending = _read(pending_path, None)
+            if not pending or pending.get("prompt_id") != prompt_id:
+                continue
+            data = load(key, kind)
+            row = {"prompt_id": prompt_id, "reward": REWARD[rating], "rows": pending["rows"]}
+            if axis:
+                row["axis"] = axis
+            data["rows"].append(row)
+            data["rows"] = data["rows"][-int(pending.get("keep", MAX_ROWS)):]
+            _write(_dir(key) / f"{kind}.pt", data)
+            pending_path.unlink(missing_ok=True)
+            out["recorded"].append(kind)
+    return out
+
+
+def counts(key, kind, name=None):
+    """(liked, disliked) rows for a kind, optionally only rows holding `name`."""
+    rows = [r for r in load(key, kind)["rows"] if name is None or str(name) in r["rows"]]
+    return (sum(r["reward"] > 0 for r in rows), sum(r["reward"] < 0 for r in rows))
+
+
+def direction(key, kind, name):
+    """-> (unit vector | None, n_liked, n_disliked).
+
+    Recency-weighted mean(liked) - mean(disliked) over the rows holding `name`,
+    split by the SIGN of the rating only. Raw rows, not normalised: a hidden
+    state's magnitude carries content (v4's trajectory-probe lesson).
+    """
+    name = str(name)
+    rows = [r for r in load(key, kind)["rows"] if name in r["rows"]]
+    aged = [(r["rows"][name], r["reward"], RECENCY_DECAY ** (len(rows) - 1 - i))
+            for i, r in enumerate(rows)]
+    liked = [(d, a) for d, w, a in aged if w > 0]
+    disliked = [(d, a) for d, w, a in aged if w < 0]
+    if len(liked) < MIN_PER_GROUP or len(disliked) < MIN_PER_GROUP:
+        return None, len(liked), len(disliked)
+
+    def wmean(group):
+        ds = torch.stack([d for d, _ in group]).float()
+        a = torch.tensor([a for _, a in group], dtype=ds.dtype)
+        return (ds * a.view(-1, *([1] * (ds.dim() - 1)))).sum(0) / a.sum()
+
+    diff = wmean(liked) - wmean(disliked)
+    norm = diff.norm()
+    if not torch.isfinite(norm) or norm <= 1e-8:
+        return None, len(liked), len(disliked)
+    return diff / norm, len(liked), len(disliked)
+
+
+def delete(key):
+    with _LOCK:
+        shutil.rmtree(_dir(key), ignore_errors=True)
+        if _read_latest().get("key") == key:
+            _latest_path().unlink(missing_ok=True)
+
+
+# --- moving a key between machines -------------------------------------------
+#
+# A key is a folder of `<kind>.pt` files, so exporting is a zip of them. Importing reads a zip a
+# stranger may have made: only plainly named `.pt` files, bounded in count and size, each one
+# loadable with weights_only (no pickled code) before anything touches the real folder.
+
+_KIND_FILE = re.compile(r"\A[A-Za-z0-9_]{1,48}\.pt\Z")
+MAX_FILES = 64
+MAX_BYTES = 4 * 1024 ** 3
+
+
+def export_key(key, out_path):
+    """Zip `key`'s rated rows into `out_path` (waiting captures are not part of what was learned)."""
+    folder = _dir(key)
+    if not folder.is_dir():
+        raise ValueError(f"there is no taste key called {key!r}")
+    with _LOCK:
+        found = [p for p in sorted(folder.glob("*.pt")) if _KIND_FILE.match(p.name)]
+        if not found:
+            raise ValueError(f"{key!r} has not learned anything yet: there is nothing to export")
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_STORED) as zf:
+            for path in found:
+                zf.write(path, path.name)
+    return out_path
+
+
+def _sound_rows(data):
+    """True when `data` is what the learners consume: a dict of rated rows, each with a number
+    for a reward and tensors for what was captured. Loading it safely is not enough -- a row of
+    the wrong shape would break every later rating."""
+    if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
+        return False
+    for row in data["rows"]:
+        if not isinstance(row, dict) or isinstance(row.get("reward"), bool) or not isinstance(row.get("reward"), (int, float)):
+            return False
+        if row.get("axis") not in (None, *AXES):
+            return False
+        captured = row.get("rows")
+        if not isinstance(captured, dict) or not all(isinstance(v, torch.Tensor) for v in captured.values()):
+            return False
+    return True
+
+
+def import_key(key, zip_path, overwrite=False):
+    """-> number of kinds imported. FileExistsError if `key` exists and `overwrite` is off."""
+    dest = _dir(key)
+    try:
+        zf = zipfile.ZipFile(zip_path)
+    except zipfile.BadZipFile as exc:
+        raise ValueError("that is not an exported taste key (not a zip file)") from exc
+    with zf:
+        infos = zf.infolist()
+        if not infos or len(infos) > MAX_FILES:
+            raise ValueError(f"an exported key holds 1 to {MAX_FILES} files, this has {len(infos)}")
+        for info in infos:
+            if not _KIND_FILE.match(info.filename):
+                raise ValueError(f"{info.filename!r} is not part of a taste key")
+        if sum(i.file_size for i in infos) > MAX_BYTES:
+            raise ValueError("that key is larger than 4 GB")
+        ROOT.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix=".import-", dir=ROOT))
+        try:
+            for info in infos:
+                target = stage / info.filename
+                try:
+                    with zf.open(info) as src, open(target, "wb") as out:
+                        shutil.copyfileobj(src, out)
+                except (zipfile.BadZipFile, zlib.error, RuntimeError, NotImplementedError, EOFError) as exc:
+                    raise ValueError(f"{info.filename} cannot be read from the zip ({type(exc).__name__}): "
+                                     f"it is damaged, encrypted or compressed in an unsupported way") from exc
+                try:
+                    data = torch.load(target, map_location="cpu", weights_only=True)
+                except Exception as exc:                     # noqa: BLE001
+                    raise ValueError(f"{info.filename} is not a readable taste file ({type(exc).__name__})") from exc
+                if not _sound_rows(data):
+                    raise ValueError(f"{info.filename} does not hold rated rows of the shape FunPack reads")
+            with _LOCK:
+                if dest.exists():
+                    if not overwrite:
+                        raise FileExistsError(key)
+                    shutil.rmtree(dest)
+                os.replace(stage, dest)
+                # Anything waiting to be rated under this name died with the old folder.
+                if _read_latest().get("key") == key:
+                    _latest_path().unlink(missing_ok=True)
+                return len(infos)
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)

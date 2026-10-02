@@ -721,7 +721,8 @@ input[type=number] { font-family: var(--font-ui); }
 #media-zone .media-grid[data-view="list"] .media-name-actions { opacity: 1; }
 #media-zone .media-grid[data-view="icons"][data-cols] { grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 4px; --mb-cell: 46px; }
 #media-zone .media-grid[data-view="icons"] .media-thumb { height: 46px; }
-#media-zone .media-grid[data-view="icons"] .media-name-row { display: none; }
+#media-zone .media-grid[data-view="icons"] .media-name { display: none; }
+#media-zone .media-grid[data-view="icons"] .media-name-row { position: absolute; top: 0; right: 0; left: 0; min-height: 0; padding: 1px; justify-content: flex-end; flex-wrap: wrap; background: color-mix(in srgb, var(--ink-void) 70%, transparent); }
 .media-card { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; background: var(--ink-0); }
 .media-card:hover { border-color: var(--muted); }
 .media-card.previewing { border-color: var(--teal); box-shadow: 0 0 0 1px color-mix(in srgb, var(--teal) 35%, transparent); }

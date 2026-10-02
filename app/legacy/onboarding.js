@@ -698,6 +698,7 @@
   const back = () => go(-1);
 
   function renderStep() {
+    if (!root) return;                                  // closed while a step was still working
     const name = steps[idx];
     const st = STEPS[name];
     paint(st.render(), name);
@@ -705,6 +706,7 @@
   }
 
   function paint(node, name) {
+    if (!root || !stage) return;
     if (stage?._child?._cleanup) stage._child._cleanup();
     clear(stage);
     root.querySelector(".oo-actions")?.remove();
@@ -785,7 +787,9 @@
   // The wizard must always be leavable: a modal that can only be completed is a trap. Esc and the
   // ✕ close it; an unfinished run is remembered (save()) the way a refresh would have left it.
   function onEscape(e) {
-    if (e.key !== "Escape" || !root) return;
+    if (e.key !== "Escape" || !root || e.defaultPrevented) return;
+    // A layer open above the wizard (Settings, a floating window, the restart overlay) owns Esc.
+    if (document.querySelector(".restart-overlay, .sw-overlay, .fw:not([hidden])")) return;
     const t = document.activeElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     e.preventDefault();
@@ -793,7 +797,8 @@
   }
   function leave() {
     if (panel) { closePane(); return; }
-    try { if (ctx) save(false); } catch (_) {}
+    // A run waiting out the wizard's own ComfyUI restart stays resumable: only an ordinary run is rewritten.
+    try { if (ctx && !(restore() || {}).resumable) save(false); } catch (_) {}
     close();
   }
 

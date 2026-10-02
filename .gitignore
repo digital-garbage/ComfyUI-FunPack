@@ -40,7 +40,7 @@ app/playwright-report/
 /shortcut_revolver.json
 
 # Taste keys: what your ratings taught, per rental
-taste/
+/taste/
 /block_influence.enabled
 /block_influence.latest.json
 /phrase_probe.enabled
