@@ -635,12 +635,14 @@
       save.onclick = async () => {
         const triggers = splitTriggers(trig.value);
         if (!triggers.length) { alert("At least one trigger is required."); return; }
-        await S.saveShortcut({
+        // A refused save (a name clash) keeps the editor open: closing it would throw away
+        // what was typed.
+        if (!await S.saveShortcut({
           name: name.value.trim() || triggers[0], triggers,
           replacements: splitReplacements(reps.value), enabled: en._cb.checked,
           category: grouping.category, sub_category: grouping.sub_category,
           original_name: item.name || undefined,
-        });
+        })) return;
         close(); render();
       };
       const cancel = el("button", "btn ghost tiny", "Cancel"); cancel.onclick = close;

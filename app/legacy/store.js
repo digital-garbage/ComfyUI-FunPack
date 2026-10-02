@@ -3691,7 +3691,7 @@
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text, anchor: state.project.anchor || "", postfix: state.project.postfix || "",
-          postfix_enabled: !!state.project.postfix_enabled, variables: state.project.variables || [],
+          postfix_enabled: state.project.postfix_enabled !== false, variables: state.project.variables || [],
           // No per-run sampler seed is reachable from here (nothing threads a
           // real generation seed through this path yet) — a fresh one per
           // queue gives real variety across separate Generate clicks, same
@@ -3707,7 +3707,7 @@
       // server would have -- rather than a prompt-craft feature blocking the run. Shortcuts
       // and $variables are NOT applied, and the person is told so.
       const p = state.project;
-      const literal = [(p.anchor || "").trim(), text, p.postfix_enabled ? (p.postfix || "").trim() : ""]
+      const literal = [(p.anchor || "").trim(), text, p.postfix_enabled !== false ? (p.postfix || "").trim() : ""]
         .filter(Boolean).join(" ");
       raw[found.slot.id] = { ...(raw[found.slot.id] || {}), [found.role.input]: literal };
       state.notice = "Could not reach the prompt expander: this run uses your words as typed, without shortcuts or $variables.";
@@ -4671,7 +4671,7 @@
     notify();
   }
   async function loadShortcuts() { try { const r = await API.shortcuts(); state.shortcuts = r.shortcuts || []; state.shortcutCategories = r.categories || []; } catch (_) { state.shortcuts = []; state.shortcutCategories = []; } notify(); }
-  async function saveShortcut(item) { try { const r = await API.saveShortcut(item); state.shortcuts = r.shortcuts || state.shortcuts; if (r.categories) state.shortcutCategories = r.categories; notify(); } catch (e) { alert("Save failed: " + e.message); } }
+  async function saveShortcut(item) { try { const r = await API.saveShortcut(item); state.shortcuts = r.shortcuts || state.shortcuts; if (r.categories) state.shortcutCategories = r.categories; notify(); return true; } catch (e) { alert("Save failed: " + e.message); return false; } }
   async function deleteShortcut(name) { try { const r = await API.deleteShortcut(name); state.shortcuts = r.shortcuts || []; if (r.categories) state.shortcutCategories = r.categories; notify(); } catch (e) { console.error(e); } }
   async function addCategory(category, subCategory) {
     try {

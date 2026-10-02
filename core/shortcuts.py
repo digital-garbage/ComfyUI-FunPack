@@ -30,11 +30,12 @@ MAX_NAME = 120
 MAX_ITEM = 4096
 
 
-def _as_list(raw):
-    """A string is one comma/semicolon/newline separated list (hand-written v4
-    files); anything that is not a list or string is nothing, never its repr."""
+def _as_list(raw, sep=r"[,;\n]+"):
+    """A string is one separated list (hand-written v4 files); anything that is
+    not a list or string is nothing, never its repr. Replacements are prose
+    and may hold commas, so they split on newlines only -- as v4 did."""
     if isinstance(raw, str):
-        return re.split(r"[,;\n]+", raw)
+        return re.split(sep, raw)
     return [x for x in raw if isinstance(x, (str, int, float))] if isinstance(raw, list) else []
 
 
@@ -82,7 +83,7 @@ class Shortcut:
         return Shortcut(
             name=name,
             triggers=triggers,
-            replacements=_clean_list(_as_list(d.get("replacements", d.get("replacement"))), keep_empty=True),
+            replacements=_clean_list(_as_list(d.get("replacements", d.get("replacement")), r"\n+"), keep_empty=True),
             enabled=bool(d.get("enabled", True)),
             category=_label(d.get("category")),
             sub_category=_label(d.get("sub_category")),
@@ -129,10 +130,15 @@ def save(payload: dict, original_name: str | None = None) -> list[Shortcut]:
     with _LOCK:
         items = listing()
         same = lambda a, b: a.lower() == b.lower()  # noqa: E731 -- one identity rule, shared with import
-        idx = next((i for i, it in enumerate(items)
-                    if same(it.name, original_name or item.name)), None)
+        target = original_name or item.name
+        # An exact-case match first: a library written before names were one identity may
+        # hold "Fox" and "fox", and an edit must land on the one that was edited.
+        idx = next((i for i, it in enumerate(items) if it.name == target), None)
+        if idx is None:
+            idx = next((i for i, it in enumerate(items) if same(it.name, target)), None)
         clash = next((i for i, it in enumerate(items) if same(it.name, item.name)), None)
-        if clash is not None and clash != idx:
+        renamed = idx is None or items[idx].name != item.name
+        if renamed and clash is not None and clash != idx:
             raise ValueError(f"a shortcut named {items[clash].name!r} already exists")
         if idx is None:
             items.append(item)
@@ -144,7 +150,12 @@ def save(payload: dict, original_name: str | None = None) -> list[Shortcut]:
 
 def delete(name: str) -> list[Shortcut]:
     with _LOCK:
-        items = [it for it in listing() if it.name != name]
+        items = listing()
+        hit = next((i for i, it in enumerate(items) if it.name == name), None)
+        if hit is None:
+            hit = next((i for i, it in enumerate(items) if it.name.lower() == name.lower()), None)
+        if hit is not None:
+            del items[hit]
         _save_all(items)
         return items
 

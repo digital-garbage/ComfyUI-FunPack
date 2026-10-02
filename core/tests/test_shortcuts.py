@@ -276,3 +276,19 @@ def test_odd_types_never_become_their_repr(store):
     assert s.triggers == ["a", "b", "c"] and s.replacements == ["ok"] and (s.category, s.sub_category) == ("", "")
     with pytest.raises(ValueError):
         shortcuts.add_category(5)
+
+
+def test_replacements_are_prose_split_on_newlines_only(store):
+    s = shortcuts.Shortcut.from_dict({"name": "P", "triggers": ["p"], "replacements": "a big, red fox; run\nsecond"})
+    assert s.replacements == ["a big, red fox; run", "second"]
+
+
+def test_a_library_with_case_duplicates_edits_and_deletes_the_named_one(store):
+    shortcuts._save_all([shortcuts.Shortcut(name="Fox", triggers=["a"], replacements=["1"]),
+                         shortcuts.Shortcut(name="fox", triggers=["b"], replacements=["2"])])
+    shortcuts.save({"name": "fox", "triggers": ["b2"], "replacements": ["2"]}, original_name="fox")
+    assert [(s.name, s.triggers) for s in shortcuts.listing()] == [("Fox", ["a"]), ("fox", ["b2"])]
+    shortcuts.delete("fox")
+    assert [s.name for s in shortcuts.listing()] == ["Fox"]
+    shortcuts.delete("FOX")                      # no exact match: the case-insensitive one goes
+    assert shortcuts.listing() == []
