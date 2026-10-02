@@ -738,7 +738,7 @@
     const parsed = pv.parsed || {};
     // Anchor disabled (editor setting): the backend still reports a leading anchor, but
     // generation folds it into Scene 1 — show it that way so the preview matches.
-    const foldAnchor = parsed.anchor && !S.getEditorSetting("anchorEnabled");
+    const foldAnchor = false;
     if (parsed.anchor && !foldAnchor) { const l = el("div", "pv-line"); l.append(el("span", "pv-badge anchor", "anchor")); l.append(el("span", null, parsed.anchor)); box.append(l); }
     if (foldAnchor) { const l = el("div", "pv-line"); l.append(el("span", "pv-badge", "S1")); l.append(el("span", null, parsed.anchor)); box.append(l); }
     const sBase = foldAnchor ? 2 : 1;

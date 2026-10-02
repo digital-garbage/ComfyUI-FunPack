@@ -35,6 +35,8 @@ def markers() -> list[str]:
 def _clean(raw) -> list[str]:
     out = []
     for m in raw if isinstance(raw, list) else []:
+        if not isinstance(m, str):
+            continue
         m = " ".join(str(m).split())[:MAX_MARKER]
         if m and m.lower() not in (o.lower() for o in out):
             out.append(m)

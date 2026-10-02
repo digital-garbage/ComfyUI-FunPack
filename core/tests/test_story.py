@@ -42,3 +42,9 @@ def test_empty_marker_list_is_refused_and_keeps_the_old_one():
 def test_unreadable_store_falls_back_to_default():
     config.MARKERS_FILE.write_text("{nope", encoding="utf-8")
     assert story.markers() == story.DEFAULT_MARKERS
+
+
+def test_non_string_markers_are_ignored():
+    assert story.save_markers([None, 5, "cut"]) == ["cut"]
+    with pytest.raises(ValueError):
+        story.save_markers([None, 5])

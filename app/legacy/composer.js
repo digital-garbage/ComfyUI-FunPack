@@ -189,7 +189,9 @@
     // global prompt to edit — dereferencing st.project here crashed the whole editor.
     const live = (st.project && st.project.global_prompt)
       || (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt)) || "";
-    const val = gpDraft != null ? gpDraft : live;
+    // The draft only stands in for the scenes while its split is still on its way; after
+    // that the scenes are the truth, so a tab/project/cut-word change never shows old text.
+    const val = gpDraft != null && S.globalPromptApplyPending() ? gpDraft : live;
 
     // Templates: pick one to apply (prompt + variables), Save to snapshot the current state.
     wrap.append(composeTemplatesBar());
@@ -730,7 +732,7 @@
     const wrap = el("div", "bin");
     wrap.append(el("div", "lib-form-title", "Cut words"));
     wrap.append(el("div", "insp-hint",
-      "Type one of these words in the Story to start a new scene. The first is the one written between scenes for you."));
+      "Type one of these words in the Story to start a new scene. The first is the one written between scenes for you. A scene whose own text contains a cut word is split there the next time the Story is edited, so pick words you will not otherwise write."));
     const list = el("div", "lib-list");
     wrap.append(list);
     let words = null;
@@ -753,7 +755,14 @@
       });
     };
     const add = el("input", "lib-in"); add.placeholder = "New cut word, then Enter";
-    add.onkeydown = (e) => { if (e.key === "Enter" && add.value.trim()) { const v = add.value; add.value = ""; save([...words, v]); } };
+    add.onkeydown = (e) => {
+      if (e.key !== "Enter" || !add.value.trim()) return;
+      const v = add.value.trim();
+      const re = new RegExp("(?<!\\w)" + v.split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+") + "(?!\\w)", "i");
+      const hit = ((S.get().project || {}).scenes || []).find((sc) => re.test(sc.text || ""));
+      if (hit) { alert(`"${v}" already appears in a scene's text, which would split that scene. Pick another word.`); return; }
+      add.value = ""; save([...words, v]);
+    };
     wrap.append(add);
     API.storyMarkers().then((r) => { words = r.markers; paint(); }).catch((e) => list.append(el("div", "pj-meta", e.message)));
     return wrap;
@@ -937,7 +946,7 @@
   // Keep the Compose textarea in sync with timeline-driven global-prompt changes,
   // but never clobber what the user is actively typing.
   window.addEventListener("funpack-global-prompt-updated", (e) => {
-    if (tab !== "Story" || !composeTextarea) return;
+    if (tab !== "Story" || !composeTextarea) { if (!(S.globalPromptApplyPending && S.globalPromptApplyPending())) gpDraft = null; return; }
     if (document.activeElement === composeTextarea) return;
     // Never rewind the draft while the user's newest text is still debouncing/mid-parse —
     // the event would carry the previous apply's text and eat their last keystrokes.

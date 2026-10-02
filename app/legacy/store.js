@@ -257,6 +257,8 @@
   async function loadStoryMarkers() {
     try { _storyMarker = ((await API.storyMarkers()).markers || [])[0] || "qcut"; } catch (_) {}
   }
+  // Another tab or window may have changed the words; the box must write the server's.
+  window.addEventListener("focus", () => loadStoryMarkers());
   function buildGlobalPromptFromTimeline(project) {
     if (!project) return "";
     const active = (project.scenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
@@ -295,7 +297,7 @@
     if (!state.project) return;
     _pinnedGlobalPrompt = null;
     const built = buildGlobalPromptFromTimeline(state.project);
-    const prev = (state.project.global_prompt || "").trim();
+    const prev = state.project.global_prompt || "";
     if (built === prev && (state.preview?.display_prompt || "") === built) return;
     state.project.global_prompt = built;
     state.preview = {
@@ -338,9 +340,14 @@
   // — otherwise we'd save (and generate from) stale scene text while the screen shows the new prompt.
   async function flushGlobalPromptApply() {
     if (_globalApplyTimer) { clearTimeout(_globalApplyTimer); _globalApplyTimer = null; }
-    if (_pendingGlobalPromptText == null) return;
-    const t = _pendingGlobalPromptText; _pendingGlobalPromptText = null;
-    await applyGlobalPromptQuiet(t);
+    if (_pendingGlobalPromptText != null) {
+      const t = _pendingGlobalPromptText; _pendingGlobalPromptText = null;
+      await applyGlobalPromptQuiet(t);
+    }
+    // A split already in flight (its debounce fired before Generate) is not "pending" any
+    // more -- wait for it, or Generate would run the scenes the box no longer shows.
+    await _lastApply.catch(() => {});
+    if (_applyFailed) throw new Error("The Story could not be split into scenes (is the server reachable?) -- the scenes were not updated, so nothing was generated.");
   }
 
   function _normalizeSceneText(t) {
@@ -597,7 +604,15 @@
     return true;
   }
 
-  async function applyGlobalPromptQuiet(text) {
+  let _lastApply = Promise.resolve();
+  let _applyFailed = false;
+  function applyGlobalPromptQuiet(text) {
+    const p = _applyGlobalPromptQuiet(text);
+    _lastApply = p;
+    return p;
+  }
+
+  async function _applyGlobalPromptQuiet(text) {
     // Same shape as commit()'s guard above, and needed for the same reason:
     // this has an internal closure-scoped caller (applyPromptTemplate) besides its exported
     // property, so blocking Store.applyGlobalPromptQuiet from tour.js alone
@@ -607,8 +622,7 @@
     if (window.__FUNPACK_TOUR__) return false;
     if (!state.project) return false;
     const trimmed = String(text || "").trim();
-    if (!trimmed) return false;
-    if (trimmed === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) return true;
+    if (trimmed === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) { _applyFailed = false; return true; }
     const seq = ++_applySeq;
     _applyInFlight++;
     try {
@@ -617,8 +631,10 @@
       try { res = await API.parsePrompt(state.project.id, trimmed); }
       catch (e) {
         console.warn("Global prompt parse failed:", e);
+        _applyFailed = true;
         return false;
       }
+      _applyFailed = false;
       // The user typed more while this parse was in flight: a newer apply is scheduled (or
       // already running). Distributing this OLDER text now would re-split the timeline to a
       // stale prompt and dispatch a stale updated event — drop it and let the newer one win.
