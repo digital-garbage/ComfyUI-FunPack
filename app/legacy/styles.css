@@ -713,6 +713,15 @@ input[type=number] { font-family: var(--font-ui); }
 }
 #media-zone .media-act { width: 18px; height: 18px; font-size: 11px; }
 #media-zone .media-name-edit { font-size: clamp(11.5px, calc(var(--mb-cell) * 0.115), 13.5px); }
+/* Bin views: list = a row per item, icons = bare small thumbnails (the name is the tooltip). */
+#media-zone .media-grid[data-view="list"][data-cols] { grid-template-columns: minmax(0, 1fr); gap: 4px; --mb-cell: 40px; }
+#media-zone .media-grid[data-view="list"] .media-card { display: flex; align-items: center; }
+#media-zone .media-grid[data-view="list"] .media-thumb { width: 56px; height: 40px; flex: none; }
+#media-zone .media-grid[data-view="list"] .media-name-row { flex: 1; min-width: 0; align-items: center; }
+#media-zone .media-grid[data-view="list"] .media-name-actions { opacity: 1; }
+#media-zone .media-grid[data-view="icons"][data-cols] { grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 4px; --mb-cell: 46px; }
+#media-zone .media-grid[data-view="icons"] .media-thumb { height: 46px; }
+#media-zone .media-grid[data-view="icons"] .media-name-row { display: none; }
 .media-card { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; background: var(--ink-0); }
 .media-card:hover { border-color: var(--muted); }
 .media-card.previewing { border-color: var(--teal); box-shadow: 0 0 0 1px color-mix(in srgb, var(--teal) 35%, transparent); }
@@ -2522,6 +2531,8 @@ body.tour-mode { overflow: hidden; }
 }
 .oo-back:hover { background: var(--ink-2); color: var(--text); }
 .oo-back[hidden] { display: none; }
+.oo-close { position: absolute; top: 14px; right: 16px; width: 30px; height: 30px; border-radius: 50%; border: 0; background: transparent; color: var(--muted, #8a8f9a); font-size: 15px; cursor: pointer; z-index: 3; }
+.oo-close:hover { background: var(--ink-2); color: var(--text); }
 
 /* Only steps that carry an action bar reserve room for it; the splash has none. */
 .oo-root.oo-has-actions { padding-bottom: 140px; }

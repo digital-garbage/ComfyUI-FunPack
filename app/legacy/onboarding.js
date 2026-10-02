@@ -782,7 +782,23 @@
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
 
+  // The wizard must always be leavable: a modal that can only be completed is a trap. Esc and the
+  // ✕ close it; an unfinished run is remembered (save()) the way a refresh would have left it.
+  function onEscape(e) {
+    if (e.key !== "Escape" || !root) return;
+    const t = document.activeElement;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+    e.preventDefault();
+    leave();
+  }
+  function leave() {
+    if (panel) { closePane(); return; }
+    try { if (ctx) save(false); } catch (_) {}
+    close();
+  }
+
   function close() {
+    document.removeEventListener("keydown", onEscape);
     if (panel) { try { panel.cleanup?.(); } catch (_) {} panel = null; }
     if (stage?._child?._cleanup) stage._child._cleanup();
     root?.remove();
@@ -807,6 +823,13 @@
     backBtn.hidden = true;
     backBtn.onclick = () => (panel ? closePane() : back());
     root.append(backBtn);
+    const closeBtn = el("button", "oo-close", "✕");
+    closeBtn.type = "button";
+    closeBtn.title = "Close (Esc) — File ▸ Project Setup Wizard… brings it back";
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.onclick = leave;
+    root.append(closeBtn);
+    document.addEventListener("keydown", onEscape);
 
     stage = el("div", "oo-stage");
     root.append(stage);

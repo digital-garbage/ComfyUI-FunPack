@@ -35,10 +35,20 @@
   const MF_KEY = "fp_media_filter";
   const MS_KEY = "fp_media_sort";
   const MC_KEY = "fp_media_grid_cols";
+  const MV_KEY = "fp_media_view";
   let mediaFilter = localStorage.getItem(MF_KEY) || "all";
   let mediaSort = localStorage.getItem(MS_KEY) || "name_asc";
   let mediaGridCols = parseInt(localStorage.getItem(MC_KEY) || "0", 10);
   if (![0, 1, 2, 3, 4].includes(mediaGridCols)) mediaGridCols = 0;
+  // How the bin is laid out: thumbnails with names (grid), one row per item (list), or bare
+  // small thumbnails (icons). Only the grid has a column count.
+  const MEDIA_VIEWS = [
+    { id: "grid", label: "Grid", title: "Thumbnails with names" },
+    { id: "list", label: "List", title: "One row per item" },
+    { id: "icons", label: "Icons", title: "Small thumbnails, names on hover" },
+  ];
+  let mediaView = localStorage.getItem(MV_KEY) || "grid";
+  if (!MEDIA_VIEWS.some((v) => v.id === mediaView)) mediaView = "grid";
 
   const MEDIA_FILTERS = [
     { id: "all", label: "All" },
@@ -249,8 +259,24 @@
     sortRow.append(sortSel);
     controls.append(sortRow);
 
+    const viewRow = el("div", "media-bin-cols");
+    viewRow.append(el("span", "media-bin-sort-lbl", "View"));
+    const viewSeg = el("div", "insp-switch media-bin-cols-switch");
+    MEDIA_VIEWS.forEach((v) => {
+      const btn = el("button", "insp-seg" + (mediaView === v.id ? " active" : ""), v.label);
+      btn.title = v.title;
+      btn.onclick = () => {
+        mediaView = v.id;
+        localStorage.setItem(MV_KEY, v.id);
+        render(S.get());
+      };
+      viewSeg.append(btn);
+    });
+    viewRow.append(viewSeg);
+    controls.append(viewRow);
+
     const colsRow = el("div", "media-bin-cols");
-    colsRow.append(el("span", "media-bin-sort-lbl", "Grid"));
+    colsRow.append(el("span", "media-bin-sort-lbl", "Columns"));
     const colsSeg = el("div", "insp-switch media-bin-cols-switch");
     MEDIA_GRID_COLS.forEach((c) => {
       const btn = el("button", "insp-seg" + (mediaGridCols === c.id ? " active" : ""), c.label);
@@ -265,7 +291,7 @@
       colsSeg.append(btn);
     });
     colsRow.append(colsSeg);
-    controls.append(colsRow);
+    if (mediaView === "grid") controls.append(colsRow);
 
     if (total > 0 && shown !== total) {
       controls.append(el("div", "pj-meta media-bin-count", `${shown} of ${total} shown`));
@@ -555,6 +581,7 @@
 
     const grid = el("div", "media-grid");
     grid.dataset.cols = String(mediaGridCols);
+    grid.dataset.view = mediaView;
     if (items.length) _appendMediaGrid(grid, items, st);
     else if (total) grid.append(el("div", "pj-meta media-grid-empty", "No items match this filter."));
     else grid.append(el("div", "pj-meta media-grid-empty", "No media yet."));
