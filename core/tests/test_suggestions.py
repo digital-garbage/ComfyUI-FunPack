@@ -29,3 +29,15 @@ def test_pairs_follows_counts_come_from_typed_triggers_only():
 
 def test_no_projects_or_no_shortcuts_is_an_empty_answer():
     assert suggestions.stats() == {"scenes": 0, "counts": {}, "pairs": [], "follows": []}
+
+
+def test_excluded_scenes_and_sub_clips_are_skipped_and_follows_use_timeline_order():
+    for n in ("rain", "neon", "fox"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    scenes = [projects.Scene(id="a", text="rain"), projects.Scene(id="b", text="neon"),
+              projects.Scene(id="c", text="fox", excluded=True),
+              projects.Scene(id="d", text="rain", gen_unit_id="a", cut_offset_frames=24)]
+    projects.save(projects.Project(name="x", scenes=scenes, timeline_order=["b", "a", "c", "d"]))
+    s = suggestions.stats()
+    assert s["scenes"] == 2 and s["counts"] == {"rain": 1, "neon": 1}
+    assert s["follows"] == [["neon", "rain", 1]]

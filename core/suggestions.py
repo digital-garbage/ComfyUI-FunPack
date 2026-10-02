@@ -29,7 +29,14 @@ def stats() -> dict:
         if proj is None:
             continue
         prev: set[str] | None = None
-        for sc in proj.scenes:
+        by_id = {sc.id: sc for sc in proj.scenes}
+        # Timeline (cut) order, as v4 mined it; the plan order until a clip was moved by hand.
+        order = [i for i in proj.timeline_order if i in by_id] or [sc.id for sc in proj.scenes]
+        for sid in order:
+            sc = by_id[sid]
+            # Editorial cuts share the root's text: only the root owns the prompt.
+            if sc.excluded or (sc.gen_unit_id and sc.cut_offset_frames):
+                continue
             text = (sc.text or "").strip().lower()
             if not text:
                 continue
