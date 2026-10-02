@@ -3734,16 +3734,17 @@
   // The value a `project.video` role asks for. The editor keeps these as flat project fields
   // (width, height, frames per scene), the pipeline names them per node (width/target_width,
   // length...); a value stored in project.video under the role's own name wins.
-  // `length` is the frames THIS RUN covers: one scene's own, or every scene's for a whole-timeline run.
+  // `length` is the frames THIS RUN covers: the project's per scene, times the scenes in the run.
   function _videoRoleValue(input, targetSceneIds) {
     const p = state.project;
     if (p.video && p.video[input] !== undefined) return p.video[input];
     if (input === "width" || input === "target_width") return p.width;
     if (input === "height" || input === "target_height") return p.height;
     if (input === "length") {
-      const frames = (targetSceneIds || []).map((id) => scene(id)).filter(Boolean)
-        .reduce((n, sc) => n + (sceneEffFrames(sc, p) || 0), 0);
-      return frames || p.num_frames_per_scene;
+      // The PROJECT's length per scene, never the scene's own: a scene cropped on the timeline
+      // regenerates at the project length (the crop was a timeline decision; a regenerate is new).
+      const n = (targetSceneIds || []).filter((id) => scene(id)).length || 1;
+      return n * p.num_frames_per_scene;
     }
     return undefined;
   }
