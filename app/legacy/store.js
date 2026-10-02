@@ -4708,7 +4708,8 @@
     const p = (async () => {
       try {
         // Bounded: a hung request must not hold every later project save behind it.
-        const ok = await Promise.race([window.PipelineState.adopt(saved, state.project && state.project.models && state.project.models.removed), new Promise((r) => setTimeout(() => r(false), 20000))]);
+        const ok = await Promise.race([window.PipelineState.adopt(saved, state.project && state.project.models && state.project.models.removed,
+                                                               state.project && state.project.models && state.project.models.unwired), new Promise((r) => setTimeout(() => r(false), 20000))]);
         const live = window.PipelineState.slots();
         // The project's pipeline is not in (ComfyUI unreachable, slow, or it refused the file): the
         // project's own copy stays exactly as it was and is not rewritten from whatever is live --
@@ -4716,10 +4717,11 @@
         _modelsAdopted = !!(ok && live);
         const base = (state.project && state.project.models) || {};
         state.models = { ...base, slots: _modelsAdopted ? JSON.parse(JSON.stringify(live)) : saved,
-                         removed: _modelsAdopted ? window.PipelineState.removedIds() : (base.removed || []) };
+                         removed: _modelsAdopted ? window.PipelineState.removedIds() : (base.removed || []),
+                         unwired: _modelsAdopted ? window.PipelineState.unwiredMap() : (base.unwired || {}) };
         if (!_modelsAdopted && _modelsRetries++ < 3) setTimeout(loadModels, 5000);
         else if (_modelsAdopted) _modelsRetries = 0;
-      } catch (_) { state.models = { slots: saved }; }
+      } catch (_) { state.models = { ...((state.project && state.project.models) || {}), slots: saved }; _modelsAdopted = false; }
     })();
     _modelsLoad = p;
     await p;
@@ -5022,7 +5024,7 @@
     window.PipelineState.subscribe((slots) => {
       if (!state.project || !_modelsAdopted) return;
       state.models = { ...(state.models || {}), slots: JSON.parse(JSON.stringify(slots || [])),
-                       removed: window.PipelineState.removedIds() };
+                       removed: window.PipelineState.removedIds(), unwired: window.PipelineState.unwiredMap() };
       // Soon, and past a Settings window's hold: a model pick must survive the reload that follows it.
       _localDirty = true;
       clearTimeout(_pipelineSaveTimer);

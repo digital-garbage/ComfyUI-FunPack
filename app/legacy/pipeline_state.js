@@ -65,9 +65,10 @@
   let queueable = false;
   let loading = false;
   let loadError = null;
+  let unwired = {};           // default links the person cut: {slotId: [input, ...]}
   let removed = new Set();    // default slots the person took out of this project's pipeline
   let adoptGate = null;       // a promise while a project's pipeline is being put in
-  let deferredRemoved;
+  let deferredRemoved, deferredUnwired;
   let deferred = null;        // a project's saved pipeline waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
   let saving = false;
@@ -131,7 +132,7 @@
       }
       loading = false;
       loadPromise = null;
-      if (slots !== null && deferred) { const d = deferred, r = deferredRemoved; deferred = null; deferredRemoved = undefined; await adopt(d, r); }
+      if (slots !== null && deferred) { const d = deferred, r = deferredRemoved, u = deferredUnwired; deferred = null; deferredRemoved = undefined; deferredUnwired = undefined; await adopt(d, r, u); }
     })();
     return loadPromise;
   }
@@ -315,6 +316,14 @@
       if (!refusedNow.length) {
         if (body.action === "remove" && offered.some((s) => s.id === body.slot)) removed.add(body.slot);   // the person's own additions just go
         if (body.action === "add") (res.slots || []).forEach((s) => removed.delete(s.id));
+        if (body.action === "unwire" && offered.some((s) => s.id === body.slot)) {
+          unwired[body.slot] = [...new Set([...(unwired[body.slot] || []), body.input])];
+        }
+        if (body.action === "wire" && unwired[body.slot]) {
+          unwired[body.slot] = unwired[body.slot].filter((k) => k !== body.input);
+          if (!unwired[body.slot].length) delete unwired[body.slot];
+        }
+        if (body.action === "remove") delete unwired[body.slot];
         try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
         _changed();
       }
@@ -354,17 +363,17 @@
   // the saved copy predates, so an update's new settings are not lost to an old project.
   // Not announced as a change: it IS the project's own copy.
   // True when the project's pipeline is in (or it had none to put in); false when it could not be.
-  async function adopt(saved, removedIds) {
+  async function adopt(saved, removedIds, unwiredMap) {
     let open;
     const gate = new Promise((r) => { open = r; });
     adoptGate = gate;                                   // before anything awaits: an edit right behind this waits too
-    try { await ensureLoaded(); return await _adopt(saved, removedIds); } finally { if (adoptGate === gate) adoptGate = null; open(); }
+    try { await ensureLoaded(); return await _adopt(saved, removedIds, unwiredMap); } finally { if (adoptGate === gate) adoptGate = null; open(); }
   }
 
-  async function _adopt(saved, removedIds) {
+  async function _adopt(saved, removedIds, unwiredMap) {
     // Not loaded (ComfyUI unreachable): remember what the project holds and put it in the moment a
     // load succeeds, so the default is never what the next edit is built on.
-    if (slots === null) { if (Array.isArray(saved) && saved.length) { deferred = saved; deferredRemoved = removedIds; } return !(Array.isArray(saved) && saved.length); }
+    if (slots === null) { if (Array.isArray(saved) && saved.length) { deferred = saved; deferredRemoved = removedIds; deferredUnwired = unwiredMap; } return !(Array.isArray(saved) && saved.length); }
     if (!Array.isArray(saved) || !saved.length) return true;
     // A saved slot is only what the server would accept: a project file outlives the code that
     // wrote it (v4 files name the node differently), and one bad slot refuses every later edit.
@@ -383,7 +392,8 @@
       // A default LINK the saved copy lacks was unwired by the person; a default VALUE it lacks is
       // one an update added, and fills in.
       const inputs = { ...(def.inputs || {}) };
-      Object.keys(inputs).forEach((k) => { if (Array.isArray(inputs[k]) && !(k in mine.inputs)) delete inputs[k]; });
+      const cut = (unwiredMap || {})[def.id];
+      Object.keys(inputs).forEach((k) => { if (Array.isArray(cut) && cut.includes(k) && !(k in mine.inputs)) delete inputs[k]; });
       const out = { ...def, inputs: { ...inputs, ...mine.inputs } };
       if (typeof mine.group === "string" && mine.group) out.group = mine.group;
       if (typeof mine.bypassed === "boolean") out.bypassed = mine.bypassed;
@@ -392,6 +402,10 @@
     // Replaces whatever pipeline was live: nothing queued for the old one may land on the new.
     const mine = ++epoch;
     removed = new Set(gone);
+    unwired = {};
+    Object.entries(unwiredMap && typeof unwiredMap === "object" ? unwiredMap : {}).forEach(([id, list]) => {
+      if (Array.isArray(list)) unwired[id] = list.filter((x) => typeof x === "string");
+    });
     groupEdits = {};
     pendingBody = null; pending = false;
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
@@ -421,6 +435,7 @@
     ensureLoaded, save, edit, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     removedIds: () => [...removed],
+    unwiredMap: () => JSON.parse(JSON.stringify(unwired)),
     slots: () => slots,
     incomplete: () => incomplete,
     refused: () => refused,

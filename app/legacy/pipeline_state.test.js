@@ -158,8 +158,16 @@ test("a structural edit is sent on its own and its refusal is handed back", asyn
 test("a default link the person unwired stays unwired when the project is opened again", async () => {
   const PS = load([]);
   await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } },
-                  { id: "gen", node: "Gen", inputs: { steps: 8 } }]);       // gen.model (a link) was unwired
+                  { id: "gen", node: "Gen", inputs: { steps: 8 } }], [], { gen: ["model"] });
   assert.strictEqual("model" in PS.slots().find((s) => s.id === "gen").inputs, false);
+  assert.deepStrictEqual(PS.unwiredMap(), { gen: ["model"] });
+});
+
+test("a default link an older project never had (an update added it) is kept", async () => {
+  const PS = load([]);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } },
+                  { id: "gen", node: "Gen", inputs: { steps: 8 } }]);       // nothing recorded as unwired
+  assert.strictEqual("model" in PS.slots().find((s) => s.id === "gen").inputs, true);
 });
 
 test("a group moved while a save is in flight is still moved when it lands", async () => {

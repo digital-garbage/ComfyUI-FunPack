@@ -46,7 +46,10 @@
 
   function slotDisplayLabel(slot) {
     const spec = nodesByClass[slot.node];
-    return (spec && spec.title) || slot.node || slot.id;
+    const title = (spec && spec.title) || slot.node || slot.id;
+    // Two slots of one kind (the positive and negative prompt, two Primitives) are told apart by id.
+    const twin = (PS.slots() || []).some((o) => o.id !== slot.id && ((nodesByClass[o.node] && nodesByClass[o.node].title) || o.node) === title);
+    return twin ? `${title} (${slot.id})` : title;
   }
 
   function setInput(slotId, name, value) {
@@ -60,10 +63,32 @@
   // reason is shown here and nothing changes.
   let lastRefusal = [];
 
+  // A node that is new (added, swapped in) or whose input was just unwired has nothing SET on it, while
+  // its form shows the node's defaults: send what is shown, so what runs is what is seen.
+  async function fillShown(slotId, onlyInput) {
+    const slot = (PS.slots() || []).find((s) => s.id === slotId);
+    const spec = slot && nodesByClass[slot.node];
+    if (!spec || !spec.widgets) return;
+    const values = {};
+    spec.widgets.forEach((w) => {
+      if (onlyInput && w.name !== onlyInput) return;
+      if (slot.inputs && slot.inputs[w.name] !== undefined) return;
+      const v = w.default !== undefined ? w.default
+        : w.type === "COMBO" ? (w.choices || [])[0] : w.type === "BOOLEAN" ? false : undefined;
+      if (v !== undefined) values[w.name] = v;
+    });
+    if (Object.keys(values).length) await PS.save({ inputs: { [slotId]: values } });
+  }
+
   async function structural(body) {
     const res = await PS.edit(body);
     lastRefusal = res.refused || [];
     await ensureNodesLoaded();
+    if (!lastRefusal.length) {
+      if (body.action === "replace") await fillShown(body.slot);
+      else if (body.action === "unwire") await fillShown(body.slot, body.input);
+      else if (body.action === "add") { const s = (PS.slots() || []).slice(-1)[0]; if (s) await fillShown(s.id); }
+    }
     render();
     return !lastRefusal.length;
   }
@@ -84,6 +109,7 @@
         group = name;
         PS.setGroup(slot.id, name).then(render);
       } else {
+        lastRefusal = [];
         PS.setGroup(slot.id, sel.value).then(render);
       }
     };
@@ -136,7 +162,10 @@
     const swap = el("button", "btn ghost tiny", "Swap node…");
     swap.title = "Use a different node here. It must still produce what the nodes after it read.";
     swap.onclick = () => pickNode(`Swap ${slotDisplayLabel(slot)} for…`, (cls) => {
-      if (!confirm(`Swap ${slotDisplayLabel(slot)} for ${cls}?\n\nEverything set on this node (files, values, connections into it) is cleared, and the new node starts empty.`)) return;
+      const roles = (slot.roles || []).map((r) => r.label || r.input).filter(Boolean);
+      const note = roles.length
+        ? `\n\nThe main window drives this node's ${roles.join(", ")}: those controls keep working only for inputs the new node also has, by the same name.` : "";
+      if (!confirm(`Swap ${slotDisplayLabel(slot)} for ${cls}?\n\nEverything set on this node (files, values, connections into it) is cleared, and the new node starts empty.${note}`)) return;
       structural({ action: "replace", slot: slot.id, node: cls });
     });
     const rm = el("button", "btn ghost tiny danger", "Remove");
@@ -190,7 +219,8 @@
     const row = controlForPlainWidget(slot, widget);
     // An input the app itself writes (the prompt box, the source picture, the length) is the app's:
     // wiring it elsewhere would make every Generate refuse.
-    if ((slot.roles || []).some((r) => r.input === widget.name)) return row;
+    // (Width, height and length are the exception: Generate skips them when they are wired.)
+    if ((slot.roles || []).some((r) => r.input === widget.name && r.at !== "project.video")) return row;
     // Another node can drive this value (one Primitive shared by several inputs is how a "link" is made).
     if (widget.type !== "COMBO" || (widget.choices || []).length) {
       const sources = sourcesFor(slot, widget.type);
