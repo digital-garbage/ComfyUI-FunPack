@@ -104,7 +104,7 @@ def _go(sample, outer, noise, latent=None, guider=None):
                       noise, latent, None, True)
 
     run = call
-    for o in outer:
+    for o in reversed(outer):
         run = (lambda w, inner: (lambda: w(lambda: inner())))(o, run)
     run()
     return ex.noise

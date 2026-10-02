@@ -32,10 +32,12 @@ FLOOR = 0.03
 
 
 class Call:
-    """One model call: the input to run, the gate to use, and where to put the edit."""
+    """One model call: the input to run, the gate to use, and where to put the edit.
+    `steering` is False for a call that will never take an edit (a probe, off the schedule,
+    the sampler declared unsupported); `final` is the call whose answer is the output."""
 
-    def __init__(self, x, gate, keep=None, final=False):
-        self.x, self.gate, self.final = x, gate, final
+    def __init__(self, x, gate, keep=None, final=False, steering=False):
+        self.x, self.gate, self.final, self.steering = x, gate, final, steering
         self._keep = keep
 
     def keep(self, out, steered):
@@ -56,6 +58,11 @@ class Steer:
         self._multi = False     # the sampler calls the model more than once per step
         self._made, self._delivered = 0, 0
         self._reach = 0.0       # largest delivered push, as a share of the input it joined
+
+    def effect(self):
+        """How hard this run's pushes landed (largest, as a share of the input they joined),
+        or None when none arrived. What a rating is weighted by."""
+        return self._reach if self._delivered else None
 
     def attach(self, patcher, key):
         """Reset around every sampling call. The node that installs the modifier is cached
@@ -87,7 +94,7 @@ class Steer:
     def begin(self, x, t, to) -> Call:
         to = to or {}
         if not self._packed(x):
-            return Call(x, dit_hooks.late_half(to))
+            return Call(x, dit_hooks.late_half(to), steering=True)
         if dit_hooks.probing(to):
             return Call(x, 0.0, keep=lambda out, _steered: out)   # a discarded candidate
         where = dit_hooks.current_step(to)
@@ -145,7 +152,7 @@ class Steer:
             held[i] = (steered - out).detach()
             return out
 
-        return Call(x, dit_hooks.late_half(to, ahead=1), keep=keep)
+        return Call(x, dit_hooks.late_half(to, ahead=1), keep=keep, steering=True)
 
     def _report(self):
         """Said on the last step. Reach is what counts: an edit made is not an edit that

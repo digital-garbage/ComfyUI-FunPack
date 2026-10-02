@@ -168,6 +168,13 @@ def current_step(transformer_options):
 
 
 PROBE = "funpack_probe"
+# Set on late-branch guidance's weakened copy (which also carries PROBE). Hooks that must not
+# run on it, or must tell it from a probe, read this.
+WEAK_BRANCH = "funpack_weak_branch"
+
+
+def weak_branch(transformer_options) -> bool:
+    return bool((transformer_options or {}).get(WEAK_BRANCH))
 
 
 def probing(transformer_options) -> bool:

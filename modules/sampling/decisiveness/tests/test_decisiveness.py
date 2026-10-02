@@ -66,7 +66,7 @@ def _load(tiny, **values):
 
 def _run(outer, fn):
     call = fn
-    for o in outer:
+    for o in reversed(outer):
         call = (lambda w, inner: (lambda: w(lambda: inner())))(o, call)
     return call()
 

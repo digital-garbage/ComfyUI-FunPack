@@ -21,6 +21,16 @@ def video_of(x, named=None):
 MODEL_ARGS = ("c_concat", "c_crossattn", "control", "transformer_options")
 
 
+def with_options(args, kwargs, transformer_options):
+    """The same call with other transformer_options: positional where comfy put it (4th),
+    by name otherwise. -> (args, kwargs)."""
+    if len(args) > MODEL_ARGS.index("transformer_options"):
+        args = list(args)
+        args[MODEL_ARGS.index("transformer_options")] = transformer_options
+        return tuple(args), kwargs
+    return args, {**kwargs, "transformer_options": transformer_options}
+
+
 def model_args(args, kwargs) -> dict:
     """An APPLY_MODEL wrapper's call, by name.
 

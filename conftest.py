@@ -88,7 +88,7 @@ class TinyH3:
         self.audio = torch.randn(1, 32, 2, 3)
         self.context = torch.randn(1, 5, 48)
 
-    def run(self, patcher=None, sigma=0.5, sigmas=None, denoise_mask=None):
+    def run(self, patcher=None, sigma=0.5, sigmas=None, denoise_mask=None, options=None):
         """One denoise call through `patcher`'s transformer_options, as the
         sampler would make it. Returns (video, audio)."""
         import torch
@@ -102,6 +102,7 @@ class TinyH3:
         sched = sigmas if sigmas is not None else torch.tensor([1.0, sigma, 0.0])
         to.setdefault("sample_sigmas", sched)
         to["sigmas"] = torch.tensor([sigma])
+        to.update(options or {})
         dm = patcher.model.diffusion_model
         with torch.inference_mode():
             return dm([self.video, self.audio], torch.tensor([sigma * 1000.0]),
