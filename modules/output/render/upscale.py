@@ -14,7 +14,8 @@ import subprocess
 
 from . import files
 
-CHUNK = 8                # frames per upscale call
+CHUNK = 8                # frames per upscale call, at most
+CHUNK_PIXELS = 2_000_000   # ...and at most this many input pixels per call: a big upscale of 1080p is gigabytes per frame
 SUBFOLDER = "funpack_upscaled"
 
 
@@ -51,6 +52,7 @@ def upscale_file(src, dst, upscale, interrupted=lambda: None):
     import torch
     w, h, fps, has_sound = probe(src)
     frame = w * h * 3
+    chunk = max(1, min(CHUNK, CHUNK_PIXELS // max(1, w * h)))
     ffmpeg = files.ffmpeg()
     dec = subprocess.Popen([ffmpeg, "-v", "error", "-i", src, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -58,7 +60,7 @@ def upscale_file(src, dst, upscale, interrupted=lambda: None):
     try:
         while True:
             interrupted()
-            raw = _read(dec.stdout, frame * CHUNK)
+            raw = _read(dec.stdout, frame * chunk)
             n = len(raw) // frame
             if n == 0:
                 break

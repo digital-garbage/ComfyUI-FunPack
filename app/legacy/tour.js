@@ -429,7 +429,7 @@
 
   function patchStore(Store) {
     const blocked = [
-      "generate", "generateMontage", "generateSelected", "renderFinal", "exportSelected",
+      "generate", "generateMontage", "generateSelected", "renderFinal", "upscaleRender", "exportSelected",
       "saveSelectedToMediaBin", "commit", "newProject", "loadProject", "deleteProject",
       "importProject", "downloadProject", "uploadMedia", "deleteMedia", "deleteMediaMany",
       "interrupt", "resetStudioSession", "syncFromPreview", "saveClipToMediaBin",
@@ -462,6 +462,7 @@
       generateMontage: "Generate",
       generateSelected: "Generate Selected",
       renderFinal: "Render",
+      upscaleRender: "Upscale",
       exportSelected: "Export",
       saveSelectedToMediaBin: "Save to media bin",
       commit: "Save project",

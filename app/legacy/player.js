@@ -177,7 +177,7 @@
         const sourceIn = sc?.source_in || 0;
         const renderIn = Math.max(0, (c.inSec || 0) - sourceIn);
         c.streamUrl = API.previewSegmentUrl(pid, c.sceneId, {
-          media: c.media, renderIn, dur: c.durationSec, reverse: wantsReverse,
+          media: c.media, renderIn, srcIn: sourceIn, dur: c.durationSec, reverse: wantsReverse,
         });
       }
     }

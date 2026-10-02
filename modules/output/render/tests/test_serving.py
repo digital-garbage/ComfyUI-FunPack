@@ -169,3 +169,16 @@ def test_the_cache_deletes_the_oldest_files_past_its_cap(comfy, monkeypatch):
         paths.append(p)
         cache.put(i, (None, str(p)))
     assert not paths[0].exists() and paths[1].exists() and paths[2].exists() and len(cache) == 2
+
+
+@needs_ffmpeg
+def test_the_url_window_wins_over_a_project_that_has_not_been_saved_yet(comfy, server):
+    moov_at_end(comfy.output / "a.mp4", 4.0)
+    proj = _project(comfy, source_in=0.0, frames=25, frames_mode="timeline")      # saved: 1 s
+    status, _h, body = get(server, f"{BASE}/projects/{proj.id}/preview-segment/s1?dur=2.5&src_in=1")
+    assert status == 200
+    (comfy.root / "seg.mp4").write_bytes(body)
+    assert probe(comfy.root / "seg.mp4")[0] == pytest.approx(2.5, abs=0.2)
+    # a different head trim is a different segment, not the cached one
+    other = get(server, f"{BASE}/projects/{proj.id}/preview-segment/s1?dur=2.5&src_in=0")[2]
+    assert other != body

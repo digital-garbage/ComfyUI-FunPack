@@ -141,8 +141,12 @@ async def result(request) -> "web.StreamResponse":
 # --- preview segments ---------------------------------------------------------
 
 
-def scene_clip(project, scene_id: str, render: dict | None = None) -> dict:
-    """The trim a scene's preview segment must show: the same window the export uses."""
+def scene_clip(project, scene_id: str, render: dict | None = None, window: dict | None = None) -> dict:
+    """The trim a scene's preview segment must show: the same window the export uses.
+
+    `window` ({dur, src_in} from the URL) wins over the saved project: the editor autosaves
+    seconds after a trim, and a segment is cached for an hour under its URL, so the bytes
+    must follow what the URL says, never a project that has not caught up."""
     scene = next((s for s in project.scenes if s.id == scene_id), None)
     if scene is None or scene.excluded:
         raise KeyError(f"scene {scene_id}")
@@ -152,9 +156,15 @@ def scene_clip(project, scene_id: str, render: dict | None = None) -> dict:
         raise KeyError(f"no render for {scene_id}")
     fps = float(scene.eff_fps(project) or 25)
     dur = float(scene.source_dur) if scene.source_dur is not None else scene.eff_frames(project) / fps
+    src_in = float(scene.source_in or 0)
+    window = window or {}
+    if window.get("dur") is not None and window["dur"] > 0:
+        dur = window["dur"]
+    if window.get("src_in") is not None and window["src_in"] >= 0:
+        src_in = window["src_in"]
     return {"filename": media["filename"], "subfolder": media.get("subfolder") or "",
             "type": media.get("type") or "output",
-            "in": float(scene.source_in or 0) + _f(render.get("inSec")), "dur": dur, "fps": fps}
+            "in": src_in + _f(render.get("inSec")), "dur": dur, "fps": fps}
 
 
 def _f(value, default=0.0):
@@ -163,6 +173,17 @@ def _f(value, default=0.0):
     except (TypeError, ValueError):
         return default
     return default if v != v else v
+
+
+def query_window(q) -> dict:
+    """The trim the player asked for; a missing or junk value reads as "use the project's"."""
+    def num(key):
+        try:
+            v = float(q.get(key))
+        except (TypeError, ValueError):
+            return None
+        return v if v == v and v not in (float("inf"), float("-inf")) else None
+    return {"dur": num("dur"), "src_in": num("src_in")}
 
 
 def query_render(q) -> dict | None:
@@ -192,7 +213,7 @@ async def segment(request, project) -> "web.StreamResponse":
     q = request.query
     scene_id = request.match_info["scene_id"]
     try:
-        clip = scene_clip(project, scene_id, query_render(q))
+        clip = scene_clip(project, scene_id, query_render(q), query_window(q))
     except KeyError as exc:
         clip = ghost_clip(q)
         if clip is None:

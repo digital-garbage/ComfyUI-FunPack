@@ -218,7 +218,8 @@ def thumb_path_for(mid: str) -> Path | None:
         try:
             if it["kind"] == "image":
                 from PIL import Image
-                img = Image.open(src)
+                from PIL import ImageOps
+                img = ImageOps.exif_transpose(Image.open(src))      # the browser shows it turned upright
                 img.thumbnail((THUMB_MAX_DIM, THUMB_MAX_DIM))      # in place, keeps aspect, never upscales
                 (img if img.mode in ("RGB", "L") else img.convert("RGB")).save(tmp, "JPEG", quality=82)
             else:

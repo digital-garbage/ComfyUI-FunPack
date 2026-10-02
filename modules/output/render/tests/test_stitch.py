@@ -189,3 +189,29 @@ def test_a_separated_audio_lane_plays_the_clips_own_sound_from_its_file(comfy):
         {"id": "s", "kind": "separated", "scene_id": "sc1", "start_sec": 0}])
     out = stitch.render(proj, [clip("a.mp4", dur=2.0, scene_id="sc1")])
     assert probe(comfy.temp / out["media"]["filename"])[3] is True
+
+
+@needs_ffmpeg
+def test_export_keeps_the_sound_when_the_first_clip_is_silent(comfy):
+    make_clip(comfy.output / "quiet.mp4", 1.0, audio=False)
+    make_clip(comfy.output / "loud.mp4", 1.0, audio=True)
+    out = stitch.concat([{"filename": "quiet.mp4", "dur": 1.0}, {"filename": "loud.mp4", "dur": 1.0}])
+    assert files.has_audio(str(comfy.temp / out["media"]["filename"]))
+
+
+@needs_ffmpeg
+def test_export_of_a_window_past_the_end_says_so_and_leaves_nothing(comfy):
+    make_clip(comfy.output / "a.mp4", 1.0)
+    with pytest.raises(stitch.RenderError, match="shorter than the window|past"):
+        stitch.concat([{"filename": "a.mp4", "in": 5, "dur": 1.0}])
+    with pytest.raises(stitch.RenderError, match="Clip 1"):
+        stitch.concat([{"filename": "a.mp4", "in": 0, "dur": 3.0}])
+    assert not os.listdir(comfy.temp)
+
+
+@needs_ffmpeg
+def test_two_exports_in_one_second_do_not_share_a_file(comfy):
+    make_clip(comfy.output / "a.mp4", 1.0)
+    first = stitch.concat([{"filename": "a.mp4", "dur": 1.0}])["media"]["filename"]
+    second = stitch.concat([{"filename": "a.mp4", "dur": 1.0}])["media"]["filename"]
+    assert first != second and (comfy.temp / first).is_file() and (comfy.temp / second).is_file()

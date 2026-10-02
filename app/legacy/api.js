@@ -159,7 +159,11 @@
         xhr.onload = () => {
           let body = {};
           try { body = JSON.parse(xhr.responseText || "{}"); } catch (_) { /* not JSON */ }
-          if (xhr.status >= 200 && xhr.status < 300) resolve(body.media && body.media[0] ? body.media[0] : body);
+          if (xhr.status >= 200 && xhr.status < 300) {
+            if (body.media && body.media[0]) resolve(body.media[0]);
+            else if (body.problems && body.problems.length) reject(new Error(body.problems.join("; ")));
+            else resolve(body);
+          }
           else reject(new Error((body.problems && body.problems.join("; ")) || body.detail || xhr.statusText || `HTTP ${xhr.status}`));
         };
         xhr.onerror = () => reject(new Error("Network error during upload"));
@@ -263,9 +267,19 @@
     },
     // null while it is still queued or running, else {error} or {videos}.
     upscaleResult: async (promptId) => {
-      const res = await fetch(`/history/${encodeURIComponent(promptId)}`);
-      const entry = res.ok ? (await res.json())[promptId] : null;
-      if (!entry) return null;
+      let entry = null;
+      try {
+        const res = await fetch(`/history/${encodeURIComponent(promptId)}`);
+        entry = res.ok ? (await res.json())[promptId] : null;
+      } catch (_) { return { retry: true }; }            // a dropped reply is not a failed job
+      if (!entry) {
+        // Not in history: still queued/running, or gone (dequeued, ComfyUI restarted).
+        try {
+          const q = await (await fetch("/queue")).json();
+          const live = [...(q.queue_running || []), ...(q.queue_pending || [])].some((r) => r[1] === promptId);
+          return live ? null : { gone: true };
+        } catch (_) { return { retry: true }; }
+      }
       const st = entry.status || {};
       if (st.status_str === "error") {
         const msg = (st.messages || []).find((m) => m[0] === "execution_error");
@@ -369,6 +383,7 @@
         // timeline trim must produce a different URL. Anything else that changes the bytes
         // (reverse) must be in the URL too, for the same reason.
         if (spec.dur != null) q.set("dur", String(spec.dur));
+        if (spec.srcIn != null) q.set("src_in", String(spec.srcIn));
         if (spec.reverse) q.set("rev", "1");
         u += "?" + q.toString();
       }

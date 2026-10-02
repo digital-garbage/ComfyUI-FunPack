@@ -57,6 +57,8 @@
     // {kind:"section"|"node", id, label}. Node ids are project-scoped, which is why these
     // ride with the project rather than living in the browser alone.
     pinnedButtons: null,
+    // Post-render upscale (Settings ▸ Editor): follows the project to a new rental.
+    upscaleMode: "never", upscaleModel: "",
   };
   function _loadEditorSettings() {
     try {
@@ -3438,7 +3440,7 @@
   }
   async function upscaleMedia(media) {
     const model = getEditorSetting("upscaleModel");
-    if (!media || !media.filename) return;
+    if (!media || !media.filename || media.subfolder === "funpack_upscaled") return;   // never upscale twice
     if (!model) {
       set({ notice: "Upscale: pick a model in Settings ▸ Editor ▸ Upscale finished renders." });
       return;
@@ -3451,15 +3453,20 @@
     let notice = "";
     try {
       const promptId = await API.queueUpscale(media, model);
+      let misses = 0;
       for (;;) {
         await new Promise((res) => setTimeout(res, 2000));
         const r = await API.upscaleResult(promptId);
-        if (!r) continue;
+        if (!r) { misses = 0; continue; }
+        // A job neither queued nor in history is gone; a reply that fails to arrive is retried a while.
+        if (r.retry && ++misses < 30) continue;
+        if (r.retry) throw new Error("lost contact with ComfyUI");
+        if (r.gone && ++misses < 3) continue;
+        if (r.gone) throw new Error("the job left ComfyUI's queue without finishing (interrupted or ComfyUI restarted)");
         if (r.error) throw new Error(r.error);
         const out = { ...r.videos[0], kind: "videos" };
-        if (state.project && state.project.id === pid && !_swapRenderMedia(media, out)) {
-          notice = "Upscaled, but that render was replaced meanwhile, so nothing was swapped.";
-        }
+        if (!state.project || state.project.id !== pid) notice = `Upscaled ${media.filename} in another project: it is in output/funpack_upscaled.`;
+        else if (!_swapRenderMedia(media, out)) notice = "Upscaled, but that render was replaced meanwhile, so nothing was swapped.";
         break;
       }
     } catch (e) {
@@ -4750,8 +4757,11 @@
   // state.mediaUpload: null when idle, else { current, total, name, loaded, size } -- the
   // drop zone had no way to show this at all before, so a batch of photos/a big video
   // uploading over a slow connection just looked like nothing was happening.
+  let _uploadBatches = 0;
   async function uploadMedia(files) {
     const list = [...files];
+    const failed = [];
+    _uploadBatches++;
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
       // A full notify() here (once per file) is what builds the "uploading" drop zone in the
@@ -4762,9 +4772,10 @@
         await API.uploadMedia(f, (loaded, total) => {
           updateMediaUploadProgress({ loaded, size: total || f.size });
         });
-      } catch (e) { console.error("upload failed", e); }
+      } catch (e) { console.error("upload failed", e); failed.push(`${f.name}: ${e && e.message ? e.message : e}`); }
     }
-    state.mediaUpload = null;
+    if (--_uploadBatches === 0) state.mediaUpload = null;     // a second batch drawn meanwhile keeps its bar
+    if (failed.length) set({ notice: `Not uploaded — ${failed.join(" · ")}` });
     await loadMedia();
   }
   async function deleteMedia(id) {

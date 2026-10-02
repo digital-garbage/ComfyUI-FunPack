@@ -13,6 +13,7 @@ follows the same fold, then extra tracks are delayed to their start and mixed in
 
 from __future__ import annotations
 
+import itertools
 import os
 import time
 
@@ -197,6 +198,14 @@ def has_graphics(project) -> bool:
     return bool(project.audio_tracks) or any(_f(ov.get("duration_sec")) > 0 for ov in project.overlay_tracks)
 
 
+_stamp_n = itertools.count()
+
+
+def _stamp() -> str:
+    """Unique per job: two jobs in one second must not write the same file."""
+    return f"{time.time_ns()}_{next(_stamp_n)}"
+
+
 def _clip_spec_ok(c) -> bool:
     return isinstance(c, dict) and (c.get("bin_media_ref") or c.get("filename"))
 
@@ -215,6 +224,7 @@ def render(project, clips: list[dict]) -> dict:
         raise RenderError(str(exc)) from exc
     if clips:
         cw, ch = int(_f(clips[0].get("w")) or cw), int(_f(clips[0].get("h")) or ch)
+        cw, ch = cw - cw % 2, ch - ch % 2           # yuv420p cannot be encoded at an odd size
         fps = _f(clips[0].get("fps")) or fps
         for c, p in zip(clips, paths):
             c["has_audio"] = files.has_audio(p)
@@ -264,7 +274,7 @@ def render(project, clips: list[dict]) -> dict:
     cmd += ["-filter_complex", ";".join(lines), "-map", "[vout]"]
     if has_audio:
         cmd += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
-    name = f"funpack_final_{int(time.time())}.mp4"
+    name = f"funpack_final_{_stamp()}.mp4"
     out = os.path.join(tempdir, name)
     cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out]
     try:
@@ -281,13 +291,27 @@ def concat(clips: list[dict]) -> dict:
     clips = [c for c in clips if _clip_spec_ok(c)] if isinstance(clips, list) else []
     if not clips:
         raise RenderError("There is nothing to export.")
-    stamp = int(time.time())
+    stamp = _stamp()
+    parts = []
     try:
-        parts = []
         for i, c in enumerate(clips):
             out = files.temp_file(f"funpack_seg_{stamp}_{i}.mp4")
             files.trim(files.clip_path(c), out, c.get("in"), c.get("dur"))
             parts.append(out)
+            got, want = files.duration(out), _f(c.get("dur"))
+            if got is not None and (got <= 0 or (want > 0 and got < want - max(0.5, 0.1 * want))):
+                raise files.ClipError(
+                    f"Clip {i + 1} has {got:.1f}s of picture where the timeline expects {want:.1f}s: "
+                    f"its render is shorter than the window cut from it (or the window starts past "
+                    f"its end). Generate it again, then export.")
+        sound = [files.has_audio(p) for p in parts]
+        if any(sound) and not all(sound) and len(parts) > 1:      # the joiner keeps only the first part's streams
+            for k, p in enumerate(parts):
+                if not sound[k]:
+                    fixed = files.temp_file(f"funpack_seg_{stamp}_{k}_s.mp4")
+                    files.add_silence(p, fixed)
+                    os.remove(p)
+                    parts[k] = fixed
         name = f"funpack_export_{stamp}.mp4"
         out = files.temp_file(name)
         if len(parts) == 1:
@@ -308,5 +332,10 @@ def concat(clips: list[dict]) -> dict:
                     except OSError:
                         pass
     except files.ClipError as exc:
+        for p in parts:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
         raise RenderError(str(exc)) from exc
     return {"media": {"filename": name, "subfolder": "", "type": "temp", "kind": "videos"}, "clips": len(clips)}

@@ -24,6 +24,8 @@ from ..._core import media
 
 ISOBMFF = (".mp4", ".m4v", ".mov")          # containers where moov/mdat order applies
 
+AUDIO_RATE = 48000                          # every exported part is made at this rate, so parts can be joined
+
 FFMPEG_MISSING = "ffmpeg was not found on PATH: install it to preview, export or render clips."
 
 
@@ -146,7 +148,7 @@ def trim(src: str, out: str, start=None, dur=None, *, fast=False, reverse=False)
     cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
     if fast:
         cmd += ["-preset", "veryfast"]
-    cmd += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out]
+    cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", str(AUDIO_RATE), "-ac", "2", "-movflags", "+faststart", out]
     run(cmd)
 
 
@@ -159,6 +161,30 @@ def has_audio(path: str) -> bool:
         return proc.returncode == 0 and bool(proc.stdout.strip())
     proc = subprocess.run([ffmpeg(), "-i", path], capture_output=True, text=True)
     return "Audio:" in (proc.stderr or "")
+
+
+def duration(path: str) -> float | None:
+    """Seconds of picture in `path`, or None when it has none (a window past the end of the source
+    trims to a file with no streams at all) or ffprobe is not here to ask."""
+    probe = shutil.which("ffprobe")
+    if not probe:
+        return None
+    proc = subprocess.run([probe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                           "stream=duration:format=duration", "-of", "default=nw=1:nk=1", path],
+                          capture_output=True, text=True)
+    for line in proc.stdout.split():
+        try:
+            return float(line)
+        except ValueError:
+            continue
+    return 0.0 if proc.returncode == 0 else None
+
+
+def add_silence(src: str, out: str) -> None:
+    """Copy `src` with a silent stereo track added, so it can be joined to clips that have sound."""
+    run([ffmpeg(), "-y", "-i", src, "-f", "lavfi", "-i", f"anullsrc=r={AUDIO_RATE}:cl=stereo",
+         "-shortest", "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+         "-movflags", "+faststart", out])
 
 
 def temp_file(name: str) -> str:

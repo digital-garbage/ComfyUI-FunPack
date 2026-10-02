@@ -299,3 +299,15 @@ def test_rename_and_thumb_over_http(server):
     status, jpg = _request(server, "GET", f"/funpack/api/media/{mid}/thumb")
     assert status == 200 and jpg["raw"][:2] == b"\xff\xd8"
     assert _request(server, "GET", "/funpack/api/media/aaaaaaaaaaaa/thumb")[0] == 404
+
+
+def test_a_photo_thumbnail_is_turned_upright_like_the_browser_shows_it(store):
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    img = Image.new("RGB", (400, 200), (10, 200, 10))
+    exif = img.getexif()
+    exif[274] = 6                                       # rotate 90 on display
+    img.save(buf, "JPEG", exif=exif)
+    entry = media.save_upload("p.jpg", buf.getvalue())
+    assert Image.open(media.thumb_path_for(entry["id"])).size == (160, 320)
