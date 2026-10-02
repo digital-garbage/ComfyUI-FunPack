@@ -371,10 +371,10 @@ def test_a_scene_keeps_a_crop_and_a_rating(store):
 def test_a_scene_field_read_back_is_never_trusted():
     scene = projects.Scene.from_dict({
         "length": "48",           # a number that arrived as text
-        "rating": "perfect",      # a word an older scale had, and this one has not
+        "rating": 7,              # not a label
     })
     assert scene.length == 48
-    assert scene.rating is None
+    assert scene.rating == ""
 
     for junk in (0, -4, True, None, "soon", 999_999):
         assert projects.Scene.from_dict({"length": junk}).length is None, junk
@@ -522,3 +522,65 @@ def test_a_template_with_no_text_is_dropped_not_kept_as_a_wipe():
     kept = projects._clean_templates([{"name": "empty"}, {"name": "v4", "prompt": "x"},
                                       {"name": "new", "scenes": ["a"]}])
     assert [t["name"] for t in kept] == ["v4", "new"]
+
+
+# ── the editor's whole saved state ───────────────────────────────────────
+
+
+def _v4():
+    path = __import__("pathlib").Path(__file__).parent / "fixtures" / "v4_project.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_a_v4_project_comes_back_whole():
+    """Every field v4 wrote -- timeline edits, audio and overlay lanes, renders, the pipeline --
+    survives a save and a read. A dropped field would be the editor silently losing work."""
+    raw = _v4()
+    back = projects.Project.from_dict(raw).to_dict()
+    gone = {k for k in raw if k not in back}
+    assert gone == {"global_prompt"}, gone           # the Story is derived from the scenes now
+    for key in raw:
+        if key in ("global_prompt", "id", "updated_at", "scenes", "editor_settings"):
+            continue
+        assert back[key] == raw[key], key
+    assert back["editor_settings"] == raw["editor_settings"]
+    for mine, theirs in zip(back["scenes"], raw["scenes"]):
+        for key, want in theirs.items():
+            assert mine[key] == want, (theirs["id"], key)
+
+
+def test_a_clients_own_scene_ids_are_kept_so_renders_still_point_at_their_scenes():
+    back = projects.Project.from_dict(_v4())
+    assert [s.id for s in back.scenes] == ["s1abc", "s2xyz"]
+    assert set(back.scene_renders) == {"s1abc"} and back.timeline_order == ["s2xyz", "s1abc"]
+
+
+def test_a_scene_id_that_could_be_a_path_is_replaced():
+    for bad in ("../x", "a/b", "a b", "", "x" * 65, None, 5):
+        assert projects.is_token(projects.Scene.from_dict({"id": bad}).id), bad
+    assert projects.safe_part("../../etc/passwd") == "etcpasswd"
+
+
+def test_timeline_fields_are_checked_not_trusted():
+    s = projects.Scene.from_dict({
+        "audio_volume": "loud", "frames": -3, "fps": 0, "frames_mode": "sideways", "source_in": -1,
+        "source_dur": float("nan"), "gap_after_sec": True, "transition_frames": 1.5e9,
+        "effects": {"blur": 0.2, "x" * 99: 1, "nested": {"a": 1}, "ok": "fill"},
+        "source": {"type": "nope", "guide_strength": 7, "media_ref": ["x"]},
+        "guides": ["a", {"k": 1}, 3], "gen_unit_id": "../x", "excluded": "yes"})
+    assert (s.audio_volume, s.frames, s.fps, s.frames_mode) == (1.0, None, None, "project")
+    assert (s.source_in, s.source_dur, s.gap_after_sec, s.transition_frames) == (0.0, None, 0.0, None)
+    assert s.effects == {"blur": 0.2, "ok": "fill"}
+    assert s.source == {"type": "carry", "media_ref": None, "target": None, "frame_ref": None,
+                        "guide_strength": None}
+    assert s.guides == [{"k": 1}] and s.gen_unit_id is None and s.excluded is False
+
+
+def test_free_form_project_fields_must_be_the_right_shape_and_size():
+    p = projects.Project.from_dict({
+        "audio_tracks": [{"id": "a"}, "x", 3], "overlay_tracks": "nope", "models": [1],
+        "scene_renders": {"s": "x" * (5 * 1024 * 1024)}, "timeline_order": ["a", "../b", 4],
+        "num_frames_per_scene": 0, "width": "wide", "generation_mode": "weird", "references": ["m1", "", 7]})
+    assert p.audio_tracks == [{"id": "a"}] and p.overlay_tracks == []
+    assert p.models == {"slots": []} and p.scene_renders == {} and p.timeline_order == ["a"]
+    assert (p.num_frames_per_scene, p.width, p.generation_mode, p.references) == (97, 768, "i2v", ["m1"])

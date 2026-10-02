@@ -1,14 +1,17 @@
 """Projects: an ordered list of scenes, one JSON file each.
 
-A scene owns its prompt text and the result it last produced. Nothing else about
-a scene lives here. v4's Scene accumulated three dozen fields over its life --
-transitions, effects, audio gain, per-scene frames, guide sources -- and each of
-those belongs to the feature that needs it, added when that feature lands, not to
-the model every part of the app has to load.
+A project is the editor's whole saved state: the scenes and what a person did to
+them on the timeline (trims, seams, effects, audio, overlays), the pipeline they
+configured, and the renders each scene last produced. It is the one thing in the
+app that outlives the code that wrote it, so everything read back is checked --
+each field by type and range, the free-form ones (effects, audio and overlay
+lanes, the pipeline's own settings) by shape and size, their inner keys left to
+whatever consumes them. A field this module does not name is DROPPED on save:
+that is how a hand-edited file or a hostile body is kept out of a path or a
+command line, and it is also why a new editor feature must add its field here.
 
-Per-scene length and fps are deliberately absent: regeneration uses the PROJECT's
-values, never a scene's own, so a scene cropped on the timeline and regenerated
-comes back whole. A crop is a timeline decision; a regenerate is a new scene.
+A scene's frames/fps follow the PROJECT until trimmed ("frames_mode"): a stale
+per-scene value never overrides a project length change.
 
 Synchronous, one file per project, stdlib json. Projects are small.
 """
@@ -59,6 +62,83 @@ def _whole(value) -> int | None:
     return number if 1 <= number <= MAX_SETTING else None
 
 
+_TOKEN = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+#: What a free-form field (effects, tracks, pipeline settings) may weigh once it is JSON.
+MAX_BLOB = 4 * 1024 * 1024
+FRAME_MODES = ("project", "timeline", "custom")
+SOURCE_TYPES = ("carry", "empty", "image", "generated_frame", "mixed", "video", "v2v", "anchor_guide")
+
+
+def is_token(value) -> bool:
+    """A client-made id (scenes, tracks): letters, digits, `_` and `-`. Never a path --
+    anything that builds a filename from one runs it through `safe_part`."""
+    return isinstance(value, str) and bool(_TOKEN.match(value))
+
+
+def safe_part(value) -> str:
+    """`value` as one filename fragment: nothing but token characters."""
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(value or ""))[:64] or "x"
+
+
+def _str(raw, default="", limit=MAX_BLOB) -> str:
+    return raw[:limit] if isinstance(raw, str) else default
+
+
+def _bool(raw, default=False) -> bool:
+    return raw if isinstance(raw, bool) else default
+
+
+def _num(raw, default=None, lo=None, hi=None):
+    """A finite number within [lo, hi], else `default`. A bool is not a number here."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw != raw or raw in (float("inf"), float("-inf")):
+        return default
+    if (lo is not None and raw < lo) or (hi is not None and raw > hi):
+        return default
+    return raw
+
+
+def _int(raw, default=None, lo=None, hi=None):
+    n = _num(raw, None, lo, hi)
+    return int(n) if n is not None else default
+
+
+def _blob(raw, kind):
+    """`raw` when it is a `kind` (dict/list) that survives JSON and is not huge, else empty."""
+    if not isinstance(raw, kind):
+        return kind()
+    try:
+        if len(json.dumps(raw)) > MAX_BLOB:
+            return kind()
+    except (TypeError, ValueError):
+        return kind()
+    return raw
+
+
+def _dicts(raw) -> list:
+    """A list of objects: the other kinds of row are dropped."""
+    return [x for x in _blob(raw, list) if isinstance(x, dict)]
+
+
+def _clean_effects(raw) -> dict:
+    """Flat {name: bool | number | str}: what a clip's pixel effects are."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in list(raw.items())[:64]
+            if isinstance(k, str) and len(k) <= 40 and (isinstance(v, (bool, int, float, str)) and (not isinstance(v, str) or len(v) <= 80)
+                                       and (not isinstance(v, float) or v == v))}
+
+
+def _clean_source(raw) -> dict:
+    d = raw if isinstance(raw, dict) else {}
+    out = {"type": d.get("type") if d.get("type") in SOURCE_TYPES else "carry"}
+    for key in ("media_ref", "target"):
+        out[key] = _str(d.get(key), None, 200) or None
+    ref = d.get("frame_ref")
+    out["frame_ref"] = _blob(ref, dict) or None
+    out["guide_strength"] = _num(d.get("guide_strength"), None, 0, 1)
+    return out
+
+
 #: What a person can say about a result: it was good, or it was not.
 #:
 #: Binary because that is all anything downstream reads. dev proved it on H3 --
@@ -69,6 +149,9 @@ def _whole(value) -> int | None:
 #: Core keeps the word and nothing else. What either of them MEANS belongs to
 #: whatever learns from them, which is not here.
 RATINGS = ("liked", "disliked")
+#: The label the picker stored on a scene ("10", "Disliked: bad image", ...): kept as the
+#: picker wrote it, turned into liked/disliked only where a taste key is taught.
+MAX_RATING = 80
 
 
 @dataclass
@@ -82,7 +165,7 @@ class Scene:
     #: what a regenerate uses: that reads the project, because the crop was a
     #: timeline decision and a regenerate is a new scene.
     length: int | None = None
-    rating: str | None = None
+    rating: str = ""
     #: A media library id, picked to size this scene's generation -- not
     #: included in it. v4's "drop a picture on the timeline" only ever fed a
     #: resolution/aspect-ratio node; the picture's own pixels went nowhere. Per
@@ -92,6 +175,39 @@ class Scene:
     #: whatever the pipeline's own reference input wants them for. Per scene
     #: for the same reason source_image is: a reference is about THIS shot.
     references: list[str] = field(default_factory=list)
+    #: A prompt trigger at the seam AFTER this scene, and the post-decode pixel
+    #: transition there (length in frames): a crossfade never re-encodes to latent.
+    transition_to_next: str = ""
+    transition_frames: int | None = None
+    video_transition: str = ""
+    #: Per-clip pixel effects, flat: blur, fades, zoom, flips, crop, fit, reverse.
+    effects: dict = field(default_factory=dict)
+    #: Gain on this clip's own sound; separated = its sound lives on an audio track.
+    audio_volume: float = 1.0
+    audio_separated: bool = False
+    #: Length/fps/size, used only in the "timeline"/"custom" modes; "project" follows the project.
+    frames: int | None = None
+    fps: int | None = None
+    frames_mode: str = "project"
+    fps_mode: str = "project"
+    width: int | None = None
+    height: int | None = None
+    #: How the scene's latent is born (carry / image / video clip / ...).
+    source: dict = field(default_factory=lambda: _clean_source(None))
+    excluded: bool = False
+    #: Timeline cuts of one generated clip share the root scene's id; only the root
+    #: (cut_offset_frames == 0) owns prompt, rating and source.
+    gen_unit_id: str | None = None
+    cut_offset_frames: int = 0
+    guides: list = field(default_factory=list)
+    #: Slip edit: where in the generated media this clip starts and how long it runs.
+    source_in: float = 0.0
+    source_dur: float | None = None
+    #: The generative state a clip had before it was locked to a video clip.
+    scene_archive: dict | None = None
+    gap_after_sec: float = 0.0
+    #: Gone from the plan but its generated clip stays on the timeline.
+    removed_from_plan: bool = False
 
     @staticmethod
     def from_dict(d) -> "Scene":
@@ -101,14 +217,38 @@ class Scene:
         rating = d.get("rating")
         source_image = d.get("source_image")
         raw_refs = d.get("references")
+        guide = d.get("gen_unit_id")
+        archive = _blob(d.get("scene_archive"), dict)
         return Scene(
-            id=sid if is_id(sid) else _new_id(),
-            text=d.get("text") if isinstance(d.get("text"), str) else "",
+            id=sid if is_token(sid) else _new_id(),
+            text=_str(d.get("text")),
             result=result if isinstance(result, str) else None,
             length=_whole(d.get("length")),
-            rating=rating if rating in RATINGS else None,
+            rating=_str(rating, "", MAX_RATING),
             source_image=source_image if media.is_id(source_image) else None,
             references=[r for r in raw_refs if media.is_id(r)] if isinstance(raw_refs, list) else [],
+            transition_to_next=_str(d.get("transition_to_next"), "", 200),
+            transition_frames=_int(d.get("transition_frames"), None, 0, MAX_SETTING),
+            video_transition=_str(d.get("video_transition"), "", 40),
+            effects=_clean_effects(d.get("effects")),
+            audio_volume=_num(d.get("audio_volume"), 1.0, 0.0, 10.0),
+            audio_separated=_bool(d.get("audio_separated")),
+            frames=_int(d.get("frames"), None, 1, MAX_SETTING),
+            fps=_int(d.get("fps"), None, 1, 1000),
+            frames_mode=d.get("frames_mode") if d.get("frames_mode") in FRAME_MODES else "project",
+            fps_mode=d.get("fps_mode") if d.get("fps_mode") in FRAME_MODES else "project",
+            width=_int(d.get("width"), None, 1, MAX_SETTING),
+            height=_int(d.get("height"), None, 1, MAX_SETTING),
+            source=_clean_source(d.get("source")),
+            excluded=_bool(d.get("excluded")),
+            gen_unit_id=guide if is_token(guide) else None,
+            cut_offset_frames=_int(d.get("cut_offset_frames"), 0, 0, 10 ** 7),
+            guides=_dicts(d.get("guides")),
+            source_in=_num(d.get("source_in"), 0.0, 0.0, 10 ** 6),
+            source_dur=_num(d.get("source_dur"), None, 0.0, 10 ** 6),
+            scene_archive=archive or None,
+            gap_after_sec=_num(d.get("gap_after_sec"), 0.0, 0.0, 10 ** 5),
+            removed_from_plan=_bool(d.get("removed_from_plan")),
         )
 
 
@@ -237,6 +377,44 @@ class Project:
     active_prompt_template: str = ""
     editor_settings: dict = field(default_factory=dict)
     updated_at: float = 0.0
+    created_at: float = 0.0
+    #: What every scene is generated at unless trimmed on the timeline.
+    seed: int = 1
+    num_frames_per_scene: int = 97
+    frame_rate: int = 25
+    width: int = 768
+    height: int = 512
+    max_scenes: int = 8
+    #: The pre-roll marker between the anchor and the first scene, and the negative the editor edits.
+    intro_transition: str = ""
+    negative_prompt: str = ""
+    conditioning_slot: str = "funpack"
+    sampler_slot: str = "funpack"
+    #: "i2v" or "t2v": decides what is EXPECTED (an anchor picture), never what is allowed.
+    generation_mode: str = "i2v"
+    studio_inputs: dict = field(default_factory=dict)
+    sampler_inputs: dict = field(default_factory=dict)
+    h3_references: list = field(default_factory=list)
+    #: Media ids marked "R", in mark order (R1, R2, ...): the order IS the identity.
+    references: list = field(default_factory=list)
+    refinement_key: str = "default"
+    #: Audio: keep each clip's own sound, plus lanes mixed over the montage.
+    keep_original_audio: bool = True
+    audio_tracks: list = field(default_factory=list)
+    overlay_lanes: list = field(default_factory=list)
+    overlay_tracks: list = field(default_factory=list)
+    #: The pipeline the person configured (loader slots and linked inputs).
+    models: dict = field(default_factory=lambda: {"slots": []})
+    guide_settings: dict = field(default_factory=dict)
+    continuity_settings: dict = field(default_factory=dict)
+    generation_meta: dict = field(default_factory=dict)
+    #: What each scene last rendered ({media, inSec, promptId}) and the removed scenes whose
+    #: clip still previews: a reload shows the timeline the person left.
+    scene_renders: dict = field(default_factory=dict)
+    scene_ghosts: list = field(default_factory=list)
+    #: Cut order (scene ids in TIMELINE order), empty = follow the plan; True once reordered by hand.
+    timeline_order: list = field(default_factory=list)
+    timeline_manually_ordered: bool = False
 
     @staticmethod
     def from_dict(d) -> "Project":
@@ -264,6 +442,35 @@ class Project:
             active_prompt_template=str(d.get("active_prompt_template") or "")[:MAX_NAME],
             editor_settings=_clean_editor_settings(d.get("editor_settings")),
             updated_at=float(d.get("updated_at") or 0.0),
+            created_at=_num(d.get("created_at"), 0.0, 0.0),
+            seed=_int(d.get("seed"), 1, 0, 2 ** 63),
+            num_frames_per_scene=_int(d.get("num_frames_per_scene"), 97, 1, MAX_SETTING),
+            frame_rate=_int(d.get("frame_rate"), 25, 1, 1000),
+            width=_int(d.get("width"), 768, 1, MAX_SETTING),
+            height=_int(d.get("height"), 512, 1, MAX_SETTING),
+            max_scenes=_int(d.get("max_scenes"), 8, 1, 10 ** 4),
+            intro_transition=_str(d.get("intro_transition"), "", 200),
+            negative_prompt=_str(d.get("negative_prompt")),
+            conditioning_slot=_str(d.get("conditioning_slot"), "funpack", 120) or "funpack",
+            sampler_slot=_str(d.get("sampler_slot"), "funpack", 120) or "funpack",
+            generation_mode="t2v" if d.get("generation_mode") == "t2v" else "i2v",
+            studio_inputs=_blob(d.get("studio_inputs"), dict),
+            sampler_inputs=_blob(d.get("sampler_inputs"), dict),
+            h3_references=_dicts(d.get("h3_references")),
+            references=[r for r in _blob(d.get("references"), list) if isinstance(r, str) and r][:256],
+            refinement_key=_str(d.get("refinement_key"), "default", 64) or "default",
+            keep_original_audio=_bool(d.get("keep_original_audio"), True),
+            audio_tracks=_dicts(d.get("audio_tracks")),
+            overlay_lanes=_dicts(d.get("overlay_lanes")),
+            overlay_tracks=_dicts(d.get("overlay_tracks")),
+            models=_blob(d.get("models"), dict) or {"slots": []},
+            guide_settings=_blob(d.get("guide_settings"), dict),
+            continuity_settings=_blob(d.get("continuity_settings"), dict),
+            generation_meta=_blob(d.get("generation_meta"), dict),
+            scene_renders=_blob(d.get("scene_renders"), dict),
+            scene_ghosts=_dicts(d.get("scene_ghosts")),
+            timeline_order=[i for i in _blob(d.get("timeline_order"), list) if is_token(i)],
+            timeline_manually_ordered=_bool(d.get("timeline_manually_ordered")),
         )
 
     def to_dict(self) -> dict:
