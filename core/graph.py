@@ -604,8 +604,20 @@ def replace(slots: Sequence[dict], slot_id: str, class_type: str,
     # Inputs are NOT carried across: a different node has different inputs, and
     # silently keeping the ones whose names happen to match is how a value ends
     # up meaning something else.
-    changed = [dict(slot, node=class_type, inputs={}) if slot["id"] == slot_id else dict(slot)
-               for slot in slots]
+    # The slot's roles say which of its inputs the app writes to (the prompt box, the source image,
+    # the length). Only the ones the new node actually has can still be written: a role left
+    # pointing at an input that is gone would make every run refuse.
+    have = schemas.inputs(class_type)
+
+    def fits(slot):
+        roles = [r for r in (slot.get("roles") or []) if isinstance(r, dict) and r.get("input") in have]
+        out = dict(slot, node=class_type, inputs={})
+        out.pop("roles", None)
+        if roles:
+            out["roles"] = roles
+        return out
+
+    changed = [fits(slot) if slot["id"] == slot_id else dict(slot) for slot in slots]
     return changed, []
 
 

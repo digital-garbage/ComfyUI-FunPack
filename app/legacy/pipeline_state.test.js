@@ -154,3 +154,20 @@ test("a structural edit is sent on its own and its refusal is handed back", asyn
   assert.strictEqual(posts.at(-1).action, "remove");
   assert.deepStrictEqual(PS.removedIds(), []);                 // refused: nothing is remembered as removed
 });
+
+test("a default link the person unwired stays unwired when the project is opened again", async () => {
+  const PS = load([]);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } },
+                  { id: "gen", node: "Gen", inputs: { steps: 8 } }]);       // gen.model (a link) was unwired
+  assert.strictEqual("model" in PS.slots().find((s) => s.id === "gen").inputs, false);
+});
+
+test("a group moved while a save is in flight is still moved when it lands", async () => {
+  const PS = load([], { delay: 30 });
+  await PS.ensureLoaded();
+  const inflight = PS.save({ inputs: { model: { file: "z" } } });
+  await new Promise((r) => setTimeout(r, 5));
+  await PS.setGroup("gen", "Mine");
+  await inflight;
+  assert.strictEqual(PS.slots().find((s) => s.id === "gen").group, "Mine");
+});

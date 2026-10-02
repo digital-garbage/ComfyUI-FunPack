@@ -119,6 +119,17 @@ def test_a_built_in_slot_can_be_removed_over_http(server):
     assert sampler["inputs"]["model"] == ["model", 0], "the sampler was not rewired"
 
 
+def test_a_node_can_be_added_over_http_and_a_missing_one_comes_back_as_a_reason(server):
+    status, body = _request(server, "POST", "/funpack/api/pipeline",
+                            {"action": "add", "node": "PrimitiveInt", "group": "Mine"})
+    assert status == 200 and body["refused"] == [], body
+    added = body["slots"][-1]
+    assert added["node"] == "PrimitiveInt" and added["group"] == "Mine" and added["inputs"] == {}
+    status, body = _request(server, "POST", "/funpack/api/pipeline", {"action": "add", "node": "NoSuchNode"})
+    assert status == 200 and any("NoSuchNode" in r for r in body["refused"])
+    assert _request(server, "POST", "/funpack/api/pipeline", {"action": "add", "node": 5})[0] == 400
+
+
 def test_a_removal_that_cannot_work_comes_back_as_a_reason(server):
     status, body = _request(server, "POST", "/funpack/api/pipeline",
                             {"action": "remove", "slot": "latent"})

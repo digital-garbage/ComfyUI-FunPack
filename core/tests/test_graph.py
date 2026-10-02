@@ -577,3 +577,11 @@ def test_a_new_node_can_be_wired_into_several_inputs_and_later_ones_added_to_the
     slots, _ = graph.add(slots, "Empty", None, SCHEMAS)
     slots, problems = graph.wire(slots, "empty_2", "width", "primitiveint", 0, SCHEMAS)
     assert problems == [] and graph.slots_by_id(slots)["empty_2"]["inputs"]["width"] == ["primitiveint", 0]
+
+def test_a_swap_keeps_only_the_roles_the_new_node_can_still_take():
+    slots = [{"id": "empty", "node": "Empty", "inputs": {"width": 8},
+              "roles": [{"at": "project.video", "input": "width"}, {"at": "project.video", "input": "length"}]},
+             {"id": "save", "node": "Save", "inputs": {"latent": ["empty", 0]}}]
+    swapped, problems = graph.replace(slots, "empty", "Empty", SCHEMAS)
+    assert problems == []
+    assert graph.slots_by_id(swapped)["empty"]["roles"] == [{"at": "project.video", "input": "width"}]

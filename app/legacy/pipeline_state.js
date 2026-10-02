@@ -67,6 +67,7 @@
   let loadError = null;
   let removed = new Set();    // default slots the person took out of this project's pipeline
   let adoptGate = null;       // a promise while a project's pipeline is being put in
+  let deferredRemoved;
   let deferred = null;        // a project's saved pipeline waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
   let saving = false;
@@ -130,7 +131,7 @@
       }
       loading = false;
       loadPromise = null;
-      if (slots !== null && deferred) { const d = deferred; deferred = null; await adopt(d); }
+      if (slots !== null && deferred) { const d = deferred, r = deferredRemoved; deferred = null; deferredRemoved = undefined; await adopt(d, r); }
     })();
     return loadPromise;
   }
@@ -178,6 +179,7 @@
     saving = true;
     do {
       pending = false;
+      applyGroups();
       const toSend = { slots, ...pendingBody };
       pendingBody = null;
       const mine = epoch;
@@ -187,6 +189,7 @@
         // this answer is about the old one and must not overwrite the new.
         if (mine !== epoch) continue;
         if (res && res.slots) slots = res.slots;
+        applyGroups();
         incomplete = (res && res.incomplete) || [];
         refused = (res && res.refused) || [];
         queueable = !!(res && res.queueable);
@@ -300,10 +303,11 @@
     saving = true;
     let refusedNow = [];
     try {
+      applyGroups();
       const res = await API.editPipeline({ slots, ...body });
       if (mine !== epoch) return { refused: ["The project was changed while this was being sent."] };
       refusedNow = (res && res.refused) || [];
-      if (res && res.slots && !refusedNow.length) slots = res.slots;
+      if (res && res.slots && !refusedNow.length) { slots = res.slots; applyGroups(); }
       incomplete = (res && res.incomplete) || [];
       refused = refusedNow;
       queueable = !!(res && res.queueable);
@@ -324,12 +328,20 @@
   }
 
   // A slot's group is the person's own to name (any node in any group).
+  // Kept until it has landed: a save already in flight answers with the slots as they were when
+  // it left, and would otherwise put the old group back.
+  let groupEdits = {};
+  function applyGroups() {
+    (slots || []).forEach((s) => {
+      if (!(s.id in groupEdits)) return;
+      if (groupEdits[s.id]) s.group = groupEdits[s.id]; else delete s.group;
+    });
+  }
   function setGroup(slotId, group) {
-    const slot = (slots || []).find((s) => s.id === slotId);
-    if (!slot) return Promise.resolve();
-    const name = String(group || "").trim();
-    if (name) slot.group = name; else delete slot.group;
-    return save({});
+    if (!(slots || []).some((s) => s.id === slotId)) return Promise.resolve();
+    groupEdits[slotId] = String(group || "").trim();
+    applyGroups();
+    return save({}).then(() => { if (!saving) groupEdits = {}; });
   }
 
   // Whoever keeps the pipeline with the project hears every landed edit.
@@ -352,12 +364,14 @@
   async function _adopt(saved, removedIds) {
     // Not loaded (ComfyUI unreachable): remember what the project holds and put it in the moment a
     // load succeeds, so the default is never what the next edit is built on.
-    if (slots === null) { if (Array.isArray(saved) && saved.length) deferred = saved; return !(Array.isArray(saved) && saved.length); }
+    if (slots === null) { if (Array.isArray(saved) && saved.length) { deferred = saved; deferredRemoved = removedIds; } return !(Array.isArray(saved) && saved.length); }
     if (!Array.isArray(saved) || !saved.length) return true;
     // A saved slot is only what the server would accept: a project file outlives the code that
     // wrote it (v4 files name the node differently), and one bad slot refuses every later edit.
     const sound = (s) => s && typeof s.id === "string" && typeof s.node === "string"
-      && s.inputs && typeof s.inputs === "object" && !Array.isArray(s.inputs);
+      && s.inputs && typeof s.inputs === "object" && !Array.isArray(s.inputs)
+      && (s.group === undefined || (typeof s.group === "string" && s.group.trim()))
+      && (s.roles === undefined || Array.isArray(s.roles));
     const byId = new Map(saved.filter(sound).map((s) => [s.id, s]));
     const have = new Set(offered.map((s) => s.id));
     // Slots the person took out stay out; ones whose node they swapped keep their swap.
@@ -366,7 +380,11 @@
       const mine = byId.get(def.id);
       if (!mine) return JSON.parse(JSON.stringify(def));
       if (mine.node !== def.node) return JSON.parse(JSON.stringify(mine));
-      const out = { ...def, inputs: { ...(def.inputs || {}), ...mine.inputs } };
+      // A default LINK the saved copy lacks was unwired by the person; a default VALUE it lacks is
+      // one an update added, and fills in.
+      const inputs = { ...(def.inputs || {}) };
+      Object.keys(inputs).forEach((k) => { if (Array.isArray(inputs[k]) && !(k in mine.inputs)) delete inputs[k]; });
+      const out = { ...def, inputs: { ...inputs, ...mine.inputs } };
       if (typeof mine.group === "string" && mine.group) out.group = mine.group;
       if (typeof mine.bypassed === "boolean") out.bypassed = mine.bypassed;
       return out;
@@ -374,6 +392,7 @@
     // Replaces whatever pipeline was live: nothing queued for the old one may land on the new.
     const mine = ++epoch;
     removed = new Set(gone);
+    groupEdits = {};
     pendingBody = null; pending = false;
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     for (const extras of [true, false]) {

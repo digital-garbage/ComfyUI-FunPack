@@ -135,7 +135,10 @@
     const actions = el("div", "eng-structure-actions");
     const swap = el("button", "btn ghost tiny", "Swap node…");
     swap.title = "Use a different node here. It must still produce what the nodes after it read.";
-    swap.onclick = () => pickNode(`Swap ${slotDisplayLabel(slot)} for…`, (cls) => structural({ action: "replace", slot: slot.id, node: cls }));
+    swap.onclick = () => pickNode(`Swap ${slotDisplayLabel(slot)} for…`, (cls) => {
+      if (!confirm(`Swap ${slotDisplayLabel(slot)} for ${cls}?\n\nEverything set on this node (files, values, connections into it) is cleared, and the new node starts empty.`)) return;
+      structural({ action: "replace", slot: slot.id, node: cls });
+    });
     const rm = el("button", "btn ghost tiny danger", "Remove");
     rm.title = "Take this node out; what it fed is rewired to what fed it, when that is unambiguous.";
     rm.onclick = () => { if (confirm(`Remove ${slotDisplayLabel(slot)} from the pipeline?`)) structural({ action: "remove", slot: slot.id }); };
@@ -185,6 +188,9 @@
         "Fed by another node: change it there, or pick “A value” to type one here.");
     }
     const row = controlForPlainWidget(slot, widget);
+    // An input the app itself writes (the prompt box, the source picture, the length) is the app's:
+    // wiring it elsewhere would make every Generate refuse.
+    if ((slot.roles || []).some((r) => r.input === widget.name)) return row;
     // Another node can drive this value (one Primitive shared by several inputs is how a "link" is made).
     if (widget.type !== "COMBO" || (widget.choices || []).length) {
       const sources = sourcesFor(slot, widget.type);
