@@ -106,10 +106,11 @@ def with_coarse(video, coarse):
     return out
 
 
-def fit(coarse, h, w):
-    """A stored coarse map on this run's grid. Another resolution is resampled and
-    re-standardised: the layout survives, exact Gaussianity does not."""
-    coarse = coarse.float()
+def fit(coarse, h, w, device=None):
+    """A stored coarse map on this run's grid and device (stored maps live on the CPU; the
+    noise is on the GPU). Another resolution is resampled and re-standardised: the layout
+    survives, exact Gaussianity does not."""
+    coarse = coarse.float().to(device) if device is not None else coarse.float()
     if tuple(coarse.shape[-2:]) == (h, w):
         return coarse
     x = F.interpolate(coarse[None], size=(h, w), mode="bilinear", align_corners=False)[0]
@@ -182,7 +183,7 @@ def choose_parent(rows, cond, channels, rng=random):
 
 def blend(own, parent_coarse, amount):
     """The layout to start from: the liked shot's, `amount` of the way."""
-    coarse = amount * fit(parent_coarse, *own.shape[-2:]) + math.sqrt(1.0 - amount ** 2) * own
+    coarse = amount * fit(parent_coarse, *own.shape[-2:], device=own.device) + math.sqrt(1.0 - amount ** 2) * own
     # Unit variance only holds when the two layouts are unrelated. Rerunning the liked
     # shot's own seed makes them the same pattern and the blend stacks it (1.41x at 0.7):
     # back to a normal-strength layout, per channel. Only ever down: a few-cell grid's

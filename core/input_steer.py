@@ -61,7 +61,12 @@ class Steer:
 
     def felt(self):
         """Whether this run's pushes were big enough to be felt (and so worth learning from)."""
-        return self._delivered > 0 and self._reach >= FLOOR
+        return not self._multi and self._delivered > 0 and self._reach >= FLOOR
+
+    @property
+    def multi(self):
+        """The model is called more than once per step: nothing here was steered as designed."""
+        return self._multi
 
     def effect(self):
         """How hard this run's pushes landed (largest, as a share of the input they joined),

@@ -145,6 +145,13 @@ def install(patcher, values, key):
             normal = executor(step.x, t, *args, **kwargs)
         finally:
             live["want"] = False
+        if not manual:
+            if steer.felt():       # every call, the last included: the biggest push lands there
+                captured["v"] = torch.tensor(live["w"])
+                captured["e"] = torch.tensor(steer.effect())
+                captured["b"] = torch.tensor(branch)   # a strength means something per branch block
+            elif steer.multi:
+                captured.clear()
         if not branching:
             if step.steering and not step.final and not cond_only:
                 _say("a negative-prompt call (CFG above 1) is left unguided: guidance is for "
@@ -164,12 +171,7 @@ def install(patcher, values, key):
             _say("off this run: could not find the picture in this model's latent")
             return normal
         video, rebuild = split_n
-        guided = step.keep(normal, rebuild(mix(video, split_w[0], live["w"]).to(video.dtype)))
-        if not manual and steer.felt():          # a push too small to feel teaches nothing
-            captured["v"] = torch.tensor(live["w"])
-            captured["e"] = torch.tensor(steer.effect())
-            captured["b"] = torch.tensor(branch)       # a strength means something per branch block
-        return guided
+        return step.keep(normal, rebuild(mix(video, split_w[0], live["w"]).to(video.dtype)))
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)
     return (("manual" if manual else "learned") + f" strength, weak copy left out at block {branch}, "

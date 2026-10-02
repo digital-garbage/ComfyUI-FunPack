@@ -150,6 +150,15 @@ def install(patcher, values, key):
 
         patcher.add_wrapper_with_key(WrappersMP.OUTER_SAMPLE, key, start)
 
+    def learn(k):
+        """Only a k whose push reached the model teaches. Checked on every call, the last
+        included: on a few-step schedule the biggest push lands on the final step."""
+        if steer.felt():
+            captured["logk"] = torch.tensor(math.log(k))
+            captured["steps"] = torch.tensor(live["steps"])
+        elif steer.multi:
+            captured.clear()
+
     def apply_model(executor, x, t, *args, **kwargs):
         named = streams.model_args(args, kwargs)
         to = named.get("transformer_options")
@@ -170,6 +179,8 @@ def install(patcher, values, key):
                      f"a step's noise, under {INERT_SHARE:.0%}); more steps or a larger k would "
                      "let it be felt" + ("" if manual else "; this run teaches nothing"))
         k = live["k"]
+        if not manual:
+            learn(k)
         if not live["acts"] or step.final or k == 1.0:
             return out
         split_x, split_out = streams.video_of(step.x, named), streams.video_of(out, named)
@@ -178,11 +189,7 @@ def install(patcher, values, key):
             return out
         video, rebuild = split_out
         sigma = float(t.max())
-        kept = step.keep(out, rebuild(rescale_x0(split_x[0], video, sigma, k).to(video.dtype)))
-        if not manual and steer.felt():
-            captured["logk"] = torch.tensor(math.log(k))     # only a k that reached the model teaches
-            captured["steps"] = torch.tensor(live["steps"])
-        return kept
+        return step.keep(out, rebuild(rescale_x0(split_x[0], video, sigma, k).to(video.dtype)))
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)
     return ("manual k" if manual else "learned k") + ", picture only, carried into the next step"

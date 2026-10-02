@@ -17,6 +17,9 @@ Whether H3 has massive channels at the chosen block is unknown: the run says whi
 found, or that it steered nothing. v4's user saw motion get "much more fluid and
 detailed" with this stack on; STAS is the prime suspect, not isolated.
 
+Keep this block different from late-branch guidance's branch block: at the same block the
+weak copy lacks this edit and guidance would amplify it.
+
 Switches ComfyUI's model compiler off for the run (an in-place edit of one block's output).
 """
 

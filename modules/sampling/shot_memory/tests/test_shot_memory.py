@@ -42,6 +42,14 @@ def test_one_cell_grids_are_left_alone():
     assert coarse_of(torch.randn(1, 4, 2, 4, 4)) is None and coarse_of(torch.randn(2, 4, 2, 16, 16)) is None
 
 
+def test_a_stored_cpu_shot_blends_into_noise_on_another_device():
+    from modules.sampling.shot_memory import blend, fit
+    device = "mps" if torch.backends.mps.is_available() else "meta"
+    own = torch.randn(4, 2, 2, device=device)
+    assert fit(torch.randn(4, 2, 2).half(), 2, 2, device=own.device).device == own.device
+    assert blend(own, torch.randn(4, 2, 2).half(), 0.7).device == own.device
+
+
 def test_the_blend_never_raises_the_layout_strength_even_for_the_same_seed():
     from modules.sampling.shot_memory import blend
     c = torch.randn(4, 8, 8)

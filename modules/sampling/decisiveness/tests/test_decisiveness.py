@@ -164,3 +164,16 @@ def test_ratings_from_another_schedule_length_are_left_out_of_the_centre(tiny_h3
     log.new_run()
     _run(outer, lambda: wrap(lambda *a, **k: x0, x0, _sched(8)[0:1], None, None, None, _to(0), latent_shapes=shapes))
     assert any("from 0 rating(s) at 8 steps" in e["message"] for e in log.history())
+
+
+def test_on_a_four_step_schedule_the_biggest_push_lands_on_the_last_step_and_still_teaches(tiny_h3, monkeypatch):
+    import random
+    from modules.system.taste import store
+    monkeypatch.setattr(random, "gauss", lambda *a: 0.5)         # clamps to the largest k
+    wrap, outer, _ = _load(tiny_h3)
+    x0, shapes = _packed()
+    sched = torch.tensor([1.0, 0.95, 0.89, 0.80, 0.0])
+    to = lambda i: {"sample_sigmas": sched, "sigmas": sched[i:i + 1]}
+    _run(outer, lambda: [wrap(lambda *a, **k: x0, x0, sched[i:i + 1], None, None, None, to(i),
+                              latent_shapes=shapes) for i in range(4)])
+    assert store.rate("run-1", "liked")["recorded"] == ["decisiveness"]
