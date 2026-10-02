@@ -24,7 +24,7 @@ below exists and why a run that never sparsified says so in the log.
 """
 import logging
 
-from .._core import traits as _traits
+from .._core import dit_hooks as _dit_hooks, traits as _traits
 
 SLA_NAME = "sla_h3"
 
@@ -235,12 +235,16 @@ def make_wrapper(state, sparsity_ratio, blkq, blkk, dense_last_steps):
         to = transformer_options
         n_steps = max(1, len(to.get("sample_sigmas", [])) - 1)
 
-        if state["step"] >= n_steps:      # new run
+        # A throwaway call (a probe, late-branch's weakened copy) is not a step of the
+        # schedule: counting it would slide the "dense last steps" window onto the wrong call.
+        counted = not _dit_hooks.probing(to)
+        if counted and state["step"] >= n_steps:      # new run
             state["step"] = 0
             state["calls"] = 0
             state["dense"] = 0
             state["failed"] = None
-        state["step"] += 1
+        if counted:
+            state["step"] += 1
 
         # PackedLayout.segments is [(start, stop, kind), …] over
         # [text | cond/ref | audio | video]; the video start is therefore the length of
@@ -265,7 +269,7 @@ def make_wrapper(state, sparsity_ratio, blkq, blkk, dense_last_steps):
         out = executor.original(x, timestep, context,
                                 transformer_options=transformer_options, **kwargs)
 
-        if state["step"] >= n_steps:
+        if counted and state["step"] >= n_steps:
             _summarise(state, sparsity_ratio, blkq, blkk)
         return out
 

@@ -219,6 +219,8 @@ def install(patcher, values, key):
     def plan(cond, channels):
         if live["plan"] is None:
             parent, why = choose_parent(live["rows"], cond, channels)
+            if parent is not None and manual and manual_amount <= 0.0:
+                parent, why = None, "fresh (reuse amount is 0)"       # not a reuse: do not record one
             amount = 0.0
             if parent is not None:
                 amount = manual_amount if manual else min(max(

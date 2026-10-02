@@ -28,6 +28,13 @@ def test_unusualness_needs_history_and_is_clamped():
     assert rated_dial.unusualness(0.0001, [1.0, 1.0, 1.0]) == 0.25
 
 
+def test_a_rating_made_with_another_setup_is_left_out():
+    import torch
+    row = lambda v, b: {"reward": 1.0, "rows": {"v": torch.tensor(v), "b": torch.tensor(b)}}
+    assert rated_dial.history([row(1.0, 10), row(0.5, 43)], {"b": 43}) == [(0.5, 1.0, None)]
+    assert rated_dial.history([{"reward": 1.0, "rows": {"v": torch.tensor(1.0)}}], {"b": 43}) == []
+
+
 def test_rows_become_history_and_pick_stays_in_range():
     import torch
     rows = [{"reward": 1.0, "rows": {"v": torch.tensor(1.0), "e": torch.tensor(0.2)}},

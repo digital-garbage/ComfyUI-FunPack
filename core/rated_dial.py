@@ -14,12 +14,16 @@ import random
 MIN_EFFECTS = 3         # runs of history before an effect is compared with the key's own
 
 
-def history(rows):
-    """Taste-store rows -> [(value, reward, effect | None)], oldest first."""
+def history(rows, setup=None):
+    """Taste-store rows -> [(value, reward, effect | None)], oldest first.
+
+    `setup` is what gives the value its meaning ({"b": block}): a rating made with another
+    setup says nothing about this one and is left out. Rows from before a setup was
+    recorded are left out too."""
     out = []
     for r in rows:
         p = r["rows"]
-        if "v" in p:
+        if "v" in p and all(k in p and int(p[k]) == int(want) for k, want in (setup or {}).items()):
             e = float(p["e"]) if "e" in p and float(p["e"]) > 0 else None
             out.append((float(p["v"]), float(r["reward"]), e))
     return out

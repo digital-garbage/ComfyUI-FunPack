@@ -133,3 +133,34 @@ def test_learning_without_a_taste_key_is_off_and_says_so(tiny_h3):
     patched, _ = FunPackLoadModifiers.execute(tiny_h3.patcher, {"decisiveness": {"enabled": True}}).result
     assert any("needs a Taste key" in e["message"] for e in log.history())
     assert not patched.wrappers.get(WrappersMP.APPLY_MODEL)
+
+
+def test_a_run_whose_push_never_arrived_teaches_nothing(tiny_h3, monkeypatch):
+    import random
+    from modules.system.taste import store
+    monkeypatch.setattr(random, "gauss", lambda *a: 0.2)
+    wrap, outer, _ = _load(tiny_h3)
+    x0, shapes = _packed()
+
+    def twice():                                       # a second-order sampler: every step called twice
+        for i in range(8):
+            for _ in range(2):
+                wrap(lambda *a, **k: x0, x0, _sched(8)[i:i + 1], None, None, None, _to(i), latent_shapes=shapes)
+
+    _run(outer, twice)
+    assert store.rate("run-1", "liked")["why"]
+
+
+def test_ratings_from_another_schedule_length_are_left_out_of_the_centre(tiny_h3, monkeypatch):
+    import random
+    from core import log
+    from modules.system.taste import store
+    monkeypatch.setattr(random, "gauss", lambda *a: 0.0)
+    for i in range(3):
+        store.capture("fox", "decisiveness", {"logk": torch.tensor(0.3), "steps": torch.tensor(4)}, prompt_id=f"t{i}")
+        store.rate(f"t{i}", "liked")
+    wrap, outer, _ = _load(tiny_h3)
+    x0, shapes = _packed()
+    log.new_run()
+    _run(outer, lambda: wrap(lambda *a, **k: x0, x0, _sched(8)[0:1], None, None, None, _to(0), latent_shapes=shapes))
+    assert any("from 0 rating(s) at 8 steps" in e["message"] for e in log.history())

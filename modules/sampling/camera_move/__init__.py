@@ -18,6 +18,8 @@ end scale (above 1 = camera moves in), focus is where the zoom aims (0..1), `fro
 1-based step from which the model sees the moved latent (earlier = a stronger move the model
 builds on longer; later = closer to a plain pan of the finished video).
 
+Keyframe pins after frame 0 do not move with the picture and may fight the move.
+
 Stands down, and says so, for: context windows, a latent that is not empty (second pass,
 anchor), batched CFG, one latent frame, a model call that is off the schedule or repeats a
 step (midpoint and second-order samplers).
@@ -231,6 +233,9 @@ def install(patcher, values, key):
         gen = torch.Generator().manual_seed((live["seed"] ^ 0x5CA3E12A) + int(i))
         vid = video[0]
         moved = rebuild_x(warp(vid, move, float(t.max()), gen)[None])
+        if i == move.first_step(n):
+            # An edit another modifier filed one step ago is in the unmoved frame.
+            args, kwargs = streams.with_options(args, kwargs, {**to, dit_hooks.FRAME_CHANGE: True})
         d = executor(moved, t, *args, **kwargs)
         live["moved"] += 1
         if i >= n - 1:

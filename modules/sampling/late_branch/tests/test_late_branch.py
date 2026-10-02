@@ -123,8 +123,10 @@ def test_probe_calls_and_negative_calls_are_left_unguided_and_weak_calls_are_mar
     assert calls[1]["funpack_weak_branch"] and dit_hooks.probing(calls[1])
 
 
-def test_learned_mode_banks_strength_and_effect_after_a_guided_step(tiny_h3):
+def test_learned_mode_banks_strength_effect_and_branch_after_a_felt_push_only(tiny_h3, monkeypatch):
+    from core import input_steer
     from modules.system.taste import store
+    monkeypatch.setattr(input_steer, "FLOOR", 0.0)
     patched, wrap, outer, x0, shapes, executor, _ = _setup(tiny_h3)
 
     def go(i):
@@ -134,7 +136,29 @@ def test_learned_mode_banks_strength_and_effect_after_a_guided_step(tiny_h3):
     _run(outer, lambda: [go(i) for i in range(4)])
     assert store.rate("run-1", "liked")["recorded"] == ["late_branch"]
     row = store.load("fox", "late_branch")["rows"][0]["rows"]
-    assert 0.0 <= float(row["v"]) <= 1.5 and float(row["e"]) > 0
+    assert 0.0 <= float(row["v"]) <= 1.5 and float(row["e"]) > 0 and int(row["b"]) == 2
+
+
+def test_a_push_too_small_to_feel_teaches_nothing(tiny_h3, monkeypatch):
+    from core import input_steer
+    from modules.system.taste import store
+    monkeypatch.setattr(input_steer, "FLOOR", 10.0)          # nothing can be big enough
+    patched, wrap, outer, x0, shapes, executor, _ = _setup(tiny_h3)
+    _run(outer, lambda: [wrap(executor, x0, torch.tensor([[1.0, 0.75, 0.5, 0.25][i]]), None, None, None,
+                              _to(i), latent_shapes=shapes) for i in range(4)])
+    assert store.rate("run-1", "liked")["why"]                # nothing was captured
+
+
+def test_strength_zero_runs_no_weak_copy_and_the_mix_pushes_away_from_the_weak_one():
+    from modules.sampling.late_branch import mix
+    n, w = torch.tensor([2.0]), torch.tensor([1.0])
+    assert float(mix(n, w, 0.5)) == 2.5 and float(mix(n, w, 0.0)) == 2.0
+
+
+def test_manual_strength_zero_makes_one_call_per_step(tiny_h3):
+    patched, wrap, outer, x0, shapes, executor, calls = _setup(tiny_h3, mode="manual", strength=0.0)
+    _run(outer, lambda: wrap(executor, x0, torch.tensor([0.5]), None, None, None, _to(1), latent_shapes=shapes))
+    assert len(calls) == 1
 
 
 def test_a_branch_block_outside_the_model_is_refused_and_said(tiny_h3):

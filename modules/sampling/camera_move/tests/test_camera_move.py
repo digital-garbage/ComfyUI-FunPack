@@ -135,3 +135,25 @@ def test_no_move_is_set_and_the_wrapper_is_not_installed_and_says_so(tiny_h3):
     patched, _ = FunPackLoadModifiers.execute(tiny_h3.patcher, {"camera_move": {"enabled": True}}).result
     assert any("nothing to move" in e["message"] for e in log.history())
     assert not patched.wrappers.get(WrappersMP.APPLY_MODEL)
+
+
+def test_the_first_moved_call_is_marked_so_an_old_frame_push_is_not_added(tiny_h3):
+    sample, wrap, _ = _load(tiny_h3)
+    x0, shapes = _packed()
+    flags = []
+
+    def spy(x, t, c_concat=None, c_crossattn=None, control=None, transformer_options=None, **k):
+        flags.append(bool((transformer_options or {}).get("funpack_frame_change")))
+        return x
+
+    _steps(sample, wrap, x0, shapes, executor=spy)
+    assert flags == [False, True, False, False]            # 'from step 2' of 4
+
+
+def test_a_probe_call_is_neither_moved_nor_counted_as_a_step(tiny_h3):
+    sample, wrap, _ = _load(tiny_h3, step=1)
+    x0, shapes = _packed()
+    seen = []
+    outs, _ = _steps(sample, wrap, x0, shapes, to=lambda i, n: {**_to(i, n), "funpack_probe": True},
+                     executor=lambda x, *a, **k: (seen.append(x), x)[1])
+    assert all(torch.equal(s, x0) for s in seen)

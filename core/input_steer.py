@@ -59,6 +59,10 @@ class Steer:
         self._made, self._delivered = 0, 0
         self._reach = 0.0       # largest delivered push, as a share of the input it joined
 
+    def felt(self):
+        """Whether this run's pushes were big enough to be felt (and so worth learning from)."""
+        return self._delivered > 0 and self._reach >= FLOOR
+
     def effect(self):
         """How hard this run's pushes landed (largest, as a share of the input they joined),
         or None when none arrived. What a rating is weighted by."""
@@ -94,6 +98,8 @@ class Steer:
     def begin(self, x, t, to) -> Call:
         to = to or {}
         if not self._packed(x):
+            self._say(log.INFO, "this latent is not packed (not H3), so edits land on the model's "
+                                "own answer, as before; the last step is edited too", "plain latent")
             return Call(x, dit_hooks.late_half(to), steering=True)
         if dit_hooks.probing(to):
             return Call(x, 0.0, keep=lambda out, _steered: out)   # a discarded candidate
@@ -132,6 +138,8 @@ class Steer:
             held.clear()
         self._seen[key] = i
         push = held.pop(i - 1, None)       # delivered once; a repeated sigma cannot re-deliver it
+        if push is not None and to.get(dit_hooks.FRAME_CHANGE):
+            push = None                    # filed in the frame before the latent was moved
         if push is not None:
             if tuple(push.shape) == tuple(x.shape):
                 add = (1.0 - float(t.max())) * push.to(x.device, x.dtype)

@@ -121,23 +121,26 @@ def install(patcher, values, key):
     if not manual and taste is None:
         _say("off: learning needs a Taste key -- set one, or pick 'My value'")
         return None
-    live = {"k": 1.0, "acts": False, "checked": False}
+    live = {"k": 1.0, "acts": False, "checked": False, "steps": 0}
     steer = input_steer.Steer("Decisiveness")
     steer.attach(patcher, key)
 
     def fresh():
-        live["checked"], live["acts"] = False, False
+        live.update(checked=False, acts=False, steps=0, rows=None if manual else taste.rows(KIND))
+        live["k"] = float(values.get("k", 1.0)) if manual else 1.0
         if manual:
-            live["k"] = float(values.get("k", 1.0))
-            note = f"manual k {live['k']:.3f}"
-        else:
-            history = [(float(r["rows"]["logk"]), float(r["reward"]))
-                       for r in taste.rows(KIND) if "logk" in r["rows"]]
-            centre = learned_logk(history)
-            live["k"] = math.exp(min(max(centre + random.gauss(0.0, EXPLORE), -LOGK_MAX), LOGK_MAX))
-            note = (f"key {taste.key!r}: learned k {math.exp(centre):.3f} from {len(history)} "
-                    f"rating(s), trying {live['k']:.3f}")
-        log.once(f"{ID}:state", log.INFO, "FunPack Decisiveness", note)
+            log.once(f"{ID}:state", log.INFO, "FunPack Decisiveness", f"manual k {live['k']:.3f}")
+
+    def choose(steps):
+        """Learned k for a schedule of this length. Ratings from another length are left out:
+        the same k pushes a very different share of a 4-step and a 12-step run."""
+        history = [(float(r["rows"]["logk"]), float(r["reward"])) for r in live["rows"]
+                   if "logk" in r["rows"] and int(r["rows"].get("steps", steps)) == steps]
+        centre = learned_logk(history)
+        live["k"] = math.exp(min(max(centre + random.gauss(0.0, EXPLORE), -LOGK_MAX), LOGK_MAX))
+        log.once(f"{ID}:state", log.INFO, "FunPack Decisiveness",
+                 f"key {taste.key!r}: learned k {math.exp(centre):.3f} from {len(history)} "
+                 f"rating(s) at {steps} steps, trying {live['k']:.3f}")
 
     captured = (taste.collect(patcher, key, KIND, fresh=fresh) if not manual else {})
     if manual:
@@ -152,20 +155,22 @@ def install(patcher, values, key):
         to = named.get("transformer_options")
         step = steer.begin(x, t, to)
         out = executor(step.x, t, *args, **kwargs)
-        k = live["k"]
-        if k == 1.0:
-            return out
         if not live["checked"] and to and to.get("sample_sigmas") is not None:
             live["checked"] = True
+            live["steps"] = len(to["sample_sigmas"]) - 1
+            if not manual:
+                choose(live["steps"])
+            k = live["k"]
+            if k == 1.0:
+                return out
             share = reach(to["sample_sigmas"].flatten().tolist(), k)
             live["acts"] = share >= INERT_SHARE
             if not live["acts"]:
                 _say(f"Inactive | barely acts on this schedule (k {k:.3f} pushes {share:.1%} of "
                      f"a step's noise, under {INERT_SHARE:.0%}); more steps or a larger k would "
                      "let it be felt" + ("" if manual else "; this run teaches nothing"))
-            elif not manual:
-                captured["logk"] = torch.tensor(math.log(k))
-        if not live["acts"] or step.final:
+        k = live["k"]
+        if not live["acts"] or step.final or k == 1.0:
             return out
         split_x, split_out = streams.video_of(step.x, named), streams.video_of(out, named)
         if split_x is None or split_out is None:
@@ -173,7 +178,11 @@ def install(patcher, values, key):
             return out
         video, rebuild = split_out
         sigma = float(t.max())
-        return step.keep(out, rebuild(rescale_x0(split_x[0], video, sigma, k).to(video.dtype)))
+        kept = step.keep(out, rebuild(rescale_x0(split_x[0], video, sigma, k).to(video.dtype)))
+        if not manual and steer.felt():
+            captured["logk"] = torch.tensor(math.log(k))     # only a k that reached the model teaches
+            captured["steps"] = torch.tensor(live["steps"])
+        return kept
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)
     return ("manual k" if manual else "learned k") + ", picture only, carried into the next step"

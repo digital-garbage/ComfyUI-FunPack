@@ -235,3 +235,16 @@ def test_each_run_says_its_own_result_not_just_the_first_of_the_prompt():
     s.reset()
     s.begin(x, _t(3), _to(3))                           # run 2, same prompt: log.once not cleared
     assert len([r for r in log.history() if "no step made" in r["message"]]) == seen + 1
+
+
+def test_a_push_filed_before_the_frame_changed_is_not_added_after_it():
+    s, x, out = input_steer.Steer("t"), _x(), _x()
+    _edit(s, 2, x, out, torch.ones(1, 1, 12))
+    moved = s.begin(x, _t(3), _to(3, funpack_frame_change=True))
+    assert torch.equal(moved.x, x)
+
+
+def test_a_plain_latent_says_edits_land_on_the_answer():
+    log._reset()
+    input_steer.Steer("t").begin(torch.randn(1, 4, 2, 4, 4), _t(1), _to(1))
+    assert _said("not packed")

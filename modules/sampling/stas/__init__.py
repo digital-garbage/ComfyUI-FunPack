@@ -134,7 +134,7 @@ def install(patcher, values, key):
         if manual:
             return log.once(f"{ID}:state", log.INFO, "FunPack STAS",
                             f"manual alpha {live['alpha']:.2f} at block {block}")
-        live["alpha"], centre, held = DIAL.pick(rated_dial.history(taste.rows(KIND)))
+        live["alpha"], centre, held = DIAL.pick(rated_dial.history(taste.rows(KIND), {"b": block}))
         log.once(f"{ID}:state", log.INFO, "FunPack STAS",
                  f"key {taste.key!r}: learned alpha {centre:.2f} from {held} rating(s), trying "
                  f"{live['alpha']:.2f} at block {block}")
@@ -152,7 +152,7 @@ def install(patcher, values, key):
                      + (f"; {live['empty']} call(s) had no massive channel" if live["empty"] else ""))
             if not manual:
                 captured["v"] = torch.tensor(live["alpha"])
-                captured["e"] = torch.tensor(float(live["steered"]))
+                captured["b"] = torch.tensor(block)       # an alpha means something per block
         else:
             _say("Inactive | " + (live["why"] or f"no channel at block {block} is over "
                                   f"{MA_RATIO:.0f}x the mean, nothing steered -- try another block"))
@@ -177,7 +177,10 @@ def install(patcher, values, key):
         if where is None:
             live["why"] = "no step schedule to read, nothing steered"
             return {"img": out}
-        if where[0] >= first_steps(where[1]) or dit_hooks.weak_branch(to) or not live["per_frame"]:
+        if where[0] >= first_steps(where[1]):
+            return {"img": out}
+        if not live["per_frame"]:
+            live["why"] = "the picture's frame size was not seen (no latent shapes), nothing steered"
             return {"img": out}
         seq = int(out.shape[0])
         span = live["spans"].get(seq, "unset")

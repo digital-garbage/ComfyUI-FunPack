@@ -102,7 +102,7 @@ def install(patcher, values, key):
         if manual:
             return log.once(f"{ID}:state", log.INFO, "FunPack Late-branch guidance",
                             f"manual strength {live['w']:.2f}, branch at block {branch}")
-        live["w"], centre, held = DIAL.pick(rated_dial.history(taste.rows(KIND)))
+        live["w"], centre, held = DIAL.pick(rated_dial.history(taste.rows(KIND), {"b": branch}))
         log.once(f"{ID}:state", log.INFO, "FunPack Late-branch guidance",
                  f"key {taste.key!r}: learned {centre:.2f} from {held} rating(s), trying "
                  f"{live['w']:.2f}, branch at block {branch}")
@@ -165,9 +165,10 @@ def install(patcher, values, key):
             return normal
         video, rebuild = split_n
         guided = step.keep(normal, rebuild(mix(video, split_w[0], live["w"]).to(video.dtype)))
-        if not manual and steer.effect() is not None:
+        if not manual and steer.felt():          # a push too small to feel teaches nothing
             captured["v"] = torch.tensor(live["w"])
             captured["e"] = torch.tensor(steer.effect())
+            captured["b"] = torch.tensor(branch)       # a strength means something per branch block
         return guided
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)

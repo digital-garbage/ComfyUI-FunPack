@@ -173,6 +173,11 @@ PROBE = "funpack_probe"
 WEAK_BRANCH = "funpack_weak_branch"
 
 
+# Set by a wrapper that moves the latent's frame of reference (camera move) on the first call
+# it moves: an edit filed in the old frame must not be added to this call's input.
+FRAME_CHANGE = "funpack_frame_change"
+
+
 def weak_branch(transformer_options) -> bool:
     return bool((transformer_options or {}).get(WEAK_BRANCH))
 

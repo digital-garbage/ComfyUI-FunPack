@@ -171,3 +171,17 @@ def test_no_taste_key_is_off_and_says_so(tiny_h3):
     patched, _ = FunPackLoadModifiers.execute(tiny_h3.patcher, {"shot_memory": {"enabled": True}}).result
     assert any("Taste key" in e["message"] for e in log.history())
     assert not patched.wrappers.get(WrappersMP.SAMPLER_SAMPLE)
+
+
+def test_a_manual_amount_of_zero_is_a_fresh_run_not_a_recorded_reuse(tiny_h3):
+    from modules.system.taste import store
+    sample, outer = _load(tiny_h3, mode="manual", amount=0.95)
+    _go(sample, outer, _noise())
+    store.rate("run-1", "liked")
+    sample, outer = _load(tiny_h3, mode="manual", amount=0.0)
+    for _ in range(30):                                  # Thompson would draw a reuse often
+        import random
+        random.seed(_)
+        _go(sample, outer, _noise())
+        pending = store.ROOT / "fox" / "shot_memory.pending.pt"
+        assert int(torch.load(pending)["rows"]["parent"]) == -1

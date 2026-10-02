@@ -108,7 +108,7 @@ def test_learned_mode_banks_alpha_when_it_steered(tiny_h3, monkeypatch):
     _forward(tiny_h3, patched, wrap, outer, 0, torch.tensor([1.0, 0.8, 0.6, 0.4, 0.0]))
     assert store.rate("run-1", "liked")["recorded"] == ["stas"]
     row = store.load("fox", "stas")["rows"][0]["rows"]
-    assert 0.5 <= float(row["v"]) <= 3.0 and float(row["e"]) >= 1
+    assert 0.5 <= float(row["v"]) <= 3.0 and int(row["b"]) == 1
 
 
 def test_a_block_outside_the_model_is_refused_and_said(tiny_h3):

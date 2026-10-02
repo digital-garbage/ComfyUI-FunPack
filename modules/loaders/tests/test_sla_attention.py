@@ -338,3 +338,26 @@ def test_the_override_fires_and_returns_h3s_shape():
     assert (state["calls"], state["dense"]) == (1, 0)
     assert out.shape == (1, S, H * D)
     assert not torch.isnan(out).any()
+
+
+def test_a_throwaway_call_is_not_a_step_so_the_dense_window_stays_on_the_real_last_step():
+    """Late-branch guidance's weakened copy (and a seed-search probe) call the model between
+    real steps. Counting them slid the dense window onto the wrong call and left the real
+    final step sparse."""
+    state = sla.new_state()
+    w = sla.make_wrapper(state, 0.90, 64, 64, dense_last_steps=1)
+    real, weak = [], []
+
+    class Ex:
+        @staticmethod
+        def original(*a, **kw):
+            (weak if kw["transformer_options"].get("funpack_probe") else real).append(
+                kw["transformer_options"]["_funpack_sla_dense"])
+            return None
+
+    for i in range(4):
+        w(Ex, None, None, None, transformer_options={"sample_sigmas": [0.0] * 5}, minimax_payload=None)
+        if i < 3:
+            w(Ex, None, None, None, transformer_options={"sample_sigmas": [0.0] * 5, "funpack_probe": True},
+              minimax_payload=None)
+    assert real == [False, False, False, True]
