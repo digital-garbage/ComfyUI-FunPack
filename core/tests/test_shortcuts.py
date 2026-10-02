@@ -242,3 +242,37 @@ def test_import_refuses_what_holds_nothing_and_changes_nothing(store):
     with pytest.raises(ValueError):
         shortcuts.import_payload([{"triggers": ["a"]}], "bogus")
     assert [s.name for s in shortcuts.listing()] == ["Keep"]
+
+
+def test_a_bad_categories_shape_is_refused_before_anything_is_written(store):
+    shortcuts.save({"name": "Keep", "triggers": ["keep"], "replacements": ["k"]})
+    ok = [{"name": "A", "triggers": ["a"], "replacements": ["1"]}]
+    # a wrong-typed sub_categories is ignored, not exploded into letters or crashed on
+    assert shortcuts.import_payload({"shortcuts": ok, "categories": [{"name": "C", "sub_categories": 5}, {"name": "D", "sub_categories": "Wild"}]}, "replace") == 1
+    assert [s.name for s in shortcuts.listing()] == ["A"]
+    assert shortcuts.categories() == [{"name": "C", "sub_categories": []}, {"name": "D", "sub_categories": []}]
+
+
+def test_names_are_one_identity_everywhere(store):
+    shortcuts.save({"name": "Fox", "triggers": ["fox"], "replacements": ["a"]})
+    shortcuts.save({"name": "fox", "triggers": ["fox2"], "replacements": ["b"]})     # same shortcut, updated
+    assert [s.triggers for s in shortcuts.listing()] == [["fox2"]]
+    shortcuts.save({"name": "Cat", "triggers": ["cat"], "replacements": ["c"]})
+    with pytest.raises(ValueError):                       # a rename onto an existing name
+        shortcuts.save({"name": "CAT", "triggers": ["cat"], "replacements": ["c"]}, original_name="fox")
+    assert sorted(s.name for s in shortcuts.listing()) == ["Cat", "fox"]
+
+
+def test_import_counts_what_was_stored_and_the_key_names_a_nameless_row(store):
+    data = {"shortcuts": {"Alpha": {"name": "", "triggers": ["x", "y"]},
+                          "b": {"triggers": ["x", "z"]}, "b2": {"name": "B", "triggers": ["q"]}}}
+    assert shortcuts.import_payload(data) == 2            # "b" and "B" are one name: the later row wins
+    assert sorted(s.name for s in shortcuts.listing()) == ["Alpha", "B"]
+
+
+def test_odd_types_never_become_their_repr(store):
+    shortcuts.save({"name": "T", "triggers": "a, b;c", "replacements": [{"a": 1}, "ok"], "category": 5, "sub_category": ["x"]})
+    s = shortcuts.listing()[0]
+    assert s.triggers == ["a", "b", "c"] and s.replacements == ["ok"] and (s.category, s.sub_category) == ("", "")
+    with pytest.raises(ValueError):
+        shortcuts.add_category(5)

@@ -9,11 +9,8 @@ case where only part of the library is ever read or written.
 The expansion algorithm (trigger regex, longest-first, seeded multi-choice) and
 `$variable` resolution (recursive, cycle-safe, undefined -> literal) are a
 close port of v4's `templates.py` (`apply_prompt_shortcuts`/`resolve_variables`)
--- proven logic, not reinvented. Not ported: the shortcut revolver's
-no-repeat cycling (a stateful commit-vs-preview split) and managed category
-lists (empty categories kept around for a picker to offer) -- both are real
-v4 features, cut here to keep this a first pass rather than a rewrite of
-the whole prompt-craft surface at once.
+-- proven logic, not reinvented. Not ported yet: the shortcut revolver's
+no-repeat cycling (a stateful commit-vs-preview split).
 """
 
 from __future__ import annotations
@@ -31,6 +28,14 @@ _LOCK = threading.Lock()
 
 MAX_NAME = 120
 MAX_ITEM = 4096
+
+
+def _as_list(raw):
+    """A string is one comma/semicolon/newline separated list (hand-written v4
+    files); anything that is not a list or string is nothing, never its repr."""
+    if isinstance(raw, str):
+        return re.split(r"[,;\n]+", raw)
+    return [x for x in raw if isinstance(x, (str, int, float))] if isinstance(raw, list) else []
 
 
 def _clean_list(raw, *, keep_empty=False) -> list[str]:
@@ -72,15 +77,15 @@ class Shortcut:
     def from_dict(d) -> "Shortcut":
         d = d if isinstance(d, dict) else {}
         # v4 files spelled these differently; an import must read them.
-        triggers = _clean_list(d.get("triggers", d.get("activation_words", d.get("activation"))))
+        triggers = _clean_list(_as_list(d.get("triggers", d.get("activation_words", d.get("activation")))))
         name = str(d.get("name") or "").strip()[:MAX_NAME] or (triggers[0] if triggers else "")
         return Shortcut(
             name=name,
             triggers=triggers,
-            replacements=_clean_list(d.get("replacements", d.get("replacement")), keep_empty=True),
+            replacements=_clean_list(_as_list(d.get("replacements", d.get("replacement"))), keep_empty=True),
             enabled=bool(d.get("enabled", True)),
-            category=str(d.get("category") or "").strip()[:MAX_NAME],
-            sub_category=str(d.get("sub_category") or "").strip()[:MAX_NAME],
+            category=_label(d.get("category")),
+            sub_category=_label(d.get("sub_category")),
         )
 
     def to_dict(self) -> dict:
@@ -123,8 +128,12 @@ def save(payload: dict, original_name: str | None = None) -> list[Shortcut]:
         raise ValueError("a shortcut needs at least one trigger")
     with _LOCK:
         items = listing()
+        same = lambda a, b: a.lower() == b.lower()  # noqa: E731 -- one identity rule, shared with import
         idx = next((i for i, it in enumerate(items)
-                    if it.name == (original_name or item.name)), None)
+                    if same(it.name, original_name or item.name)), None)
+        clash = next((i for i, it in enumerate(items) if same(it.name, item.name)), None)
+        if clash is not None and clash != idx:
+            raise ValueError(f"a shortcut named {items[clash].name!r} already exists")
         if idx is None:
             items.append(item)
         else:
@@ -150,6 +159,8 @@ def clear() -> list[Shortcut]:
 # --- categories --------------------------------------------------------------
 
 def _label(v) -> str:
+    if not isinstance(v, str):
+        return ""
     return re.sub(r"\s+", " ", str(v or "").strip())[:MAX_NAME]
 
 
@@ -218,34 +229,46 @@ def import_payload(data, mode: str = "merge") -> int:
     name-keyed object, plus categories). `merge` keeps what is here and
     replaces same-named entries; `replace` starts from the file alone.
     Entries without a trigger are skipped, not fatal -- one bad row in a
-    long library is not a reason to refuse the rest. Returns how many were read."""
+    long library is not a reason to refuse the rest. Everything is read and
+    checked BEFORE anything is written, so a refused file changes nothing.
+    Returns how many shortcuts the library gained or updated."""
     if mode not in ("merge", "replace"):
         raise ValueError("mode is merge or replace")
     raw = data.get("shortcuts") if isinstance(data, dict) else data
     if isinstance(raw, dict):
-        raw = [dict({"name": k}, **v) if isinstance(v, dict) else v for k, v in raw.items()]
+        # v4 keyed by name and let the key stand in for a row's own empty name.
+        raw = [dict(v, name=v.get("name") or k) if isinstance(v, dict) else v for k, v in raw.items()]
     if not isinstance(raw, list):
         raise ValueError("that file holds no shortcuts")
-    read = [s for s in (Shortcut.from_dict(r) for r in raw) if s.triggers]
+    read: dict[str, Shortcut] = {}
+    for r in raw:
+        s = Shortcut.from_dict(r)
+        if s.triggers:
+            read[s.name.lower()] = s      # a name twice in one file: the later row wins
     if not read:
         raise ValueError("that file holds no shortcut with a trigger")
+    wanted: list[dict] = []
+    for c in (data.get("categories") if isinstance(data, dict) else None) or []:
+        c = {"name": c} if isinstance(c, str) else c
+        if isinstance(c, dict):
+            _union(wanted, c.get("name"))
+            subs = c.get("sub_categories")
+            for sub in subs if isinstance(subs, list) else []:
+                _union(wanted, c.get("name"), sub)
     with _LOCK:
         items = [] if mode == "replace" else listing()
-        for s in read:
+        for s in read.values():
             i = next((i for i, it in enumerate(items) if it.name.lower() == s.name.lower()), None)
             if i is None:
                 items.append(s)
             else:
                 items[i] = s
-        _save_all(items)
         cats = [] if mode == "replace" else _saved_categories()
-        for c in (data.get("categories") if isinstance(data, dict) else None) or []:
-            if isinstance(c, str):
-                c = {"name": c}
-            if isinstance(c, dict):
-                _union(cats, c.get("name"))
-                for sub in c.get("sub_categories") or []:
-                    _union(cats, c.get("name"), sub)
+        for c in wanted:
+            _union(cats, c["name"])
+            for sub in c["sub_categories"]:
+                _union(cats, c["name"], sub)
+        _save_all(items)
         _save_categories(cats)
     return len(read)
 

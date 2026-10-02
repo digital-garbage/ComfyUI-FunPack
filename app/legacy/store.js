@@ -3699,13 +3699,19 @@
           seed: Math.floor(Math.random() * 2 ** 31) || 1,
         }),
       });
-      const expanded = res.ok ? (await res.json()).text : text;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const expanded = (await res.json()).text;
       raw[found.slot.id] = { ...(raw[found.slot.id] || {}), [found.role.input]: expanded };
     } catch (_) {
-      // The literal typed text still queues — the run just runs without
-      // anchor/shortcuts/$variables applied, rather than being blocked by a
-      // prompt-craft feature failing.
-      raw[found.slot.id] = { ...(raw[found.slot.id] || {}), [found.role.input]: text };
+      // The literal words still queue -- with the anchor and postfix joined on, as the
+      // server would have -- rather than a prompt-craft feature blocking the run. Shortcuts
+      // and $variables are NOT applied, and the person is told so.
+      const p = state.project;
+      const literal = [(p.anchor || "").trim(), text, p.postfix_enabled ? (p.postfix || "").trim() : ""]
+        .filter(Boolean).join(" ");
+      raw[found.slot.id] = { ...(raw[found.slot.id] || {}), [found.role.input]: literal };
+      state.notice = "Could not reach the prompt expander: this run uses your words as typed, without shortcuts or $variables.";
+      notify();
     }
     return { raw, unwiredNotice };
   }
