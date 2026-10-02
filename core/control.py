@@ -1,0 +1,193 @@
+"""Which modules run: the project's own switch, and a module's persistent quarantine.
+
+A module that raises mid-run is dropped for that run (core/patching.py). That alone leaves a
+faulty module to fail again on every generation, so a fault is also written down here and the
+module stays OFF until it is repaired -- its code changed -- or the person turns it back on.
+The project's switch is the person's own: a module they turned off vanishes for that project.
+
+Only modules that MODIFY a run can be switched (they provide `modifier` or `sampler_modifier`).
+Loaders, the sampler and the like are structure: a pipeline without them is not a pipeline.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Dict, Iterable, List, Tuple
+
+from . import config, log, patching
+
+#: Keys of the settings payload that are not module ids.
+RESERVED = frozenset({"_off"})
+
+_TRANSIENT = ("Interrupt", "OutOfMemory", "OOM")        # not the module's fault: say nothing, remember nothing
+_lock = threading.Lock()
+
+
+def controllable(spec) -> bool:
+    return bool(spec.provides.get("modifier") or spec.provides.get("sampler_modifier"))
+
+
+def off_by_project(settings) -> set:
+    """Module ids the project turned off, read from the settings payload."""
+    raw = settings.get("_off") if isinstance(settings, dict) else None
+    ids = raw.get("modules") if isinstance(raw, dict) else None
+    return {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else set()
+
+
+def bad_off(raw) -> str | None:
+    """Why a payload's `_off` entry is malformed, or None."""
+    if raw is None:
+        return None
+    ids = raw.get("modules") if isinstance(raw, dict) else None
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        return '"_off" must be {"modules": ["module_id", ...]}'
+    return None
+
+
+# --- the quarantine file ---------------------------------------------------
+
+
+def _file() -> Path:
+    return Path(config.QUARANTINE_FILE)
+
+
+def _read() -> Dict[str, dict]:
+    try:
+        raw = json.loads(_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)} if isinstance(raw, dict) else {}
+
+
+def _write(entries: Dict[str, dict]) -> None:
+    path = _file()
+    tmp = path.with_suffix(".tmp")
+    try:
+        if not entries:
+            path.unlink(missing_ok=True)
+            return
+        tmp.write_text(json.dumps(entries, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("module control", f"could not write {path.name}: {exc}. The module is off for this "
+                                      f"session only.")
+
+
+def signature(spec) -> str:
+    """Changes when the module's code does: that is what "repaired" means."""
+    mod = sys.modules.get(spec.source)
+    base = Path(getattr(mod, "__file__", "") or "").parent
+    parts = []
+    if base.is_dir():
+        for p in sorted(base.rglob("*.py")):
+            if "tests" in p.parts or "__pycache__" in p.parts:
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            parts.append(f"{p.name}:{st.st_mtime_ns}:{st.st_size}")
+    return "|".join(parts)
+
+
+def quarantined(specs: Iterable = ()) -> Dict[str, dict]:
+    """{module id: {reason, when}} for modules still quarantined. One whose code has changed since
+    it failed is released here, and said."""
+    by_id = {s.id: s for s in specs}
+    with _lock:
+        entries = _read()
+        kept = {}
+        for mid, entry in entries.items():
+            spec = by_id.get(mid)
+            if spec is not None and entry.get("sig") and entry["sig"] != signature(spec):
+                log.info("module control", f"{mid} was changed since it failed: trying it again.")
+                continue
+            kept[mid] = entry
+        if kept != entries:
+            _write(kept)
+    return kept
+
+
+def quarantine(spec, reason: str) -> None:
+    with _lock:
+        entries = _read()
+        if spec.id in entries:
+            return
+        entries[spec.id] = {"reason": str(reason)[:400], "when": time.strftime("%Y-%m-%d %H:%M"),
+                            "sig": signature(spec)}
+        _write(entries)
+    log.alert("module control", f"{spec.id} failed and is now OFF until it is repaired or you turn it "
+                                f"back on (Settings ▸ Modules): {reason}")
+
+
+def release(module_id: str) -> bool:
+    with _lock:
+        entries = _read()
+        if module_id not in entries:
+            return False
+        del entries[module_id]
+        _write(entries)
+    return True
+
+
+def fault(key: str, exc: BaseException) -> None:
+    """Called by core/patching.Dropped when a module's hook raised. Faults that are not the module's
+    (an interrupt, running out of memory) are left alone."""
+    if any(t in type(exc).__name__ for t in _TRANSIENT):
+        return
+    mid = key[len("funpack."):].split(".")[0] if key.startswith("funpack.") else None
+    if not mid:
+        return
+    from . import registry
+    spec = registry.current().specs.get(mid)
+    if spec is not None and controllable(spec):
+        quarantine(spec, f"{type(exc).__name__}: {exc}")
+
+
+patching.on_fault = fault
+
+
+def start_failed(spec, exc: BaseException) -> None:
+    """A module that raised while installing or starting up for a run."""
+    if controllable(spec) and not any(t in type(exc).__name__ for t in _TRANSIENT):
+        quarantine(spec, f"{type(exc).__name__}: {exc}")
+
+
+# --- what a run uses -------------------------------------------------------
+
+
+def partition(specs: Iterable, settings) -> Tuple[List, List[str]]:
+    """(kept, notes): `specs` without the ones the project turned off or that are quarantined."""
+    specs = list(specs)
+    off = off_by_project(settings)
+    held = quarantined(specs)
+    kept, notes = [], []
+    for spec in specs:
+        if controllable(spec):
+            if spec.id in off:
+                notes.append(f"{spec.id}: turned off for this project")
+                continue
+            if spec.id in held:
+                notes.append(f"{spec.id}: OFF -- it failed on {held[spec.id].get('when', '?')} "
+                             f"({held[spec.id].get('reason', '')}). Turn it back on in Settings ▸ Modules.")
+                continue
+        kept.append(spec)
+    return kept, notes
+
+
+def fingerprint() -> str:
+    """Part of a node's cache key: a module going into or out of quarantine changes what a run does."""
+    return ",".join(sorted(_read()))
+
+
+def state(specs: Iterable) -> Dict[str, dict]:
+    """What the Modules panel shows: {id: {controllable, quarantine?}} for every module."""
+    specs = list(specs)
+    held = quarantined(specs)
+    return {s.id: {"controllable": controllable(s), **({"quarantine": held[s.id]} if s.id in held else {})}
+            for s in specs}

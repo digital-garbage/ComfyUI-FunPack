@@ -239,3 +239,26 @@ test("a refused restore leaves the pipeline as it is", async () => {
   assert.deepStrictEqual(res.refused, ["no"]);
   assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "changed");
 });
+
+test("a module switched off is remembered with the settings, listed as off, and can be switched back on", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.ensureLoaded();
+  global.window.MovieEditorAPI.modules = async () => ({ modules: [{ id: "sharpen", settings: {} }, { id: "alg", settings: {} }], control: {} });
+  await PS.refreshControl();
+  await PS.setOff("sharpen", true);
+  assert.strictEqual(PS.isOff("sharpen"), true);
+  assert.strictEqual(PS.isOff("alg"), false);
+  assert.deepStrictEqual(posts.at(-1).values._off, { modules: ["sharpen"] });
+  await PS.setOff("alg", true);
+  await PS.setOff("sharpen", false);
+  assert.deepStrictEqual(posts.at(-1).values._off, { modules: ["alg"] });
+});
+
+test("a project opened after another does not inherit the first one's pending switch", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  await PS.setOff("sharpen", true);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } }]);
+  assert.strictEqual(PS.isOff("sharpen"), false);
+});

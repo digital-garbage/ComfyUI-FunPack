@@ -111,6 +111,10 @@ def _strip_options(options: dict, prefix: str) -> int:
 # this" and "this happened", so it is said once, with the traceback, and carried
 # in the run's status.
 
+#: Set by core/control.py: told when a module's hook raised, so the fault outlives the run.
+on_fault = None
+
+
 class Dropped:
     """What was disabled during a run, and why. One per run, not per process."""
 
@@ -118,9 +122,10 @@ class Dropped:
         self.reasons: dict = {}
 
     def clear(self) -> None:
-        """Forget what was dropped. Called when a generation starts, because a
-        modifier that failed on the last one deserves its chance at this one --
-        and because ComfyUI's cache hands the same object to both."""
+        """Forget what was dropped. Called when a generation starts: this run's record starts
+        empty (a module that FAILED also stays off across runs: that is
+        core/control.py's quarantine, not this record) -- and because ComfyUI's cache hands the same
+        object to both."""
         self.reasons.clear()
 
     def record(self, key: str, exc: BaseException) -> bool:
@@ -128,6 +133,11 @@ class Dropped:
         if key in self.reasons:
             return False
         self.reasons[key] = f"{type(exc).__name__}: {exc}"
+        if on_fault is not None:
+            try:
+                on_fault(key, exc)
+            except Exception:                    # noqa: BLE001 -- bookkeeping must not end a run
+                pass
         return True
 
     def __contains__(self, key) -> bool:

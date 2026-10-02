@@ -418,6 +418,7 @@
       document.body.appendChild(link); link.click(); link.remove();
       URL.revokeObjectURL(url);
     },
+    releaseModule: (id) => j("POST", API("/api/control/release"), { id }),
     deleteRefinementKey: (key) => j("DELETE", API(`/api/m/taste/keys/${encodeURIComponent(key)}`)),
     absoluteStoreInfo: () => unsupported("refinement keys are not built in v5 yet"),
     clearAbsoluteStore: () => unsupported("refinement keys are not built in v5 yet"),

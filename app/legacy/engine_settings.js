@@ -37,7 +37,7 @@
 
   function categoriesWithContent() {
     const found = new Set();
-    Object.values(PS.modulesById()).forEach((m) => {
+    PS.activeModules().forEach((m) => {
       if (Object.keys(m.settings || {}).length) found.add(m.category || "");
     });
     return CATEGORY_ORDER.filter((c) => found.has(c));
@@ -58,7 +58,7 @@
     }
     if (!category || !cats.includes(category)) category = cats[0];
 
-    const modulesInCategory = Object.values(PS.modulesById())
+    const modulesInCategory = PS.activeModules()
       .filter((m) => (m.category || "") === category && Object.keys(m.settings || {}).length);
 
     const notes = PS.saveNotes();

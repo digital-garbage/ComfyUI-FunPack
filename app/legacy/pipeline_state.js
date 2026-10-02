@@ -58,6 +58,7 @@
     const manifest = await API.modules(traits ? traits.join(",") : undefined);
     modulesById = {};
     (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
+    controlState = manifest.control || controlState;
     lastProbedFile = file;                              // only once it worked: a failed probe is tried again
   }
   let incomplete = [];
@@ -85,7 +86,7 @@
   // session already knows is installed, so an unrelated node's incidentally
   // JSON-shaped string can't inject a bogus entry that round-trips forever.
   function valuesAlreadyPlaced() {
-    const known = new Set(Object.keys(modulesById));
+    const known = new Set([...Object.keys(modulesById), "_off"]);    // _off: the modules this project turned off
     const merged = {};
     (slots || []).forEach((slot) => {
       Object.values(slot.inputs || {}).forEach((v) => {
@@ -231,7 +232,9 @@
     Object.keys(pendingValues).forEach((moduleId) => {
       const pend = pendingValues[moduleId];
       const real = already[moduleId] || {};
-      Object.keys(pend).forEach((name) => { if (real[name] === pend[name]) delete pend[name]; });
+      Object.keys(pend).forEach((name) => {
+        if (real[name] === pend[name] || (typeof pend[name] === "object" && JSON.stringify(real[name]) === JSON.stringify(pend[name]))) delete pend[name];
+      });
       if (!Object.keys(pend).length) delete pendingValues[moduleId];
     });
   }
@@ -259,6 +262,27 @@
       merged[moduleId] = { ...(merged[moduleId] || {}), ...own };
     });
     return merged;
+  }
+
+  // Which modules this project turned off (a reserved entry of the same settings tree), and which
+  // the server has quarantined after a fault. Neither shows in Engine settings or the quick bar.
+  let controlState = {};
+  function isOff(id) {
+    const off = (currentValues()._off || {}).modules;
+    return Array.isArray(off) && off.includes(id);
+  }
+  function setOff(id, off) {
+    const cur = new Set(((currentValues()._off || {}).modules) || []);
+    if (off) cur.add(id); else cur.delete(id);
+    return setModuleValue("_off", "modules", [...cur]);
+  }
+  async function refreshControl() {
+    try { controlState = (await API.modules()).control || {}; } catch (_) { /* keeps the last answer */ }
+    return controlState;
+  }
+  function isQuarantined(id) { return !!(controlState[id] && controlState[id].quarantine); }
+  function activeModules() {
+    return Object.values(modulesById).filter((m) => !isOff(m.id) && !isQuarantined(m.id));
   }
 
   // Patch ONE field and save the WHOLE tree. place() (core/graph.py) writes
@@ -449,6 +473,7 @@
     }).concat(extras ? saved.filter((s) => sound(s) && !have.has(s.id)) : []);
     // Replaces whatever pipeline was live: nothing queued for the old one may land on the new.
     const mine = ++epoch;
+    pendingValues = {};                                 // the new project's values win, not an edit made to the old one
     removed = new Set(gone);
     unwired = {};
     Object.entries(unwiredMap && typeof unwiredMap === "object" ? unwiredMap : {}).forEach(([id, list]) => {
@@ -482,6 +507,7 @@
   window.PipelineState = {
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
+    activeModules, isOff, setOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),
     slots: () => slots,

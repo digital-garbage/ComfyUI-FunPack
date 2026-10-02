@@ -8,7 +8,7 @@ thin adapters over pure functions in `serve`.
 import asyncio
 import json
 
-from . import (backend_log, config, graph as graph_mod, log, media, nodes_manager, probe as probe_mod,
+from . import (backend_log, config, control as control_mod, graph as graph_mod, log, media, nodes_manager, probe as probe_mod,
                projects,
                prompt_build,
                settings_card,
@@ -141,6 +141,8 @@ def manifest(traits=None):
         "incompatible": [
             {"id": spec.id, "requires": spec.requires} for spec in incompatible
         ],
+        # Which modules the person can switch, and which are quarantined after a fault.
+        "control": control_mod.state(ordered),
     }
 
 
@@ -172,6 +174,18 @@ def register(routes, prefix=None):
         raw = req.query.get("traits")
         traits = [t for t in raw.split(",") if t] if raw is not None else None
         return web.json_response(manifest(traits))
+
+    @routes.post(P + "/api/control/release")
+    async def _control_release(req):
+        """Turn a quarantined module back on: {"id": "<module id>"}."""
+        try:
+            body = await req.json()
+        except ValueError:
+            body = None
+        mid = body.get("id") if isinstance(body, dict) else None
+        if not isinstance(mid, str) or mid not in modules().specs:
+            return web.json_response({"detail": "Name a module that is installed."}, status=400)
+        return web.json_response({"released": control_mod.release(mid)})
 
     def _pipeline():
         """Whatever module offers a default pipeline, or nothing.

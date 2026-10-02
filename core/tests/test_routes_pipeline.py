@@ -515,3 +515,19 @@ def test_a_module_provided_preset_is_offered(server, registered):
     preset = next(p for p in body["presets"] if p["id"] == "minimax_h3_reference_to_video")
     assert preset["module"] == "model_minimax_h3"
     assert preset["slots"]
+
+
+def test_the_manifest_says_which_modules_can_be_switched_and_a_quarantined_one_can_be_released(server):
+    from core import control, registry
+    status, body = _request(server, "GET", "/funpack/api/modules")
+    assert status == 200 and body["control"]
+    sharp = registry.current().specs["sharpen"]
+    assert body["control"]["sharpen"]["controllable"] is True
+    control.quarantine(sharp, "RuntimeError: boom")
+    _, body = _request(server, "GET", "/funpack/api/modules")
+    assert body["control"]["sharpen"]["quarantine"]["reason"].endswith("boom")
+    status, body = _request(server, "POST", "/funpack/api/control/release", {"id": "sharpen"})
+    assert (status, body) == (200, {"released": True})
+    _, body = _request(server, "GET", "/funpack/api/modules")
+    assert "quarantine" not in body["control"]["sharpen"]
+    assert _request(server, "POST", "/funpack/api/control/release", {"id": "nope"})[0] == 400

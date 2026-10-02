@@ -39,3 +39,6 @@ SHORTCUT_CATEGORIES_FILE = ROOT / "shortcut_categories.json"
 # The words that cut a story into scenes (core/story.py). Global for the same
 # reason the shortcut library is.
 MARKERS_FILE = ROOT / "markers.json"
+
+# Modules that failed and stay off until repaired (core/control.py). State, so beside the library.
+QUARANTINE_FILE = ROOT / "quarantine.json"

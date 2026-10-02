@@ -29,7 +29,7 @@
   }
 
   function samplingModules() {
-    return Object.values(PS.modulesById())
+    return PS.activeModules()
       .filter((m) => (m.category || "") === "sampling" && Object.keys(m.settings || {}).length);
   }
 

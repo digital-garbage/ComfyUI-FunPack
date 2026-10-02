@@ -36,6 +36,7 @@ app/playwright-report/
 /media/
 /shortcuts.json
 /markers.json
+/quarantine.json
 /shortcut_categories.json
 /shortcut_revolver.json
 

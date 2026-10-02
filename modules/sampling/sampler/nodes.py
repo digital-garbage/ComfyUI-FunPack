@@ -27,7 +27,7 @@ import torch
 from comfy_api.latest import io
 
 from ..._core import chain as chain_mod, log, patching, registry as registry_mod, run as run_mod
-from ..._core import relations as relations_mod, schema as schema_mod, traits as traits_mod
+from ..._core import control as control_mod, relations as relations_mod, schema as schema_mod, traits as traits_mod
 
 # The hook points this sampler offers. A modifier asking for anything else is
 # absent and said, rather than half-running.
@@ -201,6 +201,7 @@ class FunPackSampler(io.ComfyNode):
 
         offering = [s for s in specs if s.provides.get("sampler_modifier")]
         compatible, incompatible = traits_mod.split(offering, available)
+        compatible, switched = control_mod.partition(compatible, settings)
         ordered, rejected = relations_mod.order(compatible)
 
         guards_off = any(answer(settings or {}) for _spec, answer
@@ -218,7 +219,7 @@ class FunPackSampler(io.ComfyNode):
             notes.append(f"{spec.id}: needs {', '.join(traits_mod.missing_for(spec, available))}")
         for spec, why in rejected:
             notes.append(f"{spec.id}: {why}")
-        return chain, notes
+        return chain, notes + switched
 
     @classmethod
     def _with_chain(cls, sampler, chain, sigmas, run):

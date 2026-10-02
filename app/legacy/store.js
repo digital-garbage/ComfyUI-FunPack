@@ -3684,6 +3684,7 @@
         const mediaList = [...(images || []), ...(audio || [])]
           .map((f) => ({ ...f, kind: _kindForFilename(f.filename) }));
         if (mediaList.length && _genRunSceneIds.length) _recordSegment(mediaList, _genRunSceneIds, { promptId });
+        _announceQuarantine();
         if (getEditorSetting("upscaleMode") === "always") upscaleMedia(mediaList.find((m) => m.kind === "videos"));
         set({
           gen: {
@@ -3692,6 +3693,7 @@
           },
         });
       } else if (phase === "failed") {
+        _announceQuarantine();
         set({
           gen: {
             state: "error", promptId, media: [],
@@ -4693,6 +4695,21 @@
     } catch (e) {
       set({ gen: { state: "error", promptId: null, media: [], msg: "Render failed: " + _friendlyGenError(e.message) } });
     }
+  }
+
+  // A module that failed during a run is now off for good (until repaired): say which, once.
+  const _quarantineSeen = new Set();
+  async function _announceQuarantine() {
+    const PS = window.PipelineState;
+    if (!PS || !PS.refreshControl) return;
+    const control = await PS.refreshControl();
+    const fresh = Object.entries(control).filter(([id, c]) => c.quarantine && !_quarantineSeen.has(id));
+    if (!fresh.length) return;
+    fresh.forEach(([id]) => _quarantineSeen.add(id));
+    const title = (id) => (PS.modulesById()[id] || {}).title || id;
+    state.notice = fresh.map(([id, c]) => `${title(id)} failed and is now off (${c.quarantine.reason}). `
+      + `Turn it back on in Settings ▸ Modules once it is repaired.`).join(" ");
+    notify();
   }
 
   // ── pluggable models / exposed controls ──────────────────────────────────────

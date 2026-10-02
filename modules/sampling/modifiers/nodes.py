@@ -33,7 +33,7 @@ import json
 
 from comfy_api.latest import io
 
-from ..._core import (log, patching, registry as registry_mod,
+from ..._core import (control as control_mod, log, patching, registry as registry_mod,
                       relations as relations_mod, run as run_mod,
                       schema as schema_mod)
 
@@ -120,6 +120,11 @@ class FunPackModifierSettings(io.ComfyNode):
         specs = registry_mod.current().specs
         problems = []
         for module_id, values in raw.items():
+            if module_id in control_mod.RESERVED:
+                said = control_mod.bad_off(values)
+                if said:
+                    problems.append(said)
+                continue
             spec = specs.get(module_id)
             if spec is None:
                 problems.append(f"no module named {module_id!r} is installed")
@@ -152,6 +157,13 @@ class FunPackModifierSettings(io.ComfyNode):
         guards_off = cls._guards_off(raw)
         problems, checked = [], {}
         for module_id, values in raw.items():
+            if module_id in control_mod.RESERVED:
+                said = control_mod.bad_off(values)
+                if said:
+                    problems.append(said)
+                else:
+                    checked[module_id] = values
+                continue
             spec = specs.get(module_id)
             if spec is None:
                 # Silently ignoring it is how v4 accumulated settings that meant
@@ -192,8 +204,9 @@ class FunPackLoadModifiers(io.ComfyNode):
 
     @classmethod
     def fingerprint_inputs(cls, **_):
-        return "|".join(f"{spec.id}={answer()}"
-                        for spec, answer in registry_mod.current().providers(CACHE_KEY))
+        return "|".join([f"{spec.id}={answer()}"
+                         for spec, answer in registry_mod.current().providers(CACHE_KEY)]
+                        + ["quarantine=" + control_mod.fingerprint()])
 
     @classmethod
     def execute(cls, model, settings=None) -> io.NodeOutput:
@@ -214,6 +227,7 @@ class FunPackLoadModifiers(io.ComfyNode):
 
         offering = [spec for spec in specs if spec.provides.get(CAPABILITY)]
         compatible, incompatible = traits_mod.split(offering, available)
+        compatible, switched = control_mod.partition(compatible, settings)
         ordered, rejected = order(compatible)
 
         patched = model.clone()
@@ -241,6 +255,7 @@ class FunPackLoadModifiers(io.ComfyNode):
                          "these settings are yours.")
         if stripped:
             notes.append(f"replaced {stripped} modifier(s) already on this model")
+        notes.extend(switched)
 
         # Checked HERE, not only where the payload was made. A FUNPACK_SETTINGS
         # socket is typed by a string tag, so a dict can reach this node without
@@ -270,6 +285,7 @@ class FunPackLoadModifiers(io.ComfyNode):
                 # Absent, and said out loud. A modifier that half-installed and
                 # carried on is how a run silently stops meaning what it says.
                 log.broke(f"{spec.id}.{CAPABILITY}", exc, "installing itself")
+                control_mod.start_failed(spec, exc)
                 notes.append(f"{spec.id}: failed to install -- {type(exc).__name__}: {exc}")
                 continue
             if note is None:

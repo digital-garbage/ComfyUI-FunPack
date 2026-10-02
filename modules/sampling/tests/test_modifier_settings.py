@@ -156,3 +156,13 @@ def test_validation_catches_the_same_things_execution_would(registry, payload, e
 
     with pytest.raises(RuntimeError):
         _run(payload)
+
+
+def test_the_projects_off_list_passes_through_and_is_not_mistaken_for_a_module(registry):
+    out, _status = _run('{"alg": {"enabled": true}, "_off": {"modules": ["sharpen"]}}')
+    assert out["_off"] == {"modules": ["sharpen"]} and out["alg"]["enabled"] is True
+
+
+def test_a_malformed_off_list_is_refused_with_a_reason(registry):
+    with pytest.raises(RuntimeError, match="modules"):
+        _run('{"_off": ["sharpen"]}')

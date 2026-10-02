@@ -159,3 +159,10 @@ def packed_av(video, audio):
 def unpacked(x, latent_shapes):
     import comfy.utils
     return comfy.utils.unpack_latents(x, latent_shapes)
+
+
+@pytest.fixture(autouse=True)
+def _quarantine_in_tmp(tmp_path, monkeypatch):
+    """A test that makes a module fail must never write the real quarantine file."""
+    from core import config
+    monkeypatch.setattr(config, "QUARANTINE_FILE", tmp_path / "quarantine.json")

@@ -136,9 +136,30 @@ def test_the_record_is_per_run_not_per_process(patcher):
         hook(_pre_cfg_args([torch.randn(1, 4, 8, 16, 16), torch.randn(1, 4, 8, 16, 16)]))
         return patched.funpack_dropped
 
-    first, second = run(), run()
+    from core import control
+    first = run()
+    assert control.release("sharpen")            # a fault is also remembered across runs: see core/tests/test_control.py
+    second = run()
     assert first is not second
     assert "funpack.sharpen" in first and "funpack.sharpen" in second
+
+
+def test_a_module_that_failed_stays_off_for_the_next_generation_until_turned_back_on(patcher):
+    import torch
+    from core import control
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+
+    values = {"sharpen": {"enabled": True, "amount": 0.4}}
+    first, _ = FunPackLoadModifiers.execute(patcher, settings=values).result
+    first.model_options["sampler_pre_cfg_function"][0](
+        _pre_cfg_args([torch.randn(1, 4, 8, 16, 16), torch.randn(1, 4, 8, 16, 16)]))
+    assert "sharpen" in control.quarantined(__import__("core.registry", fromlist=["x"]).current().specs.values())
+    second, status = FunPackLoadModifiers.execute(patcher, settings=values).result
+    assert "sampler_pre_cfg_function" not in second.model_options
+    assert "sharpen: OFF" in status and "Settings ▸ Modules" in status
+    control.release("sharpen")
+    third, _ = FunPackLoadModifiers.execute(patcher, settings=values).result
+    assert "sampler_pre_cfg_function" in third.model_options
 
 
 def test_a_hook_shape_with_no_known_neutral_result_is_named(patcher):
@@ -207,6 +228,8 @@ def test_the_guards_are_on_unless_asked_otherwise(patcher):
         original = video[0].clone()
         out = hook(_pre_cfg_args(video))          # must not raise
         assert torch.equal(out[0], original)
+        from core import control
+        control.release("sharpen")                # it faulted on purpose; each case starts with it on
 
 
 def test_is_on_reads_the_switch_the_same_way_everywhere():
