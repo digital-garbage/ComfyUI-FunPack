@@ -182,6 +182,21 @@ def duration(path: str) -> float | None:
     return 0.0 if proc.returncode == 0 else None
 
 
+def dimensions(path: str) -> tuple[int, int] | None:
+    """(width, height) of the first video stream, or None."""
+    probe = shutil.which("ffprobe")
+    if not probe:
+        return None
+    proc = subprocess.run([probe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                           "stream=width,height", "-of", "csv=p=0:s=x", path],
+                          capture_output=True, text=True)
+    try:
+        w, h = proc.stdout.strip().split("x")[:2]
+        return (int(w), int(h)) if int(w) > 0 and int(h) > 0 else None
+    except ValueError:
+        return None
+
+
 def frame_rate(path: str) -> str | None:
     """The first video stream's rate as ffprobe spells it ("25/1"), or None."""
     probe = shutil.which("ffprobe")

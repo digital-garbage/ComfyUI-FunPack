@@ -317,3 +317,16 @@ def test_an_audio_lane_whose_file_has_no_sound_is_left_out_and_said(comfy):
     proj = projects.Project(width=160, height=120, audio_tracks=[{"id": "t", "kind": "separated", "scene_id": "s1"}])
     out = stitch.render(proj, [clip("quiet.mp4", dur=1.0, scene_id="s1")])
     assert any("audio lane" in w for w in out["warnings"])
+
+
+@needs_ffmpeg
+def test_the_render_is_made_at_the_clips_own_size_not_the_projects(comfy):
+    make_clip(comfy.output / "a.mp4", 1.0, size="160x120")
+    make_clip(comfy.output / "b.mp4", 1.0, size="96x96")
+    spec = lambda name, **k: clip(name, dur=1.0, w=100, h=100, **k)          # noqa: E731  (scene settings say 100x100)
+    size = lambda proj, clips: probe(comfy.temp / stitch.render(proj, clips)["media"]["filename"])[1:3]   # noqa: E731
+    clips = [spec("a.mp4", scene_id="s1"), spec("b.mp4", scene_id="s2")]
+    assert size(projects.Project(width=100, height=100), clips) == (160, 120)              # the first clip
+    assert size(projects.Project(width=100, height=100, export_size_from="s2"), clips) == (96, 96)
+    assert size(projects.Project(width=100, height=100, export_size_from="project"), clips) == (100, 100)
+    assert size(projects.Project(width=100, height=100, export_size_from="gone"), clips) == (160, 120)

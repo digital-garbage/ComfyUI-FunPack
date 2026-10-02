@@ -224,6 +224,20 @@ def _clip_spec_ok(c) -> bool:
     return isinstance(c, dict) and (c.get("bin_media_ref") or c.get("filename"))
 
 
+def export_canvas(project, clips: list[dict], paths: list[str], fallback: tuple[int, int]) -> tuple[int, int]:
+    """The size the final render is made at: the real resolution of the clip the person chose
+    (default: the first), never the project's Width x Height unless asked for -- a project
+    setting must not rescale the material."""
+    choice = getattr(project, "export_size_from", "") or ""
+    if choice == "project":
+        return fallback
+    idx = next((i for i, c in enumerate(clips) if choice and c.get("scene_id") == choice), 0)
+    got = files.dimensions(paths[idx])
+    if got:
+        return got
+    return int(_f(clips[idx].get("w")) or fallback[0]), int(_f(clips[idx].get("h")) or fallback[1])
+
+
 def render(project, clips: list[dict]) -> dict:
     """Run the final render: -> {"media": {...temp file...}, "clips": n}. Blocking: call it off the event loop."""
     clips = [c for c in clips if _clip_spec_ok(c)] if isinstance(clips, list) else []
@@ -237,7 +251,9 @@ def render(project, clips: list[dict]) -> dict:
     except files.ClipError as exc:
         raise RenderError(str(exc)) from exc
     if clips:
-        cw, ch = int(_f(clips[0].get("w")) or cw), int(_f(clips[0].get("h")) or ch)
+        cw, ch = export_canvas(project, clips, paths, (cw, ch))
+        for c in clips:
+            c["w"], c["h"] = cw, ch                 # build_filter reads the canvas off the clips
         fps = _f(clips[0].get("fps")) or fps
         for i, (c, p) in enumerate(zip(clips, paths)):
             c["has_audio"] = files.has_audio(p)

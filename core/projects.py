@@ -412,6 +412,9 @@ class Project:
     refinement_key: str = "default"
     #: Audio: keep each clip's own sound, plus lanes mixed over the montage.
     keep_original_audio: bool = True
+    #: Which clip's own resolution the final render takes: "" = the first clip on the timeline,
+    #: "project" = the project's Width x Height, otherwise a scene id.
+    export_size_from: str = ""
     audio_tracks: list = field(default_factory=list)
     overlay_lanes: list = field(default_factory=list)
     overlay_tracks: list = field(default_factory=list)
@@ -472,6 +475,7 @@ class Project:
             references=[r for r in _blob(d.get("references"), list) if isinstance(r, str) and r][:256],
             refinement_key=_str(d.get("refinement_key"), "default", 64) or "default",
             keep_original_audio=_bool(d.get("keep_original_audio"), True),
+            export_size_from=_str(d.get("export_size_from"), "", 128),
             audio_tracks=_dicts(d.get("audio_tracks")),
             overlay_lanes=_dicts(d.get("overlay_lanes")),
             overlay_tracks=_dicts(d.get("overlay_tracks")),

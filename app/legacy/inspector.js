@@ -585,6 +585,17 @@
     row2.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));
     body.append(row2);
 
+    // The final render takes its size from a clip's own resolution, so a project Width/Height never
+    // rescales the material (and never adds black bars).
+    const sizeFrom = el("select"); sizeFrom.dataset.k = "pj-export-size";
+    const rendered = S.orderedTimelineScenes().filter((sc) => !sc.excluded && S.get().sceneRenders[sc.id]);
+    const opts = [["", "The first clip's own size"], ["project", `The project's size (${p.width || 768}×${p.height || 512})`]]
+      .concat(rendered.map((sc, i) => [sc.id, `Clip ${i + 1}'s own size`]));
+    if (p.export_size_from && !opts.some(([v]) => v === p.export_size_from)) opts.push([p.export_size_from, "A clip that is no longer here (the first clip is used)"]);
+    opts.forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.export_size_from || "") === v) o.selected = true; sizeFrom.append(o); });
+    sizeFrom.onchange = () => S.patchProject({ export_size_from: sizeFrom.value });
+    body.append(field("Final render size", sizeFrom));
+
     // Sets what a new scene starts from and whether a missing anchor is worth mentioning.
     // Images stay wireable in either mode.
     const mode = el("select"); mode.dataset.k = "pj-genmode";
