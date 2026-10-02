@@ -498,7 +498,7 @@
     const p = st.project;
     title.textContent = "Project";
 
-    const outTag = el("div", "insp-tag"); outTag.textContent = "Output"; body.append(outTag);
+    const outTag = el("div", "insp-tag"); outTag.textContent = "Project"; body.append(outTag);
     const name = el("input"); name.value = p.name || ""; name.dataset.k = "pj-name";
     name.oninput = () => S.patchProjectQuiet({ name: name.value });
     body.append(field("Project name", name));
@@ -510,6 +510,7 @@
     const grid = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(st) : null;
     const spec = window.PipelineCaps?.frameInputSpec
       ? window.PipelineCaps.frameInputSpec(st) : null;
+    const videoTag = el("div", "insp-tag"); videoTag.textContent = "Video settings"; body.append(videoTag);
     const row1 = el("div", "fields-row");
     const framesField = numberField("Frames / scene", p.num_frames_per_scene,
       (v) => S.patchProjectQuiet({ num_frames_per_scene: v }), "pj-frames");
