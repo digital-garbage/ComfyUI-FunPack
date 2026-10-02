@@ -132,7 +132,7 @@ def remux_faststart(src: str, out: str) -> None:
     run([ffmpeg(), "-y", "-i", src, "-c", "copy", "-movflags", "+faststart", out])
 
 
-def trim(src: str, out: str, start=None, dur=None, *, fast=False, reverse=False) -> None:
+def trim(src: str, out: str, start=None, dur=None, *, fast=False, reverse=False, fps=None) -> None:
     """Cut [start, start+dur) out of `src` into a seekable h264/aac mp4.
 
     `fast` is for previews, where the latency of a scrub across a clip boundary matters
@@ -145,6 +145,8 @@ def trim(src: str, out: str, start=None, dur=None, *, fast=False, reverse=False)
     cmd += ["-i", src]
     if reverse:
         cmd += ["-vf", "reverse", "-af", "areverse"]     # after the trim: only the clip is buffered
+    if fps:
+        cmd += ["-r", str(fps)]                          # parts to be joined must share one rate
     cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
     if fast:
         cmd += ["-preset", "veryfast"]
@@ -178,6 +180,18 @@ def duration(path: str) -> float | None:
         except ValueError:
             continue
     return 0.0 if proc.returncode == 0 else None
+
+
+def frame_rate(path: str) -> str | None:
+    """The first video stream's rate as ffprobe spells it ("25/1"), or None."""
+    probe = shutil.which("ffprobe")
+    if not probe:
+        return None
+    proc = subprocess.run([probe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                           "stream=r_frame_rate", "-of", "default=nw=1:nk=1", path],
+                          capture_output=True, text=True)
+    out = proc.stdout.strip()
+    return out if out and out != "0/0" else None
 
 
 def add_silence(src: str, out: str) -> None:

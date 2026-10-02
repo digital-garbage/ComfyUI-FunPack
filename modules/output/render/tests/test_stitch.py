@@ -215,3 +215,51 @@ def test_two_exports_in_one_second_do_not_share_a_file(comfy):
     first = stitch.concat([{"filename": "a.mp4", "dur": 1.0}])["media"]["filename"]
     second = stitch.concat([{"filename": "a.mp4", "dur": 1.0}])["media"]["filename"]
     assert first != second and (comfy.temp / first).is_file() and (comfy.temp / second).is_file()
+
+
+def _audio_seconds(path):
+    import subprocess
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                          "stream=duration", "-of", "default=nw=1:nk=1", str(path)],
+                         capture_output=True, text=True).stdout.split()
+    return float(out[0])
+
+
+@needs_ffmpeg
+def test_a_clip_whose_sound_is_shorter_than_its_picture_does_not_pull_later_sound_early(comfy):
+    import subprocess
+    short = comfy.output / "short.mp4"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=2:size=160x120:rate=25",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1.5", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", str(short)], check=True, capture_output=True)
+    out = stitch.render(projects.Project(width=160, height=120),
+                        [clip("short.mp4", dur=2.0), clip("short.mp4", dur=2.0), clip("short.mp4", dur=2.0)])
+    assert _audio_seconds(comfy.temp / out["media"]["filename"]) == pytest.approx(6.0, abs=0.15)
+
+
+@needs_ffmpeg
+def test_an_odd_canvas_renders(comfy):
+    make_clip(comfy.output / "a.mp4", 1.0, size="160x120")
+    out = stitch.render(projects.Project(width=161, height=121), [clip("a.mp4", dur=1.0, w=161, h=121)])
+    assert probe(comfy.temp / out["media"]["filename"])[1:3] == (160, 120)
+
+
+@needs_ffmpeg
+def test_export_of_clips_with_different_frame_rates_keeps_picture_and_sound_together(comfy):
+    make_clip(comfy.output / "a.mp4", 2.0, rate=25)
+    make_clip(comfy.output / "b.mp4", 2.0, rate=30)
+    out = stitch.concat([{"filename": "a.mp4", "dur": 2.0}, {"filename": "b.mp4", "dur": 2.0}])
+    path = comfy.temp / out["media"]["filename"]
+    assert probe(path)[0] == pytest.approx(4.0, abs=0.25)
+    assert _audio_seconds(path) == pytest.approx(4.0, abs=0.25)
+
+
+@needs_ffmpeg
+def test_a_render_says_what_it_left_out(comfy):
+    make_clip(comfy.output / "a.mp4", 1.0)
+    proj = projects.Project(width=160, height=120,
+                            overlay_tracks=[{"id": "o1", "kind": "image", "media_ref": "aaaaaaaaaaaa",
+                                             "start_sec": 0, "duration_sec": 1}],
+                            audio_tracks=[{"id": "t1", "media_ref": "bbbbbbbbbbbb", "start_sec": 0}])
+    out = stitch.render(proj, [clip("a.mp4", dur=1.0)])
+    assert len(out["warnings"]) == 2 and "overlay" in out["warnings"][0] and "audio" in out["warnings"][1]

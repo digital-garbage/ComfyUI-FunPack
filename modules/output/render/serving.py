@@ -200,7 +200,7 @@ def ghost_clip(q) -> dict | None:
     if not q.get("filename") or q.get("dur") is None:
         return None
     try:
-        start, dur = float(q.get("render_in") or 0), float(q["dur"])
+        start, dur = float(q.get("render_in") or 0) + float(q.get("src_in") or 0), float(q["dur"])
     except (TypeError, ValueError):
         return None
     if start != start or dur != dur:
@@ -245,6 +245,11 @@ async def segment(request, project) -> "web.StreamResponse":
                                   f"{projects.safe_part(scene_id)}_{int(time.time() * 1000)}.mp4")
             await asyncio.to_thread(files.trim, src, out, clip.get("in"), clip.get("dur"),
                                     fast=True, reverse=reverse)
+            got = files.duration(out)
+            if got is not None and got <= 0:           # a window past the end trims to a file with no picture
+                os.remove(out)
+                return web.json_response({"detail": "This clip's window starts past the end of its render: "
+                                                    "generate it again."}, status=400)
         except files.ClipError as exc:
             return web.json_response({"detail": str(exc)}, status=503)
         _segments.put(key, (None, out))

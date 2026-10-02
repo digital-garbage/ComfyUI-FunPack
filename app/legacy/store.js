@@ -3450,7 +3450,7 @@
     if (!pid || _upscaling.has(key)) return;
     _upscaling.add(key);
     set({ notice: `Upscaling with ${model}…` });
-    let notice = "";
+    let notice = null;                                       // null: leave whatever else was said meanwhile
     try {
       const promptId = await API.queueUpscale(media, model);
       let misses = 0;
@@ -3473,7 +3473,7 @@
       notice = `Upscale failed: ${e && e.message ? e.message : e}`;
     } finally {
       _upscaling.delete(key);
-      set({ notice });
+      set({ notice: notice !== null ? notice : (state.notice && state.notice.startsWith("Upscaling with") ? "" : state.notice) });
     }
   }
   function upscaleRender(sceneId) {
@@ -4670,6 +4670,7 @@
       });
       const name = (state.project.name || "montage").replace(/[^\w.-]+/g, "_") + `_final_${_stamp()}.mp4`;
       await _saveBlobAs(API.resultUrl(state.project.id, r.media), name);
+      if (r.warnings && r.warnings.length) set({ notice: `Rendered, but: ${r.warnings.join(" ")}` });
     } catch (e) {
       set({ gen: { state: "error", promptId: null, media: [], msg: "Render failed: " + _friendlyGenError(e.message) } });
     }

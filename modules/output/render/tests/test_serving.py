@@ -182,3 +182,24 @@ def test_the_url_window_wins_over_a_project_that_has_not_been_saved_yet(comfy, s
     # a different head trim is a different segment, not the cached one
     other = get(server, f"{BASE}/projects/{proj.id}/preview-segment/s1?dur=2.5&src_in=0")[2]
     assert other != body
+
+
+@needs_ffmpeg
+def test_a_ghost_whose_scene_is_not_saved_yet_still_gets_its_in_point(comfy, server):
+    make_clip(comfy.output / "a.mp4", 4.0)
+    proj = _project(comfy)
+    url = (f"{BASE}/projects/{proj.id}/preview-segment/new?filename=a.mp4&subfolder=&type=output"
+           "&render_in=0&src_in=2&dur=1.5")
+    status, _h, a = get(server, url)
+    status2, _h, b = get(server, url.replace("src_in=2", "src_in=0"))
+    assert status == status2 == 200 and a != b
+
+
+@needs_ffmpeg
+def test_a_window_past_the_end_of_the_render_is_refused_not_served_empty(comfy, server):
+    make_clip(comfy.output / "a.mp4", 1.0)
+    proj = _project(comfy)
+    url = (f"{BASE}/projects/{proj.id}/preview-segment/gone?filename=a.mp4&subfolder=&type=output"
+           "&render_in=5&dur=1")
+    status, _h, body = get(server, url)
+    assert status == 400 and b"past the end" in body

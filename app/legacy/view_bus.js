@@ -139,7 +139,7 @@
       renders: st.sceneRenders,
       // The Upscale button: shown by the mode setting, disabled while that render upscales.
       upscale: [window.Store?.getEditorSetting?.("upscaleMode"),
-        st.selectedSceneId ? window.Store?.isUpscaling?.(st.selectedSceneId) : false],
+        (st.project?.scenes || []).map((s) => !!window.Store?.isUpscaling?.(s.id))],
       ratings: (st.project?.scenes || []).map((s) => [s.id, s.rating, s.source?.type]),
       conditioning: st.project?.conditioning_slot,
       // The Best-FaceID warning chip lives in this zone, so everything its message

@@ -59,6 +59,7 @@ def build_filter(clips: list[dict], tracks: list[dict] | None = None, *, keep_or
             raise RenderError("There is nothing to render: no clips, no overlays and no audio.")
         cw = int(_f(clips[0].get("w")) or 768)
         ch = int(_f(clips[0].get("h")) or 768)
+        cw, ch = cw - cw % 2, ch - ch % 2          # yuv420p cannot be encoded at an odd size
         fps = _f(clips[0].get("fps")) or 25.0
         for i, c in enumerate(clips):
             dur = _f(c.get("dur"))
@@ -131,6 +132,8 @@ def _clip_audio(i: int, clip: dict, dur: float) -> str:
     vol = _f(clip.get("volume"), 1.0)
     if abs(vol - 1.0) > 1e-3:
         af += f",volume={max(0.0, vol):.3f}"
+    if dur > 0:                            # exactly the picture's length: a short sound must not pull later clips early
+        af += f",apad,atrim=0:{dur:.3f},asetpts=PTS-STARTPTS"
     return f"[{i}:a:0]{af}[a{i}]"
 
 
@@ -224,12 +227,12 @@ def render(project, clips: list[dict]) -> dict:
         raise RenderError(str(exc)) from exc
     if clips:
         cw, ch = int(_f(clips[0].get("w")) or cw), int(_f(clips[0].get("h")) or ch)
-        cw, ch = cw - cw % 2, ch - ch % 2           # yuv420p cannot be encoded at an odd size
         fps = _f(clips[0].get("fps")) or fps
         for c, p in zip(clips, paths):
             c["has_audio"] = files.has_audio(p)
         blank_canvas = None
     else:
+        cw, ch = cw - cw % 2, ch - ch % 2
         blank_canvas = {"w": cw, "h": ch, "fps": fps, "dur": graphics_duration(project)}
     try:
         ffmpeg = files.ffmpeg()
@@ -263,6 +266,11 @@ def render(project, clips: list[dict]) -> dict:
 
     drawn, pictures = overlays.prepare(project.overlay_tracks, project.overlay_lanes, tempdir=tempdir,
                                        image_path=image_path)
+    warnings = []
+    if len(drawn) < len(project.overlay_tracks):
+        warnings.append(f"{len(project.overlay_tracks) - len(drawn)} overlay(s) left out: their picture is gone from the media library.")
+    if len(tracks) < len(project.audio_tracks):
+        warnings.append(f"{len(project.audio_tracks) - len(tracks)} audio lane(s) left out: their file is gone.")
     for path in pictures:
         cmd += ["-i", path]
     graph, has_audio = build_filter(clips, tracks, keep_original=keep, base_input=base, blank=blank_canvas)
@@ -282,7 +290,7 @@ def render(project, clips: list[dict]) -> dict:
     except files.ClipError as exc:
         raise RenderError(f"ffmpeg could not make the render: {exc}") from exc
     return {"media": {"filename": name, "subfolder": "", "type": "temp", "kind": "videos"},
-            "clips": len(clips) or 1}
+            "clips": len(clips) or 1, "warnings": warnings}
 
 
 def concat(clips: list[dict]) -> dict:
@@ -293,10 +301,14 @@ def concat(clips: list[dict]) -> dict:
         raise RenderError("There is nothing to export.")
     stamp = _stamp()
     parts = []
+    fps = None
     try:
         for i, c in enumerate(clips):
             out = files.temp_file(f"funpack_seg_{stamp}_{i}.mp4")
-            files.trim(files.clip_path(c), out, c.get("in"), c.get("dur"))
+            src = files.clip_path(c)
+            if fps is None:
+                fps = files.frame_rate(src)           # the first clip's rate: the joiner keeps one
+            files.trim(src, out, c.get("in"), c.get("dur"), fps=fps)
             parts.append(out)
             got, want = files.duration(out), _f(c.get("dur"))
             if got is not None and (got <= 0 or (want > 0 and got < want - max(0.5, 0.1 * want))):

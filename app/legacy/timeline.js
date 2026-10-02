@@ -234,7 +234,7 @@
     // and shared across every scene in the run, so a filmstrip per clip meant N full-file
     // downloads with preload=auto fighting the player pool over Chrome's 6-per-origin cap.
     const segUrl = API.previewSegmentUrl && st.project.id
-      ? API.previewSegmentUrl(st.project.id, scene.id, { media: r.media, renderIn: r.inSec || 0, dur: durSec })
+      ? API.previewSegmentUrl(st.project.id, scene.id, { media: r.media, renderIn: r.inSec || 0, srcIn: scene.source_in || 0, dur: durSec })
       : null;
     const url = segUrl || API.resultUrl(st.project.id, r.media);
     _fsEnqueue(() => new Promise((finish) => {
@@ -1335,7 +1335,7 @@
       // trimmed segment is this scene's span only, so no inSec slice is needed to paint it.
       const API = window.MovieEditorAPI;
       const segUrl = API.previewSegmentUrl
-        ? API.previewSegmentUrl(st.project.id, scene.id, { media: r.media, renderIn: r.inSec || 0, dur: durSec })
+        ? API.previewSegmentUrl(st.project.id, scene.id, { media: r.media, renderIn: r.inSec || 0, srcIn: scene.source_in || 0, dur: durSec })
         : null;
       _attachWaveform(canvas, `scene-aud:${scene.id}:${inSec.toFixed(3)}:${durSec.toFixed(3)}`, segUrl || API.resultUrl(st.project.id, r.media), segUrl ? {
         width: w,
