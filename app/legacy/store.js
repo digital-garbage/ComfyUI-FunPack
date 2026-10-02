@@ -3731,6 +3731,24 @@
   // let check()'s note silently clobber it before anyone ever saw it. The
   // caller applies unwiredNotice AFTER GB.generate() resolves instead, so it
   // wins that race on purpose (see extensive_testing round 1 finding).
+  // The value a `project.video` role asks for. The editor keeps these as flat project fields
+  // (width, height, frames per scene), the pipeline names them per node (width/target_width,
+  // length...); a value stored under the role's own name wins, so a hand-set one is honoured.
+  // `length` is the frames THIS RUN covers: one scene's own, or every scene's for a whole-timeline run.
+  function _videoRoleValue(input, targetSceneIds) {
+    const p = state.project;
+    if (p[input] !== undefined) return p[input];
+    if (p.video && p.video[input] !== undefined) return p.video[input];
+    if (input === "width" || input === "target_width") return p.width;
+    if (input === "height" || input === "target_height") return p.height;
+    if (input === "length") {
+      const frames = (targetSceneIds || []).map((id) => scene(id)).filter(Boolean)
+        .reduce((n, sc) => n + (sceneEffFrames(sc, p) || 0), 0);
+      return frames || p.num_frames_per_scene;
+    }
+    return undefined;
+  }
+
   async function _buildQueueInputs(targetSceneIds) {
     const raw = {};
     let unwiredNotice = null;
@@ -3740,7 +3758,7 @@
     for (const slot of (window.PipelineState.slots() || [])) {
       for (const role of (slot.roles || [])) {
         if (role.at !== "project.video") continue;
-        const v = state.project[role.input];
+        const v = _videoRoleValue(role.input, targetSceneIds);
         if (v === undefined) continue;
         raw[slot.id] = { ...(raw[slot.id] || {}), [role.input]: v };
       }
