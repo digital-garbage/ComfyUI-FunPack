@@ -3756,6 +3756,11 @@
     let unwiredNotice = null;
     const GB = window.GenerateBridge;
     if (!GB || !state.project) return { raw, unwiredNotice };
+    // The Generate's own settings are the base; what is specific to this run is laid over them below.
+    const live = new Set((window.PipelineState.slots() || []).map((s) => s.id));
+    for (const [slotId, own] of Object.entries(_frozenSettings || {})) {
+      if (live.has(slotId) && Object.keys(own).length) raw[slotId] = { ...own };
+    }
 
     for (const slot of (window.PipelineState.slots() || [])) {
       for (const role of (slot.roles || [])) {
@@ -4326,6 +4331,7 @@
   // `await` (not `return fn()`) is what makes the finally wait for the whole montage.
   // A Generate begins: captures still waiting for a rating from the last one are forgotten.
   // Best effort -- a failure here must not stop a generation.
+  let _frozenSettings = null;       // slot id -> inputs, for the Generate in flight (null outside one)
   let _tasteGenPending = false;      // set by an entry point that owns a Generate; spent by its first real run
   async function _newTasteGeneration() {
     try { await API.newTasteGeneration(); } catch (e) { /* nothing to forget */ }
@@ -4334,8 +4340,12 @@
   // is refused later anyway and must not make the running Generate forget its unrated clips.
   async function _ownsGenerate(fn) {
     const owner = !_genRunActive;
-    if (owner) _tasteGenPending = true;
-    try { return await fn(); } finally { if (owner) _tasteGenPending = false; }
+    if (owner) {
+      _tasteGenPending = true;
+      // The settings of this Generate, taken once: every run of it is queued with these.
+      _frozenSettings = window.PipelineState && window.PipelineState.frozenInputs ? window.PipelineState.frozenInputs() : null;
+    }
+    try { return await fn(); } finally { if (owner) { _tasteGenPending = false; _frozenSettings = null; } }
   }
   async function _clockedGenerate(onlyScene) {
     _genClockStart(onlyScene ? "scene" : "all");

@@ -262,3 +262,16 @@ test("a project opened after another does not inherit the first one's pending sw
   await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } }]);
   assert.strictEqual(PS.isOff("sharpen"), false);
 });
+
+test("the settings of a Generate are taken once: frozenInputs is a copy, wired inputs are left to their node", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const frozen = PS.frozenInputs();
+  assert.deepStrictEqual(frozen.model, { file: "", dtype: "bf16" });
+  assert.deepStrictEqual(frozen.gen, { steps: 8 });                       // `model: ["model", 0]` is fed by a node
+  await PS.save({ inputs: { gen: { steps: 4 } } });
+  assert.strictEqual(PS.slots().find((s) => s.id === "gen").inputs.steps, 4);
+  assert.strictEqual(frozen.gen.steps, 8);                                // the snapshot does not follow the edit
+  frozen.model.dtype = "fp16";
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.dtype, "bf16");   // and is not the live object
+});

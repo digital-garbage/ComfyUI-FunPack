@@ -504,7 +504,21 @@
     return false;
   }
 
+  // Every slot's own values as they are NOW, as per-run overrides: a Generate is several runs, and the
+  // settings are global to it -- an edit made while it runs reaches the next Generate, never half of
+  // this one. Inputs another node feeds (arrays) are left to that node.
+  function frozenInputs() {
+    const out = {};
+    (slots || []).forEach((s) => {
+      const own = {};
+      Object.entries(s.inputs || {}).forEach(([k, v]) => { if (!Array.isArray(v)) own[k] = JSON.parse(JSON.stringify(v)); });
+      out[s.id] = own;
+    });
+    return out;
+  }
+
   window.PipelineState = {
+    frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     activeModules, isOff, setOff, refreshControl, control: () => controlState,
