@@ -18,7 +18,7 @@ export function addLane(p) {
   return lane;
 }
 
-/** Drop a lane and everything on it. The last lane stays only while it holds something. */
+/** Drop a lane and everything on it. */
 export function removeLane(p, laneId) {
   if (!lanesOf(p).some((l) => l.id === laneId)) return false;
   p.overlay_lanes = lanesOf(p).filter((l) => l.id !== laneId);

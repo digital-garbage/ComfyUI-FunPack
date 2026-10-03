@@ -44,7 +44,7 @@ const stage = {
     const ghostActions = (g) => [{ label: "✕", title: "Remove from the timeline",
       onClick: () => edit((pr) => { pr.scene_ghosts = (pr.scene_ghosts || []).filter((x) => x.id !== g.id); return true; }) }];
 
-    const draw = () => { const open = p.project; view.setLanes(open ? [videoLane(open, sel.ids, sel.focus, clipActions, ghostActions), audioLane(open, sel.ids), tracksLane(open), ...extra.flatMap((e) => e.lanes(open))].filter(Boolean) : []); };
+    const draw = () => { const open = p.project; view.setLanes(open ? [videoLane(open, sel.ids, sel.focus, clipActions, ghostActions), audioLane(open, sel.ids), tracksLane(open), ...extra.flatMap((e) => { try { return e.lanes(open); } catch { return []; } })]       // a feature's lanes failing must not stop the baseline's.filter(Boolean) : []); };
     const setZoom = (z) => { zoom = Math.min(ZOOM.length - 1, Math.max(0, z)); view.setZoom(ZOOM[zoom]); };
     host.append(view.node);
     const off = [app.on((what) => {

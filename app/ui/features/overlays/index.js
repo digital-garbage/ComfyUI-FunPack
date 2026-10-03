@@ -5,7 +5,7 @@ import { learn } from "../../shell/bin.js";
 import { openDialog } from "./dialog.js";
 
 const ID = "o:";
-const short = (o) => (o.kind === "text" ? o.text : o.label || "Image").split("\n")[0].slice(0, 40);
+const short = (o) => String((o.kind === "text" ? o.text : o.label) || "Overlay").split("\n")[0].slice(0, 40);
 
 export default {
   id: "overlays",
@@ -19,7 +19,7 @@ export default {
     async function open(kind, existing) {
       let bin = [];
       if (kind === "image") { try { bin = await pictures(); } catch (err) { return c.toast.warn({ text: `Could not read the media bin: ${err.message}` }); } }
-      openDialog({ kind, existing, bin, onSave: (s) => edit((pr) => {
+      openDialog({ kind, existing, bin, projectWidth: p.project ? p.project.width : undefined, onSave: (s) => edit((pr) => {
         if (existing) return ov.update(pr, existing.id, s);
         const at = app.playhead.at, made = kind === "text" ? ov.addText(pr, at, s) : ov.addImage(pr, s.media_ref, s.label, at);
         return ov.update(pr, made.id, s);
@@ -30,9 +30,10 @@ export default {
     const entry = {
       owns: (id) => id.startsWith(ID),
       lanes(pr) {
-        const lanes = ov.lanesOf(pr);
+        const known = new Set(ov.lanesOf(pr).map((l) => l.id));
+        const lanes = [...(ov.overlaysOf(pr).some((o) => !known.has(o.lane_id)) ? [{ id: "", label: "Unplaced" }] : []), ...ov.lanesOf(pr)];       // a v4 project's overlays without a lane still show, at the bottom as they render
         return [...lanes].reverse().map((lane) => ({ id: `ov:${lane.id}`, label: lane.label, kind: "overlay", move: true,
-          clips: ov.overlaysOf(pr).filter((o) => o.lane_id === lane.id).map((o) => ({ id: ID + o.id, start: o.start_sec || 0, dur: o.duration_sec || 0.1, trim: true, title: short(o),
+          clips: ov.overlaysOf(pr).filter((o) => (lane.id ? o.lane_id === lane.id : !known.has(o.lane_id))).map((o) => ({ id: ID + o.id, start: o.start_sec || 0, dur: o.duration_sec || 0.1, trim: true, title: short(o),
             head: [o.kind === "text" ? "T" : "▣"],
             actions: [{ label: "✎", title: "Edit", onClick: () => open(o.kind, o) }, { label: "▲", title: "Draw above the others (higher lane)", onClick: () => edit((x) => ov.restack(x, o.id, 1)) },
               { label: "▼", title: "Draw below the others (lower lane)", onClick: () => edit((x) => ov.restack(x, o.id, -1)) }, { label: "✕", title: "Remove", onClick: () => confirmRemove(o) }] })) }));

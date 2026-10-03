@@ -27,7 +27,7 @@ function textForm(s) {
 
 function imageForm(s, bin) {
   return [
-    field("Picture", c.select.md({ label: "Picture", value: s.media_ref || "", options: [{ value: "", label: "Choose a picture…" }, ...bin.map((m) => ({ value: m.id, label: m.name }))],
+    field("Picture", c.select.md({ label: "Picture", value: s.media_ref || "", options: [{ value: "", label: "Choose a picture…" }, ...(s.media_ref && !bin.some((m) => m.id === s.media_ref) ? [{ value: s.media_ref, label: "(no longer in the media bin)" }] : []), ...bin.map((m) => ({ value: m.id, label: m.name }))],
       onChange: (v) => { s.media_ref = v; s.label = (bin.find((m) => m.id === v) || {}).name || "Image"; } }), bin.length ? undefined : "The media bin has no pictures yet."),
     field("Width (px)", c.number.md({ label: "Width", value: s.width_px, min: 8, step: 1, precision: 0, onChange: (v) => { s.width_px = v; } })),
     c.toggle.default({ label: "Keep the picture's proportions", checked: s.keep_aspect !== false, onChange: (v) => { s.keep_aspect = v; if (!v && s.height_px == null) s.height_px = s.width_px; } }),
@@ -40,13 +40,14 @@ function imageForm(s, bin) {
 
 /** kind "text"|"image", `existing` an overlay (edit) or null (new), `bin` the pictures to choose from.
  *  `onSave(patch)` runs once with the chosen values; the window closes after it. */
-export function openDialog({ kind, existing, bin = [], onSave }) {
-  const s = kind === "text" ? { ...TEXT_DEFAULTS, text: "Title", ...(existing || {}) } : { width_px: 270, keep_aspect: true, opacity: 1, ...(existing || {}) };
+export function openDialog({ kind, existing, bin = [], projectWidth = 768, onSave }) {
+  const s = kind === "text" ? { ...TEXT_DEFAULTS, text: "Title", ...(existing || {}) } : { width_px: Math.round(projectWidth * 0.35), keep_aspect: true, opacity: 1, ...(existing || {}) };
   const where = field("Starts at (s)", c.number.md({ label: "Starts at", value: existing ? existing.start_sec : undefined, min: 0, step: 0.1, onChange: (v) => { s.start_sec = v; } }));
   const dur = field("Shown for (s)", c.number.md({ label: "Shown for", value: s.duration_sec ?? 3, min: 0.1, step: 0.1, onChange: (v) => { s.duration_sec = v; } }));
   const body = c.region.stack({ gap: "sm", children: [...(kind === "text" ? textForm(s) : imageForm(s, bin)), ...(existing ? [where, dur] : [])] });
   const save = () => {
     if (kind === "image" && !s.media_ref) return c.toast.warn({ text: "Choose a picture first." });
+    if (kind === "text") s.text = String(s.text || "").trim() || "Title";       // what the render would draw anyway
     onSave(s);
     win.close("done");
   };

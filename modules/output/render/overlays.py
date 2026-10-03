@@ -59,11 +59,20 @@ def _fontfile(family) -> str | None:
 
 def _rgba(color, opacity) -> tuple[int, int, int, int]:
     c = str(color or "#ffffff").strip().lstrip("#")
+    if len(c) in (3, 4):                                       # #rgb / #rgba
+        c = "".join(ch * 2 for ch in c)
+    alpha = 1.0
+    if len(c) == 8:                                            # #rrggbbaa: its alpha scales the overlay's opacity
+        try:
+            alpha, c = int(c[6:], 16) / 255, c[:6]
+        except ValueError:
+            c = "ffffff"
+    opacity = _num(opacity, 1.0, 0.0, 1.0) * alpha
     try:
         r, g, b = (int(c[i:i + 2], 16) for i in (0, 2, 4)) if len(c) == 6 else (255, 255, 255)
     except ValueError:
         r, g, b = 255, 255, 255
-    return r, g, b, int(_num(opacity, 1.0, 0.0, 1.0) * 255)
+    return r, g, b, int(opacity * 255)
 
 
 def _variant(regular: str, bold: bool, italic: bool) -> str | None:
