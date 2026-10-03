@@ -2,12 +2,12 @@
 import { composer as c } from "../../composer/composer.js";
 
 const SEEN = "funpack_welcomed";
-const card = (title, hint) => c.field.default({ label: title, hint, control: c.button.sm({ label: title, tone: "ghost", disabled: true }) });
+const card = (title, hint, onClick) => c.field.default({ label: title, hint, control: c.button.sm({ label: title, tone: "ghost", onClick }) });
 
 export default {
   id: "welcome",
   mount: "menubar.right",
-  needs: ["project"],
+  needs: ["project", "maintenance"],
   setup({ app }) {
     let win = null;
     const seen = () => { try { return localStorage.getItem(SEEN) === "1"; } catch { return true; } };
@@ -23,8 +23,8 @@ export default {
           c.button.lg({ label: "Begin", tone: "primary", onClick: done }),
           ...(recent ? [c.button.sm({ label: `Continue with “${recent.name}”`, tone: "ghost", onClick: done })] : []),
           c.button.sm({ label: "Load an existing project", tone: "ghost", disabled: true }),
-          c.toolbar.default({ items: [card("Update", "Check this install for a newer version"), card("Switch branch", "Pick another branch"),
-            card("Restart ComfyUI", "Reload the server without updating"), card("Rollback update", "Undo the last update")] }),
+          c.toolbar.default({ items: [card("Update", "Check this install for a newer version", () => app.maintenance.update()), card("Switch branch", "Pick another branch", () => app.maintenance.switchBranch()),
+            card("Restart ComfyUI", "Reload the server without updating", () => app.maintenance.restart()), card("Rollback update", "Undo the last update", () => app.maintenance.rollback())] }),
         ] }),
         onClose: () => { markSeen(); win = null; },
       });

@@ -9,6 +9,7 @@ import { linkPipeline } from "./shell/pipeline_link.js";
 import { api } from "./shell/api.js";
 import { createSelection } from "./shell/selection.js";
 import { createPlayhead } from "./shell/playhead.js";
+import { createMaintenance } from "./shell/maintenance.js";
 import { createKeys } from "./shell/keys.js";
 import { createDock } from "./shell/dock.js";
 import { createMode } from "./shell/mode.js";
@@ -27,7 +28,7 @@ linkPipeline({ project, pipeline, onOpen: (fn) => on((what) => { if (what === "o
 const frame = build(document.getElementById("app"));
 const selection = createSelection({ project });
 selection.on(() => say("select"));
-const app = { project, pipeline, generate, api, on, say, title: frame.setZoneTitle, selection, playhead: createPlayhead(), theme: window.ComposerTheme, mode: createMode(), panel: frame.togglePanel, closePanels: frame.closePanels, dock: createDock(), keys: createKeys(), resetLayout: () => { frame.resetLayout(); app.dock.reset(); } };
+const app = { project, pipeline, generate, api, on, say, title: frame.setZoneTitle, selection, playhead: createPlayhead(), theme: window.ComposerTheme, mode: createMode(), panel: frame.togglePanel, closePanels: frame.closePanels, dock: createDock(), maintenance: createMaintenance({ api, flush: () => project.flush() }), keys: createKeys(), resetLayout: () => { frame.resetLayout(); app.dock.reset(); } };
 const settings = createSettings({ menubar: hostFor("menubar.menus") });
 const result = await loadFeatures(paths, { app });
 settings.addButton();

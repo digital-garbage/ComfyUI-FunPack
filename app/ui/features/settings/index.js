@@ -5,6 +5,7 @@ import { appearance } from "./appearance.js";
 import { models } from "./models.js";
 import { engine } from "./engine.js";
 import { modules } from "./modules.js";
+import { system } from "./system.js";
 
 const later = (what) => function mount() {
   return c.emptyState.default({ icon: "◌", title: "Not built yet", hint: what });
@@ -13,7 +14,7 @@ const later = (what) => function mount() {
 export default {
   id: "settings-sections",
   mount: "settings",
-  needs: ["api", "theme", "pipeline"],
+  needs: ["api", "theme", "pipeline", "maintenance"],
   setup({ host, app }) {
     const add = (id, title, subtitle, icon, tone, mount, group = "", keywords = "") => host.add({ id, group, title, subtitle, icon, tone, mount, keywords: `${keywords} ${title}` });
     add("about", "About FunPack", "", "◎", "accent", about(app.api), "", "version commit branch cpu memory gpu disk python torch");
@@ -29,7 +30,7 @@ export default {
     add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys and the Absolute global-taste store.", "✦", "danger",
       later("Refinement keys: export, delete; the taste store."), "Learning", "refinement taste keys rating");
     add("system", "Updates & ComfyUI", "Server connection, FunPack code updates, pipeline health.", "⟳", "good",
-      later("Update, switch branch, restart ComfyUI, roll back."), "System", "update git branch restart rollback");
+      system(app), "System", "update git branch restart rollback");
     add("customnodes", "Custom Nodes", "Install, update and remove ComfyUI node packs.", "⧉", "neutral",
       later("Install, update and remove node packs."), "System", "custom nodes packs install");
   },
