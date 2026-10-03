@@ -247,6 +247,7 @@ class FunPackLoadModifiers(io.ComfyNode):
         # it re-executes whenever anything about the generation differs.
         dropped = patching.Dropped()
         patched.funpack_dropped = dropped
+        patched.model_options["funpack_dropped"] = dropped      # stock nodes' clone() keeps model_options, not attributes
 
         # Asked for by capability, so nothing here names the module that answers
         # and a build without it installed has nobody saying yes -- which reads

@@ -84,3 +84,10 @@ def test_clone_keeps_the_fault_record_the_sampler_will_clear():
     m.funpack_dropped = patching.Dropped()
     assert patching.clone(m).funpack_dropped is m.funpack_dropped
     assert not hasattr(patching.clone(P()), "funpack_dropped")
+
+
+def test_a_stock_clone_between_the_nodes_keeps_the_fault_record(patcher):
+    from core import patching
+    record = patching.Dropped()
+    patcher.model_options["funpack_dropped"] = record
+    assert patcher.clone().model_options["funpack_dropped"] is record

@@ -177,3 +177,21 @@ def test_cond_and_uncond_calls_of_one_step_share_a_roll():
     w(None, args)
     w(None, {**args, "timestep": torch.tensor([0.3])})
     assert torch.equal(seen[0], seen[1]) and not torch.equal(seen[1], seen[2])
+
+
+def test_a_model_error_through_the_loop_is_not_blamed_on_the_roll_or_rerun(tiny_ltx):
+    from modules.sampling.temporal_style import install
+    p = tiny_ltx.patcher.clone()
+    dropped = patching.Dropped()
+    install(patching.GuardedPatcher(p, KEY, dropped), {"style": "loop"}, key=KEY)
+    calls = []
+
+    def apply_fn(x, t, **c):
+        calls.append(1)
+        raise RuntimeError("model blew up")
+
+    x = torch.zeros(1, 4, 8, 2, 2)                       # unpacked single stream: rolls
+    args = {"input": x, "timestep": torch.tensor([0.5]), "c": {}}
+    with pytest.raises(RuntimeError, match="model blew up"):
+        p.model_options["model_function_wrapper"](apply_fn, args)
+    assert len(calls) == 1 and not dropped

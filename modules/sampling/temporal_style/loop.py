@@ -156,6 +156,12 @@ def _loop_audio_tail_frames(mask):
         return 0
 
 
+def _roll_failed(e, call, args):
+    log.once("temporal_style:loop_failed", log.ALERT, "FunPack Temporal style",
+             f"the loop roll failed ({type(e).__name__}: {e}); the calls it failed on ran without it")
+    return call(args) if call else None
+
+
 def make_loop_temporal_wrapper(old_wrapper):
     """Build the loop-style model_function_wrapper. Installed INNERMOST (closest to
     apply_model): prediction-modifying wrappers layered above it (dynashift, output
@@ -221,13 +227,14 @@ def make_loop_temporal_wrapper(old_wrapper):
             rolled = dict(args)
             rolled["input"] = _loop_roll_packed(args["input"], shapes, frac, 1, tails=tails)
             rolled["c"] = new_c
-            out = _call(rolled)
+        except Exception as e:                         # noqa: BLE001 -- only the roll is ours to catch
+            return _roll_failed(e, _call, args)
+        out = _call(rolled)                            # the model's errors are the model's: not caught here
+        try:
             return _loop_roll_packed(out, shapes, frac, -1, tails=tails)
-        except Exception as e:
-            if state.get("roll_error") is None:
-                state["roll_error"] = True
-                log.once("temporal_style:loop_failed", log.ALERT, "FunPack Temporal style", f"the loop roll failed ({type(e).__name__}: {e}); this call ran without it")
-            return _call(args)
+        except Exception as e:                         # noqa: BLE001
+            _roll_failed(e, None, None)
+            return out
 
     return _loop_wrapper
 

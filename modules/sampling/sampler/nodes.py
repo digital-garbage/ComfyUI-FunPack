@@ -102,7 +102,8 @@ class FunPackSampler(io.ComfyNode):
         # its cache -- so it is emptied here rather than trusted to be fresh.
         # Otherwise a modifier dropped in one generation stays dropped in every
         # later one, with nothing said.
-        dropped = getattr(model, "funpack_dropped", None) or patching.Dropped()
+        dropped = (getattr(model, "model_options", {}).get("funpack_dropped") or getattr(model, "funpack_dropped", None)
+                   or patching.Dropped())
         dropped.clear()
 
         latent = latent.copy()
