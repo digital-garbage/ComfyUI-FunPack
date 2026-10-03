@@ -1,0 +1,10 @@
+/* The frame's proportions, as v4 had them: fixed side columns and a fixed-height timeline across the bottom. */
+:root { --media-w: 280px; --properties-w: 340px; --timeline-h: 320px; }
+.fp-main { flex-direction: column; }
+.fp-row { flex: 1 1 auto; flex-direction: row; min-block-size: 0; }
+.fp-row > * { min-inline-size: 0; border-inline-end: var(--bw) solid var(--line); }
+.fp-row > :first-child { flex: 0 0 var(--media-w); }
+.fp-row > :nth-child(2) { flex: 1 1 auto; }
+.fp-row > :last-child { flex: 0 0 var(--properties-w); border-inline-end: 0; }
+.fp-main > :last-child { flex: 0 0 var(--timeline-h); min-block-size: 200px; border-block-start: var(--bw) solid var(--line); }
+.cx-frame-head { padding-inline: calc(var(--sp-6) + var(--sp-1)); }

@@ -1,5 +1,5 @@
-// The app's regions, and what each offers to features. This is the whole of the layout:
-// Assets | Preview over Timeline | Properties, under a menubar. It names no feature.
+// The app's regions, laid out as v4 had them: a menubar, then Assets | Preview | Properties side by
+// side with the Timeline under all three. Each region offers a mount point; no feature is named here.
 import { composer } from "../composer/composer.js";
 import { offer } from "./mounts.js";
 
@@ -9,12 +9,19 @@ export function build(root) {
     offer(mount, body.node);
     return composer.panel.zone({ title, body });
   };
-  const menubar = composer.region.stack({ gap: "sm" });
-  offer("menubar", menubar.node);
+  const group = (mount) => {
+    const bar = composer.toolbar.default({});
+    offer(mount, bar.node);
+    return bar;
+  };
 
-  const centre = composer.splitPane.v({ panes: [zone("Preview", "preview"), zone("Timeline", "timeline")], size: 60 });
-  const main = composer.workspace.docked({ centre, left: zone("Assets", "assets"), right: zone("Properties", "inspector") });
-  const frame = composer.frame.app({ header: menubar, main });
+  const row = composer.region.stack({ gap: "none", children: [zone("Assets", "assets"), zone("Preview", "preview"), zone("Properties", "inspector")] });
+  const main = composer.region.stack({ gap: "none", fill: true, children: [row, zone("Timeline", "timeline")] });
+  row.node.classList.add("fp-row");
+  main.node.classList.add("fp-main");
+
+  const header = composer.toolbar.default({ items: [composer.brand.default({}), group("menubar")], trailing: [group("menubar.right")] });
+  const frame = composer.frame.app({ header, main });
   root.append(frame.node);
   return frame;
 }

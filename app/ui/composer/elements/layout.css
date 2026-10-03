@@ -79,7 +79,7 @@
 
 .cx-panel-head {
   display: flex; align-items: center; gap: var(--sp-2) var(--sp-5);
-  padding: var(--sp-1) var(--sp-6); border-bottom: var(--bw) solid var(--line);
+  padding: var(--sp-2) var(--sp-6); border-bottom: var(--bw) solid var(--line);
   background: var(--grad-band);
   /* A MINIMUM height, and it wraps. Fixed, it could not shrink below the width
      of everything in it -- and a head now holds a title, two or three controls
@@ -91,7 +91,7 @@
   min-inline-size: 0;
 }
 .cx-panel-title {
-  font-family: var(--font-display); font-size: var(--fs-3); font-weight: var(--fw-semibold);
+  font-size: var(--fs-5); font-weight: var(--fw-semibold);
   display: flex; align-items: center; gap: var(--sp-3);
   min-inline-size: 0; white-space: nowrap;
 }

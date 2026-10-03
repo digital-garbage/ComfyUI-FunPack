@@ -39,6 +39,6 @@
   box-shadow: 0 0 6px var(--accent-soft);
 }
 .cx-brand-name {
-  font-family: var(--font-display); font-weight: var(--fw-bold);
+  font-family: var(--font-display); font-weight: 800;
   font-size: var(--fs-3); letter-spacing: .2px; color: var(--text);
 }
