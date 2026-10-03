@@ -6,6 +6,7 @@ export default [
   "./features/inspector/index.js",
   "./features/generate/index.js",
   "./features/preview/index.js",
+  "./features/menus/index.js",
   "./features/placeholders/index.js",
   "./features/temp/index.js",
 ].map((path) => new URL(path, import.meta.url).href);

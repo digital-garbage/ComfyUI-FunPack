@@ -8,7 +8,7 @@ const dockTab = (label) => c.button.sm({ label, tone: "neutral", pressed: true, 
 
 const items = {
   "menubar.mode": () => [c.segmented.sm({ options: [{ value: "simple", label: "Simple" }, { value: "editor", label: "Editor" }], value: "editor" })],
-  "menubar.menus": () => ["File", "Edit", "View", "Help"].map(menu),
+  "menubar.menus": () => ["View", "Help"].map(menu),
   "menubar.right": () => [c.chip.neutral({ label: "saved" }), c.chip.good({ label: "ComfyUI live", dot: true })],
 
   preview: () => [
