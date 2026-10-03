@@ -154,6 +154,18 @@ define("gallery", "list", (props = {}) => {
   };
 });
 
+/** Rows of a name and what it is, nothing to look at: a list of projects. */
+define("gallery", "rows", (props = {}) => {
+  const body = el("div", { cls: "cx-pick-rows", attrs: { role: "listbox" } });
+  const api = collection(props, body, (item, on) => el("button", {
+    cls: ["cx-pick-row", on ? "cx-on" : null, "cx-focusable"],
+    attrs: option(on),
+    children: [el("span", { cls: "cx-pick-name", text: item.label }),
+      item.hint ? el("span", { cls: "cx-pick-hint", text: item.hint }) : null].filter(Boolean),
+  }));
+  return { node: body, get value() { return api.value; }, setValue: api.setValue, setItems: api.setItems, destroy: () => body.remove() };
+});
+
 /** Large clickable cards: the wizard's "what are you making?" choices. */
 define("gallery", "cards", ({ items = [], value, onActivate } = {}) => {
   let current = value;

@@ -144,3 +144,13 @@
   font-size: var(--fs-8); line-height: var(--lh-8); color: var(--faint);
   font-variant-numeric: tabular-nums;
 }
+
+.cx-pick-rows { display: flex; flex-direction: column; gap: var(--sp-1); }
+.cx-pick-row {
+  display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-3) var(--sp-2); text-align: left;
+  border: var(--bw) solid transparent; border-radius: var(--ctl-r); background: none; color: var(--text); cursor: pointer;
+}
+.cx-pick-row:hover { background: var(--elev-2); }
+.cx-pick-row.cx-on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 27%, transparent); }
+.cx-pick-name { flex: 1; min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-pick-hint { font-size: var(--fs-6); color: var(--faint); font-variant-numeric: tabular-nums; }

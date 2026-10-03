@@ -11,10 +11,6 @@ const items = {
   "menubar.menus": () => ["File", "Edit", "View", "Help"].map(menu),
   "menubar.right": () => [c.chip.neutral({ label: "saved" }), c.chip.good({ label: "ComfyUI live", dot: true })],
 
-  "assets.actions": () => [],
-  assets: () => [c.toolbar.default({ items: [c.text.sm({ text: "Projects" })], trailing: [btn("＋ New")] }),
-    c.hint.default({ text: "Your projects appear here." })],
-
   preview: () => [
     c.viewer.media({ empty: "No render yet. Use Generate in the timeline header." }),
     c.toolbar.default({ items: [btn("⏹"), btn("▶"), c.text.sm({ text: "00:00:00:00" }), btn("📌 Save frame")] }),

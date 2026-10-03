@@ -322,6 +322,10 @@ export const DEMOS = {
     { id: "2", label: "anchor_frame.png", hint: "image" },
     { id: "3", label: "a_very_long_generated_filename_00042_.png", hint: "image" },
   ] },
+  "gallery.rows": { selection: ["1"], items: [
+    { id: "1", label: "export-size-test", hint: "3▦" },
+    { id: "2", label: "Race Test 2", hint: "1▦" },
+  ] },
   "gallery.cards": { value: "image", items: [
     { id: "blank", icon: "▦", label: "Empty project", hint: "Nothing on the timeline" },
     { id: "image", icon: "◐", label: "From an image", hint: "Adds it as the first anchor" },

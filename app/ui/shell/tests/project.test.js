@@ -12,7 +12,7 @@ import { setupDom, teardownDom } from "../../composer/tests/_dom.js";
 let createProject;
 test.before(async () => {
   setupDom();
-  ({ createProject } = await import("../projects.js"));
+  ({ createProject } = await import("../project.js"));
 });
 test.after(() => teardownDom());
 
