@@ -64,6 +64,7 @@ define("popover", "anchored", ({ body, ...rest } = {}) =>
 function menuList(items, onPick, close) {
   const list = el("div", { cls: "cx-menu", attrs: { role: "menu" } });
   for (const item of items) {
+    if (item.heading) { list.append(el("div", { cls: "cx-menu-heading", text: item.heading })); continue; }
     if (item.separator) { list.append(el("div", { cls: "cx-menu-sep", attrs: { role: "separator" } })); continue; }
     list.append(el("button", {
       cls: ["cx-menu-item", "cx-focusable", item.danger ? "cx-danger" : null],

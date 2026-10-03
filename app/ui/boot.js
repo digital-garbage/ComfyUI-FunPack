@@ -7,6 +7,8 @@ import { createPipelineState } from "./shell/pipeline_state.js";
 import { createGenerate } from "./shell/generate.js";
 import { linkPipeline } from "./shell/pipeline_link.js";
 import { api } from "./shell/api.js";
+import { createSelection } from "./shell/selection.js";
+import { createPlayhead } from "./shell/playhead.js";
 import { hostFor } from "./shell/mounts.js";
 import paths from "./modules.js";
 
@@ -19,9 +21,10 @@ const project = createProject({ onChange: () => say("change"), onOpen: () => say
 const pipeline = createPipelineState(api);
 const generate = createGenerate({ pipeline });
 linkPipeline({ project, pipeline, onOpen: (fn) => on((what) => { if (what === "open") fn(); }) });
-const app = { project, pipeline, generate, api, on, say };
-
 const frame = build(document.getElementById("app"));
+const selection = createSelection({ project });
+selection.on(() => say("select"));
+const app = { project, pipeline, generate, api, on, say, title: frame.setZoneTitle, selection, playhead: createPlayhead() };
 const settings = createSettings({ menubar: hostFor("menubar.menus") });
 const result = await loadFeatures(paths, { app });
 settings.addButton();

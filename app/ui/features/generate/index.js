@@ -2,6 +2,7 @@
 import { composer as c } from "../../composer/composer.js";
 import { isGenerative, isVideoClip, genUnitId, unitRoot, effFrames, effFps } from "../../shell/scenes.js";
 import { QUEUED, RUNNING } from "../../shell/run.js";
+import { inPlace } from "../../shell/place.js";
 import { buildInputs } from "./inputs.js";
 
 const expand = (body) => fetch("/funpack/api/prompt/expand", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -75,7 +76,8 @@ export default {
     }
     const unitsOf = (scenes) => [...new Set(scenes.map(genUnitId))];
 
-    let nodes = [], drawn = "";
+    const put = inPlace(host);
+    let drawn = "";
     function draw() {
       const open = p.project;
       const key = `${busy}|${held}|${g.state().phase}|${Boolean(open)}|${Boolean(p.selected)}`;
@@ -85,10 +87,9 @@ export default {
       const go = c.button.sm({ label: working ? "Generating…" : "▶ Generate", tone: "primary", disabled: working || !open,
         onClick: () => runUnits(unitsOf(p.scenes)) });
       const one = c.button.sm({ label: "Selected", disabled: working || !p.selected, onClick: () => runUnits(unitsOf([p.selected])) });
-      const stop = c.button.sm({ label: "■ Stop", tone: "danger", disabled: !working, onClick: () => { stopped = true; g.cancel(); } });
-      const next = [go, one, stop].map((b) => b.node);
-      if (nodes.length) nodes.forEach((n, i) => n.replaceWith(next[i])); else host.append(...next);     // in place: keeps its spot in the row
-      nodes = next;
+      const stop = c.button.sm({ label: "■ Stop", tone: "danger", onClick: () => { stopped = true; g.cancel(); } });
+      stop.node.hidden = !working;
+      put(go.node, one.node, stop.node);
     }
     // A run found after a reload belongs to this page's last session: its result still goes on its clips.
     const claim = ({ sceneId, projectId }) => {
@@ -123,7 +124,7 @@ export default {
     });
     draw();
     const offRun = g.subscribe(draw);
-    const offApp = app.on(draw);
+    const offApp = app.on((what) => { if (what === "generate.selected" && !busy && p.selected) runUnits(unitsOf([p.selected])); else draw(); });
     return () => { offRun(); offApp(); };
   },
 };

@@ -8,21 +8,18 @@ const dockTab = (label) => c.button.sm({ label, tone: "neutral", pressed: true, 
 
 const items = {
   "menubar.mode": () => [c.segmented.sm({ options: [{ value: "simple", label: "Simple" }, { value: "editor", label: "Editor" }], value: "editor" })],
-  "menubar.menus": () => ["View", "Help"].map(menu),
   "menubar.right": () => [c.chip.neutral({ label: "saved" }), c.chip.good({ label: "ComfyUI live", dot: true })],
 
   preview: () => [
-    c.toolbar.default({ items: [btn("⏹"), btn("▶"), c.text.sm({ text: "00:00:00:00" }), btn("📌 Save frame")] }),
+    c.progress.bar({ value: 0, label: "Playback position" }),
+    c.toolbar.default({ items: [c.iconButton.sm({ icon: "⏹", label: "Stop", disabled: true }), c.iconButton.sm({ icon: "▶", label: "Play", disabled: true }),
+      c.text.sm({ text: "00:00:00:00" }), c.select.sm({ label: "Save frame to", disabled: true, options: [{ value: "", label: "— save to Media bin —" }], value: "" }),
+      btn("📌 Save frame")] }),
   ],
-
 
   "timeline.actions": () => [btn("⚡ Auto Montage")],
-  "timeline.status": () => [btn("⏱ Sampler", "neutral"), c.text.sm({ text: "0 clips" }),
-    dockTab("Assets"), dockTab("Preview"), dockTab("Properties"), btn("◆ Composer", "neutral")],
-  timeline: () => [
-    c.toolbar.default({ items: [btn("⤓ Export"), btn("Save to media bin"), btn("⊟ Separate audio"), btn("Remove audio")],
-      trailing: [c.text.sm({ text: "J/K/L · S split · I/O in/out · +/- zoom" })] }),
-  ],
+  "timeline.status": () => [dockTab("Assets"), dockTab("Preview"), dockTab("Properties"), btn("◆ Composer", "neutral")],
+  "timeline.toolbar": () => [btn("⤓ Export"), btn("Save to media bin"), btn("⊟ Separate audio"), btn("Remove audio")],
 };
 
 export default Object.entries(items).map(([mount, build]) => ({

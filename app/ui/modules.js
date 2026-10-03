@@ -3,6 +3,7 @@ export default [
   "./features/log/index.js",
   "./features/projects/index.js",
   "./features/media/index.js",
+  "./features/placeholders/early.js",
   "./features/timeline/index.js",
   "./features/inspector/index.js",
   "./features/generate/index.js",
@@ -10,5 +11,6 @@ export default [
   "./features/menus/index.js",
   "./features/render/index.js",
   "./features/placeholders/index.js",
+  "./features/generate/warn.js",
   "./features/temp/index.js",
 ].map((path) => new URL(path, import.meta.url).href);

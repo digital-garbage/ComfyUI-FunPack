@@ -14,14 +14,16 @@ export default {
   needs: ["project"],
   setup({ host, app }) {
     const p = app.project;
-    const viewer = c.viewer.media({ kind: "video", empty: "No render yet. Use Generate in the timeline header." });
-    host.append(viewer.node);
+    const viewer = c.viewer.media({ kind: "video", empty: "" });
+    const empty = c.emptyState.default({ icon: "🎬", title: "No render yet", hint: "Use Generate in the timeline header" });
+    host.append(viewer.node, empty.node);
     let shown = "";
     const draw = () => {
       const sc = p.selected, media = sc && p.project && (p.project.scene_renders || {})[sc.id];
       const src = media && media.media ? `${viewUrl(media.media)}#t=${start(sc, media, p.project)}${end(sc, media, p.project)}` : "";   // a split clip starts where its half does
       if (src === shown) return;          // a keystroke elsewhere must not restart the video
       shown = src;
+      viewer.node.hidden = !src; empty.node.hidden = Boolean(src);
       viewer.setSource(src || null, "video", src ? media.media : null);
     };
     draw();

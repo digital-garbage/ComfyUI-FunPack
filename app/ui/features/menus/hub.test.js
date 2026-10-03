@@ -9,31 +9,30 @@ test.after(() => teardownDom());
 const rig = (over = {}) => {
   const calls = [];
   const project = { project: { id: "P", name: "Demo" }, canUndo: true, canRedo: false, undo: () => calls.push("undo"), redo: () => calls.push("redo"), ...over };
+  const selection = { ids: [], focus: null };
   const host = document.createElement("div");
-  hub.setup({ host, app: { project } });
+  hub.setup({ host, app: { project, selection } });
   return { host, calls };
 };
-const pick = (host, menu, item) => {
+const pick = async (host, menu, item) => {
   [...host.querySelectorAll("button")].find((b) => b.textContent === menu).click();
+  await new Promise((r) => setTimeout(r, 10));
   [...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent.includes(item)).click();
 };
 
-test("Edit > Undo undoes; Redo is greyed when there is nothing to redo", () => {
+test("Edit > Undo undoes; Redo is greyed when there is nothing to redo", async () => {
   const { host, calls } = rig();
-  pick(host, "Edit", "Undo");
+  await pick(host, "Edit", "Undo");
   assert.deepEqual(calls, ["undo"]);
   [...host.querySelectorAll("button")].find((b) => b.textContent === "Edit").click();
+  await new Promise((r) => setTimeout(r, 10));
   assert.equal([...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent.includes("Redo")).disabled, true);
 });
 
-test("File > Rename renames the open project", async () => {
-  const renamed = [];
-  const { host } = rig({ rename: (n) => renamed.push(n) });
-  pick(host, "File", "Rename");
+test("Edit > Delete Scene is greyed until a scene is picked; File lists recent projects", async () => {
+  const { host } = rig();
+  [...host.querySelectorAll("button")].find((b) => b.textContent === "Edit").click();
   await new Promise((r) => setTimeout(r, 10));
-  const input = document.querySelector("input");
-  input.value = "Better";
-  [...document.querySelectorAll("button")].find((b) => b.textContent === "Rename").click();
-  await new Promise((r) => setTimeout(r, 10));
-  assert.deepEqual(renamed, ["Better"]);
+  assert.equal([...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent.includes("Delete Scene")).disabled, true);
+  assert.ok([...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent.includes("Add Scene")));
 });

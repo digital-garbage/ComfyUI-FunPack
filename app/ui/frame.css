@@ -9,3 +9,11 @@
 .fp-main > :last-child { flex: 0 0 var(--timeline-h); min-block-size: 200px; border-block-start: var(--bw) solid var(--line); }
 .cx-frame-head { padding-inline: calc(var(--sp-6) + var(--sp-1)); }
 .cx-frame-head > .cx-toolbar { gap: calc(var(--sp-6) + var(--sp-3)); }
+/* A zone body is a scroller of rows: they keep their height instead of squashing, and a tab strip spans the zone. */
+.cx-zone .cx-panel-body > :not(.cx-stack-fill):not(.cx-viewer) { flex-shrink: 0; }
+.cx-zone .cx-stack-fill > :not(.cx-viewer):not(.cx-stack-fill) { flex-shrink: 0; }
+.cx-zone .cx-stack-fill > .cx-segmented { display: flex; }
+.cx-zone .cx-stack-fill > .cx-segmented .cx-segment { flex: 1 1 0; }
+[hidden] { display: none !important; }
+/* An empty zone says so in the middle of it, with the controls kept at its foot. */
+.cx-zone .cx-stack-fill > .cx-empty { flex: 1 1 auto; justify-content: center; }

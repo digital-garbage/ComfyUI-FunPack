@@ -15,8 +15,9 @@ test("choosing an image in the bin makes it the selected scene's source", async 
   await new Promise((r) => setTimeout(r, 10));
   const cells = [...host.querySelectorAll(".cx-cell")];
   assert.equal(cells.length, 2);
-  cells[0].click();
+  const named = (n) => cells.find((x) => x.textContent.includes(n));
+  named("cat.png").click();
   assert.deepEqual(set, [["s1", "source_image", "m1"]]);
-  cells[1].click();                                   // audio: refused, nothing set
+  named("a.wav").click();                                   // audio: refused, nothing set
   assert.equal(set.length, 1);
 });

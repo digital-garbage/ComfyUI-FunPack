@@ -25,3 +25,9 @@ export function videoLane(p, picked, focus, actions = () => [], ghostActions = (
 
 /** Frames at `sec` into scene `sc`, for Split. */
 export const framesAt = (sc, p, sec) => Math.round(sec * effFps(sc, p));
+
+/** The sound that came with the picture, one block under each clip. */
+export const audioLane = (p, picked) => ({
+  id: "audio", label: "Original", kind: "audio",
+  clips: segments(p).filter((s) => s.kind === "scene").map((s, i) => ({ id: `a:${s.id}`, start: s.start, dur: s.dur, title: `S${i + 1}`, selected: picked.includes(s.id), excluded: Boolean(s.scene.excluded) })),
+});
