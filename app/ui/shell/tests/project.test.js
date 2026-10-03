@@ -609,3 +609,23 @@ test("taking an edit back saves it, and tells whoever draws it", async () => {
   await p.flush();
   assert.equal(sent.at(-1).scenes.at(-1).text, "", "the version saved was not the one on screen");
 });
+
+test("an edit that throws leaves the project as it was, and the next edit does not save it", async () => {
+  const { sent } = server();
+  const p = createProject({});
+  await p.start();
+  p.project.scenes.push({ id: "a", text: "keep" });
+  assert.throws(() => p.edit((pr) => { pr.scenes[0].text = "half"; throw new Error("boom"); }), /boom/);
+  assert.equal(p.project.scenes[0].text, "keep");
+  assert.equal(p.canUndo, false);
+});
+
+test("removing the selected scene selects another", async () => {
+  server();
+  const p = createProject({});
+  await p.start();
+  p.project.scenes.push({ id: "a" }, { id: "b" });
+  p.select("a");
+  p.edit((pr) => { pr.scenes.shift(); return true; });
+  assert.equal(p.selectedId, "b");
+});

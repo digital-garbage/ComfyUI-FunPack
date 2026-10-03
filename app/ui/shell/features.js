@@ -10,10 +10,13 @@ function mountOne(hub, has, app) {
   const lacking = (hub.needs || []).filter((name) => !has(name));
   if (lacking.length) throw new Error(`needs ${lacking.join(", ")}`);
   const before = [...host.childNodes];
+  const heard = [];                         // what the feature subscribed to, so a failed one can be unsubscribed
+  const mine = { ...app, on: (fn) => { const off = app.on(fn); heard.push(off); return off; } };
   try {
-    return { id: hub.id, teardown: hub.setup({ host, app }) };
-  } catch (err) {                           // whatever it put on the page goes with it
+    return { id: hub.id, teardown: hub.setup({ host, app: mine }) };
+  } catch (err) {                           // whatever it put on the page and listened to goes with it
     [...host.childNodes].filter((n) => !before.includes(n)).forEach((n) => n.remove());
+    heard.forEach((off) => off());
     throw err;
   }
 }

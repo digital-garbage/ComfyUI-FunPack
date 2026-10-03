@@ -301,8 +301,15 @@ export function createProject({ onChange, onError, onOpen } = {}) {
       if (!project) return false;
       const before = JSON.stringify(project);
       remember();
-      const result = fn(project);
+      let result;
+      try { result = fn(project); } catch (err) {         // a half-made edit must not stay in memory to be saved by the next one
+        Object.keys(project).forEach((k) => delete project[k]);
+        Object.assign(project, JSON.parse(before));
+        past.pop();
+        throw err;
+      }
       if (!result || JSON.stringify(project) === before) { past.pop(); return result; }
+      if (!sceneAt(selected)) selected = ((project.scenes || [])[0] || {}).id || null;     // the selected scene was removed
       scheduleSave();
       changed();
       return result;

@@ -17,7 +17,16 @@ const sceneRows = (p) => {
   ];
 };
 
-const projectRows = (p) => {
+// What the pipeline lets the project decide (width, length, steps...): one control per slot input that declares the role.
+const videoRows = (p, slots) => (slots || []).flatMap((slot) => (slot.roles || []).filter((r) => r.at === "project.video" && r.input).map((role) => {
+  const now = p.video[role.input] ?? (slot.inputs || {})[role.input];
+  const set = (v) => p.setVideo(role.input, v);
+  const label = role.label || role.input;
+  const control = typeof now === "number" ? c.number.md({ label, value: now, onChange: set }) : c.input.md({ label, value: now ?? "", onCommit: set });
+  return c.settingsRow.default({ label, control });
+}));
+
+const projectRows = (p, slots) => {
   const open = p.project;
   if (!open) return [c.emptyState.default({ icon: "▭", title: "No project", hint: "Open or create one." })];
   const num = (label, key, fallback, min) => c.settingsRow.default({ label, control: c.number.md({ label, min, value: open[key] || fallback,
@@ -25,6 +34,7 @@ const projectRows = (p) => {
   return [
     c.label.section({ text: "Project" }),
     num("Frames per scene", "num_frames_per_scene", 97, 9), num("Frame rate", "frame_rate", 25, 1),
+    ...videoRows(p, slots),
     c.label.section({ text: "Negative prompt" }),
     c.textarea.md({ label: "Negative prompt", value: p.negative, rows: 3, autoGrow: true, onInput: (v) => p.setNegative(v) }),
   ];
@@ -45,7 +55,7 @@ export default {
       const next = `${tab}|${p.project && p.project.id}|${p.selectedId}`;
       if (!force && next === key) return;
       key = next;
-      body.set((tab === "scene" ? sceneRows : projectRows)(p));
+      body.set((tab === "scene" ? sceneRows : projectRows)(p, app.pipeline && app.pipeline.slots()));
     }
     draw(true);
     return app.on((what) => draw(what === "open"));

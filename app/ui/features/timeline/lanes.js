@@ -1,5 +1,5 @@
 // The project as lanes of clips: what the timeline stage draws. Pure.
-import { segments, isVideoClip, effFps, effFrames } from "../../shell/scenes.js";
+import { segments, isVideoClip, effFps } from "../../shell/scenes.js";
 
 const first = (t) => ((t || "").split("\n")[0] || "").slice(0, 80);
 
@@ -24,4 +24,4 @@ export function videoLane(p, picked, focus, actions = () => []) {
 }
 
 /** Frames at `sec` into scene `sc`, for Split. */
-export const framesAt = (sc, p, sec) => Math.round(sec * effFps(sc, p)) || effFrames(sc, p) / 2;
+export const framesAt = (sc, p, sec) => Math.round(sec * effFps(sc, p));

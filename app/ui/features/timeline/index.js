@@ -42,15 +42,16 @@ export default {
     const btn = (label, onClick, disabled = false, title) => c.button.sm({ label, onClick, disabled, title });
     function bar() {
       const open = p.project, ids = open ? sel.ids : [];
-      const splitAt = () => {
-        const seg = segments(open).find((s) => s.kind === "scene" && at >= s.start && at < s.start + s.dur) || segments(open).find((s) => s.id === sel.focus);
-        if (!seg || !seg.scene) return;
-        edit((pr) => { const r = edits.split(pr, seg.id, framesAt(seg.scene, pr, Math.max(0, at - seg.start))); return r; });
+      const splitAt = () => {       // the selected clip, at the playhead if it is over it, else in the middle
+        const seg = segments(open).find((s) => s.id === sel.focus && s.kind === "scene");
+        if (!seg) return;
+        const inside = at > seg.start && at < seg.start + seg.dur;
+        edit((pr) => edits.split(pr, seg.id, inside ? framesAt(seg.scene, pr, at - seg.start) : undefined));
       };
       toolbar = swap(toolbar, [
         c.text.sm({ text: `${clock(at)} / ${clock(open ? totalSeconds(open) : 0)}` }),
-        btn("＋ Add", () => edit((pr) => edits.addScene(pr)), !open),
-        btn("Split", splitAt, !ids.length, "Split the selected clip at the playhead (S)"),
+        btn("＋ Add", () => { const sc = edit((pr) => edits.addScene(pr)); if (sc) p.select(sc.id); }, !open),
+        btn("Split", splitAt, !ids.length, "Split the selected clip at the playhead"),
         btn("Remove", () => ids.forEach((id) => edit((pr) => edits.removeScene(pr, id))), !ids.length),
         ids.length > 1 ? c.chip.neutral({ label: `${ids.length} selected` }) : c.text.sm({ text: "" }),
       ]);

@@ -25,3 +25,12 @@ test("what a feature put on the page before it threw is taken away", async () =>
   await run(["throws"]);
   assert.equal(h.childNodes.length, 0);
 });
+
+test("a feature that subscribed and then threw stops hearing the app", async () => {
+  _reset(); offer("a", host());
+  const heard = new Set();
+  const app = { on: (fn) => { heard.add(fn); return () => heard.delete(fn); } };
+  hubs.throws.setup = ({ app: a }) => { a.on(() => {}); throw new Error("late"); };
+  await loadFeatures(["throws"], { load: async (n) => ({ default: hubs[n] }), app, has: () => true });
+  assert.equal(heard.size, 0);
+});

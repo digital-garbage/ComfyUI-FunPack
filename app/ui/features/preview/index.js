@@ -13,7 +13,7 @@ export default {
     let shown = "";
     const draw = () => {
       const sc = p.selected, media = sc && p.project && (p.project.scene_renders || {})[sc.id];
-      const src = media && media.media ? viewUrl(media.media) : "";
+      const src = media && media.media ? `${viewUrl(media.media)}#t=${media.inSec || 0}` : "";   // a split clip starts where its half does
       if (src === shown) return;          // a keystroke elsewhere must not restart the video
       shown = src;
       viewer.setSource(src || null, "video", src ? media.media : null);
