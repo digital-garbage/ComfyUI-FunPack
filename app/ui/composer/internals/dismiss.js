@@ -23,6 +23,7 @@ function onPointerDown(event) {
   if (!stack.length) return;
   const top = stack[stack.length - 1];
   if (!top.closeOnOutside) return;
+  if (event.target.closest && event.target.closest(".cx-toasts")) return;       // a toast belongs to no overlay
   for (const node of top.nodes) {
     // Guarded: an anchor can be a VIRTUAL point (a context menu is anchored to
     // coordinates, not an element), and those have no .contains. Letting one

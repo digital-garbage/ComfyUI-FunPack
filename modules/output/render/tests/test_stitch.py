@@ -330,3 +330,10 @@ def test_the_render_is_made_at_the_clips_own_size_not_the_projects(comfy):
     assert size(projects.Project(width=100, height=100, export_size_from="s2"), clips) == (96, 96)
     assert size(projects.Project(width=100, height=100, export_size_from="project"), clips) == (100, 100)
     assert size(projects.Project(width=100, height=100, export_size_from="gone"), clips) == (160, 120)
+
+
+def test_a_separated_lane_goes_quiet_with_a_clip_that_is_not_in_the_cut():
+    proj = projects.Project(width=160, height=120, audio_tracks=[
+        {"id": "a", "kind": "separated", "scene_id": "gone"}, {"id": "b", "kind": "separated", "scene_id": "here"},
+        {"id": "c", "media_ref": "aaaaaaaaaaaa", "start_sec": 0}])
+    assert [t["id"] for t in stitch._live_tracks(proj, {"here": {}})] == ["b", "c"]

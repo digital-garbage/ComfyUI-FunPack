@@ -141,6 +141,12 @@ def _clip_audio(i: int, clip: dict, dur: float) -> str:
     return f"[{i}:a:0]{af}[a{i}]"
 
 
+def _live_tracks(project, clips_by_scene: dict) -> list[dict]:
+    """The lanes that can sound: a clip's own lane goes quiet with its clip (excluded, or not in this cut)."""
+    return [t for t in project.audio_tracks
+            if t.get("kind") != "separated" or not t.get("scene_id") or t["scene_id"] in clips_by_scene]
+
+
 def _audio_tracks(project, clips_by_scene: dict, resolve) -> list[dict]:
     """The project's extra audio lanes as {path, start_sec, volume[, source_in, source_dur]}.
 
@@ -148,7 +154,7 @@ def _audio_tracks(project, clips_by_scene: dict, resolve) -> list[dict]:
     separation time (so a later regeneration of the picture keeps the old sound), else the
     clip's file. A lane whose file cannot be found is left out."""
     out = []
-    for t in project.audio_tracks:
+    for t in _live_tracks(project, clips_by_scene):
         separated = t.get("kind") == "separated" or (t.get("scene_id") and not t.get("media_ref")
                                                     and t.get("kind") != "overlay")
         start, vol = _f(t.get("start_sec")), _f(t.get("volume"), 1.0)
@@ -301,8 +307,9 @@ def render(project, clips: list[dict]) -> dict:
     warnings = []
     if len(drawn) < len(project.overlay_tracks):
         warnings.append(f"{len(project.overlay_tracks) - len(drawn)} overlay(s) left out: their picture is gone from the media library.")
-    if len(tracks) < len(project.audio_tracks):
-        warnings.append(f"{len(project.audio_tracks) - len(tracks)} audio lane(s) left out: their file is gone or has no sound.")
+    live = len(_live_tracks(project, by_scene))
+    if len(tracks) < live:
+        warnings.append(f"{live - len(tracks)} audio lane(s) left out: their file is gone or has no sound.")
     for path in pictures:
         cmd += ["-i", path]
     graph, has_audio = build_filter(clips, tracks, keep_original=keep, base_input=base, blank=blank_canvas)

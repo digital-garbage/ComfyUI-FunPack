@@ -172,3 +172,12 @@ test("a virtual anchor never reaches the outside-click check", () => {
   assert.doesNotThrow(() => fire(document.body, "pointerdown"));
   assert.equal(closed, true);
 });
+
+test("a click on a toast does not dismiss the modal beneath", () => {
+  let closed = false;
+  const toasts = panel("toasts"); toasts.className = "cx-toasts";
+  const toast = document.createElement("div"); toasts.appendChild(toast);
+  push({ nodes: panel("card"), onDismiss: () => { closed = true; } });
+  fire(toast, "pointerdown");
+  assert.equal(closed, false);
+});

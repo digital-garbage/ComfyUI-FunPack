@@ -81,7 +81,7 @@ test("raise() works when the rung is nearly full", () => {
   mid.raise();
   const peers = hs.filter((h) => h.live && h !== mid).map((h) => h.z);
   assert.ok(mid.z > Math.max(...peers), "raise must put it above every peer");
-  assert.ok(mid.z < baseOf("backdrop"), "and still inside its own rung");
+  assert.ok(mid.z < baseOf("toast"), "and still inside its own rung");
 });
 
 test("releasing a middle claim keeps the order of the rest", () => {

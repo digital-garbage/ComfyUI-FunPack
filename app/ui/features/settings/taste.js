@@ -31,7 +31,7 @@ export const taste = (app) => function mount() {
       error ? c.banner.warn({ text: `Could not read the keys: ${error}` }) : null,
       keys && !keys.length && !error ? c.emptyState.default({ icon: "✦", title: "No keys yet", hint: "A key appears once you rate a render with learning on." }) : null,
       ...(keys || []).map((name) => c.settingsRow.default({ label: name, hint: "Refinement key", control: c.toolbar.default({ items: [
-        c.button.sm({ label: "⤓ Export", tone: "ghost", onClick: () => c.toast.good({ text: "Preparing the download…" }) || Object.assign(document.createElement("a"), { href: app.api.tasteKeyUrl(name) }).click() }),
+        c.button.sm({ label: "⤓ Export", tone: "ghost", onClick: () => { Object.assign(document.createElement("a"), { href: app.api.tasteKeyUrl(name) }).click(); c.toast.good({ text: "Preparing the download…" }); } }),
         c.button.sm({ label: "Delete", tone: "danger", onClick: () => remove(name) })] }) })),
       c.label.section({ text: "Bring a key here" }),
       c.dropzone.default({ label: "Drop or choose an exported key (.zip)", hint: "from another machine", accept: ".zip,application/zip", multiple: false, onFiles: bring }),

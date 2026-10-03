@@ -24,11 +24,14 @@ export function focusables(container) {
  * Restoring matters as much as trapping: closing a dialog and dropping focus to
  * <body> silently ends keyboard navigation, and the only way back is the mouse.
  */
-export function trap(container, { initial } = {}) {
+const modals = [];                     // modal traps, bottom to top: only the top one may pull focus
+
+export function trap(container, { initial, modal = false } = {}) {
   const previous = document.activeElement;
 
   const onKeyDown = (event) => {
     if (event.key !== "Tab") return;
+    if (modal && modals[modals.length - 1] !== container) return;
     const items = focusables(container);
     if (!items.length) { event.preventDefault(); return; }
     const first = items[0];
@@ -46,12 +49,16 @@ export function trap(container, { initial } = {}) {
     }
   };
 
-  container.addEventListener("keydown", onKeyDown);
+  // A modal listens on the document: focus that left the card (a click on plain text) must still be pulled back.
+  const scope = modal ? document : container;
+  if (modal) modals.push(container);
+  scope.addEventListener("keydown", onKeyDown, true);
   const target = initial || focusables(container)[0] || container;
   if (target && target.focus) target.focus();
 
   return function release({ restore = true } = {}) {
-    container.removeEventListener("keydown", onKeyDown);
+    scope.removeEventListener("keydown", onKeyDown, true);
+    if (modal) modals.splice(modals.indexOf(container), 1);
     if (restore && previous && previous.isConnected && previous.focus) previous.focus();
   };
 }

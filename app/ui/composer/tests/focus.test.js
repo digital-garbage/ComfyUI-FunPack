@@ -127,3 +127,13 @@ test("arrow keys outside the group are left alone", () => {
   document.body.focus();
   assert.doesNotThrow(() => arrow(n, "ArrowRight"));
 });
+
+test("a modal trap pulls back focus that left the card, and only the top modal acts", () => {
+  const behind = box("<button>behind</button>");
+  const lower = box("<button>lower</button>"), upper = box("<button>upper</button>");
+  const a = trap(lower, { modal: true }), b = trap(upper, { modal: true });
+  behind.querySelector("button").focus();
+  tab(document.body);
+  assert.equal(document.activeElement.textContent, "upper");
+  b(); a();
+});

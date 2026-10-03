@@ -31,7 +31,7 @@ function nodeOf(control, where) {
  */
 function open({
   title, subtitle, size = "md", body, actions = [], onClose,
-  closeOnOutside = true, stacked = false, describedBy,
+  closeOnOutside = true, closeOnEsc = true, stacked = false, describedBy,
 } = {}) {
   const titleId = uid("modal-title");
 
@@ -53,8 +53,8 @@ function open({
       el("h2", { cls: "cx-modal-title", text: title, attrs: { id: titleId } }),
       subtitle ? el("p", { cls: "cx-hint", text: subtitle }) : null,
     ].filter(Boolean) }),
-    close,
-  ] }));
+    closeOnEsc ? close : null,       // a card that must not be dismissed has no way out but its own work
+  ].filter(Boolean) }));
 
   const content = el("div", { cls: "cx-modal-body", children: nodeOf(body, "modal") });
   card.append(content);
@@ -86,10 +86,11 @@ function open({
   mount(root);
 
   // Trap after mounting: focusables() must be able to see the card.
-  const release = trap(card);
+  const release = trap(card, { modal: true });
   const dismissal = push({
     nodes: card,
     closeOnOutside,
+    closeOnEsc,
     onDismiss: (reason) => handle.close(reason),
   });
 

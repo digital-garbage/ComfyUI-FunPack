@@ -43,7 +43,7 @@ export function build(p, { leadId, poolIds, segmentFrames = 100, decay = 1, rand
   };
   const piece = (sc, src, start, frames) => {
     const out = clone(sc), at = start / src.fps;
-    Object.assign(out, { id: newId(), gen_unit_id: genUnitId(sc), frames, rating: "", transition_to_next: "cut", transition_frames: null, frames_mode: "timeline", excluded: false });
+    Object.assign(out, { id: newId(), gen_unit_id: genUnitId(sc), frames, rating: "", transition_to_next: "cut", transition_frames: null, frames_mode: "timeline", excluded: false, audio_separated: false, audio_volume: sc.audio_separated ? 1 : sc.audio_volume });
     if (isVideoClip(sc)) Object.assign(out, { source_in: src.from + at, source_dur: frames / src.fps });
     else {
       out.cut_offset_frames = (sc.cut_offset_frames || 0) + start;

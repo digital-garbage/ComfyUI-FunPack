@@ -29,7 +29,7 @@ export function createMaintenance({ api, flush }) {
   async function run(message, action, said) {
     try { await flush(); } catch (err) { return tell(err.message); }
     const text = c.text.md({ text: message });
-    const card = c.modal.generic({ title: "Working", size: "sm", closeOnOutside: false, body: c.region.stack({ gap: "md", children: [c.progress.indeterminate({ label: "Working" }), text] }) });
+    const card = c.modal.generic({ title: "Working", size: "sm", closeOnOutside: false, closeOnEsc: false, body: c.region.stack({ gap: "md", children: [c.progress.indeterminate({ label: "Working" }), text] }) });
     card.setText = (t) => text.setText ? text.setText(t) : (text.node.textContent = t);
     try {
       const res = await action();
