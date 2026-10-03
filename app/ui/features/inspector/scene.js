@@ -1,10 +1,20 @@
 // The Scene tab: this clip's prompt, where it starts from, how long it runs.
 import { composer as c } from "../../composer/composer.js";
+import { namesOf, pick } from "./mediapick.js";
 import { effFrames, effFps, genUnitId, isSubclip } from "../../shell/scenes.js";
 
 const SOURCES = [{ value: "image", label: "Image · i2v anchor" }, { value: "carry", label: "From generated frame" }, { value: "video", label: "Video clip" }];
 const MODES = [{ value: "project", label: "Project default" }, { value: "timeline", label: "Timeline trim" }, { value: "custom", label: "Custom" }];
-const inert = (label, extra = {}) => c.button.sm({ label, tone: "ghost", disabled: true, ...extra });
+
+/** A field that holds media from the bin: what is chosen, Browse to change it, ✕ to clear it. */
+const mediaField = (app, p, sc, { label, hint, key, multiple, kinds, empty }) => {
+  const ids = multiple ? sc[key] || [] : sc[key] ? [sc[key]] : [];
+  const set = (next) => p.setScene(sc.id, key, multiple ? next : next[0] || null);
+  return c.field.default({ label, hint, control: c.toolbar.default({
+    items: [c.text.sm({ text: ids.length ? `◇  ${namesOf(ids, app.api, () => app.say("bin")).join(", ")}` : `◇  ${empty}` })],
+    trailing: [c.button.sm({ label: "Browse", tone: "ghost", onClick: async () => { const got = await pick(app.api, { title: label, kinds, multiple, current: ids }); if (got) set(got); } }),
+      c.button.sm({ label: "✕", tone: "ghost", disabled: !ids.length, title: "Clear", onClick: () => set([]) })] }) });
+};
 
 /** A number-or-mode pair: "Project default / Timeline trim / Custom", and the number only when Custom. */
 const lengthField = (p, sc, label, modeKey, valueKey, shown) => {
@@ -29,9 +39,9 @@ export function sceneRows(p, app) {
         onChange: (v) => p.setScene(sc.id, "source", { ...(sc.source || {}), type: v }) }) }),
     ]),
     c.label.section({ text: "Reference media (v5 pipeline)" }),
-    c.field.default({ label: "Resolution source", hint: "Sets this scene's aspect ratio for generation — the project's own Width/Height set the actual resolution; this image's pixels are not used.",
-      control: c.toolbar.default({ items: [c.text.sm({ text: "◇  — choose resolution source —" })], trailing: [inert("Browse")] }) }),
-    c.field.default({ label: "References", control: c.toolbar.default({ items: [c.text.sm({ text: "◇  + Add reference" })], trailing: [inert("Browse"), inert("✕")] }) }),
+    mediaField(app, p, sc, { label: "Resolution source", hint: "Sets this scene's aspect ratio for generation — the project's own Width/Height set the actual resolution; this image's pixels are not used.",
+      key: "source_image", multiple: false, kinds: ["image"], empty: "— choose resolution source —" }),
+    mediaField(app, p, sc, { label: "References", key: "references", multiple: true, kinds: ["image", "video", "audio"], empty: "+ Add reference" }),
     c.field.row({ fields: [
       lengthField(p, sc, "Frames", "frames_mode", "frames", effFrames(sc, open)),
       lengthField(p, sc, "FPS", "fps_mode", "fps", effFps(sc, open)),

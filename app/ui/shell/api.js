@@ -84,6 +84,7 @@ export const api = {
   gitFull: () => call("GET", "/api/git/status"),
   gitStatus: () => call("GET", "/api/git/status?remote=0"),
   media: () => call("GET", "/api/media"),
+  renameMedia: (id, name) => call("PATCH", `/api/media/${encodeURIComponent(id)}`, { name }),
   deleteMedia: (id) => call("DELETE", `/api/media/${encodeURIComponent(id)}`),
   /** Upload files as media, one request each so one refusal (too big, wrong type) does not sink the rest.
    *  Resolves {media, problems}. Not JSON, so not through call(). */

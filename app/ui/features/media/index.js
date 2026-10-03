@@ -25,14 +25,30 @@ export default {
       p.setScene(sc.id, "source_image", item.id);
       draw();
     };
-    const context = (it, e) => c.menu.context({ x: e.clientX, y: e.clientY, items: [{ id: "delete", label: "Delete from the bin", danger: true }],
-      onPick: async () => {
+    const context = (it, e) => c.menu.context({ x: e.clientX, y: e.clientY, onPick: (id) => act[id](it),
+      items: [{ id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected || (p.selected.references || []).includes(it.id) }, { id: "rename", label: "Rename…" },
+        { id: "export", label: "Save to your computer", disabled: !items.some((m) => m.id === it.id && m.kind !== "audio") }, { separator: true }, { id: "delete", label: "Delete from the bin", danger: true }] });
+    const act = {
+      ref: (it) => p.setScene(p.selected.id, "references", [...(p.selected.references || []), it.id]),
+      rename: async (it) => {
+        const name = await c.modal.prompt({ title: "Rename media", label: "Name", value: (items.find((m) => m.id === it.id) || {}).name || "", confirmLabel: "Rename" }).result;
+        if (!name || !name.trim()) return;
+        try { await api.renameMedia(it.id, name.trim()); await refresh(); } catch (err) { tell(err.message); }
+      },
+      export: (it) => { const m = items.find((x) => x.id === it.id); Object.assign(document.createElement("a"), { href: `${base(it.id)}/file`, download: m ? m.name : it.id }).click(); },
+      delete: async (it) => {
         try {
           await api.deleteMedia(it.id);
-          p.edit((pr) => pr.scenes.reduce((hit, s) => (s.source_image === it.id ? (s.source_image = "", true) : hit), false));    // nothing may keep pointing at it
+          p.edit((pr) => pr.scenes.reduce((hit, s) => {
+            const had = s.source_image === it.id || (s.references || []).includes(it.id);
+            if (s.source_image === it.id) s.source_image = "";
+            if (had) s.references = (s.references || []).filter((r) => r !== it.id);
+            return hit || had;
+          }, false));    // nothing may keep pointing at it
           await refresh();
         } catch (err) { tell(err.message); }
-      } });
+      },
+    };
     const props = { id: "media", items: [], empty: "No media yet. Drop images or clips here.", onActivate: pick, onContext: context };
     const galleries = { adaptive: c.gallery.adaptive(props), list: c.gallery.list(props), icons: c.gallery.icons(props) };
     const shelf = c.region.stack({ gap: "none", children: [galleries.adaptive] });
