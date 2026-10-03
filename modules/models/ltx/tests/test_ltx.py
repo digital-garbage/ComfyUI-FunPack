@@ -144,3 +144,47 @@ def test_the_presets_are_offered_through_the_registry(registered):
     from core import routes
     found = {preset["id"] for _spec, make in routes.modules().providers("pipeline_presets") for preset in make()}
     assert {"ltx23_text_to_video", "ltx23_image_to_video"} <= found
+
+
+def test_the_picture_is_found_in_both_shapes_a_sampling_latent_takes(comfyui):
+    import torch
+    from comfy.nested_tensor import NestedTensor
+    m = _ltx()
+    video, audio = torch.randn(1, 128, 2, 2, 3), torch.randn(1, 8, 5, 16)
+    found, rebuild = m.PROVIDES["video_stream"](NestedTensor((video, audio)))
+    assert torch.equal(found, video)
+    packed = torch.cat([video.reshape(1, 1, -1), audio.reshape(1, 1, -1)], dim=-1)
+    found, rebuild = m.PROVIDES["video_stream"](packed, {"latent_shapes": [video.shape, audio.shape]})
+    assert torch.equal(found, video)
+    assert torch.equal(rebuild(found * 2)[..., video.numel():], packed[..., video.numel():])
+    assert m.PROVIDES["video_stream"](torch.randn(1, 4, 8, 8)) is None
+
+
+def test_a_tiled_decode_is_asked_the_way_comfy_asks_it(comfyui, monkeypatch):
+    import torch
+    from comfy.nested_tensor import NestedTensor
+    m = _ltx()
+    monkeypatch.setattr(m, "is_ltx", lambda model: True)
+    seen = {}
+
+    class Vae:
+        def temporal_compression_decode(self): return 8
+        def spacial_compression_decode(self): return 32
+        def decode_tiled(self, latent, **kw):
+            seen.update(kw)
+            return torch.zeros(1, 9, 64, 64, 3)
+
+    latent = NestedTensor((torch.zeros(1, 128, 2, 2, 2), torch.zeros(1, 8, 5, 16)))
+    m.decode(latent, model=object(), vae=Vae(), audio_vae=_AudioVae(), tile_size=512)
+    assert seen == {"tile_x": 16, "tile_y": 16, "overlap": 4, "tile_t": 8, "overlap_t": 1}
+
+
+def test_a_size_that_is_not_a_multiple_of_32_is_said(comfyui, monkeypatch):
+    import torch
+    from core import log
+    m = _ltx()
+    monkeypatch.setattr(m, "is_ltx", lambda model: True)
+    said = []
+    monkeypatch.setattr(log, "once", lambda key, level, source, msg: said.append(msg))
+    m.empty_latent(object(), 816, 512, 9, 1, audio_vae=_AudioVae(), frame_rate=25.0)
+    assert said and "800x512" in said[0]

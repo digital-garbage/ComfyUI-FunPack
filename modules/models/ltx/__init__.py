@@ -14,6 +14,8 @@ What it contributes, and what it deliberately does NOT:
   from the AUDIO VAE and the frame rate. That is why this provider asks for `audio_vae` and
   `frame_rate`: without them the audio half cannot be sized, and a video-only latent would make a
   silent clip while reporting success, so it refuses instead.
+* **The picture inside a sampling-time latent** (`video_stream`) -- video first, then audio, the same
+  arrangement H3 uses, so ALG, DynaShift and the guidance modules find the picture.
 * **Decode** -- the picture through the video VAE, the sound through the audio VAE.
 
 Not validated on a real LTX model yet: the shapes are tested against fakes and ComfyUI's own
@@ -24,7 +26,7 @@ import comfy.model_management
 import torch
 from comfy.nested_tensor import NestedTensor
 
-from ..._core import log, traits as _traits
+from ..._core import log, streams as _streams, traits as _traits, vae_tiles
 from .pipeline import presets as _pipeline_presets
 
 has_block = _traits.has_block
@@ -86,6 +88,10 @@ def empty_latent(model, width, height, length, batch_size=1, audio_vae=None, fra
             "this model makes sound with the picture and sizes it from the audio VAE: wire the audio "
             "VAE into the empty latent (a video-only latent would give a silent clip)")
 
+    if width % VIDEO_SPATIAL_RATIO or height % VIDEO_SPATIAL_RATIO:
+        log.once(f"ltx_size:{width}x{height}", log.ALERT, "FunPack LTX",
+                 f"{width}x{height} is not a multiple of {VIDEO_SPATIAL_RATIO}: the video comes out "
+                 f"{width // VIDEO_SPATIAL_RATIO * VIDEO_SPATIAL_RATIO}x{height // VIDEO_SPATIAL_RATIO * VIDEO_SPATIAL_RATIO}")
     frames = frames_for(length)
     device = comfy.model_management.intermediate_device()
     video = torch.zeros(
@@ -116,8 +122,7 @@ def decode(latent, model=None, vae=None, audio_vae=None, tile_size=0):
 
     if tile_size and tile_size > 0:
         try:
-            images = vae.decode_tiled(video_latent, tile_x=max(1, tile_size // VIDEO_SPATIAL_RATIO),
-                                      tile_y=max(1, tile_size // VIDEO_SPATIAL_RATIO))
+            images = vae_tiles.tiled_decode(vae, video_latent, tile_size)
         except Exception as exc:                             # noqa: BLE001
             log.once(f"ltx_decode_tiles:{type(exc).__name__}", log.ALERT, "FunPack LTX decode",
                      f"the tiled decode failed ({type(exc).__name__}: {exc}); decoded in one piece instead")
@@ -134,4 +139,5 @@ def decode(latent, model=None, vae=None, audio_vae=None, tile_size=0):
 
 TRAITS = traits
 PROVIDES = {"empty_latent": empty_latent, "decode": decode, "detect": detect,
-            "probe_traits": probe_traits, "pipeline_presets": _pipeline_presets}
+            "probe_traits": probe_traits, "pipeline_presets": _pipeline_presets,
+            "video_stream": _streams.av_video_stream}

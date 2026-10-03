@@ -18,6 +18,42 @@ def video_of(x, named=None):
     return None
 
 
+def av_video_stream(x, named=None):
+    """The picture of an audio+video model whose latent is [video, audio], in this order, in both the
+    shapes that reach a feature:
+
+    * the model call's result (APPLY_MODEL) is PACKED: comfy's `_apply_model` flattens the parts into
+      one [B, 1, N] tensor with `pack_latents`, and the shapes to undo that ride along as
+      `latent_shapes`;
+    * elsewhere (callbacks, the finished latent) it is a two-part NestedTensor.
+
+    -> (video [B, C, T, H, W], rebuild(new_video) -> x), or None when `x` is neither.
+    """
+    import math
+    if getattr(x, "is_nested", False):
+        if len(x.tensors) != 2 or x.tensors[0].dim() != 5:
+            return None
+        from comfy.nested_tensor import NestedTensor
+        rest = x.tensors[1:]
+        return x.tensors[0], lambda video: NestedTensor([video, *rest])
+    shapes = (named or {}).get("latent_shapes")
+    if not hasattr(x, "dim") or x.dim() != 3 or not shapes or len(shapes) != 2 \
+            or len(shapes[0]) != 5:
+        return None
+    n = math.prod(shapes[0][1:])
+    if x.shape[-1] != n + math.prod(shapes[1][1:]):
+        return None
+    b = x.shape[0]
+    video = x[..., :n].reshape(b, *shapes[0][1:])
+    rest = x[..., n:]
+
+    def rebuild(new_video):
+        import torch
+        return torch.cat([new_video.reshape(b, 1, n).to(rest.dtype), rest], dim=-1)
+
+    return video, rebuild
+
+
 MODEL_ARGS = ("c_concat", "c_crossattn", "control", "transformer_options")
 
 
