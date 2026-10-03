@@ -25,15 +25,15 @@ const videoRows = (p, slots) => (slots || []).flatMap((slot) => (slot.roles || [
   const now = field ? p.project[field] : p.video[role.input] ?? (slot.inputs || {})[role.input];
   if (!Number.isInteger(now)) return null;                  // the project file keeps whole numbers only
   const label = role.label || role.input;
-  return c.settingsRow.default({ label, control: c.number.md({ label, min: 1, value: now,
-    onChange: (v) => (field ? p.setField(field, v) : p.setVideo(role.input, v)) }) });
-}).filter(Boolean));
+  return { key: field || role.input, row: c.settingsRow.default({ label, control: c.number.md({ label, min: 1, step: 1, precision: 0, value: now,
+    onChange: (v) => (field ? p.setField(field, v) : p.setVideo(role.input, v)) }) }) };
+}).filter(Boolean)).filter((r, i, all) => all.findIndex((x) => x.key === r.key) === i).map((r) => r.row);   // one row per thing edited
 
 const projectRows = (p, slots) => {
   const open = p.project;
   if (!open) return [c.emptyState.default({ icon: "▭", title: "No project", hint: "Open or create one." })];
   const rows = videoRows(p, slots);
-  const num = (label, key, fallback, min) => c.settingsRow.default({ label, control: c.number.md({ label, min, value: open[key] || fallback,
+  const num = (label, key, fallback, min) => c.settingsRow.default({ label, control: c.number.md({ label, min, step: 1, precision: 0, value: open[key] || fallback,
     onChange: (v) => p.setField(key, v) }) });
   return [
     c.label.section({ text: "Project" }),

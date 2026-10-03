@@ -35,6 +35,7 @@ export default {
       busy = true; stopped = false; draw();
       const pid = p.project.id;
       let made = 0;
+      said = false;
       try {
         for (const unit of units) {
           if (stopped) break;
@@ -61,7 +62,7 @@ export default {
           if (!images.length) { tell("ComfyUI finished without a result (a cached run makes none). Change the prompt or seed and try again."); break; }
           record(pid, unit, images[images.length - 1]);
         }
-        if (!made && !stopped) tell("Nothing to generate: every scene is left out or is a video clip.");
+        if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out or is a video clip.");
       } finally { busy = false; draw(); }
     }
     const unitsOf = (scenes) => [...new Set(scenes.map(genUnitId))];
