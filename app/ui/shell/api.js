@@ -22,6 +22,8 @@ export const api = {
   pipeline: () => call("GET", "/api/pipeline"),
   editPipeline: (body) => call("POST", "/api/pipeline", body),
   modules: (traits) => call("GET", `/api/modules${traits ? `?traits=${encodeURIComponent(traits)}` : ""}`),
+  system: () => call("GET", "/api/system"),
+  gitStatus: () => call("GET", "/api/git/status?remote=0"),
   media: () => call("GET", "/api/media"),
   deleteMedia: (id) => call("DELETE", `/api/media/${encodeURIComponent(id)}`),
   /** Upload files as media, one request each so one refusal (too big, wrong type) does not sink the rest.

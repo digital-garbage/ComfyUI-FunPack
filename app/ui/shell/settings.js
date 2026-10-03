@@ -1,13 +1,14 @@
 // The Settings window. It owns no section: features announce theirs by mounting at "settings"
-//   setup({ host }) { host.add({ id, title, subtitle, keywords, icon, tone, mount({ setFooter, close }) -> handle }) }
+//   setup({ host }) { host.add({ id, group?, title, subtitle, keywords, icon, tone, mount({ setFooter, close }) -> handle }) }
 // and the window lists whatever arrived. It is also the one place a "Settings" button is made.
 import { composer } from "../composer/composer.js";
 import { offer } from "./mounts.js";
 
 export function createSettings({ menubar }) {
+  const GROUPS = ["", "Generation", "Learning", "System"];       // the order v4 laid the window out in
   const sections = [];
   // childNodes: the feature loader checks a region's children to undo a feature that fails half-way
-  const host = { childNodes: [], add: (section) => sections.push(section) };
+  const host = { childNodes: [], add: (section) => { sections.push(section); sections.sort((a, b) => GROUPS.indexOf(a.group || "") - GROUPS.indexOf(b.group || "")); } };
   offer("settings", host);
   let current = null;
 
@@ -29,7 +30,7 @@ export function createSettings({ menubar }) {
     }
 
     const nav = composer.filterList.md({
-      items: sections.map((s) => ({ id: s.id, label: s.title, icon: s.icon, keywords: s.keywords, tone: s.tone || "neutral" })),
+      items: sections.map((s) => ({ id: s.id, label: s.title, icon: s.icon, keywords: s.keywords, tone: s.tone || "neutral", group: s.group || "" })),
       value: id, onChange: show, placeholder: "Search settings",
     });
     nav.node.classList.add("cx-filter-full", "cx-settings-rail");

@@ -56,6 +56,7 @@
   background: transparent; color: var(--text);
   font-size: var(--fs-5); text-align: left; cursor: pointer; width: 100%;
 }
+.cx-filter-gap { block-size: var(--sp-5); }
 .cx-filter-row:hover { background: var(--hover); }
 .cx-filter-row.cx-on { background: var(--accent-soft); color: var(--accent-hi); }
 .cx-filter-row.cx-on .cx-filter-label { font-weight: var(--fw-semibold); }

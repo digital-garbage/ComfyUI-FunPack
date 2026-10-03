@@ -24,7 +24,7 @@ linkPipeline({ project, pipeline, onOpen: (fn) => on((what) => { if (what === "o
 const frame = build(document.getElementById("app"));
 const selection = createSelection({ project });
 selection.on(() => say("select"));
-const app = { project, pipeline, generate, api, on, say, title: frame.setZoneTitle, selection, playhead: createPlayhead() };
+const app = { project, pipeline, generate, api, on, say, title: frame.setZoneTitle, selection, playhead: createPlayhead(), theme: window.ComposerTheme };
 const settings = createSettings({ menubar: hostFor("menubar.menus") });
 const result = await loadFeatures(paths, { app });
 settings.addButton();

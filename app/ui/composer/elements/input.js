@@ -169,7 +169,10 @@ define("filterList", "md", ({ items = [], value, onChange, placeholder = "Search
       !q || `${i.label} ${i.hint || ""} ${i.keywords || ""}`.toLowerCase().includes(q));
     list.replaceChildren();
     if (!shown.length) { list.append(el("div", { cls: "cx-filter-empty", text: empty })); return; }
+    let before;
     for (const item of shown) {
+      if (before !== undefined && item.group !== before) list.append(el("div", { cls: "cx-filter-gap", attrs: { "aria-hidden": "true" } }));   // a new group starts after a gap
+      before = item.group;
       // `tone` picks one of a FIXED set of chip colours -- never a raw
       // colour from data, which is the rule `el()`'s style refusal exists to
       // hold everywhere else too. Enforced, not just claimed: an unknown
