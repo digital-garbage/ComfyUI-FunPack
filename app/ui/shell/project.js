@@ -450,6 +450,15 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
       changed();
     },
 
+    /** Editor preferences that travel with the project (a new rental has an empty browser). */
+    pref(key, fallback) { const s = project && project.editor_settings; return s && key in s ? s[key] : fallback; },
+    setPref(key, value) {
+      if (!project || this.pref(key) === value) return;
+      (project.editor_settings ||= {})[key] = value;
+      scheduleSave();
+      changed();
+    },
+
     /** Attach what a run produced to the scene it was started from. */
     setResult(id, result) { this.setScene(id, "result", result); },
 

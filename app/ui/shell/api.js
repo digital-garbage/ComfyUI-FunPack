@@ -48,6 +48,34 @@ export const api = {
     if (!res.ok) throw new Error((payload && payload.why) || `HTTP ${res.status}`);
     return payload;
   },
+  upscaleModels: () => call("GET", "/api/m/render/upscale_models"),
+  /** The upscale is an ordinary ComfyUI job: queued on /prompt, read back from /history. -> the prompt id. */
+  async queueUpscale(media, model) {
+    const graph = { 1: { class_type: "FunPackUpscaleVideo", inputs: { filename: media.filename, subfolder: media.subfolder || "", type: media.type === "temp" ? "temp" : "output", upscale_model: model } } };
+    const res = await fetch("/prompt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: graph }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.prompt_id) {
+      const nodes = Object.values(body.node_errors || {}).flatMap((n) => (n.errors || []).map((x) => x.message));
+      throw new Error([(body.error || {}).message, ...nodes].filter(Boolean).join("; ") || `ComfyUI refused the job (HTTP ${res.status})`);
+    }
+    return body.prompt_id;
+  },
+  /** null while it is queued or running, else {videos} | {error} | {gone} | {retry} (a dropped reply is not a failed job). */
+  async upscaleResult(promptId) {
+    let entry = null;
+    try { const res = await fetch(`/history/${encodeURIComponent(promptId)}`); entry = res.ok ? (await res.json())[promptId] : null; } catch { return { retry: true }; }
+    if (!entry) {
+      try {
+        const q = await (await fetch("/queue")).json();
+        return [...(q.queue_running || []), ...(q.queue_pending || [])].some((r) => r[1] === promptId) ? null : { gone: true };
+      } catch { return { retry: true }; }
+    }
+    const st = entry.status || {};
+    if (st.status_str === "error") { const m = (st.messages || []).find((x) => x[0] === "execution_error"); return { error: (m && m[1] && m[1].exception_message) || "failed inside ComfyUI" }; }
+    if (!st.completed) return null;
+    const videos = Object.values(entry.outputs || {}).flatMap((o) => o.videos || []);
+    return videos.length ? { videos } : { error: "no video came out, check the ComfyUI terminal" };
+  },
   expandPrompt: (body) => call("POST", "/api/prompt/expand", { ...body, seed: 1 }),
   packs: () => call("GET", "/api/packs"),
   pack: (action, body) => call("POST", `/api/packs/${action}`, body || {}),

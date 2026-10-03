@@ -8,10 +8,7 @@ import { modules } from "./modules.js";
 import { system } from "./system.js";
 import { packs } from "./packs.js";
 import { taste } from "./taste.js";
-
-const later = (what) => function mount() {
-  return c.emptyState.default({ icon: "◌", title: "Not built yet", hint: what });
-};
+import { editor } from "./editor.js";
 
 export default {
   id: "settings-sections",
@@ -22,7 +19,7 @@ export default {
     add("about", "About FunPack", "", "◎", "accent", about(app.api), "", "version commit branch cpu memory gpu disk python torch");
     add("appearance", "Appearance", "Light, dark, or follow the system.", "◐", "neutral", appearance(app.theme), "", "theme colour light dark auto");
     add("editor", "Editor", "How the editor behaves. The open project remembers these, so they follow it to another machine.", "☰", "neutral",
-      later("Upscale model, prompt autocomplete, shortcut ideas, i2v options."), "", "upscale autocomplete shortcuts ideas preferences");
+      editor(app), "", "upscale autocomplete shortcuts ideas preferences");
     add("engine", "Engine", "Settings every installed module has volunteered, grouped by what they're for.", "⚡", "warn",
       engine(app), "Generation", "engine module settings");
     add("models", "Models & Pipeline", "Loaders and nodes wired into the live pipeline.", "⬡", "accent",
