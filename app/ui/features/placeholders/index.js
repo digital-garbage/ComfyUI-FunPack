@@ -4,7 +4,6 @@ import { composer as c } from "../../composer/composer.js";
 
 const btn = (label, tone = "ghost", extra = {}) => c.button.sm({ label, tone, disabled: true, ...extra });
 const menu = (label) => c.button.menu({ label, tone: "ghost" });          // inert, but not dimmed: a menu is never greyed in v4
-const dockTab = (label) => c.button.sm({ label, tone: "neutral", pressed: true, disabled: true });
 
 const items = {
   "menubar.right": () => [c.chip.neutral({ label: "saved" }), c.chip.good({ label: "ComfyUI live", dot: true })],
@@ -17,7 +16,6 @@ const items = {
   ],
 
   "timeline.actions": () => [btn("⚡ Auto Montage")],
-  "timeline.status": () => [dockTab("Assets"), dockTab("Preview"), dockTab("Properties")],
   "timeline.toolbar": () => [btn("⤓ Export"), btn("Save to media bin"), btn("⊟ Separate audio"), btn("Remove audio")],
 };
 

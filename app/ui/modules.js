@@ -5,6 +5,7 @@ export default [
   "./features/projects/index.js",
   "./features/media/index.js",
   "./features/placeholders/early.js",
+  "./features/dock/index.js",
   "./features/timeline/index.js",
   "./features/inspector/index.js",
   "./features/generate/index.js",

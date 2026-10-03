@@ -5,8 +5,8 @@
 .fp-row > * { min-inline-size: 0; border-inline-end: var(--bw) solid var(--line); }
 .fp-row > :first-child { flex: 0 0 var(--media-w); }
 .fp-row > :nth-child(2) { flex: 1 1 auto; }
-.fp-row > :last-child { flex: 0 0 var(--properties-w); border-inline-end: 0; }
-.fp-main > :last-child { flex: 0 0 var(--timeline-h); min-block-size: 200px; border-block-start: var(--bw) solid var(--line); }
+.fp-row > :nth-child(3) { flex: 0 0 var(--properties-w); border-inline-end: 0; }
+.fp-main > :nth-child(2) { flex: 0 0 var(--timeline-h); min-block-size: 200px; border-block-start: var(--bw) solid var(--line); }
 .cx-frame-head { padding-inline: calc(var(--sp-6) + var(--sp-1)); }
 .cx-frame-head > .cx-toolbar { gap: calc(var(--sp-6) + var(--sp-3)); }
 /* A zone body is a scroller of rows: they keep their height instead of squashing, and a tab strip spans the zone. */
@@ -20,18 +20,18 @@
 
 /* Simple mode: one prompt and one Generate. The timeline, splitters and dock go; Assets and Properties slide over the preview. */
 .fp-row { position: relative; }
-:root[data-ui-mode="simple"] .fp-main > :last-child,
+:root[data-ui-mode="simple"] .fp-main > :nth-child(2),
 :root[data-ui-mode="simple"] .fp-simple-hide { display: none !important; }
 :root[data-ui-mode="simple"] .fp-row > :first-child,
-:root[data-ui-mode="simple"] .fp-row > :last-child {
+:root[data-ui-mode="simple"] .fp-row > :nth-child(3) {
   position: absolute; top: 0; bottom: 0; z-index: 60; inline-size: min(var(--properties-w), 82vw);
   background: var(--bg, var(--elev-1)); box-shadow: 0 0 40px -8px var(--shadow-ink, #000);
   transition: transform .18s cubic-bezier(.22, .61, .36, 1);
 }
 :root[data-ui-mode="simple"] .fp-row > :first-child { left: 0; transform: translateX(-101%); }
-:root[data-ui-mode="simple"] .fp-row > :last-child { right: 0; transform: translateX(101%); }
+:root[data-ui-mode="simple"] .fp-row > :nth-child(3) { right: 0; transform: translateX(101%); }
 :root[data-ui-mode="simple"] .fp-row.fp-show-assets > :first-child,
-:root[data-ui-mode="simple"] .fp-row.fp-show-props > :last-child { transform: none; }
+:root[data-ui-mode="simple"] .fp-row.fp-show-props > :nth-child(3) { transform: none; }
 
 /* Splitters: thin hit areas straddling the zone borders. */
 .fp-main { position: relative; }
@@ -42,3 +42,8 @@
 .fp-split-right { right: calc(var(--properties-w) - 3px); }
 .fp-split-bottom { left: 0; right: 0; block-size: 7px; bottom: calc(var(--timeline-h) - 3px); cursor: row-resize; }
 :root[data-ui-mode="simple"] .fp-split { display: none; }
+
+/* Dock: a hidden zone leaves the row (and the splitter beside it). */
+.fp-hide-assets .fp-row > :first-child, .fp-hide-preview .fp-row > :nth-child(2), .fp-hide-properties .fp-row > :nth-child(3) { display: none; }
+.fp-hide-assets .fp-split-left, .fp-hide-properties .fp-split-right { display: none; }
+.fp-hide-assets.fp-hide-preview .fp-row > :nth-child(3), .fp-hide-preview.fp-hide-properties .fp-row > :first-child { flex: 1 1 auto; }
