@@ -164,3 +164,49 @@ def test_the_learners_read_through_the_blind_view():
     h = taste.Handle("fox")
     assert [r["reward"] for r in h.rows("k", blind_to="image")] == [0.0, -1.0]
     assert [r["reward"] for r in h.rows("k")] == [-1.0, -1.0]
+
+
+def test_a_cleared_rating_can_be_given_again_while_its_generate_is_the_latest():
+    store.capture("fox", "reins", {25: _v(1)}, prompt_id="p1")
+    store.rate("p1", "liked")
+    store.rate("p1", None)                                  # "I take it back"
+    assert store.counts("fox", "reins") == (0, 0)
+    out = store.rate("p1", "disliked")
+    assert out["recorded"] == ["reins"] and store.counts("fox", "reins") == (0, 1)
+    store.rate("p1", None)
+    store.new_generation()                                  # the next Generate: nothing waits any more
+    out = store.rate("p1", "liked")
+    assert out["recorded"] == [] and out["why"]
+
+
+def test_a_cleared_rating_beside_a_newer_run_goes_aside_not_over_it():
+    store.capture("fox", "reins", {25: _v(1)}, prompt_id="p1")
+    store.rate("p1", "liked")
+    store.capture("fox", "reins", {25: _v(2)}, prompt_id="p2")
+    store.rate("p1", None)
+    assert store.rate("p2", "liked")["recorded"] == ["reins"]
+    assert store.rate("p1", "disliked")["recorded"] == ["reins"]
+    rows = {r["prompt_id"]: float(r["rows"]["25"][0]) for r in store.load("fox", "reins")["rows"]}
+    assert rows == {"p2": 2.0, "p1": 1.0}
+
+
+def test_a_rating_says_why_when_nothing_was_kept_for_the_clip():
+    out = store.rate("never-captured", "liked")
+    assert out["recorded"] == [] and "captured nothing" in out["why"]
+
+
+def test_deleting_a_key_leaves_other_keys_runs_ratable_and_one_run_can_wait_under_two_keys():
+    store.capture("fox", "reins", {25: _v(1)}, prompt_id="p1")
+    store.capture("wolf", "reins", {25: _v(2)}, prompt_id="p1")        # one run, two keys
+    store.capture("wolf", "reins", {25: _v(3)}, prompt_id="p2")
+    store.delete("fox")
+    assert sorted(store.rate("p1", "liked")["recorded"]) == ["reins"]
+    assert store.counts("wolf", "reins") == (1, 0) and store.counts("fox", "reins") == (0, 0)
+    assert store.rate("p2", "liked")["recorded"] == ["reins"]
+
+
+def test_a_run_waiting_under_two_keys_teaches_both():
+    store.capture("fox", "reins", {25: _v(1)}, prompt_id="p1")
+    store.capture("wolf", "reins", {25: _v(2)}, prompt_id="p1")
+    assert store.rate("p1", "liked")["recorded"] == ["reins", "reins"]
+    assert store.counts("fox", "reins") == (1, 0) and store.counts("wolf", "reins") == (1, 0)

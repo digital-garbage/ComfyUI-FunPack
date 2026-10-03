@@ -4014,6 +4014,10 @@
       return false;
     }
     _genRunActive = true;
+    if (_tasteGenPending) {          // the first run of a Generate: what the last one left unrated is forgotten
+      _tasteGenPending = false;
+      await _newTasteGeneration();
+    }
     // A run started through the normal click path owns its own clock
     // lifecycle (the _clockedX wrapper's `finally`, spanning the whole
     // batch) — any stale flag left over from a PRIOR adopted run must not
@@ -4180,7 +4184,9 @@
   // random pick) and reused for the whole sweep.
   async function runComboSweep(sceneId, configText, sameSeed) {
     if (!state.project || !sceneId) return;
-    _newTasteGeneration();
+    return _ownsGenerate(() => _runComboSweep(sceneId, configText, sameSeed));
+  }
+  async function _runComboSweep(sceneId, configText, sameSeed) {
     const configs = parseComboSweepConfig(configText);
     if (!configs.length) {
       set({ comboSweep: { running: false, results: [], error: "No valid config lines — one per line, reins:strength;block and/or sweep:blocks;seam|noseam;times[;laststeps]." } });
@@ -4320,23 +4326,28 @@
   // `await` (not `return fn()`) is what makes the finally wait for the whole montage.
   // A Generate begins: captures still waiting for a rating from the last one are forgotten.
   // Best effort -- a failure here must not stop a generation.
-  function _newTasteGeneration() {
-    try { API.newTasteGeneration().catch(() => {}); } catch (e) { /* nothing to forget */ }
+  let _tasteGenPending = false;      // set by an entry point that owns a Generate; spent by its first real run
+  async function _newTasteGeneration() {
+    try { await API.newTasteGeneration(); } catch (e) { /* nothing to forget */ }
+  }
+  // Runs `fn` as the owner of one Generate -- unless one is already in flight, in which case this click
+  // is refused later anyway and must not make the running Generate forget its unrated clips.
+  async function _ownsGenerate(fn) {
+    const owner = !_genRunActive;
+    if (owner) _tasteGenPending = true;
+    try { return await fn(); } finally { if (owner) _tasteGenPending = false; }
   }
   async function _clockedGenerate(onlyScene) {
-    _newTasteGeneration();
     _genClockStart(onlyScene ? "scene" : "all");
-    try { return await generate(onlyScene); } finally { _genClockStop(); }
+    try { return await _ownsGenerate(() => generate(onlyScene)); } finally { _genClockStop(); }
   }
   async function _clockedMontage() {
-    _newTasteGeneration();
     _genClockStart("all");
-    try { return await generateMontage(); } finally { _genClockStop(); }
+    try { return await _ownsGenerate(() => generateMontage()); } finally { _genClockStop(); }
   }
   async function _clockedSelected() {
-    _newTasteGeneration();
     _genClockStart("selected");
-    try { return await generateSelected(); } finally { _genClockStop(); }
+    try { return await _ownsGenerate(() => generateSelected()); } finally { _genClockStop(); }
   }
 
   // Local timestamp for unique export filenames: YYYYMMDD-HHMMSS.

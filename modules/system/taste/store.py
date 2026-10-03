@@ -158,13 +158,11 @@ def capture(key, kind, rows, prompt_id=None, keep=MAX_ROWS):
             old.unlink(missing_ok=True)
         state = _read_latest()
         runs = state.get("runs", {})
-        kinds = runs[prompt_id]["kinds"] if runs.get(prompt_id, {}).get("key") == key else []
+        kinds = runs.setdefault(prompt_id, {}).setdefault(key, [])
         if kind not in kinds:
             kinds.append(kind)
-        runs[prompt_id] = {"key": key, "kinds": kinds}
         ROOT.mkdir(parents=True, exist_ok=True)
-        _latest_path().write_text(json.dumps({"key": key, "prompt_id": prompt_id, "kinds": kinds,
-                                              "runs": runs}))
+        _latest_path().write_text(json.dumps({"key": key, "prompt_id": prompt_id, "runs": runs}))
 
 
 def new_generation():
@@ -197,10 +195,23 @@ def blind(rows, to):
     return [dict(r, reward=0.0) if r.get("axis") == to else r for r in rows]
 
 
+def _restore_pending(key, kind, prompt_id, rows, keep):
+    """A cleared rating puts the capture back to waiting (until the next Generate), so the clip can be
+    rated again. The latest slot if it is free or already this run's, else aside under the prompt id."""
+    latest = _pending_path(key, kind)
+    held = _read(latest, None)
+    if held and held.get("prompt_id") not in (None, prompt_id):
+        if not _PID.match(str(prompt_id)):
+            return
+        latest = _pending_path(key, kind, prompt_id)
+    _write(latest, {"prompt_id": prompt_id, "rows": rows, "keep": int(keep)})
+
+
 def rate(prompt_id, rating, axis=None):
     """-> {"recorded": [kinds], "updated": [kinds], "why": str|None}.
 
-    `rating` None clears: the row is removed, nothing is learned from that clip.
+    `rating` None clears: the row is removed, nothing is learned from that clip -- and while its
+    Generate is still the latest, the capture waits again so it can be rated again.
     `axis` only goes with "disliked" (see AXES); any other rating drops it.
     """
     if not isinstance(prompt_id, str) or not prompt_id:
@@ -213,6 +224,7 @@ def rate(prompt_id, rating, axis=None):
         raise ValueError("only a dislike can name what went wrong")
     out = {"recorded": [], "updated": [], "why": None}
     with _LOCK:
+        entry = _read_latest().get("runs", {}).get(prompt_id) or {}
         # A clip already recorded: change or remove its row, in every key/kind.
         for key in keys():
             for path in _dir(key).glob("*.pt"):
@@ -224,6 +236,8 @@ def rate(prompt_id, rating, axis=None):
                     continue
                 if rating is None:
                     data["rows"] = [r for r in data["rows"] if r.get("prompt_id") != prompt_id]
+                    if path.stem in entry.get(key, []):
+                        _restore_pending(key, path.stem, prompt_id, hit[-1]["rows"], hit[-1].get("keep", MAX_ROWS))
                 else:
                     for r in hit:
                         r["reward"] = REWARD[rating]
@@ -235,33 +249,37 @@ def rate(prompt_id, rating, axis=None):
         if out["updated"]:
             return out
 
-        entry = _read_latest().get("runs", {}).get(prompt_id)
         if not entry:
-            out["why"] = ("this clip's capture is gone: a new Generate started before it was rated, "
-                          "and nothing is learned from a clip left unrated")
+            out["why"] = ("no capture is waiting for this clip: a new Generate started before it was rated, "
+                          "or this run captured nothing (no learning feature was on, or ComfyUI reused an "
+                          "earlier result instead of sampling again)")
             return out
         if rating is None:
             return out
-        key = entry["key"]
-        for kind in entry.get("kinds", []):
-            where = [_pending_path(key, kind)]
-            if _PID.match(str(prompt_id)):
-                where.append(_pending_path(key, kind, prompt_id))
-            for pending_path in where:
-                pending = _read(pending_path, None)
-                if pending and pending.get("prompt_id") == prompt_id:
-                    break
-            else:
-                continue
-            data = load(key, kind)
-            row = {"prompt_id": prompt_id, "reward": REWARD[rating], "rows": pending["rows"]}
-            if axis:
-                row["axis"] = axis
-            data["rows"].append(row)
-            data["rows"] = data["rows"][-int(pending.get("keep", MAX_ROWS)):]
-            _write(_dir(key) / f"{kind}.pt", data)
-            pending_path.unlink(missing_ok=True)
-            out["recorded"].append(kind)
+        for key, kinds in entry.items():
+            for kind in kinds:
+                where = [_pending_path(key, kind)]
+                if _PID.match(str(prompt_id)):
+                    where.append(_pending_path(key, kind, prompt_id))
+                for pending_path in where:
+                    pending = _read(pending_path, None)
+                    if pending and pending.get("prompt_id") == prompt_id:
+                        break
+                else:
+                    continue
+                data = load(key, kind)
+                keep = int(pending.get("keep", MAX_ROWS))
+                row = {"prompt_id": prompt_id, "reward": REWARD[rating], "rows": pending["rows"], "keep": keep}
+                if axis:
+                    row["axis"] = axis
+                data["rows"].append(row)
+                data["rows"] = data["rows"][-keep:]
+                _write(_dir(key) / f"{kind}.pt", data)
+                pending_path.unlink(missing_ok=True)
+                out["recorded"].append(kind)
+        if not out["recorded"]:
+            out["why"] = ("this clip's capture was not kept (more runs waited than are kept, or it was "
+                          "cleared); nothing was learned")
     return out
 
 
@@ -299,15 +317,26 @@ def direction(key, kind, name):
     return diff / norm, len(liked), len(disliked)
 
 
+def _forget_key_runs(key):
+    """The key's waiting runs died with its folder; other keys' runs stay ratable."""
+    state = _read_latest()
+    if not state:
+        return
+    runs = {}
+    for pid, per_key in state.get("runs", {}).items():
+        left = {k: v for k, v in per_key.items() if k != key}
+        if left:
+            runs[pid] = left
+    state["runs"] = runs
+    if state.get("key") == key:
+        state["key"] = None
+    _latest_path().write_text(json.dumps(state))
+
+
 def delete(key):
     with _LOCK:
         shutil.rmtree(_dir(key), ignore_errors=True)
-        state = _read_latest()
-        if state.get("key") == key:
-            _latest_path().unlink(missing_ok=True)
-        elif state.get("runs"):
-            state["runs"] = {p: r for p, r in state["runs"].items() if r.get("key") != key}
-            _latest_path().write_text(json.dumps(state))
+        _forget_key_runs(key)
 
 
 # --- moving a key between machines -------------------------------------------
@@ -401,8 +430,7 @@ def import_key(key, zip_path, overwrite=False):
                     shutil.rmtree(dest)
                 os.replace(stage, dest)
                 # Anything waiting to be rated under this name died with the old folder.
-                if _read_latest().get("key") == key:
-                    _latest_path().unlink(missing_ok=True)
+                _forget_key_runs(key)
                 return len(infos)
         finally:
             shutil.rmtree(stage, ignore_errors=True)
