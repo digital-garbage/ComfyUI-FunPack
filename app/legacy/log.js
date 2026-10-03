@@ -1,6 +1,6 @@
 // Menubar "Log" button + a collapsible panel showing ComfyUI's real backend log
 // (tee'd stdout/stderr from the server). Polls only while open. Freezes during selection to preserve user interaction.
-(function () {
+Modules.define("log", { needs: ["MovieEditorAPI"] }, function () {
   const API = window.MovieEditorAPI;
   const right = document.querySelector(".menubar-right");
   if (!right) return;
@@ -192,4 +192,4 @@
   x.onclick = close;
 
   actions.append(copy, pauseBtn, x);
-})();
+});
