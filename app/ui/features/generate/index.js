@@ -9,13 +9,13 @@ const expand = (body) => fetch("/funpack/api/prompt/expand", { method: "POST", h
   body: JSON.stringify({ ...body, seed: Math.floor(Math.random() * 2 ** 31) || 1 }) }).then((r) => (r.ok ? r.json() : null));
 
 /** The render a scene gets from its unit's one clip: a cut half plays from where its half begins. */
-export const renderFor = (sc, p, media, unitSec) => ({ media, inSec: (sc.cut_offset_frames || 0) / effFps(sc, p),
+export const renderFor = (sc, p, media, unitSec, promptId) => ({ media, ...(promptId ? { promptId } : {}), inSec: (sc.cut_offset_frames || 0) / effFps(sc, p),
   ...((sc.frames_mode || "project") === "project" ? { durationSec: unitSec } : {}) });
 
 export default {
   id: "generate",
   mount: "timeline.actions",
-  needs: ["project", "pipeline", "generate"],
+  needs: ["project", "pipeline", "generate", "api"],
   setup({ host, app }) {
     const p = app.project, g = app.generate;
     let said = false;
@@ -24,13 +24,13 @@ export default {
     g.on("hold", () => { held = true; draw(); }); g.on("release", () => { held = false; draw(); });   // while the page asks ComfyUI whether a run is already going          // the pipeline check's refusals: said where the person is looking
     let busy = false, stopped = false, held = false;
 
-    const record = (pid, unit, image, frames) => p.editFor(pid, (pr) => {
+    const record = (pid, unit, image, frames, promptId) => p.editFor(pid, (pr) => {
       const group = pr.scenes.filter((s) => genUnitId(s) === unit);
       if (!group.length) return false;
       const secs = (frames || group.reduce((t, s) => t + effFrames(s, pr), 0) - (group.length - 1)) / (pr.frame_rate || 25);   // as queued, not as the project reads now
       const media = { filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" };
       group.forEach((s) => {
-        (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs);
+        (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs, promptId);
         if (!isVideoClip(s)) s.source_in = 0;      // a fresh render was made at this length: an earlier trim's window no longer applies
       });
       return true;
@@ -42,6 +42,7 @@ export default {
       const pid = p.project.id;
       let made = 0;
       said = false;
+      app.api.newTasteGeneration().catch(() => {});        // ratings of the last run can no longer be paired with what it learned
       try {
         for (const unit of units) {
           if (stopped) break;
@@ -69,7 +70,7 @@ export default {
           const images = g.run.state.images;
           if (end !== g.DONE) { tell("Generation failed. The log has ComfyUI's message."); break; }
           if (!images.length) { tell("ComfyUI finished without a result. Try again."); break; }
-          record(pid, unit, images[images.length - 1], frames);
+          record(pid, unit, images[images.length - 1], frames, g.run.state.promptId);
         }
         if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out or is a video clip.");
       } finally { busy = false; draw(); }
