@@ -402,7 +402,11 @@ def register(routes, prefix=None):
                     {"problems": [f"settings are an object keyed by module id, "
                                   f"not a {type(values).__name__}"],
                      "queueable": False}, status=400)
-            slots, placed = graph_mod.place(slots, json.dumps(values), _sinks())
+            # An empty object is "nothing held", never "settings are empty": placing
+            # it would overwrite the settings the slots already carry.
+            placed = 0
+            if values:
+                slots, placed = graph_mod.place(slots, json.dumps(values), _sinks())
             # Said, not swallowed. A pipeline with nothing to accept them is a
             # legitimate pipeline, so this does not stop the run -- but a panel
             # full of switches that do nothing has to say so somewhere, and

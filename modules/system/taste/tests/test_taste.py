@@ -223,6 +223,16 @@ def test_a_liked_only_kind_banks_likes_and_never_lets_dislikes_push_them_out():
     assert store.counts("fox", "vel") == (3, 0)
 
 
+def test_a_changed_mind_on_a_liked_only_clip_works_both_ways():
+    store.capture("fox", "vel", {"v": _v(1)}, prompt_id="p", only="liked")
+    store.rate("p", "disliked")
+    assert store.rate("p", "liked")["recorded"] == ["vel"]
+    assert store.counts("fox", "vel") == (1, 0)
+    store.rate("p", "disliked")                       # liked -> disliked leaves no row behind
+    assert store.counts("fox", "vel") == (0, 0)
+    assert store.rate("p", "liked")["recorded"] == ["vel"]
+
+
 def test_a_kind_of_mixed_sizes_exports_and_imports(tmp_path):
     store.capture("fox", "vel", {"v": torch.ones(2, 2)}, prompt_id="a", mixed=True)
     store.rate("a", "liked")

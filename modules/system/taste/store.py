@@ -241,7 +241,8 @@ def rate(prompt_id, rating, axis=None):
                 hit = [r for r in data["rows"] if r.get("prompt_id") == prompt_id]
                 if not hit:
                     continue
-                if rating is None:
+                if rating is None or (hit[-1].get("only") == "liked" and rating != "liked"):
+                    # a liked-only bank holds no dislike: it leaves, and may come back if liked again
                     data["rows"] = [r for r in data["rows"] if r.get("prompt_id") != prompt_id]
                     if path.stem in entry.get(key, []):
                         _restore_pending(key, path.stem, prompt_id, hit[-1]["rows"], hit[-1].get("keep", MAX_ROWS),
@@ -278,7 +279,7 @@ def rate(prompt_id, rating, axis=None):
                 data = load(key, kind)
                 keep = int(pending.get("keep", MAX_ROWS))
                 if pending.get("only") == "liked" and rating != "liked":
-                    pending_path.unlink(missing_ok=True)          # nothing here learns from it: not banked
+                    # nothing here learns from it, but a changed mind may still like it
                     out.setdefault("skipped", []).append(kind)
                     continue
                 row = {"prompt_id": prompt_id, "reward": REWARD[rating], "rows": pending["rows"], "keep": keep,

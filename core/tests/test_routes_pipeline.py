@@ -531,3 +531,16 @@ def test_the_manifest_says_which_modules_can_be_switched_and_a_quarantined_one_c
     _, body = _request(server, "GET", "/funpack/api/modules")
     assert "quarantine" not in body["control"]["sharpen"]
     assert _request(server, "POST", "/funpack/api/control/release", {"id": "nope"})[0] == 400
+
+
+def test_empty_values_do_not_wipe_the_settings_the_slots_carry(server):
+    """The legacy Generate sends `values: {}` every time (its settings already sit in the
+    slots). Placing that empty object overwrote them, so every module ran switched off."""
+    _s, first = _request(server, "POST", "/funpack/api/pipeline", {"values": {"sampling_alg": {"enabled": True}}})
+    carried = json.dumps({"sampling_alg": {"enabled": True}})
+    slots = [dict(s, inputs=dict(s["inputs"], settings=carried)) if s["node"] == "FunPackModifierSettings" else s
+             for s in first["slots"]]
+    status, body = _request(server, "POST", "/funpack/api/pipeline", {"slots": slots, "values": {}})
+    assert status == 200, body
+    settings = next(s for s in body["slots"] if s["node"] == "FunPackModifierSettings")
+    assert json.loads(settings["inputs"]["settings"]) == {"sampling_alg": {"enabled": True}}

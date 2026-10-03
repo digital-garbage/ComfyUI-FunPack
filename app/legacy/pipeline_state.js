@@ -511,7 +511,7 @@
     const out = {};
     (slots || []).forEach((s) => {
       const own = {};
-      Object.entries(s.inputs || {}).forEach(([k, v]) => { if (!Array.isArray(v)) own[k] = JSON.parse(JSON.stringify(v)); });
+      Object.entries(s.inputs || {}).forEach(([k, v]) => { if (v !== undefined && !Array.isArray(v)) own[k] = JSON.parse(JSON.stringify(v)); });
       out[s.id] = own;
     });
     return out;

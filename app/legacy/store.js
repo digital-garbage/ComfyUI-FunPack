@@ -4348,7 +4348,12 @@
       _generateOwned = true;
       _tasteGenPending = true;
       // The settings of this Generate, taken once: every run of it is queued with these.
-      _frozenSettings = window.PipelineState && window.PipelineState.frozenInputs ? window.PipelineState.frozenInputs() : null;
+      // An edit made a moment ago is still on its way to the server: wait for it, or its old value is frozen.
+      const PS = window.PipelineState;
+      try {
+        for (let i = 0; PS && PS.saving && PS.saving() && i < 200; i++) await new Promise((r) => setTimeout(r, 25));
+        _frozenSettings = PS && PS.frozenInputs ? PS.frozenInputs() : null;
+      } catch (e) { _frozenSettings = null; }
     }
     try { return await fn(); } finally { if (owner) { _tasteGenPending = false; _frozenSettings = null; _generateOwned = false; } }
   }
