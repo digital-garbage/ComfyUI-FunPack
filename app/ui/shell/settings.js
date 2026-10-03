@@ -46,6 +46,7 @@ export function createSettings({ menubar }) {
     return current;
   }
 
-  menubar.append(composer.button.sm({ label: "Settings", onClick: () => open() }).node);
-  return { open, sections: () => [...sections] };
+  // Added once the other menus are in, so it sits last as in v4.
+  const addButton = () => menubar.append(composer.button.sm({ label: "Settings", onClick: () => open() }).node);
+  return { open, addButton, sections: () => [...sections] };
 }

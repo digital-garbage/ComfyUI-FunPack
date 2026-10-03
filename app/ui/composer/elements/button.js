@@ -9,7 +9,7 @@ import { el } from "../internals/el.js";
 import { setText } from "../internals/text.js";
 import { roving } from "../internals/focus.js";
 
-const TONES = new Set(["neutral", "primary", "danger", "ghost"]);
+const TONES = new Set(["neutral", "primary", "danger", "ghost", "render"]);
 
 function base(size, { label, onClick, tone = "neutral", icon, disabled = false, busy = false, type = "button", title, pressed } = {}) {
   if (!TONES.has(tone)) throw new RangeError(`Unknown button tone "${tone}". Known: ${[...TONES].join(", ")}.`);

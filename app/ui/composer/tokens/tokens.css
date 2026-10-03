@@ -43,9 +43,9 @@
   --r-pill: 9999px;
 
   /* ── controls (v4 shipped 11 distinct heights) ──────────────────────── */
-  --ctl-h-sm: 20px;  --ctl-h-md: 24px;  --ctl-h-lg: 28px;  --ctl-h-xl: 32px;
+  --ctl-h-sm: 22px;  --ctl-h-md: 24px;  --ctl-h-lg: 28px;  --ctl-h-xl: 32px;
   --ctl-h-icon: 18px;  --ctl-h-icon-sm: 16px;
-  --ctl-pad-x-sm: 6px;  --ctl-pad-x-md: 8px;
+  --ctl-pad-x-sm: 8px;  --ctl-pad-x-md: 8px;
   --ctl-pad-x-lg: 10px; --ctl-pad-x-xl: 12px;
   --ctl-r: var(--r-3);
   --ctl-gap: var(--sp-3);

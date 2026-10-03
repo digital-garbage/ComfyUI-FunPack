@@ -2,7 +2,7 @@
   display: inline-flex; align-items: center; gap: var(--sp-2);
   height: var(--ctl-h-sm); padding: 0 var(--sp-3);
   border: var(--bw) solid var(--line); border-radius: var(--r-pill);
-  font-size: var(--fs-7); color: var(--muted); white-space: nowrap;
+  font-size: var(--fs-6); color: var(--muted); white-space: nowrap;
 }
 .cx-chip-dot { width: 6px; height: 6px; border-radius: var(--r-pill); background: currentColor; }
 .cx-chip-good   { color: var(--good);   border-color: color-mix(in srgb, var(--good) 30%, var(--line)); }

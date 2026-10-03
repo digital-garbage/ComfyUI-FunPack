@@ -6,6 +6,7 @@ import { hostFor } from "./shell/mounts.js";
 import paths from "./modules.js";
 
 const frame = build(document.getElementById("app"));
-const settings = createSettings({ menubar: hostFor("menubar") });
+const settings = createSettings({ menubar: hostFor("menubar.menus") });
 const result = await loadFeatures(paths);
+settings.addButton();
 window.FunPackUI = { frame, settings, ...result };
