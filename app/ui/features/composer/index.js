@@ -4,6 +4,7 @@ import { applyStory, clash, joinStory } from "./story.js";
 import { shortcuts } from "./shortcuts.js";
 import { cuts } from "./cuts.js";
 import { enhance } from "./enhance.js";
+import { pickShortcut, templatesBar, variablesPanel } from "./storytools.js";
 
 const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }];
 const inert = (label, tone = "ghost") => c.button.sm({ label, tone, disabled: true });
@@ -34,11 +35,16 @@ const story = (app, own) => {
   own(app.on(sync));
   sync();
   return c.region.stack({ gap: "sm", children: [
-    c.toolbar.default({ items: [c.select.sm({ label: "Templates", disabled: true, options: [{ value: "", label: "Templates…" }], value: "" })], trailing: [inert("Save")] }),
-    c.toolbar.default({ items: [c.label.section({ text: "Story" })], trailing: [inert("+ Add shortcut"), inert("💡")] }),
+    templatesBar(app, own),
+    c.toolbar.default({ items: [c.label.section({ text: "Story" })], trailing: [c.button.sm({ label: "+ Add shortcut", tone: "ghost", title: "Insert a shortcut trigger: browse the library", onClick: async () => {
+      const trigger = await pickShortcut(app);
+      if (!trigger) return;
+      area.focus(); area.setRangeText(`${area.selectionStart && !/\s$/.test(area.value.slice(0, area.selectionStart)) ? " " : ""}${trigger} `, area.selectionStart, area.selectionEnd, "end");
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+    } }), inert("💡")] }),
     box, warn,
     c.hint.default({ text: `Scenes are cut at the word “${marker}”. Edits apply to the scenes as you type; the anchor is its own field.` }),
-    c.collapsible.default({ label: "+ Variables", body: c.hint.default({ text: "$name → text, filled in at generation." }) }),
+    c.collapsible.default({ label: "+ Variables", body: variablesPanel(app) }),
   ] });
 };
 
