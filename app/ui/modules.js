@@ -4,7 +4,7 @@ export default [
   "./features/log/index.js",
   "./features/projects/index.js",
   "./features/media/index.js",
-  "./features/placeholders/early.js",
+  "./features/sampler/index.js",
   "./features/dock/index.js",
   "./features/keys/index.js",
   "./features/timeline/index.js",
