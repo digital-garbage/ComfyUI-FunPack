@@ -137,3 +137,11 @@ test("a modal trap pulls back focus that left the card, and only the top modal a
   assert.equal(document.activeElement.textContent, "upper");
   b(); a();
 });
+
+test("Shift+Tab from the card itself (clicked text) goes to the last control, not out", () => {
+  const n = box("<button>a</button><button>b</button>"); n.tabIndex = -1;
+  const rel = trap(n, { modal: true });
+  n.focus(); tab(document.body, true);
+  assert.equal(document.activeElement.textContent, "b");
+  rel();
+});

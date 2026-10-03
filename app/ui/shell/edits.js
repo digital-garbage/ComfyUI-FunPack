@@ -120,6 +120,7 @@ function followLane(p, id, d, shorten) {
   const lane = trackFor(p, id);
   if (!lane) return;
   lane.pinned_in_sec = (lane.pinned_in_sec || 0) + d; lane.source_in_sec = lane.pinned_in_sec;
+  if (shorten && lane.full_dur != null) lane.full_dur = Math.max(0.1, lane.full_dur - d);
   if (shorten && lane.pinned_dur != null) { lane.pinned_dur = Math.max(0.1, lane.pinned_dur - d); lane.source_dur = lane.pinned_dur; }
 }
 

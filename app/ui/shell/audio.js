@@ -24,7 +24,7 @@ export function separate(p, sceneId) {
   const inSec = video ? sc.source_in || 0 : (render.inSec || 0) + (sc.source_in || 0);
   const lane = { id: newId(), kind: "separated", scene_id: sceneId, start_sec: seg.start, source_in_sec: inSec, source_dur: dur,
     pinned_media: video ? null : JSON.parse(JSON.stringify(render.media)), pinned_bin_ref: video ? sc.source.media_ref : null,
-    pinned_in_sec: inSec, pinned_dur: dur, volume: sc.audio_volume != null ? sc.audio_volume : 1, label: `${video ? "V" : "S"}${at + 1} audio` };
+    pinned_in_sec: inSec, pinned_dur: dur, full_dur: dur, volume: sc.audio_volume != null ? sc.audio_volume : 1, label: `${video ? "V" : "S"}${at + 1} audio` };
   p.audio_tracks = [...(p.audio_tracks || []), lane];
   sc.audio_separated = true;
   sc.audio_volume = 0;
@@ -50,9 +50,11 @@ export function syncSeparated(p) {
   for (const t of tracks) {
     if (t.kind !== "separated" || !starts.has(t.scene_id)) continue;
     const sc = p.scenes.find((s) => s.id === t.scene_id);
-    if (sc.excluded) continue;
+    if (sc.excluded && !sc.removed_from_plan) continue;       // a clip removed from the plan still plays, so its sound still follows it
     if (Math.abs((t.start_sec || 0) - starts.get(t.scene_id)) > 0.001) t.start_sec = starts.get(t.scene_id);
     const room = durs.get(t.scene_id);
-    if (t.pinned_dur != null && t.pinned_dur > room + 0.001) { t.pinned_dur = room; t.source_dur = room; }       // the sound is never longer than its picture (a cut or a trim shortened it)
+    if (t.pinned_dur == null) continue;
+    const want = Math.min(t.full_dur != null ? t.full_dur : t.pinned_dur, room);       // never longer than its picture, and back to its full length when the picture grows again
+    if (Math.abs(t.pinned_dur - want) > 0.001) { t.pinned_dur = want; t.source_dur = want; }
   }
 }

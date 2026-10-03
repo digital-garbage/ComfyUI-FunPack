@@ -38,13 +38,14 @@ export function trap(container, { initial, modal = false } = {}) {
     const first = items[0];
     const last = items[items.length - 1];
     const active = document.activeElement;
+    const inside = container.contains(active) && active !== container;       // the card itself (a click on its text) is not a stop inside it
 
     // Wrapping is also the fix for focus having escaped the container entirely
     // (a click outside, a removed node): either edge pulls it back in.
-    if (event.shiftKey && (active === first || !container.contains(active))) {
+    if (event.shiftKey && (active === first || !inside)) {
       event.preventDefault();
       last.focus();
-    } else if (!event.shiftKey && (active === last || !container.contains(active))) {
+    } else if (!event.shiftKey && (active === last || !inside)) {
       event.preventDefault();
       first.focus();
     }

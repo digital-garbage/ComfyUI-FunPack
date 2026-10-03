@@ -45,7 +45,7 @@ export default {
     });
     function draw() {
       const off = busy || !p.project || !sel.ids.length;
-      put(c.button.sm({ label: "⤓ Export", tone: "ghost", disabled: off, onClick: exportIt, title: "Join the picked clips and download them" }).node,
+      put(c.button.sm({ label: "⤓ Export", tone: "ghost", disabled: off, onClick: exportIt, title: "Join the picked clips and download them (pictures only: a clip whose sound was separated is silent here, Render mixes it)" }).node,
         c.button.sm({ label: "Save to media bin", tone: "ghost", disabled: off, onClick: toBin, title: "Join the picked clips and keep them in the media bin" }).node);
     }
     draw();

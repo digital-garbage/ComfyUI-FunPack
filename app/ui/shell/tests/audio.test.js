@@ -79,3 +79,14 @@ test("trimming or slipping a separated clip moves its sound's in-point with the 
   slip(p, "v", 0.5);
   assert.equal(lane.pinned_in_sec, 1.5); assert.equal(lane.pinned_dur, 4);
 });
+
+test("a shortened lane grows back with its picture, and a clip removed from the plan keeps its lane in step", () => {
+  const p = proj();
+  const lane = separate(p, "a");              // 2s clip, full 2
+  p.num_frames_per_scene = 25; syncSeparated(p);
+  assert.equal(lane.pinned_dur, 1);
+  p.num_frames_per_scene = 50; syncSeparated(p);
+  assert.equal(lane.pinned_dur, 2);
+  Object.assign(p.scenes[0], { excluded: true, removed_from_plan: true }); p.scenes.unshift({ id: "z", text: "" }); syncSeparated(p);
+  assert.ok(lane.start_sec > 0);
+});
