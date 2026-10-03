@@ -17,3 +17,28 @@
 [hidden] { display: none !important; }
 /* An empty zone says so in the middle of it, with the controls kept at its foot. */
 .cx-zone .cx-stack-fill > .cx-empty { flex: 1 1 auto; justify-content: center; }
+
+/* Simple mode: one prompt and one Generate. The timeline, splitters and dock go; Assets and Properties slide over the preview. */
+.fp-row { position: relative; }
+:root[data-ui-mode="simple"] .fp-main > :last-child,
+:root[data-ui-mode="simple"] .fp-simple-hide { display: none !important; }
+:root[data-ui-mode="simple"] .fp-row > :first-child,
+:root[data-ui-mode="simple"] .fp-row > :last-child {
+  position: absolute; top: 0; bottom: 0; z-index: 60; inline-size: min(var(--properties-w), 82vw);
+  background: var(--bg, var(--elev-1)); box-shadow: 0 0 40px -8px var(--shadow-ink, #000);
+  transition: transform .18s cubic-bezier(.22, .61, .36, 1);
+}
+:root[data-ui-mode="simple"] .fp-row > :first-child { left: 0; transform: translateX(-101%); }
+:root[data-ui-mode="simple"] .fp-row > :last-child { right: 0; transform: translateX(101%); }
+:root[data-ui-mode="simple"] .fp-row.fp-show-assets > :first-child,
+:root[data-ui-mode="simple"] .fp-row.fp-show-props > :last-child { transform: none; }
+
+/* Splitters: thin hit areas straddling the zone borders. */
+.fp-main { position: relative; }
+.fp-split { position: absolute; z-index: 20; background: transparent; touch-action: none; }
+.fp-split:hover { background: var(--accent, var(--line)); opacity: .5; }
+.fp-split-left, .fp-split-right { top: 0; bottom: 0; inline-size: 7px; cursor: col-resize; }
+.fp-split-left { left: calc(var(--media-w) - 3px); }
+.fp-split-right { right: calc(var(--properties-w) - 3px); }
+.fp-split-bottom { left: 0; right: 0; block-size: 7px; bottom: calc(var(--timeline-h) - 3px); cursor: row-resize; }
+:root[data-ui-mode="simple"] .fp-split { display: none; }

@@ -17,7 +17,7 @@ export default {
     const viewer = c.viewer.media({ kind: "video", empty: "" });
     const empty = c.emptyState.default({ icon: "🎬", title: "No render yet", hint: "Use Generate in the timeline header" });
     host.append(viewer.node, empty.node);
-    let shown = "";
+    let shown = null;
     const draw = () => {
       const sc = p.selected, media = sc && p.project && (p.project.scene_renders || {})[sc.id];
       const src = media && media.media ? `${viewUrl(media.media)}#t=${start(sc, media, p.project)}${end(sc, media, p.project)}` : "";   // a split clip starts where its half does

@@ -1,5 +1,6 @@
 // The one list of UI features. Adding a feature is a folder under ./features and a line here.
 export default [
+  "./features/modes/index.js",
   "./features/log/index.js",
   "./features/projects/index.js",
   "./features/media/index.js",
@@ -12,6 +13,8 @@ export default [
   "./features/render/index.js",
   "./features/placeholders/index.js",
   "./features/generate/warn.js",
+  "./features/composer/index.js",
   "./features/settings/index.js",
+  "./features/welcome/index.js",
   "./features/temp/index.js",
 ].map((path) => new URL(path, import.meta.url).href);

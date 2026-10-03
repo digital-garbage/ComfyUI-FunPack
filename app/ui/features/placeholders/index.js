@@ -7,7 +7,6 @@ const menu = (label) => c.button.menu({ label, tone: "ghost" });          // ine
 const dockTab = (label) => c.button.sm({ label, tone: "neutral", pressed: true, disabled: true });
 
 const items = {
-  "menubar.mode": () => [c.segmented.sm({ options: [{ value: "simple", label: "Simple" }, { value: "editor", label: "Editor" }], value: "editor" })],
   "menubar.right": () => [c.chip.neutral({ label: "saved" }), c.chip.good({ label: "ComfyUI live", dot: true })],
 
   preview: () => [
@@ -18,7 +17,7 @@ const items = {
   ],
 
   "timeline.actions": () => [btn("⚡ Auto Montage")],
-  "timeline.status": () => [dockTab("Assets"), dockTab("Preview"), dockTab("Properties"), btn("◆ Composer", "neutral")],
+  "timeline.status": () => [dockTab("Assets"), dockTab("Preview"), dockTab("Properties")],
   "timeline.toolbar": () => [btn("⤓ Export"), btn("Save to media bin"), btn("⊟ Separate audio"), btn("Remove audio")],
 };
 

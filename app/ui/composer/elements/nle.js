@@ -124,7 +124,7 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
   function draw() {
     disposers.forEach((d) => d());
     disposers = [];
-    const span = spanOf();
+    const span = Math.max(spanOf(), ((node.clientWidth || 0) - 96) / px);       // the ruler runs to the window's edge, as an editor's does
     content.style.width = `${span * px}px`;
     drawRuler(span);
     gutter.replaceChildren(el("div", { cls: "cx-nle-gutter-ruler" }));
@@ -144,6 +144,9 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
   });
 
   draw();
+  // The ruler follows the width it is given.
+  let observer = null;
+  if (typeof ResizeObserver !== "undefined") { observer = new ResizeObserver(() => draw()); observer.observe(node); }
   return {
     node,
     get span() { return spanOf(); },
@@ -152,6 +155,6 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
     setLanes(next = []) { lanes = next; draw(); },
     setZoom(next) { px = Math.max(4, next); draw(); },
     setPlayhead(seconds) { playhead = seconds; head.style.insetInlineStart = `${Math.max(0, seconds) * px}px`; },
-    destroy() { disposers.forEach((d) => d()); node.remove(); },
+    destroy() { disposers.forEach((d) => d()); if (observer) observer.disconnect(); node.remove(); },
   };
 });
