@@ -1,0 +1,25 @@
+/* Shared bases for kit elements. No #ids, no feature selectors, no element
+ * appears here that does not exist in elements/. Every kit class is `cx-`. */
+
+.cx-focusable:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.cx-disabled,
+.cx-focusable:disabled {
+  opacity: var(--disabled-opacity);
+  pointer-events: none;
+}
+
+/* Visually hidden but reachable by assistive tech — icon-only controls need it,
+ * which is why `label` is a required prop on iconButton. */
+.cx-sr {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

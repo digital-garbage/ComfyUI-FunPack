@@ -1,0 +1,634 @@
+// Behaviour the registry-wide rule tests cannot see: what each element does
+// when it is actually used.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { setupDom, teardownDom, fire } from "./_dom.js";
+
+let composer;
+test.before(async () => {
+  setupDom();
+  ({ composer } = await import("../composer.js"));
+});
+test.after(() => teardownDom());
+
+const mount = (handle) => { document.body.appendChild(handle.node); return handle; };
+
+// --- buttons ---------------------------------------------------------------
+
+test("a button reports clicks and can be made busy", () => {
+  let clicks = 0;
+  const b = mount(composer.button.md({ label: "Go", onClick: () => { clicks += 1; } }));
+  b.node.click();
+  assert.equal(clicks, 1);
+
+  b.setBusy(true);
+  assert.equal(b.node.disabled, true);
+  assert.equal(b.node.getAttribute("aria-busy"), "true");
+  b.node.click();
+  assert.equal(clicks, 1, "a busy button does not fire again");
+
+  b.setBusy(false);
+  assert.equal(b.node.disabled, false);
+});
+
+test("an unknown tone is refused rather than rendered plain", () => {
+  assert.throws(() => composer.button.md({ label: "x", tone: "sparkly" }), RangeError);
+});
+
+test("an icon button without a label is refused", () => {
+  // Otherwise a toolbar of glyphs is unusable by screen reader and unlabelled
+  // on hover, and nobody notices until someone needs it.
+  assert.throws(() => composer.iconButton.md({ icon: "x" }), TypeError);
+});
+
+test("buttonGroup picks one, or several when multi", () => {
+  const seen = [];
+  const g = mount(composer.buttonGroup.md({
+    value: "a", onChange: (v) => seen.push(v),
+    items: [{ value: "a", label: "A" }, { value: "b", label: "B" }],
+  }));
+  g.node.querySelectorAll("button")[1].click();
+  assert.equal(g.value, "b");
+  assert.deepEqual(seen, ["b"]);
+  assert.equal(g.node.querySelectorAll("button")[1].getAttribute("aria-checked"), "true");
+
+  const m = mount(composer.buttonGroup.md({
+    multi: true, value: ["a"],
+    items: [{ value: "a", label: "A" }, { value: "b", label: "B" }],
+  }));
+  m.node.querySelectorAll("button")[1].click();
+  assert.deepEqual(m.value.sort(), ["a", "b"]);
+  m.node.querySelectorAll("button")[0].click();
+  assert.deepEqual(m.value, ["b"], "clicking an active one turns it off");
+});
+
+// --- choice ----------------------------------------------------------------
+
+test("checkbox reads and writes its state", () => {
+  let last = null;
+  const c = mount(composer.checkbox.default({ label: "On", checked: false, onChange: (v) => { last = v; } }));
+  const input = c.node.querySelector("input");
+  input.click();
+  assert.equal(c.value, true);
+  assert.equal(last, true);
+  c.setValue(false);
+  assert.equal(input.checked, false);
+});
+
+test("a bare checkbox carries its label as the accessible name", () => {
+  const c = composer.checkbox.default({ label: "Enabled" });
+  assert.equal(c.node.querySelector("input").getAttribute("aria-label"), "Enabled");
+});
+
+test("a checkbox row is labelled by its visible text, not by aria-label", () => {
+  // Duplicating it would override what the user can see with a copy that can
+  // drift from it.
+  const c = composer.checkboxRow.default({ label: "Sync", hint: "Locks timing" });
+  const input = c.node.querySelector("input");
+  assert.equal(input.getAttribute("aria-label"), null);
+  const face = c.node.querySelector("label.cx-check-face");
+  assert.equal(face.getAttribute("for"), input.id,
+    "the label points at the input rather than wrapping it");
+  assert.equal(face.contains(input), false);
+  assert.ok(input.getAttribute("aria-describedby"), "the hint is wired as the description");
+});
+
+test("checklist collects several values", () => {
+  const c = mount(composer.checklist.default({
+    values: ["a"], items: [{ value: "a", label: "A" }, { value: "b", label: "B" }],
+  }));
+  c.node.querySelectorAll("input")[1].click();
+  assert.deepEqual(c.value.sort(), ["a", "b"]);
+  c.setValue(["b"]);
+  assert.deepEqual(c.value, ["b"]);
+});
+
+test("radioGroup keeps exactly one", () => {
+  const r = mount(composer.radioGroup.default({
+    value: "a", options: [{ value: "a", label: "A" }, { value: "b", label: "B" }],
+  }));
+  const inputs = r.node.querySelectorAll("input");
+  inputs[1].click();
+  assert.equal(r.value, "b");
+  assert.equal(inputs[0].checked, false);
+});
+
+test("segmented selects and reflects aria-checked", () => {
+  const s = mount(composer.segmented.md({
+    value: "t2v", options: [{ value: "t2v", label: "T" }, { value: "i2v", label: "I" }],
+  }));
+  const buttons = s.node.querySelectorAll("button");
+  buttons[1].click();
+  assert.equal(s.value, "i2v");
+  assert.equal(buttons[1].getAttribute("aria-checked"), "true");
+  assert.equal(buttons[0].getAttribute("aria-checked"), "false");
+});
+
+test("select round-trips its value", () => {
+  const s = mount(composer.select.md({
+    value: "b", options: [{ value: "a", label: "A" }, { value: "b", label: "B" }],
+  }));
+  assert.equal(s.value, "b");
+  s.setValue("a");
+  assert.equal(s.value, "a");
+});
+
+test("toggle is a switch, not a checkbox, to assistive tech", () => {
+  const t = mount(composer.toggle.default({ label: "Second pass", checked: true }));
+  assert.equal(t.node.querySelector("input").getAttribute("role"), "switch");
+  assert.equal(t.value, true);
+});
+
+// --- input -----------------------------------------------------------------
+
+test("onCommit fires on Enter and blur, not on every keystroke", () => {
+  // A settings value that updates per keystroke writes nine intermediate values
+  // while you type "0.65".
+  const commits = [];
+  const inputs = [];
+  const i = mount(composer.input.md({
+    onInput: (v) => inputs.push(v),
+    onCommit: (v) => commits.push(v),
+  }));
+  i.node.value = "roof";
+  fire(i.node, "input");
+  assert.deepEqual(inputs, ["roof"]);
+  assert.deepEqual(commits, []);
+
+  i.node.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  assert.deepEqual(commits, ["roof"]);
+
+  fire(i.node, "blur");
+  assert.deepEqual(commits, ["roof"], "an unchanged value does not commit twice");
+});
+
+test("number clamps on commit, not while typing", () => {
+  // Clamping mid-keystroke makes a leading "-" or "0." impossible to type.
+  let last = null;
+  const n = mount(composer.number.md({ value: 3, min: 1, max: 10, onChange: (v) => { last = v; } }));
+  const input = n.node.querySelector("input") || n.node;
+  input.value = "99";
+  fire(input, "input");
+  assert.equal(input.value, "99", "not clamped yet");
+  fire(input, "blur");
+  assert.equal(last, 10);
+});
+
+test("number applies its precision", () => {
+  let last = null;
+  const n = mount(composer.number.md({ value: 1, min: 0, max: 10, precision: 1, onChange: (v) => { last = v; } }));
+  const input = n.node.querySelector("input") || n.node;
+  input.value = "3.14159";
+  fire(input, "blur");
+  assert.equal(last, 3.1);
+});
+
+test("stepper steps without float drift", () => {
+  const s = mount(composer.stepper.md({ value: 0.1, min: 0, max: 1, step: 0.2 }));
+  s.node.querySelectorAll("button")[1].click();
+  assert.equal(s.value, 0.3, "0.1 + 0.2 must not surface as 0.30000000000000004");
+});
+
+test("stepper respects its bounds", () => {
+  const s = mount(composer.stepper.md({ value: 1, min: 0, max: 1, step: 1 }));
+  s.node.querySelectorAll("button")[1].click();
+  assert.equal(s.value, 1);
+});
+
+test("filterList filters on label and hint, and reports a pick", () => {
+  let picked = null;
+  const f = mount(composer.filterList.md({
+    onChange: (id) => { picked = id; },
+    items: [
+      { id: "a", label: "bong_tangent", hint: "validated" },
+      { id: "b", label: "karras", hint: "2.3 era" },
+    ],
+  }));
+  const search = f.node.querySelector("input");
+  search.value = "valid";
+  fire(search, "input");
+  assert.equal(f.node.querySelectorAll(".cx-filter-row").length, 1, "matches on hint too");
+
+  f.node.querySelector(".cx-filter-row").click();
+  assert.equal(picked, "a");
+});
+
+test("filterList filters on keywords too, though it never draws them", () => {
+  const f = mount(composer.filterList.md({
+    items: [
+      { id: "a", label: "Models and pipeline", hint: "What the run is made of.", keywords: "loaders" },
+      { id: "b", label: "Updates" },
+    ],
+  }));
+  const search = f.node.querySelector("input");
+  search.value = "loaders";
+  fire(search, "input");
+  const rows = f.node.querySelectorAll(".cx-filter-row");
+  assert.equal(rows.length, 1, "a section findable only by a keyword must still be found");
+  assert.equal(f.node.textContent.includes("loaders"), false, "keywords are for search, not display");
+});
+
+test("filterList gives an icon a coloured chip only from a fixed tone, never from raw item data", () => {
+  const f = mount(composer.filterList.md({
+    items: [{ id: "a", label: "Node packs", icon: "▣", tone: "good" }],
+  }));
+  const icon = f.node.querySelector(".cx-filter-icon");
+  assert.ok(icon.classList.contains("cx-filter-icon-good"));
+});
+
+test("an unknown filterList icon tone is refused rather than rendered as a blank chip", () => {
+  assert.throws(() => mount(composer.filterList.md({
+    items: [{ id: "a", label: "Node packs", icon: "▣", tone: "sparkly-typo" }],
+  })), RangeError);
+});
+
+test("filterList says so when nothing matches", () => {
+  const f = mount(composer.filterList.md({ items: [{ id: "a", label: "one" }] }));
+  const search = f.node.querySelector("input");
+  search.value = "zzz";
+  fire(search, "input");
+  assert.equal(f.node.querySelectorAll(".cx-filter-row").length, 0);
+  assert.ok(f.node.querySelector(".cx-filter-empty"), "an empty list must say it is empty");
+});
+
+// --- slider ----------------------------------------------------------------
+
+test("slider reports as it moves and commits on release", () => {
+  const moves = [];
+  const commits = [];
+  const s = mount(composer.slider.md({
+    value: 0.5, min: 0, max: 1, step: 0.1,
+    onChange: (v) => moves.push(v), onCommit: (v) => commits.push(v),
+  }));
+  const input = s.node.querySelector("input");
+  input.value = "0.8";
+  fire(input, "input");
+  fire(input, "change");
+  assert.deepEqual(moves, [0.8]);
+  assert.deepEqual(commits, [0.8]);
+});
+
+test("the slider paints its fill from the value", () => {
+  const s = mount(composer.slider.md({ value: 0.25, min: 0, max: 1, step: 0.05 }));
+  assert.equal(s.node.querySelector("input").style.getPropertyValue("--fill"), "25%");
+});
+
+test("slider.readout shows the value and its unit", () => {
+  const s = mount(composer.slider.readout({ value: 0.65, min: 0, max: 1, step: 0.05, unit: "x", precision: 2 }));
+  assert.equal(s.node.querySelector("output").textContent, "0.65x");
+  s.setValue(0.3);
+  assert.equal(s.node.querySelector("output").textContent, "0.30x");
+});
+
+test("slider.macro jumps to a preset", () => {
+  const s = mount(composer.slider.macro({
+    value: 0.2, min: 0, max: 1, step: 0.05,
+    presets: [{ label: "Chill", value: 0.2 }, { label: "Chaos", value: 0.9 }],
+  }));
+  s.node.querySelectorAll(".cx-macro-presets button")[1].click();
+  assert.equal(s.value, 0.9);
+});
+
+test("range thumbs cannot pass each other", () => {
+  // A range whose start is after its end is a state every consumer would then
+  // have to defend against.
+  const r = mount(composer.range.md({ from: 0.3, to: 0.7, min: 0, max: 1, step: 0.05 }));
+  const [lo, hi] = r.node.querySelectorAll("input");
+  lo.value = "0.9";
+  fire(lo, "input");
+  const { from, to } = r.value;
+  assert.ok(from <= to, `from ${from} must not exceed to ${to}`);
+});
+
+// --- regressions found by the adversarial pass ------------------------------
+
+test("finishing a busy spell does not re-enable a button that was disabled", () => {
+  // busy and disabled are independent reasons a button cannot be clicked.
+  // Deriving the attribute from the constructor's value meant the later call
+  // silently lost to the earlier one.
+  const b = mount(composer.button.md({ label: "Save" }));
+  b.setDisabled(true);
+  b.setBusy(true);
+  b.setBusy(false);
+  assert.equal(b.node.disabled, true);
+  b.setDisabled(false);
+  assert.equal(b.node.disabled, false);
+});
+
+test("a busy button stays disabled even if setDisabled(false) is called", () => {
+  const b = mount(composer.button.md({ label: "Save" }));
+  b.setBusy(true);
+  b.setDisabled(false);
+  assert.equal(b.node.disabled, true);
+});
+
+test("clearing a number field keeps the last committed value", () => {
+  // A browser normalises invalid text in a number input to "", and Number("")
+  // is 0 -- finite, so it sails past an isFinite guard and lands on min,
+  // discarding what the user had actually entered.
+  const seen = [];
+  const n = mount(composer.number.md({ value: 3, min: 1, max: 10, onChange: (v) => seen.push(v) }));
+  const input = n.node.querySelector("input") || n.node;
+
+  input.value = "7";
+  fire(input, "blur");
+  assert.equal(n.value, 7);
+
+  input.value = "";
+  fire(input, "blur");
+  assert.equal(n.value, 7, "an emptied field is not a zero");
+  assert.equal(input.value, "7", "and the field shows what is actually held");
+  assert.deepEqual(seen, [7, 7]);
+});
+
+test("a number field ignores unparseable text on commit", () => {
+  const n = mount(composer.number.md({ value: 5, min: 0, max: 10 }));
+  const input = n.node.querySelector("input") || n.node;
+  input.value = "abc";
+  fire(input, "blur");
+  assert.equal(n.value, 5);
+});
+
+test("a list row carries a real control, separate from its reorder arrows", () => {
+  // A bare number printed beside up/down arrows reads as a stepper for that
+  // number. The weight is edited in a control; the arrows only move the row.
+  const weight = composer.number.md({ value: 0.8, min: -2, max: 2, step: 0.05, label: "Weight" });
+  const l = mount(composer.list.rows({
+    reorder: true,
+    items: [{ label: "detail_v3", control: weight }, { label: "motion_lift" }],
+  }));
+  assert.ok(l.node.querySelector(".cx-list-control input"), "the row has an editable control");
+
+  const moves = [...l.node.querySelectorAll(".cx-list-move")];
+  assert.ok(moves.length >= 2);
+  for (const m of moves) {
+    assert.match(m.getAttribute("aria-label"), /^Move .* (up|down)$/,
+      "reorder buttons say they reorder");
+  }
+});
+
+test("reordering a list reports the new order", () => {
+  let order = null;
+  const l = mount(composer.list.rows({
+    reorder: true, onReorder: (items) => { order = items.map((i) => i.label); },
+    items: [{ label: "a" }, { label: "b" }],
+  }));
+  // the second row's "up" button
+  l.node.querySelectorAll(".cx-list-row")[1].querySelector(".cx-list-move").click();
+  assert.deepEqual(order, ["b", "a"]);
+});
+
+// --- workspace -------------------------------------------------------------
+
+const workspace = (props = {}) => mount(composer.workspace.docked({
+  id: `ws-${Math.random().toString(36).slice(2)}`,
+  left: composer.hint.default({ text: "assets" }),
+  centre: composer.hint.default({ text: "preview" }),
+  right: composer.hint.default({ text: "properties" }),
+  ...props,
+}));
+
+test("a docked panel's toggle is not inside the panel it collapses", () => {
+  // The v4 fault, as a test. A collapsed column was marked [hidden], which is
+  // display:none, and the control that would have brought it back was inside
+  // it -- so the button did nothing at all and said nothing.
+  const ws = workspace();
+  for (const side of ["left", "right"]) {
+    const panel = side === "left" ? ws.left : ws.right;
+    const toggle = ws.node.querySelector(`.cx-workspace-rail-${side} button`);
+    assert.ok(toggle, `${side} has no toggle`);
+    assert.ok(!panel.contains(toggle), `the ${side} toggle is inside the panel it hides`);
+  }
+});
+
+test("collapsing keeps the panel in the document rather than removing it", () => {
+  const ws = workspace();
+  ws.close("left");
+  assert.equal(ws.isOpen("left"), false);
+  assert.ok(ws.node.contains(ws.left), "the panel was removed rather than collapsed");
+  assert.ok(!ws.left.hasAttribute("hidden"),
+    "[hidden] is display:none, which is what made this unrecoverable in v4");
+  assert.ok(ws.left.classList.contains("cx-collapsed"));
+});
+
+test("a collapsed panel can be reopened from its toggle", () => {
+  const ws = workspace();
+  const toggle = ws.node.querySelector(".cx-workspace-rail-right button");
+  toggle.click();
+  assert.equal(ws.isOpen("right"), false);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  toggle.click();
+  assert.equal(ws.isOpen("right"), true);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+});
+
+test("the centre keeps its content and the sides keep theirs", () => {
+  const ws = workspace();
+  assert.match(ws.centre.textContent, /preview/);
+  assert.match(ws.left.textContent, /assets/);
+  assert.match(ws.right.textContent, /properties/);
+});
+
+test("which panels were open is remembered per workspace id", () => {
+  const first = workspace({ id: "remembered" });
+  first.close("left");
+  first.destroy();
+
+  const second = workspace({ id: "remembered" });
+  assert.equal(second.isOpen("left"), false, "the closed panel came back open");
+  assert.equal(second.isOpen("right"), true);
+});
+
+test("a workspace with no panels still renders its centre", () => {
+  const ws = mount(composer.workspace.docked({
+    id: "bare", centre: composer.hint.default({ text: "only the middle" }),
+  }));
+  assert.match(ws.centre.textContent, /only the middle/);
+  assert.ok(ws.left && ws.right, "the regions exist even when nothing was put in them");
+});
+
+test("a captionless tile still has a name", () => {
+  // The icons view drops the caption on purpose. Nothing else in the cell says
+  // what it is, so without an explicit name the whole bin reads to a screen
+  // reader as a row of unlabelled buttons.
+  const g = mount(composer.gallery.icons({ items: [{ id: "1", label: "rooftop_dusk_01.mp4" }] }));
+  const tile = g.node.querySelector(".cx-cell");
+  assert.equal(tile.getAttribute("aria-label"), "rooftop_dusk_01.mp4");
+  assert.equal(tile.getAttribute("title"), "rooftop_dusk_01.mp4");
+});
+
+test("the three views of a collection agree on what is selected", () => {
+  // Grid, list and icons are one bin in three shapes. A view that reported its
+  // selection differently would make switching views a way to lose it.
+  const items = [{ id: "a", label: "a.png" }, { id: "b", label: "b.png" }];
+  for (const view of ["adaptive", "list", "icons"]) {
+    const g = mount(composer.gallery[view]({ items, selection: ["b"] }));
+    assert.deepEqual(g.value, ["b"], `${view} reported the wrong selection`);
+    g.setValue(["a"]);
+    assert.deepEqual(g.value, ["a"], `${view} did not take a new selection`);
+    const on = [...g.node.querySelectorAll('[aria-selected="true"]')];
+    assert.equal(on.length, 1, `${view} drew ${on.length} selected entries`);
+    g.destroy();
+  }
+});
+
+test("a thumbnail that does not load falls back to the glyph", () => {
+  // The browser's broken-image icon reads as a damaged file. In a bin of fifty
+  // results one server hiccup would look like lost work.
+  const g = mount(composer.gallery.adaptive({ id: "broken", items: [{ id: "1", label: "a.png", thumb: "/gone.png" }] }));
+  const img = g.node.querySelector("img");
+  fire(img, "error");
+  assert.equal(g.node.querySelector("img"), null);
+  assert.ok(g.node.querySelector(".cx-cell-glyph"), "nothing stood in for the missing picture");
+  assert.match(g.node.textContent, /a\.png/, "the name went with it");
+});
+
+test("a bin's thumbnails are lazy", () => {
+  // A bin holds everything a session produced. Fetching all of it the moment
+  // the panel draws is the shape of v4's media-bin stall: the browser opens six
+  // connections per origin, and the API is behind the same six.
+  const items = [{ id: "1", label: "a.png", thumb: "/view?filename=a.png" }];
+  for (const view of ["adaptive", "list", "icons"]) {
+    const g = mount(composer.gallery[view]({ items }));
+    assert.equal(g.node.querySelector("img").getAttribute("loading"), "lazy",
+      `${view} fetches every thumbnail at once`);
+    g.destroy();
+  }
+});
+
+// --- track -------------------------------------------------------------
+
+const CLIPS = [
+  { id: "a", label: "Scene 1", start: 0, duration: 4 },
+  { id: "b", label: "Scene 2", start: 4, duration: 6 },
+  { id: "c", label: "Scene 3", start: 10, duration: 2 },
+];
+
+test("a clip's width is proportional to its duration, not equal to its neighbours'", () => {
+  // The third clip is 2s at 10px/s = 20px, under the 24px floor -- widened to
+  // stay clickable, which is why it is not exactly proportional to the other
+  // two the way the first two are to each other.
+  const t = mount(composer.track.default({ items: CLIPS, pxPerSecond: 10 }));
+  const widths = [...t.node.querySelectorAll(".cx-track-clip")].map((c) => parseFloat(c.style.width));
+  assert.deepEqual(widths, [40, 60, 24]);
+});
+
+test("a clip under the pixel floor is not squeezed to nothing", () => {
+  const t = mount(composer.track.default({
+    items: [{ id: "a", label: "Sliver", start: 0, duration: 0.1 }], pxPerSecond: 10,
+  }));
+  const width = parseFloat(t.node.querySelector(".cx-track-clip").style.width);
+  assert.ok(width >= 24, `a 0.1s clip at 10px/s rendered ${width}px wide`);
+});
+
+test("the ruler reads real elapsed time, not a tick per clip", () => {
+  // Three clips, but the ruler's ticks are seconds -- there is no reason their
+  // count should match the clip count in either direction.
+  const t = mount(composer.track.default({ items: CLIPS, pxPerSecond: 40 }));
+  const ticks = [...t.node.querySelectorAll(".cx-track-tick")].map((n) => n.textContent);
+  assert.deepEqual(ticks, ["0:00", "0:02", "0:04", "0:06", "0:08", "0:10", "0:12"]);
+});
+
+test("clicking partway into a clip seeks to that exact second, not to the clip's start", () => {
+  // A clip covers most of the track's own area -- if a click on one only
+  // ever resolved to its START, an exact-second seek would only ever be
+  // reachable from the thin ruler strip above it.
+  const seen = [];
+  const t = mount(composer.track.default({
+    items: CLIPS, pxPerSecond: 40, onSeek: (seconds, item) => seen.push([seconds, item && item.id]),
+  }));
+  // Clip "b" spans 4s-10s -> 160px-400px at 40px/s. 250px is 6.25s into it.
+  t.node.querySelector('[data-id="b"]')
+    .dispatchEvent(new window.MouseEvent("click", { bubbles: true, clientX: 250 }));
+  assert.deepEqual(seen, [[6.25, "b"]]);
+});
+
+test("clicking empty track (the ruler, the gap past the clips) seeks by position", () => {
+  const seen = [];
+  const t = mount(composer.track.default({
+    items: CLIPS, pxPerSecond: 10, onSeek: (seconds, item) => seen.push([seconds, item && item.id]),
+  }));
+  const inner = t.node.querySelector(".cx-track-inner");
+  inner.dispatchEvent(new window.MouseEvent("click", { bubbles: true, clientX: 45 }));
+  // 45px at 10px/s = 4.5s, which falls inside clip "b" (4s..10s).
+  assert.deepEqual(seen, [[4.5, "b"]]);
+});
+
+test("a seek past the last clip clamps to the track's own end", () => {
+  const seen = [];
+  const t = mount(composer.track.default({
+    items: CLIPS, pxPerSecond: 10, onSeek: (seconds, item) => seen.push([seconds, item && item.id]),
+  }));
+  t.node.querySelector(".cx-track-inner")
+    .dispatchEvent(new window.MouseEvent("click", { bubbles: true, clientX: 9999 }));
+  assert.deepEqual(seen, [[12, "c"]]);
+});
+
+test("setPlayhead moves the marker without redrawing the clips", () => {
+  const t = mount(composer.track.default({ items: CLIPS, pxPerSecond: 10, playhead: 0 }));
+  const before = t.node.querySelector(".cx-track-clip");
+  t.setPlayhead(7);
+  const head = t.node.querySelector(".cx-track-playhead");
+  assert.equal(head.style.insetInlineStart, "70px");
+  assert.equal(t.node.querySelector(".cx-track-clip"), before, "the clip row was rebuilt for a playhead move");
+});
+
+test("setValue redraws the selected clip without a fresh setItems call", () => {
+  const t = mount(composer.track.default({ items: CLIPS, pxPerSecond: 10 }));
+  assert.equal(t.node.querySelectorAll('[aria-selected="true"]').length, 0);
+  t.setValue(["b"]);
+  const on = t.node.querySelector('[aria-selected="true"]');
+  assert.equal(on && on.dataset.id, "b");
+});
+
+test("dragging a clip onto another reports the reorder by id, not by position", () => {
+  const reordered = [];
+  const t = mount(composer.track.default({ items: CLIPS, pxPerSecond: 10, onReorder: (from, to) => reordered.push([from, to]) }));
+  const cells = t.node.querySelectorAll(".cx-track-clip");
+  const store = {};
+  const dt = {
+    effectAllowed: null,
+    setData: (type, v) => { store[type] = v; },
+    getData: (type) => store[type] || "",
+    get types() { return Object.keys(store); },
+  };
+  const fireDrag = (node, type) => {
+    const e = new window.Event(type, { bubbles: true, cancelable: true });
+    e.dataTransfer = dt;
+    node.dispatchEvent(e);
+  };
+  fireDrag(cells[0], "dragstart");
+  fireDrag(cells[2], "drop");
+  assert.deepEqual(reordered, [["a", "c"]]);
+});
+
+test("an excluded clip is dimmed, a rated one carries its rating", () => {
+  const t = mount(composer.track.default({
+    items: [
+      { id: "a", label: "A", start: 0, duration: 1, excluded: true },
+      { id: "b", label: "B", start: 1, duration: 1, rating: "liked" },
+    ], pxPerSecond: 10,
+  }));
+  const [a, b] = t.node.querySelectorAll(".cx-track-clip");
+  assert.equal(a.classList.contains("cx-excluded"), true);
+  assert.equal(b.getAttribute("data-rating"), "liked");
+});
+
+test("Enter is a newline in a textarea, not a commit", () => {
+  // A one-line field commits on Enter. A textarea holds the longest thing
+  // anyone types here -- the prompt -- and stealing Enter there means a
+  // multi-line value cannot be typed at all.
+  const committed = [];
+  const box = mount(composer.textarea.md({ label: "Prompt", onCommit: (v) => committed.push(v) }));
+  box.node.value = "first line";
+  const event = new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  box.node.dispatchEvent(event);
+
+  assert.equal(event.defaultPrevented, false, "Enter was swallowed, so no second line can be typed");
+  assert.deepEqual(committed, []);
+
+  fire(box.node, "blur");
+  assert.deepEqual(committed, ["first line"], "blur is what commits a textarea");
+});

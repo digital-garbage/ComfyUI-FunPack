@@ -1,0 +1,428 @@
+.cx-field { display: flex; flex-direction: column; gap: var(--sp-2); }
+.cx-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-5); }
+.cx-field-error { font-size: var(--fs-6); color: var(--danger); }
+
+.cx-settings-row {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-7);
+  padding: var(--sp-4) 0; border-bottom: var(--bw) solid var(--line-2);
+}
+.cx-settings-row:last-child { border-bottom: 0; }
+.cx-settings-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cx-settings-label { font-size: var(--fs-4); line-height: var(--lh-4); color: var(--text); }
+.cx-settings-control {
+  flex: 0 0 var(--control-col); min-inline-size: 0;
+  display: flex; align-items: center; justify-content: flex-end;
+}
+/* A control fills its column, or is at most as wide as it. Left to itself a
+   <select> takes the width of its widest option, which is how one row in a
+   list of five ended up 124px wider than the rest. */
+.cx-settings-control > * { max-inline-size: 100%; }
+.cx-settings-control > .cx-select,
+.cx-settings-control > .cx-input,
+.cx-settings-control > .cx-textarea,
+.cx-settings-control > .cx-slider { inline-size: 100%; }
+.cx-settings-row.cx-danger .cx-settings-label { color: var(--danger); }
+/* Below the width where a label and a control fit side by side, they stop
+   sitting side by side. The control column will not give up its width, so in a
+   docked panel the label was squeezed to one word per line and its hint to a
+   four-character column -- readable as damage, not as a layout. The container
+   is the ROWS, not the viewport: the same group is used in a 190px panel and in
+   a 600px window, and only its own width decides.
+
+   AFTER the rules it overrides, and it has to stay there: a container query
+   adds no specificity, so written above them it lost -- and `flex: 0 0 180px`
+   in a COLUMN is 180px of HEIGHT, which turned four settings into a panel two
+   screens long. */
+/* 360, not 300: the control column is 180px and a label needs at least as much
+   again beside it. Written as 300 it depended on the padding around the rows --
+   trimming 4px off two nested boxes widened this container past the threshold
+   and the shredding came straight back, in a commit about something else. */
+@container (max-width: 360px) {
+  .cx-settings-row { flex-direction: column; align-items: stretch; gap: var(--sp-2); }
+  .cx-settings-control { flex: 0 0 auto; justify-content: flex-start; }
+}
+
+
+.cx-group { display: flex; flex-direction: column; gap: var(--sp-3); }
+.cx-group-rows {
+  border: var(--bw) solid var(--line); border-radius: var(--r-4);
+  background: var(--elev-1);
+  /* Weighted to the left. A row's content -- a checkbox, a label, a stepper --
+     starts at the same edge every time, and sitting it hard against the border
+     made the whole card read as leaning left, because what is beside it on the
+     right is usually the shorter half of a wrapped line rather than a control.
+     A few pixels of extra lead-in settles it without costing the text a line. */
+  padding-inline: var(--sp-6) var(--sp-4);
+  container-type: inline-size;
+}
+
+.cx-panel {
+  border: var(--bw) solid var(--line); border-radius: var(--r-4);
+  background: var(--elev-1); overflow: hidden;
+  box-shadow: var(--shadow-1);
+  /* A zone is as wide as it is given, never as wide as its head wants to be. */
+  min-inline-size: 0;
+  /* A column, so a panel given a height passes it to its body. Without this a
+     viewer asking for 100% of its parent got 100% of `auto` and collapsed to
+     one line, inside a panel that was the right size around it. */
+  display: flex; flex-direction: column; min-block-size: 0;
+}
+/* Every panel head is the SAME height, whatever is in it. Padding-block plus a
+   min-height meant a head holding a control was 41px and a head holding only a
+   title was 34, so two panels side by side had their titles on different lines
+   -- the whole row read as if it had been assembled by hand. The height is the
+   band's; a control inside is centred in it. */
+/* A zone is the app's own surface, not a card on it: no corners to round, no
+   shadow to cast, and no border of its own -- the hairline between it and the
+   next region belongs to the region, so two neighbours never draw two lines. */
+.cx-zone { border: 0; border-radius: 0; box-shadow: none; }
+
+.cx-panel-head {
+  display: flex; align-items: center; gap: var(--sp-2) var(--sp-5);
+  padding: var(--sp-1) var(--sp-6); border-bottom: var(--bw) solid var(--line);
+  background: var(--grad-band);
+  /* A MINIMUM height, and it wraps. Fixed, it could not shrink below the width
+     of everything in it -- and a head now holds a title, two or three controls
+     and a status. That min-content width became the whole centre column's, so a
+     768px window laid out 878px wide and scrolled sideways. v4 hit this and
+     landed in the same place: the right-hand block wraps, the head grows a
+     line, and nothing is ever clipped. */
+  min-block-size: var(--menubar-h); flex: none; flex-wrap: wrap;
+  min-inline-size: 0;
+}
+.cx-panel-title {
+  font-family: var(--font-display); font-size: var(--fs-3); font-weight: var(--fw-semibold);
+  display: flex; align-items: center; gap: var(--sp-3);
+  min-inline-size: 0; white-space: nowrap;
+}
+/* One accent mark per panel. Carried over from v4, where it is what makes a
+   head read as the top of something rather than as a strip of grey. */
+.cx-panel-title::before {
+  content: ""; flex: none; inline-size: 5px; block-size: 5px;
+  border-radius: var(--r-pill); background: var(--accent);
+}
+/* Wraps, like the head around it. The head was made to wrap when a zone got
+   narrow, but the group of controls inside it was still one unbreakable row --
+   so the head's min-content was the whole row, and a 768px window laid out
+   860px wide and scrolled sideways. */
+.cx-panel-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; min-inline-size: 0; }
+/* Whatever the zone has to say, at the far end of its own head: a count, a
+   duration, where a run has got to. Quiet by default -- it is read at a glance
+   and never pressed. */
+.cx-panel-status {
+  margin-inline-start: auto; display: flex; align-items: center; gap: var(--sp-4);
+  min-inline-size: 0; font-size: var(--fs-6); color: var(--faint);
+}
+/* A column with a gap, not a block: two things put in a body by two different
+   parts of the app had whatever space their own line boxes happened to leave,
+   which is how a prompt box ended up 8px under one label and 3px under the
+   next. The body decides the rhythm; what goes in it brings nothing. */
+.cx-panel-body {
+  padding: var(--sp-6); flex: 1 1 auto; min-block-size: 0; overflow: auto;
+  /* Both axes. A body is a scroller, and a scroller that cannot shrink below
+     its content is not one -- it hands the width up to the zone, the column and
+     the window, which then scrolls sideways as a page. */
+  min-inline-size: 0;
+  display: flex; flex-direction: column; gap: var(--sp-5);
+}
+/* One child fills the body -- a viewer, a bin. Several are each their own
+   height and the body scrolls, which is what a panel of controls does. */
+.cx-panel-body > .cx-viewer, .cx-panel-body > .cx-stack-fill { flex: 1 1 auto; }
+.cx-panel-flush > .cx-panel-body { padding: 0; }
+
+.cx-toolbar { display: flex; align-items: center; gap: var(--sp-2); min-inline-size: 0; }
+.cx-toolbar-trailing {
+  margin-inline-start: auto; display: flex; align-items: center; gap: var(--sp-3);
+  font-size: var(--fs-6); color: var(--muted);
+}
+
+.cx-action-bar {
+  display: flex; align-items: center; gap: var(--sp-6);
+  padding: var(--sp-5) var(--gutter);
+  border-top: var(--bw) solid var(--line); background: var(--grad-band);
+  position: sticky; bottom: 0;
+}
+/* What the app is SAYING sits at the start of the row and what is PRESSED at
+   the end. Everything shared one right-aligned group before, so "Ready" sat
+   against the Generate button with 1300px of empty bar to its left. */
+.cx-action-bar-lead { display: flex; align-items: center; gap: var(--sp-5); min-inline-size: 0; }
+.cx-action-bar-buttons { display: flex; align-items: center; gap: var(--sp-3); margin-inline-start: auto; }
+
+.cx-list-wrap { display: flex; flex-direction: column; gap: var(--sp-3); align-items: flex-start; }
+.cx-list {
+  width: 100%; border: var(--bw) solid var(--line); border-radius: var(--r-3);
+  background: var(--elev-1); overflow: hidden;
+}
+.cx-list-row {
+  display: flex; align-items: center; gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-5); border-bottom: var(--bw) solid var(--line-2);
+}
+.cx-list-row:last-child { border-bottom: 0; }
+.cx-list-label { font-size: var(--fs-4); flex: 1; min-width: 0; }
+.cx-list-hint { font-size: var(--fs-7); color: var(--muted); }
+.cx-list-control { flex: none; width: 92px; }
+/* Separated from the row's own control by a rule, so the arrows read as
+ * "reorder this row" rather than "adjust that number". */
+.cx-list-actions {
+  display: flex; gap: var(--sp-1); flex: none;
+  padding-left: var(--sp-4); margin-left: var(--sp-2);
+  border-left: var(--bw) solid var(--line-2);
+}
+.cx-list-move { color: var(--faint); }
+.cx-list-move:hover:not(:disabled) { color: var(--accent); }
+.cx-list-empty { padding: var(--sp-6); font-size: var(--fs-6); color: var(--faint); text-align: center; }
+
+.cx-tabs { display: flex; gap: var(--sp-1); }
+.cx-tab {
+  border: 0; background: transparent; color: var(--muted);
+  cursor: pointer; font-family: var(--font-ui); font-size: var(--fs-5);
+  transition: color var(--dur-1) var(--ease-standard);
+}
+.cx-tabs-underline { border-bottom: var(--bw) solid var(--line); gap: var(--sp-5); }
+.cx-tabs-underline .cx-tab {
+  padding: var(--sp-3) 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.cx-tabs-underline .cx-tab.cx-on { color: var(--text); border-bottom-color: var(--accent); }
+.cx-tabs-dock .cx-tab {
+  height: var(--ctl-h-md); padding: 0 var(--ctl-pad-x-md);
+  border: var(--bw) solid var(--line); border-radius: var(--r-3);
+  font-size: var(--fs-6);
+}
+.cx-tabs-dock .cx-tab.cx-on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.cx-tab:hover { color: var(--text); }
+
+.cx-split { display: flex; width: 100%; min-height: 120px; min-inline-size: 0; }
+.cx-split-v { flex-direction: column; }
+/* A column, so what is inside a pane inherits the pane's height instead of
+   sizing to its own content. A panel in a pane was the right size with a body
+   one line tall inside it, which looks like the panel is fine and the content
+   is empty. */
+.cx-split-pane {
+  flex: 1 1 0; min-inline-size: 0; min-block-size: 0; overflow: auto;
+  display: flex; flex-direction: column;
+}
+.cx-split-pane > * { flex: 1 1 auto; min-block-size: 0; }
+.cx-split > .cx-split-pane:first-child { flex: 0 0 auto; }
+
+/* A horizontal split stacks rather than overflowing when there is not room for
+   two columns. The first pane carries an inline size, so on a narrow screen it
+   could not shrink and the whole page scrolled sideways -- 407px of content in
+   a 360px viewport. Wrapping rather than a media query because the kit sizes
+   itself from its container, not from the window. */
+.cx-split-h { flex-wrap: wrap; }
+.cx-split-h > .cx-split-pane { min-inline-size: min(100%, 260px); }
+.cx-split-h > .cx-split-pane:first-child { max-inline-size: 100%; }
+.cx-split-bar { flex: none; background: transparent; position: relative; }
+.cx-split-h > .cx-split-bar { width: var(--gutter); cursor: col-resize; }
+.cx-split-v > .cx-split-bar { height: var(--gutter); cursor: row-resize; }
+.cx-split-bar::after {
+  content: ""; position: absolute; inset: 0; margin: auto;
+  background: var(--line); transition: background var(--dur-1) var(--ease-standard);
+}
+.cx-split-h > .cx-split-bar::after { width: 1px; }
+.cx-split-v > .cx-split-bar::after { height: 1px; }
+.cx-split-bar:hover::after, .cx-split-bar:focus-visible::after { background: var(--accent); }
+.cx-split-bar:focus-visible { outline: none; }
+
+/* The same radius as a panel: these stand side by side in the properties
+   column, and two different corner radii on two boxes in one column reads as
+   two different kinds of thing. */
+.cx-collapsible { border: var(--bw) solid var(--line); border-radius: var(--r-4); background: var(--elev-1); }
+.cx-collapsible-head {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: 0 var(--sp-6); block-size: var(--menubar-h); cursor: pointer; list-style: none;
+  font-size: var(--fs-5); background: var(--grad-band);
+  border-radius: calc(var(--r-4) - var(--bw));
+}
+.cx-collapsible[open] > .cx-collapsible-head {
+  border-end-start-radius: 0; border-end-end-radius: 0;
+  border-block-end: var(--bw) solid var(--line);
+}
+.cx-collapsible-head::-webkit-details-marker { display: none; }
+.cx-collapsible-head::before {
+  content: "›"; color: var(--faint); display: inline-block;
+  transition: transform var(--dur-1) var(--ease-standard);
+}
+.cx-collapsible[open] > .cx-collapsible-head::before { transform: rotate(90deg); }
+/* Its own top padding, not the head's. With none, the first thing in the body
+   -- usually a section label -- sat directly on the head's dividing line, which
+   read as the label belonging to the divider rather than to what is under it.
+   Narrower at the sides than at the top: this is the third box a setting's text
+   is nested inside, and each level of padding comes out of the words. */
+.cx-collapsible-body { padding: var(--sp-6) var(--sp-4) var(--sp-5); }
+
+.cx-rail { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-2); }
+.cx-rail-item {
+  display: flex; align-items: center; gap: var(--sp-4);
+  height: var(--ctl-h-xl); padding: 0 var(--sp-4);
+  border: 0; border-radius: var(--r-3); background: transparent;
+  color: var(--muted); font-size: var(--fs-5); cursor: pointer; text-align: left;
+}
+.cx-rail-item:hover { background: var(--hover); color: var(--text); }
+.cx-rail-item.cx-on { background: var(--accent-soft); color: var(--accent-hi); }
+.cx-rail-icon { width: 18px; text-align: center; }
+
+/* Workspace: a centre that shrinks, panels docked either side.
+   The rails hold the toggles and never collapse, so the control for a panel is
+   never inside the panel it controls. */
+.cx-workspace {
+  display: flex; align-items: stretch; min-block-size: 0; block-size: 100%; inline-size: 100%;
+}
+/* Flex containers, not blocks with overflow. A region whose height comes from
+   its content gives a vertical split inside it a basis of `auto`, so the split's
+   second pane resolves to zero and simply is not there -- the prompt under the
+   preview vanished exactly that way, with no error and nothing to see. */
+.cx-workspace-main {
+  flex: 1 1 auto; min-inline-size: 0; min-block-size: 0;
+  display: flex; flex-direction: column;
+  background: var(--elev-1);
+}
+.cx-workspace-main > *, .cx-workspace-side > * { flex: 1 1 auto; min-block-size: 0; }
+.cx-workspace-side {
+  /* A width the CONTENT can live in, not a share of the window. Sizing these
+     as a fraction of the viewport gave a 900px-wide window a 198px column, in
+     which "Loosen the starting image" wrapped over three lines and a section
+     heading broke mid-word. A panel is as wide as a settings row needs; when
+     the window cannot afford two of them it stops docking them (below). */
+  flex: 0 0 auto;
+  inline-size: clamp(268px, 24vw, 360px);
+  min-block-size: 0;
+  overflow: auto;
+  display: flex; flex-direction: column;
+  background: var(--elev-1);
+  /* The divider between one region and the next. One hairline, the same one a
+     splitter draws, so the app reads as a single surface that has been cut up
+     rather than as three things put next to each other. */
+  border-inline: var(--bw) solid var(--line);
+}
+/* Width nil rather than display:none -- the panel stays in the flow, stays
+   measurable, and can come back without being rebuilt.
+
+   Deliberately not animated. A remembered-closed panel would animate shut on
+   every page load, which reads as the app doing something rather than as a
+   remembered preference, and an in-flight width is a state anything measuring
+   the layout has to wait out. */
+.cx-workspace-side.cx-collapsed {
+  inline-size: 0;
+  overflow: hidden;
+  border-inline-width: 0;
+}
+/* The toggle sits in the head band's height, so it lines up with the panel
+   titles either side of it instead of floating a few pixels above them like a
+   mark left on the glass. */
+/* The rails are the frame's own edge, so they carry the page colour rather than
+   a zone's -- the one strip of background the app shows. */
+.cx-workspace-rail {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  background: var(--elev-0);
+  padding-inline: var(--sp-1);
+}
+.cx-workspace-rail > * { block-size: var(--menubar-h); }
+
+/* The page frame. The one place a definite height is established, so everything
+   below can fill instead of each pane guessing at a percentage of nothing. */
+.cx-frame { display: flex; flex-direction: column; block-size: 100%; min-block-size: 0; }
+/* Film grain over the app, and only over the app: no z-index, so anything that
+   opens above the frame -- a modal, a popover -- paints over it and stays
+   crisp. Fixed, so it does not scroll and cannot be captured by a scroller's
+   own stacking context. */
+.cx-frame::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none;
+  opacity: var(--grain-opacity); mix-blend-mode: var(--grain-blend);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.cx-frame-main { flex: 1 1 auto; min-block-size: 0; min-inline-size: 0; display: flex; }
+.cx-frame-main > * { flex: 1 1 auto; min-inline-size: 0; }
+.cx-frame-head, .cx-frame-foot { flex: 0 0 auto; }
+/* Bands: edge to edge, the same height as a panel head, with the gutter inside
+   them. So the top bar reads as part of the frame rather than as a stray
+   button floating above the first panel. */
+.cx-frame-head {
+  display: flex; align-items: center;
+  block-size: var(--menubar-h); padding-inline: var(--gutter);
+  border-block-end: var(--bw) solid var(--line); background: var(--grad-band);
+}
+.cx-frame-head > * { flex: 1 1 auto; min-inline-size: 0; }
+
+/* Not enough room to dock. Below this the two panels plus a usable centre do
+   not fit -- three columns in 375px gave clipped headings and a preview no
+   wider than a thumbnail -- so a panel stops taking space from the centre and
+   sits over it instead. The rails do not move, so the way in and out is the
+   same control in the same place at every size.
+
+   The element closes both panels when it enters this mode and opens only one
+   at a time within it, because two overlays over a narrow centre is the same
+   problem with extra steps. What was open before is restored on the way out,
+   and none of that touches the remembered preference -- a window being small
+   is not the user changing their mind.
+
+   This is also what makes a phone possible later rather than a rewrite: the
+   difference between docked and overlaid is where the panel is drawn, not what
+   it is or how it is opened. */
+@media (max-width: 760px) {
+  .cx-workspace { position: relative; }
+  .cx-workspace-side {
+    position: absolute;
+    inset-block: 0;
+    z-index: 1;
+    inline-size: min(86vw, 360px);
+    background: var(--elev-1);
+    box-shadow: var(--shadow-3);
+  }
+  .cx-workspace-left { inset-inline-start: 0; }
+  .cx-workspace-right { inset-inline-end: 0; }
+  /* Above the overlay, or the panel covers the only control that closes it --
+     which is the whole fault this arrangement was built to avoid, arriving by a
+     different route the moment the panel stopped taking its own space. */
+  .cx-workspace-rail { position: relative; z-index: 2; }
+  /* A collapsed overlay must not keep catching pointers over the centre. */
+  .cx-workspace-side.cx-collapsed { inline-size: 0; box-shadow: none; }
+}
+
+/* region.stack -- the app's redrawable host. Spacing only: what goes in it
+   brings its own everything else. */
+/* min-inline-size on the stack ITSELF, not only on what is in it. A flex item's
+   automatic minimum is its content, so a stack holding anything that scrolls --
+   a strip of scenes, a wide table -- handed its content's full width up to
+   whatever contains it, and the page scrolled sideways instead of the scroller
+   scrolling. The rule below covers a stack's children; this covers the stack.
+   No min-block-size:0 here, on purpose: that would let a plain grouping stack
+   -- rows of fields nested inside a scrollable panel -- get flex-shrunk below
+   its own content height the moment its container runs short on room, and
+   since nothing here clips it, the excess paints over the next row instead of
+   the panel scrolling. .cx-stack-fill below is the one stack meant to give up
+   height for that; a stack that hasn't opted into that must keep its natural
+   size so a tight column scrolls at the real scroll boundary instead of
+   silently overlapping. */
+.cx-stack { display: flex; flex-direction: column; min-inline-size: 0; }
+.cx-stack > * { min-inline-size: 0; }
+.cx-stack-none { gap: 0; }
+.cx-stack-sm { gap: var(--sp-4); }
+.cx-stack-md { gap: var(--sp-6); }
+.cx-stack-lg { gap: var(--sp-9); }
+
+/* Filling the room it was given, rather than sizing to its content. Without a
+   definite height nothing inside can scroll: the whole page scrolls instead,
+   and a bar meant to hold the bottom scrolls away with it. */
+.cx-stack-fill { flex: 1 1 auto; min-block-size: 0; }
+/* A split inside a stack is what stretches. The rows around it -- a toolbar, a
+   banner, an action bar -- are each their own height. */
+.cx-stack > .cx-split { flex: 1 1 auto; min-block-size: 0; }
+
+/* A stack that is a small poster rather than a form -- an "About" pane's
+   mark, name and facts, centred instead of ranged left like every settings
+   list around it. */
+.cx-about { align-items: center; text-align: center; padding-block: var(--sp-7) 0; }
+/* v4's own mark size, from the scale (--fs-d1) rather than a literal --
+   the whole point of naming display steps at all. */
+.cx-about > .cx-t-lg { font-size: var(--fs-d1); line-height: var(--lh-tight); color: var(--accent); }
+.cx-about .cx-settings-row {
+  justify-content: center; gap: var(--sp-4); border-bottom: 0; padding-block: var(--sp-2);
+  inline-size: auto; align-self: center;
+}
+.cx-about .cx-settings-control { flex: 0 0 auto; justify-content: flex-start; }
+/* The fact key ("Chip", "Memory", ...) reads as a label, not a value. */
+.cx-about .cx-settings-label { font-weight: var(--fw-semibold); }
