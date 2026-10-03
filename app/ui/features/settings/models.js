@@ -4,7 +4,6 @@ import { composer as c } from "../../composer/composer.js";
 
 const widgetControl = (w, current, set) => {
   const label = w.name;
-  if (w.type === "BOOLEAN") return c.toggle.default({ label, checked: Boolean(current), onChange: set });
   if (w.type === "COMBO") {
     const choices = [...(w.choices || [])];
     if (current != null && !choices.includes(current)) choices.unshift(current);       // a file gone from disk still shows, so saving something else cannot swap it out
@@ -41,7 +40,7 @@ export const models = (app) => function mount() {
         const spec = specs[slot.node];
         if (!spec) return [c.hint.default({ text: `${slot.node} is not installed — this slot can't be edited or run.` })];
         const rows = (spec.widgets || []).filter((w) => !Array.isArray(slot.inputs && slot.inputs[w.name]))        // fed by another node: edited there
-          .map((w) => c.settingsRow.default({ label: w.name, hint: w.tooltip || "", control: widgetControl(w, slot.inputs && slot.inputs[w.name] !== undefined ? slot.inputs[w.name] : w.default, set(slot, w.name)) }));
+          .map((w) => w.type === "BOOLEAN" ? c.toggle.default({ label: w.name, hint: w.tooltip || "", checked: Boolean(slot.inputs && slot.inputs[w.name] !== undefined ? slot.inputs[w.name] : w.default), onChange: set(slot, w.name) }) : c.settingsRow.default({ label: w.name, hint: w.tooltip || "", control: widgetControl(w, slot.inputs && slot.inputs[w.name] !== undefined ? slot.inputs[w.name] : w.default, set(slot, w.name)) }));
         return [c.header.sm({ text: spec.title || slot.node }), ...rows];
       })]),
     ].filter(Boolean));

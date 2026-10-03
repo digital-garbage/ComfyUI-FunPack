@@ -22,6 +22,7 @@ export const api = {
   pipeline: () => call("GET", "/api/pipeline"),
   editPipeline: (body) => call("POST", "/api/pipeline", body),
   modules: (traits) => call("GET", `/api/modules${traits ? `?traits=${encodeURIComponent(traits)}` : ""}`),
+  releaseModule: (id) => call("POST", "/api/control/release", { id }),
   describeNodes: (classes) => call("GET", `/api/nodes?classes=${encodeURIComponent(classes.join(","))}`),
   system: () => call("GET", "/api/system"),
   gitStatus: () => call("GET", "/api/git/status?remote=0"),

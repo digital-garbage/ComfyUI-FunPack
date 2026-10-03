@@ -3,6 +3,8 @@ import { composer as c } from "../../composer/composer.js";
 import { about } from "./about.js";
 import { appearance } from "./appearance.js";
 import { models } from "./models.js";
+import { engine } from "./engine.js";
+import { modules } from "./modules.js";
 
 const later = (what) => function mount() {
   return c.emptyState.default({ icon: "◌", title: "Not built yet", hint: what });
@@ -19,11 +21,11 @@ export default {
     add("editor", "Editor", "How the editor behaves. The open project remembers these, so they follow it to another machine.", "☰", "neutral",
       later("Upscale model, prompt autocomplete, shortcut ideas, i2v options."), "", "upscale autocomplete shortcuts ideas preferences");
     add("engine", "Engine", "Settings every installed module has volunteered, grouped by what they're for.", "⚡", "warn",
-      later("Continuity, guidance, conditioning, sampling and post settings of the installed modules."), "Generation", "engine module settings");
+      engine(app), "Generation", "engine module settings");
     add("models", "Models & Pipeline", "Loaders and nodes wired into the live pipeline.", "⬡", "accent",
       models(app), "Generation", "models loaders unet vae clip lora");
     add("modules", "Modules", "Switch a module off for this project; see and re-enable ones that failed.", "☷", "neutral",
-      later("Per-module on/off for this project, and the ones that failed to load."), "Generation", "modules enable disable quarantine");
+      modules(app), "Generation", "modules enable disable quarantine");
     add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys and the Absolute global-taste store.", "✦", "danger",
       later("Refinement keys: export, delete; the taste store."), "Learning", "refinement taste keys rating");
     add("system", "Updates & ComfyUI", "Server connection, FunPack code updates, pipeline health.", "⟳", "good",
