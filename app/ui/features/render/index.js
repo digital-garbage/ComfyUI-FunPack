@@ -2,7 +2,7 @@
 import { composer as c } from "../../composer/composer.js";
 import { call } from "../../shell/api.js";
 import { clipSpecs } from "./clips.js";
-import { runJob } from "./job.js";
+import { RENDER, runJob } from "./job.js";
 
 export default {
   id: "render",
@@ -20,9 +20,9 @@ export default {
       busy = true; draw();
       try {
         await p.flush();
-        const state = await runJob(`/api/projects/${open.id}/render`, { clips });
+        const state = await runJob(`${RENDER}/projects/${open.id}/render`, { clips });
         if (state.state !== "done") return tell(state.detail || "The render failed.");
-        const { media } = await call("POST", "/api/import-clip", { clip: state.media, name: `${open.name}.mp4` });
+        const { media } = await call("POST", `${RENDER}/import-clip`, { clip: state.media, name: `${open.name}.mp4` });
         if (app.say) app.say("media");                   // the bin shows it now
         c.toast.good({ text: `Rendered: saved to the media bin as ${media.name}.` });
       } catch (err) { tell(err.message); } finally { busy = false; draw(); }

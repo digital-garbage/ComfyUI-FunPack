@@ -4,7 +4,7 @@ import { call } from "../../shell/api.js";
 import { viewUrl } from "../../shell/run.js";
 import { inPlace } from "../../shell/place.js";
 import { clipSpecs } from "./clips.js";
-import { runJob } from "./job.js";
+import { RENDER, runJob } from "./job.js";
 
 export default {
   id: "render-selected",
@@ -22,7 +22,7 @@ export default {
       if (!clips.length) return tell("Generate the picked clip(s) first, or pick a video clip that has media."), null;
       if (missing && !(await c.modal.dialogue({ title: "Some clips have no render", message: `${missing} picked clip(s) have no render yet and will be skipped. Continue with ${clips.length}?`, confirmLabel: "Continue" }).result)) return null;
       await p.flush();
-      const state = await runJob(`/api/projects/${open.id}/export-clips`, { clips });
+      const state = await runJob(`${RENDER}/projects/${open.id}/export-clips`, { clips });
       return state.state === "done" ? state.media : (tell(state.detail || "The export failed."), null);
     }
     const run = (work) => async () => {
@@ -39,7 +39,7 @@ export default {
     const toBin = run(async () => {
       const name = p.project.name, media = await join();
       if (!media) return;
-      const { media: entry } = await call("POST", "/api/import-clip", { clip: media, name: `${name}.mp4` });
+      const { media: entry } = await call("POST", `${RENDER}/import-clip`, { clip: media, name: `${name}.mp4` });
       app.say("media");
       c.toast.good({ text: `Saved to the media bin as ${entry.name}.` });
     });
