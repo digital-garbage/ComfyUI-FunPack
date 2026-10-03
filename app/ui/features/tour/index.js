@@ -34,10 +34,12 @@ export default {
           trailing: [c.button.sm({ label: "Exit tour", tone: "ghost", onClick: stop })] })] });
       pop = c.popover.anchored({ anchor: target, body, side: s.side, align: "center", gap: 10, closeOnOutside: false, onClose: () => { if (pop) { pop = null; at = -1; } } });
     }
-    return app.on((what) => {
+    app.has.add("tour");
+    const off = app.on((what) => {
       if (what === "tour.start") show(0);
       else if (what === "tour.faq") show(STEPS.length - 1);
       else if (what === "tour.stop") stop();
     });
+    return () => { off(); app.has.delete("tour"); };
   },
 };

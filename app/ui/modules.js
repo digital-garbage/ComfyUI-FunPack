@@ -24,6 +24,7 @@ export default [
   "./features/wheel/index.js",
   "./features/status/index.js",
   "./features/audio/index.js",
+  "./features/overlays/index.js",
   "./features/montage/index.js",
   "./features/generate/warn.js",
   "./features/composer/index.js",

@@ -60,7 +60,7 @@ export default {
     const menus = {
       File: async () => {
         const recent = await list().catch(() => []);
-        return [{ id: "new", label: "New Project" }, { id: "wizard", label: "Project Setup Wizard…" }, { separator: true },
+        return [{ id: "new", label: "New Project" }, ...(app.has.has("wizard") ? [{ id: "wizard", label: "Project Setup Wizard…" }] : []), { separator: true },
           { heading: "Open recent" }, ...(recent.length ? recent.slice(0, 8).map((r) => ({ id: `open:${r.id}`, label: r.name })) : [{ id: "-", label: "No projects", disabled: true }]),
           { separator: true }, { id: "save", label: "Save Project File…", hint: "⬇", disabled: !p.project }, { id: "load", label: "Load Project File…" }, { separator: true }, { id: "import", label: "Import Media…" },
           { id: "delete", label: "Delete Current Project", danger: true, disabled: !p.project }];
@@ -70,7 +70,7 @@ export default {
         { id: "left", label: "Move Clip Left", hint: "timeline cut", disabled: !sel.focus }, { id: "right", label: "Move Clip Right", hint: "timeline cut", disabled: !sel.focus }, { separator: true },
         { id: "exclude", label: "Toggle Exclude", disabled: !sel.focus }],
       View: () => [{ id: "refresh", label: "Refresh Preview" }, { id: "reset", label: "Reset Layout" }],
-      Help: () => [{ id: "tour", label: "Restart tour" }, { id: "faq", label: "Skip to FAQ" }, { id: "exit", label: "Exit tour" }, { separator: true }, { id: "welcome", label: "Welcome tour…" }],
+      Help: () => [...(app.has.has("tour") ? [{ id: "tour", label: "Restart tour" }, { id: "faq", label: "Skip to FAQ" }, { id: "exit", label: "Exit tour" }, { separator: true }] : []), { id: "welcome", label: "Welcome tour…" }],
     };
     const pick = (id) => (id.startsWith("open:") ? p.open(id.slice(5)) : actions[id] && actions[id]());
     for (const [label, items] of Object.entries(menus)) {

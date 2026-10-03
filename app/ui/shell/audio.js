@@ -65,8 +65,10 @@ export function syncSeparated(p) {
 export function moveLane(p, id, deltaSec) {
   const t = (p.audio_tracks || []).find((x) => x.id === id && x.kind === "separated");
   if (!t || !deltaSec) return false;
-  t.offset_sec = (t.offset_sec || 0) + deltaSec;
-  return true;
+  const seg = segments(p).find((s) => s.kind === "scene" && s.id === t.scene_id);
+  const was = t.offset_sec || 0;
+  t.offset_sec = Math.max(seg ? -seg.start : -Infinity, was + deltaSec);       // never before 0: a slide past the edge must not be owed on the way back
+  return t.offset_sec !== was;
 }
 
 /** Trim a separated lane's sound. "in" cuts the head off (positive) or gives it back (negative, never before the sound begins);
@@ -76,7 +78,7 @@ export function trimLane(p, id, edge, deltaSec) {
   if (!t || !deltaSec || t.pinned_dur == null) return false;
   const full = t.full_dur != null ? t.full_dur : t.pinned_dur;
   if (edge === "out") { t.user_dur = Math.max(0.1, Math.min(full, t.pinned_dur + deltaSec)); return true; }
-  const d = Math.min(Math.max(deltaSec, -(t.pinned_in_sec || 0)), t.pinned_dur - 0.1);
+  const d = Math.min(Math.max(deltaSec, -(t.pinned_in_sec || 0), -(t.start_sec || 0)), t.pinned_dur - 0.1);       // nor earlier than the timeline's start
   if (!d) return false;
   t.pinned_in_sec = (t.pinned_in_sec || 0) + d; t.source_in_sec = t.pinned_in_sec;
   t.full_dur = Math.max(0.1, full - d);

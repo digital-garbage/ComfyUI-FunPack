@@ -23,12 +23,16 @@ export default {
       { title: "Want the guided tour?", sub: "A walk through the screen, one part at a time. It changes nothing; Help ▸ Restart tour runs it again.", body: () => c.toggle.default({ label: "Show me around when I finish", checked: ctx.tour, onChange: (v) => { ctx.tour = v; } }) },
     ];
 
+    let busy = false;
     async function finish() {
+      if (busy) return;
+      busy = true;
       const pick = presets.find((p) => p.id === ctx.preset);
       try {
         await app.project.newProject((ctx.name || "").trim() || "Untitled montage");
         if (pick) { const r = await app.pipeline.restore({ slots: pick.slots, removed: [], unwired: {} }); if (r.refused.length) c.toast.warn({ text: `The model's pipeline was not loaded: ${r.refused[0]}` }); }
-      } catch (err) { return c.toast.warn({ text: `Could not make the project: ${err.message}` }); }
+      } catch (err) { busy = false; return c.toast.warn({ text: `Could not make the project: ${err.message}` }); }
+      busy = false;
       close();
       if (ctx.tour) setTimeout(() => app.say("tour.start"), 300);
     }
@@ -45,9 +49,11 @@ export default {
       if (win) return;
       try { presets = (await app.api.pipelinePresets()).presets || []; } catch { presets = []; }
       step = 0; ctx.name = "Untitled montage"; ctx.preset = ""; ctx.tour = true;
-      win = c.modal.generic({ title: "Project Setup", size: "md", body: body(STEPS[0]), onClose: () => { win = null; } });
+      win = c.modal.generic({ title: "Project Setup", size: "md", closeOnOutside: false, body: body(STEPS[0]), onClose: () => { win = null; } });
       draw();
     }
-    return app.on((what) => { if (what === "wizard.open") open(); });
+    app.has.add("wizard");
+    const off = app.on((what) => { if (what === "wizard.open") open(); });
+    return () => { off(); app.has.delete("wizard"); };
   },
 };

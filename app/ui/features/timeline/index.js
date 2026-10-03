@@ -19,12 +19,16 @@ const stage = {
     const p = app.project, sel = app.selection, head = app.playhead;
     let zoom = 2;
     const edit = (fn) => p.edit(fn);
+    const extra = app.timelineLanes || [];       // lanes other features add: { owns(id), lanes(project), select/move/trim(id, ...) }
+    const owner = (id) => extra.find((e) => e.owns(id));
     const view = c.timeline.stage({
       pxPerSecond: ZOOM[zoom],
       onSeek: (sec) => head.set(sec),
-      onSelect: (id, how) => sel.pick(id, how, sceneIds(p.project)),
-      onMove: (id, d) => id.startsWith("t:") && edit((pr) => moveLane(pr, id.slice(2), d)),
+      onSelect: (id, how) => { const own = owner(id); if (own) own.select(id); else sel.pick(id, how, sceneIds(p.project)); },
+      onMove: (id, d) => { const own = owner(id); if (own) own.move(id, d); else id.startsWith("t:") && edit((pr) => moveLane(pr, id.slice(2), d)); },
       onTrim: (id, edge, d) => {
+        const own = owner(id);
+        if (own) return own.trim(id, edge, d);
         if (id.startsWith("t:")) return edit((pr) => trimLane(pr, id.slice(2), edge, d));
         const dur = segments(p.project).find((s) => s.id === id).dur;
         edit((pr) => edge === "out" ? edits.resize(pr, id, dur + d) : d > 0 && edits.trimLeft(pr, id, d));   // the left edge only cuts in
@@ -40,7 +44,7 @@ const stage = {
     const ghostActions = (g) => [{ label: "✕", title: "Remove from the timeline",
       onClick: () => edit((pr) => { pr.scene_ghosts = (pr.scene_ghosts || []).filter((x) => x.id !== g.id); return true; }) }];
 
-    const draw = () => { const open = p.project; view.setLanes(open ? [videoLane(open, sel.ids, sel.focus, clipActions, ghostActions), audioLane(open, sel.ids), tracksLane(open)].filter(Boolean) : []); };
+    const draw = () => { const open = p.project; view.setLanes(open ? [videoLane(open, sel.ids, sel.focus, clipActions, ghostActions), audioLane(open, sel.ids), tracksLane(open), ...extra.flatMap((e) => e.lanes(open))].filter(Boolean) : []); };
     const setZoom = (z) => { zoom = Math.min(ZOOM.length - 1, Math.max(0, z)); view.setZoom(ZOOM[zoom]); };
     host.append(view.node);
     const off = [app.on((what) => {

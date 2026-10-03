@@ -113,3 +113,16 @@ test("trimming a lane cuts its sound, not its clip; the tail can grow back, neve
   assert.deepEqual([lane.pinned_in_sec, lane.pinned_dur, lane.start_sec], [1.5, 1.5, 2.5]);      // the head is gone and the rest still starts where it sounded
   assert.equal(trimLane(p, lane.id, "in", 99) && lane.pinned_dur >= 0.1, true);
 });
+
+test("sliding past the timeline start is not owed on the way back; trimming in cannot reach before 0", () => {
+  const p = proj(), lane = separate(p, "b");
+  syncSeparated(p);
+  moveLane(p, lane.id, -9);
+  assert.equal(lane.offset_sec, -2);
+  moveLane(p, lane.id, 1);
+  assert.equal(lane.offset_sec, -1);
+  const q = proj(), first = separate(q, "a");
+  const before = first.pinned_in_sec;
+  assert.equal(trimLane(q, first.id, "in", -0.5), false);
+  assert.equal(first.pinned_in_sec, before);
+});
