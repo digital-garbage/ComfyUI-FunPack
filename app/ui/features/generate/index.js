@@ -57,7 +57,7 @@ export default {
           said = false;
           if (!(await g.generate({ sceneId: root.id, projectId: pid, inputs }))) {
             done.cancel();
-            if (!said) tell(g.run.state.error || "Could not queue the run. Is ComfyUI running, and is a run already going?");
+            if (!said) tell((g.run.state.error && g.run.state.error.message) || "Could not queue the run. Is ComfyUI running, and is a run already going?");
             break;
           }
           if (stopped) g.cancel();                      // Stop landed while this one was being queued
@@ -97,7 +97,7 @@ export default {
       const finish = (end) => {
         const im = g.run.state.images;
         if (end === g.DONE && im.length) record(projectId, unit, im[im.length - 1]);
-        else tell("A run from before the reload ended without a result that could be attached. Generate again.");
+        else if (end !== g.CANCELLED) tell("A run from before the reload ended without a result that could be attached. Generate again.");
         busy = false; draw();
       };
       const now = g.run.state.phase;                 // a run that ended while the page reloaded is over already: nothing to wait for
@@ -109,7 +109,15 @@ export default {
     // The page may know the run before it has opened a project: wait for the project, then claim or give up.
     g.on("adopt", (a) => {
       if (claim(a)) return;
-      const off = app.on(() => { if (p.project) { claim(a); off(); } });
+      const off = app.on(() => {                      // until its project opens, or the run is over
+        if (!p.project) return;
+        if (claim(a)) return off();
+        const phase = g.run.state.phase;
+        if (phase === g.DONE || phase === g.FAILED || phase === g.CANCELLED) {
+          off();
+          tell("A run from before the reload finished, but its project or scene is not open here, so its result was not attached.");
+        }
+      });
     });
     draw();
     const offRun = g.subscribe(draw);
