@@ -481,6 +481,16 @@ export function createProject({ onChange, onError, onOpen } = {}) {
       }
     },
 
+    /** `edit(fn)` on a project that may not be the open one: a run finishes for the project it was started in,
+     *  whatever is open by then. The open project takes the normal edit; another is read, changed and saved. */
+    async editFor(projectId, fn) {
+      if (project && project.id === projectId) return this.edit(fn);
+      const doc = await read(projectId);
+      if (!fn(doc)) return false;
+      await put(doc);
+      return true;
+    },
+
     /** Step back, or forward. True when something moved. */
     undo() { return step(past, future); },
     redo() { return step(future, past); },

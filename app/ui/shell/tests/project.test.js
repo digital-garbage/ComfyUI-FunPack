@@ -629,3 +629,12 @@ test("removing the selected scene selects another", async () => {
   p.edit((pr) => { pr.scenes.shift(); return true; });
   assert.equal(p.selectedId, "b");
 });
+
+test("an edit for a project that is not open is read, changed and saved there", async () => {
+  const { sent } = server();
+  const p = createProject({});
+  await p.start();
+  const done = await p.editFor("0123456789ab", (doc) => { doc.name = "other"; return true; });
+  assert.equal(done, true);
+  assert.equal(sent.at(-1).name, "other");
+});

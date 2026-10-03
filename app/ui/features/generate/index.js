@@ -1,6 +1,7 @@
 // Generate / Selected / Stop: queue generated units one after another and put each result on its clips.
 import { composer as c } from "../../composer/composer.js";
 import { isGenerative, isVideoClip, genUnitId, unitRoot, effFrames, effFps } from "../../shell/scenes.js";
+import { QUEUED, RUNNING } from "../../shell/run.js";
 import { buildInputs } from "./inputs.js";
 
 const expand = (body) => fetch("/funpack/api/prompt/expand", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -21,17 +22,17 @@ export default {
     g.on("say", tell); g.on("warn", tell);          // the pipeline check's refusals: said where the person is looking
     let busy = false, stopped = false;
 
-    const record = (pid, unit, image, frames) => p.project && p.project.id === pid && p.edit((pr) => {
+    const record = (pid, unit, image, frames) => p.editFor(pid, (pr) => {
       const group = pr.scenes.filter((s) => genUnitId(s) === unit);
       if (!group.length) return false;
-      const secs = (frames || group.reduce((t, s) => t + effFrames(s, pr), 0) - (group.length - 1)) / effFps(group[0], pr);   // as queued, not as the project reads now
+      const secs = (frames || group.reduce((t, s) => t + effFrames(s, pr), 0) - (group.length - 1)) / (pr.frame_rate || 25);   // as queued, not as the project reads now
       const media = { filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" };
       group.forEach((s) => {
         (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs);
         if (!isVideoClip(s)) s.source_in = 0;      // a fresh render was made at this length: an earlier trim's window no longer applies
       });
       return true;
-    });
+    }).catch(() => tell("The result could not be saved to its project."));
 
     async function runUnits(units) {
       if (busy) return;
@@ -73,13 +74,17 @@ export default {
     }
     const unitsOf = (scenes) => [...new Set(scenes.map(genUnitId))];
 
-    let nodes = [];
+    let nodes = [], drawn = "";
     function draw() {
       const open = p.project;
-      const go = c.button.sm({ label: busy ? "Generating…" : "▶ Generate", tone: "primary", disabled: busy || !open,
+      const key = `${busy}|${g.state().phase}|${Boolean(open)}|${Boolean(p.selected)}`;
+      if (key === drawn) return;          // progress ticks must not rebuild the buttons
+      drawn = key;
+      const working = busy || g.state().phase === QUEUED || g.state().phase === RUNNING;     // also a run this page did not start
+      const go = c.button.sm({ label: working ? "Generating…" : "▶ Generate", tone: "primary", disabled: working || !open,
         onClick: () => runUnits(unitsOf(p.scenes)) });
-      const one = c.button.sm({ label: "Selected", disabled: busy || !p.selected, onClick: () => runUnits(unitsOf([p.selected])) });
-      const stop = c.button.sm({ label: "■ Stop", tone: "danger", disabled: !busy, onClick: () => { stopped = true; g.cancel(); } });
+      const one = c.button.sm({ label: "Selected", disabled: working || !p.selected, onClick: () => runUnits(unitsOf([p.selected])) });
+      const stop = c.button.sm({ label: "■ Stop", tone: "danger", disabled: !working, onClick: () => { stopped = true; g.cancel(); } });
       const next = [go, one, stop].map((b) => b.node);
       if (nodes.length) nodes.forEach((n, i) => n.replaceWith(next[i])); else host.append(...next);     // in place: keeps its spot in the row
       nodes = next;
@@ -92,6 +97,7 @@ export default {
       const finish = (end) => {
         const im = g.run.state.images;
         if (end === g.DONE && im.length) record(projectId, unit, im[im.length - 1]);
+        else tell("A run from before the reload ended without a result that could be attached. Generate again.");
         busy = false; draw();
       };
       const now = g.run.state.phase;                 // a run that ended while the page reloaded is over already: nothing to wait for
@@ -106,6 +112,8 @@ export default {
       const off = app.on(() => { if (p.project) { claim(a); off(); } });
     });
     draw();
-    return app.on(draw);
+    const offRun = g.subscribe(draw);
+    const offApp = app.on(draw);
+    return () => { offRun(); offApp(); };
   },
 };
