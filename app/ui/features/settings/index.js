@@ -2,6 +2,7 @@
 import { composer as c } from "../../composer/composer.js";
 import { about } from "./about.js";
 import { appearance } from "./appearance.js";
+import { models } from "./models.js";
 
 const later = (what) => function mount() {
   return c.emptyState.default({ icon: "◌", title: "Not built yet", hint: what });
@@ -10,7 +11,7 @@ const later = (what) => function mount() {
 export default {
   id: "settings-sections",
   mount: "settings",
-  needs: ["api", "theme"],
+  needs: ["api", "theme", "pipeline"],
   setup({ host, app }) {
     const add = (id, title, subtitle, icon, tone, mount, group = "", keywords = "") => host.add({ id, group, title, subtitle, icon, tone, mount, keywords: `${keywords} ${title}` });
     add("about", "About FunPack", "", "◎", "accent", about(app.api), "", "version commit branch cpu memory gpu disk python torch");
@@ -20,7 +21,7 @@ export default {
     add("engine", "Engine", "Settings every installed module has volunteered, grouped by what they're for.", "⚡", "warn",
       later("Continuity, guidance, conditioning, sampling and post settings of the installed modules."), "Generation", "engine module settings");
     add("models", "Models & Pipeline", "Loaders and nodes wired into the live pipeline.", "⬡", "accent",
-      later("Pick the model, VAE, CLIP and LoRA files; see the live pipeline."), "Generation", "models loaders unet vae clip lora");
+      models(app), "Generation", "models loaders unet vae clip lora");
     add("modules", "Modules", "Switch a module off for this project; see and re-enable ones that failed.", "☷", "neutral",
       later("Per-module on/off for this project, and the ones that failed to load."), "Generation", "modules enable disable quarantine");
     add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys and the Absolute global-taste store.", "✦", "danger",
