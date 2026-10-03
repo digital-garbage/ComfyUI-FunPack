@@ -16,8 +16,6 @@ const items = {
     c.toolbar.default({ items: [btn("⏹"), btn("▶"), c.text.sm({ text: "00:00:00:00" }), btn("📌 Save frame")] }),
   ],
 
-  inspector: () => [c.segmented.sm({ options: [{ value: "project", label: "Project" }, { value: "scene", label: "Scene" }], value: "scene" }),
-    c.hint.default({ text: "Settings of the selected scene or the project." })],
 
   "timeline.actions": () => [btn("▶ Generate", "primary"), btn("Selected"), btn("⧉ Render", "render"), btn("⚡ Auto Montage")],
   "timeline.status": () => [btn("⏱ Sampler", "neutral"), c.text.sm({ text: "0 clips" }),
