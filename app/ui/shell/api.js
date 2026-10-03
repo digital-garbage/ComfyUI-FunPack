@@ -25,6 +25,8 @@ export const api = {
   releaseModule: (id) => call("POST", "/api/control/release", { id }),
   describeNodes: (classes) => call("GET", `/api/nodes?classes=${encodeURIComponent(classes.join(","))}`),
   system: () => call("GET", "/api/system"),
+  storyMarkers: () => call("GET", "/api/story/markers"),
+  storySplit: (text) => call("POST", "/api/story/split", { text }),
   packs: () => call("GET", "/api/packs"),
   pack: (action, body) => call("POST", `/api/packs/${action}`, body || {}),
   git: (action, body) => call("POST", `/api/git/${action}`, body || {}),

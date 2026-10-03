@@ -1,17 +1,41 @@
 // ◆ Composer: the floating "prompt craft" window. Opens from the timeline header; its tabs are the five v4 had.
 import { composer as c } from "../../composer/composer.js";
+import { applyStory, joinStory } from "./story.js";
 
 const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }];
 const inert = (label, tone = "ghost") => c.button.sm({ label, tone, disabled: true });
 const later = (what) => c.emptyState.default({ icon: "◌", title: "Not built yet", hint: what });
 
-const story = (p) => c.region.stack({ gap: "sm", children: [
-  c.toolbar.default({ items: [c.select.sm({ label: "Templates", disabled: true, options: [{ value: "", label: "Templates…" }], value: "" })], trailing: [inert("Save")] }),
-  c.toolbar.default({ items: [c.label.section({ text: "Story" })], trailing: [inert("+ Add shortcut"), inert("💡")] }),
-  c.textarea.md({ label: "Story", rows: 14, disabled: true, value: p.scenes.map((s) => s.text || "").join("\n\n") }),
-  c.hint.default({ text: "Coming soon: edit all scenes as one story here." }),
-  c.collapsible.default({ label: "+ Variables", body: c.hint.default({ text: "$name → text, filled in at generation." }) }),
-] });
+// The box follows the scenes; typing in it rewrites them (after a short pause, or when focus leaves).
+const story = (app, own) => {
+  const p = app.project;
+  let marker = "qcut", timer = 0, asked = 0;
+  const box = c.textarea.md({ label: "Story", rows: 14, value: p.project ? joinStory(p.project, marker) : "", onInput: (v) => { clearTimeout(timer); timer = setTimeout(() => { timer = 0; apply(v); }, 700); }, onCommit: (v) => { clearTimeout(timer); timer = 0; apply(v); } });
+  const area = box.node;
+  async function apply(text) {
+    if (!p.project) return;
+    const mine = ++asked;
+    try {
+      const { scenes } = await app.api.storySplit(text);
+      if (mine !== asked) return;                           // typed more meanwhile: the newer text wins
+      p.edit((pr) => applyStory(pr, scenes));
+    } catch (err) { c.toast.warn({ text: `Could not split the story: ${err.message}` }); }
+  }
+  app.api.storyMarkers().then((r) => { marker = (r.markers || [marker])[0]; sync(); }).catch(() => {});
+  function sync() {
+    if (!p.project || document.activeElement === area || timer) return;           // never rewrite the box while it is being typed in
+    const next = joinStory(p.project, marker);
+    if (area.value !== next) box.setValue(next);
+  }
+  own(app.on(sync));
+  return c.region.stack({ gap: "sm", children: [
+    c.toolbar.default({ items: [c.select.sm({ label: "Templates", disabled: true, options: [{ value: "", label: "Templates…" }], value: "" })], trailing: [inert("Save")] }),
+    c.toolbar.default({ items: [c.label.section({ text: "Story" })], trailing: [inert("+ Add shortcut"), inert("💡")] }),
+    box,
+    c.hint.default({ text: `Scenes are cut at the word “${marker}”. Edits apply to the scenes as you type; the anchor is its own field.` }),
+    c.collapsible.default({ label: "+ Variables", body: c.hint.default({ text: "$name → text, filled in at generation." }) }),
+  ] });
+};
 
 const sheets = { story, shortcuts: () => later("Your trigger → replacement library."), cuts: () => later("Where a story splits into shots."),
   enhance: () => later("Rewrite a prompt with a language model."), chat: () => later("Talk a scene through with the enhancer.") };
@@ -19,17 +43,19 @@ const sheets = { story, shortcuts: () => later("Your trigger → replacement lib
 export default {
   id: "composer",
   mount: "timeline.status",
-  needs: ["project"],
+  needs: ["project", "api"],
   setup({ host, app }) {
-    let win = null;
+    let win = null, owned = [];
+    const cleanup = () => { owned.forEach((f) => f()); owned = []; };
     const open = () => {
       if (win) return;
       const body = c.region.stack({ gap: "sm", fill: true });
-      const show = (tab) => body.set([c.tabs.underline({ label: "Composer", tabs: TABS, value: tab, onChange: show }), sheets[tab](app.project)]);
+      const show = (tab) => { cleanup(); body.set([c.tabs.underline({ label: "Composer", tabs: TABS, value: tab, onChange: show }), sheets[tab](app, (off) => owned.push(off))]); };
       show("story");
       win = c.floating.window({ id: "composer", title: "Composer", subtitle: "prompt craft", body, width: 420, height: 520, x: 320, y: 90,
-        onClose: () => { win = null; } });
+        onClose: () => { cleanup(); win = null; } });
     };
     host.append(c.button.sm({ label: "◆ Composer", tone: "neutral", onClick: open }).node);
+    return cleanup;
   },
 };
