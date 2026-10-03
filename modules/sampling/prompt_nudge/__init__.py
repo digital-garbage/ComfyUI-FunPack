@@ -73,13 +73,13 @@ def install(patcher, values, key):
     if taste is None:
         _say("off: set a Taste key first -- it is what your ratings teach")
         return None
-    strength = float(values.get("strength", 0.02))
+    strength = max(0.0, min(0.1, float(values.get("strength", 0.02))))
     similar = bool(values.get("similar"))
     live = {}
 
     def fresh():
         live.clear()
-        acted["yes"] = False
+        acted.clear()
 
     captured = taste.collect(patcher, key, KIND, fresh=fresh)
     acted = {"yes": False}
@@ -98,16 +98,20 @@ def install(patcher, values, key):
         row = cond_row(c, to)
         if not dit_hooks.probing(to) and row is not None:
             captured[NAME] = c[row][words].float().mean(0).detach()
-        if "dir" not in live:
+        if "dir" not in live and (row is not None or not similar):     # "similar" needs the positive prompt
             live["dir"], how = direction(taste.rows(KIND), c[row or 0][words].float().mean(0), similar)
             log.once(f"{ID}:state", log.INFO, "FunPack Taste prompt nudge", f"key {taste.key!r}: {how}")
+        if "dir" not in live:
+            return executor(x, t, *args, **kwargs)
         amount = strength * dit_hooks.late_half(to)
         d = live["dir"]
-        if dit_hooks.last_step(to) and not acted["yes"] and not dit_hooks.probing(to):
+        if dit_hooks.last_step(to) and not acted.get("yes") and not dit_hooks.probing(to):
             acted["yes"] = d is not None and amount > 0.0
-            if not acted["yes"]:
+            if not acted.get("yes"):
                 _say("Inactive | nothing was nudged this run: " + (
                     "no direction learned yet (needs liked clips)" if d is None else
+                    "the sampler did not report its steps, so the late-step gate cannot open"
+                    if dit_hooks.current_step(to) is None else
                     "the schedule is too short for the late-step gate to open"))
         if d is None or amount <= 0.0:
             return executor(x, t, *args, **kwargs)
@@ -116,7 +120,15 @@ def install(patcher, values, key):
             _say("off this run: the learned direction was taught on a different model's text width; "
                  "rate a few clips on this model")
             return executor(x, t, *args, **kwargs)
-        named = {**named, "c_crossattn": nudged(c, words, d, amount, picture_width(patcher, c))}
+        new_c = nudged(c, words, d, amount, picture_width(patcher, c))
+        if not acted.get("checked"):
+            acted["checked"] = True
+            moved = float((new_c - c).float().norm())
+            wanted = amount * float(words.sum()) ** 0.5 * c.shape[0] ** 0.5
+            if moved < 0.5 * wanted:
+                _say(f"the nudge is mostly lost to {str(c.dtype).split('.')[-1]} rounding "
+                     f"({moved / max(wanted, 1e-12):.0%} of it arrived); raise the strength")
+        named = {**named, "c_crossattn": new_c}
         return executor(x, t, **named)
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)

@@ -64,12 +64,54 @@ def test_off_installs_nothing(tiny_h3):
     assert not patched.wrappers.get(WrappersMP.APPLY_MODEL)
 
 
-def test_the_carried_edit_is_sized_to_move_the_next_input_like_v4s_blended_direction():
-    from modules.sampling.momentum import carry_factor
-    sigma, nxt = 0.75, 0.5
-    # an x0 edit of -sigma*dd, scaled by this and carried in (x (1 - nxt)), moves x by (sigma - nxt)*dd
-    assert abs(carry_factor(sigma, nxt) * sigma * (1 - nxt) - (sigma - nxt) * 1.0) < 1e-9
-    assert abs(carry_factor(sigma, nxt, carried=False) * sigma - (sigma - nxt)) < 1e-9
+def test_a_carried_edit_moves_the_next_input_exactly_like_v4s_blended_direction(tiny_h3):
+    from conftest import packed_av, unpacked
+    k, decay, sigmas = 0.7, 0.5, torch.linspace(1.0, 0.0, 5)
+    _p, wrap, _ = _load(tiny_h3, strength=k, decay=decay, below_sigma=0.8)
+    torch.manual_seed(0)
+    x0, shapes = packed_av(torch.randn(1, 4, 3, 8, 8), torch.randn(1, 8, 5))
+    answers = [x0 * f for f in (0.9, 0.5, 0.2, 0.1)]
+    seen = []
+
+    def model(x, *a, **kw):
+        seen.append(x)
+        return answers[len(seen) - 1]
+
+    for i in range(3):
+        wrap(model, x0, sigmas[i:i + 1], None, None, None, _to(i), latent_shapes=shapes)
+    v = lambda t: unpacked(t, shapes)[0]
+    d0, d1 = (v(x0) - v(answers[0])) / sigmas[0], (v(x0) - v(answers[1])) / sigmas[1]
+    ema1 = decay * d0 + (1 - decay) * d1                                  # the memory after step 1
+    v4_delta = (sigmas[2] - sigmas[1]) * k * (ema1 - d1)                  # x_next moves by dt * (blended - d)
+    assert torch.allclose(v(seen[2] - x0), v4_delta, atol=1e-5)
+
+
+def test_a_plain_latent_edit_on_the_answer_equals_v4s_step_and_skips_the_last_step(tiny_h3):
+    k, decay, sigmas = 0.6, 0.5, torch.linspace(1.0, 0.0, 5)
+    _p, wrap, _ = _load(tiny_h3, strength=k, decay=decay, below_sigma=0.9)
+    x = torch.randn(1, 4, 3, 8, 8)
+    outs = [x * f for f in (0.9, 0.5, 0.2, 0.1)]
+    got = [wrap(lambda *a, o=outs[i], **kw: o, x, sigmas[i:i + 1], None, None, None, _to(i)) for i in range(4)]
+    d = [(x - outs[i]) / sigmas[i] for i in range(4)]
+    ema = d[0]
+    assert torch.allclose(got[0], outs[0])                   # above the threshold: nothing
+    for i in (1, 2):
+        ema = decay * ema + (1 - decay) * d[i]
+        blended = d[i] + k * (ema - d[i])
+        assert torch.allclose(got[i], x - sigmas[i] * blended, atol=1e-5)    # v4: x_next = x + dt * blended
+    assert torch.equal(got[3], outs[3])                      # v4 never edits the step that lands on 0
+
+
+def test_clips_cut_into_context_windows_are_refused_in_words(tiny_h3):
+    from conftest import packed_av
+    from core import log
+    log.new_run()
+    wrap = _load(tiny_h3, strength=1.0)[1]
+    x0, shapes = packed_av(torch.randn(1, 4, 3, 8, 8), torch.randn(1, 8, 5))
+    to = {**_to(1), "context_window": object()}
+    out = wrap(lambda x, *a, **k: x0 * 0.5, x0, torch.tensor([0.75]), None, None, None, to, latent_shapes=shapes)
+    assert torch.equal(out, x0 * 0.5)
+    assert any("context windows" in e["message"] for e in log.history())
 
 
 def _run_calls(wrap, shapes, x0, n, steps=4, ts_start=0, **extra):
@@ -98,19 +140,24 @@ def test_a_probe_call_does_not_feed_the_memory(tiny_h3):
     assert all(torch.allclose(a, b) for a, b in zip(clean, after))
 
 
-def test_each_window_and_each_call_kind_has_its_own_memory_and_a_new_run_starts_empty(tiny_h3):
+def test_a_second_pass_that_restarts_lower_still_starts_with_an_empty_memory(tiny_h3):
     from conftest import packed_av
-    torch.manual_seed(0)
-    patched, wrap, _ = _load(tiny_h3, strength=1.0, decay=0.5, below_sigma=1.0)
-    big, sb = packed_av(torch.randn(1, 4, 3, 8, 8), torch.randn(1, 8, 5))
-    small, ss = packed_av(torch.randn(1, 4, 2, 8, 8), torch.randn(1, 8, 5))
+    wrap = _load(tiny_h3, strength=1.0, decay=0.5, below_sigma=1.0)[1]
+    x0, shapes = packed_av(torch.randn(1, 4, 3, 8, 8), torch.randn(1, 8, 5))
+    first = [0.9, 0.5, 0.2]
+    seen = []
 
-    class Win:
-        def __init__(self, idx):
-            self.index_list = idx
-    ts = torch.linspace(1.0, 0.0, 5)
-    for i in range(3):                               # two windows of different sizes interleaved: must not collide
-        for x0, shapes, idx in ((big, sb, [0, 1, 2]), (small, ss, [3, 4])):
-            to = {**_to(i), "context_window": Win(idx)}
-            wrap(lambda x, *a, **k: x0 * 0.5, x0, ts[i:i + 1], None, None, None, to, latent_shapes=shapes)
-    assert not patched.model_options["funpack_dropped"]      # no size clash: the guard would have dropped it
+    def run(steps, f):
+        ts = torch.linspace(1.0, 0.0, steps + 1)
+        for i in range(steps):
+            wrap(lambda x, *a, **k: seen.append(x) or x0 * f[i], x0, ts[i:i + 1], None, None, None, _to(i, steps),
+                 latent_shapes=shapes)
+    run(4, first + [0.1])
+    seen.clear()
+    run(4, first + [0.1])
+    twice = [s for s in seen]
+    seen.clear()
+    fresh = _load(tiny_h3, strength=1.0, decay=0.5, below_sigma=1.0)[1]
+    wrap = fresh
+    run(4, first + [0.1])
+    assert all(torch.allclose(a, b) for a, b in zip(twice, seen))

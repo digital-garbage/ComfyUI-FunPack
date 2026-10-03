@@ -125,12 +125,12 @@ def install(patcher, values, key):
         pooled = c[row or 0][words].float().mean(0).detach()
         if not dit_hooks.probing(named.get("transformer_options")) and row is not None:
             captured[NAME] = pooled
-        if "dir" not in live:
+        if "dir" not in live and (row is not None or not similar):
             live["dir"], how = direction(taste.rows(KIND), pooled, similar)
             log.once(f"{ID}:state", log.INFO, "FunPack Taste slider", f"key {taste.key!r}: {how}")
         base = executor(x, t, *args, **kwargs)
         amount = eta * step.gate
-        d = live["dir"]
+        d = live.get("dir")
         if d is None or amount == 0.0 or d.numel() != c.shape[-1]:
             return base
         size = torch.linalg.vector_norm(c[:, words], dim=-1, dtype=torch.float32).mean()

@@ -127,3 +127,25 @@ def test_a_run_that_never_nudged_says_so(tiny_h3):
         wrap(lambda x, t, *a, **k: x, torch.zeros(1, 1, 4), s[i:i + 1], None, c, None,
              {"sample_sigmas": s, "sigmas": s[i:i + 1]})
     assert any("Inactive" in e["message"] and "too short" in e["message"] for e in log.history())
+
+
+def test_a_nudge_that_bf16_rounds_away_is_said(tiny_h3):
+    from core import log
+    _teach(8)
+    wrap, _ = _load(tiny_h3, strength=0.005)
+    log.new_run()
+    c = (torch.randn(1, 4, 8) * 50).to(torch.bfloat16)
+    s = torch.linspace(1.0, 0.0, 5)
+    wrap(lambda x, t, *a, **k: x, torch.zeros(1, 1, 4), s[3:4], None, c, None, _to(3))
+    assert any("rounding" in e["message"] for e in log.history())
+
+
+def test_a_run_that_starts_with_the_negative_prompt_does_not_learn_from_it(tiny_h3):
+    _teach(8)
+    wrap, _ = _load(tiny_h3, strength=0.1, similar=True)
+    c = torch.ones(1, 4, 8)
+    s = torch.linspace(1.0, 0.0, 5)
+    seen = []
+    to = {**_to(3), "cond_or_uncond": [1]}
+    wrap(lambda x, t, *a, **k: seen.append(a[1]) or x, torch.zeros(1, 1, 4), s[3:4], None, c, None, to)
+    assert torch.equal(seen[0], c)            # no positive prompt yet: nothing learned, nothing nudged
