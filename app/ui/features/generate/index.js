@@ -19,8 +19,9 @@ export default {
     const p = app.project, g = app.generate;
     let said = false;
     const tell = (text) => { said = true; c.toast.warn({ text }); };
-    g.on("say", tell); g.on("warn", tell);          // the pipeline check's refusals: said where the person is looking
-    let busy = false, stopped = false;
+    g.on("say", tell); g.on("warn", tell);
+    g.on("hold", () => { held = true; draw(); }); g.on("release", () => { held = false; draw(); });   // while the page asks ComfyUI whether a run is already going          // the pipeline check's refusals: said where the person is looking
+    let busy = false, stopped = false, held = false;
 
     const record = (pid, unit, image, frames) => p.editFor(pid, (pr) => {
       const group = pr.scenes.filter((s) => genUnitId(s) === unit);
@@ -77,10 +78,10 @@ export default {
     let nodes = [], drawn = "";
     function draw() {
       const open = p.project;
-      const key = `${busy}|${g.state().phase}|${Boolean(open)}|${Boolean(p.selected)}`;
+      const key = `${busy}|${held}|${g.state().phase}|${Boolean(open)}|${Boolean(p.selected)}`;
       if (key === drawn) return;          // progress ticks must not rebuild the buttons
       drawn = key;
-      const working = busy || g.state().phase === QUEUED || g.state().phase === RUNNING;     // also a run this page did not start
+      const working = busy || held || g.state().phase === QUEUED || g.state().phase === RUNNING;     // also a run this page did not start
       const go = c.button.sm({ label: working ? "Generating…" : "▶ Generate", tone: "primary", disabled: working || !open,
         onClick: () => runUnits(unitsOf(p.scenes)) });
       const one = c.button.sm({ label: "Selected", disabled: working || !p.selected, onClick: () => runUnits(unitsOf([p.selected])) });
@@ -97,6 +98,7 @@ export default {
       const finish = (end) => {
         const im = g.run.state.images;
         if (end === g.DONE && im.length) record(projectId, unit, im[im.length - 1]);
+        else if (end === g.FAILED) tell((g.run.state.error && g.run.state.error.message) || "A run from before the reload failed.");
         else if (end !== g.CANCELLED) tell("A run from before the reload ended without a result that could be attached. Generate again.");
         busy = false; draw();
       };
