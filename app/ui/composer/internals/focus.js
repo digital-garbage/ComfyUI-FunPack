@@ -32,6 +32,7 @@ export function trap(container, { initial, modal = false } = {}) {
   const onKeyDown = (event) => {
     if (event.key !== "Tab") return;
     if (modal && modals[modals.length - 1] !== container) return;
+    if (modal && document.activeElement && document.activeElement.closest(".cx-menu")) return;       // a menu opened over the card keeps its own Tab
     const items = focusables(container);
     if (!items.length) { event.preventDefault(); return; }
     const first = items[0];

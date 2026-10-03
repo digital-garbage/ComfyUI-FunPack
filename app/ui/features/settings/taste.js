@@ -16,6 +16,14 @@ export const taste = (app) => function mount() {
     try { await app.api.deleteTasteKey(name); } catch (err) { tell(err.message); }
     refresh();
   };
+  const exportKey = async (name) => {         // fetched first, so a refusal is said instead of navigating the page to its JSON
+    try {
+      const r = await fetch(app.api.tasteKeyUrl(name));
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).why || `The server refused (${r.status}).`);
+      const link = Object.assign(document.createElement("a"), { download: `${name}.zip`, href: URL.createObjectURL(await r.blob()) });
+      link.click(); URL.revokeObjectURL(link.href);
+    } catch (err) { tell(err.message); }
+  };
   async function bring([file]) {
     const name = await c.modal.prompt({ title: "Import refinement key", label: "Name", value: file.name.replace(/\.zip$/i, ""), confirmLabel: "Import" }).result;
     if (!name || !name.trim()) return;
@@ -31,7 +39,7 @@ export const taste = (app) => function mount() {
       error ? c.banner.warn({ text: `Could not read the keys: ${error}` }) : null,
       keys && !keys.length && !error ? c.emptyState.default({ icon: "✦", title: "No keys yet", hint: "A key appears once you rate a render with learning on." }) : null,
       ...(keys || []).map((name) => c.settingsRow.default({ label: name, hint: "Refinement key", control: c.toolbar.default({ items: [
-        c.button.sm({ label: "⤓ Export", tone: "ghost", onClick: () => { Object.assign(document.createElement("a"), { href: app.api.tasteKeyUrl(name) }).click(); c.toast.good({ text: "Preparing the download…" }); } }),
+        c.button.sm({ label: "⤓ Export", tone: "ghost", onClick: () => exportKey(name) }),
         c.button.sm({ label: "Delete", tone: "danger", onClick: () => remove(name) })] }) })),
       c.label.section({ text: "Bring a key here" }),
       c.dropzone.default({ label: "Drop or choose an exported key (.zip)", hint: "from another machine", accept: ".zip,application/zip", multiple: false, onFiles: bring }),

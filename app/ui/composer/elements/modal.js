@@ -37,7 +37,7 @@ function open({
 
   const card = el("div", {
     cls: ["cx-modal", `cx-modal-${size}`, stacked ? "cx-modal-stacked" : null],
-    attrs: { role: "dialog", "aria-modal": "true", "aria-labelledby": titleId,
+    attrs: { role: "dialog", "aria-modal": "true", tabindex: "-1", "aria-labelledby": titleId,
              "aria-describedby": describedBy },
   });
   card.style.maxWidth = SIZES[size] || SIZES.md;

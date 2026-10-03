@@ -69,3 +69,13 @@ test("removing a separated clip removes its lane (a lane with no clip could not 
   removeScene(p, "b");
   assert.equal(p.audio_tracks.length, 0);
 });
+
+test("trimming or slipping a separated clip moves its sound's in-point with the picture", async () => {
+  const { trimLeft, slip } = await import("../edits.js");
+  const p = { scenes: [{ id: "v", source: { type: "video", media_ref: "x" }, source_in: 0, source_dur: 5, frames: 125 }], audio_tracks: [] };
+  const lane = separate(p, "v");
+  trimLeft(p, "v", 1);
+  assert.equal(lane.pinned_in_sec, 1); assert.equal(lane.pinned_dur, 4);
+  slip(p, "v", 0.5);
+  assert.equal(lane.pinned_in_sec, 1.5); assert.equal(lane.pinned_dur, 4);
+});

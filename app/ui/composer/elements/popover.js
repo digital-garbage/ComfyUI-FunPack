@@ -74,7 +74,7 @@ function menuList(items, onPick, close) {
         el("span", { cls: "cx-menu-label", text: item.label }),
         item.hint ? el("span", { cls: "cx-menu-hint", text: item.hint }) : null,
       ].filter(Boolean),
-      on: { click: () => { if (onPick) onPick(item.id); close(); } },
+      on: { click: () => { close(); if (onPick) onPick(item.id); } },
     }));
   }
   return list;

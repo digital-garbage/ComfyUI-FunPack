@@ -209,13 +209,13 @@ def graphics_duration(project) -> float:
     end = 0.0
     for ov in project.overlay_tracks:
         end = max(end, _f(ov.get("start_sec")) + _f(ov.get("duration_sec")))
-    for t in project.audio_tracks:
+    for t in _live_tracks(project, {}):       # only reached with no clips: a clip's own lane has nothing to sound over
         end = max(end, _track_end(t, _file_seconds(t)))
     return max(end, 0.01)
 
 
 def has_graphics(project) -> bool:
-    return bool(project.audio_tracks) or any(_f(ov.get("duration_sec")) > 0 for ov in project.overlay_tracks)
+    return bool(_live_tracks(project, {})) or any(_f(ov.get("duration_sec")) > 0 for ov in project.overlay_tracks)
 
 
 _stamp_n = itertools.count()

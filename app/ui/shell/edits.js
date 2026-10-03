@@ -115,6 +115,14 @@ export function resize(p, id, sec, grid = LTX_GRID) {
   return true;
 }
 
+/** A separated clip's sound follows its picture's in-point (`shorten`: the head was cut off, so the sound loses its head too). */
+function followLane(p, id, d, shorten) {
+  const lane = trackFor(p, id);
+  if (!lane) return;
+  lane.pinned_in_sec = (lane.pinned_in_sec || 0) + d; lane.source_in_sec = lane.pinned_in_sec;
+  if (shorten && lane.pinned_dur != null) { lane.pinned_dur = Math.max(0.1, lane.pinned_dur - d); lane.source_dur = lane.pinned_dur; }
+}
+
 /** Cut `sec` off the start: the clip begins later in its source and runs shorter. */
 export function trimLeft(p, id, sec, grid = LTX_GRID) {
   const sc = p.scenes.find((s) => s.id === id);
@@ -124,6 +132,7 @@ export function trimLeft(p, id, sec, grid = LTX_GRID) {
     const dur = sc.source_dur != null ? sc.source_dur : seconds(sc, p);
     if (trim >= dur - 0.05) return false;
     sc.source_in = (sc.source_in || 0) + trim;
+    followLane(p, id, trim, true);
     sc.source_dur = Math.max(0.1, dur - trim);
     modeToTimeline(sc);
     return true;
@@ -136,6 +145,7 @@ export function trimLeft(p, id, sec, grid = LTX_GRID) {
   if (next >= cur) next = Math.max(grid.step + grid.base, cur - grid.step);
   if (next >= cur) return false;
   sc.source_in = (sc.source_in || 0) + (cur - next) / fps;
+  followLane(p, id, (cur - next) / fps, true);
   sc.frames = next;
   modeToTimeline(sc);
   return true;
@@ -145,7 +155,9 @@ export function trimLeft(p, id, sec, grid = LTX_GRID) {
 export function slip(p, id, deltaSec) {
   const sc = p.scenes.find((s) => s.id === id);
   if (!sc || !deltaSec) return false;
-  sc.source_in = Math.max(0, (sc.source_in || 0) + deltaSec);
+  const before = sc.source_in || 0;
+  sc.source_in = Math.max(0, before + deltaSec);
+  followLane(p, id, sc.source_in - before, false);
   return true;
 }
 
