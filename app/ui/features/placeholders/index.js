@@ -23,13 +23,8 @@ const items = {
   "timeline.status": () => [btn("⏱ Sampler", "neutral"), c.text.sm({ text: "0 clips" }),
     dockTab("Assets"), dockTab("Preview"), dockTab("Properties"), btn("◆ Composer", "neutral")],
   timeline: () => [
-    c.toolbar.default({ items: [c.text.sm({ text: "00:00:00 / 00:00:00" }), btn("＋ Add"), btn("Split"), btn("Remove"),
-      btn("⤓ Export"), btn("Save to media bin"), btn("⊟ Separate audio"), btn("Remove audio")],
+    c.toolbar.default({ items: [btn("⤓ Export"), btn("Save to media bin"), btn("⊟ Separate audio"), btn("Remove audio")],
       trailing: [c.text.sm({ text: "J/K/L · S split · I/O in/out · +/- zoom" })] }),
-    c.toolbar.default({ items: [c.text.sm({ text: "zoom" }), btn("−"), btn("+"), btn("fit")] }),
-    c.ruler.default({ marks: [{ label: "00:00" }, { label: "00:02" }, { label: "00:04" }], total: 3 }),
-    c.toolbar.default({ items: [c.text.sm({ text: "Video" }), c.hint.default({ text: "" })] }),
-    c.toolbar.default({ items: [c.text.sm({ text: "Original" }), c.hint.default({ text: "" })] }),
   ],
 };
 
