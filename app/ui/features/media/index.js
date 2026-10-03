@@ -22,7 +22,13 @@ export default {
         draw();
       },
       onContext: (it, e) => c.menu.context({ x: e.clientX, y: e.clientY, items: [{ id: "delete", label: "Delete from the bin", danger: true }],
-        onPick: async () => { try { await api.deleteMedia(it.id); await refresh(); } catch (err) { tell(err.message); } } }),
+        onPick: async () => {
+          try {
+            await api.deleteMedia(it.id);
+            p.edit((pr) => pr.scenes.reduce((hit, s) => (s.source_image === it.id ? (s.source_image = "", true) : hit), false));    // nothing may keep pointing at it
+            await refresh();
+          } catch (err) { tell(err.message); }
+        } }),
     });
     const drop = c.dropzone.default({ label: "Drop or choose files", hint: "images, clips, audio",
       onFiles: async (files) => {
@@ -44,6 +50,6 @@ export default {
       draw(true);
     }
     refresh();
-    return app.on(() => draw());
+    return app.on((what) => (what === "media" ? refresh() : draw()));       // "media": another feature put something in the bin
   },
 };

@@ -24,14 +24,21 @@ export const api = {
   modules: (traits) => call("GET", `/api/modules${traits ? `?traits=${encodeURIComponent(traits)}` : ""}`),
   media: () => call("GET", "/api/media"),
   deleteMedia: (id) => call("DELETE", `/api/media/${encodeURIComponent(id)}`),
-  /** Upload files as media; resolves {media, problems}. Not JSON, so not through call(). */
+  /** Upload files as media, one request each so one refusal (too big, wrong type) does not sink the rest.
+   *  Resolves {media, problems}. Not JSON, so not through call(). */
   async uploadMedia(files) {
-    const form = new FormData();
-    files.forEach((f) => form.append("file", f, f.name));
-    const res = await fetch(`${BASE}/api/media`, { method: "POST", body: form });
-    const payload = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(why(res, payload));
-    return payload;
+    const out = { media: [], problems: [] };
+    for (const file of files) {
+      const form = new FormData();
+      form.append("file", file, file.name);
+      try {
+        const res = await fetch(`${BASE}/api/media`, { method: "POST", body: form });
+        const payload = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(why(res, payload));
+        out.media.push(...(payload.media || [])); out.problems.push(...(payload.problems || []));
+      } catch (err) { out.problems.push(`${file.name}: ${err.message}`); }
+    }
+    return out;
   },
   probeFamily: (file) => call("GET", `/api/probe?file=${encodeURIComponent(file)}`),
 };

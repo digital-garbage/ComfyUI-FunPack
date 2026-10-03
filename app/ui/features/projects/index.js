@@ -17,7 +17,7 @@ export default {
 
     let known = [];
     const draw = () => {
-      rows.setItems(known.map((r) => ({ id: r.id, label: r.name, hint: r.scene_count == null ? "" : `${r.scene_count}▦` })));
+      rows.setItems(known.map((r) => ({ id: r.id, label: p.project && p.project.id === r.id ? p.project.name : r.name, hint: r.scene_count == null ? "" : `${r.scene_count}▦` })));
       if (p.project) rows.setValue([p.project.id]);
     };
     const refresh = () => list().then((all) => { known = all; draw(); }).catch(() => draw());

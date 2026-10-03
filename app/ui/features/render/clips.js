@@ -7,8 +7,8 @@ export function clipSpecs(p) {
   const clips = [];
   let missing = 0;
   for (const seg of segments(p)) {
-    if (seg.kind !== "scene" || seg.scene.excluded) continue;
-    const sc = seg.scene, r = renders[sc.id], base = { scene_id: sc.id, dur: seg.dur, fps: effFps(sc, p) };
+    if (seg.kind !== "scene" || (seg.scene.excluded && !seg.scene.removed_from_plan)) continue;       // removed from the plan still plays
+    const sc = seg.scene, r = renders[sc.id], base = { scene_id: sc.id, dur: seg.dur, fps: effFps(sc, p), gap_after: Math.max(0, +sc.gap_after_sec || 0) };
     if (isVideoClip(sc)) {
       if (!(sc.source && sc.source.media_ref)) { missing += 1; continue; }
       clips.push({ ...base, bin_media_ref: sc.source.media_ref, in: sc.source_in || 0 });

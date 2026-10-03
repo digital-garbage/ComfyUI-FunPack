@@ -19,7 +19,7 @@ const project = createProject({ onChange: () => say("change"), onOpen: () => say
 const pipeline = createPipelineState(api);
 const generate = createGenerate({ pipeline });
 linkPipeline({ project, pipeline, onOpen: (fn) => on((what) => { if (what === "open") fn(); }) });
-const app = { project, pipeline, generate, api, on };
+const app = { project, pipeline, generate, api, on, say };
 
 const frame = build(document.getElementById("app"));
 const settings = createSettings({ menubar: hostFor("menubar.menus") });

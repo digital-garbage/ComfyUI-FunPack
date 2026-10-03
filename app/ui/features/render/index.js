@@ -26,6 +26,7 @@ export default {
         do { await wait(1500); state = await call("GET", `/api/projects/${open.id}/render/${job}`); } while (state.state === "queued" || state.state === "running");
         if (state.state !== "done") return tell(state.detail || "The render failed.");
         const { media } = await call("POST", "/api/import-clip", { clip: state.media, name: `${open.name}.mp4` });
+        if (app.say) app.say("media");                   // the bin shows it now
         c.toast.good({ text: `Rendered: saved to the media bin as ${media.name}.` });
       } catch (err) { tell(err.message); } finally { busy = false; draw(); }
     }

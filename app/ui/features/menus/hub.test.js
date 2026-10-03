@@ -25,3 +25,15 @@ test("Edit > Undo undoes; Redo is greyed when there is nothing to redo", () => {
   [...host.querySelectorAll("button")].find((b) => b.textContent === "Edit").click();
   assert.equal([...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent.includes("Redo")).disabled, true);
 });
+
+test("File > Rename renames the open project", async () => {
+  const renamed = [];
+  const { host } = rig({ rename: (n) => renamed.push(n) });
+  pick(host, "File", "Rename");
+  await new Promise((r) => setTimeout(r, 10));
+  const input = document.querySelector("input");
+  input.value = "Better";
+  [...document.querySelectorAll("button")].find((b) => b.textContent === "Rename").click();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(renamed, ["Better"]);
+});
