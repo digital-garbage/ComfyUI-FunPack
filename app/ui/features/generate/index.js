@@ -4,6 +4,7 @@ import { isGenerative, isVideoClip, genUnitId, unitRoot, effFrames, effFps } fro
 import { QUEUED, RUNNING } from "../../shell/run.js";
 import { inPlace } from "../../shell/place.js";
 import { buildInputs } from "./inputs.js";
+import { offer } from "../../shell/actions.js";
 
 const expand = (body) => fetch("/funpack/api/prompt/expand", { method: "POST", headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ ...body, seed: Math.floor(Math.random() * 2 ** 31) || 1 }) }).then((r) => (r.ok ? r.json() : null));
@@ -129,6 +130,8 @@ export default {
     draw();
     const offRun = g.subscribe(draw);
     const offApp = app.on((what) => { if (what === "generate.selected" && !busy && p.selected) runUnits(unitsOf([p.selected])); else draw(); });
-    return () => { offRun(); offApp(); };
+    const offers = [offer(app, { id: "generate-all", label: "Generate", icon: "▶", run: () => { if (!busy && p.project) runUnits(unitsOf(p.scenes)); } }),
+      offer(app, { id: "generate-selected", label: "Generate selected", icon: "▶", run: () => { if (!busy && p.selected) runUnits(unitsOf([p.selected])); } })];
+    return () => { offRun(); offApp(); offers.forEach((f) => f()); };
   },
 };

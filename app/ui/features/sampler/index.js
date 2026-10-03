@@ -1,5 +1,6 @@
 // "⏱ Sampler": steps, scheduler and sampler one click away, in a thin window over the timeline. Same settings as Engine ▸ Sampling,
 // same values tree, so the two cannot disagree. Absent when no installed module has a sampling setting.
+import { offer } from "../../shell/actions.js";
 import { composer as c } from "../../composer/composer.js";
 import { settingRow, whenSatisfied } from "../settings/field.js";
 
@@ -34,6 +35,7 @@ export default {
       draw();
       pop = c.popover.anchored({ anchor: button, body, side: "top", align: "end", onClose: () => { pop = null; } });
     }
-    return () => { off(); offShow(); if (pop) pop.close(); button.node.remove(); };
+    const offered = offer(app, { id: "sampler", label: "Sampler", icon: "⏱", run: () => { if (!button.node.hidden) (pop ? pop.close() : open()); } });
+    return () => { off(); offShow(); offered(); if (pop) pop.close(); button.node.remove(); };
   },
 };

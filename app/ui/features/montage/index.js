@@ -1,4 +1,5 @@
 // Auto Montage: the button in the timeline header and its window.
+import { offer } from "../../shell/actions.js";
 import { composer as c } from "../../composer/composer.js";
 import { playable, build } from "./build.js";
 
@@ -41,6 +42,8 @@ export default {
     }
     const draw = () => button.setDisabled(!p.project);
     draw();
-    return app.on(draw);
+    const offered = offer(app, { id: "auto-montage", label: "Auto Montage", icon: "⚡", run: () => { if (!button.node.disabled) ask(); } });
+    const off = app.on(draw);
+    return () => { off(); offered(); };
   },
 };

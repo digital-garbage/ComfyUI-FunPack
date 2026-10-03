@@ -1,4 +1,5 @@
 // Render: stitch the cut into one file and keep it in the media bin.
+import { offer } from "../../shell/actions.js";
 import { composer as c } from "../../composer/composer.js";
 import { call } from "../../shell/api.js";
 import { clipSpecs } from "./clips.js";
@@ -33,6 +34,8 @@ export default {
       node = next;
     }
     draw();
-    return app.on(() => { if (Boolean(p.project) === node.disabled) draw(); });
+    const offered = offer(app, { id: "render-final", label: "Render", icon: "⧉", run: () => { if (!busy && p.project) render(); } });
+    const off = app.on(() => { if (Boolean(p.project) === node.disabled) draw(); });
+    return () => { off(); offered(); };
   },
 };
