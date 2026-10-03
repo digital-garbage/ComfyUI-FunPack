@@ -8,7 +8,6 @@ const menu = (label) => c.button.menu({ label, tone: "ghost" });          // ine
 const items = {
   "menubar.right": () => [c.chip.neutral({ label: "saved" }), c.chip.good({ label: "ComfyUI live", dot: true })],
 
-  "timeline.actions": () => [btn("⚡ Auto Montage")],
   "timeline.toolbar": () => [btn("⊟ Separate audio"), btn("Remove audio")],
 };
 
