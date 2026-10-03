@@ -6,6 +6,7 @@ import { models } from "./models.js";
 import { engine } from "./engine.js";
 import { modules } from "./modules.js";
 import { system } from "./system.js";
+import { packs } from "./packs.js";
 
 const later = (what) => function mount() {
   return c.emptyState.default({ icon: "◌", title: "Not built yet", hint: what });
@@ -32,6 +33,6 @@ export default {
     add("system", "Updates & ComfyUI", "Server connection, FunPack code updates, pipeline health.", "⟳", "good",
       system(app), "System", "update git branch restart rollback");
     add("customnodes", "Custom Nodes", "Install, update and remove ComfyUI node packs.", "⧉", "neutral",
-      later("Install, update and remove node packs."), "System", "custom nodes packs install");
+      packs(app), "System", "custom nodes packs install");
   },
 };

@@ -25,6 +25,8 @@ export const api = {
   releaseModule: (id) => call("POST", "/api/control/release", { id }),
   describeNodes: (classes) => call("GET", `/api/nodes?classes=${encodeURIComponent(classes.join(","))}`),
   system: () => call("GET", "/api/system"),
+  packs: () => call("GET", "/api/packs"),
+  pack: (action, body) => call("POST", `/api/packs/${action}`, body || {}),
   git: (action, body) => call("POST", `/api/git/${action}`, body || {}),
   health: () => call("GET", "/api/health"),
   gitFull: () => call("GET", "/api/git/status"),
