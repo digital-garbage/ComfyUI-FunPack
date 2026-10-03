@@ -41,3 +41,13 @@ test("starting shots from a prompt sends no picture even when the scene has one"
   const { inputs } = await buildInputs({ project: { generation_mode: "t2v" }, scene: { text: "a cat", source_image: "m1" }, slots, expand: async ({ text }) => ({ text }) });
   assert.equal(inputs.s.media_id, "");
 });
+
+test("Chat comments reach the enhancer only when they are about the prompt being run", async () => {
+  const s = [...slots, { id: "e", node: "FunPackEnhancePrompt", roles: [] }];
+  const chat = [{ comment: "warmer", original: "a cat" }, { comment: "old", original: "a dog" }, { comment: "any" }];
+  const project = { editor_settings: { enhance_chat: chat } };
+  const r = await buildInputs({ project, scene: { text: " a cat " }, slots: s, expand: async () => null });
+  assert.deepEqual(JSON.parse(r.inputs.e.chat).map((x) => x.comment), ["warmer", "any"]);
+  assert.equal(r.chatLeftOut, 1);
+  assert.equal((await buildInputs({ project, scene: { text: "a cat" }, slots, expand: async () => null })).inputs.e, undefined);       // no enhancer in the pipeline: nothing to send
+});

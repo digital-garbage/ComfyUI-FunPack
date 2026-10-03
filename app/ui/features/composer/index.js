@@ -4,11 +4,11 @@ import { applyStory, clash, joinStory } from "./story.js";
 import { shortcuts } from "./shortcuts.js";
 import { cuts } from "./cuts.js";
 import { enhance } from "./enhance.js";
+import { chat } from "./chat.js";
 import { pickShortcut, templatesBar, variablesPanel } from "./storytools.js";
 
 const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }];
 const inert = (label, tone = "ghost") => c.button.sm({ label, tone, disabled: true });
-const later = (what) => c.emptyState.default({ icon: "◌", title: "Not built yet", hint: what });
 
 // The box follows the scenes; typing in it rewrites them (after a short pause, or when focus leaves).
 const story = (app, own) => {
@@ -49,7 +49,7 @@ const story = (app, own) => {
 };
 
 const sheets = { story, shortcuts, cuts,
-  enhance, chat: () => later("Talk a scene through with the enhancer.") };
+  enhance, chat };
 
 export default {
   id: "composer",

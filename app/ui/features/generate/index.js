@@ -52,9 +52,10 @@ export default {
           if (!root || group.every((s) => s.excluded) || !isGenerative(root)) continue;        // removed, all left out, or not made by the model
           // The unit is made once at the length of its clips together (each cut adds one shared frame).
           const frames = group.reduce((t, s) => t + effFrames(s, p.project), 0) - (group.length - 1);
-          const { inputs, unwired, noPrompt } = await buildInputs({ project: p.project, scene: root, slots: app.pipeline.slots(), expand, frames });
+          const { inputs, unwired, noPrompt, chatLeftOut } = await buildInputs({ project: p.project, scene: root, slots: app.pipeline.slots(), expand, frames });
           if (stopped) break;
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
+          if (chatLeftOut) tell(`${chatLeftOut} Chat comment(s) are about a different prompt and were left out of this run.`);
           if (unwired) tell(`${unwired} reference(s) did not fit this pipeline and are not used.`);
           const done = g.waitForTerminal();             // listening before the run starts, so a fast one is not missed
           said = false;

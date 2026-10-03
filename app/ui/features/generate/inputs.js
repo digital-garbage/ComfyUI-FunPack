@@ -27,5 +27,13 @@ export async function buildInputs({ project, scene, slots, expand, frames, seed 
       .catch(() => null);         // a failing prompt-craft feature must not block the run: send what was typed
     put(prompt.slot, prompt.role.input, body && typeof body.text === "string" ? body.text : text);
   }
-  return { inputs: raw, unwired, noPrompt: !prompt };
+  // Chat comments on the enhancer's last rewrite ride with the project; only those about THIS typed prompt reach the run.
+  const enhancer = (slots || []).find((s) => s.node === "FunPackEnhancePrompt"), chat = (project.editor_settings || {}).enhance_chat;
+  let chatLeftOut = 0;
+  if (enhancer && Array.isArray(chat)) {
+    const typed = (scene.text || "").trim(), mine = chat.filter((r) => r && (r.original === undefined || r.original === typed));
+    chatLeftOut = chat.length - mine.length;
+    if (mine.length) put(enhancer, "chat", JSON.stringify(mine));
+  }
+  return { inputs: raw, unwired, noPrompt: !prompt, chatLeftOut };
 }
