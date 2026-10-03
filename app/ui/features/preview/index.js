@@ -65,6 +65,7 @@ export default {
       }
       scrub.input.max = String(total() || 1);
       scrub.setValue(head.at);
+      scrub.input.style.setProperty("--fill", `${Math.min(100, (head.at / (total() || 1)) * 100)}%`);       // the slider drew its fill for 0..1
       time.setText(timecode(head.at, open() && open().frame_rate));
       play.node.firstChild.textContent = playing ? "⏸" : "▶"; play.node.title = playing ? "Pause" : "Play";
       if (playing && viewer.element) viewer.element.paused && viewer.element.play().catch(() => {});
@@ -74,7 +75,8 @@ export default {
     const walk = setInterval(() => {
       if (!playing) return;
       const v = viewer.element;
-      if (!(seg && v && !v.paused)) head.set(head.at + 0.04);
+      if (seg && v && !v.paused) onTime(v);                        // timeupdate is too slow to catch a short clip's end
+      else head.set(head.at + 0.04);
       if (head.at >= total()) { pause(); head.set(Math.min(head.at, total())); }
     }, 40);
     function start() { if (!total()) return; if (head.at >= total() - 0.02) head.set(0); playing = true; sync(); }
@@ -98,8 +100,9 @@ export default {
       else if (what === "play.toggle") (playing ? pause() : start());
       else if (what === "play.start") start();
       else if (what === "play.pause") pause();
+      else if (what === "open") { pause(); head.set(0); }          // another project: nothing carries over
       else sync();
     })];
-    return () => { clearInterval(walk); off.forEach((f) => f()); };
+    return () => { clearInterval(walk); off.forEach((f) => f()); viewer.destroy(); };
   },
 };

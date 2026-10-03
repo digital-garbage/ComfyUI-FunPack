@@ -60,6 +60,7 @@ const tools = {
     const put = inPlace(host);
     const btn = (label, onClick, disabled, title) => c.button.sm({ label, onClick, disabled, title, tone: "ghost" }).node;
     const split = () => {       // the selected clip, at the playhead if it is over it, else in the middle
+      if (!p.project) return;
       const seg = segments(p.project).find((s) => s.id === sel.focus && s.kind === "scene");
       if (!seg) return;
       const inside = head.at > seg.start && head.at < seg.start + seg.dur;

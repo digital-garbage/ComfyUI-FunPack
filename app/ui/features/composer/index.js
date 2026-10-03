@@ -1,6 +1,6 @@
 // ◆ Composer: the floating "prompt craft" window. Opens from the timeline header; its tabs are the five v4 had.
 import { composer as c } from "../../composer/composer.js";
-import { applyStory, joinStory } from "./story.js";
+import { applyStory, clash, joinStory } from "./story.js";
 import { shortcuts } from "./shortcuts.js";
 import { cuts } from "./cuts.js";
 import { enhance } from "./enhance.js";
@@ -12,29 +12,31 @@ const later = (what) => c.emptyState.default({ icon: "◌", title: "Not built ye
 // The box follows the scenes; typing in it rewrites them (after a short pause, or when focus leaves).
 const story = (app, own) => {
   const p = app.project;
-  let marker = "qcut", timer = 0, asked = 0;
+  let marker = "qcut", words = ["qcut"], timer = 0, asked = 0;
   const box = c.textarea.md({ label: "Story", rows: 14, value: p.project ? joinStory(p.project, marker) : "", onInput: (v) => { clearTimeout(timer); timer = setTimeout(() => { timer = 0; apply(v); }, 700); }, onCommit: (v) => { clearTimeout(timer); timer = 0; apply(v); } });
-  const area = box.node;
+  const area = box.node, warn = c.hint.default({ text: "" });
   async function apply(text) {
     if (!p.project) return;
-    const mine = ++asked;
+    const mine = ++asked, pid = p.project.id;
     try {
       const { scenes } = await app.api.storySplit(text);
-      if (mine !== asked) return;                           // typed more meanwhile: the newer text wins
+      if (mine !== asked || !p.project || p.project.id !== pid) return;     // typed more meanwhile, or another project opened: not for this one
       p.edit((pr) => applyStory(pr, scenes));
     } catch (err) { c.toast.warn({ text: `Could not split the story: ${err.message}` }); }
   }
-  app.api.storyMarkers().then((r) => { marker = (r.markers || [marker])[0]; sync(); }).catch(() => {});
+  app.api.storyMarkers().then((r) => { words = r.markers || words; marker = words[0]; sync(); }).catch(() => {});
   function sync() {
+    warn.setText(p.project && clash(p.project, words) ? `A scene's own text contains a cut word (${words.join(", ")}), so the story shows it as two scenes. Remove the word from that scene.` : "");
     if (!p.project || document.activeElement === area || timer) return;           // never rewrite the box while it is being typed in
     const next = joinStory(p.project, marker);
     if (area.value !== next) box.setValue(next);
   }
   own(app.on(sync));
+  sync();
   return c.region.stack({ gap: "sm", children: [
     c.toolbar.default({ items: [c.select.sm({ label: "Templates", disabled: true, options: [{ value: "", label: "Templates…" }], value: "" })], trailing: [inert("Save")] }),
     c.toolbar.default({ items: [c.label.section({ text: "Story" })], trailing: [inert("+ Add shortcut"), inert("💡")] }),
-    box,
+    box, warn,
     c.hint.default({ text: `Scenes are cut at the word “${marker}”. Edits apply to the scenes as you type; the anchor is its own field.` }),
     c.collapsible.default({ label: "+ Variables", body: c.hint.default({ text: "$name → text, filled in at generation." }) }),
   ] });

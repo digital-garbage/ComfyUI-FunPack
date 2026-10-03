@@ -288,6 +288,7 @@ define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError
     current = next || null;
     currentKind = nextKind;
     currentFile = current ? file : null;
+    if (mediaEl && mediaEl.tagName === "VIDEO") { mediaEl.removeAttribute("src"); mediaEl.load(); }       // a video left behind must give its connection back
     mediaEl = null;
     stage.replaceChildren();
     if (!current) {
@@ -339,6 +340,6 @@ define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError
       canvas.getContext("2d").drawImage(mediaEl, 0, 0);
       return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
     },
-    destroy: () => node.remove(),
+    destroy: () => { show(null); node.remove(); },
   };
 });

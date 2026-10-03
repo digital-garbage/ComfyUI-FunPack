@@ -33,29 +33,45 @@ export function match(parts, roots) {
   return out;
 }
 
-/** Make the plan say `parts` (the story split at its markers). Roots that no part owns leave the plan (a rendered one
- *  keeps a ghost); parts nothing owns become new scenes. -> true when anything changed. */
+/** The first scene whose own text holds a cut word: the story would show it as two scenes. */
+export const clash = (p, words) => {
+  if (!words.length) return null;
+  const re = new RegExp(`(?<![\\p{L}\\p{N}_])(?:${words.map((w) => w.trim().split(/\s+/).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")).join("|")})(?![\\p{L}\\p{N}_])`, "iu");
+  return storyRoots(p).find((s) => re.test(s.text || "")) || null;
+};
+
+/** Make the plan say `parts` (the story split at its markers). Roots that no part owns leave the plan WITH their cuts (a
+ *  rendered one keeps a ghost); parts nothing owns become new scenes. Plan order only moves when the parts were reordered.
+ *  -> true when anything changed. */
 export function applyStory(p, parts) {
-  if (!parts.length) return false;
+  if (!parts.some((t) => String(t).trim())) return false;        // an emptied box is not an instruction to delete everything
   const before = JSON.stringify(p);
   const roots = storyRoots(p);
   const owner = match(parts.map(norm), roots.map((r) => norm(r.text)));
-  roots.forEach((r, i) => { if (!owner.includes(i)) removeScene(p, r.id); });
-  const group = (r) => p.scenes.filter((s) => genUnitId(s) === genUnitId(r));
-  const groups = parts.map((text, i) => {
-    if (owner[i] >= 0) { const r = roots[owner[i]]; if (norm(r.text) !== norm(text)) r.text = text; return group(r); }
-    return [{ id: newId(), text, transition_to_next: "", source: { type: "carry" }, excluded: false, frames_mode: "project", fps_mode: "project" }];
-  });
-  // The story's scenes take the slots the story's scenes held (video clips and left-out scenes stay where they were), in the parts' order.
-  const mine = new Set(groups.flat().map((s) => s.id)), keep = new Set(roots.filter((_, i) => owner.includes(i)).flatMap(group).map((s) => s.id));
-  const out = [], fill = groups.flat();
-  let queued = 0;
-  for (const s of p.scenes) { if (keep.has(s.id)) { if (queued < fill.length) out.push(fill[queued++]); } else out.push(s); }
-  out.push(...fill.slice(queued));
-  p.scenes = out;
+  const unitOf = (r) => p.scenes.filter((s) => genUnitId(s) === genUnitId(r));
+  roots.forEach((r, i) => { if (!owner.includes(i)) unitOf(r).sort((a, b) => (b.cut_offset_frames || 0) - (a.cut_offset_frames || 0)).forEach((s) => removeScene(p, s.id)); });
+  const kept = parts.map((_, i) => (owner[i] >= 0 ? roots[owner[i]] : null));
+  kept.forEach((r, i) => { if (r && norm(r.text) !== norm(parts[i])) unitOf(r).forEach((s) => { if (!isSubclip(s)) s.text = parts[i]; }); });      // a cut's first piece shares the prompt
+  const made = new Map();
+  parts.forEach((text, i) => { if (!kept[i]) made.set(i, { id: newId(), text, transition_to_next: "", source: { type: "carry" }, excluded: false, frames_mode: "project", fps_mode: "project" }); });
+  const owned = owner.filter((o) => o >= 0);
+  if (owned.some((o, k) => k && o < owned[k - 1])) {                 // the parts were reordered: whole units move, into the slots the story's scenes held
+    const fill = parts.flatMap((_, i) => (kept[i] ? unitOf(kept[i]) : [made.get(i)]));
+    const keep = new Set(kept.filter(Boolean).flatMap(unitOf).map((s) => s.id));
+    const out = []; let n = 0;
+    for (const s of p.scenes) { if (keep.has(s.id)) { if (n < fill.length) out.push(fill[n++]); } else out.push(s); }
+    p.scenes = out.concat(fill.slice(n)).filter((s, k, all) => all.indexOf(s) === k);
+  } else {
+    parts.forEach((_, i) => {                                         // new scenes go right after the previous part's last scene
+      if (!made.has(i)) return;
+      const prev = parts.slice(0, i).map((__, k) => k).reverse().find((k) => kept[k] || made.has(k));
+      const anchor = prev === undefined ? -1 : p.scenes.indexOf(kept[prev] ? unitOf(kept[prev]).pop() : made.get(prev));
+      p.scenes.splice(anchor + 1, 0, made.get(i));
+    });
+  }
   if (p.timeline_manually_ordered && Array.isArray(p.timeline_order)) {
     const have = new Set(p.timeline_order);
-    p.timeline_order = p.timeline_order.filter((id) => out.some((s) => s.id === id)).concat(out.filter((s) => mine.has(s.id) && !have.has(s.id)).map((s) => s.id));
+    p.timeline_order = p.timeline_order.filter((id) => p.scenes.some((s) => s.id === id)).concat([...made.values()].filter((s) => !have.has(s.id)).map((s) => s.id));
   }
   return JSON.stringify(p) !== before;
 }

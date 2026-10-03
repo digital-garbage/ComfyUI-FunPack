@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyStory, joinStory, match, storyRoots } from "./story.js";
+import { applyStory, clash, joinStory, match, storyRoots } from "./story.js";
 
 const proj = () => ({ scenes: [{ id: "a", text: "one" }, { id: "b", text: "two" }, { id: "v", text: "", source: { type: "video", media_ref: "m" } }, { id: "c", text: "three" }], scene_renders: {}, scene_ghosts: [] });
 const texts = (p) => p.scenes.map((s) => `${s.id}:${s.text}`);
@@ -51,3 +51,28 @@ test("a reordered story reorders the plan; an unchanged story changes nothing", 
 });
 
 test("an empty split changes nothing", () => assert.equal(applyStory(proj(), []), false));
+
+test("an emptied box does not delete the scenes", () => {
+  const p = proj(), before = JSON.stringify(p);
+  assert.equal(applyStory(p, [""]), false);
+  assert.equal(JSON.stringify(p), before);
+});
+
+test("editing one scene leaves the plan order alone, even with a montage or a cut unit interleaved", () => {
+  const p = { scenes: [{ id: "A", text: "alpha" }, { id: "B", text: "beta" }, { id: "a1", gen_unit_id: "A", cut_offset_frames: 40, text: "" }, { id: "b1", gen_unit_id: "B", cut_offset_frames: 40, text: "" }, { id: "a2", gen_unit_id: "A", cut_offset_frames: 0, text: "alpha" }], scene_renders: {}, scene_ghosts: [] };
+  applyStory(p, ["alpha!", "beta"]);
+  assert.deepEqual(p.scenes.map((s) => s.id), ["A", "B", "a1", "b1", "a2"]);
+  assert.equal(p.scenes.find((s) => s.id === "a2").text, "alpha!", "the first piece shares the prompt");
+});
+
+test("dropping a cut scene's paragraph removes the scene with its cuts instead of promoting a cut", () => {
+  const p = { scenes: [{ id: "A", text: "alpha" }, { id: "A2", gen_unit_id: "A", cut_offset_frames: 40, text: "" }, { id: "B", text: "beta" }], scene_renders: {}, scene_ghosts: [] };
+  assert.equal(applyStory(p, ["beta"]), true);
+  assert.deepEqual(p.scenes.map((s) => s.id), ["B"]);
+});
+
+test("clash finds a scene whose own text contains a cut word", () => {
+  const p = proj(); p.scenes[1].text = "a quick qcut to b";
+  assert.equal(clash(p, ["qcut"]).id, "b");
+  assert.equal(clash(p, ["other"]), null);
+});
