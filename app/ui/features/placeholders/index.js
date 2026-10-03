@@ -12,7 +12,6 @@ const items = {
   "menubar.right": () => [c.chip.neutral({ label: "saved" }), c.chip.good({ label: "ComfyUI live", dot: true })],
 
   preview: () => [
-    c.viewer.media({ empty: "No render yet. Use Generate in the timeline header." }),
     c.toolbar.default({ items: [btn("⏹"), btn("▶"), c.text.sm({ text: "00:00:00:00" }), btn("📌 Save frame")] }),
   ],
 
