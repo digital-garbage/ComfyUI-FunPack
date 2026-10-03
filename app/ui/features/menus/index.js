@@ -50,6 +50,7 @@ export default {
       add: () => { const sc = p.edit((pr) => edits.addScene(pr)); if (sc) p.select(sc.id); },
       del: () => sel.ids.forEach((id) => p.edit((pr) => edits.removeScene(pr, id))),
       left: () => move(-1), right: () => move(1),
+      refresh: () => app.say("preview.refresh"),
       reset: () => app.resetLayout(),
       welcome: () => app.say("welcome.open"),
       exclude: () => { const sc = p.selected; if (sc) p.setScene(sc.id, "excluded", !sc.excluded); },
@@ -66,7 +67,7 @@ export default {
         { id: "add", label: "Add Scene", disabled: !p.project }, { id: "del", label: "Delete Scene", disabled: !sel.ids.length }, { separator: true },
         { id: "left", label: "Move Clip Left", hint: "timeline cut", disabled: !sel.focus }, { id: "right", label: "Move Clip Right", hint: "timeline cut", disabled: !sel.focus }, { separator: true },
         { id: "exclude", label: "Toggle Exclude", disabled: !sel.focus }],
-      View: () => [soon("Refresh Preview", ""), { id: "reset", label: "Reset Layout" }],
+      View: () => [{ id: "refresh", label: "Refresh Preview" }, { id: "reset", label: "Reset Layout" }],
       Help: () => [soon("Restart tour", ""), soon("Skip to FAQ", ""), soon("Exit tour", ""), { separator: true }, { id: "welcome", label: "Welcome tour…" }],
     };
     const pick = (id) => (id.startsWith("open:") ? p.open(id.slice(5)) : actions[id] && actions[id]());

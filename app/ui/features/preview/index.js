@@ -104,6 +104,7 @@ export default {
       else if (what === "play.toggle") (playing ? pause() : start());
       else if (what === "play.start") start();
       else if (what === "play.pause") pause();
+      else if (what === "preview.refresh") { shown = ""; sync(); }       // show the clip again from its file
       else if (what === "open") { pause(); head.set(0); }          // another project: nothing carries over
       else sync();
     })];
