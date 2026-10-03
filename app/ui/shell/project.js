@@ -295,6 +295,16 @@ export function createProject({ onChange, onError, onOpen } = {}) {
       changed();
     },
 
+    /** Any project-level field. `quiet` is for what the app maintains by itself (the pipeline's copy):
+     *  saved, but not an edit a person made, so not an undo step. */
+    setField(key, value, { quiet = false } = {}) {
+      if (!project) return;
+      if (!quiet) remember();
+      project[key] = value;
+      scheduleSave();
+      if (!quiet) changed();
+    },
+
     /** The negative prompt, whichever scene is current -- a project-level
      *  choice, the same as video, not a per-scene one. */
     get negative() { return (project && project.negative) || ""; },

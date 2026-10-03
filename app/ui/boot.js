@@ -3,6 +3,10 @@ import { build } from "./shell/frame.js";
 import { loadFeatures } from "./shell/features.js";
 import { createSettings } from "./shell/settings.js";
 import { createProject } from "./shell/project.js";
+import { createPipelineState } from "./shell/pipeline_state.js";
+import { createGenerate } from "./shell/generate.js";
+import { linkPipeline } from "./shell/pipeline_link.js";
+import { api } from "./shell/api.js";
 import { hostFor } from "./shell/mounts.js";
 import paths from "./modules.js";
 
@@ -10,10 +14,12 @@ import paths from "./modules.js";
 // different project was opened, "change" for an edit.
 const heard = new Set();
 const say = (what) => heard.forEach((fn) => { try { fn(what); } catch (err) { console.error(err); } });
-const app = {
-  project: createProject({ onChange: () => say("change"), onOpen: () => say("open"), onError: (err) => console.warn(err) }),
-  on: (fn) => { heard.add(fn); return () => heard.delete(fn); },
-};
+const on = (fn) => { heard.add(fn); return () => heard.delete(fn); };
+const project = createProject({ onChange: () => say("change"), onOpen: () => say("open"), onError: (err) => console.warn(err) });
+const pipeline = createPipelineState(api);
+const generate = createGenerate({ pipeline });
+linkPipeline({ project, pipeline, onOpen: (fn) => on((what) => { if (what === "open") fn(); }) });
+const app = { project, pipeline, generate, api, on };
 
 const frame = build(document.getElementById("app"));
 const settings = createSettings({ menubar: hostFor("menubar.menus") });
