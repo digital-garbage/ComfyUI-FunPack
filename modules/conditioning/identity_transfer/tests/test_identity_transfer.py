@@ -106,3 +106,28 @@ def test_the_rotation_composes_onto_both_rope_layouts():
     m2, _ = rotate_overlap_freqs((mat, "split"), 2, 1.0)
     assert torch.equal(m2[:, :4], mat[:, :4]) and not torch.equal(m2[:, 4:], mat[:, 4:])
     assert rotate_overlap_freqs((cos, sin, "split"), 0, 1.0)[0] is cos
+
+
+def _guided(tiny, patched):
+    """The real forward with a guide frame: a denoise_mask with a hard-pinned frame, keyframe_idxs, per-token timestep."""
+    patched.patch_model(device_to=torch.device("cpu"), load_weights=False)
+    try:
+        video, dmask = torch.randn(1, 128, 3, 2, 2), torch.ones(1, 1, 3, 2, 2)
+        dmask[:, :, 0] = 0.0
+        dmask[:, :, -1] = 0.0
+        kf = torch.zeros(1, 3, 4, 2)
+        kf[:, 0] = 5
+        dm = patched.model.diffusion_model
+        ts = dm.patchifier.patchify((dmask * 500.0)[:, :1])[0].reshape(1, -1)
+        opts = {"sample_sigmas": torch.tensor([1.0, .5, 0.0]), "sigmas": torch.tensor([.5])}
+        with torch.inference_mode():
+            return dm([video, tiny.audio], (ts, torch.full((1, 3), 500.0)), tiny.context, frame_rate=25,
+                      transformer_options=opts, denoise_mask=dmask, keyframe_idxs=kf)
+    finally:
+        patched.unpatch_model(unpatch_weights=False)
+
+
+def test_a_latent_with_guide_frames_still_runs(tiny_ltx):
+    base_v, _ = _guided(tiny_ltx, tiny_ltx.patcher.clone())
+    v, _ = _guided(tiny_ltx, _patched(tiny_ltx))
+    assert v.shape == base_v.shape and not torch.allclose(v, base_v)

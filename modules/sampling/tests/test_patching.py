@@ -73,3 +73,14 @@ def test_chaining_the_loader_does_not_stack_a_pre_cfg_modifier(patcher):
 
     assert count(once) == count(twice) == count(thrice) == 1
     assert count(patcher) == 0, "the shared model was modified"
+
+
+def test_clone_keeps_the_fault_record_the_sampler_will_clear():
+    from core import patching
+    class P:
+        def clone(self):
+            return P()
+    m = P()
+    m.funpack_dropped = patching.Dropped()
+    assert patching.clone(m).funpack_dropped is m.funpack_dropped
+    assert not hasattr(patching.clone(P()), "funpack_dropped")

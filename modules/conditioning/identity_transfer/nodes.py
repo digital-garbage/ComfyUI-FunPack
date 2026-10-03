@@ -62,7 +62,7 @@ class FunPackIdentityTransfer(io.ComfyNode):
     @classmethod
     def execute(cls, model, vae, positive, negative, latent, image=None, identity_projector="None",
                 source_id=2.0, phase_scale=1.0, id_strength=1.0, arcface_mode="auto_adjust") -> io.NodeOutput:
-        patched = model.clone()
+        patched = patching.clone(model)
         patching.strip(patched, KEY)                       # a clone carries an earlier install forward
         if image is None:
             return io.NodeOutput(patched, positive, negative, "no reference image: untouched")

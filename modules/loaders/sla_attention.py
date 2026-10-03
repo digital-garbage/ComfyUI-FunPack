@@ -24,7 +24,7 @@ below exists and why a run that never sparsified says so in the log.
 """
 import logging
 
-from .._core import dit_hooks as _dit_hooks, traits as _traits
+from .._core import dit_hooks as _dit_hooks, patching, traits as _traits
 
 SLA_NAME = "sla_h3"
 
@@ -312,7 +312,7 @@ def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
     blkk = 64 if blkq == 128 else blkq
 
     state = new_state()
-    patched = model.clone()
+    patched = patching.clone(model)
     to = patched.model_options.get("transformer_options", {}).copy()
     to["optimized_attention_override"] = make_override(
         state, sparsity_ratio, blkq, blkk, min_seq_len, protect_audio,

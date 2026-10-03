@@ -58,3 +58,13 @@ def test_old_schedule_spellings_still_work_and_junk_is_named(tiny_ltx, monkeypat
     assert "standard_uniform" in install(p, {**ON, "schedule": "uniform_standard"}, KEY)
     with pytest.raises(RuntimeError, match="not one this ComfyUI knows"):
         install(p, {**ON, "schedule": "wobbly"}, KEY)
+
+
+@pytest.mark.parametrize("length, overlap", [(33, 40), (145, 152), (9, 40)])
+def test_an_overlap_as_long_as_the_window_is_cut_and_said(tiny_ltx, monkeypatch, length, overlap):
+    from modules.sampling.context_windows import install
+    p = _patcher(tiny_ltx)
+    monkeypatch.setattr(type(p._patcher.model), "map_context_window_to_modalities", lambda *a: None, raising=False)
+    note = install(p, {**ON, "length": length, "overlap": overlap}, KEY)
+    handler = p._patcher.model_options["context_handler"]
+    assert handler.context_overlap < handler.context_length and "overlap cut" in note

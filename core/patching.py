@@ -326,3 +326,13 @@ class GuardedPatcher:
 
     def __setattr__(self, name, value):
         setattr(self._patcher, name, value)
+
+
+def clone(model):
+    """`model.clone()` that keeps the fault record a modifier node hung on it: ModelPatcher.clone()
+    drops unknown attributes, and the sampler would then clear a record nobody else holds."""
+    patched = model.clone()
+    record = getattr(model, "funpack_dropped", None)
+    if record is not None:
+        patched.funpack_dropped = record
+    return patched

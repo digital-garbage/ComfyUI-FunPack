@@ -42,10 +42,13 @@ def scale_frame_rate(args, mult):
     if not (isinstance(c, dict) and "frame_rate" in c):
         return args
     cond = c["frame_rate"]
-    if not hasattr(cond, "cond"):
-        return args
     scaled = dict(c)
-    scaled["frame_rate"] = type(cond)(float(cond.cond) * float(mult))
+    if hasattr(cond, "cond"):
+        scaled["frame_rate"] = type(cond)(float(cond.cond) * float(mult))
+    elif isinstance(cond, (int, float)) and not isinstance(cond, bool):
+        scaled["frame_rate"] = float(cond) * float(mult)      # what cond_cat hands a wrapper: CONDConstant.concat is the bare value
+    else:
+        return args
     return {**args, "c": scaled}
 
 

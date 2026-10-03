@@ -22,16 +22,17 @@ def _install(tiny, style, old=None):
     return p, install(g, {"style": style}, key=KEY)
 
 
-def _call(patched, **extra):
+def _call(patched, bare=True, **extra):  # core's cond_cat hands a wrapper the bare number
     seen = {}
 
     def apply_fn(x, t, **c):
-        seen["frame_rate"] = c["frame_rate"].cond
+        fr = c["frame_rate"]
+        seen["frame_rate"] = getattr(fr, "cond", fr)
         seen["x"] = x
         return x
 
     args = {"input": torch.zeros(1, 1, 4), "timestep": torch.tensor([0.5]),
-            "c": {"frame_rate": Cond(25.0), **extra}}
+            "c": {"frame_rate": 25.0 if bare else Cond(25.0), **extra}}
     patched.model_options["model_function_wrapper"](apply_fn, args)
     return seen
 
@@ -45,6 +46,11 @@ def test_natural_installs_nothing(tiny_ltx):
 def test_the_frame_rate_the_model_sees_is_scaled(tiny_ltx, style, mult):
     p, note = _install(tiny_ltx, style)
     assert _call(p)["frame_rate"] == pytest.approx(25.0 * mult) and style in note
+
+
+def test_a_wrapped_cond_is_scaled_too(tiny_ltx):
+    p, _ = _install(tiny_ltx, "freeze")
+    assert _call(p, bare=False)["frame_rate"] == pytest.approx(50.0)
 
 
 def test_pulse_and_rapid_follow_the_schedules_progress(tiny_ltx):
@@ -63,7 +69,7 @@ def test_an_earlier_wrapper_still_runs_and_comes_back_when_ours_is_stripped(tiny
     ran = []
 
     def earlier(apply_fn, args):
-        ran.append(args["c"]["frame_rate"].cond)
+        ran.append(args["c"]["frame_rate"])
         return apply_fn(args["input"], args["timestep"], **args["c"])
 
     p, _ = _install(tiny_ltx, "freeze", old=earlier)

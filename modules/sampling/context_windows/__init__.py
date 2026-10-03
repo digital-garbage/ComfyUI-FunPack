@@ -82,9 +82,12 @@ def install(patcher, values, key):
         raise control.Unavailable(f"blend {values.get('fuse')!r} is not one this ComfyUI knows")
 
     latent_len = max(((int(values["length"]) - 1) // _TEMPORAL) + 1, 1)
+    overlap = max(int(values["overlap"]) // _TEMPORAL, 0)
+    clamped = overlap >= latent_len                       # core's schedules loop forever / return no windows
+    overlap = min(overlap, latent_len - 1)
     retain = "0" if values.get("retain_first") else ""
     kwargs = dict(context_schedule=sched, fuse_method=fuse, context_length=latent_len,
-                  context_overlap=max(int(values["overlap"]) // _TEMPORAL, 0), context_stride=1,
+                  context_overlap=overlap, context_stride=1,
                   closed_loop=False, dim=2, freenoise=bool(values.get("freenoise")),
                   cond_retain_index_list=retain, latent_retain_index_list=retain,
                   split_conds_to_windows=False)
@@ -98,6 +101,9 @@ def install(patcher, values, key):
     if values.get("freenoise"):
         patcher.add_wrapper_with_key(pe.WrappersMP.SAMPLER_SAMPLE, f"{key}.freenoise", cw._sampler_sample_wrapper)
     note = f"windows of {values['length']} frames, {values['overlap']} overlap ({schedule}, {values['fuse']})"
+    if clamped:
+        note = (f"windows of {values['length']} frames, overlap cut to {overlap * _TEMPORAL} "
+                f"(it must be shorter than the window) ({schedule}, {values['fuse']})")
     if retain and "latent_retain_index_list" in dropped:
         note += "; this ComfyUI cannot pin the anchor in the latent, only in the conditioning"
     return note

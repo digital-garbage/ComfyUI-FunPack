@@ -77,10 +77,13 @@ def install(patcher, ref_latent, seg_value, key):
     def prepare_timestep(timestep, batch_size, hidden_dtype, **kwargs):
         ref_len = state["ref_len"]
         if ref_len:
-            target_len = state["target_len"]
-            if timestep.dim() <= 1 and target_len is not None:
-                timestep = timestep.view(-1, 1).expand(batch_size, target_len).contiguous()
+            grid_mask = kwargs.get("grid_mask")          # guides drop tokens: the timestep is still full length
+            width = int(grid_mask.shape[0]) if grid_mask is not None else state["target_len"]
+            if timestep.dim() <= 1 and width is not None:
+                timestep = timestep.view(-1, 1).expand(batch_size, width).contiguous()
             if timestep.dim() >= 2:
+                if grid_mask is not None:
+                    timestep, kwargs = timestep[:, grid_mask], {**kwargs, "grid_mask": None}
                 clean = torch.zeros(batch_size, ref_len, *timestep.shape[2:],
                                     device=timestep.device, dtype=timestep.dtype)
                 timestep = torch.cat([timestep, clean], dim=1)

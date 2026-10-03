@@ -99,7 +99,7 @@ class FunPackApplyPromptMarkup(io.ComfyNode):
 
     @classmethod
     def execute(cls, model, clip, positive, latent, markup) -> io.NodeOutput:
-        patched = model.clone()
+        patched = patching.clone(model)
         patching.strip(patched, "funpack_markup.")
         weighted, timed, blended = (markup or {}).get("weighted"), (markup or {}).get("timed"), \
             (markup or {}).get("blended")
