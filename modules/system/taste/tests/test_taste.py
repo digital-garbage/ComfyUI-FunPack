@@ -17,18 +17,67 @@ def _v(x):
     return torch.tensor([float(x), 0.0])
 
 
-def test_latest_run_is_recorded_once_and_a_replaced_one_is_refused():
+def test_a_run_is_recorded_once_and_a_re_rating_changes_it_never_adds_a_row():
+    store.capture("fox", "reins", {25: _v(1)}, prompt_id="p1")
+    assert store.rate("p1", "liked")["recorded"] == ["reins"]
+    assert store.counts("fox", "reins") == (1, 0)
+    # The pending capture is spent: rating p1 again changes it, never adds a row.
+    assert store.rate("p1", "disliked")["updated"] == ["reins"]
+    assert store.counts("fox", "reins") == (0, 1)
+    store.rate("p1", None)
+    assert store.counts("fox", "reins") == (0, 0)
+
+
+def test_every_run_of_one_generate_waits_for_its_own_rating():
     store.capture("fox", "reins", {25: _v(1)}, prompt_id="p1")
     store.capture("fox", "reins", {25: _v(2)}, prompt_id="p2")
+    store.capture("fox", "reins", {25: _v(3)}, prompt_id="p3")
+    assert store.rate("p2", "liked")["recorded"] == ["reins"]       # not the latest run, still rateable
+    assert store.rate("p1", "disliked")["recorded"] == ["reins"]
+    assert store.rate("p3", "liked")["recorded"] == ["reins"]
+    assert store.counts("fox", "reins") == (2, 1)
+    rows = store.load("fox", "reins")["rows"]
+    assert [float(r["rows"]["25"][0]) for r in rows] == [2.0, 1.0, 3.0]    # each row holds ITS run's capture
+
+
+def test_a_new_generate_forgets_what_nobody_rated():
+    store.capture("fox", "reins", {25: _v(1)}, prompt_id="p1")
+    store.capture("fox", "reins", {25: _v(2)}, prompt_id="p2")
+    assert store.new_generation() == 2
     out = store.rate("p1", "liked")
-    assert out["recorded"] == [] and "most recent" in out["why"]
-    assert store.rate("p2", "liked")["recorded"] == ["reins"]
+    assert out["recorded"] == [] and "new Generate" in out["why"]
+    assert store.rate("p2", "liked")["recorded"] == []
+    assert not list((store.ROOT / "fox").glob("*.pending.pt"))
+    store.capture("fox", "reins", {25: _v(3)}, prompt_id="p3")           # the next Generate's runs still work
+    assert store.rate("p3", "liked")["recorded"] == ["reins"]
+
+
+def test_rated_rows_survive_a_new_generate():
+    store.capture("fox", "reins", {25: _v(1)}, prompt_id="p1")
+    store.rate("p1", "liked")
+    store.new_generation()
     assert store.counts("fox", "reins") == (1, 0)
-    # The pending capture is spent: rating p2 again changes it, never adds a row.
-    assert store.rate("p2", "disliked")["updated"] == ["reins"]
-    assert store.counts("fox", "reins") == (0, 1)
-    store.rate("p2", None)
-    assert store.counts("fox", "reins") == (0, 0)
+    assert store.rate("p1", "disliked")["updated"] == ["reins"]            # changing your mind still works
+
+
+def test_an_id_that_cannot_name_a_file_is_never_kept_aside_and_never_crashes():
+    store.capture("fox", "reins", {25: _v(1)}, prompt_id="../evil")
+    store.capture("fox", "reins", {25: _v(2)}, prompt_id="p2")
+    assert not list(store.ROOT.rglob("*evil*"))
+    assert store.rate("../evil", "liked")["recorded"] == []
+    assert store.rate("p2", "liked")["recorded"] == ["reins"]
+
+
+def test_pending_runs_are_not_part_of_an_export_and_clearing_a_kind_forgets_them(tmp_path):
+    store.capture("fox", "reins", {25: _v(1)}, prompt_id="p1")
+    store.capture("fox", "reins", {25: _v(2)}, prompt_id="p2")
+    store.rate("p2", "liked")
+    out = tmp_path / "k.zip"
+    store.export_key("fox", out)
+    import zipfile
+    assert zipfile.ZipFile(out).namelist() == ["reins.pt"]
+    store.clear_kind("fox", "reins")
+    assert not list((store.ROOT / "fox").glob("reins*"))
 
 
 def test_every_kind_of_one_run_is_recorded_together():

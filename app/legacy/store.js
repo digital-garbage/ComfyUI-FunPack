@@ -4180,6 +4180,7 @@
   // random pick) and reused for the whole sweep.
   async function runComboSweep(sceneId, configText, sameSeed) {
     if (!state.project || !sceneId) return;
+    _newTasteGeneration();
     const configs = parseComboSweepConfig(configText);
     if (!configs.length) {
       set({ comboSweep: { running: false, results: [], error: "No valid config lines — one per line, reins:strength;block and/or sweep:blocks;seam|noseam;times[;laststeps]." } });
@@ -4317,15 +4318,23 @@
   // The clock is wrapped around the PUBLIC entry points rather than set inside them: every
   // one of these has several early-return error paths, and a `finally` here cannot miss one.
   // `await` (not `return fn()`) is what makes the finally wait for the whole montage.
+  // A Generate begins: captures still waiting for a rating from the last one are forgotten.
+  // Best effort -- a failure here must not stop a generation.
+  function _newTasteGeneration() {
+    try { API.newTasteGeneration().catch(() => {}); } catch (e) { /* nothing to forget */ }
+  }
   async function _clockedGenerate(onlyScene) {
+    _newTasteGeneration();
     _genClockStart(onlyScene ? "scene" : "all");
     try { return await generate(onlyScene); } finally { _genClockStop(); }
   }
   async function _clockedMontage() {
+    _newTasteGeneration();
     _genClockStart("all");
     try { return await generateMontage(); } finally { _genClockStop(); }
   }
   async function _clockedSelected() {
+    _newTasteGeneration();
     _genClockStart("selected");
     try { return await generateSelected(); } finally { _genClockStop(); }
   }

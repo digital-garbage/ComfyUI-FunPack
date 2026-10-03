@@ -1,14 +1,16 @@
 """Named taste keys on disk, and pairing a run's capture with its rating.
 
 Layout: `<pack>/taste/<key>/<kind>.pt` holds `{"rows": [{"prompt_id", "reward",
-"rows": {name: tensor}}]}`; `<kind>.pending.pt` holds the latest run's capture.
+"rows": {name: tensor}}]}`; `<kind>.pending.pt` holds the latest run's capture and
+`<kind>.<prompt id>.pending.pt` the earlier runs' of the SAME Generate.
 A key is a folder, so deleting one is one folder and a kind is one file.
 
-"Latest only" (user's choice, 2026-09-27): each capture overwrites the pending
-one, so a rating can only teach from the most recent run -- but it is TAGGED with
-the ComfyUI prompt id it came from, so rating any other clip is refused and said,
-never paired with the wrong run. Changing your mind on a clip already recorded
-updates its row instead of adding a second one.
+A capture waits for a rating until the next Generate starts (`new_generation`), then is forgotten:
+nothing is learned from a clip nobody rated. A Generate can be several runs (one per scene that
+starts its own run), so every run of the latest Generate waits, each TAGGED with the ComfyUI prompt
+id it came from -- rating a clip whose capture was dropped is refused and said, never paired with
+the wrong run. Changing your mind on a clip already recorded updates its row instead of adding a
+second one.
 
 Keys are disposable (retrained per rental), so there is no migration from v4's
 `refinements/` files.
@@ -104,8 +106,9 @@ def kind_path(key, kind):
 
 
 def clear_kind(key, kind):
-    """Forget every rated row and the waiting capture of one kind."""
-    for path in (kind_path(key, kind), _dir(key) / f"{kind}.pending.pt"):
+    """Forget every rated row and the waiting captures of one kind."""
+    kind_path(key, kind).unlink(missing_ok=True)
+    for path in [_pending_path(key, kind), *_dir(key).glob(f"{kind}.*.pending.pt")]:
         path.unlink(missing_ok=True)
 
 
@@ -122,27 +125,61 @@ def _latest_path():
     return ROOT / "latest.json"
 
 
-def capture(key, kind, rows, prompt_id=None, keep=MAX_ROWS):
-    """This run's capture for `kind`, waiting for a rating. Overwrites the last.
+MAX_PENDING = 64          # earlier runs of one Generate kept waiting, per kind
+_PID = re.compile(r"\A[A-Za-z0-9_-]{1,80}\Z")      # a prompt id names a file: only plain ones may
 
-    Kept in the dtype given: a banked latent stays half precision. `keep` caps
-    how many rated rows this kind holds, oldest dropped first.
+
+def _pending_path(key, kind, prompt_id=None):
+    """The latest run's waiting capture (no id), or an earlier run's of the same Generate."""
+    return _dir(key) / (f"{kind}.pending.pt" if prompt_id is None else f"{kind}.{prompt_id}.pending.pt")
+
+
+def capture(key, kind, rows, prompt_id=None, keep=MAX_ROWS):
+    """This run's capture for `kind`, waiting for a rating until the next Generate starts.
+
+    The previous run's capture of the same Generate is kept aside, not overwritten. Kept in the
+    dtype given: a banked latent stays half precision. `keep` caps how many rated rows this kind
+    holds, oldest dropped first.
     """
     if not rows:
         return
     prompt_id = prompt_id or current_prompt_id()
     clean = {str(k): v.detach().cpu() for k, v in rows.items()}
     with _LOCK:
-        _write(_dir(key) / f"{kind}.pending.pt",
-               {"prompt_id": prompt_id, "rows": clean, "keep": int(keep)})
-        latest = _read_latest()
-        kinds = latest.get("kinds", []) if latest.get("prompt_id") == prompt_id \
-            and latest.get("key") == key else []
+        latest = _pending_path(key, kind)
+        before = _read(latest, None)
+        earlier = before.get("prompt_id") if before else None
+        if earlier is not None and earlier != prompt_id:
+            if _PID.match(str(earlier)):
+                os.replace(latest, _pending_path(key, kind, earlier))
+        _write(latest, {"prompt_id": prompt_id, "rows": clean, "keep": int(keep)})
+        aside = sorted(_dir(key).glob(f"{kind}.*.pending.pt"), key=lambda p: p.stat().st_mtime_ns)
+        for old in aside[:-MAX_PENDING]:
+            old.unlink(missing_ok=True)
+        state = _read_latest()
+        runs = state.get("runs", {})
+        kinds = runs[prompt_id]["kinds"] if runs.get(prompt_id, {}).get("key") == key else []
         if kind not in kinds:
             kinds.append(kind)
+        runs[prompt_id] = {"key": key, "kinds": kinds}
         ROOT.mkdir(parents=True, exist_ok=True)
-        _latest_path().write_text(json.dumps({"key": key, "prompt_id": prompt_id,
-                                              "kinds": kinds}))
+        _latest_path().write_text(json.dumps({"key": key, "prompt_id": prompt_id, "kinds": kinds,
+                                              "runs": runs}))
+
+
+def new_generation():
+    """A Generate is starting: every capture still waiting for a rating is forgotten.
+    -> how many were dropped."""
+    with _LOCK:
+        dropped = 0
+        for key in keys():
+            for path in _dir(key).glob("*.pending.pt"):
+                path.unlink(missing_ok=True)
+                dropped += 1
+        state = _read_latest()
+        if state:
+            _latest_path().write_text(json.dumps({"key": state.get("key"), "runs": {}}))
+    return dropped
 
 
 def _read_latest():
@@ -198,18 +235,23 @@ def rate(prompt_id, rating, axis=None):
         if out["updated"]:
             return out
 
-        latest = _read_latest()
-        if not prompt_id or latest.get("prompt_id") != prompt_id:
-            out["why"] = ("only the most recent generation can teach the taste key -- "
-                          "this clip's capture has been replaced by a newer run")
+        entry = _read_latest().get("runs", {}).get(prompt_id)
+        if not entry:
+            out["why"] = ("this clip's capture is gone: a new Generate started before it was rated, "
+                          "and nothing is learned from a clip left unrated")
             return out
         if rating is None:
             return out
-        key = latest["key"]
-        for kind in latest.get("kinds", []):
-            pending_path = _dir(key) / f"{kind}.pending.pt"
-            pending = _read(pending_path, None)
-            if not pending or pending.get("prompt_id") != prompt_id:
+        key = entry["key"]
+        for kind in entry.get("kinds", []):
+            where = [_pending_path(key, kind)]
+            if _PID.match(str(prompt_id)):
+                where.append(_pending_path(key, kind, prompt_id))
+            for pending_path in where:
+                pending = _read(pending_path, None)
+                if pending and pending.get("prompt_id") == prompt_id:
+                    break
+            else:
                 continue
             data = load(key, kind)
             row = {"prompt_id": prompt_id, "reward": REWARD[rating], "rows": pending["rows"]}
@@ -260,8 +302,12 @@ def direction(key, kind, name):
 def delete(key):
     with _LOCK:
         shutil.rmtree(_dir(key), ignore_errors=True)
-        if _read_latest().get("key") == key:
+        state = _read_latest()
+        if state.get("key") == key:
             _latest_path().unlink(missing_ok=True)
+        elif state.get("runs"):
+            state["runs"] = {p: r for p, r in state["runs"].items() if r.get("key") != key}
+            _latest_path().write_text(json.dumps(state))
 
 
 # --- moving a key between machines -------------------------------------------

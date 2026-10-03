@@ -167,6 +167,11 @@ def routes(table, base, web):
             return web.json_response({"why": str(exc)}, status=400)
         return web.json_response(out)
 
+    @table.post(base + "/generation")
+    async def _generation(_req):
+        """A Generate is starting: captures still waiting for a rating are forgotten."""
+        return web.json_response({"dropped": store.new_generation()})
+
     @table.delete(base + "/keys/{name}")
     async def _delete(req):
         name = req.match_info["name"]

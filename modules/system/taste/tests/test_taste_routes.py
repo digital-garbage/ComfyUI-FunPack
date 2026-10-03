@@ -136,3 +136,12 @@ def test_reserved_names_shapes_and_missing_prompt_ids_are_refused(server):  # no
     assert _raw(server, "POST", "/funpack/api/m/taste/keys/import?name=x", _zip_of({"reins.pt": _torch_bytes(nopid)}))[0] == 400
     status, out = _request(server, "POST", "/funpack/api/m/taste/rate", {"rating": "liked"})
     assert status == 400
+
+
+def test_the_generation_route_forgets_unrated_runs_over_http(server):  # noqa: F811
+    store.capture("fox", "reins", {1: torch.ones(2)}, prompt_id="p1")
+    store.capture("fox", "reins", {1: torch.ones(2)}, prompt_id="p2")
+    status, out = _request(server, "POST", "/funpack/api/m/taste/generation", {})
+    assert status == 200 and out == {"dropped": 2}
+    status, out = _request(server, "POST", "/funpack/api/m/taste/rate", {"prompt_id": "p1", "rating": "liked"})
+    assert status == 200 and out["recorded"] == [] and "new Generate" in out["why"]

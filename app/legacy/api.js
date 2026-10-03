@@ -392,6 +392,7 @@
     },
 
     // --- taste keys: modules/system/taste --------------------------------------
+    newTasteGeneration: () => j("POST", API("/api/m/taste/generation"), {}),
     rateTaste: (prompt_id, rating, axis) => j("POST", API("/api/m/taste/rate"), { prompt_id, rating, axis: axis || null }),
     tasteKeys: () => j("GET", API("/api/m/taste/keys")),
 
