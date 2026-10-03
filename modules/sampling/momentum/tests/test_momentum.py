@@ -161,3 +161,17 @@ def test_a_second_pass_that_restarts_lower_still_starts_with_an_empty_memory(tin
     wrap = fresh
     run(4, first + [0.1])
     assert all(torch.allclose(a, b) for a, b in zip(twice, seen))
+
+
+def test_a_second_order_sampler_on_a_plain_latent_is_said_and_left_alone(tiny_h3):
+    from core import log
+    log.new_run()
+    _p, wrap, _ = _load(tiny_h3, strength=1.0, decay=0.5, below_sigma=1.0)
+    x = torch.randn(1, 4, 3, 8, 8)
+    sig = torch.linspace(1.0, 0.0, 5)
+    outs = []
+    for i in (0, 1, 1, 2, 2, 3):                              # heun: each step's corrector lands on the next sigma
+        o = x * (0.9 - 0.1 * len(outs))
+        outs.append(wrap(lambda *a, o=o, **kw: o, x, sig[i:i + 1], None, None, None, _to(i)))
+    assert any("more than once per step" in e["message"] for e in log.history())
+    assert torch.equal(outs[-1], x * (0.9 - 0.5))             # nothing edited once it is known

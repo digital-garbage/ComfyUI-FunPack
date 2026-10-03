@@ -149,3 +149,30 @@ def test_a_run_that_starts_with_the_negative_prompt_does_not_learn_from_it(tiny_
     to = {**_to(3), "cond_or_uncond": [1]}
     wrap(lambda x, t, *a, **k: seen.append(a[1]) or x, torch.zeros(1, 1, 4), s[3:4], None, c, None, to)
     assert torch.equal(seen[0], c)            # no positive prompt yet: nothing learned, nothing nudged
+
+
+def test_strength_zero_only_learns_and_does_not_cry_wolf(tiny_h3):
+    from core import log
+    _teach(8)
+    wrap, status = _load(tiny_h3, strength=0.0)
+    log.new_run()
+    before = len(log.history())
+    c = torch.ones(1, 4, 8)
+    ts = torch.linspace(1.0, 0.0, 5)
+    seen = []
+    for i in range(4):
+        wrap(lambda x, t, *a, **k: seen.append(a[1]) or x, torch.zeros(1, 1, 4), ts[i:i + 1], None, c, None, _to(i))
+    assert all(torch.equal(s, c) for s in seen) and "learning only" in str(status)
+    assert not [e["message"] for e in log.history()[before:] if "nothing was nudged" in e["message"]]
+
+
+def test_a_probe_does_not_teach_the_taste_key(tiny_h3):
+    from core import dit_hooks
+    from modules.system.taste import store
+    _teach(8)
+    wrap, _ = _load(tiny_h3, strength=0.1)
+    c = torch.ones(1, 4, 8)
+    ts = torch.linspace(1.0, 0.0, 5)
+    wrap(lambda x, t, *a, **k: x, torch.zeros(1, 1, 4), ts[3:4], None, c, None, {**_to(3), dit_hooks.PROBE: True})
+    pending = store._dir("fox") / "prompt_taste.pending.pt"
+    assert not pending.exists()                              # nothing was captured from the probe

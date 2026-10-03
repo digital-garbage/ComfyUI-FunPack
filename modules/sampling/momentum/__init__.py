@@ -6,7 +6,8 @@ which calms jitter in the refinement steps. It is the late-step partner of ALG, 
 ones (arXiv:2602.20360). It can damp motion; that is the price of averaging.
 
 The edit is carried into the next step's input (core/input_steer.py), never onto the last answer, so the
-last step is never edited; it is sized so the next input moves exactly as v4's blended direction would.
+last step is never edited; it is sized so the NEXT model input moves as v4's blended direction would. The sampler's own latent does
+not take the edit, so later steps feel about three quarters of v4's effect (v4 edits the sampler's step).
 Only the picture is touched, never the sound.
 """
 
@@ -73,13 +74,15 @@ def install(patcher, values, key):
     below = float(values.get("below_sigma", 0.975))
     if strength <= 0.0:
         return "strength 0: nothing to do"
-    state = {"ema": {}, "last": {}}          # by cond/uncond call: they are different directions
+    state = {"ema": {}, "last": {}, "index": {}, "multi": False}          # by cond/uncond call: they are different directions
     steer = input_steer.Steer("Momentum")
     steer.attach(patcher, key)
 
     def forget(executor, *args, **kwargs):
         state["ema"].clear()
         state["last"].clear()
+        state["index"].clear()
+        state["multi"] = False
         try:
             return executor(*args, **kwargs)
         finally:
@@ -99,6 +102,16 @@ def install(patcher, values, key):
         out = executor(step.x, t, *args, **kwargs)
         packed = x.dim() == 3
         where = dit_hooks.current_step(to)
+        if not packed and where is not None and not dit_hooks.probing(to):
+            now, was = where[0], state["index"].get(tuple(int(v) for v in ((to or {}).get("cond_or_uncond") or ())))
+            state["index"][tuple(int(v) for v in ((to or {}).get("cond_or_uncond") or ()))] = now
+            if now == was:                               # the same step twice: a second-order corrector call
+                state["multi"] = True
+                log.once(f"{ID}:multi", log.ALERT, "FunPack Momentum",
+                         "off for the rest of this run: the model is called more than once per step "
+                         "(a second-order sampler); use euler-style sampling")
+            if state["multi"]:
+                return out
         if not step.steering or dit_hooks.probing(to) or (not packed and where is not None and where[0] >= where[1] - 1):
             return out                                   # a probe, an off-schedule call, the last step: not a step to edit
         sigma = float(t.max())

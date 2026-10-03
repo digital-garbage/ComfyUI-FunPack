@@ -105,7 +105,7 @@ def install(patcher, values, key):
             return executor(x, t, *args, **kwargs)
         amount = strength * dit_hooks.late_half(to)
         d = live["dir"]
-        if dit_hooks.last_step(to) and not acted.get("yes") and not dit_hooks.probing(to):
+        if strength > 0.0 and dit_hooks.last_step(to) and not acted.get("yes") and not dit_hooks.probing(to):
             acted["yes"] = d is not None and amount > 0.0
             if not acted.get("yes"):
                 _say("Inactive | nothing was nudged this run: " + (
