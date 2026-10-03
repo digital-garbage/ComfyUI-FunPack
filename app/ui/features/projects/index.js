@@ -4,7 +4,7 @@ import { list } from "../../shell/project.js";
 
 export default {
   id: "projects",
-  mount: "assets",
+  mount: "assets.projects",
   needs: ["project"],
   setup({ host, app }) {
     const p = app.project;
