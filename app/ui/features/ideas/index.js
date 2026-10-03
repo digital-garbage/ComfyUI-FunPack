@@ -54,7 +54,7 @@ export default {
         body.set([c.toolbar.default({ items: [c.label.section({ text: "Ideas" })], trailing: [c.button.sm({ label: "⟳", tone: "ghost", title: "Shuffle the samples", onClick: draw })] }), ...parts]);
       };
       draw();
-      pop = c.popover.anchored({ anchor: node, body, side: "bottom", align: "end", onClose: () => { pop = null; } });
+      pop = c.popover.anchored({ anchor: node, body, side: "bottom", align: "end", onClose: () => { pop = null; settle(); } });
     }
 
     function show(target) {
@@ -74,7 +74,8 @@ export default {
       Object.assign(node.style, { left: `${Math.max(4, r.right - 40)}px`, top: `${Math.max(4, r.top - 30)}px` });
     }
     const onFocus = (e) => { const t = e.target; if (t instanceof HTMLTextAreaElement && BOXES.has(t.getAttribute("aria-label"))) { clearTimeout(hold); show(t); } };
-    const onBlur = (e) => { if (e.target === box) hold = setTimeout(() => { if (node && !node.contains(document.activeElement) && !pop) closeBulb(); }, 400); };
+    const settle = () => { clearTimeout(hold); hold = setTimeout(() => { if (node && box !== document.activeElement && !node.contains(document.activeElement) && !pop) closeBulb(); }, 400); };
+    const onBlur = (e) => { if (e.target === box || (node && node.contains(e.target))) settle(); };
     const onMove = () => place();
     document.addEventListener("focusin", onFocus); document.addEventListener("focusout", onBlur);
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);

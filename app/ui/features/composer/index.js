@@ -4,7 +4,7 @@ import { applyStory, clash, joinStory } from "./story.js";
 import { shortcuts } from "./shortcuts.js";
 import { cuts } from "./cuts.js";
 import { enhance } from "./enhance.js";
-import { chat } from "./chat.js";
+import { chat, chatHook } from "./chat.js";
 import { pickShortcut, templatesBar, variablesPanel } from "./storytools.js";
 
 const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }];
@@ -43,7 +43,7 @@ const story = (app, own) => {
     } })] }),
     box, warn,
     c.hint.default({ text: `Scenes are cut at the word “${marker}”. Edits apply to the scenes as you type; the anchor is its own field.` }),
-    c.collapsible.default({ label: "+ Variables", body: variablesPanel(app) }),
+    c.collapsible.default({ label: "+ Variables", body: variablesPanel(app, own) }),
   ] });
 };
 
@@ -56,6 +56,7 @@ export default {
   needs: ["project", "api", "pipeline"],
   setup({ host, app }) {
     let win = null, owned = [];
+    app.inputHooks.push(chatHook);
     const cleanup = () => { owned.forEach((f) => f()); owned = []; };
     const open = () => {
       if (win) return;
@@ -66,6 +67,6 @@ export default {
         onClose: () => { cleanup(); win = null; } });
     };
     host.append(c.button.sm({ label: "◆ Composer", tone: "neutral", onClick: open }).node);
-    return cleanup;
+    return () => { cleanup(); app.inputHooks.splice(app.inputHooks.indexOf(chatHook) >>> 0, 1); };
   },
 };

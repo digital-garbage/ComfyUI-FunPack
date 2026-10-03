@@ -53,7 +53,7 @@ export function templatesBar(app, own) {
     bar.set([c.toolbar.default({
       items: [c.select.sm({ label: "Templates", disabled: !open, value: known ? active : "",
         options: [{ value: "", label: "Templates…" }, { value: NONE, label: "— None (clear all prompts) —" }, ...tpls().map((t) => ({ value: t.name, label: t.name }))],
-        onChange: (v) => { if (v === NONE) clear(); else if (v) apply(v); } })],
+        onChange: async (v) => { if (v === NONE) await clear(); else if (v) apply(v); key = ""; draw(); } })],
       trailing: [c.button.sm({ label: known ? "Update…" : "Save", tone: "ghost", disabled: !open, title: known ? `Overwrite “${active}” or save under a new name` : "Save the Story and variables as a template", onClick: save }),
         ...(known ? [c.button.sm({ label: "✎", tone: "ghost", title: `Rename “${active}”`, onClick: () => rename(active) }), c.button.sm({ label: "✕", tone: "ghost", title: `Delete “${active}”`, onClick: () => remove(active) })] : [])] })]);
   };
@@ -63,19 +63,21 @@ export function templatesBar(app, own) {
 }
 
 /** `$name` → text, filled in at generation. Rows commit on leaving the field; empty names are dropped on save. */
-export function variablesPanel(app) {
+export function variablesPanel(app, own) {
   const p = app.project, page = c.region.stack({ gap: "xs" });
+  let shown = "";
   const rows = () => (p.project && p.project.variables) || [];
   const write = (list) => p.setField("variables", list.map((v) => ({ name: String(v.name || "").replace(/^\$+/, "").trim(), value: String(v.value || "") })).filter((v) => v.name || v.value));
-  const draw = () => page.set([
+  const draw = () => { shown = JSON.stringify([p.project && p.project.id, rows()]); page.set([
     ...rows().map((v, i) => c.toolbar.default({
       items: [c.input.sm({ label: "Name", value: v.name, placeholder: "name", onCommit: (x) => { const l = clone(rows()); l[i].name = x; write(l); } }),
         c.input.sm({ label: "Value", value: v.value, placeholder: "text", onCommit: (x) => { const l = clone(rows()); l[i].value = x; write(l); } })],
       trailing: [c.button.sm({ label: "✕", tone: "ghost", title: "Remove", onClick: () => { write(rows().filter((_, k) => k !== i)); draw(); } })] })),
     c.button.sm({ label: "+ Add variable", tone: "ghost", disabled: !p.project, onClick: () => { write([...rows(), { name: "name", value: "" }]); draw(); } }),
     c.hint.default({ text: "Write $name in a prompt; it becomes the variable's text when you generate." }),
-  ]);
+  ]); };
   draw();
+  own(app.on(() => { const typing = page.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName); if (!typing && shown !== JSON.stringify([p.project && p.project.id, rows()])) draw(); }));
   return page;
 }
 

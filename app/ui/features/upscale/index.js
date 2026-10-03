@@ -44,12 +44,12 @@ export default {
     }
 
     // "Always": a render that appears after the project was opened is upscaled. What was there on open is left alone.
-    let seen = null, openId = null;
+    let seen = null, obj = null;
     const watch = () => {
       const open = p.project;
-      if (!open) { seen = null; openId = null; return; }
+      if (!open) { seen = null; obj = null; return; }
       const now = new Map(Object.entries(open.scene_renders || {}).filter(([, r]) => r && r.media).map(([id, r]) => [id, keyOf(r.media)]));
-      if (open.id !== openId || !seen) { openId = open.id; seen = now; return; }
+      if (open !== obj || !seen) { obj = open; seen = now; return; }       // another project, or undo/redo put an older copy back: not a new render
       if (p.pref("upscaleMode", "never") === "always") {
         const fresh = new Map([...now].filter(([id, k]) => seen.get(id) !== k));
         for (const media of new Map([...fresh.keys()].map((id) => [fresh.get(id), open.scene_renders[id].media])).values()) run(media);

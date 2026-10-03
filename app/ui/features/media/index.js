@@ -1,5 +1,6 @@
 // The media bin: files brought in (reference images, clips), kept apart from what runs produce.
 import { composer as c } from "../../composer/composer.js";
+import { learn } from "../../shell/bin.js";
 
 const base = (id) => `/funpack/api/media/${encodeURIComponent(id)}`;
 
@@ -37,6 +38,8 @@ export default {
       },
       export: (it) => { const m = items.find((x) => x.id === it.id); Object.assign(document.createElement("a"), { href: `${base(it.id)}/file`, download: m ? m.name : it.id }).click(); },
       delete: async (it) => {
+        const name = (items.find((m) => m.id === it.id) || {}).name || "this file";
+        if (!(await c.modal.dialogue({ title: "Delete media", message: `Delete “${name}” from the bin for good? Scenes in other projects that use it will lose it too.`, tone: "danger", confirmLabel: "Delete" }).result)) return;
         try {
           await api.deleteMedia(it.id);
           p.edit((pr) => pr.scenes.reduce((hit, s) => {
@@ -77,7 +80,7 @@ export default {
       g.setValue(sc && sc.source_image ? [sc.source_image] : []);
     }
     async function refresh() {
-      try { items = (await api.media()).media || []; } catch (err) { tell(err.message); }
+      try { items = (await api.media()).media || []; learn(items); app.say("bin"); } catch (err) { tell(err.message); }
       draw(true);
     }
     refresh();

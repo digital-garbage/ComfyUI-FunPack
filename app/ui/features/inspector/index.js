@@ -2,7 +2,7 @@
 import { composer as c } from "../../composer/composer.js";
 import { effFrames, effFps, genUnitId } from "../../shell/scenes.js";
 import { sceneRows } from "./scene.js";
-import { names } from "./mediapick.js";
+import { bin } from "../../shell/bin.js";
 import { projectRows } from "./project.js";
 
 export default {
@@ -25,7 +25,7 @@ export default {
     };
     function draw(force) {      // not on every keystroke: that would rebuild the box being typed in
       const sc = p.selected, open = p.project;
-      const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "project" && open ? [open.postfix_enabled !== false, open.generation_mode] : ""}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length, sc.source_image, (sc.references || []).join(), names.size] : ""}`;
+      const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "project" && open ? [open.postfix_enabled !== false, open.generation_mode] : ""}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length, sc.source_image, (sc.references || []).join(), bin.version] : ""}`;
       titled();
       if (!force && next === key) return;
       key = next;

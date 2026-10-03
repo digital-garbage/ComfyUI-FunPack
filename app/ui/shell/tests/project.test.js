@@ -638,3 +638,16 @@ test("an edit for a project that is not open is read, changed and saved there", 
   assert.equal(done, true);
   assert.equal(sent.at(-1).name, "other");
 });
+
+test("an undo takes edits back but never an editor preference", async () => {
+  server();
+  const p = createProject({});
+  await p.start();
+  p.setVideo("width", 832);
+  p.setPref("upscaleMode", "always");
+  p.undo();
+  assert.equal(p.video.width, undefined, "the edit was not undone");
+  assert.equal(p.pref("upscaleMode", "never"), "always");
+  p.redo();
+  assert.equal(p.pref("upscaleMode", "never"), "always");
+});

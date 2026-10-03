@@ -6,7 +6,7 @@ import { DRIVEN } from "../../shell/scenes.js";
 const rolesAt = (slots, at) => (slots || []).flatMap((s) => (s.roles || []).filter((r) => r.at === at).map((role) => ({ slot: s, role })));
 
 /** `frames`: how long this unit is (its clips together); a fresh `seed` per call so a re-roll is a different result. */
-export async function buildInputs({ project, scene, slots, expand, frames, seed = () => Math.floor(Math.random() * 2 ** 31) }) {
+export async function buildInputs({ project, scene, slots, expand, frames, hooks = [], seed = () => Math.floor(Math.random() * 2 ** 31) }) {
   const raw = {};
   const put = (slot, name, value) => { raw[slot.id] = { ...raw[slot.id], [name]: value }; };
 
@@ -27,13 +27,12 @@ export async function buildInputs({ project, scene, slots, expand, frames, seed 
       .catch(() => null);         // a failing prompt-craft feature must not block the run: send what was typed
     put(prompt.slot, prompt.role.input, body && typeof body.text === "string" ? body.text : text);
   }
-  // Chat comments on the enhancer's last rewrite ride with the project; only those about THIS typed prompt reach the run.
-  const enhancer = (slots || []).find((s) => s.node === "FunPackEnhancePrompt"), chat = (project.editor_settings || {}).enhance_chat;
-  let chatLeftOut = 0;
-  if (enhancer && Array.isArray(chat)) {
-    const typed = (scene.text || "").trim(), mine = chat.filter((r) => r && (r.original === undefined || r.original === typed));
-    chatLeftOut = chat.length - mine.length;
-    if (mine.length) put(enhancer, "chat", JSON.stringify(mine));
+  // Features that add inputs of their own (a Chat comment for the enhancer, say) say so through a hook: { inputs: {slot: {name: value}}, notes: [text] }.
+  const notes = [];
+  for (const hook of hooks) {
+    const out = hook({ project, scene, slots }) || {};
+    for (const [id, fields] of Object.entries(out.inputs || {})) raw[id] = { ...raw[id], ...fields };
+    notes.push(...(out.notes || []));
   }
-  return { inputs: raw, unwired, noPrompt: !prompt, chatLeftOut };
+  return { inputs: raw, unwired, noPrompt: !prompt, notes };
 }
