@@ -93,7 +93,13 @@ export default {
       if (s && !(head.at >= s.start && head.at < s.start + s.dur)) head.set(s.start); else sync();
     };
     sync();
-    const off = [head.on(sync), app.on((what) => (what === "select" ? onSelect() : sync()))];
+    const off = [head.on(sync), app.on((what) => {
+      if (what === "select") onSelect();
+      else if (what === "play.toggle") (playing ? pause() : start());
+      else if (what === "play.start") start();
+      else if (what === "play.pause") pause();
+      else sync();
+    })];
     return () => { clearInterval(walk); off.forEach((f) => f()); };
   },
 };

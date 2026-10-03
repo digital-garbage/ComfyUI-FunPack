@@ -74,7 +74,7 @@ const tools = {
         c.chip.neutral({ label: ids.length ? `${ids.length} clip${ids.length > 1 ? "s" : ""} selected` : "no clip selected" }).node);
     };
     draw();
-    const off = [app.on(draw), head.on(draw)];
+    const off = [app.on((what) => (what === "split" ? split() : draw())), head.on(draw)];
     return () => off.forEach((f) => f());
   },
 };

@@ -1,4 +1,4 @@
-// v4's editing keys: undo/redo, delete the selected scene, +/- zoom the timeline. Scene keys do nothing in Simple mode, where no timeline shows.
+// v4's editing keys: undo/redo, delete the selected scene, +/- zoom the timeline, space/K/L play and pause, J back a second, S split. Scene keys do nothing in Simple mode, where no timeline shows.
 import * as edits from "../../shell/edits.js";
 
 export default {
@@ -16,6 +16,9 @@ export default {
       app.keys.bind("delete", remove), app.keys.bind("backspace", remove),
       ...["+", "="].map((k) => app.keys.bind(k, scene(() => app.say("zoom.in")))),
       app.keys.bind("-", scene(() => app.say("zoom.out"))),
+      app.keys.bind(" ", (e) => (e.target.closest && e.target.closest("button, a, [role=slider]") ? false : app.say("play.toggle"))), app.keys.bind("k", () => app.say("play.pause")), app.keys.bind("l", () => app.say("play.start")),
+      app.keys.bind("j", () => app.playhead.set(app.playhead.at - 1)),
+      app.keys.bind("s", scene(() => app.say("split"))),
     ];
     return () => off.forEach((f) => f());
   },
