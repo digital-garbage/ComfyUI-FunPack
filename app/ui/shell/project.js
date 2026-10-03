@@ -53,6 +53,8 @@ const put = (project) => json("PUT", `${BASE}/${encodeURIComponent(project.id)}`
  * `onChange` fires for anything that alters what is on screen, including the
  * selection. Nothing here draws; the timeline subscribes.
  */
+const KEPT = ["editor_settings", "models"];
+
 export function createProject({ onChange, onError, onOpen, keepConsistent } = {}) {
   let project = null;
   let selected = null;
@@ -107,9 +109,9 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
     // before this must not still be allowed to land on top of it once its
     // own fetch catches up.
     generation += 1;
-    const prefs = project.editor_settings;       // preferences are not edits: stepping back never takes them with it
+    const kept = KEPT.map((k) => project[k]);       // preferences and the chosen pipeline are not edits: stepping back never takes them with it
     project = was.project;
-    if (prefs !== undefined) project.editor_settings = prefs;
+    KEPT.forEach((k, i) => { if (kept[i] !== undefined) project[k] = kept[i]; });
     selected = was.selected;
     // The scene that was selected may be gone -- stepping FORWARD into a state
     // where it had been removed. Fall back rather than leaving a selection that

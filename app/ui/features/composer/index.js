@@ -56,7 +56,6 @@ export default {
   needs: ["project", "api", "pipeline"],
   setup({ host, app }) {
     let win = null, owned = [];
-    app.inputHooks.push(chatHook);
     const cleanup = () => { owned.forEach((f) => f()); owned = []; };
     const open = () => {
       if (win) return;
@@ -67,6 +66,7 @@ export default {
         onClose: () => { cleanup(); win = null; } });
     };
     host.append(c.button.sm({ label: "◆ Composer", tone: "neutral", onClick: open }).node);
+    app.inputHooks.push(chatHook);          // last, so a setup that failed above leaves nothing behind
     return () => { cleanup(); app.inputHooks.splice(app.inputHooks.indexOf(chatHook) >>> 0, 1); };
   },
 };

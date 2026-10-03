@@ -30,7 +30,8 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
   // Features that add inputs of their own (a Chat comment for the enhancer, say) say so through a hook: { inputs: {slot: {name: value}}, notes: [text] }.
   const notes = [];
   for (const hook of hooks) {
-    const out = hook({ project, scene, slots }) || {};
+    let out;
+    try { out = hook({ project, scene, slots }) || {}; } catch (err) { notes.push(`An add-on's input could not be added to this run: ${err.message}`); continue; }
     for (const [id, fields] of Object.entries(out.inputs || {})) raw[id] = { ...raw[id], ...fields };
     notes.push(...(out.notes || []));
   }

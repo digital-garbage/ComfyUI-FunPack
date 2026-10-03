@@ -15,7 +15,7 @@ export function chatHook({ project, scene, slots }) {
 
 export function chat(app, own) {
   const p = app.project, page = c.region.stack({ gap: "sm" });
-  let last = null, alive = true, key = "", draft = "";
+  let last = null, alive = true, key = "", draft = "", runs = app.lastRun.n;
   own(() => { alive = false; });
   const rounds = () => { const r = p.pref("enhance_chat", []); return Array.isArray(r) ? r : []; };
   const typed = () => {                                   // the prompt a comment is about: the picked scene's own text, as typed
@@ -27,7 +27,7 @@ export function chat(app, own) {
   function draw(force) {
     if (!alive) return;
     const list = rounds(), ok = last && last.ok, next = JSON.stringify([p.project && p.project.id, list, last && last.after]);
-    if (!force && next === key) return;
+    if (!force && (next === key || (page.node.contains(document.activeElement) && document.activeElement.tagName === "TEXTAREA"))) return;       // not under the caret
     key = next;
     if (!p.project) return page.set([c.hint.default({ text: "Open a project first." })]);
     const bubbles = [...list.flatMap((r) => [first(r) ? c.text.sm({ text: `Model: ${first(r)}` }) : null, c.text.sm({ text: `You: ${r.comment}` })]),
@@ -38,7 +38,7 @@ export function chat(app, own) {
       const comment = draft.trim(), now = rounds();
       if (!comment) return;
       const prev = now.length ? first(now[now.length - 1]) : null, here = typed();
-      const fresh = ok && last.after !== prev && app.enhanceTyped !== undefined && app.enhanceTyped === here;      // a rewrite of THIS prompt that nobody has commented on yet
+      const fresh = ok && last.after !== prev && app.lastRun.typed !== undefined && app.lastRun.typed === here;      // a rewrite of THIS prompt that nobody has commented on yet
       draft = "";
       p.setPref("enhance_chat", [...now, { rewrites: fresh ? { whole: last.after } : {}, comment, ...(here === undefined ? {} : { original: here }) }]);
       draw(true);
@@ -48,7 +48,7 @@ export function chat(app, own) {
       c.toolbar.default({ items: [c.button.sm({ label: "Send", tone: "primary", onClick: send })], trailing: [c.button.sm({ label: "Reset", tone: "ghost", disabled: !list.length, onClick: () => { p.setPref("enhance_chat", []); draw(true); } })] })]);
   }
   const look = () => app.api.enhancerRuns().then((r) => { last = (r.runs || []).slice(-1)[0] || null; draw(); }).catch(() => {});
-  own(app.on((what) => { if (what === "open") look(); else draw(); }));
+  own(app.on((what) => { if (what === "open" || app.lastRun.n !== runs) { runs = app.lastRun.n; look(); } else draw(); }));
   draw(true);
   look();
   return page;

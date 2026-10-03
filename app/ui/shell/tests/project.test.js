@@ -651,3 +651,13 @@ test("an undo takes edits back but never an editor preference", async () => {
   p.redo();
   assert.equal(p.pref("upscaleMode", "never"), "always");
 });
+
+test("an undo keeps the chosen pipeline too", async () => {
+  server();
+  const p = createProject({});
+  await p.start();
+  p.setVideo("width", 832);
+  p.setField("models", { slots: ["B"] }, { quiet: true });
+  p.undo();
+  assert.deepEqual(p.project.models, { slots: ["B"] });
+});

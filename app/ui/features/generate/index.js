@@ -24,7 +24,7 @@ export default {
     g.on("hold", () => { held = true; draw(); }); g.on("release", () => { held = false; draw(); });   // while the page asks ComfyUI whether a run is already going          // the pipeline check's refusals: said where the person is looking
     let busy = false, stopped = false, held = false;
 
-    const record = (pid, unit, image, frames, promptId) => p.editFor(pid, (pr) => {
+    const record = (pid, unit, image, frames, promptId) => { app.lastRun.n += 1; return p.editFor(pid, (pr) => {
       const group = pr.scenes.filter((s) => genUnitId(s) === unit);
       if (!group.length) return false;
       const secs = (frames || group.reduce((t, s) => t + effFrames(s, pr), 0) - (group.length - 1)) / (pr.frame_rate || 25);   // as queued, not as the project reads now
@@ -35,7 +35,7 @@ export default {
         if (!(s.cut_offset_frames > 0)) s.rating = "";       // a new render has not been rated yet      // a fresh render was made at this length: an earlier trim's window no longer applies
       });
       return true;
-    }).catch(() => tell("The result could not be saved to its project."));
+    }).catch(() => tell("The result could not be saved to its project.")); };
 
     async function runUnits(units) {
       if (busy) return;
@@ -53,7 +53,7 @@ export default {
           // The unit is made once at the length of its clips together (each cut adds one shared frame).
           const frames = group.reduce((t, s) => t + effFrames(s, p.project), 0) - (group.length - 1);
           const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: p.project, scene: root, slots: app.pipeline.slots(), expand, frames, hooks: app.inputHooks });
-          app.enhanceTyped = (root.text || "").trim();        // what a Chat comment made now would be about
+          app.lastRun.typed = (root.text || "").trim();        // what a Chat comment made now would be about
           if (stopped) break;
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
           notes.forEach(tell);

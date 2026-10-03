@@ -48,3 +48,9 @@ test("a hook's inputs are merged and its notes come back", async () => {
   assert.equal(r.inputs.k.extra, "x");
   assert.deepEqual(r.notes, ["said"]);
 });
+
+test("a hook that throws does not stop the run: its problem comes back as a note", async () => {
+  const r = await buildInputs({ project: {}, scene: { text: "x" }, slots, hooks: [() => { throw new Error("boom"); }], expand: async () => null });
+  assert.equal(r.inputs.p.text, "x");
+  assert.match(r.notes[0], /boom/);
+});
