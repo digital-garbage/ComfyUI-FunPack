@@ -20,3 +20,7 @@ test("only the picked clips are kept, still in timeline order, and unpicked ones
   assert.deepEqual(clips.map((c) => c.scene_id), ["a", "v"]);
   assert.equal(missing, 0);
 });
+
+test("a clip picked by hand is exported even when it is excluded from the full run", () => {
+  assert.deepEqual(clipSpecs(p, new Set(["c"])).clips.map((c) => c.scene_id), ["c"]);
+});

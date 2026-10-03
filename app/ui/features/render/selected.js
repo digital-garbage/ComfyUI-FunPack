@@ -31,15 +31,15 @@ export default {
       try { await work(); } catch (err) { tell(err.message); } finally { busy = false; draw(); }
     };
     const exportIt = run(async () => {
-      const media = await join();
+      const name = p.project.name, media = await join();         // named for the project it was started in
       if (!media) return;
-      const link = Object.assign(document.createElement("a"), { href: viewUrl(media), download: `${p.project.name}.mp4` });
+      const link = Object.assign(document.createElement("a"), { href: viewUrl(media), download: `${name}.mp4` });
       link.click();
     });
     const toBin = run(async () => {
-      const media = await join();
+      const name = p.project.name, media = await join();
       if (!media) return;
-      const { media: entry } = await call("POST", "/api/import-clip", { clip: media, name: `${p.project.name}.mp4` });
+      const { media: entry } = await call("POST", "/api/import-clip", { clip: media, name: `${name}.mp4` });
       app.say("media");
       c.toast.good({ text: `Saved to the media bin as ${entry.name}.` });
     });

@@ -169,6 +169,7 @@ export function createProject({ onChange, onError, onOpen } = {}) {
 
   return {
     get project() { return project; },
+    get unsaved() { return dirty; },
     get scenes() { return project ? project.scenes || [] : []; },
     get selectedId() { return selected; },
     get selected() { return sceneAt(selected); },

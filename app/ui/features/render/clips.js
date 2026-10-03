@@ -7,7 +7,7 @@ export function clipSpecs(p, only) {   // `only`: a Set of scene ids to keep (th
   const clips = [];
   let missing = 0;
   for (const seg of segments(p)) {
-    if (seg.kind !== "scene" || (seg.scene.excluded && !seg.scene.removed_from_plan)) continue;       // removed from the plan still plays
+    if (seg.kind !== "scene" || (!only && seg.scene.excluded && !seg.scene.removed_from_plan)) continue;       // removed from the plan still plays; a clip picked by hand is wanted even if left out of the full run
     if (only && !only.has(seg.scene.id)) continue;
     const sc = seg.scene, r = renders[sc.id], base = { scene_id: sc.id, dur: seg.dur, fps: effFps(sc, p), gap_after: Math.max(0, +sc.gap_after_sec || 0) };
     if (isVideoClip(sc)) {

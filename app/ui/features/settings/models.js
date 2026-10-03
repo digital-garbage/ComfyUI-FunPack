@@ -14,7 +14,7 @@ const widgetControl = (w, current, set) => {
     return c.number.md({ label, value: current ?? w.default ?? 0, min: w.min, max: w.max, step: w.step ?? (w.type === "INT" ? 1 : undefined),
       precision: w.type === "INT" ? 0 : undefined, onChange: set });
   }
-  return c.input.md({ label, value: current ?? "", onCommit: set });
+  return w.multiline ? c.textarea.md({ label, value: current ?? "", rows: 4, onCommit: set }) : c.input.md({ label, value: current ?? "", onCommit: set });
 };
 
 export const models = (app) => function mount() {
@@ -30,7 +30,11 @@ export const models = (app) => function mount() {
       try { Object.assign(specs, (await app.api.describeNodes(missing)).nodes || {}); } catch (err) { note = err.message; }
       missing.forEach((n) => { if (!(n in specs)) specs[n] = null; });
     }
-    const set = (slot, name) => async (value) => { await ps.save({ inputs: { [slot.id]: { [name]: value } } }); note = (ps.refused() || []).join(" "); draw(); };
+    const set = (slot, name) => async (value) => {
+      if (JSON.stringify((slot.inputs || {})[name]) === JSON.stringify(value)) return;          // a blur that changed nothing saves nothing
+      await ps.save({ inputs: { [slot.id]: { [name]: value } } });
+      note = [...(ps.refused() || []), ...ps.saveNotes()].join(" "); draw();
+    };
     const groups = [];
     slots.forEach((s) => { const g = s.group || "Other"; (groups.find((x) => x[0] === g) || (groups.push([g, []]), groups[groups.length - 1]))[1].push(s); });
     page.set([
@@ -45,8 +49,11 @@ export const models = (app) => function mount() {
       })]),
     ].filter(Boolean));
   }
+  // A redraw while a box has focus would eat what is being typed: it waits for the focus to leave.
+  const typing = () => page.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName);
+  page.node.addEventListener("focusout", () => setTimeout(() => { if (!typing()) draw(); }));
   ps.ensureLoaded().then(draw);
-  off = ps.subscribe(() => draw());
+  off = ps.subscribe(() => { if (!typing()) draw(); });
   const handle = { node: page.node, destroy: () => { off && off(); page.node.remove(); } };
   return handle;
 };

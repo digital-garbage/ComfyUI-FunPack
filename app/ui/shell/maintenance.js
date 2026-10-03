@@ -27,12 +27,18 @@ export function createMaintenance({ api, flush }) {
     }
   }
   async function run(message, action, said) {
-    await flush();
+    try { await flush(); } catch (err) { return tell(err.message); }
     const text = c.text.md({ text: message });
     const card = c.modal.generic({ title: "Working", size: "sm", closeOnOutside: false, body: c.region.stack({ gap: "md", children: [c.progress.indeterminate({ label: "Working" }), text] }) });
     card.setText = (t) => text.setText ? text.setText(t) : (text.node.textContent = t);
     try {
       const res = await action();
+      if (res && res.restarting === false) {       // nothing restarted: say what is true, and stay on the page
+        card.close();
+        return c.modal.dialogue({ title: "Not restarted", message: `${res.blocked || (said ? said(res) : "Nothing changed.")} ${res.blocked ? "Restart ComfyUI yourself when the generation has finished." : ""}`.trim(), confirmLabel: "OK", cancelLabel: "Close" }).result;
+      }
+      const bad = res && res.requirements && res.requirements.ran && !res.requirements.ok;
+      if (bad) { await c.modal.dialogue({ title: "Dependencies failed", message: `${res.requirements.detail || ""}\n\nFunPack was updated, but installing its dependencies failed: it may not load until they are installed by hand. ComfyUI will restart now.`, confirmLabel: "Restart", cancelLabel: "Restart" }).result; }
       card.setText(`${said ? said(res) : message}\nRestarting ComfyUI…`);
     } catch (err) {
       if (action.dropsConnection) { /* the server went down as it restarted: expected */ } else { card.close(); return tell(err.message); }
@@ -47,7 +53,7 @@ export function createMaintenance({ api, flush }) {
       let gs; try { gs = await api.gitFull(); } catch { gs = null; }
       if (!gs || !gs.ok) return { ok: false, update: "Git unavailable for this install", branch: "Git unavailable for this install", rollback: "Git unavailable for this install" };
       return { ok: true,
-        update: gs.dirty ? "Local changes — commit first" : gs.behind > 0 ? `${gs.behind} commit(s) behind origin/${gs.branch}` : `origin/${gs.branch} up to date`,
+        update: gs.fetch_ok === false ? "Could not reach origin: update status unknown" : gs.dirty ? "Local changes — commit first" : gs.behind > 0 ? `${gs.behind} commit(s) behind origin/${gs.branch}` : `origin/${gs.branch} up to date`,
         branch: `On ${gs.branch}${gs.dirty ? " · local changes — commit first" : " · pick another"}`,
         rollbackOk: Boolean(gs.rollback_target),
         rollback: gs.rollback_target ? `Undo last update — back to ${String(gs.rollback_target.commit).slice(0, 8)}` : "Nothing to undo yet" };
