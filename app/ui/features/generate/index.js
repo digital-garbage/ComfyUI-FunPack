@@ -21,10 +21,10 @@ export default {
     g.on("say", tell); g.on("warn", tell);          // the pipeline check's refusals: said where the person is looking
     let busy = false, stopped = false;
 
-    const record = (pid, unit, image) => p.project && p.project.id === pid && p.edit((pr) => {
+    const record = (pid, unit, image, frames) => p.project && p.project.id === pid && p.edit((pr) => {
       const group = pr.scenes.filter((s) => genUnitId(s) === unit);
       if (!group.length) return false;
-      const secs = group.reduce((t, s) => t + effFrames(s, pr) / effFps(s, pr), 0);
+      const secs = frames ? frames / effFps(group[0], pr) : group.reduce((t, s) => t + effFrames(s, pr) / effFps(s, pr), 0);   // as queued, not as the project reads now
       const media = { filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" };
       group.forEach((s) => {
         (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs);
@@ -66,7 +66,7 @@ export default {
           const images = g.run.state.images;
           if (end !== g.DONE) { tell("Generation failed. The log has ComfyUI's message."); break; }
           if (!images.length) { tell("ComfyUI finished without a result. Try again."); break; }
-          record(pid, unit, images[images.length - 1]);
+          record(pid, unit, images[images.length - 1], frames);
         }
         if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out or is a video clip.");
       } finally { busy = false; draw(); }
@@ -85,11 +85,22 @@ export default {
       nodes = next;
     }
     // A run found after a reload belongs to this page's last session: its result still goes on its clips.
-    g.on("adopt", ({ sceneId, projectId }) => {
+    const claim = ({ sceneId, projectId }) => {
       const sc = p.project && p.project.id === projectId && p.project.scenes.find((s) => s.id === sceneId);
-      if (!sc) return;
+      if (!sc) return false;
       const unit = genUnitId(sc), done = g.waitForTerminal();
-      done.then((end) => { const im = g.run.state.images; if (end === g.DONE && im.length) record(projectId, unit, im[im.length - 1]); });
+      busy = true; draw();                           // Stop works on it, Generate waits
+      done.then((end) => {
+        const im = g.run.state.images;
+        if (end === g.DONE && im.length) record(projectId, unit, im[im.length - 1]);
+        busy = false; draw();
+      });
+      return true;
+    };
+    // The page may know the run before it has opened a project: wait for the project, then claim or give up.
+    g.on("adopt", (a) => {
+      if (claim(a)) return;
+      const off = app.on(() => { if (p.project) { claim(a); off(); } });
     });
     draw();
     return app.on(draw);
