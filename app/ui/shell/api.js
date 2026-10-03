@@ -26,6 +26,7 @@ export const api = {
   describeNodes: (classes) => call("GET", `/api/nodes?classes=${encodeURIComponent(classes.join(","))}`),
   system: () => call("GET", "/api/system"),
   storyMarkers: () => call("GET", "/api/story/markers"),
+  saveStoryMarkers: (markers) => call("POST", "/api/story/markers", { markers }),
   storySplit: (text) => call("POST", "/api/story/split", { text }),
   shortcuts: () => call("GET", "/api/shortcuts"),
   saveShortcut: (shortcut, originalName) => call("POST", "/api/shortcuts", { ...shortcut, original_name: originalName }),
