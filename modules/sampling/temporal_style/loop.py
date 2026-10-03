@@ -156,12 +156,6 @@ def _loop_audio_tail_frames(mask):
         return 0
 
 
-def _roll_failed(e, call, args):
-    log.once("temporal_style:loop_failed", log.ALERT, "FunPack Temporal style",
-             f"the loop roll failed ({type(e).__name__}: {e}); the calls it failed on ran without it")
-    return call(args) if call else None
-
-
 def make_loop_temporal_wrapper(old_wrapper):
     """Build the loop-style model_function_wrapper. Installed INNERMOST (closest to
     apply_model): prediction-modifying wrappers layered above it (dynashift, output
@@ -216,25 +210,19 @@ def make_loop_temporal_wrapper(old_wrapper):
             state["logged"] = True
             tail_note = f", {v_tail} guide frame(s) pinned" if v_tail else ""
             log.once("temporal_style:loop", log.INFO, "FunPack Temporal style", f"loop: Mobius latent roll active (T={t_content}{tail_note})")
-        try:
-            new_c = dict(c)
-            if isinstance(new_c.get("denoise_mask"), torch.Tensor):
-                new_c["denoise_mask"] = _loop_roll_mask(new_c["denoise_mask"], frac, 1, tail=v_tail)
-            if isinstance(new_c.get("audio_denoise_mask"), torch.Tensor):
-                new_c["audio_denoise_mask"] = _loop_roll_mask(
-                    new_c["audio_denoise_mask"], frac, 1,
-                    tail=_loop_audio_tail_frames(new_c["audio_denoise_mask"]))
-            rolled = dict(args)
-            rolled["input"] = _loop_roll_packed(args["input"], shapes, frac, 1, tails=tails)
-            rolled["c"] = new_c
-        except Exception as e:                         # noqa: BLE001 -- only the roll is ours to catch
-            return _roll_failed(e, _call, args)
-        out = _call(rolled)                            # the model's errors are the model's: not caught here
-        try:
-            return _loop_roll_packed(out, shapes, frac, -1, tails=tails)
-        except Exception as e:                         # noqa: BLE001
-            _roll_failed(e, None, None)
-            return out
+        # A roll or unroll that fails is not caught here: the guard records it, drops the loop for the
+        # run and reruns the call without it. The model's own errors pass through the same guard.
+        new_c = dict(c)
+        if isinstance(new_c.get("denoise_mask"), torch.Tensor):
+            new_c["denoise_mask"] = _loop_roll_mask(new_c["denoise_mask"], frac, 1, tail=v_tail)
+        if isinstance(new_c.get("audio_denoise_mask"), torch.Tensor):
+            new_c["audio_denoise_mask"] = _loop_roll_mask(
+                new_c["audio_denoise_mask"], frac, 1,
+                tail=_loop_audio_tail_frames(new_c["audio_denoise_mask"]))
+        rolled = dict(args)
+        rolled["input"] = _loop_roll_packed(args["input"], shapes, frac, 1, tails=tails)
+        rolled["c"] = new_c
+        return _loop_roll_packed(_call(rolled), shapes, frac, -1, tails=tails)
 
     return _loop_wrapper
 

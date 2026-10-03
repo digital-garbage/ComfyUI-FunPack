@@ -195,3 +195,21 @@ def test_a_model_error_through_the_loop_is_not_blamed_on_the_roll_or_rerun(tiny_
     with pytest.raises(RuntimeError, match="model blew up"):
         p.model_options["model_function_wrapper"](apply_fn, args)
     assert len(calls) == 1 and not dropped
+
+
+def test_a_failing_roll_drops_the_loop_once_and_the_call_runs_unrolled(tiny_ltx, monkeypatch):
+    from modules.sampling.temporal_style import install, loop
+    monkeypatch.setattr(loop, "_loop_roll_packed", lambda *a, **k: 1 / 0)
+    p = tiny_ltx.patcher.clone()
+    dropped = patching.Dropped()
+    install(patching.GuardedPatcher(p, KEY, dropped), {"style": "loop"}, key=KEY)
+    seen = []
+
+    def apply_fn(x, t, **c):
+        seen.append(x)
+        return x
+
+    x = torch.arange(8.0).view(1, 1, 8, 1, 1)
+    bad = {"input": x, "timestep": torch.tensor([0.5]), "c": {"denoise_mask": torch.ones(1, 1, 8, 1, 1)}}
+    out = p.model_options["model_function_wrapper"](apply_fn, bad)
+    assert KEY in dropped and torch.equal(out, x) and torch.equal(seen[-1], x)
