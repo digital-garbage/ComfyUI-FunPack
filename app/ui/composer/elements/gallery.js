@@ -277,7 +277,7 @@ define("ruler", "default", ({ marks = [], total = 1, label } = {}) => {
  * load" have to look different, and a bare <img> with a broken src looks like
  * neither.
  */
-define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError } = {}) => {
+define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError, controls = true, loop = true } = {}) => {
   const stage = el("div", { cls: "cx-viewer-stage" });
   let current = null;
   let currentKind = kind;
@@ -295,7 +295,7 @@ define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError
       return;
     }
     const media = nextKind === "video"
-      ? el("video", { cls: "cx-viewer-media", attrs: { src: current, controls: "", loop: "", playsinline: "" } })
+      ? el("video", { cls: "cx-viewer-media", attrs: { src: current, controls: controls ? "" : undefined, loop: loop ? "" : undefined, playsinline: "" } })
       : el("img", { cls: "cx-viewer-media", attrs: { src: current, alt: "" } });
     mediaEl = media;
     // A failed load is reported rather than left as a broken icon: the file is
@@ -322,6 +322,8 @@ define("viewer", "media", ({ src, kind = "image", empty = "Nothing yet", onError
     // caller had one to give. Null for anything shown by URL alone, which is
     // not enough to name a file back to the server with.
     get file() { return currentFile; },
+    /** The <video>/<img> element on screen, or null. */
+    get element() { return mediaEl; },
     setValue: (next) => show(next, kind),
     setSource: (next, nextKind, file) => show(next, nextKind || kind, file),
     /**
