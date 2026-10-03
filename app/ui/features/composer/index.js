@@ -8,7 +8,6 @@ import { chat } from "./chat.js";
 import { pickShortcut, templatesBar, variablesPanel } from "./storytools.js";
 
 const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }];
-const inert = (label, tone = "ghost") => c.button.sm({ label, tone, disabled: true });
 
 // The box follows the scenes; typing in it rewrites them (after a short pause, or when focus leaves).
 const story = (app, own) => {
@@ -41,7 +40,7 @@ const story = (app, own) => {
       if (!trigger) return;
       area.focus(); area.setRangeText(`${area.selectionStart && !/\s$/.test(area.value.slice(0, area.selectionStart)) ? " " : ""}${trigger} `, area.selectionStart, area.selectionEnd, "end");
       area.dispatchEvent(new Event("input", { bubbles: true }));
-    } }), inert("💡")] }),
+    } })] }),
     box, warn,
     c.hint.default({ text: `Scenes are cut at the word “${marker}”. Edits apply to the scenes as you type; the anchor is its own field.` }),
     c.collapsible.default({ label: "+ Variables", body: variablesPanel(app) }),
