@@ -26,8 +26,7 @@ def test_words_move_along_the_direction_by_a_share_of_their_own_size():
     d = torch.tensor([1.0, 0, 0, 0])
     words = torch.tensor([True, True, False])
     out = nudged(c, words, d, 0.1)
-    size = float(c[0, 0].norm())
-    assert torch.allclose(out[0, 0, 0], c[0, 0, 0] + 0.1 * size)
+    assert torch.allclose(out[0, 0, 0], c[0, 0, 0] + 0.1)      # the strength is the row shift itself, as in v4
     assert torch.equal(out[0, 2], c[0, 2])                  # a reference image's row is left alone
     assert torch.equal(out[0, :, 1:], c[0, :, 1:])
 
@@ -91,3 +90,40 @@ def test_off_installs_nothing(tiny_h3):
     from modules.sampling.modifiers.nodes import FunPackLoadModifiers
     patched, _ = FunPackLoadModifiers.execute(tiny_h3.patcher, {"prompt_nudge": {"enabled": False}}).result
     assert not patched.wrappers.get(WrappersMP.APPLY_MODEL)
+
+
+def test_the_sounds_text_channels_are_left_alone():
+    from modules.sampling.prompt_nudge import nudged, picture_width
+
+    class Dm:
+        cross_attention_dim, audio_cross_attention_dim = 6, 2
+
+    class P:
+        model = type("M", (), {"diffusion_model": Dm()})()
+
+    c = torch.ones(1, 3, 8)
+    width = picture_width(P(), c)
+    assert width == 6 and picture_width(P(), torch.ones(1, 3, 5)) is None
+    out = nudged(c, torch.ones(3, dtype=torch.bool), torch.ones(8) / 8 ** 0.5, 1.0, width)
+    assert (out[..., :6] > 1).all() and torch.equal(out[..., 6:], c[..., 6:])
+
+
+def test_a_split_negative_call_does_not_teach_the_negative_prompt(tiny_h3):
+    from modules.sampling.score_slider import cond_row
+    c = torch.ones(2, 3, 4)
+    assert cond_row(c, {"cond_or_uncond": [1, 0]}) == 1
+    assert cond_row(c[:1], {"cond_or_uncond": [1]}) is None
+    assert cond_row(c, {}) == 0
+
+
+def test_a_run_that_never_nudged_says_so(tiny_h3):
+    from core import log
+    _teach(8)
+    wrap, _ = _load(tiny_h3, strength=0.1)
+    log.new_run()
+    c = torch.ones(1, 4, 8)
+    for i in range(2):                                       # a two-step schedule: the late gate never opens
+        s = torch.linspace(1.0, 0.0, 3)
+        wrap(lambda x, t, *a, **k: x, torch.zeros(1, 1, 4), s[i:i + 1], None, c, None,
+             {"sample_sigmas": s, "sigmas": s[i:i + 1]})
+    assert any("Inactive" in e["message"] and "too short" in e["message"] for e in log.history())

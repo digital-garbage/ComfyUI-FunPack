@@ -62,3 +62,55 @@ def test_off_installs_nothing(tiny_h3):
     from modules.sampling.modifiers.nodes import FunPackLoadModifiers
     patched, _ = FunPackLoadModifiers.execute(tiny_h3.patcher, {"momentum": {"enabled": False}}).result
     assert not patched.wrappers.get(WrappersMP.APPLY_MODEL)
+
+
+def test_the_carried_edit_is_sized_to_move_the_next_input_like_v4s_blended_direction():
+    from modules.sampling.momentum import carry_factor
+    sigma, nxt = 0.75, 0.5
+    # an x0 edit of -sigma*dd, scaled by this and carried in (x (1 - nxt)), moves x by (sigma - nxt)*dd
+    assert abs(carry_factor(sigma, nxt) * sigma * (1 - nxt) - (sigma - nxt) * 1.0) < 1e-9
+    assert abs(carry_factor(sigma, nxt, carried=False) * sigma - (sigma - nxt)) < 1e-9
+
+
+def _run_calls(wrap, shapes, x0, n, steps=4, ts_start=0, **extra):
+    seen = []
+    ts = torch.linspace(1.0, 0.0, steps + 1)
+    for i in range(ts_start, ts_start + n):
+        def model(x, *a, **k):
+            seen.append(x)
+            return x0 * (0.9 - 0.2 * len(seen))
+        wrap(model, x0, ts[i:i + 1], None, None, None, _to(i, steps), latent_shapes=shapes, **extra)
+    return seen
+
+
+def test_a_probe_call_does_not_feed_the_memory(tiny_h3):
+    from conftest import packed_av
+    from core import dit_hooks
+    torch.manual_seed(0)
+    x0, shapes = packed_av(torch.randn(1, 4, 3, 8, 8), torch.randn(1, 8, 5))
+    clean = _run_calls(_load(tiny_h3, strength=1.0, decay=0.5, below_sigma=1.0)[1], shapes, x0, 4)
+    wrap = _load(tiny_h3, strength=1.0, decay=0.5, below_sigma=1.0)[1]
+    ts = torch.linspace(1.0, 0.0, 5)
+    probe_to = {**_to(0), dit_hooks.PROBE: True}
+    for _ in range(3):
+        wrap(lambda x, *a, **k: x0 * 0.1, x0, ts[0:1], None, None, None, probe_to, latent_shapes=shapes)
+    after = _run_calls(wrap, shapes, x0, 4)
+    assert all(torch.allclose(a, b) for a, b in zip(clean, after))
+
+
+def test_each_window_and_each_call_kind_has_its_own_memory_and_a_new_run_starts_empty(tiny_h3):
+    from conftest import packed_av
+    torch.manual_seed(0)
+    patched, wrap, _ = _load(tiny_h3, strength=1.0, decay=0.5, below_sigma=1.0)
+    big, sb = packed_av(torch.randn(1, 4, 3, 8, 8), torch.randn(1, 8, 5))
+    small, ss = packed_av(torch.randn(1, 4, 2, 8, 8), torch.randn(1, 8, 5))
+
+    class Win:
+        def __init__(self, idx):
+            self.index_list = idx
+    ts = torch.linspace(1.0, 0.0, 5)
+    for i in range(3):                               # two windows of different sizes interleaved: must not collide
+        for x0, shapes, idx in ((big, sb, [0, 1, 2]), (small, ss, [3, 4])):
+            to = {**_to(i), "context_window": Win(idx)}
+            wrap(lambda x, *a, **k: x0 * 0.5, x0, ts[i:i + 1], None, None, None, to, latent_shapes=shapes)
+    assert not patched.model_options["funpack_dropped"]      # no size clash: the guard would have dropped it

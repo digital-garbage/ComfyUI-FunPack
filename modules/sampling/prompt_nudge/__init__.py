@@ -3,7 +3,8 @@ prompts have in common.
 
 The same learned direction as the Taste slider (liked prompts relative to everything rated), applied the
 cheap way: the words the model reads are nudged in place, once per step, with no extra model passes. It
-grows from nothing at the halfway point to full strength at the last step. Words only: reference-image
+grows from nothing at the halfway point as the steps go on (the last step reaches half to three
+quarters of it, depending on the schedule length). Words only: reference-image
 rows are left alone. Needs 3 liked clips on the taste key.
 
 Shares the slider's learning (`prompt_taste`), so turning on either teaches both.
@@ -13,7 +14,7 @@ import torch
 from comfy.patcher_extension import WrappersMP
 
 from ..._core import dit_hooks, log, registry, streams
-from ..score_slider import KIND, MIN_LIKED, NAME, direction
+from ..score_slider import KIND, MIN_LIKED, NAME, cond_row, direction
 
 ID = "prompt_nudge"
 TITLE = "Taste prompt nudge"
@@ -48,11 +49,21 @@ def _say(message):
     log.once(f"{ID}:{message}", log.ALERT, "FunPack Taste prompt nudge", message)
 
 
-def nudged(c, words, d, amount):
-    """`c` with each word row moved along unit direction `d` by `amount` x the words' own size."""
-    size = torch.linalg.vector_norm(c[:, words], dim=-1, dtype=torch.float32).mean()
-    step = (d.to(c.device) * amount * size).to(c.dtype)
+def nudged(c, words, d, amount, width=None):
+    """`c` with each word row moved by `amount` along unit direction `d` (v4's absolute size: the
+    strength is the row shift itself). `width` limits it to the first channels: an audio+video model's
+    words carry the sound's channels after the picture's, and those stay as they were."""
+    step = (d.to(c.device) * amount).to(c.dtype)
+    if width is not None:
+        step = torch.cat([step[:width], torch.zeros_like(step[width:])])
     return c + step * words.view(1, -1, 1).to(c.dtype)
+
+
+def picture_width(patcher, c):
+    """How many leading channels of the words belong to the picture, or None when all do."""
+    dm = getattr(getattr(patcher, "model", None), "diffusion_model", None)
+    video, audio = getattr(dm, "cross_attention_dim", None), getattr(dm, "audio_cross_attention_dim", None)
+    return int(video) if video and audio and int(c.shape[-1]) == int(video) + int(audio) else None
 
 
 def install(patcher, values, key):
@@ -68,8 +79,10 @@ def install(patcher, values, key):
 
     def fresh():
         live.clear()
+        acted["yes"] = False
 
     captured = taste.collect(patcher, key, KIND, fresh=fresh)
+    acted = {"yes": False}
 
     def apply_model(executor, x, t, *args, **kwargs):
         named = streams.model_args(args, kwargs)
@@ -82,20 +95,28 @@ def install(patcher, values, key):
             words = torch.ones(c.shape[1], dtype=torch.bool, device=c.device)
         words = words.to(c.device)
         to = named.get("transformer_options")
-        if not dit_hooks.probing(to):
-            captured[NAME] = c[0][words].float().mean(0).detach()
+        row = cond_row(c, to)
+        if not dit_hooks.probing(to) and row is not None:
+            captured[NAME] = c[row][words].float().mean(0).detach()
         if "dir" not in live:
-            live["dir"], how = direction(taste.rows(KIND), c[0][words].float().mean(0), similar)
+            live["dir"], how = direction(taste.rows(KIND), c[row or 0][words].float().mean(0), similar)
             log.once(f"{ID}:state", log.INFO, "FunPack Taste prompt nudge", f"key {taste.key!r}: {how}")
         amount = strength * dit_hooks.late_half(to)
         d = live["dir"]
+        if dit_hooks.last_step(to) and not acted["yes"] and not dit_hooks.probing(to):
+            acted["yes"] = d is not None and amount > 0.0
+            if not acted["yes"]:
+                _say("Inactive | nothing was nudged this run: " + (
+                    "no direction learned yet (needs liked clips)" if d is None else
+                    "the schedule is too short for the late-step gate to open"))
         if d is None or amount <= 0.0:
             return executor(x, t, *args, **kwargs)
+        acted["yes"] = True
         if d.numel() != c.shape[-1]:
             _say("off this run: the learned direction was taught on a different model's text width; "
                  "rate a few clips on this model")
             return executor(x, t, *args, **kwargs)
-        named = {**named, "c_crossattn": nudged(c, words, d, amount)}
+        named = {**named, "c_crossattn": nudged(c, words, d, amount, picture_width(patcher, c))}
         return executor(x, t, **named)
 
     patcher.add_wrapper_with_key(WrappersMP.APPLY_MODEL, key, apply_model)

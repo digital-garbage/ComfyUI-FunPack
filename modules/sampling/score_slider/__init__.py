@@ -82,6 +82,15 @@ def direction(rows, current=None, similar=False):
     return F.normalize(d, dim=0), f"from {len(liked)} liked of {len(pooled)} rated"
 
 
+def cond_row(c, to):
+    """The batch row holding the positive prompt, or None when this call carries only the negative.
+    A split CFG call (cond and uncond in separate calls) must not teach the negative prompt."""
+    kinds = list((to or {}).get("cond_or_uncond") or [])
+    if not kinds:
+        return 0
+    return next((i for i, k in enumerate(kinds) if k == 0 and i < c.shape[0]), None)
+
+
 def install(patcher, values, key):
     if not values.get("enabled"):
         return None
@@ -112,8 +121,9 @@ def install(patcher, values, key):
         if words is None:
             words = torch.ones(c.shape[1], dtype=torch.bool, device=c.device)
         words = words.to(c.device)
-        pooled = c[0][words].float().mean(0).detach()
-        if not dit_hooks.probing(named.get("transformer_options")):
+        row = cond_row(c, named.get("transformer_options"))
+        pooled = c[row or 0][words].float().mean(0).detach()
+        if not dit_hooks.probing(named.get("transformer_options")) and row is not None:
             captured[NAME] = pooled
         if "dir" not in live:
             live["dir"], how = direction(taste.rows(KIND), pooled, similar)
