@@ -37,17 +37,17 @@ export default {
     const menus = {
       File: async () => {
         const recent = await list().catch(() => []);
-        return [{ id: "new", label: "New Project", hint: "⌘N" }, soon("Project Setup Wizard…", "theme · model · tour"), { separator: true },
+        return [{ id: "new", label: "New Project" }, soon("Project Setup Wizard…", "theme · model · tour"), { separator: true },
           { heading: "Open recent" }, ...(recent.length ? recent.slice(0, 8).map((r) => ({ id: `open:${r.id}`, label: r.name })) : [{ id: "-", label: "No projects", disabled: true }]),
           { separator: true }, soon("Save Project File…", "⬇"), soon("Load Project File…"), { separator: true }, soon("Import Media…"),
           { id: "delete", label: "Delete Current Project", danger: true, disabled: !p.project }];
       },
       Edit: () => [{ id: "undo", label: "Undo", hint: "⌘Z", disabled: !p.canUndo }, { id: "redo", label: "Redo", hint: "⇧⌘Z", disabled: !p.canRedo }, { separator: true },
-        { id: "add", label: "Add Scene", hint: "+", disabled: !p.project }, { id: "del", label: "Delete Scene", disabled: !sel.ids.length }, { separator: true },
+        { id: "add", label: "Add Scene", disabled: !p.project }, { id: "del", label: "Delete Scene", disabled: !sel.ids.length }, { separator: true },
         { id: "left", label: "Move Clip Left", hint: "timeline cut", disabled: !sel.focus }, { id: "right", label: "Move Clip Right", hint: "timeline cut", disabled: !sel.focus }, { separator: true },
         { id: "exclude", label: "Toggle Exclude", disabled: !sel.focus }],
       View: () => [soon("Refresh Preview", ""), { id: "reset", label: "Reset Layout" }],
-      Help: () => [soon("Restart tour", ""), soon("Skip to FAQ", ""), soon("Exit tour", ""), { separator: true }, { id: "welcome", label: "Welcome tour…", hint: "?" }],
+      Help: () => [soon("Restart tour", ""), soon("Skip to FAQ", ""), soon("Exit tour", ""), { separator: true }, { id: "welcome", label: "Welcome tour…" }],
     };
     const pick = (id) => (id.startsWith("open:") ? p.open(id.slice(5)) : actions[id] && actions[id]());
     for (const [label, items] of Object.entries(menus)) {

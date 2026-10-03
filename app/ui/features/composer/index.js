@@ -8,8 +8,8 @@ const later = (what) => c.emptyState.default({ icon: "◌", title: "Not built ye
 const story = (p) => c.region.stack({ gap: "sm", children: [
   c.toolbar.default({ items: [c.select.sm({ label: "Templates", disabled: true, options: [{ value: "", label: "Templates…" }], value: "" })], trailing: [inert("Save")] }),
   c.toolbar.default({ items: [c.label.section({ text: "Story" })], trailing: [inert("+ Add shortcut"), inert("💡")] }),
-  c.textarea.md({ label: "Story", rows: 14, value: p.scenes.map((s) => s.text || "").join("\n\n") }),
-  c.hint.default({ text: "Edits apply to the scenes as you type, and scene edits show here. The anchor is its own field. Shortcuts expand at generation time." }),
+  c.textarea.md({ label: "Story", rows: 14, disabled: true, value: p.scenes.map((s) => s.text || "").join("\n\n") }),
+  c.hint.default({ text: "Coming soon: edit all scenes as one story here." }),
   c.collapsible.default({ label: "+ Variables", body: c.hint.default({ text: "$name → text, filled in at generation." }) }),
 ] });
 

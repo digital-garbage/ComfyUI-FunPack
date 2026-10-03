@@ -65,7 +65,13 @@ export function build(root) {
   // v4's draggable splitters: three 7px bars that set the zone sizes; sizes are remembered.
   const KEY = "funpack_layout", css = document.documentElement.style;
   const size = { "--media-w": [160, 600], "--properties-w": [200, 700], "--timeline-h": [200, 700] };
-  const saved = (() => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } })();
+  const saved = (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(KEY)), out = {};
+      for (const k in size) if (Number.isFinite(raw[k])) out[k] = Math.min(size[k][1], Math.max(size[k][0], raw[k]));
+      return out;
+    } catch { return {}; }       // nothing, or nothing usable, remembered
+  })();
   const apply = () => { for (const k in size) saved[k] ? css.setProperty(k, saved[k] + "px") : css.removeProperty(k); };
   const keep = () => { try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch { /* not remembered */ } };
   const splitter = (host, cls, prop, sign, axis) => {

@@ -43,7 +43,11 @@
 .fp-split-bottom { left: 0; right: 0; block-size: 7px; bottom: calc(var(--timeline-h) - 3px); cursor: row-resize; }
 :root[data-ui-mode="simple"] .fp-split { display: none; }
 
-/* Dock: a hidden zone leaves the row (and the splitter beside it). */
-.fp-hide-assets .fp-row > :first-child, .fp-hide-preview .fp-row > :nth-child(2), .fp-hide-properties .fp-row > :nth-child(3) { display: none; }
-.fp-hide-assets .fp-split-left, .fp-hide-properties .fp-split-right { display: none; }
-.fp-hide-assets.fp-hide-preview .fp-row > :nth-child(3), .fp-hide-preview.fp-hide-properties .fp-row > :first-child { flex: 1 1 auto; }
+/* Dock: a hidden zone leaves the row (and the splitter beside it); Simple mode ignores the dock. */
+:root:not([data-ui-mode="simple"]).fp-hide-assets .fp-row > :nth-child(1),
+:root:not([data-ui-mode="simple"]).fp-hide-preview .fp-row > :nth-child(2),
+:root:not([data-ui-mode="simple"]).fp-hide-properties .fp-row > :nth-child(3) { display: none; }
+.fp-hide-assets .fp-split-left, .fp-hide-properties .fp-split-right, .fp-hide-preview .fp-split-right { display: none; }
+:root:not([data-ui-mode="simple"]).fp-hide-preview .fp-row > :nth-child(3), :root:not([data-ui-mode="simple"]).fp-hide-preview.fp-hide-properties .fp-row > :nth-child(1) { flex: 1 1 auto; }
+:root:not([data-ui-mode="simple"]).fp-hide-assets.fp-hide-preview .fp-row > :nth-child(3) { flex: 1 1 auto; }
+.fp-split { border: 0 !important; }

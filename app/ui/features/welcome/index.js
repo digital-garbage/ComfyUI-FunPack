@@ -29,7 +29,8 @@ export default {
         onClose: () => { markSeen(); win = null; },
       });
     };
-    if (!seen()) setTimeout(open, 600);                 // after the first paint, so the screen it sits over is already there
-    return app.on((what) => { if (what === "welcome.open") open(); });
+    const timer = seen() ? 0 : setTimeout(open, 600);                 // after the first paint, so the screen it sits over is already there
+    const off = app.on((what) => { if (what === "welcome.open") open(); });
+    return () => { clearTimeout(timer); off(); };
   },
 };
