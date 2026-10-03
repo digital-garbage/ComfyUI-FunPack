@@ -37,6 +37,17 @@ export const api = {
   enhancerRuns: () => call("GET", "/api/m/conditioning_prompt_enhancer/runs"),
   rateTaste: (promptId, rating, axis) => call("POST", "/api/m/taste/rate", { prompt_id: promptId, rating, axis: axis || null }),
   newTasteGeneration: () => call("POST", "/api/m/taste/generation", {}),
+  tasteKeys: () => call("GET", "/api/m/taste/keys"),
+  deleteTasteKey: (name) => call("DELETE", `/api/m/taste/keys/${encodeURIComponent(name)}`),
+  tasteKeyUrl: (name) => `${BASE}/api/m/taste/keys/${encodeURIComponent(name)}/export`,
+  /** The zip as the raw body; `exists: true` comes back (not thrown) when the name is taken and `overwrite` was not asked. */
+  async importTasteKey(name, file, overwrite) {
+    const res = await fetch(`${BASE}/api/m/taste/keys/import?name=${encodeURIComponent(name)}${overwrite ? "&overwrite=1" : ""}`, { method: "POST", body: file });
+    const payload = await res.json().catch(() => null);
+    if (res.status === 409) return { exists: true };
+    if (!res.ok) throw new Error((payload && payload.why) || `HTTP ${res.status}`);
+    return payload;
+  },
   packs: () => call("GET", "/api/packs"),
   pack: (action, body) => call("POST", `/api/packs/${action}`, body || {}),
   git: (action, body) => call("POST", `/api/git/${action}`, body || {}),

@@ -7,6 +7,7 @@ import { engine } from "./engine.js";
 import { modules } from "./modules.js";
 import { system } from "./system.js";
 import { packs } from "./packs.js";
+import { taste } from "./taste.js";
 
 const later = (what) => function mount() {
   return c.emptyState.default({ icon: "◌", title: "Not built yet", hint: what });
@@ -29,7 +30,7 @@ export default {
     add("modules", "Modules", "Switch a module off for this project; see and re-enable ones that failed.", "☷", "neutral",
       modules(app), "Generation", "modules enable disable quarantine");
     add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys and the Absolute global-taste store.", "✦", "danger",
-      later("Refinement keys: export, delete; the taste store."), "Learning", "refinement taste keys rating");
+      taste(app), "Learning", "refinement taste keys rating");
     add("system", "Updates & ComfyUI", "Server connection, FunPack code updates, pipeline health.", "⟳", "good",
       system(app), "System", "update git branch restart rollback");
     add("customnodes", "Custom Nodes", "Install, update and remove ComfyUI node packs.", "⧉", "neutral",
