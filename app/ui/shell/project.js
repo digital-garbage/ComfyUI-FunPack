@@ -53,7 +53,7 @@ const put = (project) => json("PUT", `${BASE}/${encodeURIComponent(project.id)}`
  * `onChange` fires for anything that alters what is on screen, including the
  * selection. Nothing here draws; the timeline subscribes.
  */
-export function createProject({ onChange, onError, onOpen } = {}) {
+export function createProject({ onChange, onError, onOpen, keepConsistent } = {}) {
   let project = null;
   let selected = null;
   // Every project this browser knows about, for the File menu. Read once at
@@ -83,7 +83,8 @@ export function createProject({ onChange, onError, onOpen } = {}) {
   // whatever the user is actually looking at now.
   let generation = 0;
 
-  const changed = () => { if (onChange) onChange(); };
+  // `keepConsistent(project)` restates what must follow from an edit (audio lanes follow their clips) before anyone is told.
+  const changed = () => { if (project && keepConsistent) keepConsistent(project); if (onChange) onChange(); };
 
   /** Before an edit. Anything that changes what is SAVED calls this; selecting
    *  a scene does not, because a view is not an edit. */
@@ -169,7 +170,6 @@ export function createProject({ onChange, onError, onOpen } = {}) {
 
   return {
     get project() { return project; },
-    get unsaved() { return dirty; },
     get scenes() { return project ? project.scenes || [] : []; },
     get selectedId() { return selected; },
     get selected() { return sceneAt(selected); },

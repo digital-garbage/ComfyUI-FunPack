@@ -1,0 +1,50 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { hasEmbeddedAudio, removeTrack, separate, syncSeparated, trackFor } from "../audio.js";
+
+const media = { filename: "a.mp4", subfolder: "", type: "output" };
+const proj = () => ({ num_frames_per_scene: 50, frame_rate: 25, scenes: [{ id: "a", text: "" }, { id: "b", text: "", audio_volume: 0.5 }, { id: "v", source: { type: "video", media_ref: "m1" }, source_dur: 3 }],
+  scene_renders: { a: { media, inSec: 0 }, b: { media, inSec: 1 } }, audio_tracks: [] });
+
+test("only a clip with a render or a bin video has sound to pull out", () => {
+  const p = proj();
+  assert.equal(hasEmbeddedAudio(p.scenes[0], p), true);
+  assert.equal(hasEmbeddedAudio(p.scenes[2], p), true);
+  assert.equal(hasEmbeddedAudio({ id: "x" }, p), false);
+  assert.equal(separate(p, "x"), false);
+});
+
+test("separate: the lane takes the clip's sound, place and volume; the clip goes quiet; a second time does nothing", () => {
+  const p = proj();
+  const lane = separate(p, "b");
+  assert.deepEqual([lane.kind, lane.scene_id, lane.start_sec, lane.source_in_sec, lane.source_dur, lane.volume, lane.label], ["separated", "b", 2, 1, 2, 0.5, "S2 audio"]);
+  assert.deepEqual(lane.pinned_media, media);
+  assert.deepEqual([p.scenes[1].audio_separated, p.scenes[1].audio_volume], [true, 0]);
+  assert.equal(separate(p, "b"), false);
+  assert.equal(trackFor(p, "b"), lane);
+});
+
+test("a bin video clip's lane points at the bin file", () => {
+  const p = proj();
+  const lane = separate(p, "v");
+  assert.deepEqual([lane.pinned_bin_ref, lane.pinned_media, lane.source_dur, lane.label], ["m1", null, 3, "V3 audio"]);
+});
+
+test("removing the lane gives the clip its sound and volume back", () => {
+  const p = proj();
+  const lane = separate(p, "b");
+  assert.equal(removeTrack(p, lane.id), true);
+  assert.deepEqual([p.scenes[1].audio_separated, p.scenes[1].audio_volume, p.audio_tracks.length], [false, 0.5, 0]);
+  assert.equal(removeTrack(p, "nope"), false);
+});
+
+test("a separated lane follows its clip when the cut changes, and an untouched project is left alone", () => {
+  const p = proj();
+  const lane = separate(p, "b");
+  p.scenes.unshift({ id: "n", text: "" });                 // a new first clip pushes everything 2 s later
+  syncSeparated(p);
+  assert.equal(lane.start_sec, 4);
+  const before = JSON.stringify(p);
+  syncSeparated(p);
+  assert.equal(JSON.stringify(p), before);
+});

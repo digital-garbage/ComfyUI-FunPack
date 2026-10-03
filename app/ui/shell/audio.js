@@ -1,0 +1,54 @@
+// Audio lanes. A clip's own sound can be pulled onto a lane of its own ("separated"): the lane plays the sound pinned from
+// that clip's picture, and the clip itself goes quiet. A separated lane follows its clip around the timeline.
+import { segments, isVideoClip } from "./scenes.js";
+
+const newId = () => "t" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+export const trackFor = (p, sceneId) => (p.audio_tracks || []).find((t) => t.kind === "separated" && t.scene_id === sceneId);
+
+/** Does this clip have sound to pull out: a bin video clip, or a generated clip with a render. */
+export const hasEmbeddedAudio = (sc, p) => {
+  if (!sc || sc.excluded || sc.audio_separated) return false;
+  if (isVideoClip(sc)) return Boolean(sc.source && sc.source.media_ref);
+  return Boolean(((p.scene_renders || {})[sc.id] || {}).media);
+};
+
+/** Pull a clip's sound onto its own lane. -> the lane, or false (nothing to pull, or already pulled). */
+export function separate(p, sceneId) {
+  const at = (p.scenes || []).findIndex((s) => s.id === sceneId), sc = p.scenes[at];
+  if (!hasEmbeddedAudio(sc, p) || trackFor(p, sceneId)) return false;
+  const seg = segments(p).find((s) => s.kind === "scene" && s.id === sceneId);
+  const dur = sc.source_dur != null ? sc.source_dur : seg.dur;
+  const render = (p.scene_renders || {})[sceneId];
+  const video = isVideoClip(sc);
+  const inSec = video ? sc.source_in || 0 : (render.inSec || 0) + (sc.source_in || 0);
+  const lane = { id: newId(), kind: "separated", scene_id: sceneId, start_sec: seg.start, source_in_sec: inSec, source_dur: dur,
+    pinned_media: video ? null : JSON.parse(JSON.stringify(render.media)), pinned_bin_ref: video ? sc.source.media_ref : null,
+    pinned_in_sec: inSec, pinned_dur: dur, volume: sc.audio_volume != null ? sc.audio_volume : 1, label: `${video ? "V" : "S"}${at + 1} audio` };
+  p.audio_tracks = [...(p.audio_tracks || []), lane];
+  sc.audio_separated = true;
+  sc.audio_volume = 0;
+  return lane;
+}
+
+/** Take a lane away; a separated one gives its clip its sound (and volume) back. */
+export function removeTrack(p, id) {
+  const t = (p.audio_tracks || []).find((x) => x.id === id);
+  if (!t) return false;
+  const sc = t.kind === "separated" && (p.scenes || []).find((s) => s.id === t.scene_id);
+  if (sc) { sc.audio_separated = false; if (t.volume != null) sc.audio_volume = t.volume; }
+  p.audio_tracks = p.audio_tracks.filter((x) => x.id !== id);
+  return true;
+}
+
+/** A separated lane sits where its clip sits. Run after every edit; changes nothing when nothing moved. */
+export function syncSeparated(p) {
+  const tracks = p.audio_tracks || [];
+  if (!tracks.some((t) => t.kind === "separated")) return;
+  const starts = new Map(segments(p).filter((s) => s.kind === "scene").map((s) => [s.id, s.start]));
+  for (const t of tracks) {
+    if (t.kind !== "separated" || !starts.has(t.scene_id)) continue;
+    const sc = p.scenes.find((s) => s.id === t.scene_id);
+    if (!sc.excluded && Math.abs((t.start_sec || 0) - starts.get(t.scene_id)) > 0.001) t.start_sec = starts.get(t.scene_id);
+  }
+}

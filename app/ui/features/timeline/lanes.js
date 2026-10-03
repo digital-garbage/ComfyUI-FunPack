@@ -31,3 +31,9 @@ export const audioLane = (p, picked) => ({
   id: "audio", label: "Original", kind: "audio",
   clips: segments(p).filter((s) => s.kind === "scene").map((s, i) => ({ id: `a:${s.id}`, start: s.start, dur: s.dur, title: `S${i + 1}`, selected: picked.includes(s.id), excluded: Boolean(s.scene.excluded) })),
 });
+
+/** Audio lanes added to the project (a clip's separated sound, or a file laid over the cut), when there are any. */
+export const tracksLane = (p) => (p.audio_tracks || []).length ? {
+  id: "tracks", label: "Audio", kind: "audio",
+  clips: p.audio_tracks.map((t) => ({ id: `t:${t.id}`, start: t.start_sec || 0, dur: t.pinned_dur ?? t.source_dur ?? 1, title: t.label || "Audio" })),
+} : null;

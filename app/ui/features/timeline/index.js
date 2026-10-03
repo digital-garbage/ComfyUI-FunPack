@@ -5,7 +5,7 @@ import { composer as c } from "../../composer/composer.js";
 import { segments, totalSeconds, clock } from "../../shell/scenes.js";
 import { inPlace } from "../../shell/place.js";
 import * as edits from "../../shell/edits.js";
-import { videoLane, audioLane, framesAt } from "./lanes.js";
+import { videoLane, audioLane, tracksLane, framesAt } from "./lanes.js";
 
 const ZOOM = [20, 40, 80, 160, 320];
 const sceneIds = (p) => segments(p).filter((s) => s.kind === "scene").map((s) => s.id);
@@ -37,7 +37,7 @@ const stage = {
     const ghostActions = (g) => [{ label: "✕", title: "Remove from the timeline",
       onClick: () => edit((pr) => { pr.scene_ghosts = (pr.scene_ghosts || []).filter((x) => x.id !== g.id); return true; }) }];
 
-    const draw = () => { const open = p.project; view.setLanes(open ? [videoLane(open, sel.ids, sel.focus, clipActions, ghostActions), audioLane(open, sel.ids)] : []); };
+    const draw = () => { const open = p.project; view.setLanes(open ? [videoLane(open, sel.ids, sel.focus, clipActions, ghostActions), audioLane(open, sel.ids), tracksLane(open)].filter(Boolean) : []); };
     const setZoom = (z) => { zoom = Math.min(ZOOM.length - 1, Math.max(0, z)); view.setZoom(ZOOM[zoom]); };
     host.append(view.node);
     const off = [app.on((what) => {
