@@ -11,6 +11,7 @@
 .cx-btn-xl { height: var(--ctl-h-xl); padding: 0 var(--ctl-pad-x-xl); font-size: var(--fs-4); }
 .cx-btn-lg { height: var(--ctl-h-lg); padding: 0 var(--ctl-pad-x-lg); font-size: var(--fs-5); }
 .cx-btn-md { height: var(--ctl-h-md); padding: 0 var(--ctl-pad-x-md); font-size: var(--fs-5); }
+.cx-btn-menu { height: 26px; padding: 0 var(--sp-4); font-size: var(--fs-5); }
 .cx-btn-sm { height: var(--ctl-h-sm); padding: 0 var(--ctl-pad-x-sm); font-size: var(--fs-6); }
 
 .cx-btn:hover:not(:disabled) { border-color: var(--line-hover); background: var(--hover); }

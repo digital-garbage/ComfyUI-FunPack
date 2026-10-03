@@ -62,7 +62,7 @@ function base(size, { label, onClick, tone = "neutral", icon, disabled = false, 
   };
 }
 
-for (const size of ["xl", "lg", "md", "sm"]) define("button", size, (props) => base(size, props));
+for (const size of ["xl", "lg", "md", "sm", "menu"]) define("button", size, (props) => base(size, props));
 
 // Icon-only controls take `label` as their accessible name, not as decoration.
 // Making it required is the cheapest way to stop a toolbar of unlabelled glyphs.

@@ -31,6 +31,7 @@ export const DEMOS = {
   "button.lg": { label: "Save project" },
   "button.md": { label: "Cancel" },
   "button.sm": { label: "Reset" },
+  "button.menu": { label: "File", tone: "ghost" },
 
   "iconButton.md": { icon: "✕", label: "Close" },
   "iconButton.sm": { icon: "✎", label: "Rename" },

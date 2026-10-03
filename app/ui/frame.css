@@ -8,3 +8,4 @@
 .fp-row > :last-child { flex: 0 0 var(--properties-w); border-inline-end: 0; }
 .fp-main > :last-child { flex: 0 0 var(--timeline-h); min-block-size: 200px; border-block-start: var(--bw) solid var(--line); }
 .cx-frame-head { padding-inline: calc(var(--sp-6) + var(--sp-1)); }
+.cx-frame-head > .cx-toolbar { gap: calc(var(--sp-6) + var(--sp-3)); }

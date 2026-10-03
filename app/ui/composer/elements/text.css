@@ -32,9 +32,9 @@
 
 /* The one place the app names itself. The mark carries a little of its own
    light, which is what stops a 5px dot reading as a bullet point. */
-.cx-brand { display: inline-flex; align-items: center; gap: var(--sp-3); }
+.cx-brand { display: inline-flex; align-items: center; gap: var(--sp-4); }
 .cx-brand-mark {
-  inline-size: 9px; block-size: 9px; border-radius: var(--r-pill);
+  inline-size: 12px; block-size: 12px; box-sizing: border-box; border-radius: var(--r-pill);
   border: 2px solid var(--accent);
   box-shadow: 0 0 6px var(--accent-soft);
 }
