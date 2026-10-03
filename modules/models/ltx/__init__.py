@@ -14,6 +14,7 @@ What it contributes, and what it deliberately does NOT:
   from the AUDIO VAE and the frame rate. That is why this provider asks for `audio_vae` and
   `frame_rate`: without them the audio half cannot be sized, and a video-only latent would make a
   silent clip while reporting success, so it refuses instead.
+* **`ltx_av`** -- the trait the LTX-only modules require (audio coupling, context windows...).
 * **The picture inside a sampling-time latent** (`video_stream`) -- video first, then audio, the same
   arrangement H3 uses, so ALG, DynaShift and the guidance modules find the picture.
 * **Decode** -- the picture through the video VAE, the sound through the audio VAE.
@@ -64,13 +65,15 @@ def probe_traits(keys) -> list:
     """What `traits()` would say, read before anything loads."""
     if not detect(keys):
         return []
-    return ["audio_stream", "temporal_latent", "temporal_compression"]
+    return ["audio_stream", "temporal_latent", "temporal_compression", "ltx_av"]
 
 
 def traits(model):
     if not is_ltx(model):
         return ()
-    return ["audio_stream"]
+    # ltx_av: transformer_blocks that take (video, audio) as a pair and have the video<->audio
+    # cross-attention submodules. What the LTX-only modules require.
+    return ["audio_stream", "ltx_av"]
 
 
 def frames_for(length: int) -> int:

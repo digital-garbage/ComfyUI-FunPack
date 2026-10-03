@@ -19,6 +19,7 @@ DISTILLED_SIGMAS = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421
 def _base(image_to_video: bool):
     video = {"at": "project.video", "input": "frame_rate", "label": "FPS"}
     latent_source = ["latent", 0]
+    model_source, positive_source, negative_source = ["modifiers", 0], ["conditioning", 0], ["conditioning", 1]
     slots = [
         {"id": "model", "group": "Loaders", "node": "FunPackCheckpointLoader", "inputs": {"ckpt_name": ""}},
         {"id": "audio_vae", "group": "Loaders", "node": "LTXVAudioVAELoader", "inputs": {"ckpt_name": ""}},
@@ -61,10 +62,26 @@ def _base(image_to_video: bool):
         {"id": "settings", "group": "Preparation", "node": "FunPackModifierSettings", "inputs": {"settings": "{}"}},
         {"id": "modifiers", "group": "Preparation", "node": "FunPackLoadModifiers",
          "inputs": {"model": ["model", 0], "settings": ["settings", 0]}},
+    ]
+    if image_to_video:
+        slots += [
+            # A reference face carried into the clip. The picture is the scene's first reference
+            # (assets.reference_1): with none picked this node passes everything through untouched.
+            {"id": "identity", "group": "Preparation", "node": "FunPackIdentityTransfer",
+             "inputs": {"model": ["modifiers", 0], "vae": ["model", 2], "positive": ["conditioning", 0],
+                        "negative": ["conditioning", 1], "latent": latent_source, "source_id": 2.0,
+                        "phase_scale": 1.0, "id_strength": 1.0, "arcface_mode": "auto_adjust"}},
+            {"id": "identity_source", "group": "Reference media", "node": "FunPackLoadMedia",
+             "roles": [{"at": "assets.reference_1", "input": "media_id",
+                        "wireTo": {"slot": "identity", "input": "image"}}],
+             "inputs": {"media_id": ""}},
+        ]
+        model_source, positive_source, negative_source = ["identity", 0], ["identity", 1], ["identity", 2]
+    slots += [
         {"id": "sigmas", "group": "Sampling", "node": "ManualSigmas", "inputs": {"sigmas": DISTILLED_SIGMAS}},
         {"id": "sampler", "group": "Sampling", "node": "FunPackSampler",
          "roles": [{"at": "generation.sampling", "input": "sampler_name", "label": "Sampler"}],
-         "inputs": {"model": ["modifiers", 0], "positive": ["conditioning", 0], "negative": ["conditioning", 1],
+         "inputs": {"model": model_source, "positive": positive_source, "negative": negative_source,
                     "latent": latent_source, "settings": ["settings", 0], "sigmas": ["sigmas", 0],
                     "seed": 0, "steps": 8, "cfg": 1.0, "sampler_name": "euler", "scheduler": "normal",
                     "denoise": 1.0}},

@@ -111,3 +111,10 @@ def test_running_out_of_memory_by_message_is_not_the_modules_fault(monkeypatch):
     control.fault("funpack.a", RuntimeError("MPS backend out of memory (MPS allocated: 9 GiB)"))
     assert control.fingerprint() == ""
 
+
+
+def test_a_module_that_cannot_run_here_is_said_but_not_quarantined():
+    control.start_failed(spec("a"), control.Unavailable("needs a newer ComfyUI"))
+    assert control.fingerprint() == ""
+    control.start_failed(spec("a"), ValueError("a real bug"))
+    assert control.fingerprint() == "a"

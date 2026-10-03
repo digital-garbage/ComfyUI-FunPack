@@ -28,6 +28,11 @@ _TRANSIENT = ("Interrupt", "OutOfMemory", "OOM")        # not the module's fault
 _lock = threading.Lock()
 
 
+class Unavailable(RuntimeError):
+    """A module cannot run HERE (an older ComfyUI, a missing package): the person's world, not a
+    fault in the module, so it is said but never quarantined."""
+
+
 def controllable(spec) -> bool:
     return bool(spec.provides.get("modifier") or spec.provides.get("sampler_modifier"))
 
@@ -177,7 +182,7 @@ patching.on_fault = fault
 
 def start_failed(spec, exc: BaseException) -> None:
     """A module that raised while installing or starting up for a run."""
-    if controllable(spec) and not _transient(exc):
+    if controllable(spec) and not _transient(exc) and not isinstance(exc, Unavailable):
         quarantine(spec, f"{type(exc).__name__}: {exc}")
 
 

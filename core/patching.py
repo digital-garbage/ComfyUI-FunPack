@@ -95,6 +95,11 @@ def _strip_options(options: dict, prefix: str) -> int:
                 options[name] = value
         elif isinstance(value, dict):
             removed += _strip_options(value, prefix)
+        elif _ours(value, prefix):
+            # A tagged object that is not a callable (a handler core looks up by key): it has
+            # nothing underneath to put back.
+            options.pop(name, None)
+            removed += 1
     return removed
 
 
