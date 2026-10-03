@@ -16,7 +16,7 @@ export async function buildInputs({ project, scene, slots, expand, frames, seed 
   }
   for (const { slot, role } of rolesAt(slots, "generation.seed")) put(slot, role.input, seed());
   const source = rolesAt(slots, "assets.source_image")[0];
-  if (source) put(source.slot, "media_id", scene.source_image || "");
+  if (source) put(source.slot, "media_id", project.generation_mode === "t2v" ? "" : scene.source_image || "");    // "from a prompt" starts every shot without a picture
   const { overrides, unwired } = wireReferences(scene.references || [], slots, source ? [source.slot.id] : []);
   for (const [id, fields] of Object.entries(overrides)) raw[id] = { ...raw[id], ...fields };
 

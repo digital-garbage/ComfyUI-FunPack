@@ -28,7 +28,7 @@ export default {
       titled();
       if (!force && next === key) return;
       key = next;
-      body.set((tab === "scene" ? sceneRows(p, app) : projectRows(p, app.pipeline && app.pipeline.slots()))); 
+      body.set((tab === "scene" ? sceneRows(p, app) : projectRows(p, app.pipeline && app.pipeline.slots(), app.api))); 
     }
     draw(true);
     const offSlots = app.pipeline && app.pipeline.subscribe ? app.pipeline.subscribe(() => draw(true)) : null;     // the pipeline arrives after the project

@@ -36,3 +36,8 @@ test("each build draws a fresh seed, and a unit's own length overrides the proje
   const a = await buildInputs({ ...args, seed: () => 1 }), b = await buildInputs({ ...args, seed: () => 2 });
   assert.deepEqual([a.inputs.n.seed, b.inputs.n.seed, a.inputs.n.length], [1, 2, 49]);
 });
+
+test("starting shots from a prompt sends no picture even when the scene has one", async () => {
+  const { inputs } = await buildInputs({ project: { generation_mode: "t2v" }, scene: { text: "a cat", source_image: "m1" }, slots, expand: async ({ text }) => ({ text }) });
+  assert.equal(inputs.s.media_id, "");
+});

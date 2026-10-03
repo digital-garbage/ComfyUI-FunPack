@@ -48,6 +48,7 @@ export const api = {
     if (!res.ok) throw new Error((payload && payload.why) || `HTTP ${res.status}`);
     return payload;
   },
+  expandPrompt: (body) => call("POST", "/api/prompt/expand", { ...body, seed: 1 }),
   packs: () => call("GET", "/api/packs"),
   pack: (action, body) => call("POST", `/api/packs/${action}`, body || {}),
   git: (action, body) => call("POST", `/api/git/${action}`, body || {}),

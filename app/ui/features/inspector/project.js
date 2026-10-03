@@ -3,7 +3,7 @@ import { composer as c } from "../../composer/composer.js";
 import { DRIVEN } from "../../shell/scenes.js";
 
 const SIZES = [{ value: "", label: "The first clip's own size" }, { value: "project", label: "The project's size" }];
-const STARTS = [{ value: "image", label: "From an image" }, { value: "prompt", label: "From a prompt" }];
+const STARTS = [{ value: "i2v", label: "From an image" }, { value: "t2v", label: "From a prompt" }];
 
 // What the pipeline lets the project decide (width, length, rate...): one whole-number control per slot input
 // that declares the role. A role that `drives` length or rate edits the number the timeline draws.
@@ -19,7 +19,21 @@ const videoControls = (p, slots) => (slots || []).flatMap((slot) => (slot.roles 
 const num = (p, label, key, fallback) => ({ key, label, field: c.field.default({ label, control: c.number.md({ label, min: 1, max: key === "frame_rate" ? 1000 : 16384, step: 1, precision: 0,
   value: p.project[key] || fallback, onChange: (v) => p.setField(key, v) }) }) });
 
-export function projectRows(p, slots) {
+/** What each shot's prompt becomes at generation (anchor + shortcuts + $variables + postfix), asked for on demand. */
+function splitPreview(p, api) {
+  const out = c.region.stack({ gap: "xs" });
+  const show = async () => {
+    out.set([c.hint.default({ text: "Working…" })]);
+    try {
+      const open = p.project, roots = open.scenes.filter((s) => !s.excluded && !(s.cut_offset_frames > 0) && !(s.source && s.source.type === "video"));
+      const lines = await Promise.all(roots.map(async (s, i) => ({ n: open.scenes.indexOf(s) + 1, text: (await api.expandPrompt({ text: s.text || "", anchor: open.anchor, postfix: open.postfix, postfix_enabled: open.postfix_enabled, variables: open.variables })).text })));
+      out.set(lines.length ? lines.map((l) => c.field.default({ label: `S${l.n}`, control: c.text.sm({ text: l.text || "(empty)" }) })) : [c.hint.default({ text: "No scenes to preview." })]);
+    } catch (err) { out.set([c.hint.default({ text: `Could not build the preview: ${err.message}` })]); }
+  };
+  return c.region.stack({ gap: "xs", children: [c.button.sm({ label: "Refresh preview", tone: "ghost", onClick: show }), out] });
+}
+
+export function projectRows(p, slots, api) {
   const open = p.project;
   if (!open) return [c.emptyState.default({ icon: "▭", title: "No project", hint: "Open or create one." })];
   const controls = videoControls(p, slots);
@@ -37,12 +51,15 @@ export function projectRows(p, slots) {
     ...(size.length ? [c.field.row({ fields: size.map((x) => x.field) })] : []),
     c.field.default({ label: "Final render size", control: c.select.md({ label: "Final render size", options: SIZES, value: open.export_size_from || "",
       onChange: (v) => p.setField("export_size_from", v) }) }),
-    c.field.default({ label: "Start shots", control: c.select.md({ label: "Start shots", options: STARTS, value: "image", onChange() {}, disabled: true }) }),
+    c.field.default({ label: "Start shots", control: c.select.md({ label: "Start shots", options: STARTS, value: open.generation_mode === "t2v" ? "t2v" : "i2v", onChange: (v) => p.setField("generation_mode", v) }) }),
     c.label.section({ text: "Prompt" }),
     c.field.default({ label: "Anchor", control: c.textarea.md({ label: "Anchor", value: p.anchor, rows: 2, onInput: (v) => p.setAnchor(v) }) }),
     c.field.default({ label: "Negative prompt", control: c.textarea.md({ label: "Negative prompt", value: p.negative, rows: 2, onInput: (v) => p.setNegative(v) }) }),
-    c.field.default({ label: "Postfix", control: c.textarea.md({ label: "Postfix", value: p.postfix, rows: 2, onInput: (v) => p.setPostfix(v) }) }),
-    c.collapsible.default({ label: "ADVANCED PROJECT SETTINGS", body: c.collapsible.default({ label: "Split preview (generation prompt)",
-      body: c.hint.default({ text: "ComfyUI offline — preview paused" }) }) }),
+    c.toggle.default({ label: "Postfix", hint: "Appended to every scene (a style or quality tag, say).", checked: open.postfix_enabled !== false, onChange: (v) => p.setField("postfix_enabled", v) }),
+    c.textarea.md({ label: "Postfix", value: p.postfix, rows: 2, disabled: open.postfix_enabled === false, onInput: (v) => p.setPostfix(v) }),
+    c.collapsible.default({ label: "ADVANCED PROJECT SETTINGS", body: c.region.stack({ gap: "sm", children: [
+      c.field.default({ label: "Max scenes", control: c.number.md({ label: "Max scenes", min: 1, max: 10000, step: 1, precision: 0, value: open.max_scenes || 8, onChange: (v) => p.setField("max_scenes", v) }) }),
+      c.collapsible.default({ label: "Split preview (generation prompt)", body: splitPreview(p, api) }),
+    ] }) }),
   ];
 }
