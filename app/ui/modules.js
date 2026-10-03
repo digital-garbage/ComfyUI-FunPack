@@ -8,6 +8,7 @@ export default [
   "./features/generate/index.js",
   "./features/preview/index.js",
   "./features/menus/index.js",
+  "./features/render/index.js",
   "./features/placeholders/index.js",
   "./features/temp/index.js",
 ].map((path) => new URL(path, import.meta.url).href);

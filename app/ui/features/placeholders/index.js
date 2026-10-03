@@ -16,7 +16,7 @@ const items = {
   ],
 
 
-  "timeline.actions": () => [btn("⧉ Render", "render"), btn("⚡ Auto Montage")],
+  "timeline.actions": () => [btn("⚡ Auto Montage")],
   "timeline.status": () => [btn("⏱ Sampler", "neutral"), c.text.sm({ text: "0 clips" }),
     dockTab("Assets"), dockTab("Preview"), dockTab("Properties"), btn("◆ Composer", "neutral")],
   timeline: () => [
