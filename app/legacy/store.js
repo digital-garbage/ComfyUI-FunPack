@@ -3740,6 +3740,7 @@
     if (p.video && p.video[input] !== undefined) return p.video[input];
     if (input === "width" || input === "target_width") return p.width;
     if (input === "height" || input === "target_height") return p.height;
+    if (input === "frame_rate" || input === "fps") return p.frame_rate;
     if (input === "length") {
       // The PROJECT's length per scene, never the scene's own: a scene cropped on the timeline
       // regenerates at the project length (the crop was a timeline decision; a regenerate is new).

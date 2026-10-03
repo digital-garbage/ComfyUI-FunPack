@@ -31,6 +31,8 @@ nothing here assumes video. A 2-D latent format yields an image latent because
 that is what the model says it wants.
 """
 
+import inspect
+
 import comfy.model_management
 import torch
 from comfy_api.latest import io
@@ -108,6 +110,12 @@ class FunPackEmptyLatent(io.ComfyNode):
                                      "time axis, and it is frames -- not seconds and "
                                      "not samples."),
                 io.Int.Input("batch_size", default=1, min=1, max=4096, optional=True),
+                io.Vae.Input("audio_vae", optional=True,
+                             tooltip="Only for models that generate sound alongside the picture "
+                                     "and size its latent from this VAE (LTX)."),
+                io.Float.Input("frame_rate", default=25.0, min=1.0, max=1000.0, optional=True,
+                               tooltip="Only used with an audio VAE: how long the sound latent "
+                                       "is depends on the frames per second."),
             ],
             outputs=[
                 io.Latent.Output(display_name="latent"),
@@ -117,11 +125,14 @@ class FunPackEmptyLatent(io.ComfyNode):
 
     @classmethod
     def execute(cls, model, width: int, height: int, length: int,
-                batch_size: int = 1) -> io.NodeOutput:
+                batch_size: int = 1, audio_vae=None, frame_rate: float = 25.0) -> io.NodeOutput:
         for spec, build in registry_mod.current().providers(CAPABILITY):
             try:
+                # What only some models need is offered to those that ask for it by name.
+                extra = {k: v for k, v in (("audio_vae", audio_vae), ("frame_rate", frame_rate))
+                         if k in inspect.signature(build).parameters}
                 claimed = build(model, width=width, height=height,
-                                length=length, batch_size=batch_size)
+                                length=length, batch_size=batch_size, **extra)
             except Exception as exc:             # noqa: BLE001
                 # It got past recognising the model, so this IS its model and it
                 # broke. Carrying on to the derivation would answer a question
