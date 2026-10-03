@@ -1,17 +1,21 @@
 // The monitor and its transport: plays the cut, clip after clip, wherever the playhead is. The playhead is the one
 // clock: playing moves it, seeking (scrubber, ruler, picking a clip) moves it, and the picture follows it.
 import { composer as c } from "../../composer/composer.js";
-import { viewUrl } from "../../shell/run.js";
 import { segments, totalSeconds, isVideoClip } from "../../shell/scenes.js";
 
 const pad = (n) => String(Math.floor(n)).padStart(2, "0");
 export const timecode = (sec, fps) => { const s = Math.max(0, sec), w = Math.floor(s); return [pad(w / 3600), pad((w % 3600) / 60), pad(w % 60), pad((s - w) * (fps || 25))].join(":"); };
 
-/** Where a clip's picture comes from: {url, from} (`from` = seconds into the file), or null when there is none yet. */
-export function sourceOf(sc, open) {
+/** Where a clip's picture comes from: {url, from} (`from` = seconds into the file), or null when there is none yet.
+ *  A generated clip is played from the server's own trimmed copy, never the raw render: ComfyUI's saver writes the index at
+ *  the END of the file, which a browser cannot seek in (a deep seek stalls or blacks the monitor). */
+export function sourceOf(sc, open, dur) {
   if (isVideoClip(sc)) return sc.source && sc.source.media_ref ? { url: `/funpack/api/media/${encodeURIComponent(sc.source.media_ref)}/file`, from: sc.source_in || 0 } : null;
   const r = (open.scene_renders || {})[sc.id];
-  return r && r.media ? { url: viewUrl(r.media), from: (r.inSec || 0) + (sc.source_in || 0) } : null;
+  if (!(r && r.media)) return null;
+  const q = new URLSearchParams({ filename: r.media.filename || "", subfolder: r.media.subfolder || "", type: r.media.type || "output", render_in: String(r.inSec || 0), src_in: String(sc.source_in || 0), dur: String(dur) });
+  if (sc.effects && sc.effects.reverse) q.set("rev", "1");
+  return { url: `/funpack/api/m/render/projects/${encodeURIComponent(open.id)}/preview-segment/${encodeURIComponent(sc.id)}?${q}`, from: 0 };
 }
 
 export default {
@@ -36,8 +40,8 @@ export default {
     const total = () => (open() ? totalSeconds(open()) : 0);
 
     function show(next) {
-      const src = next && sourceOf(next.scene, open());
-      const key = src ? `${next.id}|${src.url}|${src.from}` : "";
+      const src = next && sourceOf(next.scene, open(), next.dur);
+      const key = src ? `${next.id}|${src.url}` : "";
       if (key === shown) return;
       shown = key; from = src ? src.from : 0;
       viewer.node.hidden = !src; empty.node.hidden = Boolean(src);
