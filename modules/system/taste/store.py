@@ -134,12 +134,20 @@ def _pending_path(key, kind, prompt_id=None):
     return _dir(key) / (f"{kind}.pending.pt" if prompt_id is None else f"{kind}.{prompt_id}.pending.pt")
 
 
-def capture(key, kind, rows, prompt_id=None, keep=MAX_ROWS):
+def _prune_aside(key, kind):
+    aside = sorted(_dir(key).glob(f"{kind}.*.pending.pt"), key=lambda p: p.stat().st_mtime_ns)
+    for old in aside[:-MAX_PENDING]:
+        old.unlink(missing_ok=True)
+
+
+def capture(key, kind, rows, prompt_id=None, keep=MAX_ROWS, only=None, mixed=False):
     """This run's capture for `kind`, waiting for a rating until the next Generate starts.
 
     The previous run's capture of the same Generate is kept aside, not overwritten. Kept in the
     dtype given: a banked latent stays half precision. `keep` caps how many rated rows this kind
-    holds, oldest dropped first.
+    holds, oldest dropped first. `only="liked"`: a kind that learns from liked clips alone does not
+    bank a disliked one (it could only push the liked ones out under `keep`). `mixed`: its rows are
+    legitimately of different shapes (a clip bank is matched by size), so import does not demand one.
     """
     if not rows:
         return
@@ -152,10 +160,8 @@ def capture(key, kind, rows, prompt_id=None, keep=MAX_ROWS):
         if earlier is not None and earlier != prompt_id:
             if _PID.match(str(earlier)):
                 os.replace(latest, _pending_path(key, kind, earlier))
-        _write(latest, {"prompt_id": prompt_id, "rows": clean, "keep": int(keep)})
-        aside = sorted(_dir(key).glob(f"{kind}.*.pending.pt"), key=lambda p: p.stat().st_mtime_ns)
-        for old in aside[:-MAX_PENDING]:
-            old.unlink(missing_ok=True)
+        _write(latest, {"prompt_id": prompt_id, "rows": clean, "keep": int(keep), "only": only, "mixed": bool(mixed)})
+        _prune_aside(key, kind)
         state = _read_latest()
         runs = state.get("runs", {})
         kinds = runs.setdefault(prompt_id, {}).setdefault(key, [])
@@ -195,7 +201,7 @@ def blind(rows, to):
     return [dict(r, reward=0.0) if r.get("axis") == to else r for r in rows]
 
 
-def _restore_pending(key, kind, prompt_id, rows, keep):
+def _restore_pending(key, kind, prompt_id, rows, keep, only=None, mixed=False):
     """A cleared rating puts the capture back to waiting (until the next Generate), so the clip can be
     rated again. The latest slot if it is free or already this run's, else aside under the prompt id."""
     latest = _pending_path(key, kind)
@@ -204,7 +210,8 @@ def _restore_pending(key, kind, prompt_id, rows, keep):
         if not _PID.match(str(prompt_id)):
             return
         latest = _pending_path(key, kind, prompt_id)
-    _write(latest, {"prompt_id": prompt_id, "rows": rows, "keep": int(keep)})
+    _write(latest, {"prompt_id": prompt_id, "rows": rows, "keep": int(keep), "only": only, "mixed": bool(mixed)})
+    _prune_aside(key, kind)
 
 
 def rate(prompt_id, rating, axis=None):
@@ -237,7 +244,8 @@ def rate(prompt_id, rating, axis=None):
                 if rating is None:
                     data["rows"] = [r for r in data["rows"] if r.get("prompt_id") != prompt_id]
                     if path.stem in entry.get(key, []):
-                        _restore_pending(key, path.stem, prompt_id, hit[-1]["rows"], hit[-1].get("keep", MAX_ROWS))
+                        _restore_pending(key, path.stem, prompt_id, hit[-1]["rows"], hit[-1].get("keep", MAX_ROWS),
+                                         hit[-1].get("only"), hit[-1].get("mixed", False))
                 else:
                     for r in hit:
                         r["reward"] = REWARD[rating]
@@ -269,7 +277,12 @@ def rate(prompt_id, rating, axis=None):
                     continue
                 data = load(key, kind)
                 keep = int(pending.get("keep", MAX_ROWS))
-                row = {"prompt_id": prompt_id, "reward": REWARD[rating], "rows": pending["rows"], "keep": keep}
+                if pending.get("only") == "liked" and rating != "liked":
+                    pending_path.unlink(missing_ok=True)          # nothing here learns from it: not banked
+                    out.setdefault("skipped", []).append(kind)
+                    continue
+                row = {"prompt_id": prompt_id, "reward": REWARD[rating], "rows": pending["rows"], "keep": keep,
+                       "only": pending.get("only"), "mixed": bool(pending.get("mixed"))}
                 if axis:
                     row["axis"] = axis
                 data["rows"].append(row)
@@ -277,7 +290,7 @@ def rate(prompt_id, rating, axis=None):
                 _write(_dir(key) / f"{kind}.pt", data)
                 pending_path.unlink(missing_ok=True)
                 out["recorded"].append(kind)
-        if not out["recorded"]:
+        if not out["recorded"] and not out.get("skipped"):
             out["why"] = ("this clip's capture was not kept (more runs waited than are kept, or it was "
                           "cleared); nothing was learned")
     return out
@@ -384,6 +397,8 @@ def _sound_rows(data):
             return False
         # What is stacked later must agree: one name, one shape (a key trained across two model
         # families would otherwise abort every sampling that reads it).
+        if row.get("mixed") is True:
+            continue                                  # a clip bank: rows of different sizes are the point
         for name, v in captured.items():
             if shapes.setdefault(name, tuple(v.shape)) != tuple(v.shape):
                 return False

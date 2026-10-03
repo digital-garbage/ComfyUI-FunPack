@@ -38,8 +38,8 @@ class Handle:
     def __init__(self, key):
         self.key = key
 
-    def capture(self, kind, rows, keep=store.MAX_ROWS):
-        store.capture(self.key, kind, rows, keep=keep)
+    def capture(self, kind, rows, keep=store.MAX_ROWS, only=None, mixed=False):
+        store.capture(self.key, kind, rows, keep=keep, only=only, mixed=mixed)
 
     def rows(self, kind, blind_to=None):
         """Every rated row of `kind`, oldest first: {"reward", "rows", "prompt_id"}.
@@ -47,7 +47,7 @@ class Handle:
         neutral -- for a learner that cannot tell whether that half was the problem."""
         return store.blind(store.load(self.key, kind)["rows"], blind_to)
 
-    def collect(self, patcher, key, kind, keep=store.MAX_ROWS, fresh=None):
+    def collect(self, patcher, key, kind, keep=store.MAX_ROWS, fresh=None, only=None, mixed=False):
         """A dict to fill during sampling; kept as `kind`'s capture when the
         sampling call finishes. An interrupted or failed run keeps nothing, so
         a half-finished clip can never be what a rating teaches.
@@ -64,7 +64,7 @@ class Handle:
             if fresh is not None:
                 fresh()
             out = executor(*args, **kwargs)
-            self.capture(kind, rows, keep=keep)
+            self.capture(kind, rows, keep=keep, only=only, mixed=mixed)
             return out
 
         patcher.add_wrapper_with_key(WrappersMP.OUTER_SAMPLE, key, outer)

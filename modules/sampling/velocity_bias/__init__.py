@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from comfy.patcher_extension import WrappersMP
 
 from ..._core import dit_hooks, log, registry, streams
+from ..score_slider import cond_row
 
 ID = "velocity_bias"
 TITLE = "Velocity bias"
@@ -123,46 +124,71 @@ def install(patcher, values, key):
         return None
     strength = max(0.0, min(3.0, float(values.get("strength", 0.15))))
     nearest = bool(values.get("nearest"))
-    live = {"rows": []}
+    live = {"rows": [], "hit": False, "seen": {}, "multi": False}
 
     def fresh():
+        live["hit"], live["multi"] = False, False
+        live["seen"].clear()
         live["rows"] = taste.rows(KIND)
         liked = sum(1 for r in live["rows"] if r["reward"] > 0)
         log.once(f"{ID}:state", log.INFO, "FunPack Velocity bias",
                  f"key {taste.key!r}: {liked} liked clip(s) banked" if liked else
                  f"key {taste.key!r}: learning, nothing liked banked yet")
 
-    captured = taste.collect(patcher, key, KIND, keep=MAX_ROWS, fresh=fresh)
+    # Only liked clips are banked (nothing here learns from a disliked one); clips of different sizes
+    # are meant to coexist, so a key holding two resolutions still exports and imports.
+    captured = taste.collect(patcher, key, KIND, keep=MAX_ROWS, fresh=fresh, only="liked", mixed=True)
 
     def apply_model(executor, x, t, *args, **kwargs):
         named = streams.model_args(args, kwargs)
         to = named.get("transformer_options")
-        if dit_hooks.probing(to) or not structure_step(to):
+        if dit_hooks.probing(to):
             return executor(x, t, *args, **kwargs)
+        if (to or {}).get("context_window") is not None:
+            _say("off this run: it cannot follow clips cut into context windows (each window is a different size)")
+            return executor(x, t, *args, **kwargs)
+        where = dit_hooks.current_step(to)
+        if where is not None and where[0] >= where[1] - 1 and not live["hit"] and not live["multi"]:
+            _say("did nothing this run: no step of this schedule is near 90% of the starting noise, "
+                 "so there was no structure step to bias or learn from")
+        if not structure_step(to):
+            return executor(x, t, *args, **kwargs)
+        kinds = tuple(int(v) for v in ((to or {}).get("cond_or_uncond") or ()))
         c = named.get("c_crossattn")
+        row = cond_row(c, to) if torch.is_tensor(c) and c.dim() == 3 else 0
+        if row is None:                                    # only the negative prompt in this call
+            return executor(x, t, *args, **kwargs)
+        if live["seen"].get(kinds) == where[0] or live["multi"]:
+            if not live["multi"]:
+                live["multi"] = True
+                _say("off for the rest of this run: the model is called more than once per step "
+                     "(a second-order sampler); use euler-style sampling")
+            return executor(x, t, *args, **kwargs)
+        live["seen"][kinds] = where[0]
         sig = None
         if torch.is_tensor(c) and c.dim() == 3:
             words = registry.current().ask("text_rows", named, int(c.shape[1]))
-            row = c[0] if words is None else c[0][words.to(c.device)]
-            sig = row.float().mean(0).detach().cpu()
+            r = c[row] if words is None else c[row][words.to(c.device)]
+            sig = r.float().mean(0).detach().cpu()
         split_in = streams.video_of(x, named)
         if split_in is None:
             _say("off this run: could not find the picture in this model's latent")
             return executor(x, t, *args, **kwargs)
+        live["hit"] = True
         video_in, rebuild = split_in
         sigma = float(t.max())
         ratio = sigma / float(to["sample_sigmas"][0])
-        direction, how = reference(live["rows"], video_in[0].shape, sig, nearest) if strength > 0 else (None, "")
+        direction, how = reference(live["rows"], video_in[row].shape, sig, nearest) if strength > 0 else (None, "")
         run_x = x
         if direction is not None:
             run_x = rebuild(rotate(video_in, direction.unsqueeze(0), strength, ratio))
-            log.once(f"{ID}:applied", log.INFO, "FunPack Velocity bias", f"applied: {how}")
-        elif strength > 0 and live["rows"]:
-            _say("not applied this run: " + reference(live["rows"], video_in[0].shape, sig, nearest)[1])
+            log.once(f"{ID}:applied:{how}", log.INFO, "FunPack Velocity bias", f"applied: {how}")
+        elif strength > 0:
+            _say("not applied this run: " + reference(live["rows"], video_in[row].shape, sig, nearest)[1])
         out = executor(run_x, t, *args, **kwargs)
         split_out, split_run = streams.video_of(out, named), streams.video_of(run_x, named)
         if split_out is not None and split_run is not None:
-            d = ((split_run[0].float() - split_out[0].float()) / max(sigma, 1e-6))[0]     # where the model moves the picture
+            d = ((split_run[0].float() - split_out[0].float()) / max(sigma, 1e-6))[row]     # where the model moves the picture
             captured["v"] = d.detach().half().cpu()
             if sig is not None:
                 captured["sig"] = sig

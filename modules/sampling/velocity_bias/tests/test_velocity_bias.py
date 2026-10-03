@@ -111,3 +111,49 @@ def test_strength_zero_only_learns(tiny_h3):
     seen = []
     wrap(lambda x, *a, **k: seen.append(x) or x0, x0, sched[1:2], None, None, None, _to(1, sched), latent_shapes=shapes)
     assert torch.equal(seen[0], x0)
+
+
+def _packed(shapes_seed=0):
+    from conftest import packed_av
+    torch.manual_seed(shapes_seed)
+    return packed_av(torch.randn(1, 4, 3, 8, 8), torch.randn(1, 8, 5))
+
+
+def test_a_schedule_with_no_structure_step_says_so_on_its_last_step(tiny_h3):
+    from core import log
+    wrap, _ = _load(tiny_h3, strength=1.0)
+    x0, shapes = _packed()
+    sched = torch.tensor([1.0, 0.75, 0.5, 0.25, 0.0])
+    log.new_run()
+    before = len(log.history())
+    for i in range(4):
+        wrap(lambda x, *a, **k: x0, x0, sched[i:i + 1], None, None, None, _to(i, sched), latent_shapes=shapes)
+    assert any("no step of this schedule is near 90%" in e["message"] for e in log.history()[before:])
+
+
+def test_context_windows_and_second_order_calls_are_refused_in_words(tiny_h3):
+    from core import log
+    x0, shapes = _packed()
+    sched = torch.tensor([1.0, 0.909375, 0.725, 0.421875, 0.0])
+    wrap, _ = _load(tiny_h3, strength=1.0)
+    log.new_run()
+    wrap(lambda x, *a, **k: x0, x0, sched[1:2], None, None, None, {**_to(1, sched), "context_window": object()},
+         latent_shapes=shapes)
+    assert any("context windows" in e["message"] for e in log.history())
+    wrap2, outer = _load(tiny_h3, strength=1.0)
+    log.new_run()
+    for o in outer[:1]:
+        o(lambda: None)                                      # a run starts: the state is fresh
+    for _ in range(2):                                       # the same structure step twice: a corrector call
+        wrap2(lambda x, *a, **k: x0, x0, sched[1:2], None, None, None, _to(1, sched), latent_shapes=shapes)
+    assert any("more than once per step" in e["message"] for e in log.history())
+
+
+def test_a_call_that_carries_only_the_negative_prompt_neither_biases_nor_learns(tiny_h3):
+    wrap, _ = _load(tiny_h3, strength=1.0)
+    x0, shapes = _packed()
+    sched = torch.tensor([1.0, 0.909375, 0.725, 0.421875, 0.0])
+    seen = []
+    to = {**_to(1, sched), "cond_or_uncond": [1]}
+    wrap(lambda x, *a, **k: seen.append(x) or x0, x0, sched[1:2], None, torch.ones(1, 4, 8), None, to, latent_shapes=shapes)
+    assert torch.equal(seen[0], x0)

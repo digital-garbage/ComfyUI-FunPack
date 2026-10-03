@@ -4019,10 +4019,6 @@
       return false;
     }
     _genRunActive = true;
-    if (_tasteGenPending) {          // the first run of a Generate: what the last one left unrated is forgotten
-      _tasteGenPending = false;
-      await _newTasteGeneration();
-    }
     // A run started through the normal click path owns its own clock
     // lifecycle (the _clockedX wrapper's `finally`, spanning the whole
     // batch) — any stale flag left over from a PRIOR adopted run must not
@@ -4074,6 +4070,13 @@
       // clobber it. Setting it last means an unwired reference is always
       // what the person sees, never lost to a race with an unrelated note.
       if (unwiredNotice) { state.notice = unwiredNotice; notify(); }
+      if (queued && _tasteGenPending) {
+        // The first run of a Generate is really queued: what the last Generate left unrated is
+        // forgotten now (a refused or failed click above never gets here). Sampling takes seconds;
+        // this takes milliseconds, so it lands before this run's own capture.
+        _tasteGenPending = false;
+        await _newTasteGeneration();
+      }
       if (!queued) {
         // Refused before it ever reached run.start() (an incomplete pipeline,
         // or the queue itself saying no) -- the bridge's own "say" hook
@@ -4338,14 +4341,16 @@
   }
   // Runs `fn` as the owner of one Generate -- unless one is already in flight, in which case this click
   // is refused later anyway and must not make the running Generate forget its unrated clips.
+  let _generateOwned = false;       // an entry point holds a Generate (set before its first await)
   async function _ownsGenerate(fn) {
-    const owner = !_genRunActive;
+    const owner = !_genRunActive && !_generateOwned;
     if (owner) {
+      _generateOwned = true;
       _tasteGenPending = true;
       // The settings of this Generate, taken once: every run of it is queued with these.
       _frozenSettings = window.PipelineState && window.PipelineState.frozenInputs ? window.PipelineState.frozenInputs() : null;
     }
-    try { return await fn(); } finally { if (owner) { _tasteGenPending = false; _frozenSettings = null; } }
+    try { return await fn(); } finally { if (owner) { _tasteGenPending = false; _frozenSettings = null; _generateOwned = false; } }
   }
   async function _clockedGenerate(onlyScene) {
     _genClockStart(onlyScene ? "scene" : "all");

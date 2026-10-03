@@ -210,3 +210,33 @@ def test_a_run_waiting_under_two_keys_teaches_both():
     store.capture("wolf", "reins", {25: _v(2)}, prompt_id="p1")
     assert store.rate("p1", "liked")["recorded"] == ["reins", "reins"]
     assert store.counts("fox", "reins") == (1, 0) and store.counts("wolf", "reins") == (1, 0)
+
+
+def test_a_liked_only_kind_banks_likes_and_never_lets_dislikes_push_them_out():
+    for i in range(3):
+        store.capture("fox", "vel", {"v": _v(i)}, prompt_id=f"l{i}", keep=4, only="liked")
+        assert store.rate(f"l{i}", "liked")["recorded"] == ["vel"]
+    for i in range(10):
+        store.capture("fox", "vel", {"v": _v(9)}, prompt_id=f"d{i}", keep=4, only="liked")
+        out = store.rate(f"d{i}", "disliked")
+        assert out["recorded"] == [] and out["skipped"] == ["vel"] and out["why"] is None
+    assert store.counts("fox", "vel") == (3, 0)
+
+
+def test_a_kind_of_mixed_sizes_exports_and_imports(tmp_path):
+    store.capture("fox", "vel", {"v": torch.ones(2, 2)}, prompt_id="a", mixed=True)
+    store.rate("a", "liked")
+    store.capture("fox", "vel", {"v": torch.ones(3, 3)}, prompt_id="b", mixed=True)
+    store.rate("b", "liked")
+    out = tmp_path / "k.zip"
+    store.export_key("fox", out)
+    assert store.import_key("wolf", out) == 1
+    assert store.counts("wolf", "vel") == (2, 0)
+    # a kind that did not say so still must hold one shape per name
+    store.capture("bear", "reins", {"v": torch.ones(2, 2)}, prompt_id="c")
+    store.rate("c", "liked")
+    store.capture("bear", "reins", {"v": torch.ones(3, 3)}, prompt_id="d")
+    store.rate("d", "liked")
+    store.export_key("bear", tmp_path / "b.zip")
+    with pytest.raises(ValueError):
+        store.import_key("cub", tmp_path / "b.zip")
