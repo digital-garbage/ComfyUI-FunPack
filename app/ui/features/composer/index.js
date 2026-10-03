@@ -1,6 +1,7 @@
 // ◆ Composer: the floating "prompt craft" window. Opens from the timeline header; its tabs are the five v4 had.
 import { composer as c } from "../../composer/composer.js";
 import { applyStory, joinStory } from "./story.js";
+import { shortcuts } from "./shortcuts.js";
 
 const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }];
 const inert = (label, tone = "ghost") => c.button.sm({ label, tone, disabled: true });
@@ -37,7 +38,7 @@ const story = (app, own) => {
   ] });
 };
 
-const sheets = { story, shortcuts: () => later("Your trigger → replacement library."), cuts: () => later("Where a story splits into shots."),
+const sheets = { story, shortcuts, cuts: () => later("Where a story splits into shots."),
   enhance: () => later("Rewrite a prompt with a language model."), chat: () => later("Talk a scene through with the enhancer.") };
 
 export default {
