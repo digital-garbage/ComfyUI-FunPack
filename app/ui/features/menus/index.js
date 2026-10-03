@@ -16,7 +16,27 @@ export default {
     const ask = (title, value, confirmLabel) => c.modal.prompt({ title, label: "Name", value, confirmLabel }).result;
     const move = (by) => p.edit((pr) => { const order = sceneIds(pr), at = order.indexOf(sel.focus); return at >= 0 && edits.reorder(pr, sel.focus, at + by, order); });
 
+    // A file is chosen in a small window with a drop zone: the kit's own picker, no hidden input of ours.
+    const choose = (title, hint, accept, multiple, onFiles) => {
+      const win = c.modal.generic({ title, size: "sm", body: c.dropzone.default({ label: "Drop or choose a file", hint, accept, multiple,
+        onFiles: async (files) => { win.close("done"); try { await onFiles(files); } catch (err) { c.toast.warn({ text: err.message }); } } }) });
+    };
     const actions = {
+      save: async () => {
+        await p.flush();
+        const open = p.project, link = Object.assign(document.createElement("a"), { download: `${open.name || "project"}.json`,
+          href: URL.createObjectURL(new Blob([JSON.stringify(open, null, 2)], { type: "application/json" })) });
+        link.click(); URL.revokeObjectURL(link.href);
+      },
+      load: () => choose("Load project file", "a FunPack project .json", ".json,application/json", false, async ([file]) => {
+        let data; try { data = JSON.parse(await file.text()); } catch { throw new Error("That is not a project file."); }
+        await p.importProject(data);
+      }),
+      import: () => choose("Import media", "images, clips, audio", undefined, true, async (files) => {
+        const r = await app.api.uploadMedia(files);
+        (r.problems || []).forEach((text) => c.toast.warn({ text }));
+        app.say("media");
+      }),
       new: async () => { const name = await ask("New project", "Untitled"); if (name) await p.newProject(name.trim() || "Untitled"); },
       delete: async () => {
         const open = p.project;
@@ -39,7 +59,7 @@ export default {
         const recent = await list().catch(() => []);
         return [{ id: "new", label: "New Project" }, soon("Project Setup Wizard…", "theme · model · tour"), { separator: true },
           { heading: "Open recent" }, ...(recent.length ? recent.slice(0, 8).map((r) => ({ id: `open:${r.id}`, label: r.name })) : [{ id: "-", label: "No projects", disabled: true }]),
-          { separator: true }, soon("Save Project File…", "⬇"), soon("Load Project File…"), { separator: true }, soon("Import Media…"),
+          { separator: true }, { id: "save", label: "Save Project File…", hint: "⬇", disabled: !p.project }, { id: "load", label: "Load Project File…" }, { separator: true }, { id: "import", label: "Import Media…" },
           { id: "delete", label: "Delete Current Project", danger: true, disabled: !p.project }];
       },
       Edit: () => [{ id: "undo", label: "Undo", hint: "⌘Z", disabled: !p.canUndo }, { id: "redo", label: "Redo", hint: "⇧⌘Z", disabled: !p.canRedo }, { separator: true },
