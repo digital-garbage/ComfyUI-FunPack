@@ -166,3 +166,12 @@ def test_the_projects_off_list_passes_through_and_is_not_mistaken_for_a_module(r
 def test_a_malformed_off_list_is_refused_with_a_reason(registry):
     with pytest.raises(RuntimeError, match="modules"):
         _run('{"_off": ["sharpen"]}')
+
+
+def test_a_switched_off_modules_bad_value_does_not_refuse_the_run(registry):
+    import dataclasses
+    registry.specs["alg"] = dataclasses.replace(registry.specs["alg"], provides={"modifier": lambda *a, **k: None})
+    out, _ = _run('{"alg": {"strength": 99}, "_off": {"modules": ["alg"]}}')
+    assert "alg" not in out
+    with pytest.raises(RuntimeError, match="strength"):
+        _run('{"alg": {"strength": 99}}')

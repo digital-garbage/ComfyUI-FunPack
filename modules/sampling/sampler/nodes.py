@@ -193,6 +193,11 @@ class FunPackSampler(io.ComfyNode):
         return sigmas[-(steps + 1):]
 
     @classmethod
+    def fingerprint_inputs(cls, **_):
+        """A module going into or out of quarantine changes what this run does."""
+        return "quarantine=" + control_mod.fingerprint()
+
+    @classmethod
     def _chain(cls, model, settings, dropped):
         """Whoever asked for a hook point this sampler offers."""
         registry = registry_mod.current()

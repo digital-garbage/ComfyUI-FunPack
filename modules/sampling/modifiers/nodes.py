@@ -119,7 +119,10 @@ class FunPackModifierSettings(io.ComfyNode):
 
         specs = registry_mod.current().specs
         problems = []
+        skip = control_mod.skipped(raw)           # off or quarantined: its values are not read, so not checked
         for module_id, values in raw.items():
+            if module_id in skip:
+                continue
             if module_id in control_mod.RESERVED:
                 said = control_mod.bad_off(values)
                 if said:
@@ -156,7 +159,10 @@ class FunPackModifierSettings(io.ComfyNode):
         specs = registry_mod.current().specs
         guards_off = cls._guards_off(raw)
         problems, checked = [], {}
+        skip = control_mod.skipped(raw)
         for module_id, values in raw.items():
+            if module_id in skip:
+                continue
             if module_id in control_mod.RESERVED:
                 said = control_mod.bad_off(values)
                 if said:

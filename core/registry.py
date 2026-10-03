@@ -66,6 +66,8 @@ class Registry:
                                              f"{self.specs[spec.id].source}"))
             return
         self.specs[spec.id] = spec
+        from . import control
+        control.remember_loaded(spec)
 
 
 def announcement_of(module, source: str) -> dict:

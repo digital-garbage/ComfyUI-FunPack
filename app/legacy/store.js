@@ -4703,9 +4703,10 @@
     const PS = window.PipelineState;
     if (!PS || !PS.refreshControl) return;
     const control = await PS.refreshControl();
-    const fresh = Object.entries(control).filter(([id, c]) => c.quarantine && !_quarantineSeen.has(id));
+    const seenKey = (id, c) => `${id}@${c.quarantine.when}`;       // fail, turn back on, fail again: told again
+    const fresh = Object.entries(control).filter(([id, c]) => c.quarantine && !_quarantineSeen.has(seenKey(id, c)));
     if (!fresh.length) return;
-    fresh.forEach(([id]) => _quarantineSeen.add(id));
+    fresh.forEach(([id, c]) => _quarantineSeen.add(seenKey(id, c)));
     const title = (id) => (PS.modulesById()[id] || {}).title || id;
     state.notice = fresh.map(([id, c]) => `${title(id)} failed and is now off (${c.quarantine.reason}). `
       + `Turn it back on in Settings ▸ Modules once it is repaired.`).join(" ");

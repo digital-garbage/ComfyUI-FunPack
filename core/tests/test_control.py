@@ -71,3 +71,43 @@ def test_a_hook_that_raised_in_a_run_reaches_the_quarantine(monkeypatch):
 def test_a_malformed_off_entry_is_named():
     assert control.bad_off({"modules": ["a"]}) is None and control.bad_off(None) is None
     assert "modules" in control.bad_off(["a"]) and "modules" in control.bad_off({"modules": [1]})
+
+
+def test_an_off_or_quarantined_modules_values_are_not_checked(monkeypatch):
+    from core import registry
+    a, b = spec("a"), spec("b")
+    monkeypatch.setattr(registry, "current", lambda: types.SimpleNamespace(specs={"a": a, "b": b}))
+    control.quarantine(b, "boom")
+    assert control.skipped({"_off": {"modules": ["a"]}}) == {"a", "b"}
+    assert control.skipped({}) == {"b"}
+
+
+def test_edited_code_that_this_process_has_not_loaded_stays_off_and_says_restart(monkeypatch):
+    a = spec("a")
+    sig = {"now": "v1"}
+    monkeypatch.setattr(control, "signature", lambda s: sig["now"])
+    control._loaded["a"] = "v1"
+    control.quarantine(a, "boom")
+    sig["now"] = "v2"                                   # edited, not restarted
+    kept, notes = control.partition([a], {})
+    assert kept == [] and "restart ComfyUI" in notes[0]
+    control._loaded["a"] = "v2"                         # after a restart the new code is what ran
+    assert [s.id for s in control.partition([a], {})[0]] == ["a"]
+
+
+def test_a_quarantine_that_cannot_be_written_still_holds_for_the_session(monkeypatch, tmp_path):
+    a = spec("a")
+    monkeypatch.setattr(control.config, "QUARANTINE_FILE", tmp_path / "no" / "such" / "dir" / "q.json")
+    control.quarantine(a, "boom")
+    assert control.partition([a], {})[0] == []
+    control.release("a")
+    assert [s.id for s in control.partition([a], {})[0]] == ["a"]
+
+
+def test_running_out_of_memory_by_message_is_not_the_modules_fault(monkeypatch):
+    from core import registry
+    a = spec("a")
+    monkeypatch.setattr(registry, "current", lambda: types.SimpleNamespace(specs={"a": a}))
+    control.fault("funpack.a", RuntimeError("MPS backend out of memory (MPS allocated: 9 GiB)"))
+    assert control.fingerprint() == ""
+
