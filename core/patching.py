@@ -260,6 +260,8 @@ NEUTRAL = {
     "set_model_sampler_post_cfg_function": lambda args: args["denoised"],
     "set_model_sampler_cfg_function": lambda args: args["input"] - (
         args["uncond_denoised"] + (args["cond_denoised"] - args["uncond_denoised"]) * args["cond_scale"]),
+    "set_model_unet_function_wrapper": lambda apply_fn, args: apply_fn(args["input"], args["timestep"],
+                                                                       **args.get("c", {})),
     "set_model_denoise_mask_function": lambda sigma, denoise_mask, extra_options=None: denoise_mask,
 }
 
