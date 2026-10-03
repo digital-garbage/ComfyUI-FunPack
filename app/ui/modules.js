@@ -16,6 +16,7 @@ export default [
   "./features/render/selected.js",
   "./features/rating/index.js",
   "./features/upscale/index.js",
+  "./features/revolver/index.js",
   "./features/status/index.js",
   "./features/audio/index.js",
   "./features/montage/index.js",
