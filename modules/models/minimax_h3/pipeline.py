@@ -177,6 +177,7 @@ def h3_reference_to_video_second_pass():
         {"id": "pass2_sigmas", "group": "Second pass", "node": "ManualSigmas",
          "inputs": {"sigmas": "0.4, 0.3, 0.2, 0.1, 0.0"}},
         {"id": "pass2", "group": "Second pass", "node": "FunPackSampler",
+         "roles": [{"at": "generation.seed", "input": "seed", "label": "Seed"}],
          "inputs": {
              "model": ["markup_apply", 0], "positive": ["resample", 1],
              "negative": ["resample", 2], "latent": ["resample", 0],

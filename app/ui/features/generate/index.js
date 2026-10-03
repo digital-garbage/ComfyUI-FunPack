@@ -24,7 +24,7 @@ export default {
     const record = (pid, unit, image, frames) => p.project && p.project.id === pid && p.edit((pr) => {
       const group = pr.scenes.filter((s) => genUnitId(s) === unit);
       if (!group.length) return false;
-      const secs = frames ? frames / effFps(group[0], pr) : group.reduce((t, s) => t + effFrames(s, pr) / effFps(s, pr), 0);   // as queued, not as the project reads now
+      const secs = (frames || group.reduce((t, s) => t + effFrames(s, pr), 0) - (group.length - 1)) / effFps(group[0], pr);   // as queued, not as the project reads now
       const media = { filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" };
       group.forEach((s) => {
         (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs);
@@ -88,13 +88,16 @@ export default {
     const claim = ({ sceneId, projectId }) => {
       const sc = p.project && p.project.id === projectId && p.project.scenes.find((s) => s.id === sceneId);
       if (!sc) return false;
-      const unit = genUnitId(sc), done = g.waitForTerminal();
-      busy = true; draw();                           // Stop works on it, Generate waits
-      done.then((end) => {
+      const unit = genUnitId(sc);
+      const finish = (end) => {
         const im = g.run.state.images;
         if (end === g.DONE && im.length) record(projectId, unit, im[im.length - 1]);
         busy = false; draw();
-      });
+      };
+      const now = g.run.state.phase;                 // a run that ended while the page reloaded is over already: nothing to wait for
+      if (now === g.DONE || now === g.FAILED || now === g.CANCELLED) { finish(now); return true; }
+      busy = true; draw();                           // Stop works on it, Generate waits
+      g.waitForTerminal().then(finish);
       return true;
     };
     // The page may know the run before it has opened a project: wait for the project, then claim or give up.
