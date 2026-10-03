@@ -4,7 +4,7 @@
 //   lanes: [{ id, label, kind: "video" | "audio" | "overlay", reorder?, clips: [clip] }]
 //   clip:  { id, start, dur, title?, head?: [text], badge?, body?, thumbs?: [url],
 //            actions?: [{ label, title, onClick }], selected?, focus?, excluded?, ghost?, rating?, trim? }
-//   callbacks: onSeek(sec) onSelect(id, { additive, range }) onTrim(id, "in"|"out", deltaSec) onReorder(id, index)
+//   callbacks: onSeek(sec) onSelect(id, { additive, range }) onTrim(id, "in"|"out", deltaSec) onReorder(id, index) onMove(id, deltaSec)
 
 import { define } from "../internals/register.js";
 import { el } from "../internals/el.js";
@@ -22,7 +22,7 @@ const clock = (s) => {
   return `${String(Math.floor(whole / 60)).padStart(2, "0")}:${String(whole % 60).padStart(2, "0")}`;
 };
 
-define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: initial = [], onSeek, onSelect, onTrim, onReorder } = {}) => {
+define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: initial = [], onSeek, onSelect, onTrim, onReorder, onMove } = {}) => {
   let px = pxPerSecond;
   let lanes = initial;
   let playhead = 0;
@@ -100,7 +100,7 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
       onStart: ({ event }) => { if (event.target.closest("[data-action],[data-trim]")) { moved = null; return; } moved = false; },
       onMove: ({ dx }) => {
         if (moved === null) return;
-        if (Math.abs(dx) >= MOVE_THRESHOLD_PX && lane.reorder) moved = true;
+        if (Math.abs(dx) >= MOVE_THRESHOLD_PX && (lane.reorder || lane.move)) moved = true;
         if (moved) cell.style.transform = `translateX(${dx}px)`;
       },
       onEnd: ({ dx, event, cancelled }) => {
@@ -110,6 +110,7 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
           if (onSelect) onSelect(clip.id, { additive: event.metaKey || event.ctrlKey, range: event.shiftKey });
           return;
         }
+        if (lane.move) { if (onMove) onMove(clip.id, dx / px); draw(); return; }          // a free lane: the clip goes where it was dropped, in seconds
         // Dropped where its middle now sits among the lane's other clips.
         const mid = clip.start + clip.dur / 2 + dx / px;
         const others = lane.clips.filter((c) => c.id !== clip.id);

@@ -51,10 +51,36 @@ export function syncSeparated(p) {
     if (t.kind !== "separated" || !starts.has(t.scene_id)) continue;
     const sc = p.scenes.find((s) => s.id === t.scene_id);
     if (sc.excluded && !sc.removed_from_plan) continue;       // a clip removed from the plan still plays, so its sound still follows it
-    if (Math.abs((t.start_sec || 0) - starts.get(t.scene_id)) > 0.001) t.start_sec = starts.get(t.scene_id);
-    const room = durs.get(t.scene_id);
+    const offset = Math.max(-starts.get(t.scene_id), t.offset_sec || 0), start = starts.get(t.scene_id) + offset;       // where the person dragged it, relative to its clip
+    if (Math.abs((t.start_sec || 0) - start) > 0.001) t.start_sec = start;
+    const room = durs.get(t.scene_id) - offset;
     if (t.pinned_dur == null) continue;
-    const want = Math.min(t.full_dur != null ? t.full_dur : t.pinned_dur, room);       // never longer than its picture, and back to its full length when the picture grows again
+    const own = Math.min(t.user_dur != null ? t.user_dur : Infinity, t.full_dur != null ? t.full_dur : t.pinned_dur);
+    const want = Math.max(0.1, Math.min(own, room));       // never past the end of its picture, and back to its full length when the picture grows again
     if (Math.abs(t.pinned_dur - want) > 0.001) { t.pinned_dur = want; t.source_dur = want; }
   }
+}
+
+/** Slide a separated lane against its clip (it still follows the clip when the clip moves). */
+export function moveLane(p, id, deltaSec) {
+  const t = (p.audio_tracks || []).find((x) => x.id === id && x.kind === "separated");
+  if (!t || !deltaSec) return false;
+  t.offset_sec = (t.offset_sec || 0) + deltaSec;
+  return true;
+}
+
+/** Trim a separated lane's sound. "in" cuts the head off (positive) or gives it back (negative, never before the sound begins);
+ *  "out" sets the tail (never past the sound's own length). */
+export function trimLane(p, id, edge, deltaSec) {
+  const t = (p.audio_tracks || []).find((x) => x.id === id && x.kind === "separated");
+  if (!t || !deltaSec || t.pinned_dur == null) return false;
+  const full = t.full_dur != null ? t.full_dur : t.pinned_dur;
+  if (edge === "out") { t.user_dur = Math.max(0.1, Math.min(full, t.pinned_dur + deltaSec)); return true; }
+  const d = Math.min(Math.max(deltaSec, -(t.pinned_in_sec || 0)), t.pinned_dur - 0.1);
+  if (!d) return false;
+  t.pinned_in_sec = (t.pinned_in_sec || 0) + d; t.source_in_sec = t.pinned_in_sec;
+  t.full_dur = Math.max(0.1, full - d);
+  if (t.user_dur != null) t.user_dur = Math.max(0.1, t.user_dur - d);
+  t.offset_sec = (t.offset_sec || 0) + d;
+  return true;
 }

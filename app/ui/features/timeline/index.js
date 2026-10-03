@@ -5,6 +5,7 @@ import { composer as c } from "../../composer/composer.js";
 import { segments, totalSeconds, clock } from "../../shell/scenes.js";
 import { inPlace } from "../../shell/place.js";
 import * as edits from "../../shell/edits.js";
+import { moveLane, trimLane } from "../../shell/audio.js";
 import { videoLane, audioLane, tracksLane, framesAt } from "./lanes.js";
 
 const ZOOM = [20, 40, 80, 160, 320];
@@ -22,7 +23,9 @@ const stage = {
       pxPerSecond: ZOOM[zoom],
       onSeek: (sec) => head.set(sec),
       onSelect: (id, how) => sel.pick(id, how, sceneIds(p.project)),
+      onMove: (id, d) => id.startsWith("t:") && edit((pr) => moveLane(pr, id.slice(2), d)),
       onTrim: (id, edge, d) => {
+        if (id.startsWith("t:")) return edit((pr) => trimLane(pr, id.slice(2), edge, d));
         const dur = segments(p.project).find((s) => s.id === id).dur;
         edit((pr) => edge === "out" ? edits.resize(pr, id, dur + d) : d > 0 && edits.trimLeft(pr, id, d));   // the left edge only cuts in
       },

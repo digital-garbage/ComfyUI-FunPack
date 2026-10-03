@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hasEmbeddedAudio, removeTrack, separate, syncSeparated, trackFor } from "../audio.js";
+import { hasEmbeddedAudio, moveLane, removeTrack, trimLane, separate, syncSeparated, trackFor } from "../audio.js";
 
 const media = { filename: "a.mp4", subfolder: "", type: "output" };
 const proj = () => ({ num_frames_per_scene: 50, frame_rate: 25, scenes: [{ id: "a", text: "" }, { id: "b", text: "", audio_volume: 0.5 }, { id: "v", source: { type: "video", media_ref: "m1" }, source_dur: 3 }],
@@ -89,4 +89,27 @@ test("a shortened lane grows back with its picture, and a clip removed from the 
   assert.equal(lane.pinned_dur, 2);
   Object.assign(p.scenes[0], { excluded: true, removed_from_plan: true }); p.scenes.unshift({ id: "z", text: "" }); syncSeparated(p);
   assert.ok(lane.start_sec > 0);
+});
+
+test("a lane can be slid against its clip, keeps that offset when the clip moves, and never starts before zero", () => {
+  const p = proj();
+  const lane = separate(p, "b");                       // clip b starts at 2s
+  moveLane(p, lane.id, 0.5); syncSeparated(p);
+  assert.equal(lane.start_sec, 2.5);
+  p.scenes.unshift({ id: "z", text: "" }); syncSeparated(p);        // the clip moved to 4s: the lane keeps its 0.5s offset
+  assert.equal(lane.start_sec, 4.5);
+  moveLane(p, lane.id, -99); syncSeparated(p);
+  assert.equal(lane.start_sec, 0);
+});
+
+test("trimming a lane cuts its sound, not its clip; the tail can grow back, never past the sound's own length", () => {
+  const p = proj();
+  const lane = separate(p, "b");                       // 2s of sound, in-point 1s
+  trimLane(p, lane.id, "out", -0.5); syncSeparated(p);
+  assert.equal(lane.pinned_dur, 1.5);
+  trimLane(p, lane.id, "out", +5); syncSeparated(p);
+  assert.equal(lane.pinned_dur, 2);
+  trimLane(p, lane.id, "in", 0.5); syncSeparated(p);
+  assert.deepEqual([lane.pinned_in_sec, lane.pinned_dur, lane.start_sec], [1.5, 1.5, 2.5]);      // the head is gone and the rest still starts where it sounded
+  assert.equal(trimLane(p, lane.id, "in", 99) && lane.pinned_dur >= 0.1, true);
 });
