@@ -1,6 +1,6 @@
 // Generate / Selected / Stop: queue generated units one after another and put each result on its clips.
 import { composer as c } from "../../composer/composer.js";
-import { isGenerative, genUnitId, unitRoot, effFrames, effFps } from "../../shell/scenes.js";
+import { isGenerative, isVideoClip, genUnitId, unitRoot, effFrames, effFps } from "../../shell/scenes.js";
 import { buildInputs } from "./inputs.js";
 
 const expand = (body) => fetch("/funpack/api/prompt/expand", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -26,7 +26,10 @@ export default {
       if (!group.length) return false;
       const secs = group.reduce((t, s) => t + effFrames(s, pr) / effFps(s, pr), 0);
       const media = { filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" };
-      group.forEach((s) => { (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs); });
+      group.forEach((s) => {
+        (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs);
+        if (!isVideoClip(s)) s.source_in = 0;      // a fresh render was made at this length: an earlier trim's window no longer applies
+      });
       return true;
     });
 
