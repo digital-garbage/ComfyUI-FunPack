@@ -17,4 +17,5 @@ import "./popover.js";
 import "./floating.js";
 import "./gallery.js";
 import "./track.js";
+import "./nle.js";
 import "./wheel.js";

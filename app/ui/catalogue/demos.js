@@ -339,6 +339,13 @@ export const DEMOS = {
     { at: 0, label: "1", hint: "0" }, { at: 0.4, label: "2", hint: "96" },
     { at: 0.75, label: "3", hint: "180" },
   ] },
+  "timeline.stage": { pxPerSecond: 60, lanes: [
+    { id: "video", label: "Video", kind: "video", reorder: true, clips: [
+      { id: "a", start: 0, dur: 3, head: ["▶", "00:03"], title: "01", body: "empty scene", selected: true, trim: true },
+      { id: "b", start: 3, dur: 2, head: ["▦", "00:02"], title: "02", trim: true },
+    ] },
+    { id: "audio", label: "Audio", kind: "audio", clips: [{ id: "s", start: 0, dur: 3, title: "S1" }] },
+  ] },
   "track.default": { label: "Timeline", pxPerSecond: 40, playhead: 6.5, selection: ["2"], items: [
     { id: "1", icon: "▦", label: "Scene 1", badge: "1", start: 0, duration: 4 },
     { id: "2", icon: "▦", label: "Scene 2", badge: "2", start: 4, duration: 6, rating: "liked" },

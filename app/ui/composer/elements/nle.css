@@ -1,0 +1,59 @@
+/* The cutting-room timeline. One sticky gutter, one time origin shared by the ruler and every lane. */
+.cx-nle { block-size: 100%; min-block-size: 0; overflow: auto; background: var(--elev-1); }
+.cx-nle-stage { display: flex; min-inline-size: 100%; position: relative; }
+.cx-nle-gutter {
+  position: sticky; inset-inline-start: 0; z-index: 3; flex: none; inline-size: 56px;
+  background: var(--elev-1); border-inline-end: var(--bw) solid var(--line);
+}
+.cx-nle-gutter-ruler { block-size: var(--sp-9); border-block-end: var(--bw) solid var(--line); }
+.cx-nle-gutter-lane {
+  display: flex; align-items: center; justify-content: flex-end; padding-inline-end: var(--sp-3);
+  font-size: var(--fs-6); color: var(--faint); border-block-end: var(--bw) solid var(--line);
+}
+.cx-nle-lane-video { block-size: 96px; }
+.cx-nle-lane-audio { block-size: 44px; }
+.cx-nle-lane-overlay { block-size: 40px; }
+
+.cx-nle-content { position: relative; flex: none; min-inline-size: 0; }
+.cx-nle-ruler { position: relative; block-size: var(--sp-9); border-block-end: var(--bw) solid var(--line); }
+.cx-nle-tick {
+  position: absolute; inset-block-start: 0; padding-inline-start: var(--sp-2);
+  border-inline-start: var(--bw) solid var(--line); font-size: var(--fs-7); line-height: var(--sp-9);
+  color: var(--faint); font-variant-numeric: tabular-nums; user-select: none;
+}
+.cx-nle-lane { position: relative; border-block-end: var(--bw) solid var(--line); }
+
+.cx-nle-clip {
+  position: absolute; inset-block: var(--sp-2); box-sizing: border-box; overflow: hidden; cursor: grab;
+  display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-2);
+  border: var(--bw) solid var(--line-hover); border-radius: var(--r-3);
+  background: linear-gradient(var(--elev-3), var(--elev-2)); color: var(--text);
+  touch-action: none; user-select: none;
+}
+.cx-nle-clip:hover { border-color: var(--muted); }
+.cx-nle-clip.cx-on { border-color: var(--accent); background: linear-gradient(var(--accent-soft), var(--elev-2)); }
+.cx-nle-clip.cx-focus { box-shadow: inset 0 0 0 1px var(--accent); }
+.cx-nle-clip.cx-excluded { opacity: 0.45; }
+.cx-nle-clip.cx-ghost { border-style: dashed; opacity: 0.6; }
+.cx-nle-clip[data-rating="liked"] { border-color: var(--good); }
+.cx-nle-clip[data-rating="disliked"] { border-color: var(--danger); }
+.cx-nle-clip-audio, .cx-nle-clip-overlay { padding-block: 0; justify-content: center; border-color: color-mix(in srgb, var(--teal) 40%, var(--line)); }
+.cx-nle-clip-head { display: flex; align-items: center; gap: var(--sp-2); min-inline-size: 0; font-size: var(--fs-7); color: var(--muted); }
+.cx-nle-clip-tag { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cx-nle-clip-actions { margin-inline-start: auto; display: flex; gap: var(--sp-1); }
+.cx-nle-clip-action { border: 0; background: transparent; color: var(--faint); font-size: var(--fs-7); cursor: pointer; padding: 0 var(--sp-1); border-radius: var(--r-2); }
+.cx-nle-clip-action:hover { color: var(--text); background: var(--hover); }
+.cx-nle-clip-title { font-size: var(--fs-6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-nle-clip-body { font-size: var(--fs-6); color: var(--faint); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-nle-strip { display: flex; flex: 1 1 auto; min-block-size: 0; overflow: hidden; }
+.cx-nle-thumb { block-size: 100%; inline-size: auto; flex: none; object-fit: cover; }
+
+.cx-nle-trim { position: absolute; inset-block: 0; inline-size: var(--sp-3); cursor: ew-resize; z-index: 1; }
+.cx-nle-trim-in { inset-inline-start: 0; }
+.cx-nle-trim-out { inset-inline-end: 0; }
+.cx-nle-trim:hover { background: var(--accent-soft); }
+
+.cx-nle-playhead {
+  position: absolute; inset-block: 0; inline-size: 0; z-index: 2; pointer-events: none;
+  border-inline-start: 2px solid var(--accent-hi);
+}

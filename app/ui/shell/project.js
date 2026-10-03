@@ -295,6 +295,19 @@ export function createProject({ onChange, onError, onOpen } = {}) {
       changed();
     },
 
+    /** One undo step for a compound change: `fn(project)` mutates the open project in place
+     *  (see edits.js). Returns what fn returned; a falsy answer means nothing changed, and nothing is kept. */
+    edit(fn) {
+      if (!project) return false;
+      const before = JSON.stringify(project);
+      remember();
+      const result = fn(project);
+      if (!result || JSON.stringify(project) === before) { past.pop(); return result; }
+      scheduleSave();
+      changed();
+      return result;
+    },
+
     /** Any project-level field. `quiet` is for what the app maintains by itself (the pipeline's copy):
      *  saved, but not an edit a person made, so not an undo step. */
     setField(key, value, { quiet = false } = {}) {
