@@ -23,6 +23,14 @@ export const api = {
   editPipeline: (body) => call("POST", "/api/pipeline", body),
   modules: (traits) => call("GET", `/api/modules${traits ? `?traits=${encodeURIComponent(traits)}` : ""}`),
   releaseModule: (id) => call("POST", "/api/control/release", { id }),
+  searchNodes: (q, limit = 40) => call("GET", `/api/nodes/search?q=${encodeURIComponent(q || "")}&limit=${limit}`),
+  pipelinePresets: () => call("GET", "/api/pipeline/presets"),
+  /** The pipeline as a PNG (loaders, typed-in values, host torch/CUDA). -> a Blob. */
+  async settingsCard(slots, projectName, theme) {
+    const res = await fetch(`${BASE}/api/settings-card`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slots, project_name: projectName || null, theme: theme || "dark" }) });
+    if (!res.ok) throw new Error(why(res, await res.json().catch(() => null)));
+    return res.blob();
+  },
   describeNodes: (classes) => call("GET", `/api/nodes?classes=${encodeURIComponent(classes.join(","))}`),
   system: () => call("GET", "/api/system"),
   storyMarkers: () => call("GET", "/api/story/markers"),
