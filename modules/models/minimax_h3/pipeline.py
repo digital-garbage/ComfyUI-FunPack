@@ -112,7 +112,8 @@ def h3_reference_to_video():
         {"id": "sampler", "group": "Sampling", "node": "FunPackSampler",
          "roles": [{"at": "generation.sampling", "input": "steps", "label": "Steps"},
                    {"at": "generation.sampling", "input": "sampler_name", "label": "Sampler"},
-                   {"at": "generation.sampling", "input": "scheduler", "label": "Scheduler"}],
+                   {"at": "generation.sampling", "input": "scheduler", "label": "Scheduler"},
+                   {"at": "generation.seed", "input": "seed", "label": "Seed"}],
          "inputs": {
              "model": ["markup_apply", 0], "positive": ["markup_apply", 1],
              "negative": ["negative", 0], "latent": ["r2v", 1], "settings": ["settings", 0],

@@ -29,3 +29,10 @@ test("no prompt role is reported, not silently ignored", async () => {
   const { noPrompt } = await buildInputs({ project: {}, scene: { text: "x" }, slots: [], expand: async () => null });
   assert.equal(noPrompt, true);
 });
+
+test("each build draws a fresh seed, and a unit's own length overrides the project's", async () => {
+  const s = [{ id: "n", roles: [{ at: "generation.seed", input: "seed" }, { at: "project.video", input: "length", drives: "frames" }] }];
+  const args = { project: { num_frames_per_scene: 97 }, scene: {}, slots: s, expand: async () => null, frames: 49 };
+  const a = await buildInputs({ ...args, seed: () => 1 }), b = await buildInputs({ ...args, seed: () => 2 });
+  assert.deepEqual([a.inputs.n.seed, b.inputs.n.seed, a.inputs.n.length], [1, 2, 49]);
+});

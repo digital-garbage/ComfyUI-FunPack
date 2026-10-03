@@ -5,14 +5,16 @@ import { DRIVEN } from "../../shell/scenes.js";
 
 const rolesAt = (slots, at) => (slots || []).flatMap((s) => (s.roles || []).filter((r) => r.at === at).map((role) => ({ slot: s, role })));
 
-export async function buildInputs({ project, scene, slots, expand }) {
+/** `frames`: how long this unit is (its clips together); a fresh `seed` per call so a re-roll is a different result. */
+export async function buildInputs({ project, scene, slots, expand, frames, seed = () => Math.floor(Math.random() * 2 ** 31) }) {
   const raw = {};
   const put = (slot, name, value) => { raw[slot.id] = { ...raw[slot.id], [name]: value }; };
 
   for (const { slot, role } of (slots || []).flatMap((s) => (s.roles || []).filter((r) => (r.at || "").startsWith("project.") && r.input).map((role) => ({ slot: s, role })))) {
-    const v = role.at === "project.negative" ? project.negative : DRIVEN[role.drives] ? project[DRIVEN[role.drives]] : (project.video || {})[role.input];
+    const v = role.at === "project.negative" ? project.negative : DRIVEN[role.drives] ? (role.drives === "frames" && frames ? frames : project[DRIVEN[role.drives]]) : (project.video || {})[role.input];
     if (v !== undefined && v !== null && v !== "") put(slot, role.input, v);
   }
+  for (const { slot, role } of rolesAt(slots, "generation.seed")) put(slot, role.input, seed());
   const source = rolesAt(slots, "assets.source_image")[0];
   if (source) put(source.slot, "media_id", scene.source_image || "");
   const { overrides, unwired } = wireReferences(scene.references || [], slots, source ? [source.slot.id] : []);

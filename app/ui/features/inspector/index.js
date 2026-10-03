@@ -25,7 +25,7 @@ const videoRows = (p, slots) => (slots || []).flatMap((slot) => (slot.roles || [
   const now = field ? p.project[field] : p.video[role.input] ?? (slot.inputs || {})[role.input];
   if (!Number.isInteger(now)) return null;                  // the project file keeps whole numbers only
   const label = role.label || role.input;
-  return { key: field || role.input, row: c.settingsRow.default({ label, control: c.number.md({ label, min: 1, step: 1, precision: 0, value: now,
+  return { key: field || role.input, row: c.settingsRow.default({ label, control: c.number.md({ label, min: 1, max: 16384, step: 1, precision: 0, value: now,
     onChange: (v) => (field ? p.setField(field, v) : p.setVideo(role.input, v)) }) }) };
 }).filter(Boolean)).filter((r, i, all) => all.findIndex((x) => x.key === r.key) === i).map((r) => r.row);   // one row per thing edited
 
@@ -33,7 +33,7 @@ const projectRows = (p, slots) => {
   const open = p.project;
   if (!open) return [c.emptyState.default({ icon: "▭", title: "No project", hint: "Open or create one." })];
   const rows = videoRows(p, slots);
-  const num = (label, key, fallback, min) => c.settingsRow.default({ label, control: c.number.md({ label, min, step: 1, precision: 0, value: open[key] || fallback,
+  const num = (label, key, fallback, min) => c.settingsRow.default({ label, control: c.number.md({ label, min, max: 16384, step: 1, precision: 0, value: open[key] || fallback,
     onChange: (v) => p.setField(key, v) }) });
   return [
     c.label.section({ text: "Project" }),
@@ -62,6 +62,8 @@ export default {
       body.set((tab === "scene" ? sceneRows : projectRows)(p, app.pipeline && app.pipeline.slots()));
     }
     draw(true);
-    return app.on((what) => draw(what === "open"));
+    const offSlots = app.pipeline && app.pipeline.subscribe ? app.pipeline.subscribe(() => draw(true)) : null;     // the pipeline arrives after the project
+    const offApp = app.on((what) => draw(what === "open"));
+    return () => { offApp(); if (offSlots) offSlots(); };
   },
 };

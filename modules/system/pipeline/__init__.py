@@ -67,7 +67,8 @@ DEFAULT = [
      # the slot says they belong there.
      "roles": [{"at": "generation.sampling", "input": "steps", "label": "Steps"},
                {"at": "generation.sampling", "input": "sampler_name", "label": "Sampler"},
-               {"at": "generation.sampling", "input": "scheduler", "label": "Scheduler"}],
+               {"at": "generation.sampling", "input": "scheduler", "label": "Scheduler"},
+               {"at": "generation.seed", "input": "seed", "label": "Seed"}],
      "inputs": {
         "model": ["modifiers", 0], "positive": ["positive", 0], "negative": ["negative", 0],
         "latent": ["latent", 0], "settings": ["settings", 0],

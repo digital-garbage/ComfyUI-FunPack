@@ -41,8 +41,11 @@ export default {
           if (stopped) break;
           if (!p.project || p.project.id !== pid) { tell("Stopped: another project was opened."); break; }
           const root = unitRoot(p.project, unit);
-          if (!root || root.excluded || !isGenerative(root)) continue;        // removed, left out, or not made by the model
-          const { inputs, unwired, noPrompt } = await buildInputs({ project: p.project, scene: root, slots: app.pipeline.slots(), expand });
+          const group = p.project.scenes.filter((s) => genUnitId(s) === unit);
+          if (!root || group.every((s) => s.excluded) || !isGenerative(root)) continue;        // removed, all left out, or not made by the model
+          // The unit is made once at the length of its clips together (each cut adds one shared frame).
+          const frames = group.reduce((t, s) => t + effFrames(s, p.project), 0) - (group.length - 1);
+          const { inputs, unwired, noPrompt } = await buildInputs({ project: p.project, scene: root, slots: app.pipeline.slots(), expand, frames });
           if (stopped) break;
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
           if (unwired) tell(`${unwired} reference(s) did not fit this pipeline and are not used.`);
@@ -59,7 +62,7 @@ export default {
           if (end === g.CANCELLED) break;
           const images = g.run.state.images;
           if (end !== g.DONE) { tell("Generation failed. The log has ComfyUI's message."); break; }
-          if (!images.length) { tell("ComfyUI finished without a result (a cached run makes none). Change the prompt or seed and try again."); break; }
+          if (!images.length) { tell("ComfyUI finished without a result. Try again."); break; }
           record(pid, unit, images[images.length - 1]);
         }
         if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out or is a video clip.");

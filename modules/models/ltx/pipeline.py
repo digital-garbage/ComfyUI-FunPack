@@ -80,7 +80,8 @@ def _base(image_to_video: bool):
     slots += [
         {"id": "sigmas", "group": "Sampling", "node": "ManualSigmas", "inputs": {"sigmas": DISTILLED_SIGMAS}},
         {"id": "sampler", "group": "Sampling", "node": "FunPackSampler",
-         "roles": [{"at": "generation.sampling", "input": "sampler_name", "label": "Sampler"}],
+         "roles": [{"at": "generation.sampling", "input": "sampler_name", "label": "Sampler"},
+                   {"at": "generation.seed", "input": "seed", "label": "Seed"}],
          "inputs": {"model": model_source, "positive": positive_source, "negative": negative_source,
                     "latent": latent_source, "settings": ["settings", 0], "sigmas": ["sigmas", 0],
                     "seed": 0, "steps": 8, "cfg": 1.0, "sampler_name": "euler", "scheduler": "normal",
