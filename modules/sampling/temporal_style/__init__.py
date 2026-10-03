@@ -50,6 +50,8 @@ def install(patcher, values, key):
     elif chosen == "loop":
         wrapper = _loop.make_loop_temporal_wrapper(old)
         note = "loop: the clip's end joins its start"
+        if "context_handler" in patcher.model_options:
+            note += " (context windows are on: each WINDOW is looped, not the clip -- turn them off for a seamless clip)"
     else:
         return None
     patcher.set_model_unet_function_wrapper(patching.tag(wrapper, key))

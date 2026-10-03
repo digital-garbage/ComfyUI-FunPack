@@ -106,6 +106,10 @@ def install(patcher, values, key):
                 f"(it must be shorter than the window) ({schedule}, {values['fuse']})")
     if retain and "latent_retain_index_list" in dropped:
         note += "; this ComfyUI cannot pin the anchor in the latent, only in the conditioning"
+    elif retain and "cond_retain_index_list" in dropped:
+        note += "; this ComfyUI cannot pin the anchor at all"
+    if values.get("freenoise") and "freenoise" in dropped:
+        note += "; this ComfyUI has no FreeNoise blending"
     return note
 
 

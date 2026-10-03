@@ -132,3 +132,48 @@ def test_the_loop_leaves_the_noisy_early_steps_and_short_clips_alone(tiny_ltx):
     short = _loop_args(torch.randn(1, 8, 2, 2, 2), torch.randn(1, 4, 2, 3))
     p.model_options["model_function_wrapper"](apply_fn, short)
     assert torch.equal(seen["x"], short["input"])
+
+
+def test_a_model_error_passes_through_and_does_not_drop_the_style(tiny_ltx):
+    from modules.sampling.temporal_style import install
+    p = tiny_ltx.patcher.clone()
+    dropped = patching.Dropped()
+    install(patching.GuardedPatcher(p, KEY, dropped), {"style": "freeze"}, key=KEY)
+
+    def apply_fn(x, t, **c):
+        raise RuntimeError("model blew up")
+
+    args = {"input": torch.zeros(1, 1, 4), "timestep": torch.tensor([0.5]), "c": {"frame_rate": 25.0}}
+    with pytest.raises(RuntimeError, match="model blew up"):
+        p.model_options["model_function_wrapper"](apply_fn, args)
+    assert not dropped
+
+
+def test_a_failing_style_falls_back_to_the_earlier_wrapper_not_past_it(tiny_ltx, monkeypatch):
+    from modules.sampling.temporal_style import install, style
+    ran = []
+    p = tiny_ltx.patcher.clone()
+    p.set_model_unet_function_wrapper(lambda f, a: (ran.append(1), f(a["input"], a["timestep"], **a["c"]))[1])
+    dropped = patching.Dropped()
+    install(patching.GuardedPatcher(p, KEY, dropped), {"style": "freeze"}, key=KEY)
+    monkeypatch.setattr(style, "scale_frame_rate", lambda *a: 1 / 0)
+    args = {"input": torch.zeros(1, 1, 4), "timestep": torch.tensor([0.5]), "c": {"frame_rate": 25.0}}
+    p.model_options["model_function_wrapper"](lambda x, t, **c: x, args)
+    assert dropped and ran == [1]
+
+
+def test_cond_and_uncond_calls_of_one_step_share_a_roll():
+    from modules.sampling.temporal_style import loop
+    seen = []
+
+    def old(apply_fn, a):
+        seen.append(a["input"].clone())
+        return a["input"]
+
+    w = loop.make_loop_temporal_wrapper(old)
+    x = torch.arange(8.0).view(1, 1, 8, 1, 1)
+    args = {"input": x, "timestep": torch.tensor([0.5]), "c": {}}
+    w(None, args)
+    w(None, args)
+    w(None, {**args, "timestep": torch.tensor([0.3])})
+    assert torch.equal(seen[0], seen[1]) and not torch.equal(seen[1], seen[2])

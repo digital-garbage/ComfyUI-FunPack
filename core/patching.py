@@ -246,6 +246,41 @@ def guard_wrapper(fn, key: str, dropped: Dropped):
     return guarded
 
 
+def guard_unet(fn, key: str, dropped: Dropped, prior=None):
+    """`guard` for the `wrapper(apply_fn, args)` hook. `apply_fn` is the model: what it raises (an OOM,
+    an interrupt) is not this module's failure and passes through; when the module itself fails it is
+    dropped and the call goes to whatever wrapper was installed before it (`prior`), else the model."""
+    import traceback
+
+    def fallback(apply_fn, args):
+        if prior is not None:
+            return prior(apply_fn, args)
+        return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+    def guarded(apply_fn, args):
+        if key in dropped:
+            return fallback(apply_fn, args)
+        seen = _Executor(apply_fn)
+        try:
+            return fn(seen, args)
+        except Exception as exc:                 # noqa: BLE001
+            if exc is seen.raised:
+                raise
+            if dropped.record(key, exc):
+                from . import log
+                log.warning(
+                    key,
+                    "failed during sampling and is now OFF for the rest of this run; "
+                    "the run continues without it\n"
+                    + "".join(traceback.format_exception(exc)).rstrip())
+            return seen.result if seen.done else fallback(apply_fn, args)
+
+    marker = getattr(fn, TAG, None)
+    if marker is not None:
+        guarded.__dict__[TAG] = marker
+    return guarded
+
+
 # The neutral result for each hook ComfyUI offers, by the method that installs
 # it. Core knows ComfyUI's own shapes here -- not FunPack's features -- because
 # "what this hook returns when it does nothing" is a fact about ComfyUI.
@@ -308,9 +343,13 @@ class GuardedPatcher:
         def install(*args, **kwargs):
             args = list(args)
             if len(args) > index and callable(args[index]):
-                args[index] = (guard_wrapper(args[index], self._key, self._dropped)
-                               if name == "add_wrapper_with_key"
-                               else guard(args[index], self._key, neutral, self._dropped))
+                if name == "add_wrapper_with_key":
+                    args[index] = guard_wrapper(args[index], self._key, self._dropped)
+                elif name == "set_model_unet_function_wrapper":
+                    args[index] = guard_unet(args[index], self._key, self._dropped,
+                                             self._patcher.model_options.get("model_function_wrapper"))
+                else:
+                    args[index] = guard(args[index], self._key, neutral, self._dropped)
             return target(*args, **kwargs)
 
         return install

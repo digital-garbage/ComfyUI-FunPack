@@ -176,7 +176,7 @@ def make_loop_temporal_wrapper(old_wrapper):
         except Exception:
             sigma = 1.0
         if state["last_sigma"] is not None and sigma > state["last_sigma"] + 1e-4:
-            state["count"] = 0  # sigma went back up: new scene/run
+            state["count"], state["step_sigma"] = 0, None  # sigma went back up: new scene/run
         state["last_sigma"] = sigma
 
         c = args.get("c") or {}
@@ -201,8 +201,11 @@ def make_loop_temporal_wrapper(old_wrapper):
         if t_content < LOOP_ROLL_MIN_FRAMES:
             return _call(args)
 
-        state["count"] += 1
-        frac = _van_der_corput(state["count"])
+        if state.get("step_sigma") is None or abs(sigma - state["step_sigma"]) > 1e-6:
+            state["count"] += 1                       # a new step; cond and uncond calls of one step share a roll
+            state["step_sigma"] = sigma
+            state["frac"] = _van_der_corput(state["count"])
+        frac = state["frac"]
         if not state["logged"]:
             state["logged"] = True
             tail_note = f", {v_tail} guide frame(s) pinned" if v_tail else ""

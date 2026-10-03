@@ -4,7 +4,7 @@ from comfy_api.latest import io
 from ..._core import log, patching
 from . import patch, projector
 
-KEY = "funpack.identity_transfer"
+KEY = "funpack_identity"
 
 
 def _projector_choices():

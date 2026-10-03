@@ -3,7 +3,7 @@ import torch
 
 from core import patching
 
-KEY = "funpack.identity_transfer"
+KEY = "funpack_identity"
 
 
 def _run(tiny, patched):
