@@ -24,7 +24,7 @@ export default {
     };
     function draw(force) {      // not on every keystroke: that would rebuild the box being typed in
       const sc = p.selected, open = p.project;
-      const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length] : ""}`;
+      const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "project" && open ? [open.postfix_enabled !== false, open.generation_mode] : ""}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length] : ""}`;
       titled();
       if (!force && next === key) return;
       key = next;

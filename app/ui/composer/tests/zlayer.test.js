@@ -17,6 +17,10 @@ test("autocomplete outranks modal", () => {
   assert.ok(baseOf("autocomplete") > baseOf("modal"));
 });
 
+test("a modal covers floating windows: nothing behind it is usable until it closes", () => {
+  assert.ok(baseOf("modal") > baseOf("floatingWindow"));
+});
+
 test("an unknown rung is refused rather than guessed", () => {
   assert.throws(() => baseOf("somewhere"), RangeError);
 });
@@ -25,7 +29,7 @@ test("peers stack within their rung and never reach the next one", () => {
   const a = claim("modal");
   const b = claim("modal");
   assert.ok(b.z > a.z);
-  assert.ok(b.z < baseOf("floatingWindow"));
+  assert.ok(b.z < baseOf("toast"));
 });
 
 test("releasing frees the slot for reuse", () => {

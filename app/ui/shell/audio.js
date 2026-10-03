@@ -45,10 +45,14 @@ export function removeTrack(p, id) {
 export function syncSeparated(p) {
   const tracks = p.audio_tracks || [];
   if (!tracks.some((t) => t.kind === "separated")) return;
-  const starts = new Map(segments(p).filter((s) => s.kind === "scene").map((s) => [s.id, s.start]));
+  const segs = segments(p).filter((s) => s.kind === "scene");
+  const starts = new Map(segs.map((s) => [s.id, s.start])), durs = new Map(segs.map((s) => [s.id, s.dur]));
   for (const t of tracks) {
     if (t.kind !== "separated" || !starts.has(t.scene_id)) continue;
     const sc = p.scenes.find((s) => s.id === t.scene_id);
-    if (!sc.excluded && Math.abs((t.start_sec || 0) - starts.get(t.scene_id)) > 0.001) t.start_sec = starts.get(t.scene_id);
+    if (sc.excluded) continue;
+    if (Math.abs((t.start_sec || 0) - starts.get(t.scene_id)) > 0.001) t.start_sec = starts.get(t.scene_id);
+    const room = durs.get(t.scene_id);
+    if (t.pinned_dur != null && t.pinned_dur > room + 0.001) { t.pinned_dur = room; t.source_dur = room; }       // the sound is never longer than its picture (a cut or a trim shortened it)
   }
 }

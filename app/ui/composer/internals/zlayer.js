@@ -11,7 +11,8 @@
 // and "move to the front" has nowhere to go.
 
 // Order is the contract; the numbers are derived. Autocomplete sits ABOVE modal
-// on purpose: it opens from a field that is often inside one.
+// on purpose: it opens from a field that is often inside one. A modal sits above
+// every floating window: nothing behind it may be used until it is closed.
 export const LADDER = [
   "local",
   "dropline",
@@ -20,8 +21,8 @@ export const LADDER = [
   "popover",
   "backdrop",
   "wizard",
-  "modal",
   "floatingWindow",
+  "modal",
   "toast",
   "autocomplete",
   "tour",

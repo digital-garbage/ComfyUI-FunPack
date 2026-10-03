@@ -58,7 +58,6 @@ export function projectRows(p, slots, api) {
     c.toggle.default({ label: "Postfix", hint: "Appended to every scene (a style or quality tag, say).", checked: open.postfix_enabled !== false, onChange: (v) => p.setField("postfix_enabled", v) }),
     c.textarea.md({ label: "Postfix", value: p.postfix, rows: 2, disabled: open.postfix_enabled === false, onInput: (v) => p.setPostfix(v) }),
     c.collapsible.default({ label: "ADVANCED PROJECT SETTINGS", body: c.region.stack({ gap: "sm", children: [
-      c.field.default({ label: "Max scenes", control: c.number.md({ label: "Max scenes", min: 1, max: 10000, step: 1, precision: 0, value: open.max_scenes || 8, onChange: (v) => p.setField("max_scenes", v) }) }),
       c.collapsible.default({ label: "Split preview (generation prompt)", body: splitPreview(p, api) }),
     ] }) }),
   ];

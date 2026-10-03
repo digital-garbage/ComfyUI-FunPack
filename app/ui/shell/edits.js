@@ -1,6 +1,7 @@
 // Changes to a project's scenes, as plain functions on the open project: `project.edit((p) => addScene(p))`.
 // Each mutates in place and answers truthy when it changed something. They know what a scene IS (gen units,
 // ghosts, the cut order) and nothing about the screen.
+import { trackFor } from "./audio.js";
 import {
   genUnitId, isVideoClip, isSubclip, effFps, effFrames, seconds, snapFrames, LTX_GRID,
 } from "./scenes.js";
@@ -48,6 +49,7 @@ export function removeScene(p, id, { pending = false } = {}) {
     mates.filter((s) => s.id !== id && (s.cut_offset_frames || 0) > (sc.cut_offset_frames || 0))
       .forEach((s) => { s.cut_offset_frames = Math.max(0, s.cut_offset_frames - removedFrames); });
   }
+  p.audio_tracks = (p.audio_tracks || []).filter((t) => !(t.kind === "separated" && t.scene_id === id));       // its sound goes with it: a lane with no clip could not be reached
   const anchor = at > 0 ? p.scenes[at - 1].id : null;
   p.scene_ghosts = (p.scene_ghosts || []).map((g) => (g.afterSceneId === id ? { ...g, afterSceneId: anchor } : g));
   ghostOrDrop(p, sc, anchor, pending);
@@ -166,6 +168,7 @@ export function split(p, id, atFrames, grid = LTX_GRID) {
   second.frames = snapFrames(frames - cut, "round", grid);
   second.text = "";
   second.rating = "";
+  if (sc.audio_separated) { const lane = trackFor(p, sc.id); second.audio_separated = false; second.audio_volume = lane && lane.volume != null ? lane.volume : 1; }       // the lane stays with the first half; the second plays its own sound
   sc.gen_unit_id = unit;
   // The seam between the halves is an internal hard cut: the outgoing edge now belongs to the second half.
   sc.frames = cut;
@@ -189,7 +192,7 @@ export function split(p, id, atFrames, grid = LTX_GRID) {
   const r = renders[id];
   if (r && r.media) {
     delete r.durationSec;                       // a split is an explicit re-length: both halves go back to plan layout
-    renders[second.id] = { media: r.media, inSec: (r.inSec || 0) + cutSec, renderPrompt: r.renderPrompt ? { ...r.renderPrompt } : null };
+    renders[second.id] = { media: r.media, inSec: (r.inSec || 0) + cutSec, renderPrompt: r.renderPrompt ? { ...r.renderPrompt } : null, ...(r.promptId ? { promptId: r.promptId } : {}) };
   }
   return second;
 }

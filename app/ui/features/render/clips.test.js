@@ -24,3 +24,9 @@ test("only the picked clips are kept, still in timeline order, and unpicked ones
 test("a clip picked by hand is exported even when it is excluded from the full run", () => {
   assert.deepEqual(clipSpecs(p, new Set(["c"])).clips.map((c) => c.scene_id), ["c"]);
 });
+
+test("a clip whose sound was separated is quiet in the render; others keep their volume", () => {
+  const q = { num_frames_per_scene: 50, frame_rate: 25, scenes: [{ id: "a", audio_separated: true, audio_volume: 0 }, { id: "b", audio_volume: 0.4 }, { id: "c" }],
+    scene_renders: { a: { media: { filename: "a" } }, b: { media: { filename: "b" } }, c: { media: { filename: "c" } } } };
+  assert.deepEqual(clipSpecs(q).clips.map((x) => x.volume), [0, 0.4, 1]);
+});

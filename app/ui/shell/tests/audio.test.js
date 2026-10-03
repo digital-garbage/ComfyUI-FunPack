@@ -48,3 +48,24 @@ test("a separated lane follows its clip when the cut changes, and an untouched p
   syncSeparated(p);
   assert.equal(JSON.stringify(p), before);
 });
+
+import { removeScene, split } from "../edits.js";
+
+test("splitting a separated clip leaves the lane with the first half, which it is cut to; the second half gets its own sound back", () => {
+  const p = proj();
+  p.num_frames_per_scene = 97;
+  separate(p, "a");
+  assert.ok(split(p, "a", 49));
+  const lane = p.audio_tracks[0];
+  syncSeparated(p);
+  const [first, second] = [p.scenes[0], p.scenes[1]];
+  assert.deepEqual([first.audio_separated, second.audio_separated, second.audio_volume], [true, false, 1]);
+  assert.ok(lane.pinned_dur <= 49 / 25 + 0.01, "the lane is no longer than the first half");
+});
+
+test("removing a separated clip removes its lane (a lane with no clip could not be reached)", () => {
+  const p = proj();
+  separate(p, "b");
+  removeScene(p, "b");
+  assert.equal(p.audio_tracks.length, 0);
+});

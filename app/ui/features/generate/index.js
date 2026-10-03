@@ -31,7 +31,8 @@ export default {
       const media = { filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" };
       group.forEach((s) => {
         (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs, promptId);
-        if (!isVideoClip(s)) s.source_in = 0;      // a fresh render was made at this length: an earlier trim's window no longer applies
+        if (!isVideoClip(s)) s.source_in = 0;
+        if (!(s.cut_offset_frames > 0)) s.rating = "";       // a new render has not been rated yet      // a fresh render was made at this length: an earlier trim's window no longer applies
       });
       return true;
     }).catch(() => tell("The result could not be saved to its project."));
@@ -42,7 +43,6 @@ export default {
       const pid = p.project.id;
       let made = 0;
       said = false;
-      app.api.newTasteGeneration().catch(() => {});        // ratings of the last run can no longer be paired with what it learned
       try {
         for (const unit of units) {
           if (stopped) break;
@@ -64,6 +64,7 @@ export default {
             break;
           }
           if (stopped) g.cancel();                      // Stop landed while this one was being queued
+          if (!made) app.api.newTasteGeneration().catch(() => {});        // a run really started: the last run's unrated clips can no longer be paired with what it learned
           made += 1;
           const end = await done;
           if (end === g.CANCELLED) break;
@@ -99,7 +100,7 @@ export default {
       const unit = genUnitId(sc);
       const finish = (end) => {
         const im = g.run.state.images;
-        if (end === g.DONE && im.length) record(projectId, unit, im[im.length - 1]);
+        if (end === g.DONE && im.length) record(projectId, unit, im[im.length - 1], undefined, g.run.state.promptId);
         else if (end === g.FAILED) tell((g.run.state.error && g.run.state.error.message) || "A run from before the reload failed.");
         else if (end !== g.CANCELLED) tell("A run from before the reload ended without a result that could be attached. Generate again.");
         busy = false; draw();
