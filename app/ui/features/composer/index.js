@@ -3,6 +3,7 @@ import { composer as c } from "../../composer/composer.js";
 import { applyStory, joinStory } from "./story.js";
 import { shortcuts } from "./shortcuts.js";
 import { cuts } from "./cuts.js";
+import { enhance } from "./enhance.js";
 
 const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }];
 const inert = (label, tone = "ghost") => c.button.sm({ label, tone, disabled: true });
@@ -40,12 +41,12 @@ const story = (app, own) => {
 };
 
 const sheets = { story, shortcuts, cuts,
-  enhance: () => later("Rewrite a prompt with a language model."), chat: () => later("Talk a scene through with the enhancer.") };
+  enhance, chat: () => later("Talk a scene through with the enhancer.") };
 
 export default {
   id: "composer",
   mount: "timeline.status",
-  needs: ["project", "api"],
+  needs: ["project", "api", "pipeline"],
   setup({ host, app }) {
     let win = null, owned = [];
     const cleanup = () => { owned.forEach((f) => f()); owned = []; };
