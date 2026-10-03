@@ -14,3 +14,9 @@ test("playing clips come out in order; scenes with nothing to play are counted, 
   assert.equal(clips[1].gap_after, 1.5, "a pause after a scene is the clip's gap_after");
   assert.deepEqual([clips[2].bin_media_ref, clips[2].in, clips[2].dur], ["m1", 1, 2]);
 });
+
+test("only the picked clips are kept, still in timeline order, and unpicked ones are not counted as missing", () => {
+  const { clips, missing } = clipSpecs(p, new Set(["v", "a"]));
+  assert.deepEqual(clips.map((c) => c.scene_id), ["a", "v"]);
+  assert.equal(missing, 0);
+});

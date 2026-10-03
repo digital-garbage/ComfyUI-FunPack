@@ -13,6 +13,7 @@ export default [
   "./features/preview/index.js",
   "./features/menus/index.js",
   "./features/render/index.js",
+  "./features/render/selected.js",
   "./features/placeholders/index.js",
   "./features/generate/warn.js",
   "./features/composer/index.js",

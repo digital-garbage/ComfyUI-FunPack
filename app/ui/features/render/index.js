@@ -2,8 +2,7 @@
 import { composer as c } from "../../composer/composer.js";
 import { call } from "../../shell/api.js";
 import { clipSpecs } from "./clips.js";
-
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+import { runJob } from "./job.js";
 
 export default {
   id: "render",
@@ -21,9 +20,7 @@ export default {
       busy = true; draw();
       try {
         await p.flush();
-        const { job_id: job } = await call("POST", `/api/projects/${open.id}/render`, { clips });
-        let state;
-        do { await wait(1500); state = await call("GET", `/api/projects/${open.id}/render/${job}`); } while (state.state === "queued" || state.state === "running");
+        const state = await runJob(`/api/projects/${open.id}/render`, { clips });
         if (state.state !== "done") return tell(state.detail || "The render failed.");
         const { media } = await call("POST", "/api/import-clip", { clip: state.media, name: `${open.name}.mp4` });
         if (app.say) app.say("media");                   // the bin shows it now

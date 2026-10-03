@@ -16,7 +16,7 @@ const items = {
   ],
 
   "timeline.actions": () => [btn("⚡ Auto Montage")],
-  "timeline.toolbar": () => [btn("⤓ Export"), btn("Save to media bin"), btn("⊟ Separate audio"), btn("Remove audio")],
+  "timeline.toolbar": () => [btn("⊟ Separate audio"), btn("Remove audio")],
 };
 
 export default Object.entries(items).map(([mount, build]) => ({

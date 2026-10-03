@@ -2,12 +2,13 @@
 import { segments, isVideoClip, effFps } from "../../shell/scenes.js";
 
 /** -> { clips, missing }: `missing` counts scenes that have nothing to play yet (no render). */
-export function clipSpecs(p) {
+export function clipSpecs(p, only) {   // `only`: a Set of scene ids to keep (the picked clips)
   const renders = p.scene_renders || {};
   const clips = [];
   let missing = 0;
   for (const seg of segments(p)) {
     if (seg.kind !== "scene" || (seg.scene.excluded && !seg.scene.removed_from_plan)) continue;       // removed from the plan still plays
+    if (only && !only.has(seg.scene.id)) continue;
     const sc = seg.scene, r = renders[sc.id], base = { scene_id: sc.id, dur: seg.dur, fps: effFps(sc, p), gap_after: Math.max(0, +sc.gap_after_sec || 0) };
     if (isVideoClip(sc)) {
       if (!(sc.source && sc.source.media_ref)) { missing += 1; continue; }
