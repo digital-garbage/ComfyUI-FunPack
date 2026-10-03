@@ -25,6 +25,7 @@ export default [
   "./features/status/index.js",
   "./features/audio/index.js",
   "./features/overlays/index.js",
+  "./features/overlays/monitor.js",
   "./features/montage/index.js",
   "./features/generate/warn.js",
   "./features/composer/index.js",

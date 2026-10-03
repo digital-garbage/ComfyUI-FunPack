@@ -33,3 +33,10 @@ test("move clamps at 0; restack walks lanes and stops at the edge; removing a la
   ov.removeLane(p, l2.id);
   assert.equal(ov.find(p, o.id), undefined);
 });
+
+test("stack order: lower lane first, then earlier start; a lane-less overlay sits at the bottom", () => {
+  const p = {}, a = ov.addText(p, 5), l2 = ov.addLane(p), b = ov.addText(p, 1), c = ov.addText(p, 0);
+  p.overlay_tracks.push({ id: "orphan", lane_id: "gone", start_sec: 9 });
+  assert.deepEqual(ov.inStackOrder(p).map((o) => o.id), [a.id, "orphan", c.id, b.id]);
+  assert.equal(l2.id, b.lane_id);
+});

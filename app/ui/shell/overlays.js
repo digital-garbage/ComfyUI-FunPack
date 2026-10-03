@@ -77,3 +77,9 @@ export function restack(p, id, by) {
   o.lane_id = lanes[to].id;
   return true;
 }
+
+/** Bottom lane first, then by start: the order the render lays them down. */
+export function inStackOrder(p) {
+  const at = (o) => Math.max(0, lanesOf(p).findIndex((l) => l.id === o.lane_id));
+  return [...overlaysOf(p)].sort((a, b) => at(a) - at(b) || (a.start_sec || 0) - (b.start_sec || 0));
+}
