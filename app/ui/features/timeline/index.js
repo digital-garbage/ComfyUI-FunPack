@@ -26,7 +26,7 @@ export default {
         const sc = p.project.scenes.find((s) => s.id === id);
         if (!sc) return;
         const dur = segments(p.project).find((s) => s.id === id).dur;
-        edit((pr) => edge === "out" ? edits.resize(pr, id, dur + d) : edits.trimLeft(pr, id, -d));
+        edit((pr) => edge === "out" ? edits.resize(pr, id, dur + d) : d > 0 && edits.trimLeft(pr, id, d));   // the left edge only cuts in
       },
       onReorder: (id, index) => edit((pr) => {      // the stage counts ghosts and pauses too; the cut counts scenes
         const all = segments(pr).filter((s) => s.id !== id);
@@ -46,7 +46,7 @@ export default {
         const seg = segments(open).find((s) => s.id === sel.focus && s.kind === "scene");
         if (!seg) return;
         const inside = at > seg.start && at < seg.start + seg.dur;
-        edit((pr) => edits.split(pr, seg.id, inside ? framesAt(seg.scene, pr, at - seg.start) : undefined));
+        if (!edit((pr) => edits.split(pr, seg.id, inside ? framesAt(seg.scene, pr, at - seg.start) : undefined))) c.toast.warn({ text: "Too close to the clip's edge to cut there." });
       };
       toolbar = swap(toolbar, [
         c.text.sm({ text: `${clock(at)} / ${clock(open ? totalSeconds(open) : 0)}` }),
@@ -64,7 +64,8 @@ export default {
 
     const draw = () => {
       const open = p.project;
-      stage.setLanes(open ? [videoLane(open, sel.ids, sel.focus)] : []);
+      stage.setLanes(open ? [videoLane(open, sel.ids, sel.focus, undefined, (g) => [{ label: "✕", title: "Remove from the timeline",
+        onClick: () => edit((pr) => { pr.scene_ghosts = (pr.scene_ghosts || []).filter((x) => x.id !== g.id); return true; }) }])] : []);
       bar();
     };
     host.append(toolbar.node, zoomBar.node, stage.node);

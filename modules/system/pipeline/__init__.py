@@ -53,7 +53,7 @@ DEFAULT = [
     {"id": "latent", "group": "Preparation", "node": "FunPackEmptyLatent",
      "roles": [{"at": "project.video", "input": "width", "label": "Width"},
                {"at": "project.video", "input": "height", "label": "Height"},
-               {"at": "project.video", "input": "length", "label": "Length"}],
+               {"at": "project.video", "input": "length", "label": "Length", "drives": "frames"}],
      "inputs": {
         "model": ["model", 0], "width": 512, "height": 512, "length": 1, "batch_size": 1}},
 

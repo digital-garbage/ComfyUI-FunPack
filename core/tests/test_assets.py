@@ -17,9 +17,12 @@ COMPOSER_CSS = config.APP_DIR / "composer" / "composer.css"
 URL_PREFIX = config.UI_PREFIX + "/app/"
 
 
+UI_FONTS_CSS = config.APP_DIR / "ui" / "composer" / "tokens" / "fonts.css"
+
+
 def font_urls():
-    text = FONTS_CSS.read_text()
-    return re.findall(r"url\('([^']+)'\)", text)
+    """Every font either composer declares (the old shell's and the new frontend's)."""
+    return [u for css in (FONTS_CSS, UI_FONTS_CSS) if css.exists() for u in re.findall(r"url\('([^']+)'\)", css.read_text())]
 
 
 def test_fonts_css_is_imported_first():

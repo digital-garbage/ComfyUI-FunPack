@@ -18,3 +18,14 @@ test("a failing expander sends the typed text", async () => {
   const { inputs } = await buildInputs({ project: {}, scene: { text: "x" }, slots, expand: async () => { throw new Error("down"); } });
   assert.equal(inputs.p.text, "x");
 });
+
+test("a role that drives length is fed from the project number the timeline draws", async () => {
+  const s = [{ id: "k", roles: [{ at: "project.video", input: "length", drives: "frames" }, { at: "project.video", input: "width" }] }];
+  const { inputs } = await buildInputs({ project: { num_frames_per_scene: 49, video: { length: 97, width: 640 } }, scene: {}, slots: s, expand: async () => null });
+  assert.deepEqual(inputs.k, { length: 49, width: 640 });
+});
+
+test("no prompt role is reported, not silently ignored", async () => {
+  const { noPrompt } = await buildInputs({ project: {}, scene: { text: "x" }, slots: [], expand: async () => null });
+  assert.equal(noPrompt, true);
+});

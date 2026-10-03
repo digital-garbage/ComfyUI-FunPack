@@ -91,7 +91,7 @@ def h3_reference_to_video():
         {"id": "markup", "group": "Preparation", "node": "FunPackPromptMarkup",
          "inputs": {"text": ["enhance", 0]}},
         {"id": "r2v", "group": "Preparation", "node": "MiniMaxH3ReferenceToVideo",
-         "roles": [{"at": "project.video", "input": "length", "label": "Length"}],
+         "roles": [{"at": "project.video", "input": "length", "label": "Length", "drives": "frames"}],
          "inputs": {
              "clip": ["clip", 0], "vae": ["vae", 0], "audio_vae": ["audio_vae", 0],
              "prompt": ["markup", 0], "width": ["image_transform", 4], "height": ["image_transform", 5],

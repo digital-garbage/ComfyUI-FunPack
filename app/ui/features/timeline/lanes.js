@@ -3,13 +3,13 @@ import { segments, isVideoClip, effFps } from "../../shell/scenes.js";
 
 const first = (t) => ((t || "").split("\n")[0] || "").slice(0, 80);
 
-export function videoLane(p, picked, focus, actions = () => []) {
+export function videoLane(p, picked, focus, actions = () => [], ghostActions = () => []) {
   const renders = p.scene_renders || {};
   return {
     id: "video", label: "Video", kind: "video", reorder: true,
     clips: segments(p).map((seg) => {
       if (seg.kind === "gap") return { id: seg.id, start: seg.start, dur: seg.dur, title: "pause", ghost: true };
-      if (seg.kind === "ghost") return { id: seg.id, start: seg.start, dur: seg.dur, title: first(seg.ghost.text) || "removed", ghost: true };
+      if (seg.kind === "ghost") return { id: seg.id, start: seg.start, dur: seg.dur, title: first(seg.ghost.text) || "removed", ghost: true, actions: ghostActions(seg.ghost) };
       const sc = seg.scene;
       const rendered = Boolean(renders[sc.id]);
       return {

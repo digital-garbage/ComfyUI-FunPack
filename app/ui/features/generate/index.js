@@ -16,7 +16,8 @@ export default {
   needs: ["project", "pipeline", "generate"],
   setup({ host, app }) {
     const p = app.project, g = app.generate;
-    const tell = (text) => c.toast.warn({ text });
+    let said = false;
+    const tell = (text) => { said = true; c.toast.warn({ text }); };
     g.on("say", tell); g.on("warn", tell);          // the pipeline check's refusals: said where the person is looking
     let busy = false, stopped = false;
 
@@ -33,17 +34,26 @@ export default {
       if (busy) return;
       busy = true; stopped = false; draw();
       const pid = p.project.id;
+      let made = 0;
       try {
         for (const unit of units) {
           if (stopped) break;
           if (!p.project || p.project.id !== pid) { tell("Stopped: another project was opened."); break; }
           const root = unitRoot(p.project, unit);
           if (!root || root.excluded || !isGenerative(root)) continue;        // removed, left out, or not made by the model
-          const { inputs, unwired } = await buildInputs({ project: p.project, scene: root, slots: app.pipeline.slots(), expand });
+          const { inputs, unwired, noPrompt } = await buildInputs({ project: p.project, scene: root, slots: app.pipeline.slots(), expand });
           if (stopped) break;
+          if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
           if (unwired) tell(`${unwired} reference(s) did not fit this pipeline and are not used.`);
           const done = g.waitForTerminal();             // listening before the run starts, so a fast one is not missed
-          if (!(await g.generate({ sceneId: root.id, projectId: pid, inputs }))) { done.cancel(); break; }
+          said = false;
+          if (!(await g.generate({ sceneId: root.id, projectId: pid, inputs }))) {
+            done.cancel();
+            if (!said) tell(g.run.state.error || "Could not queue the run. Is ComfyUI running, and is a run already going?");
+            break;
+          }
+          if (stopped) g.cancel();                      // Stop landed while this one was being queued
+          made += 1;
           const end = await done;
           if (end === g.CANCELLED) break;
           const images = g.run.state.images;
@@ -51,6 +61,7 @@ export default {
           if (!images.length) { tell("ComfyUI finished without a result (a cached run makes none). Change the prompt or seed and try again."); break; }
           record(pid, unit, images[images.length - 1]);
         }
+        if (!made && !stopped) tell("Nothing to generate: every scene is left out or is a video clip.");
       } finally { busy = false; draw(); }
     }
     const unitsOf = (scenes) => [...new Set(scenes.map(genUnitId))];
@@ -66,6 +77,13 @@ export default {
       if (nodes.length) nodes.forEach((n, i) => n.replaceWith(next[i])); else host.append(...next);     // in place: keeps its spot in the row
       nodes = next;
     }
+    // A run found after a reload belongs to this page's last session: its result still goes on its clips.
+    g.on("adopt", ({ sceneId, projectId }) => {
+      const sc = p.project && p.project.id === projectId && p.project.scenes.find((s) => s.id === sceneId);
+      if (!sc) return;
+      const unit = genUnitId(sc), done = g.waitForTerminal();
+      done.then((end) => { const im = g.run.state.images; if (end === g.DONE && im.length) record(projectId, unit, im[im.length - 1]); });
+    });
     draw();
     return app.on(draw);
   },

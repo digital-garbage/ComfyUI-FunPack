@@ -2,6 +2,9 @@
 // each begins on the timeline. Pure -- every function takes the project (and renders) it reads, so the same
 // answers come out on the timeline, in the player and in a run.
 
+/** A pipeline role that `drives` the plan's length or rate is fed from the project number the timeline draws. */
+export const DRIVEN = { frames: "num_frames_per_scene", fps: "frame_rate" };
+
 export const genUnitId = (sc) => (sc && (sc.gen_unit_id || sc.id)) || "";
 export const isVideoClip = (sc) => Boolean(sc && sc.source && sc.source.type === "video");
 export const isGenerative = (sc) => Boolean(sc) && !isVideoClip(sc);

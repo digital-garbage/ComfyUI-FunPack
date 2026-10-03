@@ -17,7 +17,7 @@ DISTILLED_SIGMAS = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421
 
 
 def _base(image_to_video: bool):
-    video = {"at": "project.video", "input": "frame_rate", "label": "FPS"}
+    video = {"at": "project.video", "input": "frame_rate", "label": "FPS", "drives": "fps"}
     latent_source = ["latent", 0]
     model_source, positive_source, negative_source = ["modifiers", 0], ["conditioning", 0], ["conditioning", 1]
     slots = [
@@ -39,7 +39,7 @@ def _base(image_to_video: bool):
         {"id": "latent", "group": "Preparation", "node": "FunPackEmptyLatent",
          "roles": [{"at": "project.video", "input": "width", "label": "Width"},
                    {"at": "project.video", "input": "height", "label": "Height"},
-                   {"at": "project.video", "input": "length", "label": "Length"},
+                   {"at": "project.video", "input": "length", "label": "Length", "drives": "frames"},
                    video],
          "inputs": {"model": ["model", 0], "audio_vae": ["audio_vae", 0],
                     "width": 768, "height": 512, "length": 121, "frame_rate": 25.0, "batch_size": 1}},
@@ -89,7 +89,7 @@ def _base(image_to_video: bool):
         {"id": "decode", "group": "Render", "node": "FunPackDecode", "inputs": {
             "samples": ["sampler", 0], "vae": ["model", 2], "model": ["model", 0], "audio_vae": ["audio_vae", 0]}},
         {"id": "video", "group": "Render", "node": "CreateVideo",
-         "roles": [{"at": "project.video", "input": "fps", "label": "FPS"}],
+         "roles": [{"at": "project.video", "input": "fps", "label": "FPS", "drives": "fps"}],
          "inputs": {"images": ["decode", 0], "fps": 25.0, "audio": ["decode", 1]}},
         {"id": "save", "group": "Render", "node": "SaveVideo", "inputs": {
             "video": ["video", 0], "filename_prefix": "FunPack", "format": "auto"}},
