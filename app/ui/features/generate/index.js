@@ -6,6 +6,7 @@ import { inPlace } from "../../shell/place.js";
 import { buildInputs } from "./inputs.js";
 import { offer } from "../../shell/actions.js";
 
+const MAX_TAKES = 12;
 const expand = (body) => fetch("/funpack/api/prompt/expand", { method: "POST", headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ ...body, seed: Math.floor(Math.random() * 2 ** 31) || 1 }) }).then((r) => (r.ok ? r.json() : null));
 
@@ -30,6 +31,13 @@ export default {
       if (!group.length) return false;
       const secs = (frames || group.reduce((t, s) => t + effFrames(s, pr), 0) - (group.length - 1)) / (pr.frame_rate || 25);   // as queued, not as the project reads now
       const media = { filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" };
+      const head = group.find((s) => !(s.cut_offset_frames > 0)) || group[0];
+      const takes = ((pr.scene_variants ||= {})[head.id] ||= []);        // every render stays as a take: the one that was on the clip keeps its rating
+      const was = (pr.scene_renders || {})[head.id];
+      const old = was && was.promptId && takes.find((t) => t.promptId === was.promptId);
+      if (old) old.rating = head.rating || "";
+      takes.push({ media, ...(promptId ? { promptId } : {}), rating: "" });
+      if (takes.length > MAX_TAKES) takes.splice(0, takes.length - MAX_TAKES);
       group.forEach((s) => {
         (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs, promptId);
         if (!isVideoClip(s)) s.source_in = 0;
@@ -38,14 +46,17 @@ export default {
       return true;
     }).catch(() => tell("The result could not be saved to its project.")); };
 
-    async function runUnits(units) {
+    // `times` > 1: the same shots again, only the seed differing (the prompt's random picks are drawn once), so the takes can be compared.
+    async function runUnits(units, times = 1) {
       if (busy) return;
       busy = true; stopped = false; draw();
       const pid = p.project.id;
       let made = 0;
       said = false;
       try {
-        for (const unit of units) {
+        const drawn = new Map();
+        const same = times > 1 ? (body) => { const key = JSON.stringify(body); if (!drawn.has(key)) drawn.set(key, expand(body)); return drawn.get(key); } : expand;
+        for (const unit of Array.from({ length: times }, () => units).flat()) {
           if (stopped) break;
           if (!p.project || p.project.id !== pid) { tell("Stopped: another project was opened."); break; }
           const root = unitRoot(p.project, unit);
@@ -53,7 +64,7 @@ export default {
           if (!root || group.every((s) => s.excluded) || !isGenerative(root)) continue;        // removed, all left out, or not made by the model
           // The unit is made once at the length of its clips together (each cut adds one shared frame).
           const frames = group.reduce((t, s) => t + effFrames(s, p.project), 0) - (group.length - 1);
-          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: p.project, scene: root, slots: app.pipeline.slots(), expand, frames, hooks: app.inputHooks });
+          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: p.project, scene: root, slots: app.pipeline.slots(), expand: same, frames, hooks: app.inputHooks });
           app.lastRun.typed = (root.text || "").trim();        // what a Chat comment made now would be about
           if (stopped) break;
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
@@ -79,6 +90,7 @@ export default {
         if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out or is a video clip.");
       } finally { busy = false; draw(); }
     }
+    app.runner.units = (units, times) => runUnits(units, times);
     const pickedScenes = () => { const ids = new Set(app.selection.ids); const hit = p.scenes.filter((s) => ids.has(s.id)); return hit.length ? hit : p.selected ? [p.selected] : []; };       // every picked clip, else the one in focus
     const unitsOf = (scenes) => [...new Set(scenes.map(genUnitId))];
 

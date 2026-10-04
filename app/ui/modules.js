@@ -16,6 +16,7 @@ export default [
   "./features/render/index.js",
   "./features/render/selected.js",
   "./features/rating/index.js",
+  "./features/takes/index.js",
   "./features/upscale/index.js",
   "./features/revolver/index.js",
   "./features/autocomplete/index.js",
