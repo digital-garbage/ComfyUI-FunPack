@@ -1,0 +1,63 @@
+/* The Settings window, after macOS System Settings / About: a sidebar that stays open, a large title,
+ * and rows grouped into rounded inset cards -- label on the left, value on the right, hairlines between. */
+
+.cx-settings-modal { height: min(680px, 92vh); }
+.cx-settings-modal .cx-modal-body { padding: 0; }
+
+.cx-settings-body.cx-stack { display: grid; grid-template-columns: 232px minmax(0, 1fr); block-size: 100%; min-block-size: 0; }
+
+/* sidebar */
+.cx-settings-rail {
+  min-inline-size: 0; inline-size: auto; position: static; overflow: hidden;
+  background: var(--elev-2); border-inline-end: var(--bw) solid var(--line);
+  padding: var(--sp-6) var(--sp-5); gap: var(--sp-5);
+}
+.cx-settings-rail .cx-search { inline-size: 100%; }
+.cx-settings-rail .cx-filter-list { gap: 2px; }
+.cx-settings-rail .cx-filter-row { gap: var(--sp-5); padding: var(--sp-3) var(--sp-4); border-radius: var(--r-4); font-size: var(--fs-4); }
+.cx-settings-rail .cx-filter-icon { inline-size: 24px; block-size: 24px; border-radius: 6px; font-size: var(--fs-5); margin: 0; }
+.cx-settings-rail .cx-filter-row.cx-on { background: var(--accent); color: var(--on-accent); }
+.cx-settings-rail .cx-filter-row.cx-on .cx-filter-label { font-weight: var(--fw-medium); }
+.cx-settings-rail .cx-filter-gap { block-size: var(--sp-5); }
+
+/* content */
+.cx-settings-content { margin: 0; padding: var(--sp-8) var(--sp-10) var(--sp-10); block-size: 100%; overflow-y: auto; min-inline-size: 0; }
+.cx-settings-content > .cx-h-md { font-size: var(--fs-d3); line-height: var(--lh-d3); font-weight: var(--fw-bold); letter-spacing: -.015em; }
+.cx-settings-content > .cx-hint { font-size: var(--fs-4); line-height: var(--lh-4); margin-block-end: var(--sp-4); }
+
+/* section titles sit above their card, in the sentence-case bold the About pane uses */
+.cx-settings-content .cx-eyebrow {
+  font-size: var(--fs-4); line-height: var(--lh-4); letter-spacing: 0; text-transform: none;
+  font-weight: var(--fw-semibold); color: var(--text); margin-block: var(--sp-7) calc(-1 * var(--sp-2));
+}
+
+/* a run of rows (and switches) is one card */
+.cx-settings-content .cx-stack > :is(.cx-settings-row, .cx-toggle-row) {
+  background-color: var(--elev-2); border: 0; border-radius: var(--r-5);
+  padding: var(--sp-5) var(--sp-7); min-block-size: 40px; display: flex; align-items: center;
+}
+.cx-settings-content .cx-stack > .cx-toggle-row > label { inline-size: 100%; display: flex; }
+.cx-settings-content .cx-stack > :is(.cx-settings-row, .cx-toggle-row):has(+ :is(.cx-settings-row, .cx-toggle-row)) { border-end-start-radius: 0; border-end-end-radius: 0; }
+.cx-settings-content .cx-stack > :is(.cx-settings-row, .cx-toggle-row) + :is(.cx-settings-row, .cx-toggle-row) {
+  border-start-start-radius: 0; border-start-end-radius: 0;
+  margin-block-start: calc(-1 * var(--cx-gap, var(--sp-4)));
+  background-image: linear-gradient(var(--line), var(--line)); background-repeat: no-repeat;
+  background-size: calc(100% - 2 * var(--sp-7)) 1px; background-position: center top;
+}
+.cx-settings-content .cx-settings-label { font-size: var(--fs-4); line-height: var(--lh-4); }
+.cx-settings-content .cx-settings-text .cx-hint, .cx-settings-content .cx-settings-text > :not(:first-child) { color: var(--muted); }
+/* a plain value, as in About, reads as the quieter half of the row */
+.cx-settings-content .cx-settings-control > .cx-t { color: var(--muted); text-align: end; font-size: var(--fs-4); }
+.cx-settings-content .cx-settings-control { flex: 0 1 var(--control-col); }
+.cx-settings-content .cx-settings-control > .cx-t { flex: 1 1 auto; }
+
+/* the About hero */
+.cx-settings-hero { align-items: center; text-align: center; gap: var(--sp-4); padding-block: var(--sp-4) var(--sp-7); }
+.cx-settings-hero .cx-h { font-size: var(--fs-d3); }
+.cx-settings-content .cx-settings-control:has(> .cx-t) { flex: 1 1 auto; }
+.cx-settings-content .cx-settings-text { flex: 0 1 auto; }
+
+/* rows already inside a card of their own (Engine, Models) take the same look */
+.cx-settings-content .cx-group-rows { background: var(--elev-2); border: 0; border-radius: var(--r-5); padding-inline: var(--sp-7); }
+.cx-settings-content .cx-group-rows .cx-settings-row { padding-block: var(--sp-5); border-bottom: var(--bw) solid var(--line); }
+.cx-settings-content .cx-group-rows .cx-settings-row:last-child { border-bottom: 0; }

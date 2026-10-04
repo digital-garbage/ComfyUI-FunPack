@@ -400,8 +400,8 @@
 .cx-stack { display: flex; flex-direction: column; min-inline-size: 0; }
 .cx-stack > * { min-inline-size: 0; }
 .cx-stack-none { gap: 0; }
-.cx-stack-sm { gap: var(--sp-4); }
-.cx-stack-md { gap: var(--sp-6); }
+.cx-stack-sm { gap: var(--sp-4); --cx-gap: var(--sp-4); }
+.cx-stack-md { gap: var(--sp-6); --cx-gap: var(--sp-6); }
 .cx-stack-lg { gap: var(--sp-9); }
 
 /* Filling the room it was given, rather than sizing to its content. Without a

@@ -3,6 +3,12 @@ import { composer as c } from "../../composer/composer.js";
 
 const facts = (rows) => rows.filter(([, v]) => v).map(([k, v]) => c.settingsRow.default({ label: k, control: c.text.sm({ text: String(v) }) }));
 
+const hero = (name, sub) => {
+  const node = c.region.stack({ gap: "none", children: [c.brand.default({ name: "" }), c.header.xl({ text: name }), c.hint.default({ text: sub })] });
+  node.node.classList.add("cx-settings-hero");
+  return node;
+};
+
 export const about = (api) => function mount() {
   const body = c.region.stack({ gap: "sm", label: "About" });
   body.set([c.hint.default({ text: "Looking…" })]);
@@ -10,8 +16,7 @@ export const about = (api) => function mount() {
     const major = String(git.version || "").split(".")[0];
     const mem = (sys && sys.memory) || {}, cpu = (sys && sys.cpu) || {}, disk = (sys && sys.disk) || {}, torch = (sys && sys.torch) || {}, gpu = ((sys && sys.gpus) || [])[0];
     body.set([
-      c.header.md({ text: `FunPack${major ? ` ${major}` : ""}` }),
-      c.hint.default({ text: [git.codename && `“${git.codename}”`, "Cutting Room"].filter(Boolean).join(" · ") }),
+      hero(`FunPack${major ? ` ${major}` : ""}`, [git.codename && `“${git.codename}”`, "Cutting Room"].filter(Boolean).join(" · ")),
       ...facts([["Version", git.version], ["Commit", git.commit && String(git.commit).slice(0, 7)], ["Branch", git.branch]]),
       ...(sys ? [c.label.section({ text: "Hardware" }),
         ...facts([["Chip", cpu.name], ["Memory", mem.total_gb != null && `${mem.available_gb} GB free of ${mem.total_gb} GB`],
