@@ -1,8 +1,7 @@
 // The Project tab: what the whole project makes.
 import { composer as c } from "../../composer/composer.js";
-import { DRIVEN } from "../../shell/scenes.js";
+import { DRIVEN, isVideoClip, segments } from "../../shell/scenes.js";
 
-const SIZES = [{ value: "", label: "The first clip's own size" }, { value: "project", label: "The project's size" }];
 const STARTS = [{ value: "i2v", label: "From an image" }, { value: "t2v", label: "From a prompt" }];
 
 // What the pipeline lets the project decide (width, length, rate...): one whole-number control per slot input
@@ -33,6 +32,23 @@ function splitPreview(p, api) {
   return c.region.stack({ gap: "xs", children: [c.button.sm({ label: "Refresh preview", tone: "ghost", onClick: show }), out] });
 }
 
+/** The final render's size can come from the first clip, the project, or any rendered clip's own. */
+function sizes(open) {
+  const rendered = segments(open).filter((s) => s.kind === "scene" && !s.scene.excluded && (open.scene_renders || {})[s.scene.id]);
+  const list = [{ value: "", label: "The first clip's own size" }, { value: "project", label: `The project's size (${open.width || 768}×${open.height || 512})` },
+    ...rendered.map((s, i) => ({ value: s.scene.id, label: `Clip ${i + 1}'s own size` }))];
+  if (open.export_size_from && !list.some((o) => o.value === open.export_size_from)) list.push({ value: open.export_size_from, label: "A clip that is no longer here (the first clip is used)" });
+  return list;
+}
+
+/** Shots set to Custom length ignore the project's Frames: say so, and offer to put them back. */
+function custom(p, open) {
+  const gen = open.scenes.filter((s) => !isVideoClip(s)), over = gen.filter((s) => s.frames_mode === "custom");
+  if (!over.length) return [];
+  return [c.banner.warn({ text: over.length >= gen.length ? `Frames doesn't reach any shot — all ${over.length} are set to Custom.` : `Frames doesn't reach ${over.length} of ${gen.length} shots — they're set to Custom.`,
+    action: { label: "Use project length everywhere", onClick: () => p.edit((pr) => { let hit = false; for (const s of pr.scenes) if (!isVideoClip(s) && s.frames_mode === "custom") { s.frames_mode = "project"; hit = true; } return hit; }) } })];
+}
+
 export function projectRows(p, slots, api) {
   const open = p.project;
   if (!open) return [c.emptyState.default({ icon: "▭", title: "No project", hint: "Open or create one." })];
@@ -49,7 +65,8 @@ export function projectRows(p, slots, api) {
     c.field.row({ fields: [frames.field, fps.field] }),
     c.hint.default({ text: `≈ ${per.toFixed(2)} s per shot` }),
     ...(size.length ? [c.field.row({ fields: size.map((x) => x.field) })] : []),
-    c.field.default({ label: "Final render size", control: c.select.md({ label: "Final render size", options: SIZES, value: open.export_size_from || "",
+    ...custom(p, open),
+    c.field.default({ label: "Final render size", control: c.select.md({ label: "Final render size", options: sizes(open), value: open.export_size_from || "",
       onChange: (v) => p.setField("export_size_from", v) }) }),
     c.field.default({ label: "Start shots", control: c.select.md({ label: "Start shots", options: STARTS, value: open.generation_mode === "t2v" ? "t2v" : "i2v", onChange: (v) => p.setField("generation_mode", v) }) }),
     c.label.section({ text: "Prompt" }),
