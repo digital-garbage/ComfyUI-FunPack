@@ -5,6 +5,7 @@ model IS, which is why they are node widgets and not settings: nobody downstream
 can supply them, and a saved workflow has to record them.
 """
 
+import comfy.model_management
 import comfy.sd
 import comfy.utils
 import folder_paths
@@ -12,6 +13,7 @@ from comfy_api.latest import io
 
 from ..._core import log
 from .. import gguf_support, sla_attention
+from .. import int8_convrot as int8_convrot_module
 from ..common import (COMPUTE_DTYPES, WEIGHT_DTYPES, attention_choices,
                       attention_override, dtype_of, set_fp16_accumulation,
                       weight_model_options)
@@ -98,6 +100,14 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                             tooltip="Run the last N sampling steps at full attention. 0 "
                                     "matches lightx2v; 1 was tested and did not help, for "
                                     "+20% time."),
+                io.Boolean.Input("int8_convrot", default=False, optional=True,
+                                 tooltip="MiniMax H3 from an ordinary (bf16/fp16) file: store the "
+                                         "attention and MLP weights as int8 (rotated first, so no lone "
+                                         "outlier spoils the rounding), the way Comfy-Org's own int8_convrot "
+                                         "files are. About half the memory and int8 matmuls on GPUs that "
+                                         "have them; slightly different pictures. Does nothing to a file "
+                                         "that is already quantized or is not H3 (the status says so), and "
+                                         "is skipped when a weight dtype is forced above."),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -110,7 +120,7 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                 attention: str, fp16_accumulation: bool = False, sla: bool = False,
                 sla_sparsity: float = None, sla_block_size: str = None,
                 sla_protect_audio: bool = None, sla_min_seq_len: int = None,
-                sla_dense_last_steps: int = None) -> io.NodeOutput:
+                sla_dense_last_steps: int = None, int8_convrot: bool = False) -> io.NodeOutput:
         notes = [f"FunPack Diffusion Model Loader | {model_name}"]
 
         accumulation = set_fp16_accumulation(fp16_accumulation)
@@ -147,6 +157,12 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
             notes.append(gguf_note)
         else:
             state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
+        if int8_convrot:
+            if weight_dtype != "default":
+                notes.append(f"int8_convrot: skipped, weight dtype is forced to {weight_dtype}")
+            else:
+                _, note = int8_convrot_module.quantize_state_dict(state_dict, comfy.model_management.get_torch_device())
+                notes.append(note)
         model = comfy.sd.load_diffusion_model_state_dict(
             state_dict, model_options=model_options, metadata=metadata)
         if model is None:
