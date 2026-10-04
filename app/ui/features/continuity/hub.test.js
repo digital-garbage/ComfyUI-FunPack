@@ -37,7 +37,7 @@ test("a dark last frame, a failed extraction and a missing predecessor each say 
   assert.equal((await allowed({ project: p, scene: p.scenes[1], slots })).inputs[7].media_id, "m");
   const broken = make({}, async () => { throw new Error("no ffmpeg"); });
   assert.match((await broken({ project: p, scene: p.scenes[1], slots })).notes[0], /no ffmpeg/);
-  assert.match((await broken({ project: p, scene: p.scenes[0], slots })).notes[0], /first clip/);
+  assert.deepEqual((await broken({ project: p, scene: p.scenes[0], slots })).notes || [], []);       // the first clip has nothing to continue from: silent
 });
 
 test("an identity picture rides along as the last reference of every scene, and says so when the pipeline has no room for it", async () => {
@@ -46,6 +46,8 @@ test("an identity picture rides along as the last reference of every scene, and 
   const p = project({ continuity_settings: { identity_pin_ref: "face" } });
   assert.deepEqual((await hook({ project: p, scene: p.scenes[1], slots: refSlots })).inputs, { 9: { media_id: "face" } });
   assert.match((await hook({ project: p, scene: p.scenes[1], slots })).notes[0], /no free reference input/);
+  p.scenes[1].references = ["a", "b"];       // more references than the pipeline has inputs: the picture that is dropped is the identity one, and it is said
+  assert.match((await hook({ project: p, scene: p.scenes[1], slots: refSlots })).notes[0], /no free reference input/);
   p.scenes[1].references = ["face"];
   assert.deepEqual((await hook({ project: p, scene: p.scenes[1], slots: refSlots })).inputs, {});       // already one of the scene's own
 });

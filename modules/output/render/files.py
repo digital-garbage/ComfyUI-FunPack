@@ -154,18 +154,34 @@ def trim(src: str, out: str, start=None, dur=None, *, fast=False, reverse=False,
     run(cmd)
 
 
-def last_frame(src: str, out_png: str, start=0.0, dur=None, fps=25.0) -> float:
-    """Write the last picture of [start, start+dur) of `src` as a PNG; -> its average brightness, 0 (black) .. 255.
+def last_frame(src: str, out_png: str, start=0.0, dur=None, fps=25.0, first=False) -> tuple[float, float]:
+    """Write the last picture of [start, start+dur) of `src` as a PNG (the first one with `first`: a reversed clip ends where it began);
+    -> (average brightness, a near-peak brightness), both 0 (black) .. 255.
 
-    One frame before the window's end, not at it: a seek to the very end of a file finds nothing."""
+    One frame before the window's end, not at it (a seek to the very end finds nothing), and never past the file's own end."""
     end = float(start) + float(dur) if dur else None
-    at = max(float(start), end - 1.5 / (fps or 25.0)) if end is not None else float(start)
+    at = float(start) if first or end is None else max(float(start), end - 1.5 / (fps or 25.0))
+    have = duration(src)
+    if have and not first:
+        at = max(0.0, min(at, have - 2.0 / (fps or 25.0)))
     run([ffmpeg(), "-y", "-ss", f"{at:.3f}", "-i", src, "-frames:v", "1", out_png])
     if not os.path.isfile(out_png) or os.path.getsize(out_png) == 0:
         raise ClipError("the clip has no picture at its end (is the window past the end of the render?)")
-    from PIL import Image, ImageStat
+    try:
+        from PIL import Image, ImageStat
+    except ImportError as exc:
+        raise ClipError("Pillow is needed to judge the last frame and is not installed") from exc
     with Image.open(out_png) as im:
-        return float(ImageStat.Stat(im.convert("L")).mean[0])
+        gray = im.convert("L")
+        mean = float(ImageStat.Stat(gray).mean[0])
+        hist, seen, total = gray.histogram(), 0, gray.width * gray.height
+        peak = 255
+        for level, n in enumerate(hist):
+            seen += n
+            if seen >= 0.99 * total:
+                peak = level
+                break
+    return mean, float(peak)
 
 
 def has_audio(path: str) -> bool:

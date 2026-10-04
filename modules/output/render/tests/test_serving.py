@@ -209,8 +209,10 @@ def test_a_window_past_the_end_of_the_render_is_refused_not_served_empty(comfy, 
 def test_last_frame_is_a_picture_with_its_brightness(comfy):
     src = make_clip(comfy.output / "lf.mp4", 2.0, audio=False)
     out = str(comfy.temp / "lf.png")
-    bright = files.last_frame(str(src), out, 0.0, 2.0, 25.0)
-    assert (comfy.temp / "lf.png").stat().st_size > 0 and bright > 20
+    mean, peak = files.last_frame(str(src), out, 0.0, 2.0, 25.0)
+    assert (comfy.temp / "lf.png").stat().st_size > 0 and mean > 20 and peak > 70
+    files.last_frame(str(src), out, 0.0, 9.0, 25.0)          # a window longer than the file: clamped to the file's own end, not an error
+    files.last_frame(str(src), out, 0.0, 2.0, 25.0, first=True)
 
 
 def _post(port, path, body):

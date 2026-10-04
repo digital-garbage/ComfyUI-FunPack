@@ -21,3 +21,10 @@ test("the second half of a cut unit looks past its own unit", () => {
   q.scenes = [{ id: "a" }, { id: "b" }, { id: "b2", gen_unit_id: "b", cut_offset_frames: 40 }];
   assert.equal(previousClip(q, q.scenes[2]).sceneId, "a");
 });
+
+test("the first clip has nothing to continue from and says nothing; a reversed predecessor is flagged", () => {
+  const q = p();
+  assert.equal(previousClip(q, q.scenes[0]).quiet, true);
+  q.scenes[0].effects = { reverse: true };
+  assert.equal(previousClip(q, q.scenes[1]).reverse, true);
+});

@@ -65,7 +65,7 @@ def routes(table, base, web):
         render = body.get("render") if isinstance(body.get("render"), dict) and isinstance((body["render"].get("media") or None), dict) else None
         window = serving.query_window({"dur": body.get("dur"), "src_in": body.get("src_in")})
         try:
-            return web.json_response(await asyncio.to_thread(serving.last_frame, proj, scene_id, render, window))
+            return web.json_response(await asyncio.to_thread(serving.last_frame, proj, scene_id, render, window, bool(body.get("reverse"))))
         except KeyError as exc:
             return bad(f"No render for this scene ({exc}).", 404)
         except (files.ClipError, ValueError, OSError) as exc:
