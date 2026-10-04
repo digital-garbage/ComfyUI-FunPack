@@ -8,8 +8,9 @@ export default {
   needs: ["project", "selection", "keys", "mode"],
   setup({ app }) {
     const p = app.project, sel = app.selection;
-    const scene = (fn) => () => (app.mode.now === "simple" ? false : fn());
+    const scene = (fn) => (e) => (app.mode.now === "simple" ? false : fn(e));
     const frame = () => (p.project && p.project.frame_rate) || 25;
+    const step = (dir) => scene((e) => (e && e.target && e.target.closest && e.target.closest("button, a, [role=slider], [role=tab], [role=radio], [role=option], [role=menuitem], [role=separator]") ? false : app.playhead.set(app.playhead.at + dir / frame())));       // a widget that uses the arrows keeps them
     const edge = (which) => {       // I / O: the playhead to the picked clip's in / out point
       const s = p.project && segments(p.project).find((x) => x.kind === "scene" && x.id === sel.focus);
       if (!s) return false;
@@ -26,7 +27,7 @@ export default {
       app.keys.bind(" ", (e) => (e.target.closest && e.target.closest("button, a, [role=slider]") ? false : app.say("play.toggle"))), app.keys.bind("k", () => app.say("play.pause")), app.keys.bind("l", () => app.say("play.start")),
       app.keys.bind("j", () => app.playhead.set(app.playhead.at - 1)),
       app.keys.bind("s", scene(() => app.say("split"))),
-      app.keys.bind("arrowleft", scene(() => app.playhead.set(app.playhead.at - 1 / frame()))), app.keys.bind("arrowright", scene(() => app.playhead.set(app.playhead.at + 1 / frame()))),
+      app.keys.bind("arrowleft", step(-1)), app.keys.bind("arrowright", step(1)),
       app.keys.bind("i", scene(() => edge("start"))), app.keys.bind("o", scene(() => edge("end"))),
       app.keys.bind("mod+,", () => (app.openSettings ? app.openSettings() : false)),
     ];

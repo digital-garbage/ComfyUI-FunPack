@@ -36,9 +36,11 @@ export default {
         { id: "export", label: "Save to your computer", disabled: !items.some((m) => m.id === it.id && m.kind !== "audio") }, { separator: true }, { id: "delete", label: "Delete from the bin", danger: true }] });
     /** Delete these from the bin, and nothing in this project may keep pointing at them. */
     async function gone(ids) {
+      const dead = new Set();
       try {
-        for (const id of ids) await api.deleteMedia(id);
-        const dead = new Set(ids);
+        for (const id of ids) { await api.deleteMedia(id); dead.add(id); }
+      } catch (err) { tell(`${err.message}${dead.size ? ` (${dead.size} of ${ids.length} were deleted)` : ""}`); }
+      try {
         p.edit((pr) => pr.scenes.reduce((hit, s) => {
           const had = dead.has(s.source_image) || (s.references || []).some((r) => dead.has(r));
           if (dead.has(s.source_image)) s.source_image = "";
@@ -46,8 +48,8 @@ export default {
           return hit || had;
         }, false));
         ids.forEach((id) => chosen.delete(id));
-        await refresh();
-      } catch (err) { tell(err.message); await refresh(); }
+      } catch (err) { tell(err.message); }
+      await refresh();
     }
     const act = {
       look: (it) => peek(it), res: (it) => pick(it),
@@ -85,9 +87,11 @@ export default {
 
     let drawn = "";
     function draw(force) {
-      const key = `${(p.selected || {}).source_image}|${items.map((m) => m.id)}|${selecting}|${[...chosen]}`;
+      const key = `${(p.selected || {}).source_image}|${items.map((m) => m.id)}|${selecting}|${[...chosen]}|${show.filter}`;
       if (!force && key === drawn) return;           // typing elsewhere must not rebuild the thumbnails
       drawn = key;
+      const visible = new Set(items.filter((m) => show.filter === "all" || m.kind === show.filter).map((m) => m.id));
+      for (const id of [...chosen]) if (!visible.has(id)) chosen.delete(id);       // a file out of sight is not picked
       const rev = show.sort.endsWith("-") ? -1 : 1, by = show.sort.replace("-", "");
       const shown = items.filter((m) => show.filter === "all" || m.kind === show.filter)
         .sort((x, y) => rev * (by === "added" ? (y.added || 0) - (x.added || 0) : String(x[by === "kind" ? "kind" : "name"]).localeCompare(String(y[by === "kind" ? "kind" : "name"]))));

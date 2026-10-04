@@ -50,7 +50,7 @@ const stage = {
       if (what === "zoom.in") setZoom(zoom + 1); else if (what === "zoom.out") setZoom(zoom - 1);
       else if (what === "zoom.fit") { const total = p.project ? totalSeconds(p.project) : 0; const fit = ZOOM.filter((z) => z * (total + 2) <= view.node.clientWidth); setZoom(fit.length ? ZOOM.indexOf(fit[fit.length - 1]) : 0); }
       else draw();
-    }), head.on((sec) => view.setPlayhead(sec, head.playing))];
+    }), head.on((sec) => view.setPlayhead(sec, true))];
     draw();
     return () => { off.forEach((f) => f()); view.destroy(); };
   },

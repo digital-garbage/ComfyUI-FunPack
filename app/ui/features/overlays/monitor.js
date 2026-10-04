@@ -48,11 +48,11 @@ export default {
       const grip = document.createElement("span");
       grip.style.cssText = "position:absolute;inset-inline-end:-5px;inset-block-end:-5px;inline-size:10px;block-size:10px;background:var(--accent,#e0a030);border:1px solid #000;cursor:nwse-resize;border-radius:2px";
       el.append(grip);
-      let grown = null;
+      let grown = null, w0 = 1;
       drag(grip, {
-        onStart: ({ event }) => { event.stopPropagation(); dragging = true; },
+        onStart: ({ event }) => { event.stopPropagation(); dragging = true; w0 = el.getBoundingClientRect().width || 1; },       // measured once: the factor is against the size at the start
         onMove: ({ dx }) => {
-          const w0 = el.getBoundingClientRect().width, k = Math.max(0.1, (w0 + dx * 2) / w0);       // centred: both sides grow
+          const k = Math.max(0.1, (w0 + dx * 2) / w0);       // centred: both sides grow
           if (o.kind === "text") { grown = { font_size: Math.max(8, Math.round((o.font_size || 42) * k)) }; el.style.fontSize = `${grown.font_size * box.k}px`; }
           else { const wpx = Math.max(8, Math.round((o.width_px || 0.35 * (open.width || 768)) * k)); grown = { width_px: wpx, ...(o.keep_aspect === false ? { height_px: Math.max(8, Math.round((o.height_px || wpx) * k)) } : {}) }; const img = el.querySelector("img"); if (img) img.style.width = `${wpx * box.k}px`; }
         },

@@ -1,7 +1,7 @@
 // The monitor and its transport: plays the cut, clip after clip, wherever the playhead is. The playhead is the one
 // clock: playing moves it, seeking (scrubber, ruler, picking a clip) moves it, and the picture follows it.
 import { composer as c } from "../../composer/composer.js";
-import { segments, totalSeconds, isVideoClip } from "../../shell/scenes.js";
+import { segments, totalSeconds, isVideoClip, isSubclip } from "../../shell/scenes.js";
 
 const pad = (n) => String(Math.floor(n)).padStart(2, "0");
 export const timecode = (sec, fps) => { const s = Math.max(0, sec), w = Math.floor(s); return [pad(w / 3600), pad((w % 3600) / 60), pad(w % 60), pad((s - w) * (fps || 25))].join(":"); };
@@ -34,11 +34,11 @@ export default {
     let target = "", anchorKey = "";
     const anchor = { node: document.createElement("span") };       // the "save frame to" choice: the bin, or a scene's i2v anchor
     function drawAnchor() {
-      const scenes = open() ? open().scenes.filter((s) => !s.excluded) : [];
+      const scenes = open() ? open().scenes.filter((s) => !s.excluded && !isVideoClip(s) && !isSubclip(s)) : [];       // only a generated scene can start from a picture
       const key = scenes.map((s) => `${s.id}|${(s.text || "").slice(0, 18)}`).join(",") + `|${target}`;
       if (key === anchorKey) return;
       anchorKey = key;
-      if (!scenes.some((s) => s.id === target)) target = "";
+      if (!scenes.some((s) => s.id === target)) { target = ""; frame.setLabel("📌 Save frame"); }
       const pick = c.select.sm({ label: "Save frame to", value: target, onChange: (v) => { target = v; frame.setLabel(v ? "📌 Use as anchor" : "📌 Save frame"); },
         options: [{ value: "", label: "— save to Media bin —" }, ...scenes.map((s, i) => ({ value: s.id, label: `anchor → Scene ${i + 1}${s.text ? `: ${s.text.slice(0, 18)}` : ""}` }))] });
       anchor.node.replaceChildren(pick.node);
@@ -111,7 +111,7 @@ export default {
       app.say("media");
       const made = media && media[media.length - 1];
       if (target && made && open() && open().scenes.some((s) => s.id === target)) {       // as the chosen scene's i2v anchor
-        p.setScene(target, "source", { type: "generated_frame", media_ref: made.id });
+        p.setScene(target, "source_image", made.id);
         return c.toast.good({ text: "Frame saved, and set as that scene's anchor." });
       }
       c.toast.good({ text: "Frame saved to the media bin." });

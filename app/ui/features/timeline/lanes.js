@@ -3,11 +3,15 @@ import { segments, isVideoClip, effFps } from "../../shell/scenes.js";
 
 const first = (t) => ((t || "").split("\n")[0] || "").slice(0, 80);
 
+const LIKED = new Set(["Perfect", "Nailed it", "Missing action", "Missing details", "Wrong details"]);
+const DISLIKED = new Set(["Missing quality", "Missing action + quality", "Missing details + quality", "Wrong action", "Wrong action + quality", "Awful"]);
+
 /** "liked" / "disliked" / "" from a saved rating word (numbers: 6+ is liked; "-Just forget it-" is none). */
 export function mood(rating) {
   const v = String(rating || "").replace(/\|loved$/, "").trim();
   if (!v || v.startsWith("-")) return "";
-  return /^\d+$/.test(v) ? (Number(v) >= 6 ? "liked" : "disliked") : v.toLowerCase().startsWith("disliked") ? "disliked" : "";
+  if (/^\d+$/.test(v)) return Number(v) >= 6 ? "liked" : "disliked";
+  return LIKED.has(v) ? "liked" : DISLIKED.has(v) || v.toLowerCase().startsWith("disliked") ? "disliked" : "";       // v4's category words, by the sign of their reward
 }
 
 export function videoLane(p, picked, focus, actions = () => [], ghostActions = () => [], tags = () => []) {

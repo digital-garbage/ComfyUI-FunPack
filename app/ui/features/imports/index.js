@@ -4,6 +4,7 @@ import { addVideoClip, addAudioTrack } from "../../shell/imports.js";
 import { learn } from "../../shell/bin.js";
 import { onMediaDrop } from "../../shell/dnd.js";
 import { addScene } from "../../shell/edits.js";
+import { isVideoClip, isSubclip } from "../../shell/scenes.js";
 
 /** How long a bin file is, from the browser's own reading of it (null when it cannot say). */
 const lengthOf = (asset) => new Promise((resolve) => {
@@ -49,17 +50,22 @@ export default {
     const at = (e) => (app.timelineView && app.timelineView.timeAt ? app.timelineView.timeAt(e.clientX) : app.playhead.at);
     const asset = async (item) => { let list = []; try { list = (await app.api.media()).media || []; } catch { /* the drop does nothing */ } return list.find((m) => m.id === item.id); };
     const offs = [
-      onMediaDrop(".cx-nle-lane-video", async (item, lane, e) => {
+      onMediaDrop(".cx-nle-lane.cx-nle-lane-video", async (item, lane, e) => {
         const a = await asset(item);
         if (!a || !p.project) return;
         const clip = e.target.closest && e.target.closest(".cx-nle-clip[data-id]"), id = clip && clip.dataset.id;
         if (a.kind === "video") return add(a);
         if (a.kind !== "image") return c.toast.warn({ text: "A sound goes on an audio lane." });
-        if (id && p.scenes.some((s) => s.id === id)) { p.setScene(id, "source", { type: "image", media_ref: a.id }); return c.toast.good({ text: "Set as that clip's starting picture." }); }
-        const made = p.edit((pr) => { const sc = addScene(pr, "image"); sc.source = { type: "image", media_ref: a.id }; return sc; });
+        const hit = id && p.scenes.find((s) => s.id === id);
+        if (hit) {
+          if (isVideoClip(hit) || isSubclip(hit)) return c.toast.warn({ text: "Only a generated scene can start from a picture (not a video clip or a cut part)." });
+          p.setScene(id, "source_image", a.id);
+          return c.toast.good({ text: "Set as that clip's starting picture." });
+        }
+        const made = p.edit((pr) => { const sc = addScene(pr, "image"); sc.source_image = a.id; return sc; });
         if (made) p.select(made.id);
       }),
-      onMediaDrop(".cx-nle-lane-audio", async (item, lane, e) => {
+      onMediaDrop(".cx-nle-lane.cx-nle-lane-audio", async (item, lane, e) => {
         const a = await asset(item);
         if (!a || a.kind !== "audio" || !p.project) return a && c.toast.warn({ text: "Only a sound can go on an audio lane." });
         const seconds = await lengthOf(a);

@@ -64,7 +64,7 @@ export function sceneRows(p, app) {
       lengthField(p, sc, "FPS", "fps_mode", "fps", effFps(sc, open)),
     ] }),
     drift(sc, open),
-    c.button.sm({ label: "Generate this scene", tone: "primary", onClick: () => app.say("generate.selected") }),
+    c.button.sm({ label: "Generate this scene", tone: "primary", onClick: () => app.say("generate.scene") }),
     ...trimRows(p, sc, open),
     c.checkbox.default({ label: "Exclude from full generation", checked: Boolean(sc.excluded), onChange: (v) => p.setScene(sc.id, "excluded", v) }),
   ];

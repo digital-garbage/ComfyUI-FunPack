@@ -58,10 +58,10 @@ export default {
         c.modal.dialogue({ title: "Remove lane", message: `Remove “${top.label}” and everything on it?`, tone: "danger", confirmLabel: "Remove" }).result.then((yes) => yes && edit((pr) => ov.removeLane(pr, top.id)));
       } }) });
     host.append(add.node);
-    const offDrop = onMediaDrop(".cx-nle-lane-overlay", async (item, lane, e) => {       // a picture dropped on an overlay lane becomes an overlay there
+    const offDrop = onMediaDrop(".cx-nle-lane.cx-nle-lane-overlay", async (item, lane, e) => {       // a picture dropped on an overlay lane becomes an overlay there
       if (item.kind !== "image" || !p.project) return c.toast.warn({ text: "Only a picture can be laid over the cut." });
       let name = "Image"; try { name = ((await app.api.media()).media || []).find((m) => m.id === item.id).name; } catch { /* keep the generic label */ }
-      const row = [...document.querySelectorAll(".cx-nle-lane-overlay")].indexOf(lane), lanes = ov.lanesOf(p.project), laneId = (lanes[lanes.length - 1 - row] || {}).id;       // lanes draw top-first
+      const row = [...document.querySelectorAll(".cx-nle-lane.cx-nle-lane-overlay")].indexOf(lane), lanes = ov.lanesOf(p.project), laneId = (lanes[lanes.length - 1 - row] || {}).id;       // lanes draw top-first
       const sec = app.timelineView && app.timelineView.timeAt ? app.timelineView.timeAt(e.clientX) : app.playhead.at;
       edit((pr) => ov.addImage(pr, item.id, name, sec, laneId));
     });

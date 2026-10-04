@@ -130,7 +130,8 @@ export default {
     });
     draw();
     const offRun = g.subscribe(draw);
-    const offApp = app.on((what) => { if (what === "generate.selected" && !busy && pickedScenes().length) runUnits(unitsOf(pickedScenes())); else draw(); });
+    const offApp = app.on((what) => { if (what === "generate.scene" && !busy && p.selected) runUnits(unitsOf([p.selected]));
+      else if (what === "generate.selected" && !busy && pickedScenes().length) runUnits(unitsOf(pickedScenes())); else draw(); });
     const offers = [offer(app, { id: "generate-all", label: "Generate", icon: "▶", run: () => { if (!busy && p.project) runUnits(unitsOf(p.scenes)); } }),
       offer(app, { id: "generate-selected", label: "Generate selected", icon: "▶", run: () => { if (!busy && pickedScenes().length) runUnits(unitsOf(pickedScenes())); } })];
     return () => { offRun(); offApp(); offers.forEach((f) => f()); };

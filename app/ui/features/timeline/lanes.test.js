@@ -14,5 +14,5 @@ test("scenes, a ghost and a pause become clips laid end to end", () => {
 
 test("a rated clip says so: liked or disliked, whichever word the rating is saved in", async () => {
   const { mood } = await import("./lanes.js");
-  assert.deepEqual(["10", "3", "Disliked: bad image", "7|loved", "", "-Just forget it-", "weird"].map(mood), ["liked", "disliked", "disliked", "liked", "", "", ""]);
+  assert.deepEqual(["10", "3", "Disliked: bad image", "7|loved", "", "-Just forget it-", "weird", "Perfect", "Awful", "Wrong appearance"].map(mood), ["liked", "disliked", "disliked", "liked", "", "", "", "liked", "disliked", ""]);
 });

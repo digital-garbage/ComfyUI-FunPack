@@ -42,8 +42,9 @@ export function shortcuts(app, own) {
             if (!file) return;
             let data;
             try { data = JSON.parse(await file.text()); } catch { return tell("That file is not valid JSON."); }
-            const replace = await c.modal.dialogue({ title: "Import shortcuts", message: "Merge them into your library, or replace the library with them?", confirmLabel: "Replace everything", cancelLabel: "Merge", tone: "danger" }).result;
-            did(app.api.importShortcuts(data, replace ? "replace" : "merge"));
+            c.modal.choice({ title: "Import shortcuts", subtitle: "Merge them into your library, or replace the library with them?",
+              items: [{ id: "merge", label: "Merge into my library" }, { id: "replace", label: "Replace my library (deletes the shortcuts you have now)" }],
+              onPick: (mode) => did(app.api.importShortcuts(data, mode)) });       // closing the window imports nothing
           };
           return input.click();
         }
