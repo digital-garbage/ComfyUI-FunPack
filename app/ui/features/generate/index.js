@@ -74,7 +74,7 @@ export default {
           const images = g.run.state.images;
           if (end !== g.DONE) { tell("Generation failed. The log has ComfyUI's message."); break; }
           if (!images.length) { tell("ComfyUI finished without a result. Try again."); break; }
-          record(pid, unit, images[images.length - 1], frames, g.run.state.promptId);
+          await record(pid, unit, images[images.length - 1], frames, g.run.state.promptId);       // the next shot may continue from this one: it must be on the clip first
         }
         if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out or is a video clip.");
       } finally { busy = false; draw(); }

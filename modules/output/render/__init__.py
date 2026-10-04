@@ -55,6 +55,22 @@ def routes(table, base, web):
     async def _segment(req):
         return await serving.segment(req, project_of(req))
 
+    @table.post(base + "/projects/{pid}/last-frame")
+    async def _last_frame(req):
+        proj = project_of(req)
+        body = await body_of(req)
+        scene_id = body.get("scene_id")
+        if not isinstance(scene_id, str) or not scene_id:
+            return bad("Send {scene_id}.")
+        render = body.get("render") if isinstance(body.get("render"), dict) and isinstance((body["render"].get("media") or None), dict) else None
+        window = serving.query_window({"dur": body.get("dur"), "src_in": body.get("src_in")})
+        try:
+            return web.json_response(await asyncio.to_thread(serving.last_frame, proj, scene_id, render, window))
+        except KeyError as exc:
+            return bad(f"No render for this scene ({exc}).", 404)
+        except (files.ClipError, ValueError, OSError) as exc:
+            return bad(str(exc), 502)
+
     @table.get(base + "/upscale_models")
     async def _upscale_models(_req):
         return web.json_response({"models": upscale.models()})

@@ -35,6 +35,7 @@ export default [
   "./features/montage/index.js",
   "./features/generate/warn.js",
   "./features/generate/progress.js",
+  "./features/continuity/index.js",
   "./features/composer/index.js",
   "./features/settings/index.js",
   "./features/welcome/index.js",

@@ -154,6 +154,20 @@ def trim(src: str, out: str, start=None, dur=None, *, fast=False, reverse=False,
     run(cmd)
 
 
+def last_frame(src: str, out_png: str, start=0.0, dur=None, fps=25.0) -> float:
+    """Write the last picture of [start, start+dur) of `src` as a PNG; -> its average brightness, 0 (black) .. 255.
+
+    One frame before the window's end, not at it: a seek to the very end of a file finds nothing."""
+    end = float(start) + float(dur) if dur else None
+    at = max(float(start), end - 1.5 / (fps or 25.0)) if end is not None else float(start)
+    run([ffmpeg(), "-y", "-ss", f"{at:.3f}", "-i", src, "-frames:v", "1", out_png])
+    if not os.path.isfile(out_png) or os.path.getsize(out_png) == 0:
+        raise ClipError("the clip has no picture at its end (is the window past the end of the render?)")
+    from PIL import Image, ImageStat
+    with Image.open(out_png) as im:
+        return float(ImageStat.Stat(im.convert("L")).mean[0])
+
+
 def has_audio(path: str) -> bool:
     """True when the file has a sound stream. ffprobe if there is one, else a probe run of ffmpeg."""
     probe = shutil.which("ffprobe")

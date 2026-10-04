@@ -31,7 +31,7 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
   const notes = [];
   for (const hook of hooks) {
     let out;
-    try { out = hook({ project, scene, slots }) || {}; } catch (err) { notes.push(`An add-on's input could not be added to this run: ${err.message}`); continue; }
+    try { out = (await hook({ project, scene, slots })) || {}; } catch (err) { notes.push(`An add-on's input could not be added to this run: ${err.message}`); continue; }
     for (const [id, fields] of Object.entries(out.inputs || {})) raw[id] = { ...raw[id], ...fields };
     notes.push(...(out.notes || []));
   }

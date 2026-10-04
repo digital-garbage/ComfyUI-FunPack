@@ -209,6 +209,37 @@ def ghost_clip(q) -> dict | None:
             "type": q.get("type") or "output", "in": start, "dur": dur}
 
 
+DARK_BELOW = 20.0                    # average brightness (0..255) under which a last frame is a fade-out, not a picture to continue from
+_frames: dict = {}                   # what a window's last frame was saved as: key -> (media id, brightness)
+
+
+def last_frame(project, scene_id: str, render: dict | None = None, window: dict | None = None) -> dict:
+    """The last picture of a scene's render, saved in the media bin: {media_id, brightness, dark}.
+
+    Dark means the clip ends in a fade to black -- starting the next shot from it gives a black start
+    (v4's i2i lesson), so the caller may refuse it. The same window answers from the bin it saved to."""
+    from ..._core import media
+    clip = scene_clip(project, scene_id, render, window)       # a render just made, and the trim the page shows, win over the saved project
+    src = files.clip_path(clip)
+    sig = files.signature(src)
+    key = (clip["filename"], clip["subfolder"], clip["type"], clip["in"], clip["dur"], sig)
+    hit = _frames.get(key)
+    if hit and media.path_for(hit[0]):
+        return {"media_id": hit[0], "brightness": hit[1], "dark": hit[1] < DARK_BELOW}
+    out = files.temp_file(f"funpack_last_{projects.safe_part(project.id)[:8]}_{projects.safe_part(scene_id)}_{int(time.time() * 1000)}.png")
+    try:
+        brightness = files.last_frame(src, out, clip["in"], clip["dur"], clip["fps"])
+        with open(out, "rb") as fh:
+            entry = media.save_upload(f"last_frame_{projects.safe_part(scene_id)[:12]}.png", fh.read())
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+    _frames[key] = (entry["id"], brightness)
+    return {"media_id": entry["id"], "brightness": brightness, "dark": brightness < DARK_BELOW}
+
+
 async def segment(request, project) -> "web.StreamResponse":
     q = request.query
     scene_id = request.match_info["scene_id"]

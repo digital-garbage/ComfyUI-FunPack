@@ -203,3 +203,39 @@ def test_a_window_past_the_end_of_the_render_is_refused_not_served_empty(comfy, 
            "&render_in=5&dur=1")
     status, _h, body = get(server, url)
     assert status == 400 and b"past the end" in body
+
+
+@needs_ffmpeg
+def test_last_frame_is_a_picture_with_its_brightness(comfy):
+    src = make_clip(comfy.output / "lf.mp4", 2.0, audio=False)
+    out = str(comfy.temp / "lf.png")
+    bright = files.last_frame(str(src), out, 0.0, 2.0, 25.0)
+    assert (comfy.temp / "lf.png").stat().st_size > 0 and bright > 20
+
+
+def _post(port, path, body):
+    import json
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    conn.request("POST", path, body=json.dumps(body), headers={"Content-Type": "application/json"})
+    resp = conn.getresponse()
+    out = (resp.status, json.loads(resp.read() or b"{}"))
+    conn.close()
+    return out
+
+
+@needs_ffmpeg
+def test_last_frame_route_saves_a_picture_to_the_bin_once_and_flags_a_fade_to_black(comfy, server):
+    from core import media
+    moov_at_end(comfy.output / "a.mp4", 4.0)
+    proj = _project(comfy, frames=50, frames_mode="timeline")
+    serving._frames.clear()
+    status, a = _post(server, f"{BASE}/projects/{proj.id}/last-frame", {"scene_id": "s1"})
+    assert status == 200 and a["dark"] is False and media.path_for(a["media_id"])
+    assert _post(server, f"{BASE}/projects/{proj.id}/last-frame", {"scene_id": "s1"})[1]["media_id"] == a["media_id"]     # same window: same file
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=160x120:d=2:r=25", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(comfy.output / "black.mp4")], check=True, capture_output=True)
+    dark = _project(comfy, frames=50, frames_mode="timeline")
+    dark.scene_renders["s1"] = {"media": {"filename": "black.mp4", "subfolder": "", "type": "output"}, "inSec": 0}
+    projects.save(dark)
+    assert _post(server, f"{BASE}/projects/{dark.id}/last-frame", {"scene_id": "s1"})[1]["dark"] is True
+    assert _post(server, f"{BASE}/projects/{dark.id}/last-frame", {"scene_id": "nope"})[0] == 404
+    assert _post(server, f"{BASE}/projects/{dark.id}/last-frame", {})[0] == 400

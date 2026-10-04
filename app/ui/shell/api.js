@@ -88,6 +88,7 @@ export const api = {
     return videos.length ? { videos } : { error: "no video came out, check the ComfyUI terminal" };
   },
   renderLibrary: () => call("GET", "/api/m/render/library"),
+  lastFrame: (pid, body) => call("POST", `/api/m/render/projects/${encodeURIComponent(pid)}/last-frame`, body),
   suggestionStats: () => call("GET", "/api/shortcuts/suggestion_stats"),
   expandPrompt: (body) => call("POST", "/api/prompt/expand", { ...body, seed: 1 }),
   packs: () => call("GET", "/api/packs"),
