@@ -6,6 +6,7 @@ export default [
   "./features/media/index.js",
   "./features/sampler/index.js",
   "./features/dock/index.js",
+  "./features/peek/index.js",
   "./features/keys/index.js",
   "./features/timeline/index.js",
   "./features/inspector/index.js",

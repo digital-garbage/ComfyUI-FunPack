@@ -51,3 +51,13 @@
 :root:not([data-ui-mode="simple"]).fp-hide-preview .fp-row > :nth-child(3), :root:not([data-ui-mode="simple"]).fp-hide-preview.fp-hide-properties .fp-row > :nth-child(1) { flex: 1 1 auto; }
 :root:not([data-ui-mode="simple"]).fp-hide-assets.fp-hide-preview .fp-row > :nth-child(3) { flex: 1 1 auto; }
 .fp-split { border: 0 !important; }
+
+/* Auto-hide timeline: a strip the height of its title bar, full height under the pointer or during a drag. */
+:root.fp-peek:not([data-ui-mode="simple"]) .fp-main { position: relative; padding-block-end: 34px; }
+:root.fp-peek:not([data-ui-mode="simple"]) .fp-main > :nth-child(2) { position: absolute; inset-inline: 0; bottom: 0; block-size: 34px; min-block-size: 0; z-index: 20; overflow: hidden; }
+:root.fp-peek:not([data-ui-mode="simple"]) .fp-main > :nth-child(2) .cx-panel-body { display: none; }
+:root.fp-peek:not([data-ui-mode="simple"]) .fp-main > :nth-child(2):hover,
+:root.fp-peek.fp-peek-open:not([data-ui-mode="simple"]) .fp-main > :nth-child(2) { block-size: var(--timeline-h); overflow: visible; }
+:root.fp-peek:not([data-ui-mode="simple"]) .fp-main > :nth-child(2):hover .cx-panel-body,
+:root.fp-peek.fp-peek-open:not([data-ui-mode="simple"]) .fp-main > :nth-child(2) .cx-panel-body { display: block; }
+:root.fp-peek .fp-split-bottom { display: none; }

@@ -9,6 +9,7 @@
 import { define } from "../internals/register.js";
 import { el } from "../internals/el.js";
 import { drag } from "../internals/drag.js";
+import { snapDelta } from "../internals/snap.js";
 
 const NICE = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 const MIN_TICK_PX = 64;
@@ -49,6 +50,11 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
     }
   }
 
+  // Every other clip's edges, the playhead and zero: what a dragged edge sticks to (Alt holds it free).
+  const SNAP_PX = 10;
+  const anchorsFor = (clip) => [0, playhead, ...lanes.flatMap((l) => l.clips.filter((c) => c.id !== clip.id).flatMap((c) => [c.start, c.start + c.dur]))];
+  const snapped = (clip, edges, dxSec, event) => (event && event.altKey ? dxSec : snapDelta(dxSec, edges, anchorsFor(clip), SNAP_PX / px));
+
   function clipNode(lane, clip) {
     const parts = [];
     if (clip.head || clip.actions) {
@@ -83,13 +89,15 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
     // Trim handles first, then the body: a press on a handle must not also start a reorder.
     cell.querySelectorAll("[data-trim]").forEach((h) => disposers.push(drag(h, {
       onStart: ({ event }) => event.stopPropagation(),
-      onMove: ({ dx }) => {
+      onMove: ({ dx, event }) => {
         const edge = h.dataset.trim;
+        dx = snapped(clip, [edge === "out" ? clip.start + clip.dur : clip.start], dx / px, event) * px;
         const dur = Math.max(0.1, clip.dur + (edge === "out" ? dx : -dx) / px);
         cell.style.width = `${Math.max(MIN_CLIP_PX, dur * px)}px`;
         if (edge === "in") cell.style.insetInlineStart = `${(clip.start + (clip.dur - dur)) * px}px`;
       },
-      onEnd: ({ dx, cancelled }) => {
+      onEnd: ({ dx, cancelled, event }) => {
+        dx = snapped(clip, [h.dataset.trim === "out" ? clip.start + clip.dur : clip.start], dx / px, event) * px;
         if (!cancelled && onTrim && dx) onTrim(clip.id, h.dataset.trim, dx / px);
         draw();
       },
@@ -98,9 +106,10 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
     let moved = false;
     disposers.push(drag(cell, {
       onStart: ({ event }) => { if (event.target.closest("[data-action],[data-trim]")) { moved = null; return; } moved = false; },
-      onMove: ({ dx }) => {
+      onMove: ({ dx, event }) => {
         if (moved === null) return;
         if (Math.abs(dx) >= MOVE_THRESHOLD_PX && (lane.reorder || lane.move)) moved = true;
+        if (moved && lane.move) dx = snapped(clip, [clip.start, clip.start + clip.dur], dx / px, event) * px;
         if (moved) cell.style.transform = `translateX(${dx}px)`;
       },
       onEnd: ({ dx, event, cancelled }) => {
@@ -110,7 +119,7 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
           if (onSelect) onSelect(clip.id, { additive: event.metaKey || event.ctrlKey, range: event.shiftKey });
           return;
         }
-        if (lane.move) { if (onMove) onMove(clip.id, dx / px); draw(); return; }          // a free lane: the clip goes where it was dropped, in seconds
+        if (lane.move) { if (onMove) onMove(clip.id, snapped(clip, [clip.start, clip.start + clip.dur], dx / px, event)); draw(); return; }          // a free lane: the clip goes where it was dropped, in seconds
         // Dropped where its middle now sits among the lane's other clips.
         const mid = clip.start + clip.dur / 2 + dx / px;
         const others = lane.clips.filter((c) => c.id !== clip.id);
