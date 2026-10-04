@@ -31,7 +31,7 @@ export function sceneRows(p, app) {
   if (!sc) return [c.emptyState.default({ icon: "▭", title: "No scene", hint: "Add one on the timeline." })];
   const cuts = p.scenes.filter((s) => genUnitId(s) === genUnitId(sc)).length > 1;
   return [
-    c.banner.info({ text: "Generating with FunPack Studio + Chain Sampler", action: { label: "Engine settings →", onClick() {} } }),
+    c.banner.info({ text: "Generating with FunPack Studio + Chain Sampler", action: { label: "Engine settings →", onClick: () => app.openSettings && app.openSettings("engine") } }),
     ...(cuts ? [c.hint.default({ text: "This scene has editorial cuts — Generate regens the whole uncut scene." })] : []),
     ...(isSubclip(sc) ? [c.hint.default({ text: "This is a cut: its prompt and source belong to the first part." })] : [
       c.field.default({ label: "Prompt", control: c.textarea.md({ label: "Prompt", value: sc.text || "", rows: 4, onInput: (v) => p.setText(sc.id, v) }) }),

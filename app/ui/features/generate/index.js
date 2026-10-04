@@ -16,7 +16,7 @@ export const renderFor = (sc, p, media, unitSec, promptId) => ({ media, ...(prom
 export default {
   id: "generate",
   mount: "timeline.actions",
-  needs: ["project", "pipeline", "generate", "api"],
+  needs: ["project", "pipeline", "generate", "api", "selection"],
   setup({ host, app }) {
     const p = app.project, g = app.generate;
     let said = false;
@@ -79,19 +79,20 @@ export default {
         if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out or is a video clip.");
       } finally { busy = false; draw(); }
     }
+    const pickedScenes = () => { const ids = new Set(app.selection.ids); const hit = p.scenes.filter((s) => ids.has(s.id)); return hit.length ? hit : p.selected ? [p.selected] : []; };       // every picked clip, else the one in focus
     const unitsOf = (scenes) => [...new Set(scenes.map(genUnitId))];
 
     const put = inPlace(host);
     let drawn = "";
     function draw() {
       const open = p.project;
-      const key = `${busy}|${held}|${g.state().phase}|${Boolean(open)}|${Boolean(p.selected)}`;
+      const picked = open ? pickedScenes().length : 0, key = `${busy}|${held}|${g.state().phase}|${Boolean(open)}|${picked}`;
       if (key === drawn) return;          // progress ticks must not rebuild the buttons
       drawn = key;
       const working = busy || held || g.state().phase === QUEUED || g.state().phase === RUNNING;     // also a run this page did not start
       const go = c.button.sm({ label: working ? "Generating…" : "▶ Generate", tone: "primary", disabled: working || !open,
         onClick: () => runUnits(unitsOf(p.scenes)) });
-      const one = c.button.sm({ label: "Selected", disabled: working || !p.selected, onClick: () => runUnits(unitsOf([p.selected])) });
+      const one = c.button.sm({ label: picked > 1 ? `Selected (${picked})` : "Selected", disabled: working || !picked, onClick: () => runUnits(unitsOf(pickedScenes())) });
       const stop = c.button.sm({ label: "■ Stop", tone: "danger", onClick: () => { stopped = true; g.cancel(); } });
       stop.node.hidden = !working;
       put(go.node, one.node, stop.node);
@@ -129,9 +130,9 @@ export default {
     });
     draw();
     const offRun = g.subscribe(draw);
-    const offApp = app.on((what) => { if (what === "generate.selected" && !busy && p.selected) runUnits(unitsOf([p.selected])); else draw(); });
+    const offApp = app.on((what) => { if (what === "generate.selected" && !busy && pickedScenes().length) runUnits(unitsOf(pickedScenes())); else draw(); });
     const offers = [offer(app, { id: "generate-all", label: "Generate", icon: "▶", run: () => { if (!busy && p.project) runUnits(unitsOf(p.scenes)); } }),
-      offer(app, { id: "generate-selected", label: "Generate selected", icon: "▶", run: () => { if (!busy && p.selected) runUnits(unitsOf([p.selected])); } })];
+      offer(app, { id: "generate-selected", label: "Generate selected", icon: "▶", run: () => { if (!busy && pickedScenes().length) runUnits(unitsOf(pickedScenes())); } })];
     return () => { offRun(); offApp(); offers.forEach((f) => f()); };
   },
 };

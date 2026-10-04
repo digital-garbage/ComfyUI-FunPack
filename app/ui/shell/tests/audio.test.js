@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hasEmbeddedAudio, moveLane, removeTrack, trimLane, separate, syncSeparated, trackFor } from "../audio.js";
+import { hasEmbeddedAudio, moveLane, removeTrack, splitTrack, trimLane, separate, syncSeparated, trackFor } from "../audio.js";
 
 const media = { filename: "a.mp4", subfolder: "", type: "output" };
 const proj = () => ({ num_frames_per_scene: 50, frame_rate: 25, scenes: [{ id: "a", text: "" }, { id: "b", text: "", audio_volume: 0.5 }, { id: "v", source: { type: "video", media_ref: "m1" }, source_dur: 3 }],
@@ -137,4 +137,12 @@ test("a file lane slides and trims on its own numbers", () => {
   assert.deepEqual([p.audio_tracks[0].source_in_sec, p.audio_tracks[0].start_sec], [0, 0]);
   trimLane(p, "f", "out", -9);
   assert.equal(p.audio_tracks[0].source_dur, 0.1);
+});
+
+test("splitTrack cuts a file lane in two where the playhead is; separated lanes and cuts at the edge are refused", () => {
+  const p = { audio_tracks: [{ id: "f", kind: "overlay", media_ref: "m", start_sec: 1, source_in_sec: 2, source_dur: 4, volume: 0.5 }, { id: "s", kind: "separated", pinned_dur: 3 }] };
+  assert.equal(splitTrack(p, "f", 1.01), false);
+  const tail = splitTrack(p, "f", 3);
+  assert.deepEqual([p.audio_tracks[0].source_dur, tail.start_sec, tail.source_in_sec, tail.source_dur, tail.volume], [2, 3, 4, 2, 0.5]);
+  assert.equal(splitTrack(p, "s", 1), false);
 });

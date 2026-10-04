@@ -155,7 +155,11 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
     timeAt,
     setLanes(next = []) { lanes = next; draw(); },
     setZoom(next) { px = Math.max(4, next); draw(); },
-    setPlayhead(seconds) { playhead = seconds; head.style.insetInlineStart = `${Math.max(0, seconds) * px}px`; },
+    /** `follow`: scroll along when the playhead leaves the visible part (while playing). */
+    setPlayhead(seconds, follow = false) {
+      playhead = seconds; head.style.insetInlineStart = `${Math.max(0, seconds) * px}px`;
+      if (follow) { const x = Math.max(0, seconds) * px + gutter.offsetWidth, w = node.clientWidth; if (x > node.scrollLeft + w - 24 || x < node.scrollLeft + gutter.offsetWidth) node.scrollLeft = Math.max(0, x - w * 0.2); }
+    },
     destroy() { disposers.forEach((d) => d()); if (observer) observer.disconnect(); node.remove(); },
   };
 });

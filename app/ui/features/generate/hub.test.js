@@ -14,7 +14,7 @@ const rig = (phase, extra = {}) => {
     waitForTerminal: () => Object.assign(Promise.resolve("done"), { cancel() {} }), ...extra };
   const project = { project: doc, get scenes() { return doc.scenes; }, selected: null,
     edit: (fn) => fn(doc), editFor: async (_id, fn) => fn(doc) };
-  const app = { project, lastRun: { n: 0 }, pipeline: { slots: () => [] }, generate: g, api: { newTasteGeneration: () => Promise.resolve({}) }, on: () => () => {} };
+  const app = { project, selection: { ids: [] }, lastRun: { n: 0 }, pipeline: { slots: () => [] }, generate: g, api: { newTasteGeneration: () => Promise.resolve({}) }, on: () => () => {} };
   const host = document.createElement("div");
   hub.setup({ host, app });
   return { handlers, doc, host };

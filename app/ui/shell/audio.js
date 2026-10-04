@@ -101,3 +101,15 @@ export function trimLane(p, id, edge, deltaSec) {
   t.offset_sec = (t.offset_sec || 0) + d;
   return true;
 }
+
+/** Cut a file lane in two at `atSec` (timeline seconds); both halves keep playing what they did. -> the new (later) lane, or false. */
+export function splitTrack(p, id, atSec) {
+  const t = (p.audio_tracks || []).find((x) => x.id === id);
+  if (!t || t.kind === "separated" || t.source_dur == null) return false;
+  const start = t.start_sec || 0, cut = atSec - start;
+  if (!(cut > 0.05 && cut < t.source_dur - 0.05)) return false;
+  const tail = { ...t, id: newId(), start_sec: atSec, source_in_sec: (t.source_in_sec || 0) + cut, source_dur: t.source_dur - cut };
+  t.source_dur = cut;
+  p.audio_tracks = [...p.audio_tracks, tail];
+  return tail;
+}

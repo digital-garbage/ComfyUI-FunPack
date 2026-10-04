@@ -5,8 +5,7 @@ import { composer as c } from "../../composer/composer.js";
 import { segments, totalSeconds, clock } from "../../shell/scenes.js";
 import { inPlace } from "../../shell/place.js";
 import * as edits from "../../shell/edits.js";
-import { moveLane, trimLane } from "../../shell/audio.js";
-import { videoLane, audioLane, tracksLane, framesAt } from "./lanes.js";
+import { videoLane, audioLane, framesAt } from "./lanes.js";
 
 const ZOOM = [20, 40, 80, 160, 320];
 const sceneIds = (p) => segments(p).filter((s) => s.kind === "scene").map((s) => s.id);
@@ -25,11 +24,10 @@ const stage = {
       pxPerSecond: ZOOM[zoom],
       onSeek: (sec) => head.set(sec),
       onSelect: (id, how) => { const own = owner(id); if (own) own.select(id); else sel.pick(id, how, sceneIds(p.project)); },
-      onMove: (id, d) => { const own = owner(id); if (own) own.move(id, d); else id.startsWith("t:") && edit((pr) => moveLane(pr, id.slice(2), d)); },
+      onMove: (id, d) => { const own = owner(id); if (own) own.move(id, d); },
       onTrim: (id, edge, d) => {
         const own = owner(id);
         if (own) return own.trim(id, edge, d);
-        if (id.startsWith("t:")) return edit((pr) => trimLane(pr, id.slice(2), edge, d));
         const dur = segments(p.project).find((s) => s.id === id).dur;
         edit((pr) => edge === "out" ? edits.resize(pr, id, dur + d) : d > 0 && edits.trimLeft(pr, id, d));   // the left edge only cuts in
       },
@@ -44,14 +42,14 @@ const stage = {
     const ghostActions = (g) => [{ label: "✕", title: "Remove from the timeline",
       onClick: () => edit((pr) => { pr.scene_ghosts = (pr.scene_ghosts || []).filter((x) => x.id !== g.id); return true; }) }];
 
-    const draw = () => { const open = p.project; view.setLanes(open ? [videoLane(open, sel.ids, sel.focus, clipActions, ghostActions, (sc) => (app.clipTags || []).flatMap((f) => { try { return f(sc); } catch { return []; } })), audioLane(open, sel.ids), tracksLane(open), ...extra.flatMap((e) => { try { return e.lanes(open); } catch { return []; } })].filter(Boolean) : []); };       // a feature's lanes failing must not stop the baseline's
+    const draw = () => { const open = p.project; view.setLanes(open ? [videoLane(open, sel.ids, sel.focus, clipActions, ghostActions, (sc) => (app.clipTags || []).flatMap((f) => { try { return f(sc); } catch { return []; } })), audioLane(open, sel.ids), ...extra.flatMap((e) => { try { return e.lanes(open); } catch { return []; } })].filter(Boolean) : []); };       // a feature's lanes failing must not stop the baseline's
     const setZoom = (z) => { zoom = Math.min(ZOOM.length - 1, Math.max(0, z)); view.setZoom(ZOOM[zoom]); };
     host.append(view.node);
     const off = [app.on((what) => {
       if (what === "zoom.in") setZoom(zoom + 1); else if (what === "zoom.out") setZoom(zoom - 1);
       else if (what === "zoom.fit") { const total = p.project ? totalSeconds(p.project) : 0; const fit = ZOOM.filter((z) => z * (total + 2) <= view.node.clientWidth); setZoom(fit.length ? ZOOM.indexOf(fit[fit.length - 1]) : 0); }
       else draw();
-    }), head.on((sec) => view.setPlayhead(sec))];
+    }), head.on((sec) => view.setPlayhead(sec, head.playing))];
     draw();
     return () => { off.forEach((f) => f()); view.destroy(); };
   },
