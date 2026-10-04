@@ -101,9 +101,11 @@ export const api = {
   deleteMedia: (id) => call("DELETE", `/api/media/${encodeURIComponent(id)}`),
   /** Upload files as media, one request each so one refusal (too big, wrong type) does not sink the rest.
    *  Resolves {media, problems}. Not JSON, so not through call(). */
-  async uploadMedia(files) {
+  async uploadMedia(files, onProgress) {       // onProgress(done, total, name) before each file
     const out = { media: [], problems: [] };
+    let done = 0;
     for (const file of files) {
+      if (onProgress) onProgress(done++, files.length, file.name);
       const form = new FormData();
       form.append("file", file, file.name);
       try {

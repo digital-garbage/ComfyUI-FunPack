@@ -69,9 +69,11 @@ export default {
     const props = { id: "media", items: [], empty: "No media yet. Drop images or clips here.", onActivate: (it) => (selecting ? toggle(it.id) : peek(it)), onContext: context, drag: { type: MEDIA_DRAG, data: (it) => ({ id: it.id, kind: (items.find((m) => m.id === it.id) || {}).kind }) } };
     const galleries = { adaptive: c.gallery.adaptive(props), list: c.gallery.list(props), icons: c.gallery.icons(props) };
     const shelf = c.region.stack({ gap: "none", children: [galleries.adaptive] });
+    const note = c.text.sm({ text: "" });
     const drop = c.dropzone.default({ label: "Drop or choose files", hint: "images, clips, audio",
       onFiles: async (files) => {
-        try { const r = await api.uploadMedia(files); (r.problems || []).forEach(tell); await refresh(); } catch (err) { tell(err.message); }
+        try { const r = await api.uploadMedia(files, (i, n, name) => note.setText(`Uploading ${i + 1}/${n}: ${name}`)); (r.problems || []).forEach(tell); await refresh(); } catch (err) { tell(err.message); }
+        note.setText("");
       } });
     const seg = (label, options, key) => c.segmented.sm({ label, options, value: show[key], onChange: (v) => { show[key] = v; draw(true); } });
     const sort = c.select.sm({ label: "Sort", options: SORTS, value: show.sort, onChange: (v) => { show.sort = v; draw(true); } });
@@ -82,7 +84,7 @@ export default {
       await gone(ids);
     } });
     bulk.node.hidden = true;
-    host.append(c.toolbar.default({ items: [c.text.sm({ text: "Media" })], trailing: [selectBtn, bulk] }).node, drop.node, seg("Show", FILTERS, "filter").node, sort.node,
+    host.append(c.toolbar.default({ items: [c.text.sm({ text: "Media" })], trailing: [selectBtn, bulk] }).node, drop.node, note.node, seg("Show", FILTERS, "filter").node, sort.node,
       seg("View", VIEWS, "view").node, seg("Tile size", DENSITY, "cols").node, shelf.node);
 
     let drawn = "";
