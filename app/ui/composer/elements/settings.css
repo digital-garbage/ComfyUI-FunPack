@@ -32,13 +32,13 @@
 }
 
 /* a run of rows (and switches) is one card */
-.cx-settings-content .cx-stack > :is(.cx-settings-row, .cx-toggle-row) {
+:is(.cx-settings-content, .cx-modal-body) .cx-stack > :is(.cx-settings-row, .cx-toggle-row) {
   background-color: var(--elev-2); border: 0; border-radius: var(--r-5);
   padding: var(--sp-5) var(--sp-7); min-block-size: 40px; display: flex; align-items: center;
 }
-.cx-settings-content .cx-stack > .cx-toggle-row > label { inline-size: 100%; display: flex; }
-.cx-settings-content .cx-stack > :is(.cx-settings-row, .cx-toggle-row):has(+ :is(.cx-settings-row, .cx-toggle-row)) { border-end-start-radius: 0; border-end-end-radius: 0; }
-.cx-settings-content .cx-stack > :is(.cx-settings-row, .cx-toggle-row) + :is(.cx-settings-row, .cx-toggle-row) {
+:is(.cx-settings-content, .cx-modal-body) .cx-stack > .cx-toggle-row > label { inline-size: 100%; display: flex; }
+:is(.cx-settings-content, .cx-modal-body) .cx-stack > :is(.cx-settings-row, .cx-toggle-row):has(+ :is(.cx-settings-row, .cx-toggle-row)) { border-end-start-radius: 0; border-end-end-radius: 0; }
+:is(.cx-settings-content, .cx-modal-body) .cx-stack > :is(.cx-settings-row, .cx-toggle-row) + :is(.cx-settings-row, .cx-toggle-row) {
   border-start-start-radius: 0; border-start-end-radius: 0;
   margin-block-start: calc(-1 * var(--cx-gap, var(--sp-4)));
   background-image: linear-gradient(var(--line), var(--line)); background-repeat: no-repeat;

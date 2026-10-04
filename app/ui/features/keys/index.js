@@ -5,10 +5,10 @@ import { segments } from "../../shell/scenes.js";
 export default {
   id: "keys",
   mount: "menubar.menus",
-  needs: ["project", "selection", "keys", "mode"],
+  needs: ["project", "selection", "keys"],
   setup({ app }) {
     const p = app.project, sel = app.selection;
-    const scene = (fn) => (e) => (app.mode.now === "simple" ? false : fn(e));
+    const scene = (fn) => (e) => fn(e);
     const frame = () => (p.project && p.project.frame_rate) || 25;
     const step = (dir) => scene((e) => (e && e.target && e.target.closest && e.target.closest("button, a, [role=slider], [role=tab], [role=radio], [role=option], [role=menuitem], [role=separator]") ? false : app.playhead.set(app.playhead.at + dir / frame())));       // a widget that uses the arrows keeps them
     const edge = (which) => {       // I / O: the playhead to the picked clip's in / out point

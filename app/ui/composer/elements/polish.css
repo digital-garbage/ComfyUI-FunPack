@@ -64,7 +64,8 @@ body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 .cx-field > .cx-label, .cx-field > label { color: var(--muted); font-size: var(--fs-5); font-weight: var(--fw-regular); }
 .cx-eyebrow { color: var(--muted); font-weight: var(--fw-semibold); }
 .cx-banner { border-radius: var(--r-4); }
-.cx-chip { border-color: transparent; background: var(--elev-2); }
+.cx-chip { border-color: transparent; }
+.cx-chip-neutral { background: var(--elev-2); }
 
 /* inside a settings card the buttons are quiet: a tinted fill with accent text, never a row of solid amber */
 .cx-settings-row .cx-btn-primary { background: var(--accent-soft); color: var(--accent-hi); }
@@ -87,3 +88,21 @@ body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 .cx-menu-item:hover:not(:disabled) .cx-menu-icon, .cx-menu-item:hover:not(:disabled) .cx-menu-hint { color: inherit; }
 .cx-menu-sep { margin: var(--sp-3) var(--sp-3); }
 .cx-menu-heading { padding: var(--sp-3) var(--sp-5) var(--sp-2); font-size: var(--fs-7); }
+
+/* media: tiles and the viewer are rounded, with no outline until chosen */
+.cx-cell { border-color: transparent; border-radius: var(--r-4); }
+.cx-cell:hover { border-color: var(--line-hover); }
+.cx-cell-badge, .cx-cell-duration { border-radius: var(--r-2); }
+.cx-viewer-stage { border-radius: var(--r-4); }
+.cx-viewer-media { border-radius: var(--r-3); }
+
+/* inspector: related fields share one rounded card */
+.fp-card { background: var(--elev-2); border-radius: var(--r-5); padding: var(--sp-6); gap: var(--sp-5); }
+.fp-card .cx-input, .fp-card .cx-textarea, .fp-card .cx-select { background: var(--elev-3); }
+.fp-card .cx-segmented { background: var(--elev-3); }
+.cx-panel-body > .cx-eyebrow, .cx-stack > .cx-eyebrow { margin-block-start: var(--sp-4); }
+
+/* list views read as a grouped card, like a settings list */
+.cx-settings-content .cx-media-list { background: var(--elev-2); border-radius: var(--r-5); padding: var(--sp-3); gap: 0; }
+.cx-settings-content .cx-media-row { border-radius: var(--r-3); border-color: transparent; background: transparent; }
+.cx-settings-content .cx-media-row:hover { background: var(--hover); }

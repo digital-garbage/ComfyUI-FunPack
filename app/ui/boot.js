@@ -13,7 +13,6 @@ import { createMaintenance } from "./shell/maintenance.js";
 import { syncSeparated } from "./shell/audio.js";
 import { createKeys } from "./shell/keys.js";
 import { createDock } from "./shell/dock.js";
-import { createMode } from "./shell/mode.js";
 import { hostFor } from "./shell/mounts.js";
 import paths from "./modules.js";
 
@@ -29,7 +28,7 @@ linkPipeline({ project, pipeline, onOpen: (fn) => on((what) => { if (what === "o
 const frame = build(document.getElementById("app"));
 const selection = createSelection({ project });
 selection.on(() => say("select"));
-const app = { editorSettings: [], timelineLanes: [], timelineView: {}, mediaMenu: [], mediaPeek: {}, sceneSections: [], clipTags: [], has: new Set(), actions: [], inputHooks: [], promptPrefix: [], lastRun: { typed: undefined, n: 0 }, runner: {}, project, pipeline, generate, api, on, say, title: frame.setZoneTitle, selection, playhead: createPlayhead(), theme: window.ComposerTheme, mode: createMode(), panel: frame.togglePanel, closePanels: frame.closePanels, dock: createDock(), maintenance: createMaintenance({ api, flush: async () => { await project.flush(); if (project.unsaved) throw new Error("Your latest edits could not be saved, so nothing was changed. Try again in a moment."); } }), keys: createKeys(), resetLayout: () => { frame.resetLayout(); app.dock.reset(); } };
+const app = { editorSettings: [], timelineLanes: [], timelineView: {}, mediaMenu: [], mediaPeek: {}, sceneSections: [], clipTags: [], has: new Set(), actions: [], inputHooks: [], promptPrefix: [], lastRun: { typed: undefined, n: 0 }, runner: {}, project, pipeline, generate, api, on, say, title: frame.setZoneTitle, selection, playhead: createPlayhead(), theme: window.ComposerTheme, dock: createDock(), maintenance: createMaintenance({ api, flush: async () => { await project.flush(); if (project.unsaved) throw new Error("Your latest edits could not be saved, so nothing was changed. Try again in a moment."); } }), keys: createKeys(), resetLayout: () => { frame.resetLayout(); app.dock.reset(); } };
 const settings = createSettings({ menubar: hostFor("menubar.menus") });
 app.openSettings = (id) => settings.open(id);
 const result = await loadFeatures(paths, { app });

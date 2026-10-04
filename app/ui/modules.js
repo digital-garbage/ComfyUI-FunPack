@@ -1,6 +1,5 @@
 // The one list of UI features. Adding a feature is a folder under ./features and a line here.
 export default [
-  "./features/modes/index.js",
   "./features/log/index.js",
   "./features/projects/index.js",
   "./features/media/index.js",

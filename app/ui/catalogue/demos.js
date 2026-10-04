@@ -300,7 +300,7 @@ export const DEMOS = {
   }),
   "overlay.blocking": { message: "Restarting ComfyUI…" },
   "slideOver.md": (c) => ({ side: "right", title: "Properties",
-    body: c.hint.default({ text: "Simple mode slides this over the preview." }) }),
+    body: c.hint.default({ text: "A panel that slides in over the page." }) }),
 
   // --- gallery + wheel ---
   "gallery.adaptive": { id: "demo-gallery", cols: 3, items: [

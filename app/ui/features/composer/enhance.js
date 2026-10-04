@@ -23,7 +23,7 @@ export function enhance(app, own) {
   function draw() {
     if (!alive) return;
     const sl = slot();
-    if (!sl) return page.set([c.hint.default({ text: "The open pipeline has no prompt enhancer. Pick a preset that has one, or add the “FunPack Enhance Prompt” node in Models & Pipeline." })]);
+    if (!sl) return page.set([c.emptyState.default({ icon: "✎", title: "No prompt enhancer here", hint: "Pick a preset that has one, or add the “FunPack Enhance Prompt” node in Settings ▸ Models & Pipeline." })]);
     const v = sl.inputs || {}, val = (n, d) => (v[n] === undefined ? d : v[n]);
     const on = val("enabled", false), greedy = val("greedy", false);
     page.set([

@@ -1,6 +1,7 @@
 // The Project tab: what the whole project makes.
 import { composer as c } from "../../composer/composer.js";
 import { DRIVEN, isVideoClip, segments } from "../../shell/scenes.js";
+import { card } from "./scene.js";
 
 const STARTS = [{ value: "i2v", label: "From an image" }, { value: "t2v", label: "From a prompt" }];
 
@@ -60,20 +61,20 @@ export function projectRows(p, slots, api) {
   const per = (open.num_frames_per_scene || 97) / (open.frame_rate || 25);
   return [
     c.label.section({ text: "Project" }),
-    c.field.default({ label: "Project name", control: c.input.md({ label: "Project name", value: open.name || "", onCommit: (v) => p.rename(v) }) }),
+    card(c.field.default({ label: "Project name", control: c.input.md({ label: "Project name", value: open.name || "", onCommit: (v) => p.rename(v) }) })),
     c.label.section({ text: "Video settings" }),
-    c.field.row({ fields: [frames.field, fps.field] }),
-    c.hint.default({ text: `≈ ${per.toFixed(2)} s per shot` }),
-    ...(size.length ? [c.field.row({ fields: size.map((x) => x.field) })] : []),
-    ...custom(p, open),
-    c.field.default({ label: "Final render size", control: c.select.md({ label: "Final render size", options: sizes(open), value: open.export_size_from || "",
-      onChange: (v) => p.setField("export_size_from", v) }) }),
-    c.field.default({ label: "Start shots", control: c.select.md({ label: "Start shots", options: STARTS, value: open.generation_mode === "t2v" ? "t2v" : "i2v", onChange: (v) => p.setField("generation_mode", v) }) }),
+    card(c.field.row({ fields: [frames.field, fps.field] }),
+      c.hint.default({ text: `≈ ${per.toFixed(2)} s per shot` }),
+      size.length ? c.field.row({ fields: size.map((x) => x.field) }) : null,
+      ...custom(p, open),
+      c.field.default({ label: "Final render size", control: c.select.md({ label: "Final render size", options: sizes(open), value: open.export_size_from || "",
+        onChange: (v) => p.setField("export_size_from", v) }) }),
+      c.field.default({ label: "Start shots", control: c.select.md({ label: "Start shots", options: STARTS, value: open.generation_mode === "t2v" ? "t2v" : "i2v", onChange: (v) => p.setField("generation_mode", v) }) })),
     c.label.section({ text: "Prompt" }),
-    c.field.default({ label: "Anchor", control: c.textarea.md({ label: "Anchor", value: p.anchor, rows: 2, onInput: (v) => p.setAnchor(v) }) }),
-    c.field.default({ label: "Negative prompt", control: c.textarea.md({ label: "Negative prompt", value: p.negative, rows: 2, onInput: (v) => p.setNegative(v) }) }),
-    c.toggle.default({ label: "Postfix", hint: "Appended to every scene (a style or quality tag, say).", checked: open.postfix_enabled !== false, onChange: (v) => p.setField("postfix_enabled", v) }),
-    c.textarea.md({ label: "Postfix", value: p.postfix, rows: 2, disabled: open.postfix_enabled === false, onInput: (v) => p.setPostfix(v) }),
+    card(c.field.default({ label: "Anchor", control: c.textarea.md({ label: "Anchor", value: p.anchor, rows: 2, onInput: (v) => p.setAnchor(v) }) }),
+      c.field.default({ label: "Negative prompt", control: c.textarea.md({ label: "Negative prompt", value: p.negative, rows: 2, onInput: (v) => p.setNegative(v) }) }),
+      c.toggle.default({ label: "Postfix", hint: "Appended to every scene (a style or quality tag, say).", checked: open.postfix_enabled !== false, onChange: (v) => p.setField("postfix_enabled", v) }),
+      c.textarea.md({ label: "Postfix", value: p.postfix, rows: 2, disabled: open.postfix_enabled === false, onInput: (v) => p.setPostfix(v) })),
     c.collapsible.default({ label: "ADVANCED PROJECT SETTINGS", body: c.region.stack({ gap: "sm", children: [
       c.collapsible.default({ label: "Split preview (generation prompt)", body: splitPreview(p, api) }),
     ] }) }),

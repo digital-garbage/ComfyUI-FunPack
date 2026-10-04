@@ -1,5 +1,5 @@
 /* The frame's proportions, as v4 had them: fixed side columns and a fixed-height timeline across the bottom. */
-:root { --media-w: 280px; --properties-w: 340px; --timeline-h: 320px; --pad: 10px; --pgap: 10px; }
+:root { --media-w: clamp(180px, 20vw, 280px); --properties-w: clamp(270px, 28vw, 360px); --timeline-h: clamp(270px, 42vh, 340px); --pad: 10px; --pgap: 10px; }
 .fp-main { flex-direction: column; padding: 0 var(--pad) var(--pad); gap: var(--pgap); }
 .fp-row { flex: 1 1 auto; flex-direction: row; min-block-size: 0; gap: var(--pgap); }
 .fp-row > *, .fp-main > :nth-child(2) { min-inline-size: 0; border: var(--bw) solid var(--line); border-radius: var(--card-r); overflow: hidden; background: var(--elev-1); }
@@ -18,21 +18,6 @@
 /* An empty zone says so in the middle of it, with the controls kept at its foot. */
 .cx-zone .cx-stack-fill > .cx-empty { flex: 1 1 auto; justify-content: center; }
 
-/* Simple mode: one prompt and one Generate. The timeline, splitters and dock go; Assets and Properties slide over the preview. */
-.fp-row { position: relative; }
-:root[data-ui-mode="simple"] .fp-main > :nth-child(2),
-:root[data-ui-mode="simple"] .fp-simple-hide { display: none !important; }
-:root[data-ui-mode="simple"] .fp-row > :first-child,
-:root[data-ui-mode="simple"] .fp-row > :nth-child(3) {
-  position: absolute; top: 0; bottom: 0; z-index: 60; inline-size: min(var(--properties-w), 82vw);
-  background: var(--bg, var(--elev-1)); box-shadow: 0 0 40px -8px var(--shadow-ink, #000);
-  transition: transform .18s cubic-bezier(.22, .61, .36, 1);
-}
-:root[data-ui-mode="simple"] .fp-row > :first-child { left: 0; transform: translateX(-101%); }
-:root[data-ui-mode="simple"] .fp-row > :nth-child(3) { right: 0; transform: translateX(101%); }
-:root[data-ui-mode="simple"] .fp-row.fp-show-assets > :first-child,
-:root[data-ui-mode="simple"] .fp-row.fp-show-props > :nth-child(3) { transform: none; }
-
 /* Splitters: thin hit areas straddling the zone borders. */
 .fp-main { position: relative; }
 .fp-split { position: absolute; z-index: 20; background: transparent; touch-action: none; }
@@ -41,25 +26,24 @@
 .fp-split-left { left: calc(var(--pad) + var(--media-w) + var(--pgap) / 2 - 3.5px); }
 .fp-split-right { right: calc(var(--pad) + var(--properties-w) + var(--pgap) / 2 - 3.5px); }
 .fp-split-bottom { left: 0; right: 0; block-size: 7px; bottom: calc(var(--pad) + var(--timeline-h) + var(--pgap) / 2 - 3.5px); cursor: row-resize; }
-:root[data-ui-mode="simple"] .fp-split { display: none; }
 
-/* Dock: a hidden zone leaves the row (and the splitter beside it); Simple mode ignores the dock. */
-:root:not([data-ui-mode="simple"]).fp-hide-assets .fp-row > :nth-child(1),
-:root:not([data-ui-mode="simple"]).fp-hide-preview .fp-row > :nth-child(2),
-:root:not([data-ui-mode="simple"]).fp-hide-properties .fp-row > :nth-child(3) { display: none; }
+/* Dock: a hidden zone leaves the row (and the splitter beside it). */
+.fp-hide-assets .fp-row > :nth-child(1),
+.fp-hide-preview .fp-row > :nth-child(2),
+.fp-hide-properties .fp-row > :nth-child(3) { display: none; }
 .fp-hide-assets .fp-split-left, .fp-hide-properties .fp-split-right, .fp-hide-preview .fp-split-right { display: none; }
-:root:not([data-ui-mode="simple"]).fp-hide-preview .fp-row > :nth-child(3), :root:not([data-ui-mode="simple"]).fp-hide-preview.fp-hide-properties .fp-row > :nth-child(1) { flex: 1 1 auto; }
-:root:not([data-ui-mode="simple"]).fp-hide-assets.fp-hide-preview .fp-row > :nth-child(3) { flex: 1 1 auto; }
+.fp-hide-preview .fp-row > :nth-child(3), .fp-hide-preview.fp-hide-properties .fp-row > :nth-child(1) { flex: 1 1 auto; }
+.fp-hide-assets.fp-hide-preview .fp-row > :nth-child(3) { flex: 1 1 auto; }
 .fp-split { border: 0 !important; }
 
 /* Auto-hide timeline: a strip the height of its title bar, full height under the pointer or during a drag. */
-:root.fp-peek:not([data-ui-mode="simple"]) .fp-main { position: relative; padding-block-end: 34px; }
-:root.fp-peek:not([data-ui-mode="simple"]) .fp-main > :nth-child(2) { position: absolute; inset-inline: 0; bottom: 0; block-size: 34px; min-block-size: 0; z-index: 20; overflow: hidden; }
-:root.fp-peek:not([data-ui-mode="simple"]) .fp-main > :nth-child(2) .cx-panel-body { display: none; }
-:root.fp-peek:not([data-ui-mode="simple"]) .fp-main > :nth-child(2):hover,
-:root.fp-peek.fp-peek-open:not([data-ui-mode="simple"]) .fp-main > :nth-child(2) { block-size: var(--timeline-h); overflow: visible; }
-:root.fp-peek:not([data-ui-mode="simple"]) .fp-main > :nth-child(2):hover .cx-panel-body,
-:root.fp-peek.fp-peek-open:not([data-ui-mode="simple"]) .fp-main > :nth-child(2) .cx-panel-body { display: block; }
+:root.fp-peek .fp-main { position: relative; padding-block-end: 34px; }
+:root.fp-peek .fp-main > :nth-child(2) { position: absolute; inset-inline: 0; bottom: 0; block-size: 34px; min-block-size: 0; z-index: 20; overflow: hidden; }
+:root.fp-peek .fp-main > :nth-child(2) .cx-panel-body { display: none; }
+:root.fp-peek .fp-main > :nth-child(2):hover,
+:root.fp-peek.fp-peek-open .fp-main > :nth-child(2) { block-size: var(--timeline-h); overflow: visible; }
+:root.fp-peek .fp-main > :nth-child(2):hover .cx-panel-body,
+:root.fp-peek.fp-peek-open .fp-main > :nth-child(2) .cx-panel-body { display: block; }
 :root.fp-peek .fp-split-bottom { display: none; }
 
 /* Welcome: the maintenance actions as a 2x2 of tiles */
@@ -68,3 +52,4 @@
 .fp-tile:hover { background: var(--hover); }
 .fp-tile-title { font-size: var(--fs-4); font-weight: var(--fw-medium); }
 .fp-tile-hint { font-size: var(--fs-6); color: var(--muted); }
+@media (max-width: 1150px) { .fp-keyhint { display: none; } }

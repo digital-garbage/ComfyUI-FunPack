@@ -94,7 +94,9 @@ const zoom = {
   needs: ["say"],
   setup({ host, app }) {
     const b = (label, what, title) => c.button.sm({ label, tone: "ghost", title, onClick: () => app.say(what) }).node;
-    host.append(c.hint.default({ text: "J K L · S split · I O in/out · + − zoom" }).node,
+    const keys = c.hint.default({ text: "J K L · S split · I O in/out · + − zoom" }).node;
+    keys.classList.add("fp-keyhint");          // the first thing to go when the row runs out of room
+    host.append(keys,
       b("−", "zoom.out", "Zoom out"), b("＋", "zoom.in", "Zoom in"), b("fit", "zoom.fit", "Fit the cut to the window"));
   },
 };

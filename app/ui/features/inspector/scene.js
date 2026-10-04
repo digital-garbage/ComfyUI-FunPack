@@ -36,11 +36,14 @@ function drift(sc, open) {
 /** The slip: where in the rendered file this clip starts and how much of it plays. Only a clip that has a render has one. */
 function trimRows(p, sc, open) {
   if (!((open.scene_renders || {})[sc.id] || {}).media) return [];
-  return [c.label.section({ text: "Source trim (slip)" }), c.field.row({ fields: [
+  return [c.label.section({ text: "Source trim (slip)" }), card(c.field.row({ fields: [
     c.field.default({ label: "Source in (s)", control: c.number.md({ label: "Source in", value: sc.source_in || 0, min: 0, step: 0.05, onChange: (v) => p.setScene(sc.id, "source_in", v) }) }),
     c.field.default({ label: "Source dur (s, 0 = full)", control: c.number.md({ label: "Source duration", value: sc.source_dur != null ? sc.source_dur : 0, min: 0, step: 0.05, onChange: (v) => p.setScene(sc.id, "source_dur", v > 0 ? Math.max(0.1, v) : null) }) })] }),
-  c.button.sm({ label: "Reset source trim", tone: "ghost", disabled: !sc.source_in && sc.source_dur == null, onClick: () => { p.setScene(sc.id, "source_in", 0); p.setScene(sc.id, "source_dur", null); } })];
+  c.button.sm({ label: "Reset source trim", tone: "ghost", disabled: !sc.source_in && sc.source_dur == null, onClick: () => { p.setScene(sc.id, "source_in", 0); p.setScene(sc.id, "source_dur", null); } }))];
 }
+
+/** A group of fields on one rounded card. */
+export const card = (...children) => { const n = c.region.stack({ gap: "md", children: children.flat().filter(Boolean) }); n.node.classList.add("fp-card"); return n; };
 
 export function sceneRows(p, app) {
   const sc = p.selected, open = p.project;
@@ -50,22 +53,22 @@ export function sceneRows(p, app) {
     c.banner.info({ text: "Generating with FunPack Studio + Chain Sampler", action: { label: "Engine settings →", onClick: () => app.openSettings && app.openSettings("engine") } }),
     ...(sc.removed_from_plan ? [c.banner.info({ text: "Removed from plan — its generated clip stays on the timeline.", action: { label: "Restore to plan", onClick: () => p.edit((pr) => restoreToPlan(pr, sc.id)) } })] : []),
     ...(cuts ? [c.hint.default({ text: "This scene has editorial cuts — Generate regens the whole uncut scene." })] : []),
-    ...(isSubclip(sc) ? [c.hint.default({ text: "This is a cut: its prompt and source belong to the first part." })] : [
+    ...(isSubclip(sc) ? [c.hint.default({ text: "This is a cut: its prompt and source belong to the first part." })] : [card(
       c.field.default({ label: "Prompt", control: c.textarea.md({ label: "Prompt", value: sc.text || "", rows: 4, onInput: (v) => p.setText(sc.id, v) }) }),
       c.field.default({ label: "Source", control: c.select.md({ label: "Source", options: SOURCES, value: (sc.source || {}).type || "carry",
-        onChange: (v) => p.setScene(sc.id, "source", { ...(sc.source || {}), type: v }) }) }),
-    ]),
+        onChange: (v) => p.setScene(sc.id, "source", { ...(sc.source || {}), type: v }) }) }))]),
     c.label.section({ text: "Reference media (v5 pipeline)" }),
-    mediaField(app, p, sc, { label: "Resolution source", hint: "Sets this scene's aspect ratio for generation — the project's own Width/Height set the actual resolution; this image's pixels are not used.",
+    card(mediaField(app, p, sc, { label: "Resolution source", hint: "Sets this scene's aspect ratio for generation — the project's own Width/Height set the actual resolution; this image's pixels are not used.",
       key: "source_image", multiple: false, kinds: ["image"], empty: "— choose resolution source —" }),
-    mediaField(app, p, sc, { label: "References", key: "references", multiple: true, kinds: ["image", "video", "audio"], empty: "+ Add reference" }),
-    c.field.row({ fields: [
+    mediaField(app, p, sc, { label: "References", key: "references", multiple: true, kinds: ["image", "video", "audio"], empty: "+ Add reference" })),
+    c.label.section({ text: "Length" }),
+    card(c.field.row({ fields: [
       lengthField(p, sc, "Frames", "frames_mode", "frames", effFrames(sc, open)),
       lengthField(p, sc, "FPS", "fps_mode", "fps", effFps(sc, open)),
     ] }),
     drift(sc, open),
-    c.button.sm({ label: "Generate this scene", tone: "primary", onClick: () => app.say("generate.scene") }),
+    c.button.md({ label: "Generate this scene", tone: "primary", onClick: () => app.say("generate.scene") })),
     ...trimRows(p, sc, open),
-    c.checkbox.default({ label: "Exclude from full generation", checked: Boolean(sc.excluded), onChange: (v) => p.setScene(sc.id, "excluded", v) }),
+    card(c.checkbox.default({ label: "Exclude from full generation", checked: Boolean(sc.excluded), onChange: (v) => p.setScene(sc.id, "excluded", v) })),
   ];
 }

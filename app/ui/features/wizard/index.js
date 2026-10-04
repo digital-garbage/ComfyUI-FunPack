@@ -1,10 +1,10 @@
-// Project Setup Wizard: look, how much of the app, a name and a model's starting point, then the tour offer. Opens from File ▸ Project Setup Wizard.
+// Project Setup Wizard: look, a name and a model's starting point, then the tour offer. Opens from File ▸ Project Setup Wizard.
 import { composer as c } from "../../composer/composer.js";
 
 export default {
   id: "wizard",
   mount: "menubar.menus",
-  needs: ["project", "api", "pipeline", "theme", "mode"],
+  needs: ["project", "api", "pipeline", "theme"],
   setup({ app }) {
     let win = null;
     const ctx = { name: "Untitled montage", preset: "", tour: true };
@@ -13,8 +13,6 @@ export default {
     const STEPS = [
       { title: "Choose your look", sub: "You can change this any time in Settings ▸ Appearance.", body: () => c.segmented.md({ label: "Colour scheme", value: app.theme.get(), onChange: (v) => app.theme.apply(v),
         options: [{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }, { value: "auto", label: "Auto" }] }) },
-      { title: "How much do you want in front of you?", sub: "You can switch at any time from the control beside the FunPack wordmark.", body: () => c.radioGroup.default({ label: "Mode", value: app.mode.now, onChange: (v) => app.mode.set(v),
-        options: [{ value: "simple", label: "Simple — one prompt and Generate. Rating-driven steering and experimental sampling stay off." }, { value: "editor", label: "Editor — the full cutting room: timeline, ratings, every Studio and sampler setting." }] }) },
       { title: "Name it, and pick a model", sub: "The model decides which nodes and which files this project needs.", body: () => c.region.stack({ gap: "sm", children: [
         c.field.default({ label: "Project name", control: c.input.md({ label: "Project name", value: ctx.name, onInput: (v) => { ctx.name = v; } }) }),
         c.field.default({ label: "Start from", hint: "A model's own pipeline, ready to fill with files. “Keep the current pipeline” leaves Models & Pipeline as it is.",

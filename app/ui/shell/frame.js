@@ -1,7 +1,6 @@
 // The app's regions, laid out as v4 had them: a menubar, then Assets | Preview | Properties side by
 // side with the Timeline under all three. Every region offers mount points; no feature is named here.
-//   menubar.mode | menubar.menus | menubar.right                      the bar
-//   preview.simple (under the monitor, Simple mode only)
+//   menubar.menus | menubar.right   the bar
 //   timeline.toolbar | timeline.toolbar.end (the row over the stage; the stage itself is `timeline`)
 //   assets.projects | assets.media (stacked in the Assets zone)
 //   <zone> (body) | <zone>.actions (after the title) | <zone>.status (far end)   for assets, preview, inspector, timeline
@@ -33,13 +32,11 @@ export function build(root) {
     });
     return composer.region.stack({ gap: "md", fill: true, children: sheets });
   };
-  // Preview: the monitor's stack, then (Simple mode only) the one-prompt bar under it.
+  // Preview: the monitor's stack.
   const preview = () => {
     const stack = composer.region.stack({ gap: "sm", fill: true });
     offer("preview", stack.node);
-    const bar = composer.region.stack({ gap: "sm" });
-    offer("preview.simple", bar.node);
-    return composer.region.stack({ gap: "sm", fill: true, children: [stack, bar] });
+    return stack;
   };
   // The timeline zone: a toolbar (what acts on the cut | zoom and hints), then the stage.
   const timeline = () => {
@@ -54,13 +51,10 @@ export function build(root) {
   main.node.classList.add("fp-main");
 
   const header = composer.toolbar.default({
-    items: [composer.brand.default({}), group("menubar.mode"), group("menubar.menus")],
+    items: [composer.brand.default({}), group("menubar.menus")],
     trailing: [group("menubar.right")],
   });
   const frame = composer.frame.app({ header, main });
-  // In Simple mode Assets and Properties slide over the preview on request.
-  frame.togglePanel = (which) => { const open = row.node.classList.contains(`fp-show-${which}`); row.node.classList.remove("fp-show-assets", "fp-show-props"); if (!open) row.node.classList.add(`fp-show-${which}`); };
-  frame.closePanels = () => row.node.classList.remove("fp-show-assets", "fp-show-props");
   root.append(frame.node);
   // v4's draggable splitters: three 7px bars that set the zone sizes; sizes are remembered.
   const KEY = "funpack_layout", css = document.documentElement.style;
@@ -79,7 +73,8 @@ export function build(root) {
     bar.className = `fp-split ${cls}`; bar.setAttribute("role", "separator");
     let from = 0;
     drag(bar, {
-      onStart: () => { from = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(prop)); },
+      // the default is a clamp(), which has no number in it: measure the zone itself
+      onStart: () => { const zone = prop === "--media-w" ? row.node.children[0] : prop === "--properties-w" ? row.node.children[2] : main.node.children[1]; const r = zone.getBoundingClientRect(); from = axis === "dx" ? r.width : r.height; },
       onMove: (m) => { saved[prop] = Math.round(Math.min(size[prop][1], Math.max(size[prop][0], from + sign * m[axis]))); apply(); },
       onEnd: keep,
     });
