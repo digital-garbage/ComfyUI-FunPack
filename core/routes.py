@@ -254,8 +254,8 @@ def register(routes, prefix=None):
         except ValueError:
             return web.json_response({"why": "the request was not JSON"}, status=400)
         try:
-            return web.json_response(workflow_import.convert(body.get("workflow"), graph_mod.from_comfyui()))
-        except ValueError as exc:
+            return web.json_response(workflow_import.convert(body.get("workflow") if isinstance(body, dict) else None, graph_mod.from_comfyui()))
+        except (ValueError, TypeError, KeyError, AttributeError, IndexError) as exc:        # an export that is not shaped like one
             return web.json_response({"why": str(exc)}, status=400)
 
     @routes.post(P + "/api/settings-card")

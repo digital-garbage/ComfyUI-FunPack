@@ -426,6 +426,8 @@ class Project:
     #: What each scene last rendered ({media, inSec, promptId}) and the removed scenes whose
     #: clip still previews: a reload shows the timeline the person left.
     scene_renders: dict = field(default_factory=dict)
+    #: Earlier takes of a scene: {scene id: [{media, promptId, rating}]}, newest last; the one on the clip is scene_renders'.
+    scene_variants: dict = field(default_factory=dict)
     scene_ghosts: list = field(default_factory=list)
     #: Cut order (scene ids in TIMELINE order), empty = follow the plan; True once reordered by hand.
     timeline_order: list = field(default_factory=list)
@@ -484,6 +486,7 @@ class Project:
             continuity_settings=_blob(d.get("continuity_settings"), dict),
             generation_meta=_blob(d.get("generation_meta"), dict),
             scene_renders=_blob(d.get("scene_renders"), dict),
+            scene_variants=_blob(d.get("scene_variants"), dict),
             scene_ghosts=_dicts(d.get("scene_ghosts")),
             timeline_order=[i for i in _blob(d.get("timeline_order"), list) if is_token(i)],
             timeline_manually_ordered=_bool(d.get("timeline_manually_ordered")),

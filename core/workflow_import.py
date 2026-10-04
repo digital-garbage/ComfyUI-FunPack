@@ -91,7 +91,7 @@ def flatten_subgraphs(wf: dict, schemas) -> dict:
         out_nodes, out_rows, again = [], list(rows), False
         for inst in nodes:
             defn = defs.get(str(inst.get("type")))
-            if not defn:
+            if not defn or inst.get("mode") in (2, 4):          # a bypassed or muted instance stays one node: origin() passes it through or drops it
                 out_nodes.append(inst)
                 continue
             again = True
@@ -151,8 +151,20 @@ def flatten_subgraphs(wf: dict, schemas) -> dict:
     return wf
 
 
-def _widget_names(schemas, cls):
-    return [n for n, t in schemas.inputs(cls).items() if t in comfy_types.PRIMITIVE]
+def _scope(node_id):
+    """The subgraph instance a flattened node came from ("sg2_7" -> "sg2"), "" for the top level."""
+    text = str(node_id)
+    return text.rsplit("_", 1)[0] if text.startswith("sg") and "_" in text else ""
+
+
+def _widgets(schemas, node):
+    """(name, type) of the node's widgets, in the order widgets_values lists them. The export's own sockets say
+    which inputs are widgets (they carry a "widget" key); the node's schema is the fallback for older exports."""
+    types = schemas.inputs(node.get("type"))
+    own = [i.get("name") for i in node.get("inputs") or [] if isinstance(i, dict) and i.get("widget")]
+    if own:
+        return [(n, types.get(n)) for n in own]
+    return [(n, t) for n, t in types.items() if t in comfy_types.PRIMITIVE]
 
 
 def _values(schemas, node):
@@ -162,11 +174,11 @@ def _values(schemas, node):
         out = {k: v for k, v in raw.items()}
     elif isinstance(raw, list):
         out, i = {}, 0
-        for name in _widget_names(schemas, node.get("type")):
+        for name, kind in _widgets(schemas, node):
             if i >= len(raw):
                 break
             out[name] = raw[i]; i += 1
-            if i < len(raw) and isinstance(out[name], (int, float)) and not isinstance(out[name], bool) and raw[i] in CONTROL:
+            if i < len(raw) and kind in ("INT", "FLOAT") and raw[i] in CONTROL:
                 i += 1                                       # control_after_generate rides after a number
     else:
         out = {}
@@ -193,6 +205,8 @@ def _from_ui(wf, schemas, notes):
             if n is None or (nid, slot) in seen:
                 return None
             kind, mode = n.get("type"), n.get("mode", 0)
+            if mode == 2:
+                return None                                  # muted: nothing comes out of it
             if kind in PASS or kind == "SetNode" or (mode == 4 and kind not in VIRTUAL):
                 socks = n.get("inputs") or []
                 pick = 0
@@ -209,7 +223,9 @@ def _from_ui(wf, schemas, notes):
                 nid, slot = row[1], row[2]
             elif kind == "GetNode":
                 name = (n.get("widgets_values") or [""])[0]
-                setter = next((m for m in nodes.values() if m.get("type") == "SetNode" and (m.get("widgets_values") or [""])[0] == name), None)
+                scope = _scope(nid)           # a Set inside the same subgraph instance wins over one elsewhere
+                setters = [m for m in nodes.values() if m.get("type") == "SetNode" and m.get("mode", 0) != 2 and (m.get("widgets_values") or [""])[0] == name]
+                setter = next((m for m in setters if _scope(m.get("id")) == scope), setters[0] if setters else None)
                 if setter is None:
                     return None
                 row = next((r for r in rows if r[3] == setter.get("id") and r[4] == 0), None)
@@ -238,13 +254,13 @@ def _from_ui(wf, schemas, notes):
             row = into.get((node.get("id"), i))
             if row is None:
                 continue
-            src = nodes.get(row[1])
-            if src is not None and src.get("type") == "PrimitiveNode":       # a Primitive hands over its value
+            hit = origin(row[1], row[2])
+            src = nodes.get(hit[0]) if hit else None
+            if src is not None and src.get("type") == "PrimitiveNode":       # a Primitive hands over its value, even through a Reroute or Set/Get
                 vals = src.get("widgets_values") or []
                 if vals:
                     s["inputs"][name] = vals[0]
                 continue
-            hit = origin(row[1], row[2])
             if hit and sid(hit[0]) in keep:
                 s["inputs"][name] = [sid(hit[0]), hit[1]]
             else:
@@ -265,33 +281,41 @@ def _from_api(wf, notes):
 
 # ── giving the app's controls a home ─────────────────────────────────────────
 
-def _upstream(slots_by_id, start):
-    """Slots feeding `start`, nearest first."""
+def _upstream(slots_by_id, start, prefer=None):
+    """Slots feeding `start`, nearest first. Through a node that takes both a positive and a negative, only
+    the side named `prefer` is followed, so one prompt is never read off the other's encoder."""
     seen, order, queue = {start}, [], [start]
     while queue:
         cur = queue.pop(0)
-        for v in (slots_by_id[cur]["inputs"] or {}).values():
+        ins = slots_by_id[cur]["inputs"] or {}
+        if prefer and "positive" in ins and "negative" in ins and prefer in ins:
+            ins = {prefer: ins[prefer]}
+        for v in ins.values():
             if is_link(v) and v[0] in slots_by_id and v[0] not in seen:
                 seen.add(v[0]); order.append(v[0]); queue.append(v[0])
     return order
 
 
-def bind(slots: List[dict], schemas) -> Tuple[List[dict], Dict[str, str]]:
-    """(slots with roles added, what was bound: control -> 'node #id.input')."""
+def bind(slots: List[dict], schemas, notes: List[str] = None) -> Tuple[List[dict], Dict[str, List[str]]]:
+    """(slots with roles added, what was bound: control -> ['node #id.input', ...]).
+
+    A control goes to EVERY node of the kind that first takes it (two samplers both get the seed), but only when
+    that kind's input is typed in: if the obvious node takes it from another node, the control is left unbound and
+    a note says so, rather than landing on some other node that happens to share the input name."""
+    notes = notes if notes is not None else []
     by_id = {s["id"]: s for s in slots}
-    bound: Dict[str, str] = {}
+    bound: Dict[str, List[str]] = {}
 
     def give(control, slot, name, role):
         slot.setdefault("roles", []).append(dict(role, input=name))
-        bound[control] = f"{slot['node']} #{slot['id'][1:]}.{name}"
+        bound.setdefault(control, []).append(f"{slot['node']} #{slot['id'][1:]}.{name}")
 
-    def text_home(slot_id):
-        """The first unlinked text input on the node a sampler's conditioning comes from, or upstream of it."""
-        taken = {b.split("#")[-1] for b in bound.values()}
-        for sid_ in [slot_id, *_upstream(by_id, slot_id)]:
+    def text_home(slot_id, prefer):
+        taken = {x for v in bound.values() for x in v}
+        for sid_ in [slot_id, *_upstream(by_id, slot_id, prefer)]:
             s = by_id[sid_]
             for name in TEXT_NAMES:
-                if schemas.inputs(s["node"]).get(name) == "STRING" and not is_link(s["inputs"].get(name)) and f"{sid_[1:]}.{name}" not in taken:
+                if schemas.inputs(s["node"]).get(name) == "STRING" and not is_link(s["inputs"].get(name)) and f"{s['node']} #{sid_[1:]}.{name}" not in taken:
                     return s, name
         return None
 
@@ -299,26 +323,32 @@ def bind(slots: List[dict], schemas) -> Tuple[List[dict], Dict[str, str]]:
                             ("negative", "negative", {"at": "project.negative", "label": "Negative prompt"})):
         for s in slots:
             link = (s["inputs"] or {}).get(want)
-            found = text_home(link[0]) if is_link(link) and link[0] in by_id else None
+            found = text_home(link[0], want) if is_link(link) and link[0] in by_id else None
             if found:
                 give(key, found[0], found[1], role)
-                break
-    seeds = [(s, n) for s in slots for n in s["inputs"] if "seed" in n.lower() and schemas.inputs(s["node"]).get(n) == "INT" and not is_link(s["inputs"][n])]
-    if seeds:
-        give("seed", seeds[0][0], seeds[0][1], {"at": "generation.seed", "label": "Seed"})
+
+    def numeric(control, label, names, kinds, role, match):
+        """Bind `control` to every unlinked input of the first matching node class; say when that class takes it from a wire."""
+        first = next(((s, n) for s in slots for n in s["inputs"] if match(n, names) and schemas.inputs(s["node"]).get(n) in kinds), None)
+        if first is None:
+            return
+        cls = first[0]["node"]
+        mine = [(s, n) for s in slots if s["node"] == cls for n in s["inputs"] if match(n, names) and schemas.inputs(cls).get(n) in kinds]
+        free = [(s, n) for s, n in mine if not is_link(s["inputs"][n])]
+        for s, n in free:
+            give(control, s, n, dict(role, **({"drives": control} if control in ("frames", "fps") else {})))
+        if not free:
+            notes.append(f"{label}: the nodes that take it ({cls}) get it from other nodes, so the app's {label.lower()} control is not connected. Set it where it comes from.")
+
+    numeric("seed", "Seed", None, ("INT",), {"at": "generation.seed", "label": "Seed"}, lambda n, _: "seed" in n.lower())
     for control, names in SIZE_NAMES.items():
-        for s in slots:
-            name = next((n for n in names if schemas.inputs(s["node"]).get(n) in ("INT", "FLOAT") and not is_link(s["inputs"].get(n))), None)
-            if name:
-                role = {"at": "project.video", "label": {"width": "Width", "height": "Height", "frames": "Length", "fps": "FPS"}[control]}
-                if control in ("frames", "fps"):
-                    role["drives"] = control
-                give(control, s, name, role)
-                break
+        label = {"width": "Width", "height": "Height", "frames": "Length", "fps": "FPS"}[control]
+        numeric(control, label, names, ("INT", "FLOAT"), {"at": "project.video", "label": label}, lambda n, ns: n in ns)
     for s in slots:                                           # a LoadImage becomes the scene's start picture
         if s["node"] == "LoadImage" and "image" not in bound:
             if any(is_link(v) and v == [s["id"], 1] for o in slots for v in o["inputs"].values()):
                 continue                                      # its mask is used: leave it as it is
+            notes.append(f"LoadImage #{s['id'][1:]} now takes the scene's start picture; the file it named is not kept. With no picture on the scene it cannot run.")
             s["node"], s["inputs"] = "FunPackLoadMedia", {"media_id": ""}
             give("image", s, "media_id", {"at": "assets.source_image"})
     return slots, bound
@@ -327,7 +357,8 @@ def bind(slots: List[dict], schemas) -> Tuple[List[dict], Dict[str, str]]:
 def convert(workflow: Any, schemas) -> dict:
     """{"slots", "bound", "notes"} for a workflow in either export format."""
     notes: List[str] = []
-    if is_api(workflow):
+    api = is_api(workflow)
+    if api:
         slots = _from_api(workflow, notes)
     elif isinstance(workflow, dict) and isinstance(workflow.get("nodes"), list):
         slots = _from_ui(workflow, schemas, notes)
@@ -337,6 +368,6 @@ def convert(workflow: Any, schemas) -> dict:
         raise ValueError("the workflow has no nodes that run")
     missing = sorted({s["node"] for s in slots if not schemas.of(s["node"])})
     if missing:
-        notes.append("Not installed here: " + ", ".join(missing) + ". Those nodes are kept but cannot run until their pack is installed.")
-    slots, bound = bind(slots, schemas)
+        notes.append("Not installed here: " + ", ".join(missing) + ". Those nodes are kept but cannot run until their pack is installed" + ("" if api else "; their typed-in values could not be read from this export") + ".")
+    slots, bound = bind(slots, schemas, notes)
     return {"slots": slots, "bound": bound, "notes": notes}

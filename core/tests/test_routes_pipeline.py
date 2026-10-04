@@ -528,6 +528,7 @@ def test_a_comfyui_workflow_imports_into_slots_that_build_a_real_graph(server, r
     status, body = _request(server, "POST", "/funpack/api/pipeline/import", {"workflow": wf})
     assert status == 200
     assert {"prompt", "negative", "seed", "width", "height"} <= set(body["bound"])
+    assert _request(server, "POST", "/funpack/api/pipeline/import", [1, 2])[0] == 400
     prompt, problems = graph.build(body["slots"])
     assert set(prompt) >= {"w1", "w2", "w3", "w4"}
     assert not [p for p in problems if "w4" in p and "positive" in p]

@@ -131,7 +131,7 @@ export const models = (app) => function mount() {
     let got;
     try { got = await api.importWorkflow(JSON.parse(await file.text())); } catch (err) { return say(err instanceof SyntaxError ? "That file is not valid JSON." : err.message); }
     const names = { prompt: "Prompt", negative: "Negative prompt", seed: "Seed", width: "Width", height: "Height", frames: "Length", fps: "FPS", image: "Start picture" };
-    const lines = [`${got.slots.length} nodes.`, ...Object.entries(names).map(([k, label]) => `${label}: ${got.bound[k] ? "→ " + got.bound[k] : "not connected (set on the node itself)"}`), ...got.notes];
+    const lines = [`${got.slots.length} nodes.`, ...Object.entries(names).map(([k, label]) => `${label}: ${got.bound[k] ? "→ " + got.bound[k].join(", ") : "not connected (set on the node itself)"}`), ...got.notes];
     if (!(await confirm("Use this workflow", `${lines.join("\n")}\n\nReplace the whole pipeline with it? Revert puts the old one back until you leave this page.`, "danger"))) return;
     const r = await ps.restore({ slots: got.slots, removed: [], unwired: {} });
     specs = {}; await describe(); say(r.refused.length ? `Not changed: ${r.refused[0]}` : "");
