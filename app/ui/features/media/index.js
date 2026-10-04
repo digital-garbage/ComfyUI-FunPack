@@ -14,12 +14,15 @@ export default {
     let items = [];
     const tell = (text) => c.toast.warn({ text });
 
+    const toggle = (id) => { if (chosen.has(id)) chosen.delete(id); else chosen.add(id); draw(true); };
     const FILTERS = [{ value: "all", label: "All" }, { value: "video", label: "Video" }, { value: "audio", label: "Audio" }, { value: "image", label: "Images" }];
     const SORTS = [{ value: "name", label: "Name A-Z" }, { value: "name-", label: "Name Z-A" }, { value: "kind", label: "Type" }, { value: "added", label: "Date added" }];
     const VIEWS = [{ value: "adaptive", label: "Grid" }, { value: "list", label: "List" }, { value: "icons", label: "Icons" }];
     const DENSITY = [{ value: "0", label: "Auto" }, ...[1, 2, 3, 4].map((n) => ({ value: String(n), label: `${n}×` }))];
     const show = { filter: "all", sort: "name", view: "adaptive", cols: "0" };
 
+    let selecting = false;
+    const chosen = new Set();
     const peek = (it) => { const item = items.find((m) => m.id === it.id); if (!item) return; app.mediaPeek.item = item; app.say("media.peek"); };       // a click looks at it on the monitor
     const pick = (it) => {                                  // an image becomes the selected scene's resolution source
       const sc = p.selected, item = items.find((m) => m.id === it.id);
@@ -31,6 +34,21 @@ export default {
     const context = (it, e) => c.menu.context({ x: e.clientX, y: e.clientY, onPick: (id) => act[id](it),
       items: [{ id: "look", label: "Look at it on the monitor" }, { id: "res", label: "Use as the selected scene's resolution source", disabled: !p.selected || it.kind === "audio" || !items.some((m) => m.id === it.id && m.kind === "image") }, { id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected || (p.selected.references || []).includes(it.id) }, { id: "rename", label: "Rename…" },
         { id: "export", label: "Save to your computer", disabled: !items.some((m) => m.id === it.id && m.kind !== "audio") }, { separator: true }, { id: "delete", label: "Delete from the bin", danger: true }] });
+    /** Delete these from the bin, and nothing in this project may keep pointing at them. */
+    async function gone(ids) {
+      try {
+        for (const id of ids) await api.deleteMedia(id);
+        const dead = new Set(ids);
+        p.edit((pr) => pr.scenes.reduce((hit, s) => {
+          const had = dead.has(s.source_image) || (s.references || []).some((r) => dead.has(r));
+          if (dead.has(s.source_image)) s.source_image = "";
+          if (had) s.references = (s.references || []).filter((r) => !dead.has(r));
+          return hit || had;
+        }, false));
+        ids.forEach((id) => chosen.delete(id));
+        await refresh();
+      } catch (err) { tell(err.message); await refresh(); }
+    }
     const act = {
       look: (it) => peek(it), res: (it) => pick(it),
       ref: (it) => p.setScene(p.selected.id, "references", [...(p.selected.references || []), it.id]),
@@ -43,19 +61,10 @@ export default {
       delete: async (it) => {
         const name = (items.find((m) => m.id === it.id) || {}).name || "this file";
         if (!(await c.modal.dialogue({ title: "Delete media", message: `Delete “${name}” from the bin for good? Scenes in other projects that use it will lose it too.`, tone: "danger", confirmLabel: "Delete" }).result)) return;
-        try {
-          await api.deleteMedia(it.id);
-          p.edit((pr) => pr.scenes.reduce((hit, s) => {
-            const had = s.source_image === it.id || (s.references || []).includes(it.id);
-            if (s.source_image === it.id) s.source_image = "";
-            if (had) s.references = (s.references || []).filter((r) => r !== it.id);
-            return hit || had;
-          }, false));    // nothing may keep pointing at it
-          await refresh();
-        } catch (err) { tell(err.message); }
+        await gone([it.id]);
       },
     };
-    const props = { id: "media", items: [], empty: "No media yet. Drop images or clips here.", onActivate: peek, onContext: context, drag: { type: MEDIA_DRAG, data: (it) => ({ id: it.id, kind: (items.find((m) => m.id === it.id) || {}).kind }) } };
+    const props = { id: "media", items: [], empty: "No media yet. Drop images or clips here.", onActivate: (it) => (selecting ? toggle(it.id) : peek(it)), onContext: context, drag: { type: MEDIA_DRAG, data: (it) => ({ id: it.id, kind: (items.find((m) => m.id === it.id) || {}).kind }) } };
     const galleries = { adaptive: c.gallery.adaptive(props), list: c.gallery.list(props), icons: c.gallery.icons(props) };
     const shelf = c.region.stack({ gap: "none", children: [galleries.adaptive] });
     const drop = c.dropzone.default({ label: "Drop or choose files", hint: "images, clips, audio",
@@ -64,12 +73,19 @@ export default {
       } });
     const seg = (label, options, key) => c.segmented.sm({ label, options, value: show[key], onChange: (v) => { show[key] = v; draw(true); } });
     const sort = c.select.sm({ label: "Sort", options: SORTS, value: show.sort, onChange: (v) => { show.sort = v; draw(true); } });
-    host.append(c.toolbar.default({ items: [c.text.sm({ text: "Media" })] }).node, drop.node, seg("Show", FILTERS, "filter").node, sort.node,
+    const selectBtn = c.button.sm({ label: "Select", tone: "ghost", title: "Pick several files, then delete them together", onClick: () => { selecting = !selecting; chosen.clear(); draw(true); } });
+    const bulk = c.button.sm({ label: "Delete (0)", tone: "danger", onClick: async () => {
+      const ids = [...chosen];
+      if (!ids.length || !(await c.modal.dialogue({ title: "Delete media", message: `Delete ${ids.length} file${ids.length > 1 ? "s" : ""} from the bin for good? Scenes in other projects that use them will lose them too.`, tone: "danger", confirmLabel: "Delete" }).result)) return;
+      await gone(ids);
+    } });
+    bulk.node.hidden = true;
+    host.append(c.toolbar.default({ items: [c.text.sm({ text: "Media" })], trailing: [selectBtn, bulk] }).node, drop.node, seg("Show", FILTERS, "filter").node, sort.node,
       seg("View", VIEWS, "view").node, seg("Tile size", DENSITY, "cols").node, shelf.node);
 
     let drawn = "";
     function draw(force) {
-      const key = `${(p.selected || {}).source_image}|${items.map((m) => m.id)}`;
+      const key = `${(p.selected || {}).source_image}|${items.map((m) => m.id)}|${selecting}|${[...chosen]}`;
       if (!force && key === drawn) return;           // typing elsewhere must not rebuild the thumbnails
       drawn = key;
       const rev = show.sort.endsWith("-") ? -1 : 1, by = show.sort.replace("-", "");
@@ -80,7 +96,11 @@ export default {
       if (g.setCols) g.setCols(Number(show.cols));
       g.setItems(shown.map((m) => ({ id: m.id, label: m.name, thumb: m.kind === "audio" ? undefined : `${base(m.id)}/thumb`, badge: m.kind })));
       const sc = p.selected;
-      g.setValue(sc && sc.source_image ? [sc.source_image] : []);
+      g.setValue(selecting ? [...chosen] : sc && sc.source_image ? [sc.source_image] : []);
+      selectBtn.setLabel(selecting ? "Done" : "Select");
+      bulk.node.hidden = !selecting;
+      bulk.setLabel(`Delete (${chosen.size})`);
+      bulk.setDisabled(!chosen.size);
     }
     async function refresh() {
       try { items = (await api.media()).media || []; learn(items); app.say("bin"); } catch (err) { tell(err.message); }
