@@ -9,7 +9,7 @@ export function clipSpecs(p, only) {   // `only`: a Set of scene ids to keep (th
   for (const seg of segments(p)) {
     if (seg.kind !== "scene" || (!only && seg.scene.excluded && !seg.scene.removed_from_plan)) continue;       // removed from the plan still plays; a clip picked by hand is wanted even if left out of the full run
     if (only && !only.has(seg.scene.id)) continue;
-    const sc = seg.scene, r = renders[sc.id], base = { scene_id: sc.id, dur: seg.dur, fps: effFps(sc, p), gap_after: Math.max(0, +sc.gap_after_sec || 0),
+    const sc = seg.scene, r = renders[sc.id], base = { scene_id: sc.id, dur: seg.dur, fps: effFps(sc, p), gap_after: Math.max(0, +sc.gap_after_sec || 0), fx: sc.effects || {}, transition: sc.video_transition || "", tdur: sc.transition_frames > 0 ? sc.transition_frames / effFps(sc, p) : 0,
       volume: sc.audio_separated ? 0 : sc.audio_volume != null ? sc.audio_volume : 1 };      // a clip whose sound went to its own lane is quiet here
     if (isVideoClip(sc)) {
       if (!(sc.source && sc.source.media_ref)) { missing += 1; continue; }

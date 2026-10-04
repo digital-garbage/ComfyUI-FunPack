@@ -30,3 +30,11 @@ test("a clip whose sound was separated is quiet in the render; others keep their
     scene_renders: { a: { media: { filename: "a" } }, b: { media: { filename: "b" } }, c: { media: { filename: "c" } } } };
   assert.deepEqual(clipSpecs(q).clips.map((x) => x.volume), [0, 0.4, 1]);
 });
+
+test("a clip's effects and its seam transition reach the render spec (frames become seconds at the clip's fps)", () => {
+  const q = { frame_rate: 25, num_frames_per_scene: 97, scenes: [{ id: "a", effects: { flip_h: true }, video_transition: "crossfade", transition_frames: 10 }, { id: "b" }],
+    scene_renders: { a: { media: { filename: "a.mp4" } }, b: { media: { filename: "b.mp4" } } } };
+  const [a, b] = clipSpecs(q).clips;
+  assert.deepEqual([a.fx, a.transition, a.tdur], [{ flip_h: true }, "crossfade", 0.4]);
+  assert.deepEqual([b.fx, b.transition, b.tdur], [{}, "", 0]);
+});

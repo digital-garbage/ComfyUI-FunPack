@@ -350,3 +350,10 @@ def test_a_separated_lane_starts_where_its_clip_is_in_this_render_plus_its_slide
     by = {c["scene_id"]: c for c in clips}
     out = stitch._audio_tracks(proj, by, lambda c: str(f), stitch._clip_starts(clips))
     assert [round(t["start_sec"], 2) for t in out] == [2.5, 0.0]
+
+
+def test_clip_starts_follow_the_renders_own_clock_gaps_and_overlapping_seams():
+    clips = [{"scene_id": "a", "dur": 2.0, "gap_after": 1.0, "transition": "crossfade", "tdur": 0.5},
+             {"scene_id": "b", "dur": 3.0, "transition": "crossfade", "tdur": 0.5},
+             {"scene_id": "c", "dur": 1.0}]
+    assert stitch._clip_starts(clips) == {"a": 0.0, "b": 2.5, "c": 5.0}

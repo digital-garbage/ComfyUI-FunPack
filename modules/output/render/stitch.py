@@ -148,12 +148,24 @@ def _live_tracks(project, clips_by_scene: dict) -> list[dict]:
 
 
 def _clip_starts(clips: list[dict]) -> dict:
-    """Where each clip begins in THIS render (clips that are out of the cut take no room)."""
-    at, out = 0.0, {}
-    for c in clips:
+    """Where each clip begins in THIS render: the same clock build_filter keeps (gaps add, a seam that overlaps takes its length back)."""
+    out, acc = {}, 0.0
+    for i, c in enumerate(clips):
+        dur = _f(c.get("dur"))
+        if i == 0:
+            at, acc = 0.0, dur
+        else:
+            prev = clips[i - 1]
+            gap = _f(prev.get("gap_after"))
+            if gap > 0.001:
+                acc += gap
+            td = _f(prev.get("tdur"))
+            if str(prev.get("transition") or "").strip() in XFADE and td > 0 and acc > td and dur > td:
+                at, acc = max(0.0, acc - td), acc + dur - td
+            else:
+                at, acc = acc, acc + dur
         if c.get("scene_id"):
             out[c["scene_id"]] = at
-        at += _f(c.get("dur"))
     return out
 
 

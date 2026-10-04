@@ -38,7 +38,7 @@ export default {
           if (a.paused) a.play().catch(() => {});
         }
       }
-      for (const [id, a] of pool) if (!live.has(id)) { a.pause(); if (!open || !(open.audio_tracks || []).some((t) => t.id === id)) { a.removeAttribute("src"); a.load(); delete a.dataset.src; pool.delete(id); } }       // a lane that is gone gives its connection back
+      for (const [id, a] of pool) if (!live.has(id)) { a.pause(); a.removeAttribute("src"); a.load(); delete a.dataset.src; if (!head.playing) pool.delete(id); }       // not playing: every lane gives its connection back (the 6-per-origin pool)
     }
     const off = [head.on(tick), app.on(() => tick())];
     const timer = setInterval(tick, 200);       // the playhead only moves while playing; this catches pause/stop

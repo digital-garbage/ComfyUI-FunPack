@@ -36,7 +36,7 @@ export default {
       const made = p.edit((pr) => (asset.kind === "video" ? addVideoClip(pr, asset, seconds) : addAudioTrack(pr, asset, at, seconds)));
       if (!made) return c.toast.warn({ text: "Could not add that." });
       if (asset.kind === "video") p.select(p.scenes[p.scenes.length - 1].id);
-      if (seconds == null) c.toast.warn({ text: "The file's length could not be read; the clip uses the project's length." });
+      if (seconds == null) c.toast.warn({ text: asset.kind === "video" ? "The file's length could not be read; the clip uses the project's length." : "The file's length could not be read: the lane cannot be trimmed, and plays to the end of the file." });
     }
 
     const menu = c.button.menu({ label: "＋ Import", tone: "ghost", onClick: () => c.menu.dropdown({ anchor: menu, items: [{ id: "video", label: "Video clip…", disabled: !p.project }, { id: "audio", label: "Audio track…", disabled: !p.project }],
