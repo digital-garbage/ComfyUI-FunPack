@@ -97,6 +97,7 @@ export const api = {
   suggestionStats: () => call("GET", "/api/shortcuts/suggestion_stats"),
   expandPrompt: (body) => call("POST", "/api/prompt/expand", { ...body, seed: 1 }),
   packs: () => call("GET", "/api/packs"),
+  packProviders: (classes) => call("GET", `/api/packs/providers?classes=${encodeURIComponent(classes.join(","))}`),
   pack: (action, body) => call("POST", `/api/packs/${action}`, body || {}),
   git: (action, body) => call("POST", `/api/git/${action}`, body || {}),
   health: () => call("GET", "/api/health"),

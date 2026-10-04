@@ -85,11 +85,28 @@ export const models = (app) => function mount() {
       } })] }) });
   };
 
+  // Which pack gives a missing node (from ComfyUI-Manager's map, when it is installed), and a button to clone it.
+  const providers = {};
+  const installRow = (cls) => {
+    const row = c.region.stack({ gap: "sm" });
+    const show = () => {
+      const url = providers[cls];
+      row.set(url === undefined ? [c.hint.default({ text: "Looking for the pack that provides it…" })]
+        : url ? [c.settingsRow.default({ label: url.replace(/^https?:\/\/(www\.)?github\.com\//, ""), hint: "Provides this node. Installs into custom_nodes; restart ComfyUI afterwards.", control: c.button.sm({ label: "Install", tone: "primary", onClick: async () => {
+          try { await api.pack("install", { url }); c.toast.good({ text: "Installed. Restart ComfyUI for the node to appear." }); } catch (err) { c.toast.warn({ text: err.message }); }
+        } }) })]
+        : [c.hint.default({ text: "No known pack provides it. Add one by its git URL in Settings ▸ Custom Nodes." })]);
+    };
+    show();
+    if (!(cls in providers)) api.packProviders([cls]).then((r) => { providers[cls] = (r.providers || {})[cls] || null; show(); }).catch(() => { providers[cls] = null; show(); });
+    return row;
+  };
+
   const slotBlock = (slot) => {
     const spec = specs[slot.node];
     if (spec === undefined) return [c.hint.default({ text: "Loading…" })];
     const head = c.header.sm({ text: label(slot) });
-    if (spec === null) return [head, structure(slot), c.hint.default({ text: `${slot.node} is not installed — this slot can't be edited or run. Swap it for another node, or remove it.` })];
+    if (spec === null) return [head, structure(slot), c.banner.warn({ text: `${slot.node} is not installed — this slot can't be edited or run. Install the pack that provides it, swap it for another node, or remove it.` }), installRow(slot.node)];
     const sockets = (spec.sockets || []).map((s) => c.field.default({ label: s.name, hint: s.required ? `${s.type} · needed` : s.type, control: wiring(slot, s.name, s.type, slot.inputs && slot.inputs[s.name], "Not connected") }));
     const rows = (spec.widgets || []).flatMap((w) => {
       const cur = slot.inputs && slot.inputs[w.name];

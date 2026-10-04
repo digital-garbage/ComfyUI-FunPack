@@ -17,6 +17,7 @@ refuses FunPack itself. Nothing here interpolates into a shell.
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -287,3 +288,23 @@ def check_updates() -> dict:
         if p["name"] not in results:
             results[p["name"]] = {"checked": False, "reason": "not a git checkout"}
     return {"checked": results}
+
+
+def providers(classes) -> dict:
+    """{node class: git URL of a pack that provides it, or None}, from ComfyUI-Manager's own node map when that
+    pack is installed (its extension-node-map.json: {url: [[class, ...], meta]}). Without Manager nothing is
+    known, so every answer is None and the person is sent to Custom Nodes with a URL of their own."""
+    wanted = {str(c) for c in classes or ()}
+    found = {c: None for c in wanted}
+    try:
+        path = custom_nodes_root() / "ComfyUI-Manager" / "extension-node-map.json"
+        table = json.loads(path.read_text(encoding="utf-8"))
+    except (CustomNodeError, OSError, ValueError):
+        return found
+    if not isinstance(table, dict):
+        return found
+    for url, entry in table.items():
+        names = entry[0] if isinstance(entry, list) and entry and isinstance(entry[0], list) else []
+        for name in wanted.intersection(names):
+            found[name] = found[name] or str(url)
+    return found
