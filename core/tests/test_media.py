@@ -255,6 +255,15 @@ def test_a_rename_changes_the_name_not_the_file(store):
         media.rename(entry["id"], "   ")
 
 
+def test_a_subject_text_is_kept_trimmed_and_cleared_by_an_empty_one(store):
+    entry = media.save_upload("ref.png", b"\x89PNG")
+    assert media.set_subject(entry["id"], "  <Subject 1>  is the woman  ")["subject"] == "<Subject 1> is the woman"
+    assert media.get(entry["id"])["subject"] == "<Subject 1> is the woman"
+    assert "subject" in [it for it in media.listing() if it["id"] == entry["id"]][0]
+    assert "subject" not in media.set_subject(entry["id"], "   ")
+    assert media.set_subject("aaaaaaaaaaaa", "x") is None
+
+
 def test_an_image_gets_a_small_cached_jpeg_and_delete_removes_it(store):
     from PIL import Image
     import io
@@ -296,6 +305,8 @@ def test_rename_and_thumb_over_http(server):
     assert status == 200 and body["media"]["name"] == "renamed"
     assert _request(server, "PATCH", f"/funpack/api/media/{mid}", {"name": ""})[0] == 400
     assert _request(server, "PATCH", "/funpack/api/media/aaaaaaaaaaaa", {"name": "x"})[0] == 404
+    status, body = _request(server, "PATCH", f"/funpack/api/media/{mid}", {"subject": "the woman"})
+    assert status == 200 and body["media"]["subject"] == "the woman" and body["media"]["name"] == "renamed"
     status, jpg = _request(server, "GET", f"/funpack/api/media/{mid}/thumb")
     assert status == 200 and jpg["raw"][:2] == b"\xff\xd8"
     assert _request(server, "GET", "/funpack/api/media/aaaaaaaaaaaa/thumb")[0] == 404

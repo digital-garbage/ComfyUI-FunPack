@@ -192,6 +192,25 @@ def rename(mid: str, name) -> dict | None:
     return None
 
 
+MAX_SUBJECT = 600
+
+
+def set_subject(mid: str, text) -> dict | None:
+    """What this picture MEANS when it is a reference ("<Subject 1> is the woman in <Picture 1>..."). Empty clears it."""
+    text = " ".join(str(text or "").split())[:MAX_SUBJECT]
+    with _LOCK:
+        items = _load_index()
+        for it in items:
+            if it.get("id") == mid:
+                if text:
+                    it["subject"] = text
+                else:
+                    it.pop("subject", None)
+                _save_index(items)
+                return it
+    return None
+
+
 #: Long edge of a grid thumbnail in px: headroom over the largest cell (240) for retina, and
 #: far below the 4K original the grid used to download and decode in full just to draw a square.
 THUMB_MAX_DIM = 320

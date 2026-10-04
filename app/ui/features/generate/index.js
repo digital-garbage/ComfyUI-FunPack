@@ -68,7 +68,7 @@ export default {
           if (!root || group.every((s) => s.excluded) || !isGenerative(root)) continue;        // removed, all left out, or not made by the model
           // The unit is made once at the length of its clips together (each cut adds one shared frame).
           const frames = group.reduce((t, s) => t + effFrames(s, snap || p.project), 0) - (group.length - 1);
-          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap || p.project, scene: root, slots: app.pipeline.slots(), expand: same, frames, hooks: app.inputHooks });
+          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap || p.project, scene: root, slots: app.pipeline.slots(), expand: same, frames, hooks: app.inputHooks, prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root); } catch { return []; } }) });
           app.lastRun.typed = (root.text || "").trim();        // what a Chat comment made now would be about
           if (stopped) break;
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");

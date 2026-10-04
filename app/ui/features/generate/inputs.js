@@ -6,7 +6,7 @@ import { DRIVEN } from "../../shell/scenes.js";
 export const rolesAt = (slots, at) => (slots || []).flatMap((s) => (s.roles || []).filter((r) => r.at === at).map((role) => ({ slot: s, role })));
 
 /** `frames`: how long this unit is (its clips together); a fresh `seed` per call so a re-roll is a different result. */
-export async function buildInputs({ project, scene, slots, expand, frames, hooks = [], seed = () => Math.floor(Math.random() * 2 ** 31) }) {
+export async function buildInputs({ project, scene, slots, expand, frames, hooks = [], prefix = [], seed = () => Math.floor(Math.random() * 2 ** 31) }) {
   const raw = {};
   const put = (slot, name, value) => { raw[slot.id] = { ...raw[slot.id], [name]: value }; };
 
@@ -23,7 +23,7 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
   const prompt = rolesAt(slots, "generation.prompt")[0];
   if (prompt) {
     const text = scene.text || "";
-    const body = await expand({ text, anchor: project.anchor, postfix: project.postfix, postfix_enabled: project.postfix_enabled, variables: project.variables })
+    const body = await expand({ text, anchor: [...prefix, project.anchor].filter((x) => x && String(x).trim()).join(" "), postfix: project.postfix, postfix_enabled: project.postfix_enabled, variables: project.variables })
       .catch(() => null);         // a failing prompt-craft feature must not block the run: send what was typed
     put(prompt.slot, prompt.role.input, body && typeof body.text === "string" ? body.text : text);
   }

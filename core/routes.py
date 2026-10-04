@@ -863,9 +863,13 @@ def register(routes, prefix=None):
 
     @routes.patch(P + "/api/media/{mid}")
     async def _media_rename(req):
-        body = await _body(req)
+        body = await _body(req) or {}
         try:
-            entry = media.rename(req.match_info["mid"], (body or {}).get("name"))
+            entry = media.get(req.match_info["mid"])
+            if entry is not None and "subject" in body:
+                entry = media.set_subject(req.match_info["mid"], body.get("subject"))
+            if entry is not None and "name" in body:
+                entry = media.rename(req.match_info["mid"], body.get("name"))
         except ValueError as exc:
             return web.json_response({"problems": [str(exc)]}, status=400)
         if entry is None:
