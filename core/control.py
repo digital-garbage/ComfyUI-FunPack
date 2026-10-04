@@ -37,11 +37,22 @@ def controllable(spec) -> bool:
     return bool(spec.provides.get("modifier") or spec.provides.get("sampler_modifier"))
 
 
+def all_off(settings) -> bool:
+    """The project's "disable all enhancements" switch: every module that modifies a run sits out, so a
+    run shows what the plain pipeline does (an A/B test of whether an enhancement does anything)."""
+    raw = settings.get("_off") if isinstance(settings, dict) else None
+    return isinstance(raw, dict) and raw.get("all") is True
+
+
 def off_by_project(settings) -> set:
     """Module ids the project turned off, read from the settings payload."""
     raw = settings.get("_off") if isinstance(settings, dict) else None
     ids = raw.get("modules") if isinstance(raw, dict) else None
-    return {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else set()
+    off = {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else set()
+    if all_off(settings):
+        from . import registry
+        off |= {i for i, spec in registry.current().specs.items() if controllable(spec)}
+    return off
 
 
 def bad_off(raw) -> str | None:
@@ -49,8 +60,8 @@ def bad_off(raw) -> str | None:
     if raw is None:
         return None
     ids = raw.get("modules") if isinstance(raw, dict) else None
-    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
-        return '"_off" must be {"modules": ["module_id", ...]}'
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or not isinstance(raw.get("all", False), bool):
+        return '"_off" must be {"modules": ["module_id", ...], "all": true|false}'
     return None
 
 
@@ -192,13 +203,13 @@ def start_failed(spec, exc: BaseException) -> None:
 def partition(specs: Iterable, settings) -> Tuple[List, List[str]]:
     """(kept, notes): `specs` without the ones the project turned off or that are quarantined."""
     specs = list(specs)
-    off = off_by_project(settings)
+    off, everything = off_by_project(settings), all_off(settings)
     held = quarantined(specs)
     kept, notes = [], []
     for spec in specs:
         if controllable(spec):
-            if spec.id in off:
-                notes.append(f"{spec.id}: turned off for this project")
+            if spec.id in off or everything:
+                notes.append(f"{spec.id}: " + ("off -- all enhancements are disabled" if all_off(settings) else "turned off for this project"))
                 continue
             if spec.id in held:
                 notes.append(f"{spec.id}: OFF -- it failed on {held[spec.id].get('when', '?')} "

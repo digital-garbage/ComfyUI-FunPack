@@ -4,7 +4,7 @@ import hashlib
 
 from comfy_api.latest import io
 
-from ..._core import log, registry as registry_mod, schema as schema_mod, shortcuts
+from ..._core import control as control_mod, log, registry as registry_mod, schema as schema_mod, shortcuts
 from . import engine, memory
 
 ID = "conditioning_shot_camera"
@@ -13,7 +13,7 @@ ID = "conditioning_shot_camera"
 def _values(settings):
     """This module's settings from the pipeline's settings object, checked against its own declaration."""
     spec = registry_mod.current().specs.get(ID)
-    if spec is None:
+    if spec is None or control_mod.all_off(settings):          # "disable all enhancements" is a switch for this too
         return {}
     clean, problems = schema_mod.check_values(spec, (settings or {}).get(ID))
     for problem in problems or ():

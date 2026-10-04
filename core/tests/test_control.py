@@ -118,3 +118,10 @@ def test_a_module_that_cannot_run_here_is_said_but_not_quarantined():
     assert control.fingerprint() == ""
     control.start_failed(spec("a"), ValueError("a real bug"))
     assert control.fingerprint() == "a"
+
+
+def test_disable_all_enhancements_sits_out_every_modifier_and_nothing_else():
+    kept, notes = control.partition([spec("a"), spec("loader", ("routes",))], {"_off": {"all": True}})
+    assert [s.id for s in kept] == ["loader"] and "all enhancements" in notes[0]
+    assert control.all_off({"_off": {"all": True}}) and not control.all_off({"_off": {"all": "yes"}}) and not control.all_off({})
+    assert control.bad_off({"modules": [], "all": "yes"}) and control.bad_off({"modules": [], "all": True}) is None

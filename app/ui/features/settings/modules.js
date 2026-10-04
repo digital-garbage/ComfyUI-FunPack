@@ -23,11 +23,13 @@ export const modules = (app) => function mount() {
             await ps.refreshControl(); draw();
           } }) });
       }
-      return c.toggle.default({ label: name(m), hint: ps.isOff(m.id) ? "Off for this project" : undefined, checked: !ps.isOff(m.id),
+      return c.toggle.default({ label: name(m), hint: ps.allOff() ? "Off: all enhancements are disabled" : ps.isOff(m.id) ? "Off for this project" : undefined, checked: !ps.allOff() && !ps.isOff(m.id), disabled: ps.allOff(),
         onChange: (on) => ps.setOff(m.id, !on).then(draw) });
     };
     const notes = ps.saveNotes();
-    page.set([notes.length ? c.banner.warn({ text: notes.join(" ") }) : null, c.hint.default({ text: "A module you turn off here is off for this project only, and disappears from Engine settings. One that failed while generating is off for every project until its code is repaired or you turn it back on." }),
+    const master = c.toggle.default({ label: "Disable all enhancements", hint: "Runs the plain pipeline: every module below sits out, and so do the rewrites of shot camera. Your choices are kept — switch it back off to restore them. Handy for an A/B test of whether a feature does anything.",
+      checked: ps.allOff(), onChange: (on) => ps.setAllOff(on).then(draw) });
+    page.set([master, notes.length ? c.banner.warn({ text: notes.join(" ") }) : null, c.hint.default({ text: "A module you turn off here is off for this project only, and disappears from Engine settings. One that failed while generating is off for every project until its code is repaired or you turn it back on." }),
       ...CATEGORIES.flatMap(([key, label]) => { const list = mine.filter((m) => (m.category || "") === key); return list.length ? [c.label.section({ text: label }), ...list.map(row)] : []; })].filter(Boolean));
   }
   draw();

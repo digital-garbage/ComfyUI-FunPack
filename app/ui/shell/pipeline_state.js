@@ -275,13 +275,17 @@ export function createPipelineState(API) {
     if (off) cur.add(id); else cur.delete(id);
     return setModuleValue("_off", "modules", [...cur]);
   }
+  // "Disable all enhancements": one project switch that makes every run plain, for A/B tests. The per-module
+  // choices are kept underneath, so switching it back restores exactly what was on.
+  const allOff = () => Boolean((currentValues()._off || {}).all);
+  const setAllOff = (on) => setModuleValue("_off", "all", Boolean(on));
   async function refreshControl() {
     try { controlState = (await API.modules()).control || {}; } catch (_) { /* keeps the last answer */ }
     return controlState;
   }
   function isQuarantined(id) { return !!(controlState[id] && controlState[id].quarantine); }
   function activeModules() {
-    return Object.values(modulesById).filter((m) => !isOff(m.id) && !isQuarantined(m.id));
+    return allOff() ? [] : Object.values(modulesById).filter((m) => !isOff(m.id) && !isQuarantined(m.id));
   }
 
   // Patch ONE field and save the WHOLE tree. place() (core/graph.py) writes
@@ -520,7 +524,7 @@ export function createPipelineState(API) {
     frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
-    activeModules, isOff, setOff, refreshControl, control: () => controlState,
+    activeModules, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),
     slots: () => slots,
