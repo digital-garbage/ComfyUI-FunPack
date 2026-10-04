@@ -84,6 +84,7 @@ export const api = {
     const videos = Object.values(entry.outputs || {}).flatMap((o) => o.videos || []);
     return videos.length ? { videos } : { error: "no video came out, check the ComfyUI terminal" };
   },
+  renderLibrary: () => call("GET", "/api/m/render/library"),
   suggestionStats: () => call("GET", "/api/shortcuts/suggestion_stats"),
   expandPrompt: (body) => call("POST", "/api/prompt/expand", { ...body, seed: 1 }),
   packs: () => call("GET", "/api/packs"),

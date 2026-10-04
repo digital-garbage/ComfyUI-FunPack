@@ -63,8 +63,13 @@ export function syncSeparated(p) {
 
 /** Slide a separated lane against its clip (it still follows the clip when the clip moves). */
 export function moveLane(p, id, deltaSec) {
-  const t = (p.audio_tracks || []).find((x) => x.id === id && x.kind === "separated");
+  const t = (p.audio_tracks || []).find((x) => x.id === id);
   if (!t || !deltaSec) return false;
+  if (t.kind !== "separated") {       // a file laid over the cut: it simply starts later or earlier
+    const was = t.start_sec || 0;
+    t.start_sec = Math.max(0, was + deltaSec);
+    return t.start_sec !== was;
+  }
   const seg = segments(p).find((s) => s.kind === "scene" && s.id === t.scene_id);
   const was = t.offset_sec || 0;
   t.offset_sec = Math.max(seg ? -seg.start : -Infinity, was + deltaSec);       // never before 0: a slide past the edge must not be owed on the way back
@@ -74,8 +79,18 @@ export function moveLane(p, id, deltaSec) {
 /** Trim a separated lane's sound. "in" cuts the head off (positive) or gives it back (negative, never before the sound begins);
  *  "out" sets the tail (never past the sound's own length). */
 export function trimLane(p, id, edge, deltaSec) {
-  const t = (p.audio_tracks || []).find((x) => x.id === id && x.kind === "separated");
-  if (!t || !deltaSec || t.pinned_dur == null) return false;
+  const t = (p.audio_tracks || []).find((x) => x.id === id);
+  if (!t || !deltaSec) return false;
+  if (t.kind !== "separated") {       // a file laid over the cut: its own in-point and length
+    const dur = t.source_dur, inAt = t.source_in_sec || 0;
+    if (dur == null) return false;
+    if (edge === "out") { t.source_dur = Math.max(0.1, dur + deltaSec); return true; }
+    const d = Math.min(Math.max(deltaSec, -inAt, -(t.start_sec || 0)), dur - 0.1);
+    if (!d) return false;
+    t.source_in_sec = inAt + d; t.source_dur = dur - d; t.start_sec = (t.start_sec || 0) + d;
+    return true;
+  }
+  if (t.pinned_dur == null) return false;
   const full = t.full_dur != null ? t.full_dur : t.pinned_dur;
   if (edge === "out") { t.user_dur = Math.max(0.1, Math.min(full, t.pinned_dur + deltaSec)); return true; }
   const d = Math.min(Math.max(deltaSec, -(t.pinned_in_sec || 0), -(t.start_sec || 0)), t.pinned_dur - 0.1);       // nor earlier than the timeline's start

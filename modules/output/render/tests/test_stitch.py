@@ -337,3 +337,16 @@ def test_a_separated_lane_goes_quiet_with_a_clip_that_is_not_in_the_cut():
         {"id": "a", "kind": "separated", "scene_id": "gone"}, {"id": "b", "kind": "separated", "scene_id": "here"},
         {"id": "c", "media_ref": "aaaaaaaaaaaa", "start_sec": 0}])
     assert [t["id"] for t in stitch._live_tracks(proj, {"here": {}})] == ["b", "c"]
+
+
+def test_a_separated_lane_starts_where_its_clip_is_in_this_render_plus_its_slide(tmp_path, monkeypatch):
+    f = tmp_path / "x.mp4"
+    f.write_bytes(b"")
+    monkeypatch.setattr(stitch.files, "has_audio", lambda p: True)
+    proj = projects.Project(width=160, height=120, audio_tracks=[
+        {"id": "a", "kind": "separated", "scene_id": "s2", "start_sec": 99, "offset_sec": 0.5},       # start_sec is the editor's guess, the render's own timeline wins
+        {"id": "b", "kind": "separated", "scene_id": "s2", "offset_sec": -9}])
+    clips = [{"scene_id": "s1", "dur": 2.0}, {"scene_id": "s2", "dur": 3.0}]
+    by = {c["scene_id"]: c for c in clips}
+    out = stitch._audio_tracks(proj, by, lambda c: str(f), stitch._clip_starts(clips))
+    assert [round(t["start_sec"], 2) for t in out] == [2.5, 0.0]

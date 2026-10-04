@@ -62,7 +62,12 @@ export default {
     function sync() {
       seg = segAt(head.at);
       show(seg);
+      head.playing = playing;
       const v = viewer.element;
+      if (v && seg) {       // the clip's own sound: its volume, nothing when moved to a lane of its own or dropped by the project
+        const sc = seg.scene, vol = sc.audio_separated || (open() || {}).keep_original_audio === false ? 0 : Math.max(0, Math.min(1, sc.audio_volume != null ? +sc.audio_volume : 1));
+        if (Number.isFinite(vol) && v.volume !== vol) v.volume = vol;
+      }
       if (v && seg && !quiet) {
         const want = from + head.at - seg.start;
         if (Math.abs(v.currentTime - want) > 0.25) v.currentTime = want;

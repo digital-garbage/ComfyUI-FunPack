@@ -23,13 +23,14 @@ export default {
       const unit = p.scenes.filter((s) => genUnitId(s) === genUnitId(sc));
       app.title && app.title("inspector", `Scene · ${p.scenes.indexOf(sc) + 1}${unit.length > 1 ? ` · cut ${unit.indexOf(sc) + 1}/${unit.length}` : ""}`);
     };
+    const sections = app.sceneSections || [];       // extra rows other features put under the scene's own: { rows(scene, project), key(scene, project) }
     function draw(force) {      // not on every keystroke: that would rebuild the box being typed in
       const sc = p.selected, open = p.project;
-      const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "project" && open ? [open.postfix_enabled !== false, open.generation_mode] : ""}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length, sc.source_image, (sc.references || []).join(), bin.version] : ""}`;
+      const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "project" && open ? [open.postfix_enabled !== false, open.generation_mode] : ""}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length, sc.source_image, (sc.references || []).join(), bin.version, ...sections.map((s) => s.key(sc, open))] : ""}`;
       titled();
       if (!force && next === key) return;
       key = next;
-      body.set((tab === "scene" ? sceneRows(p, app) : projectRows(p, app.pipeline && app.pipeline.slots(), app.api))); 
+      body.set((tab === "scene" ? [...sceneRows(p, app), ...(p.selected ? sections.flatMap((s) => s.rows(p.selected, p)) : [])] : projectRows(p, app.pipeline && app.pipeline.slots(), app.api))); 
     }
     draw(true);
     const offSlots = app.pipeline && app.pipeline.subscribe ? app.pipeline.subscribe(() => draw(true)) : null;     // the pipeline arrives after the project

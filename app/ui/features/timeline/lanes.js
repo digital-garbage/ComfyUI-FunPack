@@ -3,7 +3,7 @@ import { segments, isVideoClip, effFps } from "../../shell/scenes.js";
 
 const first = (t) => ((t || "").split("\n")[0] || "").slice(0, 80);
 
-export function videoLane(p, picked, focus, actions = () => [], ghostActions = () => []) {
+export function videoLane(p, picked, focus, actions = () => [], ghostActions = () => [], tags = () => []) {
   const renders = p.scene_renders || {};
   return {
     id: "video", label: "Video", kind: "video", reorder: true,
@@ -14,7 +14,7 @@ export function videoLane(p, picked, focus, actions = () => [], ghostActions = (
       const rendered = Boolean(renders[sc.id]);
       return {
         id: sc.id, start: seg.start, dur: seg.dur, trim: true,
-        head: [isVideoClip(sc) ? "▶ video" : rendered ? "✓" : "◌", `${seg.dur.toFixed(1)}s`],
+        head: [isVideoClip(sc) ? "▶ video" : rendered ? "✓" : "◌", `${seg.dur.toFixed(1)}s`, ...tags(sc)],
         title: first(sc.text) || "(empty scene)",
         selected: picked.includes(sc.id), focus: sc.id === focus, excluded: Boolean(sc.excluded),
         actions: actions(sc),
@@ -35,5 +35,5 @@ export const audioLane = (p, picked) => ({
 /** Audio lanes added to the project (a clip's separated sound, or a file laid over the cut), when there are any. */
 export const tracksLane = (p) => (p.audio_tracks || []).length ? {
   id: "tracks", label: "Audio", kind: "audio", move: true,
-  clips: p.audio_tracks.map((t) => ({ id: `t:${t.id}`, start: t.start_sec || 0, dur: t.pinned_dur ?? t.source_dur ?? 1, title: t.label || "Audio", trim: t.kind === "separated" })),
+  clips: p.audio_tracks.map((t) => ({ id: `t:${t.id}`, start: t.start_sec || 0, dur: t.pinned_dur ?? t.source_dur ?? 1, title: t.label || "Audio", trim: t.kind === "separated" ? t.pinned_dur != null : t.source_dur != null })),
 } : null;

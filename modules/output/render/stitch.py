@@ -147,7 +147,17 @@ def _live_tracks(project, clips_by_scene: dict) -> list[dict]:
             if t.get("kind") != "separated" or not t.get("scene_id") or t["scene_id"] in clips_by_scene]
 
 
-def _audio_tracks(project, clips_by_scene: dict, resolve) -> list[dict]:
+def _clip_starts(clips: list[dict]) -> dict:
+    """Where each clip begins in THIS render (clips that are out of the cut take no room)."""
+    at, out = 0.0, {}
+    for c in clips:
+        if c.get("scene_id"):
+            out[c["scene_id"]] = at
+        at += _f(c.get("dur"))
+    return out
+
+
+def _audio_tracks(project, clips_by_scene: dict, resolve, starts: dict | None = None) -> list[dict]:
     """The project's extra audio lanes as {path, start_sec, volume[, source_in, source_dur]}.
 
     A "separated" lane is a clip's own sound pulled onto a lane: it plays the audio pinned at
@@ -158,6 +168,8 @@ def _audio_tracks(project, clips_by_scene: dict, resolve) -> list[dict]:
         separated = t.get("kind") == "separated" or (t.get("scene_id") and not t.get("media_ref")
                                                     and t.get("kind") != "overlay")
         start, vol = _f(t.get("start_sec")), _f(t.get("volume"), 1.0)
+        if separated and starts and t.get("scene_id") in starts:       # a separated lane rides its clip: where the clip is in this render, plus how far it was slid
+            start = max(0.0, starts[t["scene_id"]] + _f(t.get("offset_sec")))
         if separated:
             clip = clips_by_scene.get(t.get("scene_id")) or {}
             path = None
@@ -279,7 +291,7 @@ def render(project, clips: list[dict]) -> dict:
         raise RenderError(str(exc)) from exc
 
     by_scene = {c["scene_id"]: c for c in clips if c.get("scene_id")}
-    tracks = _audio_tracks(project, by_scene, files.clip_path) if clips or project.audio_tracks else []
+    tracks = _audio_tracks(project, by_scene, files.clip_path, _clip_starts(clips)) if clips or project.audio_tracks else []
     keep = bool(project.keep_original_audio) and not blank
 
     cmd = [ffmpeg, "-y"]

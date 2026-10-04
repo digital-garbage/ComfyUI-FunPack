@@ -126,3 +126,15 @@ test("sliding past the timeline start is not owed on the way back; trimming in c
   assert.equal(trimLane(q, first.id, "in", -0.5), false);
   assert.equal(first.pinned_in_sec, before);
 });
+
+test("a file lane slides and trims on its own numbers", () => {
+  const p = { audio_tracks: [{ id: "f", kind: "overlay", media_ref: "m", start_sec: 1, source_in_sec: 0, source_dur: 4 }] };
+  moveLane(p, "f", -9);
+  assert.equal(p.audio_tracks[0].start_sec, 0);
+  assert.equal(trimLane(p, "f", "in", 1), true);
+  assert.deepEqual([p.audio_tracks[0].source_in_sec, p.audio_tracks[0].source_dur, p.audio_tracks[0].start_sec], [1, 3, 1]);
+  assert.equal(trimLane(p, "f", "in", -5), true);
+  assert.deepEqual([p.audio_tracks[0].source_in_sec, p.audio_tracks[0].start_sec], [0, 0]);
+  trimLane(p, "f", "out", -9);
+  assert.equal(p.audio_tracks[0].source_dur, 0.1);
+});
