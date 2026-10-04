@@ -75,7 +75,7 @@ const tools = {
     };
     const draw = () => {
       const open = p.project, ids = open ? sel.ids : [];
-      put(c.text.sm({ text: `${clock(head.at)} / ${clock(open ? totalSeconds(open) : 0)}` }).node,
+      put(c.hint.default({ text: `${clock(head.at)} / ${clock(open ? totalSeconds(open) : 0)}` }).node,
         btn("＋ Add", () => { const sc = p.edit((pr) => edits.addScene(pr)); if (sc) p.select(sc.id); }, !open),
         btn("Split", split, !ids.length, "Split the selected clip at the playhead"),
         btn("Remove", () => ids.forEach((id) => p.edit((pr) => edits.removeScene(pr, id))), !ids.length),
@@ -94,7 +94,7 @@ const zoom = {
   needs: ["say"],
   setup({ host, app }) {
     const b = (label, what, title) => c.button.sm({ label, tone: "ghost", title, onClick: () => app.say(what) }).node;
-    host.append(c.text.sm({ text: "J/K/L · S split · I/O in/out · +/- zoom" }).node, c.text.sm({ text: "zoom" }).node,
+    host.append(c.hint.default({ text: "J K L · S split · I O in/out · + − zoom" }).node,
       b("−", "zoom.out", "Zoom out"), b("＋", "zoom.in", "Zoom in"), b("fit", "zoom.fit", "Fit the cut to the window"));
   },
 };

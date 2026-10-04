@@ -52,3 +52,16 @@ body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 .cx-nle-clip:hover { border-color: var(--line-hover); }
 .cx-nle-clip.cx-on { border-color: var(--accent); background: linear-gradient(var(--accent-soft), var(--elev-2)); }
 .cx-nle-clip-title { font-weight: var(--fw-medium); }
+
+/* toolbars inside a zone wrap instead of overlapping; readouts never break mid-phrase */
+.cx-zone .cx-toolbar { flex-wrap: wrap; row-gap: var(--sp-2); }
+.cx-zone .cx-toolbar-trailing { flex-wrap: wrap; }
+.cx-zone .cx-toolbar .cx-hint, .cx-zone .cx-toolbar .cx-t { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cx-zone .cx-toolbar .cx-hint { padding-inline: var(--sp-3); }
+
+/* form fields: the label is the quiet half */
+.cx-field { gap: var(--sp-3); }
+.cx-field > .cx-label, .cx-field > label { color: var(--muted); font-size: var(--fs-5); font-weight: var(--fw-regular); }
+.cx-eyebrow { color: var(--muted); font-weight: var(--fw-semibold); }
+.cx-banner { border-radius: var(--r-4); }
+.cx-chip { border-color: transparent; background: var(--elev-2); }
