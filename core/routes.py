@@ -17,7 +17,7 @@ from . import (backend_log, config, control as control_mod, graph as graph_mod, 
                story,
                sysinfo,
                temp_files,
-               update as update_mod, workflow_import,
+               readiness, update as update_mod, workflow_import,
                registry as registry_mod, serve as static, widgets)
 from .contract import CONTRACT_VERSION
 from .relations import order
@@ -257,6 +257,32 @@ def register(routes, prefix=None):
             return web.json_response(workflow_import.convert(body.get("workflow") if isinstance(body, dict) else None, graph_mod.from_comfyui()))
         except (ValueError, TypeError, KeyError, AttributeError, IndexError) as exc:        # an export that is not shaped like one
             return web.json_response({"why": str(exc)}, status=400)
+
+    @routes.get(P + "/api/readiness")
+    async def _readiness(_req):
+        """Plain checks of whether this machine can generate (core/readiness.py)."""
+        def collect():
+            import nodes as comfy_nodes
+            import folder_paths
+            counts = {}
+            for key, _label in readiness.MODEL_FOLDERS:
+                try:
+                    counts[key] = len(folder_paths.get_filename_list(key))
+                except Exception:  # noqa: BLE001 -- a folder this ComfyUI does not know
+                    pass
+            presets = [{"id": "default", "title": "Default", "slots": [s for p in modules().providers("default_pipeline") for s in p[1]()]}]
+            for _spec, make in modules().providers("pipeline_presets"):
+                try:
+                    presets += list(make() or [])
+                except Exception as exc:  # noqa: BLE001
+                    log.failed("pipeline_presets", exc)
+            reg = modules()
+            rows = readiness.machine(sysinfo.collect().get("disk", {}).get("free_gb"))
+            rows += readiness.models(counts)
+            rows += readiness.pipelines(presets, lambda cls: cls in comfy_nodes.NODE_CLASS_MAPPINGS)
+            rows += readiness.modules(reg.failed, control_mod.quarantined(reg.specs.values()))
+            return rows
+        return web.json_response({"rows": await asyncio.to_thread(collect)})
 
     @routes.post(P + "/api/settings-card")
     async def _settings_card(req):

@@ -25,6 +25,7 @@ export const api = {
   releaseModule: (id) => call("POST", "/api/control/release", { id }),
   searchNodes: (q, limit = 40) => call("GET", `/api/nodes/search?q=${encodeURIComponent(q || "")}&limit=${limit}`),
   pipelinePresets: () => call("GET", "/api/pipeline/presets"),
+  readiness: () => call("GET", "/api/readiness"),
   importWorkflow: (workflow) => call("POST", "/api/pipeline/import", { workflow }),
   /** The pipeline as a PNG (loaders, typed-in values, host torch/CUDA). -> a Blob. */
   async settingsCard(slots, projectName, theme) {

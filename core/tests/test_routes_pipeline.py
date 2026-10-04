@@ -535,6 +535,12 @@ def test_a_comfyui_workflow_imports_into_slots_that_build_a_real_graph(server, r
     assert _request(server, "POST", "/funpack/api/pipeline/import", {"workflow": {"nope": 1}})[0] == 400
 
 
+def test_the_readiness_check_answers_with_rows_and_says_which_starting_point_lacks_nodes(server, registered):
+    status, body = _request(server, "GET", "/funpack/api/readiness")
+    assert status == 200 and body["rows"]
+    assert all(r["level"] in ("ok", "warn", "fail") and r["text"] for r in body["rows"])
+
+
 def test_the_manifest_says_which_modules_can_be_switched_and_a_quarantined_one_can_be_released(server):
     from core import control, registry
     status, body = _request(server, "GET", "/funpack/api/modules")

@@ -1,6 +1,6 @@
 // Settings sections that sit in v4's window: the real ones, and stand-ins (named, grouped, saying what is coming) for the rest.
 import { composer as c } from "../../composer/composer.js";
-import { about } from "./about.js";
+import { about, readiness } from "./about.js";
 import { appearance } from "./appearance.js";
 import { models } from "./models.js";
 import { engine } from "./engine.js";
@@ -17,6 +17,7 @@ export default {
   setup({ host, app }) {
     const add = (id, title, subtitle, icon, tone, mount, group = "", keywords = "") => host.add({ id, group, title, subtitle, icon, tone, mount, keywords: `${keywords} ${title}` });
     add("about", "About FunPack", "", "◎", "accent", about(app.api), "", "version commit branch cpu memory gpu disk python torch");
+    add("readiness", "Ready to generate?", "Check this machine before a first run: ffmpeg, GPU, models, nodes, modules.", "✓", "accent", readiness(app.api), "", "check preflight rental gpu ffmpeg models missing nodes");
     add("appearance", "Appearance", "Light, dark, or follow the system.", "◐", "neutral", appearance(app.theme), "", "theme colour light dark auto");
     add("editor", "Editor", "How the editor behaves. The open project remembers these, so they follow it to another machine.", "☰", "neutral",
       editor(app), "", "upscale autocomplete shortcuts ideas preferences");

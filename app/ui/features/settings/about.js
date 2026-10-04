@@ -24,3 +24,20 @@ export const about = (api) => function mount() {
   });
   return body;
 };
+
+/** "Is this machine ready to generate?": the rows core/readiness.py reports, worst first. */
+export const readiness = (api) => function mount() {
+  const body = c.region.stack({ gap: "sm", label: "Ready to generate" });
+  const MARK = { ok: "✓", warn: "!", fail: "✗" }, ORDER = { fail: 0, warn: 1, ok: 2 };
+  const run = async () => {
+    body.set([c.hint.default({ text: "Checking…" })]);
+    let rows;
+    try { rows = (await api.readiness()).rows; } catch (err) { return body.set([c.banner.warn({ text: `Could not check: ${err.message}` }), check]); }
+    const bad = rows.filter((r) => r.level !== "ok").length;
+    body.set([check, bad ? c.banner.warn({ text: `${bad} thing${bad > 1 ? "s" : ""} to look at.` }) : c.banner.info({ text: "Nothing in the way." }),
+      ...[...rows].sort((a, b) => ORDER[a.level] - ORDER[b.level]).map((r) => c.hint.default({ text: `${MARK[r.level]} ${r.text}` }))]);
+  };
+  const check = c.button.sm({ label: "Check this machine", tone: "ghost", title: "Look for what a first run on a new GPU box trips over", onClick: run });
+  body.set([c.hint.default({ text: "Run this on a new rental before the first generation: it checks ffmpeg, the GPU, model files, installed nodes and loaded modules." }), check]);
+  return body;
+};
