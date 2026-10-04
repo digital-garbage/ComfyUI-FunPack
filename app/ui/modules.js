@@ -29,6 +29,7 @@ export default [
   "./features/overlays/index.js",
   "./features/overlays/monitor.js",
   "./features/preview/lanes.js",
+  "./features/preview/fx.js",
   "./features/montage/index.js",
   "./features/generate/warn.js",
   "./features/composer/index.js",
