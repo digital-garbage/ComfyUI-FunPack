@@ -44,11 +44,25 @@ export default {
         img.style.cssText = `width:${w}px;${o.keep_aspect === false ? `height:${(o.height_px || wpx) * box.k}px;` : ""}display:block;`;
         el.append(img);
       }
+      // The corner handle: a picture grows by its width, a text by its size, from where the corner is dragged.
+      const grip = document.createElement("span");
+      grip.style.cssText = "position:absolute;inset-inline-end:-5px;inset-block-end:-5px;inline-size:10px;block-size:10px;background:var(--accent,#e0a030);border:1px solid #000;cursor:nwse-resize;border-radius:2px";
+      el.append(grip);
+      let grown = null;
+      drag(grip, {
+        onStart: ({ event }) => { event.stopPropagation(); dragging = true; },
+        onMove: ({ dx }) => {
+          const w0 = el.getBoundingClientRect().width, k = Math.max(0.1, (w0 + dx * 2) / w0);       // centred: both sides grow
+          if (o.kind === "text") { grown = { font_size: Math.max(8, Math.round((o.font_size || 42) * k)) }; el.style.fontSize = `${grown.font_size * box.k}px`; }
+          else { const wpx = Math.max(8, Math.round((o.width_px || 0.35 * (open.width || 768)) * k)); grown = { width_px: wpx, ...(o.keep_aspect === false ? { height_px: Math.max(8, Math.round((o.height_px || wpx) * k)) } : {}) }; const img = el.querySelector("img"); if (img) img.style.width = `${wpx * box.k}px`; }
+        },
+        onEnd: ({ cancelled }) => { dragging = false; if (grown && !cancelled) p.edit((pr) => ov.update(pr, o.id, grown)); else { drawn = ""; draw(); } grown = null; },
+      });
       let to = null;
       drag(el, {
         onStart: () => { dragging = true; },
         onMove: ({ dx, dy }) => { to = { x: Math.min(1, Math.max(0, (o.x ?? 0.5) + dx / box.w)), y: Math.min(1, Math.max(0, (o.y ?? 0.5) + dy / box.h)) }; el.style.left = `${to.x * 100}%`; el.style.top = `${to.y * 100}%`; },
-        onEnd: ({ cancelled }) => { dragging = false; if (to && !cancelled) p.edit((pr) => ov.update(pr, o.id, to)); else draw(); },
+        onEnd: ({ cancelled }) => { dragging = false; if (to && !cancelled) p.edit((pr) => ov.update(pr, o.id, to)); else { drawn = ""; draw(); } },
       });
       return el;
     }
