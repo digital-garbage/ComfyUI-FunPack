@@ -61,3 +61,10 @@
 :root.fp-peek:not([data-ui-mode="simple"]) .fp-main > :nth-child(2):hover .cx-panel-body,
 :root.fp-peek.fp-peek-open:not([data-ui-mode="simple"]) .fp-main > :nth-child(2) .cx-panel-body { display: block; }
 :root.fp-peek .fp-split-bottom { display: none; }
+
+/* Welcome: the maintenance actions as a 2x2 of tiles */
+.fp-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); margin-block-start: var(--sp-5); }
+.fp-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: var(--sp-5) var(--sp-6); border: 0; border-radius: var(--r-5); background: var(--elev-2); color: var(--text); text-align: left; cursor: pointer; }
+.fp-tile:hover { background: var(--hover); }
+.fp-tile-title { font-size: var(--fs-4); font-weight: var(--fw-medium); }
+.fp-tile-hint { font-size: var(--fs-6); color: var(--muted); }

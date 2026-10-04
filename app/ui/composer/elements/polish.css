@@ -65,3 +65,25 @@ body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 .cx-eyebrow { color: var(--muted); font-weight: var(--fw-semibold); }
 .cx-banner { border-radius: var(--r-4); }
 .cx-chip { border-color: transparent; background: var(--elev-2); }
+
+/* inside a settings card the buttons are quiet: a tinted fill with accent text, never a row of solid amber */
+.cx-settings-row .cx-btn-primary { background: var(--accent-soft); color: var(--accent-hi); }
+.cx-settings-row .cx-btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+.cx-settings-row .cx-btn { background: var(--elev-3); }
+
+/* windows and dialogs: the same rounded card, a deeper shadow, a calmer title bar */
+.cx-window, .cx-modal { border-radius: var(--card-r); border-color: var(--line); }
+.cx-window-bar, .cx-modal-head { background: transparent; border-bottom-color: var(--line); padding: var(--sp-5) var(--sp-7); }
+.cx-window-title, .cx-modal-title { font-weight: var(--fw-semibold); letter-spacing: -.01em; }
+.cx-modal-title { font-size: var(--fs-3); }
+.cx-modal-body { padding: var(--sp-8); }
+.cx-modal-foot { background: transparent; border-top-color: var(--line); padding: var(--sp-5) var(--sp-7); }
+.cx-tabs-underline .cx-tab { font-weight: var(--fw-medium); }
+
+/* menus and popovers: floating cards with pill-shaped rows, like a macOS menu */
+.cx-popover { border-radius: var(--r-5); padding: var(--sp-3); background: var(--elev-3); }
+.cx-menu-item { padding: var(--sp-3) var(--sp-5); border-radius: var(--r-3); font-size: var(--fs-4); }
+.cx-menu-item:hover:not(:disabled), .cx-menu-item.cx-on { background: var(--accent); color: var(--on-accent); }
+.cx-menu-item:hover:not(:disabled) .cx-menu-icon, .cx-menu-item:hover:not(:disabled) .cx-menu-hint { color: inherit; }
+.cx-menu-sep { margin: var(--sp-3) var(--sp-3); }
+.cx-menu-heading { padding: var(--sp-3) var(--sp-5) var(--sp-2); font-size: var(--fs-7); }
