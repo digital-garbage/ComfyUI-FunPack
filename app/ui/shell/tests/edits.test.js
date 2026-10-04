@@ -79,3 +79,10 @@ test("a split makes two clips of one unit that keep playing the same render", ()
   assert.deepEqual(segments(p).map((s) => s.id).slice(0, 2), ["a", second.id]);
   assert.equal(split(p, "a", 5), false, "no cut inside the first grid step");
 });
+
+test("removing the first cut of a unit hands its takes to the clip that becomes the root", async () => {
+  const { removeScene } = await import("../edits.js");
+  const p = { scenes: [{ id: "a", text: "x", frames: 8 }, { id: "b", gen_unit_id: "a", cut_offset_frames: 8, frames: 8 }], scene_variants: { a: [{ promptId: "p" }] }, scene_renders: {} };
+  removeScene(p, "a");
+  assert.deepEqual(Object.keys(p.scene_variants), ["b"]);
+});

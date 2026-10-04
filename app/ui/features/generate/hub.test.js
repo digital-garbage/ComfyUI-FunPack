@@ -14,7 +14,7 @@ const rig = (phase, extra = {}) => {
     waitForTerminal: () => Object.assign(Promise.resolve("done"), { cancel() {} }), ...extra };
   const project = { project: doc, get scenes() { return doc.scenes; }, selected: null,
     edit: (fn) => fn(doc), editFor: async (_id, fn) => fn(doc) };
-  const app = { project, selection: { ids: [] }, lastRun: { n: 0 }, runner: {}, pipeline: { slots: () => [] }, generate: g, api: { newTasteGeneration: () => Promise.resolve({}) }, on: () => () => {} };
+  const app = { project, selection: { ids: [] }, lastRun: { n: 0 }, runner: {}, pipeline: { slots: () => [{ id: "s", roles: [{ at: "generation.seed", input: "seed" }], inputs: {} }] }, generate: g, api: { newTasteGeneration: () => Promise.resolve({}) }, on: () => () => {} };
   const host = document.createElement("div");
   hub.setup({ host, app });
   return { handlers, doc, host, app };
@@ -49,7 +49,7 @@ test("a batch of takes runs the unit N times, keeps every render as a take, and 
   assert.equal(doc.scene_renders.a.media.filename, "t3.mp4");
 });
 
-test("the take that was on the clip keeps its rating when a newer one replaces it; only the last twelve are kept", async () => {
+test("the take that was on the clip keeps its rating when a newer one replaces it; only the last twenty-four are kept", async () => {
   const { app, doc } = rig("idle", { generate: async () => true });
   doc.scenes[0].rating = "10";
   doc.scene_renders = { a: { media: { filename: "old.mp4" }, promptId: "p0" } };
@@ -57,7 +57,29 @@ test("the take that was on the clip keeps its rating when a newer one replaces i
   app.generate.run.state.promptId = "p1";
   await app.runner.units(["a"], 1);
   assert.equal(doc.scene_variants.a[0].rating, "10");
-  doc.scene_variants.a = Array.from({ length: 15 }, (_, i) => ({ media: { filename: `${i}.mp4` }, promptId: `q${i}`, rating: "" }));
+  doc.scene_variants.a = Array.from({ length: 30 }, (_, i) => ({ media: { filename: `${i}.mp4` }, promptId: `q${i}`, rating: "" }));
   await app.runner.units(["a"], 1);
-  assert.equal(doc.scene_variants.a.length, 12);
+  assert.equal(doc.scene_variants.a.length, 24);
+});
+
+test("a render from before takes becomes a take; the oldest unrated take goes first when the cap is hit, never a rated one", async () => {
+  const { app, doc } = rig("idle", { generate: async () => true });
+  doc.scenes[0].rating = "10";
+  doc.scene_renders = { a: { media: { filename: "legacy.mp4" } } };
+  app.generate.run.state.promptId = "p1";
+  await app.runner.units(["a"], 1);
+  assert.deepEqual(doc.scene_variants.a.map((t) => [t.media.filename, t.rating]), [["legacy.mp4", "10"], ["a.mp4", ""]]);
+  doc.scene_variants.a = Array.from({ length: 24 }, (_, i) => ({ media: { filename: `${i}.mp4` }, promptId: `q${i}`, rating: i === 0 ? "10" : "" }));
+  await app.runner.units(["a"], 1);
+  assert.equal(doc.scene_variants.a[0].media.filename, "0.mp4", "the rated one stays");
+  assert.ok(!doc.scene_variants.a.some((t) => t.media.filename === "1.mp4"), "the oldest unrated went");
+});
+
+test("a batch with no seed input says so and makes nothing", async () => {
+  let queued = 0;
+  const { app } = rig("idle", { generate: async () => { queued += 1; return true; } });
+  app.pipeline.slots = () => [];
+  await app.runner.units(["a"], 3);
+  assert.equal(queued, 0);
+  assert.match(document.body.textContent, /no seed input/);
 });

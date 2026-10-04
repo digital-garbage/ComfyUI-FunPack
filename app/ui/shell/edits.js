@@ -45,6 +45,7 @@ export function removeScene(p, id, { pending = false } = {}) {
     next.text = sc.text || next.text;
     next.rating = sc.rating || next.rating;
     next.source = clone(sc.source || next.source || {});
+    if (p.scene_variants && p.scene_variants[id]) { p.scene_variants[next.id] = p.scene_variants[id]; delete p.scene_variants[id]; }       // the takes follow the unit's new root
     const removedFrames = sc.frames || 0;
     mates.filter((s) => s.id !== id && (s.cut_offset_frames || 0) > (sc.cut_offset_frames || 0))
       .forEach((s) => { s.cut_offset_frames = Math.max(0, s.cut_offset_frames - removedFrames); });

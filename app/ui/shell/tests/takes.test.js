@@ -32,3 +32,11 @@ test("a clip whose render is not one of its takes cannot be stepped", () => {
   p.scene_renders.a.promptId = "other";
   assert.equal(stepTake(p, p.scenes[0], 1), false);
 });
+
+test("a take made at another length plays at its own", () => {
+  const p = proj();
+  p.scene_renders.a.durationSec = 4;
+  p.scene_variants.a[1].secs = 2.5;
+  stepTake(p, p.scenes[0], -1);
+  assert.equal(p.scene_renders.a.durationSec, 2.5);
+});

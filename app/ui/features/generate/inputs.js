@@ -3,7 +3,7 @@
 import { wireReferences } from "../../shell/reference_wiring.js";
 import { DRIVEN } from "../../shell/scenes.js";
 
-const rolesAt = (slots, at) => (slots || []).flatMap((s) => (s.roles || []).filter((r) => r.at === at).map((role) => ({ slot: s, role })));
+export const rolesAt = (slots, at) => (slots || []).flatMap((s) => (s.roles || []).filter((r) => r.at === at).map((role) => ({ slot: s, role })));
 
 /** `frames`: how long this unit is (its clips together); a fresh `seed` per call so a re-roll is a different result. */
 export async function buildInputs({ project, scene, slots, expand, frames, hooks = [], seed = () => Math.floor(Math.random() * 2 ** 31) }) {

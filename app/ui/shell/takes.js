@@ -19,7 +19,7 @@ export function stepTake(p, scene, dir) {
   const take = list[to];
   p.scenes.filter((s) => genUnitId(s) === genUnitId(head)).forEach((s) => {
     const r = (p.scene_renders || {})[s.id];
-    if (r) p.scene_renders[s.id] = { ...r, media: take.media, ...(take.promptId ? { promptId: take.promptId } : {}) };
+    if (r) p.scene_renders[s.id] = { ...r, media: take.media, ...(take.promptId ? { promptId: take.promptId } : {}), ...(take.secs && r.durationSec !== undefined ? { durationSec: take.secs } : {}) };       // a take made at another length plays at its own
   });
   head.rating = take.rating || "";
   return true;

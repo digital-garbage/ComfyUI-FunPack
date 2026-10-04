@@ -26,3 +26,12 @@ test("a job that vanishes is reported after a few looks, a dropped reply is retr
   const flaky = { queueUpscale: async () => "id", upscaleResult: async () => (++n < 5 ? { retry: true } : { videos: [m("u.mp4")] }) };
   assert.equal((await upscale(flaky, m("x.mp4"), "mdl", async () => {})).filename, "u.mp4");
 });
+
+test("a take that plays the old file gets the upscaled one too, so stepping back does not undo it", async () => {
+  const { swap } = await import("./job.js");
+  const old = { filename: "a.mp4", subfolder: "", type: "output" }, up = { filename: "funpack_upscaled_a.mp4", subfolder: "", type: "output" };
+  const p = { scene_renders: { s: { media: old } }, scene_variants: { s: [{ media: old, promptId: "p" }, { media: { filename: "other.mp4" }, promptId: "q" }] } };
+  swap(p, old, up);
+  assert.equal(p.scene_variants.s[0].media.filename, "funpack_upscaled_a.mp4");
+  assert.equal(p.scene_variants.s[1].media.filename, "other.mp4");
+});

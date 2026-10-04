@@ -22,6 +22,7 @@ export function swap(p, from, to) {
   const same = (m) => !!m && keyOf(m) === keyOf(from);
   let n = 0;
   for (const [id, r] of Object.entries(p.scene_renders || {})) if (r && same(r.media)) { p.scene_renders[id] = { ...r, media: to }; n += 1; }
+  for (const list of Object.values(p.scene_variants || {})) list.forEach((t) => { if (same(t.media)) { t.media = to; n += 1; } });       // a take stepped back to must be the upscaled file too
   p.scene_ghosts = (p.scene_ghosts || []).map((g) => (same(g.media) ? (n += 1, { ...g, media: to }) : g));
   return n;
 }
