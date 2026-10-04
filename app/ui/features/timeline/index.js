@@ -45,6 +45,7 @@ const stage = {
     const draw = () => { const open = p.project; view.setLanes(open ? [videoLane(open, sel.ids, sel.focus, clipActions, ghostActions, (sc) => (app.clipTags || []).flatMap((f) => { try { return f(sc); } catch { return []; } })), audioLane(open, sel.ids), ...extra.flatMap((e) => { try { return e.lanes(open); } catch { return []; } })].filter(Boolean) : []); };       // a feature's lanes failing must not stop the baseline's
     const setZoom = (z) => { zoom = Math.min(ZOOM.length - 1, Math.max(0, z)); view.setZoom(ZOOM[zoom]); };
     host.append(view.node);
+    if (app.timelineView) app.timelineView.timeAt = view.timeAt;       // so a drop can say where on the timeline it landed
     const off = [app.on((what) => {
       if (what === "zoom.in") setZoom(zoom + 1); else if (what === "zoom.out") setZoom(zoom - 1);
       else if (what === "zoom.fit") { const total = p.project ? totalSeconds(p.project) : 0; const fit = ZOOM.filter((z) => z * (total + 2) <= view.node.clientWidth); setZoom(fit.length ? ZOOM.indexOf(fit[fit.length - 1]) : 0); }

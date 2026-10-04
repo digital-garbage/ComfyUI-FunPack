@@ -1,6 +1,7 @@
 // The media bin: files brought in (reference images, clips), kept apart from what runs produce.
 import { composer as c } from "../../composer/composer.js";
 import { learn } from "../../shell/bin.js";
+import { MEDIA_DRAG } from "../../shell/dnd.js";
 
 const base = (id) => `/funpack/api/media/${encodeURIComponent(id)}`;
 
@@ -52,7 +53,7 @@ export default {
         } catch (err) { tell(err.message); }
       },
     };
-    const props = { id: "media", items: [], empty: "No media yet. Drop images or clips here.", onActivate: pick, onContext: context };
+    const props = { id: "media", items: [], empty: "No media yet. Drop images or clips here.", onActivate: pick, onContext: context, drag: { type: MEDIA_DRAG, data: (it) => ({ id: it.id, kind: (items.find((m) => m.id === it.id) || {}).kind }) } };
     const galleries = { adaptive: c.gallery.adaptive(props), list: c.gallery.list(props), icons: c.gallery.icons(props) };
     const shelf = c.region.stack({ gap: "none", children: [galleries.adaptive] });
     const drop = c.dropzone.default({ label: "Drop or choose files", hint: "images, clips, audio",

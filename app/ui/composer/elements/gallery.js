@@ -41,7 +41,7 @@ function thumbOf(item, cls = "cx-cell-thumb", marks = true) {
  * The part every view of a collection has: items, which are selected, and what
  * a click on one means. `cellFor` is the only difference between them.
  */
-function collection({ items = [], empty = EMPTY, selection = [], onActivate, onContext } = {},
+function collection({ items = [], empty = EMPTY, selection = [], onActivate, onContext, drag } = {},
                     host, cellFor) {
   const chosen = new Set(selection);
 
@@ -56,6 +56,10 @@ function collection({ items = [], empty = EMPTY, selection = [], onActivate, onC
       cell.addEventListener("click", () => { if (onActivate) onActivate(item); });
       if (onContext) {
         cell.addEventListener("contextmenu", (e) => { e.preventDefault(); onContext(item, e); });
+      }
+      if (drag) {       // { type, data(item) }: a tile that can be dropped elsewhere
+        cell.draggable = true;
+        cell.addEventListener("dragstart", (e) => { e.dataTransfer.setData(drag.type, JSON.stringify(drag.data(item))); e.dataTransfer.effectAllowed = "copy"; });
       }
       host.append(cell);
     }

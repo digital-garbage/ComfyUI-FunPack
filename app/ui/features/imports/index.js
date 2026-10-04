@@ -2,6 +2,8 @@
 import { composer as c } from "../../composer/composer.js";
 import { addVideoClip, addAudioTrack } from "../../shell/imports.js";
 import { learn } from "../../shell/bin.js";
+import { onMediaDrop } from "../../shell/dnd.js";
+import { addScene } from "../../shell/edits.js";
 
 /** How long a bin file is, from the browser's own reading of it (null when it cannot say). */
 const lengthOf = (asset) => new Promise((resolve) => {
@@ -42,6 +44,28 @@ export default {
     const menu = c.button.menu({ label: "＋ Import", tone: "ghost", onClick: () => c.menu.dropdown({ anchor: menu, items: [{ id: "video", label: "Video clip…", disabled: !p.project }, { id: "audio", label: "Audio track…", disabled: !p.project }],
       onPick: (id) => choose(id) }) });
     host.append(menu.node);
-    return () => menu.node.remove();
+
+    // Dropping a bin tile on the timeline: a video makes a clip, a sound a lane, a picture a scene's anchor (on a clip) or a new scene (beside them).
+    const at = (e) => (app.timelineView && app.timelineView.timeAt ? app.timelineView.timeAt(e.clientX) : app.playhead.at);
+    const asset = async (item) => { let list = []; try { list = (await app.api.media()).media || []; } catch { /* the drop does nothing */ } return list.find((m) => m.id === item.id); };
+    const offs = [
+      onMediaDrop(".cx-nle-lane-video", async (item, lane, e) => {
+        const a = await asset(item);
+        if (!a || !p.project) return;
+        const clip = e.target.closest && e.target.closest(".cx-nle-clip[data-id]"), id = clip && clip.dataset.id;
+        if (a.kind === "video") return add(a);
+        if (a.kind !== "image") return c.toast.warn({ text: "A sound goes on an audio lane." });
+        if (id && p.scenes.some((s) => s.id === id)) { p.setScene(id, "source", { type: "image", media_ref: a.id }); return c.toast.good({ text: "Set as that clip's starting picture." }); }
+        const made = p.edit((pr) => { const sc = addScene(pr, "image"); sc.source = { type: "image", media_ref: a.id }; return sc; });
+        if (made) p.select(made.id);
+      }),
+      onMediaDrop(".cx-nle-lane-audio", async (item, lane, e) => {
+        const a = await asset(item);
+        if (!a || a.kind !== "audio" || !p.project) return a && c.toast.warn({ text: "Only a sound can go on an audio lane." });
+        const seconds = await lengthOf(a);
+        p.edit((pr) => addAudioTrack(pr, a, at(e), seconds));
+      }),
+    ];
+    return () => { offs.forEach((f) => f()); menu.node.remove(); };
   },
 };

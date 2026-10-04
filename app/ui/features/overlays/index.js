@@ -2,6 +2,7 @@
 import { composer as c } from "../../composer/composer.js";
 import * as ov from "../../shell/overlays.js";
 import { learn } from "../../shell/bin.js";
+import { onMediaDrop } from "../../shell/dnd.js";
 import { openDialog } from "./dialog.js";
 
 const ID = "o:";
@@ -57,7 +58,14 @@ export default {
         c.modal.dialogue({ title: "Remove lane", message: `Remove “${top.label}” and everything on it?`, tone: "danger", confirmLabel: "Remove" }).result.then((yes) => yes && edit((pr) => ov.removeLane(pr, top.id)));
       } }) });
     host.append(add.node);
+    const offDrop = onMediaDrop(".cx-nle-lane-overlay", async (item, lane, e) => {       // a picture dropped on an overlay lane becomes an overlay there
+      if (item.kind !== "image" || !p.project) return c.toast.warn({ text: "Only a picture can be laid over the cut." });
+      let name = "Image"; try { name = ((await app.api.media()).media || []).find((m) => m.id === item.id).name; } catch { /* keep the generic label */ }
+      const row = [...document.querySelectorAll(".cx-nle-lane-overlay")].indexOf(lane), lanes = ov.lanesOf(p.project), laneId = (lanes[lanes.length - 1 - row] || {}).id;       // lanes draw top-first
+      const sec = app.timelineView && app.timelineView.timeAt ? app.timelineView.timeAt(e.clientX) : app.playhead.at;
+      edit((pr) => ov.addImage(pr, item.id, name, sec, laneId));
+    });
     const off = app.on(() => { add.setDisabled && add.setDisabled(!p.project); });
-    return () => { off(); const at = app.timelineLanes.indexOf(entry); if (at >= 0) app.timelineLanes.splice(at, 1); add.node.remove(); app.say("timeline.lanes"); };
+    return () => { off(); offDrop(); const at = app.timelineLanes.indexOf(entry); if (at >= 0) app.timelineLanes.splice(at, 1); add.node.remove(); app.say("timeline.lanes"); };
   },
 };
