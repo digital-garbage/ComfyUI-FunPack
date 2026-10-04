@@ -517,6 +517,23 @@ def test_a_module_provided_preset_is_offered(server, registered):
     assert preset["slots"]
 
 
+def test_a_comfyui_workflow_imports_into_slots_that_build_a_real_graph(server, registered):
+    """Over HTTP, against ComfyUI's own nodes: the API export of a plain text-to-image graph."""
+    from core import graph
+    wf = {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a fox", "clip": ["9", 0]}},
+          "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "blur", "clip": ["9", 0]}},
+          "3": {"class_type": "EmptyLatentImage", "inputs": {"width": 512, "height": 512, "batch_size": 1}},
+          "4": {"class_type": "KSampler", "inputs": {"model": ["8", 0], "positive": ["1", 0], "negative": ["2", 0], "latent_image": ["3", 0],
+                                                      "seed": 5, "steps": 4, "cfg": 7.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0}}}
+    status, body = _request(server, "POST", "/funpack/api/pipeline/import", {"workflow": wf})
+    assert status == 200
+    assert {"prompt", "negative", "seed", "width", "height"} <= set(body["bound"])
+    prompt, problems = graph.build(body["slots"])
+    assert set(prompt) >= {"w1", "w2", "w3", "w4"}
+    assert not [p for p in problems if "w4" in p and "positive" in p]
+    assert _request(server, "POST", "/funpack/api/pipeline/import", {"workflow": {"nope": 1}})[0] == 400
+
+
 def test_the_manifest_says_which_modules_can_be_switched_and_a_quarantined_one_can_be_released(server):
     from core import control, registry
     status, body = _request(server, "GET", "/funpack/api/modules")

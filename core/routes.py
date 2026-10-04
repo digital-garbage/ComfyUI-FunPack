@@ -17,7 +17,7 @@ from . import (backend_log, config, control as control_mod, graph as graph_mod, 
                story,
                sysinfo,
                temp_files,
-               update as update_mod,
+               update as update_mod, workflow_import,
                registry as registry_mod, serve as static, widgets)
 from .contract import CONTRACT_VERSION
 from .relations import order
@@ -244,6 +244,19 @@ def register(routes, prefix=None):
                     found.append({"id": preset["id"], "title": preset.get("title") or preset["id"],
                                   "module": spec.id, "slots": preset["slots"]})
         return web.json_response({"presets": found})
+
+    @routes.post(P + "/api/pipeline/import")
+    async def _pipeline_import(req):
+        """A ComfyUI workflow file as pipeline slots (see core/workflow_import.py). Nothing is saved: the
+        caller shows what was bound and loads the slots like any other starting point."""
+        try:
+            body = await req.json()
+        except ValueError:
+            return web.json_response({"why": "the request was not JSON"}, status=400)
+        try:
+            return web.json_response(workflow_import.convert(body.get("workflow"), graph_mod.from_comfyui()))
+        except ValueError as exc:
+            return web.json_response({"why": str(exc)}, status=400)
 
     @routes.post(P + "/api/settings-card")
     async def _settings_card(req):

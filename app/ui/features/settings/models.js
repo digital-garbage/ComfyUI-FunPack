@@ -111,6 +111,7 @@ export const models = (app) => function mount() {
   }
 
   const tools = () => c.toolbar.default({ items: [c.button.sm({ label: "Start from…", tone: "ghost", title: "Replace this pipeline with a model's own starting point", onClick: presets }),
+    c.button.sm({ label: "Import workflow…", tone: "ghost", title: "Use a ComfyUI workflow (UI or API export) as this pipeline", onClick: importWorkflow }),
     c.button.sm({ label: "Revert", tone: "ghost", disabled: !opened, title: "Put back what was here when this page was opened", onClick: async () => { const r = await ps.restore(opened); say(r.refused.length ? r.refused[0] : ""); } })],
     trailing: [c.button.sm({ label: "🖼 Export settings…", tone: "ghost", title: "Render this pipeline as a PNG: loaders, typed-in values, torch / CUDA / attention", onClick: card })] });
 
@@ -122,6 +123,17 @@ export const models = (app) => function mount() {
     const pick = found.find((p) => p.id === id);
     if (!pick || !(await confirm("Replace pipeline", `Replace the whole pipeline with “${pick.title}”? Every file and value you set here is cleared. Revert puts it back until you leave this page.`, "danger"))) return;
     const r = await ps.restore({ slots: pick.slots, removed: [], unwired: {} });
+    specs = {}; await describe(); say(r.refused.length ? `Not changed: ${r.refused[0]}` : "");
+  }
+  async function importWorkflow() {
+    const file = await new Promise((resolve) => { const i = Object.assign(document.createElement("input"), { type: "file", accept: ".json,application/json" }); i.onchange = () => resolve(i.files[0]); i.oncancel = () => resolve(null); i.click(); });
+    if (!file) return;
+    let got;
+    try { got = await api.importWorkflow(JSON.parse(await file.text())); } catch (err) { return say(err instanceof SyntaxError ? "That file is not valid JSON." : err.message); }
+    const names = { prompt: "Prompt", negative: "Negative prompt", seed: "Seed", width: "Width", height: "Height", frames: "Length", fps: "FPS", image: "Start picture" };
+    const lines = [`${got.slots.length} nodes.`, ...Object.entries(names).map(([k, label]) => `${label}: ${got.bound[k] ? "→ " + got.bound[k] : "not connected (set on the node itself)"}`), ...got.notes];
+    if (!(await confirm("Use this workflow", `${lines.join("\n")}\n\nReplace the whole pipeline with it? Revert puts the old one back until you leave this page.`, "danger"))) return;
+    const r = await ps.restore({ slots: got.slots, removed: [], unwired: {} });
     specs = {}; await describe(); say(r.refused.length ? `Not changed: ${r.refused[0]}` : "");
   }
   async function card() {
