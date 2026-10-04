@@ -122,7 +122,7 @@ def test_the_empty_latent_node_passes_the_audio_vae_to_a_provider_that_asks_and_
     assert seen == {"plain": True, "wants": ("A", 30.0)}
 
 
-@pytest.mark.parametrize("pid", ["ltx23_text_to_video", "ltx23_image_to_video"])
+@pytest.mark.parametrize("pid", ["ltx23_text_to_video", "ltx23_image_to_video", "ltx23_anchor_guide"])
 def test_the_pipelines_build_a_real_graph(registered, pid):
     from core import graph
     from modules.models.ltx.pipeline import presets
@@ -143,7 +143,7 @@ def test_the_pipelines_build_a_real_graph(registered, pid):
 def test_the_presets_are_offered_through_the_registry(registered):
     from core import routes
     found = {preset["id"] for _spec, make in routes.modules().providers("pipeline_presets") for preset in make()}
-    assert {"ltx23_text_to_video", "ltx23_image_to_video"} <= found
+    assert {"ltx23_text_to_video", "ltx23_image_to_video", "ltx23_anchor_guide"} <= found
 
 
 def test_the_picture_is_found_in_both_shapes_a_sampling_latent_takes(comfyui):
