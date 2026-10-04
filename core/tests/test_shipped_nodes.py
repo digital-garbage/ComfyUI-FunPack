@@ -55,6 +55,7 @@ FROZEN = {
     "FunPackLatentUpscalerLoader": ["upscaler_name"],
     "FunPackCutOpening": ["images", "frames", "fps", "audio"],
     "FunPackPromptMarkup": ["text"],
+    "FunPackNegativeErase": ["positive", "negative", "strength", "mode", "keep_size"],
     "FunPackEnhancePrompt": [
         "clip", "text", "enabled", "instructions", "max_length", "greedy", "temperature", "top_p",
         "top_k", "min_p", "repetition_penalty", "presence_penalty", "seed", "thinking", "image", "use_image",
