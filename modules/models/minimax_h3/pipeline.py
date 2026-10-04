@@ -109,13 +109,18 @@ def h3_reference_to_video():
          "inputs": {"model": ["modifiers", 0], "clip": ["clip", 0], "positive": ["r2v", 0],
                     "latent": ["r2v", 1], "markup": ["markup", 1]}},
 
+        # Strength 0 = untouched. Above it, the negative prompt (dead at CFG 1) is taken out of the words.
+        {"id": "erase", "group": "Preparation", "node": "FunPackNegativeErase",
+         "inputs": {"positive": ["markup_apply", 1], "negative": ["negative", 0], "strength": 0.0,
+                    "mode": "project", "keep_size": True}},
+
         {"id": "sampler", "group": "Sampling", "node": "FunPackSampler",
          "roles": [{"at": "generation.sampling", "input": "steps", "label": "Steps"},
                    {"at": "generation.sampling", "input": "sampler_name", "label": "Sampler"},
                    {"at": "generation.sampling", "input": "scheduler", "label": "Scheduler"},
                    {"at": "generation.seed", "input": "seed", "label": "Seed"}],
          "inputs": {
-             "model": ["markup_apply", 0], "positive": ["markup_apply", 1],
+             "model": ["markup_apply", 0], "positive": ["erase", 0],
              "negative": ["negative", 0], "latent": ["r2v", 1], "settings": ["settings", 0],
              "seed": 0, "steps": 20, "cfg": 1.0,
              "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0}},
@@ -173,7 +178,7 @@ def h3_reference_to_video_second_pass():
         {"id": "resample", "group": "Second pass", "node": "FunPackLatentResample",
          "inputs": {"latent": ["sampler", 0], "upscaler": ["upscaler", 0],
                     "operation": "sharpen", "scale": 2.0,
-                    "positive": ["markup_apply", 1], "negative": ["negative", 0]}},
+                    "positive": ["erase", 0], "negative": ["negative", 0]}},
         {"id": "pass2_sigmas", "group": "Second pass", "node": "ManualSigmas",
          "inputs": {"sigmas": "0.4, 0.3, 0.2, 0.1, 0.0"}},
         {"id": "pass2", "group": "Second pass", "node": "FunPackSampler",
