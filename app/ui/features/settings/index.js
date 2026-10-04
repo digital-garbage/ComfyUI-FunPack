@@ -9,6 +9,7 @@ import { system } from "./system.js";
 import { packs } from "./packs.js";
 import { taste } from "./taste.js";
 import { editor } from "./editor.js";
+import { shotMemory } from "./shotmemory.js";
 
 export default {
   id: "settings-sections",
@@ -29,6 +30,10 @@ export default {
       modules(app), "Generation", "modules enable disable quarantine");
     add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys and the Absolute global-taste store.", "✦", "danger",
       taste(app), "Learning", "refinement taste keys rating");
+    // only when that module is installed: a section for something absent would be a dead end
+    app.pipeline.ensureLoaded().then(() => {
+      if (app.pipeline.modulesById()["conditioning_shot_camera"]) add("shotmemory", "Shot camera memory", "What the camera has learned from your prompts and ratings.", "◎", "neutral", shotMemory(app), "Learning", "shot camera views moves words forget");
+    });
     add("system", "Updates & ComfyUI", "Server connection, FunPack code updates, pipeline health.", "⟳", "good",
       system(app), "System", "update git branch restart rollback");
     add("customnodes", "Custom Nodes", "Install, update and remove ComfyUI node packs.", "⧉", "neutral",

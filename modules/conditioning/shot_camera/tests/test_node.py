@@ -72,3 +72,31 @@ def test_more_shots_than_seconds_refuses_instead_of_writing_bad_times(tmp_path, 
     text = "\n".join(f"[Shot {i}] A woman walks along street number {i}." for i in range(1, 8))
     out, said, _ = nodes.rewrite(text, {"shot_cuts": True}, seconds=5.17, pieces=[])
     assert out == text and "do not fit" in said
+
+
+def test_memory_routes_read_and_forget(tmp_path, monkeypatch):
+    import asyncio, json
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    memory.record_run("a", {"views": [{"view": "side view", "traits": ["none"]}], "arms": []})
+    memory.on_rating("a", "liked")
+    handlers = {}
+
+    class Table:
+        def get(self, path): return lambda fn: handlers.setdefault(("GET", path), fn)
+        def post(self, path): return lambda fn: handlers.setdefault(("POST", path), fn)
+
+    class web:
+        @staticmethod
+        def json_response(data, status=200):
+            return type("R", (), {"status": status, "data": data})()
+
+    class Req:
+        def __init__(self, body=None): self._b = body
+        async def json(self): return self._b
+
+    _mod().routes(Table(), "/b", web)
+    got = asyncio.run(handlers[("GET", "/b/memory")](Req()))
+    assert [v["view"] for v in got.data["views"]] == ["side view"]
+    assert asyncio.run(handlers[("POST", "/b/forget")](Req({"kind": "view", "name": "side view"}))).data == {"forgotten": True}
+    assert asyncio.run(handlers[("GET", "/b/memory")](Req())).data["views"] == []
+    assert asyncio.run(handlers[("POST", "/b/forget")](Req({"kind": "nonsense"}))).status == 400

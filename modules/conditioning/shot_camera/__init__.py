@@ -49,4 +49,20 @@ def on_rating(prompt_id, rating, axis=None):
     return memory.on_rating(prompt_id, rating, axis)
 
 
-PROVIDES = {"on_rating": on_rating}
+def routes(table, base, web):
+    """What the camera has learned, to read and prune from Settings."""
+    @table.get(base + "/memory")
+    async def _memory(_req):
+        return web.json_response(memory.summary())
+
+    @table.post(base + "/forget")
+    async def _forget(req):
+        try:
+            body = await req.json()
+            gone = memory.forget(body.get("kind"), body.get("name"))
+        except (ValueError, AttributeError, TypeError) as exc:
+            return web.json_response({"why": str(exc)}, status=400)
+        return web.json_response({"forgotten": gone})
+
+
+PROVIDES = {"on_rating": on_rating, "routes": routes}
