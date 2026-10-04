@@ -310,6 +310,7 @@ test("an edit made WHILE an import is in flight is still saved, against the old 
   await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
   assert.equal(p.project.id, "abcdef012345", "the import switched before the edit -- this test proves nothing");
 
+  p.project.editor_settings = { autosave_sec: 0.3 };
   p.rename("Typed while importing");  // scheduled against the still-current OLD project
 
   resolveImport();

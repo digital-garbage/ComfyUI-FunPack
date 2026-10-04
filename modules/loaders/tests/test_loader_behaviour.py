@@ -329,3 +329,10 @@ def test_a_gguf_encoder_that_vanished_since_being_listed_is_refused_by_name(monk
 
     with pytest.raises(RuntimeError, match="encoder-Q5_K.gguf.*no longer where it was listed"):
         nodes.FunPackCLIPLoader.execute(clip_name1="encoder-Q5_K.gguf", type="ltxv")
+
+
+def test_no_lora_picked_passes_the_originals_through_without_reading_a_file():
+    from modules.loaders.lora import nodes
+    model, clip = object(), object()
+    out = nodes.FunPackLoraLoader.execute(model=model, lora_name="None", strength_model=1.0, clip=clip)
+    assert out.result[0] is model and out.result[1] is clip

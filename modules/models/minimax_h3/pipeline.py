@@ -48,10 +48,13 @@ def h3_reference_to_video():
         {"id": "audio_vae", "group": "Loaders", "node": "FunPackVAELoader",
          "inputs": {"dtype": "bfloat16"}},
 
+        # Always present, does nothing until a LoRA is picked; chain more through Models & Pipeline.
+        {"id": "lora", "group": "Loaders", "node": "FunPackLoraLoader",
+         "inputs": {"model": ["model", 0], "lora_name": "None", "strength_model": 1.0}},
         {"id": "shift", "group": "Sampling", "node": "MiniMaxH3SigmaShift",
          "roles": [{"at": "generation.model", "input": "shift_video", "label": "Video shift"},
                    {"at": "generation.model", "input": "shift_audio", "label": "Audio shift"}],
-         "inputs": {"model": ["model", 0], "shift_video": 12.0, "shift_audio": 3.0}},
+         "inputs": {"model": ["lora", 0], "shift_video": 12.0, "shift_audio": 3.0}},
 
         {"id": "source_image", "group": "Reference media", "node": "FunPackLoadMedia",
          # Unhosted: see the module docstring. boot.js finds this slot by this

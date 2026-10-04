@@ -15,6 +15,9 @@ from comfy_api.latest import io
 from ..._core import log
 
 
+NONE = "None"
+
+
 class FunPackLoraLoader(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -26,7 +29,8 @@ class FunPackLoraLoader(io.ComfyNode):
                         "Chain these for more than one.",
             inputs=[
                 io.Model.Input("model"),
-                io.Combo.Input("lora_name", options=folder_paths.get_filename_list("loras")),
+                io.Combo.Input("lora_name", options=[NONE] + folder_paths.get_filename_list("loras"),
+                               default=NONE, tooltip="None leaves the model untouched."),
                 io.Float.Input("strength_model", default=1.0, min=-100.0, max=100.0, step=0.01),
                 io.Clip.Input("clip", optional=True,
                               tooltip="Leave unwired for a model-only LoRA."),
@@ -43,6 +47,8 @@ class FunPackLoraLoader(io.ComfyNode):
     @classmethod
     def execute(cls, model, lora_name: str, strength_model: float,
                 clip=None, strength_clip: float = 1.0) -> io.NodeOutput:
+        if lora_name == NONE:       # kept in the pipeline so a LoRA is one pick away; nothing picked = no effect
+            return io.NodeOutput(model, clip, "no LoRA picked")
         # Doing nothing is a valid request, but it must return the SAME objects
         # rather than clones: a clone here would silently drop patches a later
         # loader in the chain applied to the original.

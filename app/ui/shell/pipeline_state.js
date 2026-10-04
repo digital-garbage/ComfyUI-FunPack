@@ -279,8 +279,20 @@ export function createPipelineState(API) {
   // choices are kept underneath, so switching it back restores exactly what was on.
   const allOff = () => Boolean((currentValues()._off || {}).all);
   const setAllOff = (on) => setModuleValue("_off", "all", Boolean(on));
-  // Resolves once every edit made so far has been sent: a run started now reads what the screen shows.
-  async function settled() { for (let waited = 0; (saving || pending || pendingBody) && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20)); }
+  // The screen is the truth: an edit is written into the live slots the moment it is made (the same blob the
+  // server's place() writes), so a run started now reads what is shown without waiting for any round trip.
+  function mirrorValues(values) {
+    const known = new Set([...Object.keys(modulesById), "_off"]);
+    (slots || []).forEach((slot) => {
+      Object.entries(slot.inputs || {}).forEach(([key, v]) => {
+        if (typeof v !== "string") return;
+        let parsed;
+        try { parsed = JSON.parse(v); } catch (_) { return; }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+        if (Object.keys(parsed).some((id) => known.has(id))) slot.inputs[key] = JSON.stringify(values);
+      });
+    });
+  }
   async function refreshControl() {
     try { controlState = (await API.modules()).control || {}; } catch (_) { /* keeps the last answer */ }
     return controlState;
@@ -317,6 +329,7 @@ export function createPipelineState(API) {
   function setModuleValue(moduleId, name, value) {
     pendingValues[moduleId] = { ...(pendingValues[moduleId] || {}), [name]: value };
     const values = currentValues();
+    mirrorValues(values);
     return save({ values }).then(_reconcilePending);
   }
 
@@ -526,7 +539,7 @@ export function createPipelineState(API) {
     frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
-    activeModules, isOff, setOff, allOff, setAllOff, settled, refreshControl, control: () => controlState,
+    activeModules, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),
     slots: () => slots,

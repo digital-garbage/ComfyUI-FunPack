@@ -11,7 +11,6 @@
 // server answers them out of order and an older body lands last.
 
 const BASE = "/funpack/api/projects";
-const SAVE_AFTER = 600;
 
 /**
  * A scene id the server will keep.
@@ -53,6 +52,7 @@ const put = (project) => json("PUT", `${BASE}/${encodeURIComponent(project.id)}`
  * `onChange` fires for anything that alters what is on screen, including the
  * selection. Nothing here draws; the timeline subscribes.
  */
+const TYPING = 1200;       // ms after the last keystroke that still counts as typing
 const KEPT = ["editor_settings", "models"];
 
 export function createProject({ onChange, onError, onOpen, keepConsistent } = {}) {
@@ -76,6 +76,8 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
   // came back is not what anyone means by "take that back".
   const copy = () => ({ project: JSON.parse(JSON.stringify(project)), selected });
   let timer = null;
+  let lastKey = 0;
+  if (typeof document !== "undefined") document.addEventListener("keydown", () => { lastKey = Date.now(); }, true);
   let saving = null;      // the PUT in flight, so a queued one waits for it
   let dirty = false;
   // Bumped by every open/newProject/importProject, BEFORE their own await --
@@ -147,7 +149,14 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
     const target = project;
     dirty = true;
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => flush(target), SAVE_AFTER);
+    const every = Number(target && target.editor_settings && target.editor_settings.autosave_sec);
+    const tick = () => {
+      // Never save under someone's fingers: wait until they have stopped typing.
+      const wait = TYPING - (Date.now() - lastKey);
+      if (wait > 0) timer = setTimeout(tick, wait);
+      else flush(target);
+    };
+    timer = setTimeout(tick, (every > 0 ? every : 3) * 1000);
   }
 
   async function flush(target = project) {

@@ -267,15 +267,12 @@ test("Disable all enhancements is saved on its own, hides every module, and keep
   assert.strictEqual(PS.isOff("alg"), true);
 });
 
-test("settled() resolves only after the edits made so far were sent", async () => {
-  const posts = [];
-  const PS = load(posts);
-  await PS.ensureLoaded();
-  const first = PS.setAllOff(true);
-  PS.setAllOff(false);
-  await PS.settled();
-  assert.strictEqual(posts.at(-1).values._off.all, false);
-  await first;
+test("a value edit is in the live slots at once, before any save answers", async () => {
+  const PS = load([]);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "" } }, { id: "cfg", node: "Settings", inputs: { values: "{\"_off\":{}}" } }]);
+  const sink = () => PS.slots().find((x) => x.id === "cfg").inputs.values;
+  PS.setAllOff(true);
+  assert.strictEqual(JSON.parse(sink())._off.all, true);
 });
 
 test("a project opened after another does not inherit the first one's pending switch", async () => {

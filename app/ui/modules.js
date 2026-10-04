@@ -20,6 +20,7 @@ export default [
   "./features/upscale/index.js",
   "./features/revolver/index.js",
   "./features/autocomplete/index.js",
+  "./features/autosave/index.js",
   "./features/ideas/index.js",
   "./features/wizard/index.js",
   "./features/tour/index.js",
