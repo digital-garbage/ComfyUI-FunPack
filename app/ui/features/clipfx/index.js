@@ -46,7 +46,8 @@ export default {
     host.append(menu.node);
 
     app.clipTags.push(tags);
-    const section = { key: (sc) => `${sc.audio_volume}|${sc.audio_separated}`, rows: (sc) => [
+    const section = { key: (sc) => `${sc.audio_volume}|${sc.audio_separated}|${sc.gap_after_sec}`, rows: (sc) => [
+      c.field.default({ label: "Pause after this clip (s)", hint: "Black and silence before the next clip.", control: c.number.md({ label: "Pause after this clip", value: sc.gap_after_sec || 0, min: 0, max: 60, step: 0.1, onChange: (v) => p.setScene(sc.id, "gap_after_sec", v) }) }),
       c.label.section({ text: "Sound" }),
       c.field.default({ label: "Original sound volume", hint: sc.audio_separated ? "This clip's sound is on its own audio track: set the volume there." : "How loud this clip's own sound is in the render.",
         control: c.slider.readout({ label: "Original sound volume", value: sc.audio_volume != null ? sc.audio_volume : 1, min: 0, max: 1, step: 0.05, precision: 2, disabled: Boolean(sc.audio_separated), onCommit: (v) => p.setScene(sc.id, "audio_volume", v) }) })] };

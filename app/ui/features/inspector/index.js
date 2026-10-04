@@ -26,7 +26,7 @@ export default {
     const sections = app.sceneSections || [];       // extra rows other features put under the scene's own: { rows(scene, project), key(scene, project) }
     function draw(force) {      // not on every keystroke: that would rebuild the box being typed in
       const sc = p.selected, open = p.project;
-      const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "project" && open ? [open.postfix_enabled !== false, open.generation_mode] : ""}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length, sc.source_image, (sc.references || []).join(), bin.version, ...sections.map((s) => { try { return s.key(sc, open); } catch { return ""; } })] : ""}`;
+      const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "project" && open ? [open.postfix_enabled !== false, open.generation_mode] : ""}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length, sc.source_image, (sc.references || []).join(), sc.source_in, sc.source_dur, sc.removed_from_plan, ((open.scene_renders || {})[sc.id] || {}).durationSec, Boolean(((open.scene_renders || {})[sc.id] || {}).media), bin.version, ...sections.map((s) => { try { return s.key(sc, open); } catch { return ""; } })] : ""}`;
       titled();
       if (!force && next === key) return;
       key = next;

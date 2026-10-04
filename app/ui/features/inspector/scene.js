@@ -1,7 +1,8 @@
 // The Scene tab: this clip's prompt, where it starts from, how long it runs.
 import { composer as c } from "../../composer/composer.js";
 import { namesOf, pick } from "./mediapick.js";
-import { effFrames, effFps, genUnitId, isSubclip } from "../../shell/scenes.js";
+import { effFrames, effFps, genUnitId, isSubclip, seconds } from "../../shell/scenes.js";
+import { restoreToPlan } from "../../shell/edits.js";
 
 const SOURCES = [{ value: "image", label: "Image · i2v anchor" }, { value: "carry", label: "From generated frame" }, { value: "video", label: "Video clip" }];
 const MODES = [{ value: "project", label: "Project default" }, { value: "timeline", label: "Timeline trim" }, { value: "custom", label: "Custom" }];
@@ -26,12 +27,28 @@ const lengthField = (p, sc, label, modeKey, valueKey, shown) => {
   ] }) });
 };
 
+/** "Rendered ≈ Xs · plan Ys — Regenerate to apply" when the render was made at another length than the plan now says. */
+function drift(sc, open) {
+  const plan = effFrames(sc, open) / effFps(sc, open), shown = seconds(sc, open);
+  return c.hint.default({ text: Math.abs(shown - plan) > 0.05 ? `Rendered ≈ ${shown.toFixed(2)}s · plan ${plan.toFixed(2)}s — Regenerate to apply` : `Duration ≈ ${plan.toFixed(2)}s · trim on the timeline` });
+}
+
+/** The slip: where in the rendered file this clip starts and how much of it plays. Only a clip that has a render has one. */
+function trimRows(p, sc, open) {
+  if (!((open.scene_renders || {})[sc.id] || {}).media) return [];
+  return [c.label.section({ text: "Source trim (slip)" }), c.field.row({ fields: [
+    c.field.default({ label: "Source in (s)", control: c.number.md({ label: "Source in", value: sc.source_in || 0, min: 0, step: 0.05, onChange: (v) => p.setScene(sc.id, "source_in", v) }) }),
+    c.field.default({ label: "Source dur (s, 0 = full)", control: c.number.md({ label: "Source duration", value: sc.source_dur != null ? sc.source_dur : 0, min: 0, step: 0.05, onChange: (v) => p.setScene(sc.id, "source_dur", v > 0 ? Math.max(0.1, v) : null) }) })] }),
+  c.button.sm({ label: "Reset source trim", tone: "ghost", disabled: !sc.source_in && sc.source_dur == null, onClick: () => { p.setScene(sc.id, "source_in", 0); p.setScene(sc.id, "source_dur", null); } })];
+}
+
 export function sceneRows(p, app) {
   const sc = p.selected, open = p.project;
   if (!sc) return [c.emptyState.default({ icon: "▭", title: "No scene", hint: "Add one on the timeline." })];
   const cuts = p.scenes.filter((s) => genUnitId(s) === genUnitId(sc)).length > 1;
   return [
     c.banner.info({ text: "Generating with FunPack Studio + Chain Sampler", action: { label: "Engine settings →", onClick: () => app.openSettings && app.openSettings("engine") } }),
+    ...(sc.removed_from_plan ? [c.banner.info({ text: "Removed from plan — its generated clip stays on the timeline.", action: { label: "Restore to plan", onClick: () => p.edit((pr) => restoreToPlan(pr, sc.id)) } })] : []),
     ...(cuts ? [c.hint.default({ text: "This scene has editorial cuts — Generate regens the whole uncut scene." })] : []),
     ...(isSubclip(sc) ? [c.hint.default({ text: "This is a cut: its prompt and source belong to the first part." })] : [
       c.field.default({ label: "Prompt", control: c.textarea.md({ label: "Prompt", value: sc.text || "", rows: 4, onInput: (v) => p.setText(sc.id, v) }) }),
@@ -46,7 +63,9 @@ export function sceneRows(p, app) {
       lengthField(p, sc, "Frames", "frames_mode", "frames", effFrames(sc, open)),
       lengthField(p, sc, "FPS", "fps_mode", "fps", effFps(sc, open)),
     ] }),
+    drift(sc, open),
     c.button.sm({ label: "Generate this scene", tone: "primary", onClick: () => app.say("generate.selected") }),
+    ...trimRows(p, sc, open),
     c.checkbox.default({ label: "Exclude from full generation", checked: Boolean(sc.excluded), onChange: (v) => p.setScene(sc.id, "excluded", v) }),
   ];
 }

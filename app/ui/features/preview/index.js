@@ -31,8 +31,20 @@ export default {
     const play = c.iconButton.sm({ icon: "▶", label: "Play", onClick: () => (playing ? pause() : start()) });
     const time = c.text.sm({ text: timecode(0, 25) });
     const frame = c.button.sm({ label: "📌 Save frame", tone: "ghost", disabled: true, onClick: saveFrame });
+    let target = "", anchorKey = "";
+    const anchor = { node: document.createElement("span") };       // the "save frame to" choice: the bin, or a scene's i2v anchor
+    function drawAnchor() {
+      const scenes = open() ? open().scenes.filter((s) => !s.excluded) : [];
+      const key = scenes.map((s) => `${s.id}|${(s.text || "").slice(0, 18)}`).join(",") + `|${target}`;
+      if (key === anchorKey) return;
+      anchorKey = key;
+      if (!scenes.some((s) => s.id === target)) target = "";
+      const pick = c.select.sm({ label: "Save frame to", value: target, onChange: (v) => { target = v; frame.setLabel(v ? "📌 Use as anchor" : "📌 Save frame"); },
+        options: [{ value: "", label: "— save to Media bin —" }, ...scenes.map((s, i) => ({ value: s.id, label: `anchor → Scene ${i + 1}${s.text ? `: ${s.text.slice(0, 18)}` : ""}` }))] });
+      anchor.node.replaceChildren(pick.node);
+    }
     host.append(viewer.node, empty.node, scrub.node, c.toolbar.default({ items: [stop, play, time,
-      c.select.sm({ label: "Save frame to", options: [{ value: "", label: "— save to Media bin —" }], value: "" }), frame] }).node);
+      anchor, frame] }).node);
 
     let playing = false, shown = null, seg = null, from = 0, quiet = false;
     const open = () => p.project;
@@ -63,6 +75,7 @@ export default {
       seg = segAt(head.at);
       show(seg);
       head.playing = playing;
+      drawAnchor();
       const v = viewer.element;
       if (v && seg) {       // the clip's own sound: its volume, nothing when moved to a lane of its own or dropped by the project
         const sc = seg.scene, vol = sc.audio_separated || (open() || {}).keep_original_audio === false ? 0 : Math.max(0, Math.min(1, sc.audio_volume != null ? +sc.audio_volume : 1));
@@ -93,9 +106,14 @@ export default {
     async function saveFrame() {
       const blob = await viewer.captureFrame();
       if (!blob) return c.toast.warn({ text: "No frame to save yet." });
-      const { problems } = await app.api.uploadMedia([new File([blob], `${(open() || {}).name || "frame"}-${timecode(head.at, 25).replaceAll(":", "-")}.png`, { type: "image/png" })]);
+      const { problems, media } = await app.api.uploadMedia([new File([blob], `${(open() || {}).name || "frame"}-${timecode(head.at, 25).replaceAll(":", "-")}.png`, { type: "image/png" })]);
       if (problems && problems.length) return c.toast.warn({ text: problems.join(" ") });
       app.say("media");
+      const made = media && media[media.length - 1];
+      if (target && made && open() && open().scenes.some((s) => s.id === target)) {       // as the chosen scene's i2v anchor
+        p.setScene(target, "source", { type: "generated_frame", media_ref: made.id });
+        return c.toast.good({ text: "Frame saved, and set as that scene's anchor." });
+      }
       c.toast.good({ text: "Frame saved to the media bin." });
     }
     // Picking a clip puts the playhead at its start, unless the playhead is already inside it.
