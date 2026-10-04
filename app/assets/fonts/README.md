@@ -6,10 +6,8 @@ a fallback face for those users.
 
 | Family | Role | Files | Licence |
 |---|---|---|---|
-| Figtree | body / UI | variable 300–900, latin + latin-ext | [OFL 1.1](OFL-Figtree.txt) — Copyright 2022 The Figtree Project Authors |
-| Archivo | display | variable 400–900, latin + latin-ext | [OFL 1.1](OFL-Archivo.txt) — Copyright 2020 The Archivo Project Authors |
 | Inter | body / UI (the app in `app/ui`) | variable 400–700, latin + latin-ext | [OFL 1.1](OFL-Inter.txt) — Copyright 2016 The Inter Project Authors |
-| Inter Tight | display (the app in `app/ui`) | variable 600–800, latin + latin-ext | [OFL 1.1](OFL-Inter.txt) — Copyright 2016 The Inter Project Authors |
+| Inter Tight | display (the app in `app/ui`) | variable 600–800, latin + latin-ext | [OFL 1.1](OFL-InterTight.txt) — Copyright 2016 The Inter Project Authors |
 | IBM Plex Mono | mono | 400 and 500, latin + latin-ext | [OFL 1.1](OFL-IBMPlexMono.txt) — Copyright 2017 IBM Corp. |
 
 Subsetted to latin and latin-ext as served by Google Fonts; cyrillic, greek and
@@ -20,4 +18,4 @@ a GPL project, provided the licence travels with the fonts — which is why the
 three OFL texts sit beside them. The fonts are not covered by FunPack's GPL and
 are not modified.
 
-Faces are declared in `app/ui/composer/tokens/fonts.css` (Figtree and Archivo stay for the old `app/composer` tree).
+Faces are declared in `app/ui/composer/tokens/fonts.css`.

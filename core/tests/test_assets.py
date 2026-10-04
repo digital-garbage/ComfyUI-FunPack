@@ -12,17 +12,15 @@ import pytest
 from core import config
 from core.serve import serve
 
-FONTS_CSS = config.APP_DIR / "composer" / "tokens" / "fonts.css"
-COMPOSER_CSS = config.APP_DIR / "composer" / "composer.css"
+COMPOSER_CSS = config.APP_DIR / "ui" / "composer" / "composer.css"
 URL_PREFIX = config.UI_PREFIX + "/app/"
 
-
-UI_FONTS_CSS = config.APP_DIR / "ui" / "composer" / "tokens" / "fonts.css"
+FONTS_CSS = config.APP_DIR / "ui" / "composer" / "tokens" / "fonts.css"
 
 
 def font_urls():
-    """Every font either composer declares (the old shell's and the new frontend's)."""
-    return [u for css in (FONTS_CSS, UI_FONTS_CSS) if css.exists() for u in re.findall(r"url\('([^']+)'\)", css.read_text())]
+    """Every font the frontend declares."""
+    return re.findall(r"url\('([^']+)'\)", FONTS_CSS.read_text())
 
 
 def test_fonts_css_is_imported_first():
@@ -53,15 +51,15 @@ def test_fonts_are_cacheable_but_code_is_not():
     font = serve(config.APP_DIR, font_urls()[0][len(URL_PREFIX):], config.APP_EXTS)
     assert "immutable" in font.headers["Cache-Control"]
 
-    code = serve(config.APP_DIR, "boot.js", config.APP_EXTS)
+    code = serve(config.APP_DIR, "ui/boot.js", config.APP_EXTS)
     assert code.headers["Cache-Control"] == "no-store, max-age=0"
 
 
 def test_cache_headers_are_not_shared_between_responses():
     # Served.headers is a mutable dict handed to callers; two responses must not
     # end up pointing at the same one.
-    a = serve(config.APP_DIR, "boot.js", config.APP_EXTS)
-    b = serve(config.APP_DIR, "boot.js", config.APP_EXTS)
+    a = serve(config.APP_DIR, "ui/boot.js", config.APP_EXTS)
+    b = serve(config.APP_DIR, "ui/boot.js", config.APP_EXTS)
     a.headers["X-Test"] = "1"
     assert "X-Test" not in b.headers
 

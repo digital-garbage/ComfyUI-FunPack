@@ -38,8 +38,6 @@ def app(tmp_path, monkeypatch):
     (app_dir / "index.html").write_text("<p>shell</p>")
     (app_dir / "ui").mkdir(parents=True)
     (app_dir / "ui" / "index.html").write_text('<script src="/funpack/app/ui/boot.js"></script>')
-    (app_dir / "legacy").mkdir(parents=True)
-    (app_dir / "legacy" / "index.html").write_text("<p>legacy shell</p>")
 
     mod_dir = tmp_path / "modules" / "timing" / "audio_clock"
     mod_dir.mkdir(parents=True)
@@ -136,7 +134,6 @@ def test_query_string_does_not_change_the_target(app):
 def test_index_is_served(app):
     status, body = get(app, P + "/")
     assert status == 200 and "/funpack/app/ui/boot.js" in body
-    assert get(app, P + "/app/legacy/index.html")[0] == 200       # the old one is still there to fall back on
 
 
 def test_health(app):

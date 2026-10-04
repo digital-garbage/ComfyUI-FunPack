@@ -1010,8 +1010,7 @@ def register(routes, prefix=None):
 
     @routes.get(P + "/")
     async def _index(_req):
-        # The v5 frontend (app/ui). The v4-derived one stays reachable at
-        # {P}/app/legacy/index.html until it is deleted.
+        # The frontend: app/ui.
         return _respond(static.serve(config.APP_DIR, "ui/index.html", config.APP_EXTS))
 
     @routes.get(P)
