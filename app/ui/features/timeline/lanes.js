@@ -17,7 +17,7 @@ export function mood(rating) {
 export function videoLane(p, picked, focus, actions = () => [], ghostActions = () => [], tags = () => []) {
   const renders = p.scene_renders || {};
   return {
-    id: "video", label: "Video", kind: "video", reorder: true,
+    id: "video", label: "Video", kind: "video", reorder: true, slip: true,
     clips: segments(p).map((seg) => {
       if (seg.kind === "gap") return { id: seg.id, start: seg.start, dur: seg.dur, title: "pause", ghost: true };
       if (seg.kind === "ghost") return { id: seg.id, start: seg.start, dur: seg.dur, title: first(seg.ghost.text) || "removed", ghost: true, actions: ghostActions(seg.ghost) };

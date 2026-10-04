@@ -28,6 +28,7 @@ const stage = {
       onTrim: (id, edge, d) => {
         const own = owner(id);
         if (own) return own.trim(id, edge, d);
+        if (edge === "slip") return edit((pr) => Boolean(((pr.scene_renders || {})[id] || {}).media) && edits.slip(pr, id, d));       // slides what plays; only a rendered clip has more to show
         const dur = segments(p.project).find((s) => s.id === id).dur;
         edit((pr) => edge === "out" ? edits.resize(pr, id, dur + d) : d > 0 && edits.trimLeft(pr, id, d));   // the left edge only cuts in
       },

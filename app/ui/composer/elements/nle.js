@@ -50,10 +50,10 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
     }
   }
 
-  // Every other clip's edges, the playhead and zero: what a dragged edge sticks to (Alt holds it free).
+  // Every other clip's edges, the playhead and zero: what a dragged edge sticks to (Shift holds it free).
   const SNAP_PX = 10;
   const anchorsFor = (clip) => [0, playhead, ...lanes.flatMap((l) => l.clips.filter((c) => c.id !== clip.id).flatMap((c) => [c.start, c.start + c.dur]))];
-  const snapped = (clip, edges, dxSec, event) => (event && event.altKey ? dxSec : snapDelta(dxSec, edges, anchorsFor(clip), SNAP_PX / px));
+  const snapped = (clip, edges, dxSec, event) => (event && event.shiftKey ? dxSec : snapDelta(dxSec, edges, anchorsFor(clip), SNAP_PX / px));
 
   function clipNode(lane, clip) {
     const parts = [];
@@ -86,10 +86,12 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
     cell.style.width = `${Math.max(MIN_CLIP_PX, clip.dur * px)}px`;
     cell.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect && onSelect(clip.id, {}); } });
 
+    let slipping = false;
     // Trim handles first, then the body: a press on a handle must not also start a reorder.
     cell.querySelectorAll("[data-trim]").forEach((h) => disposers.push(drag(h, {
-      onStart: ({ event }) => event.stopPropagation(),
+      onStart: ({ event }) => { event.stopPropagation(); slipping = Boolean(lane.slip && event.altKey && h.dataset.trim === "in"); },       // Alt on the left edge slides what plays, not the length
       onMove: ({ dx, event }) => {
+        if (slipping) { cell.title = `slip ${dx >= 0 ? "+" : ""}${(dx / px).toFixed(2)}s`; return; }
         const edge = h.dataset.trim;
         dx = snapped(clip, [edge === "out" ? clip.start + clip.dur : clip.start], dx / px, event) * px;
         const dur = Math.max(0.1, clip.dur + (edge === "out" ? dx : -dx) / px);
@@ -97,6 +99,7 @@ define("timeline", "stage", ({ pxPerSecond = 80, label = "Timeline", lanes: init
         if (edge === "in") cell.style.insetInlineStart = `${(clip.start + (clip.dur - dur)) * px}px`;
       },
       onEnd: ({ dx, cancelled, event }) => {
+        if (slipping) { cell.title = clip.title || ""; if (!cancelled && onTrim && dx) onTrim(clip.id, "slip", dx / px); slipping = false; draw(); return; }
         dx = snapped(clip, [h.dataset.trim === "out" ? clip.start + clip.dur : clip.start], dx / px, event) * px;
         if (!cancelled && onTrim && dx) onTrim(clip.id, h.dataset.trim, dx / px);
         draw();
