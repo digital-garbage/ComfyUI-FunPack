@@ -40,3 +40,13 @@ test("a take made at another length plays at its own", () => {
   stepTake(p, p.scenes[0], -1);
   assert.equal(p.scene_renders.a.durationSec, 2.5);
 });
+
+test("any take can be picked by its number; the one already showing and numbers out of range do nothing", async () => {
+  const { pickTake } = await import("../takes.js");
+  const p = proj();
+  assert.equal(pickTake(p, p.scenes[0], 2), false);
+  assert.equal(pickTake(p, p.scenes[0], 9), false);
+  assert.equal(pickTake(p, p.scenes[0], 0), true);
+  assert.equal(p.scene_renders.a.media.filename, "1.mp4");
+  assert.equal(p.scenes[0].rating, "1");
+});

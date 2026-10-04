@@ -51,6 +51,10 @@ def routes(table, base, web):
     async def _result(req):
         return await serving.result(req)
 
+    @table.get(base + "/poster")
+    async def _poster(req):
+        return await serving.poster(req)
+
     @table.get(base + "/projects/{pid}/preview-segment/{scene_id}")
     async def _segment(req):
         return await serving.segment(req, project_of(req))

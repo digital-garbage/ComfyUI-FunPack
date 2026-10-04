@@ -10,11 +10,10 @@ export function takesOf(p, scene) {
   return { head, list, at };
 }
 
-/** Put the take `dir` steps from the clip's current one on every clip of the unit, keeping each one's rating with it. -> true when something moved. */
-export function stepTake(p, scene, dir) {
+/** Put take number `to` on every clip of the unit, keeping each one's rating with it. -> true when something moved. */
+export function pickTake(p, scene, to) {
   const { head, list, at } = takesOf(p, scene);
-  const to = at + dir;
-  if (at < 0 || to < 0 || to >= list.length) return false;
+  if (at < 0 || to < 0 || to >= list.length || to === at) return false;
   list[at].rating = head.rating || "";
   const take = list[to];
   p.scenes.filter((s) => genUnitId(s) === genUnitId(head)).forEach((s) => {
@@ -23,4 +22,9 @@ export function stepTake(p, scene, dir) {
   });
   head.rating = take.rating || "";
   return true;
+}
+
+/** The take `dir` steps from the clip's current one. */
+export function stepTake(p, scene, dir) {
+  return pickTake(p, scene, takesOf(p, scene).at + dir);
 }

@@ -138,6 +138,26 @@ async def result(request) -> "web.StreamResponse":
                                            "Content-Disposition": f'inline; filename="{name}"'})
 
 
+async def poster(request) -> "web.StreamResponse":
+    """GET a small still of a ComfyUI render, made once and kept in ComfyUI's temp folder."""
+    q = request.query
+    path = files.comfy_path(q.get("filename", ""), q.get("subfolder", ""), q.get("type", "output"))
+    if not path or not os.path.isfile(path):
+        raise web.HTTPNotFound()
+    try:
+        sig = files.signature(path)
+        out = files.temp_file("funpack_poster_" + hashlib.md5(f"{path}|{sig[0]}|{sig[1]}".encode()).hexdigest()[:16] + ".jpg")
+        if not os.path.isfile(out):
+            async with _lock(out):
+                if not os.path.isfile(out):
+                    await asyncio.to_thread(files.poster, path, out)
+    except OSError:
+        raise web.HTTPNotFound()
+    except files.ClipError as exc:
+        raise web.HTTPBadGateway(reason=str(exc).splitlines()[-1][:120] if str(exc) else "no still")
+    return web.FileResponse(out, headers={"Content-Type": "image/jpeg", "Cache-Control": "private, max-age=86400"})
+
+
 # --- preview segments ---------------------------------------------------------
 
 

@@ -16,7 +16,7 @@ test("it adds a Takes button and a Scene-tab section that steps through the take
   assert.match(host.textContent, /Takes/);
   const [section] = app.sceneSections;
   assert.equal(section.key(doc.scenes[0], doc), "2|1|");
-  assert.equal(section.rows(doc.scenes[0], doc).length, 2);
+  assert.equal(section.rows(doc.scenes[0], doc).length, 3);
   doc.scene_variants.a.pop();
   assert.deepEqual(section.rows(doc.scenes[0], doc), [], "one take is nothing to step through");
   off();

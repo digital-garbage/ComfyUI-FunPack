@@ -246,6 +246,14 @@ def add_silence(src: str, out: str) -> None:
          "-movflags", "+faststart", out])
 
 
+def poster(src: str, out_jpg: str, height: int = 96) -> None:
+    """One small still from the middle of `src`, for a thumbnail."""
+    mid = (duration(src) or 0.0) / 2
+    run([ffmpeg(), "-y", "-ss", f"{mid:.3f}", "-i", src, "-frames:v", "1", "-vf", f"scale=-2:{int(height)}", "-q:v", "5", out_jpg])
+    if not os.path.isfile(out_jpg) or os.path.getsize(out_jpg) == 0:
+        raise ClipError("the clip has no picture to take a still from")
+
+
 def temp_file(name: str) -> str:
     base = comfy_dir("temp")
     if not base:

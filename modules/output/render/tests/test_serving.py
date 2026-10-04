@@ -241,3 +241,13 @@ def test_last_frame_route_saves_a_picture_to_the_bin_once_and_flags_a_fade_to_bl
     assert _post(server, f"{BASE}/projects/{dark.id}/last-frame", {"scene_id": "s1"})[1]["dark"] is True
     assert _post(server, f"{BASE}/projects/{dark.id}/last-frame", {"scene_id": "nope"})[0] == 404
     assert _post(server, f"{BASE}/projects/{dark.id}/last-frame", {})[0] == 400
+
+
+@needs_ffmpeg
+def test_a_poster_is_a_small_still_made_once_and_a_missing_file_is_a_404(comfy, server):
+    make_clip(comfy.output / "p.mp4")
+    status, headers, body = get(server, f"{BASE}/poster?filename=p.mp4&type=output")
+    assert status == 200 and headers["Content-Type"] == "image/jpeg" and body[:2] == b"\xff\xd8"
+    assert get(server, f"{BASE}/poster?filename=p.mp4&type=output")[2] == body
+    assert get(server, f"{BASE}/poster?filename=nope.mp4")[0] == 404
+    assert get(server, f"{BASE}/poster?filename=../secret.mp4")[0] == 404
