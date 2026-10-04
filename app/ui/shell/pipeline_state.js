@@ -279,6 +279,8 @@ export function createPipelineState(API) {
   // choices are kept underneath, so switching it back restores exactly what was on.
   const allOff = () => Boolean((currentValues()._off || {}).all);
   const setAllOff = (on) => setModuleValue("_off", "all", Boolean(on));
+  // Resolves once every edit made so far has been sent: a run started now reads what the screen shows.
+  async function settled() { for (let waited = 0; (saving || pending || pendingBody) && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20)); }
   async function refreshControl() {
     try { controlState = (await API.modules()).control || {}; } catch (_) { /* keeps the last answer */ }
     return controlState;
@@ -524,7 +526,7 @@ export function createPipelineState(API) {
     frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
-    activeModules, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
+    activeModules, isOff, setOff, allOff, setAllOff, settled, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),
     slots: () => slots,

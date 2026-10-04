@@ -290,21 +290,35 @@ def check_updates() -> dict:
     return {"checked": results}
 
 
+def _manager_map() -> Path | None:
+    """Manager's node map, wherever this install keeps it (the folder name's case differs between machines)."""
+    try:
+        root = custom_nodes_root()
+    except CustomNodeError:
+        return None
+    for folder in sorted(root.iterdir()) if root.is_dir() else ():
+        if folder.name.lower() == "comfyui-manager" and (folder / "extension-node-map.json").is_file():
+            return folder / "extension-node-map.json"
+    return None
+
+
 def providers(classes) -> dict:
-    """{node class: git URL of a pack that provides it, or None}, from ComfyUI-Manager's own node map when that
-    pack is installed (its extension-node-map.json: {url: [[class, ...], meta]}). Without Manager nothing is
-    known, so every answer is None and the person is sent to Custom Nodes with a URL of their own."""
+    """{"providers": {node class: git URL of a pack that provides it, or None}, "manager": whether the map exists}.
+    The map is ComfyUI-Manager's extension-node-map.json ({url: [[class, ...], meta]}). Without Manager nothing is
+    known, and the caller says so rather than claiming that nobody provides the node."""
     wanted = {str(c) for c in classes or ()}
     found = {c: None for c in wanted}
+    path = _manager_map()
+    if path is None:
+        return {"providers": found, "manager": False}
     try:
-        path = custom_nodes_root() / "ComfyUI-Manager" / "extension-node-map.json"
         table = json.loads(path.read_text(encoding="utf-8"))
-    except (CustomNodeError, OSError, ValueError):
-        return found
+    except (OSError, ValueError):
+        return {"providers": found, "manager": False}
     if not isinstance(table, dict):
-        return found
+        return {"providers": found, "manager": False}
     for url, entry in table.items():
         names = entry[0] if isinstance(entry, list) and entry and isinstance(entry[0], list) else []
         for name in wanted.intersection(names):
             found[name] = found[name] or str(url)
-    return found
+    return {"providers": found, "manager": True}

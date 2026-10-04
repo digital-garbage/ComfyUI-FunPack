@@ -668,7 +668,7 @@ def register(routes, prefix=None):
     async def _packs_providers(req):
         """Which pack gives each of `?classes=A,B` (a git URL, or null when nobody is known to)."""
         names = [n for n in (part.strip() for part in (req.query.get("classes") or "").split(",")) if n]
-        return web.json_response({"providers": await asyncio.to_thread(nodes_manager.providers, names)})
+        return web.json_response(await asyncio.to_thread(nodes_manager.providers, names))
 
     @routes.post(P + "/api/packs/check")
     async def _packs_check(_req):

@@ -125,3 +125,8 @@ def test_disable_all_enhancements_sits_out_every_modifier_and_nothing_else():
     assert [s.id for s in kept] == ["loader"] and "all enhancements" in notes[0]
     assert control.all_off({"_off": {"all": True}}) and not control.all_off({"_off": {"all": "yes"}}) and not control.all_off({})
     assert control.bad_off({"modules": [], "all": "yes"}) and control.bad_off({"modules": [], "all": True}) is None
+
+
+def test_all_alone_is_a_valid_payload():
+    assert control.bad_off({"all": True}) is None and control.bad_off({"all": False}) is None
+    assert control.bad_off({"all": "yes"}) and control.bad_off({"modules": "x"})

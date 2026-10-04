@@ -210,7 +210,9 @@ def summary(limit=40):
     words.sort(key=lambda r: -(r["picks"] * 3 + r["rejects"] * 3 + r["seen"]))
     views = [{"view": k, "good": g, "bad": b} for k, (g, b) in view_stats().items() if "@" not in k]
     views.sort(key=lambda r: -(r["good"] + r["bad"]))
-    return {"words": words[:limit], "more": max(0, len(words) - limit), "views": views,
+    arms = [{"arm": k, "good": g, "bad": b} for k, (g, b) in arm_stats().items() if not k.startswith("word:")]
+    arms.sort(key=lambda r: -(r["good"] + r["bad"]))
+    return {"words": words[:limit], "more": max(0, len(words) - limit), "views": views, "arms": arms,
             "prompts": int(data.get("prompts", 0)), "shots": int(data.get("shots", 0)),
             "kept": int(data.get("kept", 0))}
 
@@ -227,15 +229,20 @@ def forget(kind, name=None):
         existed = any(name in (data.get(k) or {}) for k in ("picks", "rejects", "seen"))
         for k in ("picks", "rejects", "seen"):
             (data.get(k) or {}).pop(name, None)
-        existed = existed or (data.get("arms") or {}).pop(f"word:{name}", None) is not None
+        existed = ((data.get("arms") or {}).pop(f"word:{name}", None) is not None) or existed
     elif kind == "view":
         views = data.get("views") or {}
         gone = [k for k in views if k == name or k.startswith(f"{name}@")]
         existed = bool(gone)
         for k in gone:
             views.pop(k)
+    elif kind == "arm":
+        existed = (data.get("arms") or {}).pop(name, None) is not None
     else:
         raise ValueError(f"unknown kind {kind!r}")
+    if existed:                       # a forgotten lesson must not be rebuilt by re-rating the run that taught it
+        data.pop("runs", None)
+        data.pop("rated", None)
     _save(data)
     return existed
 

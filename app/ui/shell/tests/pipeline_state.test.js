@@ -251,6 +251,33 @@ test("a module switched off is remembered with the settings, listed as off, and 
   assert.deepStrictEqual(posts.at(-1).values._off, { modules: ["alg"] });
 });
 
+test("Disable all enhancements is saved on its own, hides every module, and keeps the per-module choices underneath", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.ensureLoaded();
+  lastApi.modules = async () => ({ modules: [{ id: "sharpen", settings: {} }, { id: "alg", settings: {} }], control: {} });
+  await PS.refreshControl();
+  await PS.setOff("alg", true);
+  await PS.setAllOff(true);
+  assert.strictEqual(PS.allOff(), true);
+  assert.deepStrictEqual(posts.at(-1).values._off, { modules: ["alg"], all: true });
+  assert.deepStrictEqual(PS.activeModules(), []);
+  await PS.setAllOff(false);
+  assert.strictEqual(PS.allOff(), false);
+  assert.strictEqual(PS.isOff("alg"), true);
+});
+
+test("settled() resolves only after the edits made so far were sent", async () => {
+  const posts = [];
+  const PS = load(posts);
+  await PS.ensureLoaded();
+  const first = PS.setAllOff(true);
+  PS.setAllOff(false);
+  await PS.settled();
+  assert.strictEqual(posts.at(-1).values._off.all, false);
+  await first;
+});
+
 test("a project opened after another does not inherit the first one's pending switch", async () => {
   const PS = load([]);
   await PS.ensureLoaded();

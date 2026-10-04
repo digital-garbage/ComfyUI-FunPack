@@ -100,3 +100,16 @@ def test_memory_routes_read_and_forget(tmp_path, monkeypatch):
     assert asyncio.run(handlers[("POST", "/b/forget")](Req({"kind": "view", "name": "side view"}))).data == {"forgotten": True}
     assert asyncio.run(handlers[("GET", "/b/memory")](Req())).data["views"] == []
     assert asyncio.run(handlers[("POST", "/b/forget")](Req({"kind": "nonsense"}))).status == 400
+
+
+def test_forget_is_complete_and_stays_forgotten(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    memory.observe("h1", ["lamp"])
+    memory.record_run("a", {"views": [{"view": "side view", "traits": ["none"]}], "arms": ["word:lamp", "split:yes"]})
+    memory.on_rating("a", "liked")
+    assert memory.forget("word", "lamp") and "word:lamp" not in memory.arm_stats()
+    assert memory.forget("view", "side view")
+    memory.on_rating("a", "disliked")                              # the run that taught it is gone too
+    assert memory.view_stats() == {}
+    assert [a["arm"] for a in memory.summary()["arms"]] == ["split:yes"]
+    assert memory.forget("arm", "split:yes") and memory.summary()["arms"] == []

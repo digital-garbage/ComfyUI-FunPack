@@ -28,6 +28,7 @@ export default {
       return { inputs: withIt.overrides, notes: withIt.unwired > without.unwired ? ["The identity picture was not used: this pipeline has no free reference input for it."] : [] };
     };
     const carryHook = async ({ project, scene, slots }) => {
+      if (app.pipeline.allOff?.()) return {};        // Disable all enhancements means a plain run
       const mine = (app.pipeline.currentValues() || {}).continuity;
       if (!mine) return {};       // the module that holds the choices is not here: this does nothing at all
       const carry = mine.carry !== false, guard = mine.dark_guard !== false;

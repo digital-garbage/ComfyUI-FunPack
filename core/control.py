@@ -59,7 +59,7 @@ def bad_off(raw) -> str | None:
     """Why a payload's `_off` entry is malformed, or None."""
     if raw is None:
         return None
-    ids = raw.get("modules") if isinstance(raw, dict) else None
+    ids = raw.get("modules", []) if isinstance(raw, dict) else None          # either half may stand alone
     if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or not isinstance(raw.get("all", False), bool):
         return '"_off" must be {"modules": ["module_id", ...], "all": true|false}'
     return None

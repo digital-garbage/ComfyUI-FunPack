@@ -87,6 +87,7 @@ export const models = (app) => function mount() {
 
   // Which pack gives a missing node (from ComfyUI-Manager's map, when it is installed), and a button to clone it.
   const providers = {};
+  let managerHere = true;
   const installRow = (cls) => {
     const row = c.region.stack({ gap: "sm" });
     const show = () => {
@@ -95,10 +96,10 @@ export const models = (app) => function mount() {
         : url ? [c.settingsRow.default({ label: url.replace(/^https?:\/\/(www\.)?github\.com\//, ""), hint: "Provides this node. Installs into custom_nodes; restart ComfyUI afterwards.", control: c.button.sm({ label: "Install", tone: "primary", onClick: async () => {
           try { await api.pack("install", { url }); c.toast.good({ text: "Installed. Restart ComfyUI for the node to appear." }); } catch (err) { c.toast.warn({ text: err.message }); }
         } }) })]
-        : [c.hint.default({ text: "No known pack provides it. Add one by its git URL in Settings ▸ Custom Nodes." })]);
+        : [c.hint.default({ text: managerHere ? "No known pack provides it. Add one by its git URL in Settings ▸ Custom Nodes." : "ComfyUI-Manager is not installed here, so there is no list to look it up in. Add the pack by its git URL in Settings ▸ Custom Nodes." })]);
     };
     show();
-    if (!(cls in providers)) api.packProviders([cls]).then((r) => { providers[cls] = (r.providers || {})[cls] || null; show(); }).catch(() => { providers[cls] = null; show(); });
+    if (!(cls in providers)) api.packProviders([cls]).then((r) => { managerHere = r.manager !== false; providers[cls] = (r.providers || {})[cls] || null; show(); }).catch(() => { providers[cls] = null; show(); });
     return row;
   };
 
