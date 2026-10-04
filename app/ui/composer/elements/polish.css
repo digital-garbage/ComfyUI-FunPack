@@ -1,0 +1,54 @@
+/* The finishing layer: lighter type, soft fills instead of outlines, rounded cards with hairlines and room to breathe.
+ * Kept in one file so the whole look can be tuned (or switched off) in one place. Last in the cascade on purpose. */
+
+:root {
+  /* system face first: San Francisco on a Mac (the Apple look), Inter everywhere else */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, "Helvetica Neue", Arial, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter Tight", "Inter", system-ui, sans-serif;
+  --fw-medium: 450; --fw-semibold: 560; --fw-bold: 640;
+  --fs-5: 12.5px; --lh-5: 16px;
+  --fs-6: 11.5px; --lh-6: 15px;
+  --ctl-r: var(--r-4);
+  --ctl-h-sm: 24px; --ctl-h-md: 28px; --ctl-h-lg: 32px;
+  --ctl-pad-x-sm: 10px; --ctl-pad-x-md: 12px;
+  --grain-opacity: .018;
+  --card-r: 14px;
+}
+body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
+
+/* panels: a card, not a bordered strip */
+.cx-panel-head { background: transparent; border-bottom: var(--bw) solid var(--line); padding: var(--sp-3) var(--sp-7); }
+.cx-panel-title { font-size: var(--fs-4); font-weight: var(--fw-semibold); color: var(--text); letter-spacing: -.01em; }
+.cx-panel-title::before { display: none; }
+.cx-panel-status { color: var(--muted); }
+.cx-panel-body { padding: var(--sp-7); gap: var(--sp-6); }
+
+/* buttons: soft fill, no outline; the one primary is solid */
+.cx-btn { background: var(--elev-2); border-color: transparent; font-weight: var(--fw-medium); }
+.cx-btn:hover:not(:disabled) { background: var(--hover); border-color: transparent; }
+.cx-btn-primary { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: var(--fw-semibold); box-shadow: none; }
+.cx-btn-primary:hover:not(:disabled) { background: var(--accent-hi); border-color: transparent; }
+.cx-btn-ghost { background: transparent; }
+.cx-btn-ghost:hover:not(:disabled) { background: var(--hover); }
+.cx-btn.cx-on { background: var(--accent-soft); border-color: transparent; color: var(--accent-hi); }
+.cx-btn-danger { border-color: transparent; background: color-mix(in srgb, var(--danger) 12%, var(--elev-2)); }
+.cx-btn-render { border-color: transparent; font-weight: var(--fw-semibold); }
+.cx-btn-menu { background: transparent; }
+.cx-btn-menu:hover:not(:disabled) { background: var(--hover); }
+
+/* fields: filled, borderless until focused */
+.cx-input, .cx-textarea, .cx-select { border-color: transparent; background: var(--elev-2); }
+.cx-input:hover:not(:disabled), .cx-textarea:hover:not(:disabled), .cx-select:hover:not(:disabled) { border-color: var(--line-2); }
+.cx-step-btn { border-color: transparent; }
+.cx-filter-list { border-color: var(--line); border-radius: var(--r-4); }
+
+/* hairlines are quieter, rows roomier */
+.cx-segmented { border-color: transparent; background: var(--elev-2); border-radius: var(--r-4); padding: 2px; }
+.cx-segmented .cx-segment { border-radius: var(--r-3); }
+
+/* timeline: quiet clips, the selected one speaks */
+:root { --line-hover: color-mix(in srgb, var(--accent) 14%, var(--line)); }
+.cx-nle-clip { border-color: var(--line); border-radius: var(--r-4); background: var(--elev-2); }
+.cx-nle-clip:hover { border-color: var(--line-hover); }
+.cx-nle-clip.cx-on { border-color: var(--accent); background: linear-gradient(var(--accent-soft), var(--elev-2)); }
+.cx-nle-clip-title { font-weight: var(--fw-medium); }
