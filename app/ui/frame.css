@@ -53,3 +53,14 @@
 .fp-tile-title { font-size: var(--fs-4); font-weight: var(--fw-medium); }
 .fp-tile-hint { font-size: var(--fs-6); color: var(--muted); }
 @media (max-width: 1150px) { .fp-keyhint { display: none; } }
+
+/* Models & Pipeline: every node is a card in its group */
+.fp-node-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--sp-5); }
+.fp-node-card { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-2); min-block-size: 84px; padding: var(--sp-6) var(--sp-6) var(--sp-5); border: 0; border-radius: var(--r-5); background: var(--elev-2); color: var(--text); text-align: left; cursor: pointer; }
+.fp-node-card:hover { background: var(--hover); }
+.fp-node-title { font-size: var(--fs-4); font-weight: var(--fw-semibold); padding-inline-end: var(--sp-6); }
+.fp-node-sub { font-size: var(--fs-6); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-inline-size: 100%; }
+.fp-node-state { position: absolute; inset-block-start: var(--sp-6); inset-inline-end: var(--sp-6); inline-size: 8px; block-size: 8px; border-radius: var(--r-pill); background: var(--good); }
+.fp-node-state.fp-needs { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); }
+.fp-node-add { align-items: center; justify-content: center; background: transparent; border: var(--bw) dashed var(--line); color: var(--muted); }
+.fp-node-add .fp-node-title { padding: 0; font-weight: var(--fw-medium); }

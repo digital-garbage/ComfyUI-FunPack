@@ -25,7 +25,7 @@ const widgetControl = (w, current, set) => {
 export const models = (app) => function mount() {
   const ps = app.pipeline, api = app.api;
   const page = c.region.stack({ gap: "md" });
-  let specs = {}, note = "", group = "", off = null, opened = null, gone = false;
+  let specs = {}, note = "", group = "", off = null, opened = null, gone = false, openId = null;
   const slotsNow = () => ps.slots() || [];
   const say = (text) => { note = text; draw(); };
   const label = (slot) => labelOf(slot, specs, slotsNow());
@@ -69,7 +69,7 @@ export const models = (app) => function mount() {
   const groups = () => [...new Set(slotsNow().map((s) => s.group || "Other"))];
   const structure = (slot) => {
     const here = slot.group || "Other";
-    return c.field.default({ label: "Group", hint: "Cards in the sidebar. Any node can live in any group.", control: c.toolbar.default({
+    return c.field.default({ label: "Group", hint: "Which tab this node sits under. Any node can live in any group.", control: c.toolbar.default({
       items: [c.select.md({ label: "Group", value: here, options: [...groups().map((g) => ({ value: g, label: g })), { value: NEW_GROUP, label: "New group…" }], onChange: async (v) => {
         let name = v;
         if (v === NEW_GROUP) { name = ((await c.modal.prompt({ title: "New group", label: "Name", confirmLabel: "Create" }).result) || "").trim(); if (!name) return draw(); }
@@ -104,10 +104,40 @@ export const models = (app) => function mount() {
     return [head, structure(slot), ...sockets, ...rows, ...(!rows.length && !sockets.length ? [c.hint.default({ text: "Nothing to configure on this node." })] : [])];
   };
 
-  function status() {
-    const incomplete = ps.incomplete(), refused = ps.refused(), notes = ps.saveNotes();
+  // One node as a card: what it is, the one or two values that matter, and whether it needs attention.
+  const summary = (slot) => {
+    const spec = specs[slot.node];
+    if (spec === undefined) return "Loading…";
+    if (spec === null) return "Not installed";
+    const first = (spec.widgets || [])[0], shown = (spec.widgets || []).map((w) => (slot.inputs || {})[w.name]).filter((v) => typeof v === "string" && v && v !== "default" && v !== "disabled" && !fed(v)).slice(0, 2);
+    if (first && first.type === "COMBO" && !(slot.inputs || {})[first.name]) return `${first.name} not set`;
+    return shown.length ? shown.join(" · ") : `${(spec.widgets || []).length} setting${(spec.widgets || []).length === 1 ? "" : "s"}`;
+  };
+  const nodeCard = (slot) => {
+    const node = document.createElement("button");
+    node.type = "button"; node.className = "fp-node-card cx-focusable";
+    const needs = specs[slot.node] === null || ps.incomplete().some((t) => t.startsWith(`${slot.id}:`));
+    const head = Object.assign(document.createElement("span"), { className: "fp-node-title", textContent: label(slot) });
+    const dot = Object.assign(document.createElement("span"), { className: `fp-node-state${needs ? " fp-needs" : ""}`, title: needs ? "Needs attention" : "Ready" });
+    const sub = Object.assign(document.createElement("span"), { className: "fp-node-sub", textContent: summary(slot) });
+    node.append(dot, head, sub);
+    node.addEventListener("click", () => { openId = slot.id; draw(); });
+    return { node };
+  };
+  const addCard = () => {
+    const node = document.createElement("button");
+    node.type = "button"; node.className = "fp-node-card fp-node-add cx-focusable";
+    node.append(Object.assign(document.createElement("span"), { className: "fp-node-title", textContent: "＋ Add a node" }),
+      Object.assign(document.createElement("span"), { className: "fp-node-sub", textContent: `to ${group}` }));
+    node.addEventListener("click", async () => { const cls = await pickNode(api, `Add a node to ${group}`); if (cls) structural({ action: "add", node: cls, group }); });
+    return { node };
+  };
+
+  function status(only) {
+    const all = ps.incomplete(), refused = ps.refused(), notes = ps.saveNotes();
+    const incomplete = only ? all.filter((t) => t.startsWith(`${only}:`)) : all;
     return [refused.length ? c.banner.warn({ text: `Could not save: ${refused.join(" ")}` }) : null, notes.length ? c.banner.info({ text: notes.join(" ") }) : null,
-      incomplete.length ? c.banner.warn({ text: `Not ready to generate yet: ${incomplete.join(" ")}` }) : ps.queueable() ? c.hint.default({ text: "Every slot is filled — this pipeline is ready to generate." }) : null];
+      incomplete.length ? c.banner.warn({ text: only ? incomplete.join(" ") : `Not ready to generate yet: ${incomplete.length} node${incomplete.length === 1 ? "" : "s"} still need something (the orange dots). Open one to see what.` }) : ps.queueable() && !only ? c.hint.default({ text: "Every slot is filled — this pipeline is ready to generate." }) : null];
   }
 
   const tools = () => c.toolbar.default({ items: [c.button.sm({ label: "Start from…", tone: "ghost", title: "Replace this pipeline with a model's own starting point", onClick: presets }),
@@ -150,14 +180,20 @@ export const models = (app) => function mount() {
     if (ps.loadError()) return page.set([c.banner.warn({ text: `Could not load models & pipeline: ${ps.loadError()}` })]);
     const all = groups(), slots = slotsNow();
     if (!all.includes(group)) group = all[0] || "";
+    const open = openId && slots.find((x) => x.id === openId);
+    if (openId && !open) openId = null;                       // removed or swapped away
+    if (open) {
+      const back = c.button.sm({ label: `‹ ${open.group || "Other"}`, tone: "ghost", onClick: () => { openId = null; draw(); } });
+      const detail = c.region.stack({ gap: "md", children: slotBlock(open) });
+      detail.node.classList.add("fp-card");
+      return page.set([back, note ? c.banner.warn({ text: note }) : null, ...status(open.id), detail].filter(Boolean));
+    }
+    const grid = c.region.stack({ gap: "none", children: [...slots.filter((x) => (x.group || "Other") === group).map(nodeCard), group ? addCard() : null].filter(Boolean) });
+    grid.node.classList.add("fp-node-grid");
     page.set([tools(), note ? c.banner.warn({ text: note }) : null, ...status(),
       !slots.length ? c.emptyState.default({ icon: "⬡", title: "No pipeline loaded", hint: "Is ComfyUI reachable? Or start from a model's starting point above." }) : null,
       all.length ? c.tabs.underline({ label: "Group", tabs: all.map((g) => ({ value: g, label: g })), value: group, onChange: (g) => { group = g; draw(); } }) : null,
-      group ? c.button.sm({ label: `＋ Add a node to ${group}`, tone: "ghost", title: "Put any installed node in this group, then wire it to the nodes around it.", onClick: async () => {
-        const cls = await pickNode(api, `Add a node to ${group}`);
-        if (cls) structural({ action: "add", node: cls, group });
-      } }) : null,
-      ...slots.filter((s) => (s.group || "Other") === group).flatMap(slotBlock)].filter(Boolean));
+      grid].filter(Boolean));
   }
   // A redraw while a box has focus would eat what is being typed: it waits for the focus to leave.
   const typing = () => page.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName);
