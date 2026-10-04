@@ -15,7 +15,9 @@ def _values(settings):
     spec = registry_mod.current().specs.get(ID)
     if spec is None:
         return {}
-    clean, _problems = schema_mod.check_values(spec, (settings or {}).get(ID))
+    clean, problems = schema_mod.check_values(spec, (settings or {}).get(ID))
+    for problem in problems or ():
+        log.once(f"shot_camera:{problem}", log.ALERT, "FunPack Shot Camera", f"setting ignored, default used: {problem}")
     return clean
 
 
@@ -81,6 +83,12 @@ class FunPackShotCamera(io.ComfyNode):
         )
 
     @classmethod
+    def fingerprint_inputs(cls, **kwargs):
+        # Only the seed changes between takes, so ComfyUI would reuse this node's output and never note the
+        # new run, and a rating of that take would find nothing to learn from. Cheap, so it just runs every time.
+        return float("nan")
+
+    @classmethod
     def execute(cls, text: str, length: int, frame_rate: float, settings=None) -> io.NodeOutput:
         values = _values(settings)
         if not any(values.get(k) for k in ("camera_moves", "shot_cuts", "shot_views")) or not engine.SHOT.search(text or ""):
@@ -92,6 +100,9 @@ class FunPackShotCamera(io.ComfyNode):
             return io.NodeOutput(text, f"left as written ({exc})")
         pid = _prompt_id()
         if pid and (chose["views"] or chose["arms"]):
-            memory.record_run(pid, chose)
+            try:
+                memory.record_run(pid, chose)
+            except Exception as exc:                           # noqa: BLE001 -- only the learning is lost, not the run
+                log.failed("FunPack Shot Camera", exc)
         log.info("FunPack Shot Camera", said)
         return io.NodeOutput(out, said)

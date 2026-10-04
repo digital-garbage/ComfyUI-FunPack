@@ -107,7 +107,9 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                          "files are. About half the memory and int8 matmuls on GPUs that "
                                          "have them; slightly different pictures. Does nothing to a file "
                                          "that is already quantized or is not H3 (the status says so), and "
-                                         "is skipped when a weight dtype is forced above."),
+                                         "is skipped when a weight dtype is forced above. The memory saving "
+                                         "always holds; the speed-up is lost on layers a LoRA is applied "
+                                         "to and when compute dtype is forced."),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -163,6 +165,8 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
             else:
                 _, note = int8_convrot_module.quantize_state_dict(state_dict, comfy.model_management.get_torch_device())
                 notes.append(note)
+                if compute_dtype != "default":
+                    notes.append("int8_convrot: compute dtype is forced, so the matmuls run in that dtype -- memory is saved, speed is not")
         model = comfy.sd.load_diffusion_model_state_dict(
             state_dict, model_options=model_options, metadata=metadata)
         if model is None:

@@ -528,7 +528,7 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
         t = max(t, (times[-1] if times else 0) + gap)          # not too close behind
         t = min(t, int(seconds) - (n - k) * gap)               # leave room for the shots after
         times.append(t)
-    if len(blocks) > 1 and times[-1] >= seconds:
+    if times and (times[0] < 1 or times[-1] >= seconds or any(b <= a for a, b in zip(times, times[1:]))):
         info["why"] = f"{len(blocks)} shots do not fit in {seconds}s at whole seconds"
         info["arms"] = []
         return text, info

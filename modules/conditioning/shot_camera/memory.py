@@ -13,7 +13,9 @@ the SHOT_CAMERA_MEMORY environment variable names another file. Delete the file 
 
 import json
 import math
+import functools
 import os
+import threading
 
 MIN_PROMPTS = 3
 FREQ_W = 0.6            # max bonus: reorders near-equals, never outranks an owned part
@@ -37,13 +39,35 @@ def _path():
     return os.path.join(base, "shot_camera", "focus_memory.json")
 
 
+_LOCK = threading.RLock()      # the worker thread (observe, record_run) and the rating route write the same file
+_DICTS = ("picks", "rejects", "seen", "views", "arms", "runs", "rated")
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        with _LOCK:
+            return fn(*args, **kwargs)
+    return run
+
+
 def _read():
     try:
         with open(_path(), "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    for key in _DICTS:                     # a hand-edited file of the wrong shape reads as "nothing learned there"
+        if key in data and not isinstance(data[key], dict):
+            data.pop(key)
+    for key in ("picks", "rejects", "seen"):
+        if key in data:
+            data[key] = {k: v for k, v in data[key].items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    if not isinstance(data.get("hashes", []), list):
+        data.pop("hashes")
+    return data
 
 
 def prior():
@@ -67,6 +91,7 @@ def prior():
     return out
 
 
+@_locked
 def learn(decisions):
     """Remember what a person chose. `decisions`: [{"auto": lemma|None, "picked": lemma|None,
     "mode": "auto"|"move"|"hold"|"none"}], one per shot shown. A picked word is reinforced; the
@@ -101,14 +126,16 @@ def view_stats():
 
 
 def _bump_views(data, used, good, bad):
+    # a negative amount undoes an earlier one, never below zero
     views = data.setdefault("views", {})
     for u in used:
         for key in [u["view"]] + [f"{u['view']}@{t}" for t in (u.get("traits") or ["none"])]:
             g, b = views.get(key, [0.0, 0.0])
-            views[key] = [round(g + good, 4), round(b + bad, 4)]
+            views[key] = [max(0.0, round(g + good, 4)), max(0.0, round(b + bad, 4))]
 
 
-def rate_views(used, sign):
+@_locked
+def rate_views(used, sign, k=1.0):
     """A rated generation: its views share the credit (sign > 0) or the blame (sign < 0), so a
     run with four views does not punish each as hard as a run with one. `used`: [{"view",
     "traits"}]. -> views rated."""
@@ -116,12 +143,13 @@ def rate_views(used, sign):
     if not used or not sign:
         return 0
     data = _read()
-    share = 1.0 / len(used)
+    share = k / len(used)
     _bump_views(data, used, share if sign > 0 else 0.0, share if sign < 0 else 0.0)
     _save(data)
     return len(used)
 
 
+@_locked
 def learn_views(decisions):
     """What a person chose: [{"auto": view|None, "picked": view|None, "traits": [...]}]. A pick
     counts as a good sign for that view; the view the rewriter proposed instead, as half a bad."""
@@ -154,7 +182,8 @@ def arm_rate(key, stats=None):
     return (g + 1.0) / (g + b + 2.0)
 
 
-def rate_arms(used, sign):
+@_locked
+def rate_arms(used, sign, k=1.0):
     """A rated generation: every choice the camera made in it shares the credit (sign > 0) or
     the blame (sign < 0), so a run with many choices does not punish each as hard as a run with
     one. `used`: [arm key]. -> arms rated."""
@@ -163,10 +192,10 @@ def rate_arms(used, sign):
         return 0
     data = _read()
     arms = data.setdefault("arms", {})
-    share = 1.0 / len(used)
+    share = k / len(used)
     for u in used:
         g, b = arms.get(u, [0.0, 0.0])
-        arms[u] = [round(g + (share if sign > 0 else 0.0), 4), round(b + (share if sign < 0 else 0.0), 4)]
+        arms[u] = [max(0.0, round(g + (share if sign > 0 else 0.0), 4)), max(0.0, round(b + (share if sign < 0 else 0.0), 4))]
     _save(data)
     return len(used)
 
@@ -186,6 +215,7 @@ def summary(limit=40):
             "kept": int(data.get("kept", 0))}
 
 
+@_locked
 def forget(kind, name=None):
     """Drop one remembered word (`kind="word"`), one view and its per-trait rows (`"view"`), or
     everything (`"all"`). -> True if anything was removed."""
@@ -235,12 +265,13 @@ def split_chance(chance):
 def _save(data):
     path = _path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
     os.replace(tmp, path)
 
 
+@_locked
 def observe(prompt_hash, lemmas):
     """Count each of `lemmas` once for this prompt. -> prompts seen so far (0 = nothing kept)."""
     if not lemmas:
@@ -261,6 +292,7 @@ def observe(prompt_hash, lemmas):
 MAX_RUNS = 64
 
 
+@_locked
 def record_run(prompt_id, chose):
     """What one run chose ({"views": [...], "arms": [...]}), kept until it is rated."""
     data = _read()
@@ -270,17 +302,30 @@ def record_run(prompt_id, chose):
     _save(data)
 
 
+def _sign(rating, axis):
+    """+1 liked; -1 disliked for the camera; 0 for no rating, or a dislike that blames the picture alone."""
+    return 1 if rating == "liked" else -1 if rating == "disliked" and axis != "image" else 0
+
+
+@_locked
 def on_rating(prompt_id, rating, axis=None):
     """A clip was rated: the views and camera choices of the run that made it share the credit or the blame.
-    A dislike that blames the picture alone teaches nothing here (the camera was not at fault), and only a run's
-    first rating counts, so changing your mind does not count it twice. -> choices rated."""
+    Changing or clearing the rating takes the earlier lesson back first, so the last word counts and a
+    forgotten rating leaves nothing behind. -> choices now rated."""
     data = _read()
-    run = (data.get("runs") or {}).get(str(prompt_id))
-    if not run or str(prompt_id) in (data.get("rated") or []):
+    pid = str(prompt_id)
+    run = (data.get("runs") or {}).get(pid)
+    if not isinstance(run, dict):
         return 0
-    sign = 1 if rating == "liked" else -1 if rating == "disliked" and axis != "image" else 0
-    if not sign:
+    before, sign = (data.get("rated") or {}).get(pid, 0), _sign(rating, axis)
+    if before == sign:
         return 0
-    data["rated"] = ((data.get("rated") or []) + [str(prompt_id)])[-MAX_RUNS:]
+    if before:
+        rate_views(run.get("views"), before, -1.0)
+        rate_arms(run.get("arms"), before, -1.0)
+    n = (rate_views(run.get("views"), sign) + rate_arms(run.get("arms"), sign)) if sign else 0
+    data = _read()
+    data.setdefault("rated", {})[pid] = sign
+    data["rated"] = dict(list(data["rated"].items())[-MAX_RUNS:])
     _save(data)
-    return rate_views(run.get("views"), sign) + rate_arms(run.get("arms"), sign)
+    return n
