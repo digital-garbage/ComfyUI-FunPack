@@ -29,12 +29,42 @@ export function shortcuts(app, own) {
     win.setFooter({ actions: [existing ? c.button.sm({ label: "Delete", tone: "danger", onClick: remove }) : null, c.button.sm({ label: "Save", tone: "primary", onClick: save })].filter(Boolean) });
   }
 
+  /** Export / import / new category / delete all. */
+  function tools(anchor, lib) {
+    const did = (p) => p.then(draw).catch((err) => tell(err.message));
+    c.menu.dropdown({ anchor: anchor || document.body, items: [{ id: "export", label: "Export all…" }, { id: "import", label: "Import…" }, { id: "category", label: "New category…" }, { separator: true }, { id: "clear", label: "Delete all", danger: true, disabled: !(lib.shortcuts || []).length }],
+      onPick: async (id) => {
+        if (id === "export") return Object.assign(document.createElement("a"), { href: "/funpack/api/shortcuts/export", download: "funpack_shortcuts.json" }).click();
+        if (id === "import") {
+          const input = Object.assign(document.createElement("input"), { type: "file", accept: ".json,application/json" });
+          input.onchange = async () => {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            let data;
+            try { data = JSON.parse(await file.text()); } catch { return tell("That file is not valid JSON."); }
+            const replace = await c.modal.dialogue({ title: "Import shortcuts", message: "Merge them into your library, or replace the library with them?", confirmLabel: "Replace everything", cancelLabel: "Merge", tone: "danger" }).result;
+            did(app.api.importShortcuts(data, replace ? "replace" : "merge"));
+          };
+          return input.click();
+        }
+        if (id === "category") {
+          const category = await c.modal.prompt({ title: "New category", label: "Category", confirmLabel: "Next" }).result;
+          if (!category || !category.trim()) return;
+          const sub = await c.modal.prompt({ title: "Sub-category", label: "Sub-category (optional)", confirmLabel: "Add" }).result;
+          if (sub === null || sub === undefined) return;
+          return did(app.api.addShortcutCategory(category.trim(), (sub || "").trim()));
+        }
+        if (await c.modal.dialogue({ title: "Delete all shortcuts", message: "Delete every shortcut in the library? Export first if you might want them back.", tone: "danger", confirmLabel: "Delete all" }).result) did(app.api.clearShortcuts());
+      } });
+  }
+
   function draw(lib) {
     if (!alive) return;
     const items = (lib.shortcuts || []).map((s) => ({ id: s.name, label: `${s.enabled ? "" : "⏸ "}${s.name}`, hint: s.triggers.join(", "), keywords: `${s.category} ${s.sub_category} ${s.replacements.join(" ")}`, group: s.category || "" }));
     items.sort((x, y) => x.group.localeCompare(y.group) || x.label.localeCompare(y.label));
+    const more = c.button.sm({ label: "⋯", tone: "ghost", title: "Export, import, categories, delete all", onClick: () => tools(more.node, lib) });
     page.set([
-      c.toolbar.default({ items: [c.label.section({ text: "Shortcuts" })], trailing: [c.button.sm({ label: "+ New", tone: "primary", onClick: () => edit(null) })] }),
+      c.toolbar.default({ items: [c.label.section({ text: "Shortcuts" })], trailing: [c.button.sm({ label: "+ New", tone: "primary", onClick: () => edit(null) }), more] }),
       c.filterList.md({ items, placeholder: "Search shortcuts", empty: "No shortcuts yet. Add one with + New.", onChange: (id) => edit((lib.shortcuts || []).find((s) => s.name === id)) }),
       c.hint.default({ text: "Type a trigger in any prompt and it is replaced when you generate." }),
     ]);
