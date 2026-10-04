@@ -3,6 +3,13 @@ import { segments, isVideoClip, effFps } from "../../shell/scenes.js";
 
 const first = (t) => ((t || "").split("\n")[0] || "").slice(0, 80);
 
+/** "liked" / "disliked" / "" from a saved rating word (numbers: 6+ is liked; "-Just forget it-" is none). */
+export function mood(rating) {
+  const v = String(rating || "").replace(/\|loved$/, "").trim();
+  if (!v || v.startsWith("-")) return "";
+  return /^\d+$/.test(v) ? (Number(v) >= 6 ? "liked" : "disliked") : v.toLowerCase().startsWith("disliked") ? "disliked" : "";
+}
+
 export function videoLane(p, picked, focus, actions = () => [], ghostActions = () => [], tags = () => []) {
   const renders = p.scene_renders || {};
   return {
@@ -14,7 +21,8 @@ export function videoLane(p, picked, focus, actions = () => [], ghostActions = (
       const rendered = Boolean(renders[sc.id]);
       return {
         id: sc.id, start: seg.start, dur: seg.dur, trim: true,
-        head: [isVideoClip(sc) ? "▶ video" : rendered ? "✓" : "◌", `${seg.dur.toFixed(1)}s`, ...tags(sc)],
+        rating: mood(sc.rating) || undefined,
+        head: [isVideoClip(sc) ? "▶ video" : rendered ? "✓" : "◌", `${seg.dur.toFixed(1)}s`, ...(mood(sc.rating) ? [mood(sc.rating) === "liked" ? "★" : "✕"] : []), ...tags(sc)],
         title: first(sc.text) || "(empty scene)",
         selected: picked.includes(sc.id), focus: sc.id === focus, excluded: Boolean(sc.excluded),
         actions: actions(sc),

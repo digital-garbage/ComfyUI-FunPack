@@ -20,17 +20,19 @@ export default {
     const DENSITY = [{ value: "0", label: "Auto" }, ...[1, 2, 3, 4].map((n) => ({ value: String(n), label: `${n}×` }))];
     const show = { filter: "all", sort: "name", view: "adaptive", cols: "0" };
 
-    const pick = (it) => {                                  // an image becomes the selected scene's source
+    const peek = (it) => { const item = items.find((m) => m.id === it.id); if (!item) return; app.mediaPeek.item = item; app.say("media.peek"); };       // a click looks at it on the monitor
+    const pick = (it) => {                                  // an image becomes the selected scene's resolution source
       const sc = p.selected, item = items.find((m) => m.id === it.id);
       if (!sc || !item) return tell("Select a scene first.");
-      if (item.kind !== "image") return tell("Only an image can be a scene's source here.");
+      if (item.kind !== "image") return tell("Only an image can be a scene's resolution source.");
       p.setScene(sc.id, "source_image", item.id);
       draw();
     };
     const context = (it, e) => c.menu.context({ x: e.clientX, y: e.clientY, onPick: (id) => act[id](it),
-      items: [{ id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected || (p.selected.references || []).includes(it.id) }, { id: "rename", label: "Rename…" },
+      items: [{ id: "look", label: "Look at it on the monitor" }, { id: "res", label: "Use as the selected scene's resolution source", disabled: !p.selected || it.kind === "audio" || !items.some((m) => m.id === it.id && m.kind === "image") }, { id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected || (p.selected.references || []).includes(it.id) }, { id: "rename", label: "Rename…" },
         { id: "export", label: "Save to your computer", disabled: !items.some((m) => m.id === it.id && m.kind !== "audio") }, { separator: true }, { id: "delete", label: "Delete from the bin", danger: true }] });
     const act = {
+      look: (it) => peek(it), res: (it) => pick(it),
       ref: (it) => p.setScene(p.selected.id, "references", [...(p.selected.references || []), it.id]),
       rename: async (it) => {
         const name = await c.modal.prompt({ title: "Rename media", label: "Name", value: (items.find((m) => m.id === it.id) || {}).name || "", confirmLabel: "Rename" }).result;
@@ -53,7 +55,7 @@ export default {
         } catch (err) { tell(err.message); }
       },
     };
-    const props = { id: "media", items: [], empty: "No media yet. Drop images or clips here.", onActivate: pick, onContext: context, drag: { type: MEDIA_DRAG, data: (it) => ({ id: it.id, kind: (items.find((m) => m.id === it.id) || {}).kind }) } };
+    const props = { id: "media", items: [], empty: "No media yet. Drop images or clips here.", onActivate: peek, onContext: context, drag: { type: MEDIA_DRAG, data: (it) => ({ id: it.id, kind: (items.find((m) => m.id === it.id) || {}).kind }) } };
     const galleries = { adaptive: c.gallery.adaptive(props), list: c.gallery.list(props), icons: c.gallery.icons(props) };
     const shelf = c.region.stack({ gap: "none", children: [galleries.adaptive] });
     const drop = c.dropzone.default({ label: "Drop or choose files", hint: "images, clips, audio",
