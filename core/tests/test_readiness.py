@@ -39,3 +39,6 @@ def test_the_row_names_the_device_comfyui_generates_on(monkeypatch):
     assert not any("sageattention" in x["text"] for x in rows)           # a CUDA-only library
     monkeypatch.setattr(r, "device", lambda: "cpu")                       # ComfyUI started with --cpu, GPU or not
     assert any(x["level"] == "warn" and "on the CPU" in x["text"] for x in r.machine())
+    monkeypatch.setattr(r, "device", lambda: "xpu")                       # an Intel GPU is not the CPU
+    rows = r.machine()
+    assert any("'xpu'" in x["text"] for x in rows) and not any("on the CPU" in x["text"] for x in rows)

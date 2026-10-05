@@ -356,3 +356,17 @@ test("a model file no module recognises says so, and why nothing is hidden", asy
   await PS.ensureLoaded();
   assert.match(PS.saveNotes().join(" "), /only \.safetensors.*every module is offered/);
 });
+
+test("a save reaches listeners before the model probe answers, so a project switched to meanwhile cannot take it", async () => {
+  const PS = withCheckpoint(load([]));
+  await PS.ensureLoaded();
+  let answer;
+  lastApi.probeFamily = () => new Promise((r) => { answer = r; });
+  let heard = 0;
+  PS.subscribe(() => { heard += 1; });
+  const saving = PS.save({ inputs: { model: { ckpt_name: "picked" } } });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(heard >= 1, "announced while the probe is still out");
+  answer({ detected: true, traits: [] });
+  await saving;
+});

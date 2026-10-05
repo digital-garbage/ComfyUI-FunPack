@@ -51,13 +51,14 @@ export function createPipelineState(API) {
 
   async function refreshManifest() {
     const file = currentModelFile(slots);
-    if (file === lastProbedFile) return;
+    if (file === lastProbedFile) return false;
     const traits = await probeModelTraits(slots);
     const manifest = await API.modules(traits ? traits.join(",") : undefined);
     modulesById = {};
     (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
     controlState = manifest.control || controlState;
     if (traits !== undefined) lastProbedFile = file;    // only once it worked: a failed probe is tried again
+    return true;
   }
   let incomplete = [];
   let refused = [];
@@ -194,18 +195,20 @@ export function createPipelineState(API) {
         refused = (res && res.refused) || [];
         queueable = !!(res && res.queueable);
         saveNotes = (res && res.notes) || [];
+        _changed();                                     // now: the project this edit was made in takes it, even if another opens during the probe
         // A no-op for the common case (same file as last time) -- see
         // refreshManifest()'s own guard. Only a Models & Pipeline edit that
         // actually changes the loader's file does a second round trip here.
         // Its own try/catch: a failure here is not "could not save" -- the
         // edit above already landed -- so it must not overwrite saveNotes
         // with a message about the wrong failure.
+        let fresh = false;
         try {
-          await refreshManifest();
+          fresh = await refreshManifest();
         } catch (e) {
           console.warn(`[FunPack] could not refresh modules for the new model: ${e && e.message ? e.message : e}`);
         }
-        _changed();                                     // after the modules: a listener sees the ones for this model
+        if (fresh && mine === epoch) _changed();        // again once a new model's modules are known: a listener sees those
       } catch (e) {
         saveNotes = [`Could not save: ${e && e.message ? e.message : e}`];
       }

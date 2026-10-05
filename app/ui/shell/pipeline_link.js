@@ -28,7 +28,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
       owner = target;
       retries = 0;
       // An old project with nothing saved runs the default and stays as it is on disk; a new one keeps what it took.
-      if (own || project.fresh) store(saved, pipeline.slots(), true);
+      if (own || project.fresh) store(saved, pipeline.slots(), !project.fresh);       // a new project's whole flag is a fact, not a guess
     } else if (retries++ < 3) {
       setTimeout(adopt, 5000);
     } else {

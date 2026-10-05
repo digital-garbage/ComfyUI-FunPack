@@ -82,3 +82,13 @@ test("an Undo copy of the same project keeps receiving edits", async () => {
   heard([{ ...slots[0], inputs: { ckpt_name: "b" } }]);
   assert.equal(writes.length, 1);
 });
+
+test("a new project keeps the preset pipeline it inherits as whole, so it reopens exactly", async () => {
+  const writes = [];
+  let opened;
+  const project = { fresh: true, project: { id: "n", models: { slots: [] } }, setField: (k, v) => { writes.push(v); project.project[k] = v; } };
+  const pipeline = { adopt: async () => true, slots: () => slots, removedIds: () => ["clip"], unwiredMap: () => ({}), whole: () => true, subscribe: () => {} };
+  linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
+  await opened();
+  assert.equal(writes[0].whole, true);
+});

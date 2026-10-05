@@ -46,8 +46,10 @@ def machine(disk_free_gb=None) -> List[dict]:
         kind = device()
         if kind == "mps":
             out.append(row("ok", "Apple GPU (MPS): generates, slowly; large video models may not fit in its memory."))
-        elif kind != "cuda":
+        elif kind == "cpu":
             out.append(row("warn", "ComfyUI runs on the CPU: generating is very slow, and only small models fit."))
+        elif kind != "cuda":
+            out.append(row("warn", f"ComfyUI generates on a '{kind}' device, which FunPack is not tested on: expect slow runs, and some features may fail."))
         else:
             props = torch.cuda.get_device_properties(0)
             out.append(row("ok", f"{props.name}, {props.total_memory / 1024 ** 3:.0f} GB, sm_{props.major}{props.minor}"))

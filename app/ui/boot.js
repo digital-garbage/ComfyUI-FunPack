@@ -15,6 +15,7 @@ import { createKeys } from "./shell/keys.js";
 import { createDock } from "./shell/dock.js";
 import { hostFor } from "./shell/mounts.js";
 import paths from "./modules.js";
+import { composer as c } from "./composer/composer.js";
 
 // What the core offers a feature, by name. `on(fn)` hears every change; fn gets "open" when a
 // different project was opened, "change" for an edit.
@@ -24,7 +25,7 @@ const on = (fn) => { heard.add(fn); return () => heard.delete(fn); };
 const project = createProject({ keepConsistent: syncSeparated, onChange: () => say("change"), onOpen: () => say("open"), onError: (err) => console.warn(err) });
 const pipeline = createPipelineState(api);
 const generate = createGenerate({ pipeline });
-linkPipeline({ project, pipeline, onOpen: (fn) => on((what) => { if (what === "open") fn(); }) });
+linkPipeline({ project, pipeline, onOpen: (fn) => on((what) => { if (what === "open") fn(); }), say: (text) => c.toast.warn({ text }) });
 const frame = build(document.getElementById("app"));
 const selection = createSelection({ project });
 selection.on(() => say("select"));
