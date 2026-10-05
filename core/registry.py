@@ -19,7 +19,7 @@ from .schema import SchemaError, validate
 # behaviour -- a module's announcement should be legible without running it.
 FIELDS = {
     "id": "ID", "title": "TITLE", "mount": "MOUNT", "settings": "SETTINGS",
-    "requires": "REQUIRES", "uses": "USES", "after": "AFTER", "before": "BEFORE",
+    "requires": "REQUIRES", "uses": "USES", "uses_when": "USES_WHEN", "after": "AFTER", "before": "BEFORE",
     "stage": "STAGE", "category": "CATEGORY", "status": "STATUS", "nodes": "NODES", "traits": "TRAITS", "provides": "PROVIDES", "hooks": "HOOKS",
 }
 

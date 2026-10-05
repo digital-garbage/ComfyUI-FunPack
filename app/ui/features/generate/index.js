@@ -57,6 +57,7 @@ export default {
       let made = 0;
       said = false;
       try {
+        if (app.pipeline.settled) await app.pipeline.settled();   // a project's pipeline still going in is the one this run uses, not the last one's
         const snap = times > 1 ? structuredClone(p.project) : null;        // takes differ in the seed alone: later edits to the project do not reach them
         const drawn = new Map();
         const same = times > 1 ? (body) => { const key = JSON.stringify(body); if (!drawn.has(key)) drawn.set(key, expand(body)); return drawn.get(key); } : expand;

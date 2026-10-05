@@ -293,3 +293,22 @@ def test_the_taste_key_serves_the_store_and_every_module_reading_it_says_so(comf
                and re.search(r'ask\("taste_store"', p.read_text())}
     declared = {spec.source.split(".")[-1] for spec in routes.modules().specs.values() if "taste_store" in spec.uses}
     assert readers and readers <= declared, readers - declared
+
+
+def test_a_module_that_skips_the_store_in_some_mode_says_when_it_asks(comfyui):
+    """`ask("taste_store")` behind `None if manual else` means the Taste key is idle in that mode: declared, so it can hide."""
+    import re
+    from core import routes
+    for spec in routes.modules().specs.values():
+        if "taste_store" not in spec.uses:
+            continue
+        import importlib
+        src = importlib.import_module(spec.source).__file__
+        skips = bool(re.search(r'None if manual else [^\n]*ask\("taste_store"', open(src).read()))
+        assert bool(spec.uses_when) == skips, (spec.id, spec.uses_when, skips)
+
+
+def test_uses_when_must_name_a_declared_setting():
+    with pytest.raises(SchemaError, match="uses_when"):
+        validate(announce(uses=["taste_store"], uses_when={"nope": "x"}))
+    assert validate(announce(uses=["taste_store"], uses_when={"enabled": True})).to_manifest()["uses_when"] == {"enabled": True}

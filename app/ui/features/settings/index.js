@@ -31,9 +31,15 @@ export default {
     add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys.", "✦", "danger",
       taste(app), "Learning", "refinement taste keys rating");
     // only when that module is installed: a section for something absent would be a dead end
-    app.pipeline.ensureLoaded().then(() => {
-      if (app.pipeline.modulesById()["conditioning_shot_camera"]) add("shotmemory", "Shot camera memory", "What the camera has learned from your prompts and ratings.", "◎", "neutral", shotMemory(app), "Learning", "shot camera views moves words forget");
-    });
+    // checked again on every pipeline change: ComfyUI may be down when the page loads and answer later
+    let shot = false;
+    const offerShot = () => {
+      if (shot || !app.pipeline.modulesById()["conditioning_shot_camera"]) return;
+      shot = true;
+      add("shotmemory", "Shot camera memory", "What the camera has learned from your prompts and ratings.", "◎", "neutral", shotMemory(app), "Learning", "shot camera views moves words forget");
+    };
+    app.pipeline.ensureLoaded().then(offerShot);
+    app.pipeline.subscribe(offerShot);
     add("system", "Updates & ComfyUI", "Server connection, FunPack code updates, pipeline health.", "⟳", "good",
       system(app), "System", "update git branch restart rollback");
     add("customnodes", "Custom Nodes", "Install, update and remove ComfyUI node packs.", "⧉", "neutral",

@@ -22,7 +22,10 @@ export default {
     const inputRow = ({ slot, role }) => {
       const w = ((specs[slot.node] || {}).widgets || []).find((x) => x.name === role.input);
       if (!w) return null;
-      const set = async (v) => { if (JSON.stringify((slot.inputs || {})[role.input]) !== JSON.stringify(v)) await ps.save({ inputs: { [slot.id]: { [role.input]: v } } }); };
+      const set = async (v) => {            // compared with the slot as it is NOW: the one drawn may be several saves old
+        const now = (ps.slots() || []).find((s) => s.id === slot.id) || slot;
+        if (JSON.stringify((now.inputs || {})[role.input]) !== JSON.stringify(v)) await ps.save({ inputs: { [slot.id]: { [role.input]: v } } });
+      };
       return c.settingsRow.default({ label: role.label || w.name, hint: w.tooltip || "", control: widgetControl({ ...w, name: role.label || w.name }, (slot.inputs || {})[role.input] ?? w.default, set) });
     };
     const button = c.button.sm({ label: "⏱ Sampler", tone: "neutral", title: "Steps, sampler, scheduler and sampling settings: one click, no modal.", onClick: () => (pop ? pop.close() : open()) });

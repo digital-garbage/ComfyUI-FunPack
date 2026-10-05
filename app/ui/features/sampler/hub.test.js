@@ -43,3 +43,24 @@ test("when the sampler node's options cannot be read, the window says where to c
   await new Promise((r) => setTimeout(r, 0));
   assert.match(document.body.textContent, /could not be read from the sampler node/);
 });
+
+test("typing a value back to what the window opened with is saved, though the window was not redrawn in between", async () => {
+  let live = [{ id: "sampler", node: "S", inputs: { steps: 7 }, roles: [{ at: "generation.sampling", input: "steps", label: "Steps" }] }];
+  const saved = [];
+  const ps = { slots: () => live, activeModules: () => [], useful: () => true, usefulness: () => () => true, currentValues: () => ({}), loading: () => false, loadError: () => null,
+    subscribe: () => () => {}, ensureLoaded: async () => {},
+    save: async (b) => { saved.push(b.inputs.sampler.steps); live = [{ ...live[0], inputs: { ...live[0].inputs, ...b.inputs.sampler } }]; } };
+  const host = document.createElement("div");
+  document.body.append(host);
+  hub.setup({ host, app: { pipeline: ps, api: { describeNodes: async () => ({ nodes: { S: { widgets: [{ name: "steps", type: "INT", min: 1, max: 100 }] } } }) }, on: () => () => {}, actions: null } });
+  await new Promise((r) => setTimeout(r, 0));
+  host.querySelector("button").click();
+  await new Promise((r) => setTimeout(r, 0));
+  const input = [...document.querySelectorAll("input[type=number]")].pop();
+  for (const v of ["20", "7"]) {
+    input.value = v;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  assert.deepStrictEqual(saved, [20, 7]);
+});

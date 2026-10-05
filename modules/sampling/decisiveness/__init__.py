@@ -34,6 +34,7 @@ CATEGORY = "guidance"
 STATUS = "experimental"
 REQUIRES = ["temporal_latent"]
 USES = ["taste_store"]
+USES_WHEN = {"mode": "learned"}      # "My value" never asks the store
 
 SETTINGS = {
     "enabled": {

@@ -7,7 +7,24 @@
 // that fetches on reopen throws away whatever ANY panel already placed --
 // its own edits included, per the bug this file was extracted to fix once
 // for good rather than have each new panel rediscover it.
-export function createPipelineState(API) {
+// Every request this state makes gives up after a while: one that never answers (a stalled tunnel, a Mac that slept)
+// would otherwise hold the pipeline's lock, and every edit behind it, until a reload. A Proxy, so an API object
+// changed after creation (tests do) is still the one called.
+const ANSWER_MS = 30000;
+const bounded = (api, ms) => new Proxy(api, {
+  get(target, key) {
+    const f = target[key];
+    if (typeof f !== "function") return f;
+    return (...args) => {
+      let timer;
+      const late = new Promise((_, no) => { timer = setTimeout(() => no(new Error("ComfyUI did not answer in time")), ms); });
+      return Promise.race([Promise.resolve(f.apply(target, args)), late]).finally(() => clearTimeout(timer));
+    };
+  },
+});
+
+export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
+  const API = bounded(rawApi, answerMs);
 
   // Loader nodes core knows how to point /api/probe at, and which of their
   // inputs names the file. Mirrors the same map api.js's probeFamily() is
@@ -58,6 +75,7 @@ export function createPipelineState(API) {
     (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
     controlState = manifest.control || controlState;
     if (traits !== undefined) lastProbedFile = file;    // only once it worked: a failed probe is tried again
+    loadError = null;                                   // the pipeline is in and its modules are known: nothing is failing now
     return true;
   }
   let incomplete = [];
@@ -112,7 +130,11 @@ export function createPipelineState(API) {
   let loadPromise = null;
 
   async function ensureLoaded() {
-    if (slots !== null) return; // session-wide: every consumer shares this one load
+    if (slots !== null && !loadError) return; // session-wide: every consumer shares this one load
+    if (slots !== null) {                       // the pipeline came, its modules did not: ask for those again
+      if (!loadPromise) loadPromise = refreshManifest().then(() => { loadPromise = null; _changed(); }, () => { loadPromise = null; });
+      return loadPromise;
+    }
     if (loadPromise) return loadPromise;
     loading = true; loadError = null;
     loadPromise = (async () => {
@@ -304,7 +326,7 @@ export function createPipelineState(API) {
   function isQuarantined(id) { return !!(controlState[id] && controlState[id].quarantine); }
   // Whether anything would act on a module's settings now: its own node is in the pipeline (when it has one),
   // and every capability it offers (the modifier loader, the taste store) reaches a user that is switched on for this
-  // project, not set to a manual value, has every node it needs in the pipeline, and is itself acted on (a taste learner
+  // project, in a mode that asks for it (its uses_when), has every node it needs in the pipeline, and is itself acted on (a taste learner
   // the loader never installs is not). "Disable all enhancements" is not counted: it sits on top, and the Modules page
   // still lists what is kept underneath it. -> a predicate; the values are read once for a whole list.
   function usefulness() {
@@ -314,7 +336,7 @@ export function createPipelineState(API) {
     const check = (m, seen) => {
       const working = (u) => {
         const v = values[u.id] || {};
-        return !seen.has(u.id) && (!("enabled" in (u.settings || {})) || v.enabled) && v.mode !== "manual"
+        return !seen.has(u.id) && (!("enabled" in (u.settings || {})) || v.enabled) && Object.entries(u.uses_when || {}).every(([k, want]) => (Array.isArray(want) ? want : [want]).includes(v[k]))
           && (u.nodes || []).every(has) && check(u, new Set([...seen, u.id]));
       };
       return (!(m.nodes || []).length || m.nodes.some(has))
@@ -490,6 +512,7 @@ export function createPipelineState(API) {
     const gate = new Promise((r) => { open = r; }), before = adoptGate;
     adoptGate = gate;                                   // before anything awaits: an edit right behind this waits too
     adopting += 1;
+    deferred = null;                                    // an earlier project's pipeline waiting for the load is not this one's
     try {
       if (before) await before;                         // one at a time: a project opened behind another is put in after it, never under it
       await ensureLoaded();

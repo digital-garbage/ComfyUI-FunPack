@@ -372,6 +372,10 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
                 raise SchemaError(f"module {announcement['id']!r}'s {name} must contain strings.")
         return list(value)
 
+    uses_when = announcement.get("uses_when")
+    if uses_when is not None:
+        _validate_when(uses_when, f"module {announcement['id']!r}'s uses_when", raw, "")
+
     return ModuleSpec(
         nodes=validate_nodes(announcement.get("nodes"), announcement["id"]),
         traits=validate_traits(announcement.get("traits"), announcement["id"]),
@@ -382,6 +386,7 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
         settings=settings,
         requires=_ids("requires"),
         uses=_ids("uses"),
+        uses_when=dict(uses_when or {}),
         hooks=_ids("hooks"),
         after=_ids("after"),
         before=_ids("before"),

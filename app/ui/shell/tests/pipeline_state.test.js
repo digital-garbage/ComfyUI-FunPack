@@ -20,7 +20,7 @@ function load(posts, opts = {}) {
       probeFamily: async () => ({}),
   };
   lastApi = API;
-  return createPipelineState(API);
+  return createPipelineState(API, { answerMs: opts.answerMs });
 }
 
 test("a project's saved pipeline lays its values over the server's default, keeping what the default added", async () => {
@@ -330,11 +330,13 @@ test("an edited default stays a layer: the default's new values still fill in, a
 const withCheckpoint = (PS) => { lastApi.pipeline = async () => ({ slots: [{ id: "model", node: "FunPackCheckpointLoader", inputs: { ckpt_name: "a" } }], incomplete: [], refused: [], queueable: true }); return PS; };
 
 test("a module's settings count only when something would read them: its own node, or a user of what it serves that is on", async () => {
-  const learner = (mode, enabled = true) => ({ id: "learner", settings: { enabled: { type: "bool", default: enabled }, mode: { type: "enum", default: mode } }, uses: ["taste_store"] });
+  const learner = (mode, enabled = true) => ({ id: "learner", settings: { enabled: { type: "bool", default: enabled }, mode: { type: "enum", default: mode } }, uses: ["taste_store"], uses_when: { mode: "learned" } });
   const cam = { id: "cam", nodes: ["CamNode"], settings: { on: { default: false } } }, taste = { id: "taste", serves: ["taste_store"], settings: { key: { default: "" } } };
   const check = async (mods) => { const PS = withCheckpoint(load([])); lastApi.modules = async () => ({ modules: mods }); await PS.ensureLoaded(); const by = PS.modulesById(); return [PS.useful(by.cam), PS.useful(by.taste)]; };
   assert.deepStrictEqual(await check([cam, taste, learner("learned")]), [false, true]);     // the pipeline has no CamNode
   assert.deepStrictEqual(await check([cam, taste, learner("manual")]), [false, false]);    // its one user is on a manual value
+  const always = { ...learner("manual"), uses_when: {} };                                   // a manual mode that still reads the store (shot memory)
+  assert.deepStrictEqual(await check([cam, taste, always]), [false, true]);
   assert.deepStrictEqual(await check([cam, taste, learner("learned", false)]), [false, false]);
   assert.deepStrictEqual(await check([{ ...cam, nodes: ["FunPackCheckpointLoader"] }, taste]), [true, false]);
 });
@@ -445,4 +447,41 @@ test("with every enhancement disabled, the modules kept underneath still count, 
   await PS.setAllOff(true);
   assert.strictEqual(PS.allOff(), true);
   assert.strictEqual(PS.usefulness()(PS.modulesById().sharpen), true);
+});
+
+test("a request that never answers gives up, so the pipeline loads once the server answers and edits go through", async () => {
+  const PS = load([], { answerMs: 50 });
+  const real = lastApi.pipeline;
+  lastApi.pipeline = () => new Promise(() => {});                 // hangs forever
+  const saved = [{ id: "model", node: "Loader", inputs: { file: "mine" } }];
+  assert.strictEqual(await PS.adopt(saved), false);
+  lastApi.pipeline = real;
+  assert.strictEqual(await PS.adopt(saved), true);
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "mine");
+  await PS.save({ inputs: { model: { file: "next" } } });
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "next");
+});
+
+test("a module list that failed once is asked for again, and the error clears when it comes", async () => {
+  const PS = load([]);
+  const real = async () => ({ modules: [{ id: "sharpen", settings: {} }] });
+  lastApi.modules = async () => { throw new Error("HTTP 500"); };
+  await PS.ensureLoaded();
+  assert.ok(PS.loadError());
+  lastApi.modules = real;
+  let heard = 0;
+  PS.subscribe(() => { heard += 1; });
+  await PS.ensureLoaded();
+  assert.deepStrictEqual([PS.loadError(), Object.keys(PS.modulesById()), heard], [null, ["sharpen"], 1]);
+});
+
+test("a project opened while ComfyUI is down never gets an earlier project's waiting pipeline", async () => {
+  const PS = load([]);
+  const real = lastApi.pipeline;
+  lastApi.pipeline = async () => { throw new Error("down"); };
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "A" } }]);
+  await PS.adopt([], [], {}, undefined, false);                    // an older project with nothing saved
+  lastApi.pipeline = real;
+  await PS.ensureLoaded();
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "");
 });

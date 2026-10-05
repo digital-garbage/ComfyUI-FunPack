@@ -60,6 +60,7 @@ class ModuleSpec:
     settings: Dict[str, dict] = field(default_factory=dict)
     requires: List[str] = field(default_factory=list)   # model traits
     uses: List[str] = field(default_factory=list)       # capabilities this module asks other modules for
+    uses_when: Dict[str, Any] = field(default_factory=dict)   # its own setting values under which it asks (empty: whenever on)
     after: List[str] = field(default_factory=list)      # module ids
     before: List[str] = field(default_factory=list)
     stage: str = "sampling"
@@ -101,6 +102,7 @@ class ModuleSpec:
             "settings": self.settings,
             "requires": list(self.requires),
             "uses": list(self.uses),
+            "uses_when": dict(self.uses_when),
             "after": list(self.after),
             "before": list(self.before),
             "stage": self.stage,

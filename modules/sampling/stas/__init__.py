@@ -38,6 +38,7 @@ CATEGORY = "guidance"
 STATUS = "experimental"
 REQUIRES = ["temporal_latent", "dit_block_hooks"]
 USES = ["taste_store"]
+USES_WHEN = {"mode": "learned"}      # "My value" never asks the store
 
 SETTINGS = {
     "enabled": {
