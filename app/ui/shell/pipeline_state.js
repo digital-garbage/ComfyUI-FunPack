@@ -359,13 +359,14 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     const values = currentValues(), list = (values._off || {}).modules, off = new Set(Array.isArray(list) ? list : []);
     const users = Object.values(modulesById).filter((u) => (u.uses || []).length && !off.has(u.id) && !isQuarantined(u.id));
     const has = (n) => !slots || slots.some((s) => s.node === n);
+    const filled = (at) => !slots || slots.some((s) => (s.roles || []).some((r) => r.at === at));
     const check = (m, seen) => {
       const working = (u) => {
         const v = values[u.id] || {};
         return !seen.has(u.id) && (!("enabled" in (u.settings || {})) || v.enabled) && Object.entries(u.uses_when || {}).every(([k, want]) => (Array.isArray(want) ? want : [want]).includes(v[k]))
           && (u.nodes || []).every(has) && check(u, new Set([...seen, u.id]));
       };
-      return (!(m.nodes || []).length || m.nodes.some(has))
+      return (!(m.nodes || []).length || m.nodes.some(has)) && (!(m.roles || []).length || m.roles.some(filled))
         && (m.serves || []).every((cap) => users.some((u) => u.uses.includes(cap) && working(u)));
     };
     return (m) => check(m, new Set([m.id]));

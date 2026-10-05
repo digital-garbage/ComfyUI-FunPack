@@ -608,3 +608,14 @@ test("whether the last project's pipeline went in is known the moment the load e
   await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "a" } }]);
   assert.strictEqual(PS.adoptedOk(), true);
 });
+
+test("a module that acts through a pipeline input counts only in a pipeline that has that input", async () => {
+  const carry = { id: "continuity", roles: ["assets.source_image"], settings: { carry: { type: "bool", default: true } } };
+  for (const [roles, shown] of [[[], false], [[{ at: "assets.source_image", input: "media_id" }], true]]) {
+    const PS = load([]);
+    lastApi.pipeline = async () => ({ slots: [{ id: "img", node: "Img", roles, inputs: {} }], incomplete: [], refused: [], queueable: true });
+    lastApi.modules = async () => ({ modules: [carry], control: {} });
+    await PS.ensureLoaded();
+    assert.strictEqual(PS.usefulness()(PS.modulesById().continuity), shown);
+  }
+});

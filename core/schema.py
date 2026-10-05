@@ -393,6 +393,7 @@ def validate(announcement: Dict[str, Any], source: str = "") -> ModuleSpec:
         requires=_ids("requires"),
         uses=_ids("uses"),
         uses_when=dict(uses_when or {}),
+        roles=_ids("roles"),
         hooks=_ids("hooks"),
         after=_ids("after"),
         before=_ids("before"),

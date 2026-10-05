@@ -242,3 +242,17 @@ test("an edit that waited on a retry which worked goes in: the guard reads how t
   assert.strictEqual(calls, 2);
   assert.strictEqual(atLanding, null);
 });
+
+test("once the person's edit has replaced a refused pipeline, later edits are not refused", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let opened, guard, heard;
+  const project = { project: { id: "a", models: { slots, removed: [], unwired: {}, whole: false } }, setField: () => {} };
+  const pipeline = { adopt: async () => false, adoptedOk: () => false, slots: () => slots, unreachable: () => false, refusal: () => "bad slot", setEditGuard: (fn) => { guard = fn; },
+    removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: (fn) => { heard = fn; } };
+  linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
+  await opened();
+  for (let i = 0; i < 4; i++) { t.mock.timers.tick(6000); for (let j = 0; j < 5; j++) await new Promise((r) => setImmediate(r)); }
+  assert.strictEqual(guard(), null);                 // refused for good: the next edit replaces it
+  heard(slots, "edit");
+  assert.strictEqual(guard(), null);                 // and the one after is not blocked
+});

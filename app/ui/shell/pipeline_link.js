@@ -62,7 +62,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   };
   // An edit to the stand-in while this project's pipeline could not go in would be thrown away by the next retry: refused, said.
   // Asked once the load is through, so judged by how it ended: an edit queued behind a retry that worked goes in.
-  if (pipeline.setEditGuard) pipeline.setEditGuard(() => (pipeline.adoptedOk && !pipeline.adoptedOk() && project.project && !replaceOnEdit ? `Could not save: ${why()}` : null));
+  if (pipeline.setEditGuard) pipeline.setEditGuard(() => (pipeline.adoptedOk && !pipeline.adoptedOk() && project.project && !replaceOnEdit && !owns() ? `Could not save: ${why()}` : null));
   const owns = () => !!project.project && owner === project.project.id;
   /** Why the open project's pipeline is not live, in words for the person; null when it is. */
   const why = () => owns() ? null : waiting ? "ComfyUI is not answering, so this project's pipeline is not loaded yet. It goes in as soon as ComfyUI answers."

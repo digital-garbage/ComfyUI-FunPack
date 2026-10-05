@@ -325,3 +325,9 @@ def test_a_condition_on_a_choice_must_name_one_of_its_options():
     with pytest.raises(SchemaError, match="'learn' for 'mode' is not one of its options"):
         validate(announce(settings={"mode": mode}, uses=["taste_store"], uses_when={"mode": "learn"}))
     assert validate(announce(settings={"mode": mode}, uses=["taste_store"], uses_when={"mode": ["learned"]}))
+
+
+def test_roles_a_module_acts_through_reach_the_manifest():
+    assert validate(announce(roles=["assets.source_image"])).to_manifest()["roles"] == ["assets.source_image"]
+    with pytest.raises(SchemaError, match="roles"):
+        validate(announce(roles="assets.source_image"))

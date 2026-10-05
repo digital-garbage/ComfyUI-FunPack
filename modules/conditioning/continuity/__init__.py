@@ -15,6 +15,7 @@ MOUNT = "settings.general"
 STAGE = "conditioning"
 CATEGORY = "continuity"
 STATUS = "experimental"
+ROLES = ["assets.source_image"]       # a pipeline with no start-picture input has nothing to continue through
 
 SETTINGS = {
     "carry": {

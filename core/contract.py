@@ -61,6 +61,7 @@ class ModuleSpec:
     requires: List[str] = field(default_factory=list)   # model traits
     uses: List[str] = field(default_factory=list)       # capabilities this module asks other modules for
     uses_when: Dict[str, Any] = field(default_factory=dict)   # its own setting values under which it asks (USES_WHEN absent: whenever on)
+    roles: List[str] = field(default_factory=list)      # pipeline inputs (role `at`) it acts through: inert in a pipeline with none
     after: List[str] = field(default_factory=list)      # module ids
     before: List[str] = field(default_factory=list)
     stage: str = "sampling"
@@ -103,6 +104,7 @@ class ModuleSpec:
             "requires": list(self.requires),
             "uses": list(self.uses),
             "uses_when": dict(self.uses_when),
+            "roles": list(self.roles),
             "after": list(self.after),
             "before": list(self.before),
             "stage": self.stage,
