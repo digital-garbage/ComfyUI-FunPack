@@ -308,7 +308,7 @@ export function createPipelineState(API) {
   // the loader never installs is not). "Disable all enhancements" is not counted: it sits on top, and the Modules page
   // still lists what is kept underneath it. -> a predicate; the values are read once for a whole list.
   function usefulness() {
-    const values = currentValues(), off = new Set(((values._off || {}).modules) || []);
+    const values = currentValues(), list = (values._off || {}).modules, off = new Set(Array.isArray(list) ? list : []);
     const users = Object.values(modulesById).filter((u) => (u.uses || []).length && !off.has(u.id) && !isQuarantined(u.id));
     const has = (n) => !slots || slots.some((s) => s.node === n);
     const check = (m, seen) => {
@@ -325,7 +325,9 @@ export function createPipelineState(API) {
   const useful = (m) => usefulness()(m);
 
   function activeModules() {
-    return allOff() ? [] : Object.values(modulesById).filter((m) => !isOff(m.id) && !isQuarantined(m.id));
+    if (allOff()) return [];
+    const list = (currentValues()._off || {}).modules, off = new Set(Array.isArray(list) ? list : []);      // read once, not once per module
+    return Object.values(modulesById).filter((m) => !off.has(m.id) && !isQuarantined(m.id));
   }
 
   // Patch ONE field and save the WHOLE tree. place() (core/graph.py) writes
