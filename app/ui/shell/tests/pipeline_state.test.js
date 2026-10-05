@@ -349,3 +349,10 @@ test("a file picked in a save is announced after its modules are known", async (
   await PS.save({ inputs: { model: { ckpt_name: "picked" } } });
   assert.deepStrictEqual(seen, ["new"]);
 });
+
+test("a model file no module recognises says so, and why nothing is hidden", async () => {
+  const PS = withCheckpoint(load([]));
+  lastApi.probeFamily = async () => ({ detected: false, reason: "a.ckpt: only .safetensors can be inspected without loading it" });
+  await PS.ensureLoaded();
+  assert.match(PS.saveNotes().join(" "), /only \.safetensors.*every module is offered/);
+});

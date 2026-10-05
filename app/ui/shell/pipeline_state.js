@@ -26,11 +26,14 @@ export function createPipelineState(API) {
   // Which traits the pipeline's chosen model has; null when that is not knowable (no file, or no model
   // module recognised it, or the one that did names no traits): null means "do not filter", while a list,
   // even an empty one, hides every module needing a trait it lacks. undefined: the probe failed, try again.
+  let modelNote = null;       // why nothing is hidden for the chosen file, when no model module recognised it
   async function probeModelTraits(pipelineSlots) {
     const filename = currentModelFile(pipelineSlots);
+    modelNote = null;
     if (!filename) return null;
     try {
       const data = await API.probeFamily(filename);
+      if (!data.detected && data.reason) modelNote = `${data.reason}, so every module is offered, including ones this model cannot use.`;
       return data.detected && Array.isArray(data.traits) ? data.traits : null;
     } catch (_) {
       return undefined;
@@ -568,6 +571,6 @@ export function createPipelineState(API) {
     loading: () => loading,
     loadError: () => loadError,
     saving: () => saving,
-    saveNotes: () => saveNotes,
+    saveNotes: () => (modelNote ? [...saveNotes, modelNote] : saveNotes),
   };
 }

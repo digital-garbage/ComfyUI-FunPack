@@ -7,7 +7,7 @@ import { labelOf, shownValues, sourcesFor } from "./wiring.js";
 const SEP = "\0", NEW_GROUP = "\0new";
 const fed = (v) => Array.isArray(v);
 
-const widgetControl = (w, current, set) => {
+export const widgetControl = (w, current, set) => {
   const label = w.name;
   if (w.type === "COMBO") {
     const choices = [...(w.choices || [])];
