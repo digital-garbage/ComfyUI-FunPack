@@ -83,3 +83,13 @@ test("a batch with no seed input says so and makes nothing", async () => {
   assert.equal(queued, 0);
   assert.match(document.body.textContent, /no seed input/);
 });
+
+test("Generate refuses, saying why, while the open project's pipeline is not the live one", async () => {
+  let queued = 0;
+  const { host, app } = rig("idle", { generate: async () => { queued += 1; return true; } });
+  app.pipelineOwned = () => false;
+  host.querySelector("button").click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(queued, 0);
+  assert.match(document.body.textContent, /pipeline is not loaded yet/);
+});

@@ -51,7 +51,6 @@ export default {
     // `times` > 1: the same shots again, only the seed differing (the prompt's random picks are drawn once), so the takes can be compared.
     async function runUnits(units, times = 1) {
       if (busy) { if (times > 1) tell("A run is already going: wait for it, or Stop it."); return; }
-      if (times > 1 && !rolesAt(app.pipeline.slots(), "generation.seed").length) return tell("This pipeline has no seed input the app controls, so the takes would all come out the same.");
       busy = true; stopped = false; draw();
       const pid = p.project.id;
       let made = 0;
@@ -59,6 +58,8 @@ export default {
       try {
         // A project's pipeline still going in is the one this run uses, not the last one's.
         if (app.pipeline.settled && !(await app.pipeline.settled())) { tell("Not started: this project's pipeline is still loading. ComfyUI is slow to answer; try again in a moment."); return; }
+        if (app.pipelineOwned && !app.pipelineOwned()) { tell("Not started: this project's pipeline is not loaded yet (ComfyUI did not answer). It goes in as soon as ComfyUI answers."); return; }
+        if (times > 1 && !rolesAt(app.pipeline.slots(), "generation.seed").length) { tell("This pipeline has no seed input the app controls, so the takes would all come out the same."); return; }
         const snap = times > 1 ? structuredClone(p.project) : null;        // takes differ in the seed alone: later edits to the project do not reach them
         const drawn = new Map();
         const same = times > 1 ? (body) => { const key = JSON.stringify(body); if (!drawn.has(key)) drawn.set(key, expand(body)); return drawn.get(key); } : expand;

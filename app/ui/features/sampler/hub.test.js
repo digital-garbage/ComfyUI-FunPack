@@ -64,3 +64,22 @@ test("typing a value back to what the window opened with is saved, though the wi
   }
   assert.deepStrictEqual(saved, [20, 7]);
 });
+
+test("a value that could not be saved is not left on screen: the window shows what will run and says why", async () => {
+  const live = [{ id: "sampler", node: "S", inputs: { steps: 7 }, roles: [{ at: "generation.sampling", input: "steps", label: "Steps" }] }];
+  const ps = { slots: () => live, activeModules: () => [], useful: () => true, usefulness: () => () => true, currentValues: () => ({}), loading: () => false, loadError: () => null,
+    subscribe: () => () => {}, ensureLoaded: async () => {}, save: async () => {}, saveNotes: () => ["Could not save: down"] };
+  const host = document.createElement("div");
+  document.body.append(host);
+  hub.setup({ host, app: { pipeline: ps, api: { describeNodes: async () => ({ nodes: { S: { widgets: [{ name: "steps", type: "INT", min: 1, max: 100 }] } } }) }, on: () => () => {}, actions: null } });
+  await new Promise((r) => setTimeout(r, 0));
+  host.querySelector("button").click();
+  await new Promise((r) => setTimeout(r, 0));
+  let input = [...document.querySelectorAll("input[type=number]")].pop();
+  input.value = "25";
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await new Promise((r) => setTimeout(r, 0));
+  input = [...document.querySelectorAll("input[type=number]")].pop();
+  assert.equal(input.value, "7");
+  assert.match(document.body.textContent, /Could not save: down/);
+});

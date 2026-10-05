@@ -52,5 +52,6 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
     store(project.project.models || {}, slots);
   });
   onOpen(() => { retries = 0; return adopt(); });       // each project opened gets its own retries
-  return { adopt };
+  // Whether the live pipeline is the open project's (false while it is going in, or ComfyUI has not answered).
+  return { adopt, owns: () => !!project.project && owner === project.project.id };
 }

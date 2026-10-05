@@ -24,7 +24,13 @@ export default {
       if (!w) return null;
       const set = async (v) => {            // compared with the slot as it is NOW: the one drawn may be several saves old
         const now = (ps.slots() || []).find((s) => s.id === slot.id) || slot;
-        if (JSON.stringify((now.inputs || {})[role.input]) !== JSON.stringify(v)) await ps.save({ inputs: { [slot.id]: { [role.input]: v } } });
+        if (JSON.stringify((now.inputs || {})[role.input]) === JSON.stringify(v)) return;
+        await ps.save({ inputs: { [slot.id]: { [role.input]: v } } });
+        const after = (ps.slots() || []).find((s) => s.id === slot.id) || {};
+        if (JSON.stringify((after.inputs || {})[role.input]) !== JSON.stringify(v)) {      // not saved: show what will really run, and why
+          c.toast.warn({ text: [...(ps.saveNotes ? ps.saveNotes() : [])].find((n) => /could not save/i.test(n)) || `${role.label || role.input} was not saved.` });
+          draw();
+        }
       };
       return c.settingsRow.default({ label: role.label || w.name, hint: w.tooltip || "", control: widgetControl({ ...w, name: role.label || w.name }, (slot.inputs || {})[role.input] ?? w.default, set) });
     };
