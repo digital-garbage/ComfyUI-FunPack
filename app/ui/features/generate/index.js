@@ -62,18 +62,20 @@ export default {
         // The pipeline as it is NOW, at the click: every shot of this run uses it, whatever is opened or edited meanwhile.
         const frozen = structuredClone(app.pipeline.slots() || []);
         if (times > 1 && !rolesAt(frozen, "generation.seed").length) { tell("This pipeline has no seed input the app controls, so the takes would all come out the same."); return; }
-        const snap = times > 1 ? structuredClone(p.project) : null;        // takes differ in the seed alone: later edits to the project do not reach them
+        // The project too: text, lengths and references edited after the click reach the next Generate, not this one's later shots.
+        const snap = structuredClone(p.project);
         const drawn = new Map();
         const same = times > 1 ? (body) => { const key = JSON.stringify(body); if (!drawn.has(key)) drawn.set(key, expand(body)); return drawn.get(key); } : expand;
         for (const unit of Array.from({ length: times }, () => units).flat()) {
           if (stopped) break;
           if (!p.project || p.project.id !== pid) { tell("Stopped: another project was opened."); break; }
-          const root = unitRoot(snap || p.project, unit);
-          const group = (snap || p.project).scenes.filter((s) => genUnitId(s) === unit);
-          if (!root || group.every((s) => s.excluded) || !isGenerative(root)) continue;        // removed, all left out, or not made by the model
+          const root = unitRoot(snap, unit);
+          const group = snap.scenes.filter((s) => genUnitId(s) === unit);
+          if (!root || !p.project.scenes.some((s) => s.id === root.id)) continue;               // deleted since the click
+          if (group.every((s) => s.excluded) || !isGenerative(root)) continue;                  // all left out, or not made by the model
           // The unit is made once at the length of its clips together (each cut adds one shared frame).
-          const frames = group.reduce((t, s) => t + effFrames(s, snap || p.project), 0) - (group.length - 1);
-          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap || p.project, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root); } catch { return []; } }) });
+          const frames = group.reduce((t, s) => t + effFrames(s, snap), 0) - (group.length - 1);
+          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root); } catch { return []; } }) });
           app.lastRun.typed = (root.text || "").trim();        // what a Chat comment made now would be about
           if (stopped) break;
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
@@ -95,6 +97,7 @@ export default {
           if (end !== g.DONE) { tell("Generation failed. The log has ComfyUI's message."); break; }
           if (!images.length) { tell("ComfyUI finished without a result. Try again."); break; }
           await record(pid, unit, images[images.length - 1], frames, g.run.state.promptId);       // the next shot may continue from this one: it must be on the clip first
+          snap.scene_renders = structuredClone(p.project.scene_renders || {});                       // ...and in what the next shot reads
         }
         if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out or is a video clip.");
       } finally { busy = false; draw(); }

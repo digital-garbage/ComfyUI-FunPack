@@ -35,5 +35,7 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
     for (const [id, fields] of Object.entries(out.inputs || {})) raw[id] = { ...raw[id], ...fields };
     notes.push(...(out.notes || []));
   }
+  // Not refused (a picture alone may be the point), but a shot with nothing to go on is said, not silently made.
+  if (prompt && !String((raw[prompt.slot.id] || {})[prompt.role.input] ?? "").trim() && !scene.source_image) notes.push("This shot has no text and no start picture, so the model makes whatever it likes.");
   return { inputs: raw, unwired, noPrompt: !prompt, notes };
 }

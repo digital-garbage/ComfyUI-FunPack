@@ -105,3 +105,13 @@ test("a run uses the pipeline as it was at the click, whatever is opened or edit
   assert.ok(sent.length >= 1);
   assert.ok(sent.every((s) => s[0].inputs.steps === 20));
 });
+
+test("a scene edited while an earlier shot of the run is making goes as it read at the click; the run's own render still reaches the next shot", async () => {
+  const seen = [];
+  let calls = 0;
+  const { app, doc } = rig("idle", { generate: async () => { calls += 1; if (calls === 1) doc.scenes.find((s) => s.id === "c").text = "edited"; return true; } });
+  doc.scenes.push({ id: "c", text: "at click" });
+  app.inputHooks = [async ({ project, scene }) => { seen.push([scene.text, Boolean((project.scene_renders || {}).a)]); return {}; }];
+  await app.runner.units(["a", "c"]);
+  assert.deepEqual(seen, [["x", false], ["at click", true]]);
+});

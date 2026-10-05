@@ -54,3 +54,11 @@ test("a hook that throws does not stop the run: its problem comes back as a note
   assert.equal(r.inputs.p.text, "x");
   assert.match(r.notes[0], /boom/);
 });
+
+test("a shot with no text and no start picture is said; text from the project's anchor counts as text", async () => {
+  const expand = async ({ text, anchor }) => ({ text: [anchor, text].filter(Boolean).join(" ") });
+  const said = async (project, scene) => (await buildInputs({ project, scene, slots, expand })).notes.some((n) => /no text/.test(n));
+  assert.equal(await said({}, { text: "  " }), true);
+  assert.equal(await said({ anchor: "a cat" }, { text: "" }), false);
+  assert.equal(await said({}, { text: "", source_image: "m1" }), false);
+});
