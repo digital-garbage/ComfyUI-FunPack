@@ -188,3 +188,20 @@ test("a project whose pipeline could not get through mid-session keeps being ret
   heard([{ ...slots[0], inputs: { ckpt_name: "edited" } }]);
   assert.deepStrictEqual(writes, ["edited"]);
 });
+
+test("a pipeline ComfyUI refuses says the server's reason, and the person's next edit becomes the project's pipeline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const writes = [], said = [];
+  let opened, heard;
+  const project = { project: { id: "a", models: { slots, removed: [], unwired: {}, whole: false } }, setField: (k, v) => { writes.push(v.slots[0].inputs.ckpt_name); project.project[k] = v; } };
+  const pipeline = { adopt: async () => false, slots: () => slots, unreachable: () => false, refusal: () => "slot 0 role 0 has no input",
+    removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: (fn) => { heard = fn; } };
+  const link = linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; }, say: (x) => said.push(x) });
+  const flush = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+  await opened();
+  for (let i = 0; i < 4; i++) { t.mock.timers.tick(6000); await flush(); }
+  assert.match(said.join(" "), /refused .*slot 0 role 0 has no input/);
+  assert.match(link.why(), /refused/);
+  heard([{ ...slots[0], inputs: { ckpt_name: "fixed" } }]);
+  assert.deepStrictEqual(writes, ["fixed"]);
+});

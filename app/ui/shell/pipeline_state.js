@@ -74,6 +74,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     modulesById = {};
     (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
     controlState = manifest.control || controlState;
+    if (Array.isArray(manifest.sinks)) sinks = manifest.sinks;
     if (traits !== undefined) lastProbedFile = file;    // only once it worked: a failed probe is tried again
     loadError = null;                                   // the pipeline is in and its modules are known: nothing is failing now
     return true;
@@ -87,6 +88,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   let removed = new Set();    // default slots the person took out of this project's pipeline
   let adoptGate = null;       // a promise while a project's pipeline is being put in
   let whole = false;          // the pipeline replaced the default (a preset, an import, the wizard) rather than editing it
+  let refusalLast = null;     // the server's own reason for refusing the last project's pipeline
   let unreachableLast = false; // the last project's pipeline failed because a request did not get through, not because it was refused
   let adopting = 0;           // adopts under way (waiting for the load, or putting a pipeline in)
   let deferred = null;        // a project's saved pipeline ([slots, removed, unwired, whole]) waiting for the first successful load
@@ -104,17 +106,21 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   // plain object -- and only accepts a decoded key that names a module this
   // session already knows is installed, so an unrelated node's incidentally
   // JSON-shaped string can't inject a bogus entry that round-trips forever.
+  // Once the server has named its sinks, only those are read, and EVERY module's entry in them is kept: a module the
+  // current model hides still has its values there, and writing the tree back must not drop them.
+  let sinks = null;           // [{node, input}] from the manifest; null until known (then the scan below is the fallback)
+  const isSink = (slot, key) => sinks.some((k) => k.node === slot.node && k.input === key);
   function valuesAlreadyPlaced(from = slots) {
     const known = new Set([...Object.keys(modulesById), "_off"]);    // _off: the modules this project turned off
     const merged = {};
     (from || []).forEach((slot) => {
-      Object.values(slot.inputs || {}).forEach((v) => {
-        if (typeof v !== "string") return;
+      Object.entries(slot.inputs || {}).forEach(([key, v]) => {
+        if (typeof v !== "string" || (sinks && !isSink(slot, key))) return;
         let parsed;
         try { parsed = JSON.parse(v); } catch (_) { return; }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
         Object.entries(parsed).forEach(([moduleId, own]) => {
-          if (!known.has(moduleId)) return;
+          if (!sinks && !known.has(moduleId)) return;
           if (own && typeof own === "object") merged[moduleId] = { ...(merged[moduleId] || {}), ...own };
         });
       });
@@ -313,6 +319,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     const known = new Set([...Object.keys(modulesById), "_off"]);
     (slots || []).forEach((slot) => {
       Object.entries(slot.inputs || {}).forEach(([key, v]) => {
+        if (sinks) { if (isSink(slot, key) && !Array.isArray(v)) slot.inputs[key] = JSON.stringify(values); return; }    // a fresh "{}" too
         if (typeof v !== "string") return;
         let parsed;
         try { parsed = JSON.parse(v); } catch (_) { return; }
@@ -578,7 +585,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     groupEdits = {};
     pendingBody = null; pending = false;
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
-    let unreachable = false;
+    let unreachable = false, reasons = [];
     for (const extras of [true, false]) {
       try {
         const res = await API.editPipeline({ slots: lay(extras) });
@@ -592,12 +599,15 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
           try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
           return true;
         }
+        reasons = (res && res.refused) || reasons;
       } catch (e) {
         // No answer, or a gateway's (a tunnel, a restarting ComfyUI): try again later. An answer refusing it is a refusal.
         if (!e || !e.status || e.status >= 502) unreachable = true;
+        else reasons = [e.message];
       }
     }
     unreachableLast = unreachable;
+    refusalLast = reasons.length ? String(reasons[0]) : null;
     // Nothing saved was accepted (a failed request, or a file the server refuses): the default
     // runs, said, and the caller must NOT save it over the project's own copy.
     slots = JSON.parse(JSON.stringify(offered));
@@ -622,7 +632,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, settled, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
-    unreachable: () => slots === null || unreachableLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
+    unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
     whole: () => whole,
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),

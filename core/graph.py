@@ -266,7 +266,7 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
 
         declared = schemas.inputs(class_type)
         limits = schemas.limits(class_type)
-        inputs = {}
+        inputs, refused_here = {}, set()
         for name, value in (slot.get("inputs") or {}).items():
             if name not in declared:
                 problems.append(f"{slot_id}: {class_type} has no input {name!r}")
@@ -297,10 +297,11 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
                     label = next((r.get("label") for r in slot.get("roles") or []
                                   if isinstance(r, dict) and r.get("input") == name and r.get("label")), None)
                     problems.append(unacceptable(label, value, limits.get(name)) if label else f"{slot_id}.{problem}")
+                    refused_here.add(name)
                     continue
                 inputs[name] = value
         for name in schemas.required(class_type):
-            if name not in inputs:
+            if name not in inputs and name not in refused_here:       # a refused value was just said; "nothing fills it" would be false
                 problems.append(f"{slot_id}: {class_type} needs {name!r} and nothing "
                                 f"fills it")
 

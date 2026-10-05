@@ -507,3 +507,28 @@ test("settings can be read from a frozen pipeline, apart from the live one and e
   assert.deepStrictEqual([PS.currentValues(frozen).continuity.carry, PS.allOff(frozen)], [true, false]);
   assert.deepStrictEqual([PS.currentValues().continuity.carry, PS.allOff()], [false, true]);
 });
+
+const withSink = (blob, mods) => {
+  const PS = load([]);
+  lastApi.pipeline = async () => ({ slots: [{ id: "settings", node: "Sink", inputs: { settings: blob } }, { id: "other", node: "X", inputs: { note: '{"sharpen": {"amount": 9}}' } }], incomplete: [], refused: [], queueable: true });
+  lastApi.modules = async () => ({ modules: mods, sinks: [{ node: "Sink", input: "settings" }], control: {} });
+  return PS;
+};
+const sharpen = { id: "sharpen", settings: { enabled: { type: "bool", default: false }, amount: { type: "float", default: 0.5 } } };
+
+test("a first setting on a fresh pipeline is in its settings slot at once, so a failed save cannot leave the run on old values", async () => {
+  const PS = withSink("{}", [sharpen]);
+  await PS.ensureLoaded();
+  lastApi.editPipeline = async () => { throw new Error("boom"); };
+  await PS.setModuleValue("sharpen", "enabled", true);
+  assert.strictEqual(JSON.parse(PS.slots().find((s) => s.id === "settings").inputs.settings).sharpen.enabled, true);
+  assert.strictEqual(PS.slots().find((s) => s.id === "other").inputs.note, '{"sharpen": {"amount": 9}}');    // not a sink: never read or written
+});
+
+test("settings of a module the current model hides are kept when another setting is changed", async () => {
+  const PS = withSink(JSON.stringify({ reins: { enabled: true } }), [sharpen]);
+  await PS.ensureLoaded();
+  await PS.setModuleValue("sharpen", "enabled", true);
+  const blob = JSON.parse(PS.slots().find((s) => s.id === "settings").inputs.settings);
+  assert.deepStrictEqual([blob.reins, blob.sharpen.enabled, PS.currentValues().sharpen.amount], [{ enabled: true }, true, 0.5]);
+});

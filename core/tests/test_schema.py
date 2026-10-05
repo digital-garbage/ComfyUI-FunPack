@@ -312,3 +312,8 @@ def test_uses_when_must_name_a_declared_setting():
     with pytest.raises(SchemaError, match="uses_when"):
         validate(announce(uses=["taste_store"], uses_when={"nope": "x"}))
     assert validate(announce(uses=["taste_store"], uses_when={"enabled": True})).to_manifest()["uses_when"] == {"enabled": True}
+
+
+def test_the_manifest_names_where_settings_live(comfyui):
+    from core import routes
+    assert {"node": "FunPackModifierSettings", "input": "settings"} in routes.manifest()["sinks"]

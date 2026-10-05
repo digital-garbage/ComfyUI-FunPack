@@ -5,7 +5,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   // it is written. A project opened while an open or a save is still in flight must never receive the other's pipeline.
   // An id, not the object: Undo puts a copy of the same project in place.
   let owner = null;
-  let retries = 0, opens = 0, retry = null, waiting = false;      // waiting: gave up because ComfyUI did not answer
+  let retries = 0, opens = 0, retry = null, waiting = false, replaceOnEdit = false;      // waiting: gave up because ComfyUI did not answer
   // Only a real change is written: opening a project must not rewrite its file.
   const live = (base, slots) => ({ ...base, slots: JSON.parse(JSON.stringify(slots || [])), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap(), whole: pipeline.whole() });
   const store = (base, slots) => {
@@ -15,7 +15,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
 
   async function adopt() {
     clearTimeout(retry);                    // a retry still waiting is for a project that may no longer be open
-    waiting = false;
+    waiting = false; replaceOnEdit = false;
     if (pipeline.settled) await pipeline.settled();       // an edit on its way lands in the project it was made in first
     const here = project.project && project.project.models;
     // Undo / Redo of something else: the same project, its pipeline already live, nothing to put in (or to lose).
@@ -42,21 +42,28 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
       retry = setTimeout(adopt, 15000);
       if (retries === 4) say("ComfyUI is not answering, so this project's pipeline is not loaded yet: it goes in as soon as ComfyUI answers.");
     } else {
-      say("This project's saved pipeline could not be loaded; the default is in use.");
+      replaceOnEdit = true;
+      say(refused());
     }
   }
 
   pipeline.subscribe((slots) => {
     if (waiting === "load" && owner === null) { retries = 0; adopt(); return; }
+    // Refused for good: the person's next edit of the stand-in pipeline becomes this project's pipeline.
+    if (replaceOnEdit && owner === null && project.project) { replaceOnEdit = false; owner = project.project.id; }
     if (!project.project || project.project.id !== owner) return;
     store(project.project.models || {}, slots);
   });
   onOpen(() => { retries = 0; return adopt(); });       // each project opened gets its own retries
   // Whether the live pipeline is the open project's (false while it is going in, or ComfyUI has not answered).
+  const refused = () => {
+    const reason = pipeline.refusal && pipeline.refusal();
+    return `ComfyUI refused this project's saved pipeline${reason ? ` (${reason})` : ""}, so the default is in use. Your next pipeline edit replaces the saved one; or open the project again to retry.`;
+  };
   const owns = () => !!project.project && owner === project.project.id;
   /** Why the open project's pipeline is not live, in words for the person; null when it is. */
   const why = () => owns() ? null : waiting ? "ComfyUI is not answering, so this project's pipeline is not loaded yet. It goes in as soon as ComfyUI answers."
-    : retries > 3 ? "This project's saved pipeline could not be loaded. Open the project again to retry, or rebuild it in Settings ▸ Models & Pipeline."
+    : retries > 3 ? refused()
     : "This project's pipeline is still loading. Try again in a moment.";
   return { adopt, owns, why };
 }

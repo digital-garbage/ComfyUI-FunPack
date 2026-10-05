@@ -272,6 +272,7 @@ def test_a_combo_value_that_is_no_longer_on_disk_is_refused_before_queueing():
         _schemas_with_limits())
     assert any("gone.safetensors" in p and "not one of" in p for p in problems), problems
     assert any("model.ckpt_name" in p for p in problems), problems
+    assert not any("nothing fills it" in p for p in problems), problems       # refused, not missing: said once, truly
 
 
 def test_a_combo_value_that_is_on_disk_is_accepted():
@@ -302,6 +303,7 @@ def test_a_value_the_app_writes_is_refused_by_the_name_the_person_sees():
           "inputs": {"ckpt_name": "a.safetensors", "steps": 1000}}],
         _schemas_with_limits())
     assert any(p.startswith("Length is 1000, above the largest") for p in problems), problems
+    assert not any("nothing fills it" in p for p in problems), problems       # the refused value was said; it is not "missing"
 
 
 def test_a_bool_is_not_measured_against_a_number_bound():

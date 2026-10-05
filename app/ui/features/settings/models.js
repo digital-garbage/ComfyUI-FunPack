@@ -153,7 +153,9 @@ export const models = (app) => function mount() {
 
   function status(only) {
     const all = ps.incomplete(), refused = ps.refused(), notes = ps.saveNotes();
-    const incomplete = only ? all.filter((t) => t.startsWith(`${only}:`)) : all;
+    const mine = (t, id) => t.startsWith(`${id}:`) || t.startsWith(`${id}.`)
+      || ((slotsNow().find((s) => s.id === id) || {}).roles || []).some((r) => r.label && t.startsWith(`${r.label} is `));    // refused by the name the person sees
+    const incomplete = only ? all.filter((t) => mine(t, only)) : all;
     return [refused.length ? c.banner.warn({ text: `Could not save: ${refused.join(" ")}` }) : null, notes.length ? c.banner.info({ text: notes.join(" ") }) : null,
       incomplete.length ? c.banner.warn({ text: only ? incomplete.join(" ") : `Not ready to generate yet: ${incomplete.length} node${incomplete.length === 1 ? "" : "s"} still need something (the orange dots). Open one to see what.` }) : ps.queueable() && !only ? c.hint.default({ text: "Every slot is filled — this pipeline is ready to generate." }) : null];
   }

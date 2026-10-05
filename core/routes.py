@@ -115,6 +115,20 @@ def modules(rescan=False):
     return registry_mod.current(rescan)
 
 
+def settings_sinks():
+    """Every place a module says the app's settings can be put: [{node, input}]."""
+    found = []
+    for _spec, make in modules().providers("settings_sink"):
+        try:
+            sink = make()
+        except Exception as exc:  # noqa: BLE001
+            log.failed("settings_sink", exc)
+            continue
+        if isinstance(sink, dict) and sink.get("node") and sink.get("input"):
+            found.append({"node": sink["node"], "input": sink["input"]})
+    return found
+
+
 def manifest(traits=None):
     """What the browser is told: only modules that loaded and validated.
 
@@ -146,6 +160,8 @@ def manifest(traits=None):
         ],
         # Which modules the person can switch, and which are quarantined after a fault.
         "control": control_mod.state(ordered),
+        # Where the settings live in a pipeline: the app reads and writes them there, and nowhere else.
+        "sinks": settings_sinks(),
     }
 
 
@@ -200,18 +216,7 @@ def register(routes, prefix=None):
             return make()
         return []
 
-    def _sinks():
-        """Every place a module says the app's settings can be put."""
-        found = []
-        for _spec, make in modules().providers("settings_sink"):
-            try:
-                sink = make()
-            except Exception as exc:  # noqa: BLE001
-                log.failed("settings_sink", exc)
-                continue
-            if isinstance(sink, dict):
-                found.append(sink)
-        return found
+    _sinks = settings_sinks
 
     # A module's own routes live under its id, so two modules can never collide
     # and turning one off takes its routes with it on the next start.
