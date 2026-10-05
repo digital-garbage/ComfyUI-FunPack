@@ -220,6 +220,9 @@ export const models = (app) => function mount() {
   page.node.addEventListener("focusout", () => setTimeout(() => { if (!typing()) draw(); }));
   draw();
   ps.ensureLoaded().then(async () => { opened = ps.snapshot(); await describe(); draw(); });
-  off = ps.subscribe(() => { if (!typing()) { describe().then(draw); } });
+  off = ps.subscribe((_s, kind) => {
+    if (kind === "load") opened = ps.snapshot();          // another project's pipeline went in: Revert goes back to that one
+    if (!typing()) { describe().then(draw); }
+  });
   return { node: page.node, destroy: () => { gone = true; off && off(); page.node.remove(); } };
 };

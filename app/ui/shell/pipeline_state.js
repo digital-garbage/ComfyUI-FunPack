@@ -88,6 +88,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   let removed = new Set();    // default slots the person took out of this project's pipeline
   let adoptGate = null;       // a promise while a project's pipeline is being put in
   let whole = false;          // the pipeline replaced the default (a preset, an import, the wizard) rather than editing it
+  let adoptedOk = true;       // false while the live pipeline is a stand-in for one that could not go in
   let refusalLast = null;     // the server's own reason for refusing the last project's pipeline
   let unreachableLast = false; // the last project's pipeline failed because a request did not get through, not because it was refused
   let adopting = 0;           // adopts under way (waiting for the load, or putting a pipeline in)
@@ -337,6 +338,13 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       });
     });
   }
+  // A settings node with no settings yet (just added, swapped in, or from a snapshot taken before it had any):
+  // given the project's values, or the run would not be queueable. -> whether one was.
+  function fillEmptySinks(values) {
+    const empty = (sinks || []).some((k) => (slots || []).some((s) => s.node === k.node && [undefined, ""].includes((s.inputs || {})[k.input])));
+    if (empty) mirrorValues(values);
+    return empty;
+  }
   async function refreshControl() {
     try { controlState = (await API.modules()).control || {}; } catch (_) { /* keeps the last answer */ }
     return controlState;
@@ -413,6 +421,8 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     { const why = blocked(); if (why) return { refused: [why] }; }
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     if (saving) return { refused: ["A save is still in progress: try again in a moment."] };
+    const keep = currentValues();                       // a settings node added or swapped in starts empty: it gets these
+    let refill = false;
     const mine = epoch;
     saving = true;
     let refusedNow = [];
@@ -447,6 +457,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
           if (links.length) unwired[id] = [...new Set([...(unwired[id] || []), ...links])];
         });
         try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
+        refill = fillEmptySinks(keep);
         _changed();
       }
     } catch (e) {
@@ -454,7 +465,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     } finally {
       saving = false;
     }
-    if (pending) save({});                              // a value edit queued behind this one
+    if (refill || pending) await save({});              // the filled settings, or a value edit queued behind this one
     return { refused: refusedNow };
   }
 
@@ -470,6 +481,8 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     { const why = blocked(); if (why) return { refused: [why] }; }
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     if (saving) return { refused: ["A save is still in progress: try again in a moment."] };
+    const keep = currentValues();
+    let refill = false;
     const mine = epoch;
     saving = true;
     let refusedNow = [];
@@ -489,6 +502,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         incomplete = res.incomplete || []; refused = []; queueable = !!res.queueable;
         saveNotes = res.notes || [];
         try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
+        refill = fillEmptySinks(keep);
         _changed();
       }
     } catch (e) {
@@ -496,6 +510,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     } finally {
       saving = false;
     }
+    if (refill) await save({});
     return { refused: refusedNow };
   }
 
@@ -553,8 +568,8 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     // Not loaded (ComfyUI unreachable): remember what the project holds and put it in the moment a
     // load succeeds, so the default is never what the next edit is built on.
     const hadSomething = (Array.isArray(saved) && saved.length) || (Array.isArray(removedIds) && removedIds.length);
-    if (slots === null) { if (hadSomething) deferred = [saved, removedIds, unwiredMap, wholeSaved]; return !hadSomething; }
-    if (!hadSomething && inherit) return true;
+    if (slots === null) { if (hadSomething) deferred = [saved, removedIds, unwiredMap, wholeSaved]; return (adoptedOk = !hadSomething); }
+    if (!hadSomething && inherit) return (adoptedOk = true);
     if (!Array.isArray(saved)) saved = [];
     // A saved slot is only what the server would accept: a project file outlives the code that
     // wrote it (v4 files name the node differently), and one bad slot refuses every later edit.
@@ -610,12 +625,12 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
           // The modules offered depend on the model this pipeline names, which may differ from the
           // previous project's: refresh, or the next settings edit drops this project's modules.
           try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
-          return true;
+          return (adoptedOk = true);
         }
         reasons = (res && res.refused) || reasons;
       } catch (e) {
-        // No answer, or a gateway's (a tunnel, a restarting ComfyUI): try again later. An answer refusing it is a refusal.
-        if (!e || !e.status || e.status >= 502) unreachable = true;
+        // No answer, or a server error (a tunnel, a restarting ComfyUI): try again later. A 4xx is a refusal.
+        if (!e || !e.status || e.status >= 500) unreachable = true;
         else reasons = [e.message];
       }
     }
@@ -626,8 +641,8 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     slots = JSON.parse(JSON.stringify(offered));
     removed = new Set(); unwired = {}; whole = false;   // the stand-in is the plain default: no flags of the project it could not load
     incomplete = []; refused = []; queueable = false;   // nor the last project's readiness
-    saveNotes = ["This project's saved pipeline could not be loaded, so the default is in use and edits are not being saved."];
-    return false;
+    saveNotes = ["This project's saved pipeline could not be loaded, so the default is in use."];
+    return (adoptedOk = false);
   }
 
   // Every slot's own values as they are NOW, as per-run overrides: a Generate is several runs, and the
@@ -647,7 +662,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, settled, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
-    setEditGuard: (fn) => { editGuard = fn; }, unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
+    setEditGuard: (fn) => { editGuard = fn; }, adoptedOk: () => adoptedOk, unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
     whole: () => whole,
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),

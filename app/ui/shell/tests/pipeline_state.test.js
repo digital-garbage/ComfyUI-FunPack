@@ -487,7 +487,7 @@ test("a project opened while ComfyUI is down never gets an earlier project's wai
 });
 
 test("a saved pipeline the server answers with a refusal is a refusal, not an outage; no answer is an outage", async () => {
-  for (const [err, outage] of [[Object.assign(new Error("slot 0 role 0 has no input"), { status: 400 }), false], [new Error("Failed to fetch"), true], [Object.assign(new Error("Bad gateway"), { status: 502 }), true]]) {
+  for (const [err, outage] of [[Object.assign(new Error("slot 0 role 0 has no input"), { status: 400 }), false], [new Error("Failed to fetch"), true], [Object.assign(new Error("Bad gateway"), { status: 502 }), true], [Object.assign(new Error("Internal Server Error"), { status: 500 }), true]]) {
     const PS = load([]);
     await PS.ensureLoaded();
     const real = lastApi.editPipeline;
@@ -575,4 +575,36 @@ test("the stand-in for a pipeline that could not go in does not inherit the last
   lastApi.editPipeline = async () => { throw Object.assign(new Error("refused"), { status: 400 }); };
   await PS.adopt([{ id: "model", node: "Loader", inputs: {} }]);
   assert.strictEqual(PS.queueable(), false);
+});
+
+test("a settings node swapped in (or put back by Revert) starts with the project's settings, saved, so the run stays queueable", async () => {
+  for (const how of ["replace", "restore"]) {
+    const PS = withSink(JSON.stringify({ sharpen: { enabled: true, amount: 0.9 } }), [sharpen]);
+    await PS.ensureLoaded();
+    const old = PS.snapshot();
+    old.slots.find((s) => s.id === "settings").inputs = {};                    // a snapshot from before it had settings
+    const real = lastApi.editPipeline, posts = [];
+    lastApi.editPipeline = async (body) => {
+      posts.push(structuredClone(body));
+      if (body.action === "replace") return { slots: body.slots.map((s) => (s.id === body.slot ? { ...s, inputs: {} } : s)), incomplete: [], refused: [], queueable: false };
+      return real(body);
+    };
+    const res = how === "replace" ? await PS.edit({ action: "replace", slot: "settings", node: "Sink" }) : await PS.restore(old);
+    assert.deepStrictEqual(res.refused, [], how);
+    const blob = (sl) => JSON.parse(sl.find((s) => s.id === "settings").inputs.settings);
+    assert.deepStrictEqual(blob(PS.slots()).sharpen, { enabled: true, amount: 0.9 }, how);
+    assert.deepStrictEqual(blob(posts.at(-1).slots).sharpen, { enabled: true, amount: 0.9 }, how);      // and sent, not only shown
+  }
+});
+
+test("whether the last project's pipeline went in is known the moment the load ends", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const real = lastApi.editPipeline;
+  lastApi.editPipeline = async () => { throw Object.assign(new Error("refused"), { status: 400 }); };
+  await PS.adopt([{ id: "model", node: "Loader", inputs: {} }]);
+  assert.strictEqual(PS.adoptedOk(), false);
+  lastApi.editPipeline = real;
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "a" } }]);
+  assert.strictEqual(PS.adoptedOk(), true);
 });

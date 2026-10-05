@@ -126,3 +126,26 @@ test("two quick edits of one input: the first is not called failed because the s
   assert.equal(live[0].inputs.steps, 25);
   assert.equal(document.querySelectorAll("[class*=toast]").length, toasts);
 });
+
+test("typing a value back while the change away from it is still saving puts it back", async () => {
+  let live = [{ id: "sampler", node: "S", inputs: { steps: 7 }, roles: [{ at: "generation.sampling", input: "steps", label: "Steps" }] }];
+  let queued = null;
+  const ps = { slots: () => live, activeModules: () => [], useful: () => true, usefulness: () => () => true, currentValues: () => ({}), loading: () => false, loadError: () => null,
+    subscribe: () => () => {}, ensureLoaded: async () => {}, saveNotes: () => [],
+    save: async (b) => { queued = { ...(queued || {}), ...b.inputs.sampler }; },
+    settled: async () => { await new Promise((r) => setTimeout(r, 5)); if (queued) { live = [{ ...live[0], inputs: { ...live[0].inputs, ...queued } }]; queued = null; } } };
+  const host = document.createElement("div");
+  document.body.append(host);
+  hub.setup({ host, app: { pipeline: ps, api: { describeNodes: async () => ({ nodes: { S: { widgets: [{ name: "steps", type: "INT", min: 1, max: 100 }] } } }) }, on: () => () => {}, actions: null } });
+  await new Promise((r) => setTimeout(r, 0));
+  host.querySelector("button").click();
+  await new Promise((r) => setTimeout(r, 0));
+  const input = [...document.querySelectorAll("input[type=number]")].pop();
+  for (const v of ["20", "7"]) {
+    input.value = v;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(live[0].inputs.steps, 7);
+});

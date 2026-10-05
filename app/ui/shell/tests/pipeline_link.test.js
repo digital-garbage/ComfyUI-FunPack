@@ -210,14 +210,13 @@ test("a pipeline ComfyUI refuses says the server's reason, and the person's next
 
 test("while a project's pipeline could not go in, edits to the stand-in are refused with the reason; once it is in, they are not", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  let opened, guard, up = false;
+  let opened, guard, up = false, ok = true;
   const project = { project: { id: "a", models: { slots, removed: [], unwired: {}, whole: false } }, setField: () => {} };
-  const pipeline = { adopt: async () => up, slots: () => slots, unreachable: () => true, setEditGuard: (fn) => { guard = fn; },
+  const pipeline = { adopt: async () => (ok = up), adoptedOk: () => ok, slots: () => slots, unreachable: () => true, setEditGuard: (fn) => { guard = fn; },
     removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: () => {} };
   linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
   const flush = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
   const first = opened();
-  assert.strictEqual(guard(), null);                 // a first load under way: an edit waits for it, it is not refused
   await first;
   assert.match(guard(), /^Could not save: .*still loading/);
   for (let i = 0; i < 4; i++) { t.mock.timers.tick(6000); await flush(); }
@@ -225,4 +224,21 @@ test("while a project's pipeline could not go in, edits to the stand-in are refu
   up = true;
   t.mock.timers.tick(16000); await flush();
   assert.strictEqual(guard(), null);
+});
+
+test("an edit that waited on a retry which worked goes in: the guard reads how the load ended, not the retry count", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let opened, guard, ok = false, calls = 0, atLanding;
+  const project = { project: { id: "a", models: { slots, removed: [], unwired: {}, whole: false } }, setField: () => {} };
+  // The real state clears its gate (and an edit waiting on it asks the guard) before the link hears the answer.
+  const pipeline = { adopt: async () => { ok = ++calls > 1; if (ok) atLanding = guard(); return ok; }, adoptedOk: () => ok,
+    slots: () => slots, unreachable: () => true, setEditGuard: (fn) => { guard = fn; },
+    removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: () => {} };
+  linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
+  await opened();
+  assert.match(guard(), /^Could not save/);
+  t.mock.timers.tick(6000);
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  assert.strictEqual(calls, 2);
+  assert.strictEqual(atLanding, null);
 });

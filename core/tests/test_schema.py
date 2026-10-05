@@ -317,3 +317,11 @@ def test_uses_when_must_name_a_declared_setting():
 def test_the_manifest_names_where_settings_live(comfyui):
     from core import routes
     assert {"node": "FunPackModifierSettings", "input": "settings"} in routes.manifest()["sinks"]
+
+
+def test_a_condition_on_a_choice_must_name_one_of_its_options():
+    mode = {"type": "enum", "default": "manual", "label": "Mode",
+            "options": [{"value": "manual", "label": "Manual"}, {"value": "learned", "label": "Learned"}]}
+    with pytest.raises(SchemaError, match="'learn' for 'mode' is not one of its options"):
+        validate(announce(settings={"mode": mode}, uses=["taste_store"], uses_when={"mode": "learn"}))
+    assert validate(announce(settings={"mode": mode}, uses=["taste_store"], uses_when={"mode": ["learned"]}))

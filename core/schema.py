@@ -151,6 +151,12 @@ def _validate_when(when: Any, where: str, siblings: Dict[str, dict], key: str) -
             raise SchemaError(f"{where}'s when refers to {other!r}, which this module does not declare.")
         if not isinstance(expected, SCALARS) and not isinstance(expected, (list, tuple)):
             raise SchemaError(f"{where}'s when value for {other!r} must be a scalar or a list.")
+        options = siblings[other].get("options") if isinstance(siblings[other], dict) else None
+        if isinstance(options, (list, tuple)):
+            allowed = [o.get("value") for o in options if isinstance(o, dict)]
+            for value in expected if isinstance(expected, (list, tuple)) else [expected]:
+                if value not in allowed:            # a value the setting can never hold: the condition is never true
+                    raise SchemaError(f"{where}'s when value {value!r} for {other!r} is not one of its options.")
 
 
 def validate_nodes(value: Any, module_id: str) -> list:
