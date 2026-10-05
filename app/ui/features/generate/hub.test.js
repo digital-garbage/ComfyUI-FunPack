@@ -115,3 +115,22 @@ test("a scene edited while an earlier shot of the run is making goes as it read 
   await app.runner.units(["a", "c"]);
   assert.deepEqual(seen, [["x", false], ["at click", true]]);
 });
+
+test("Generate this scene clicked while a run is going says so, and queues nothing more", async () => {
+  let queued = 0, finish;
+  const { app, doc, host } = rig("idle", { generate: async () => { queued += 1; return true; }, waitForTerminal: () => Object.assign(new Promise((r) => { finish = r; }), { cancel() {} }) });
+  let heard;
+  app.on = (fn) => { heard = fn; return () => {}; };
+  host.remove();
+  const h2 = document.createElement("div");
+  hub.setup({ host: h2, app });
+  app.project.selected = doc.scenes[0];
+  const before = document.body.textContent;
+  app.runner.units(["a"]);
+  await new Promise((r) => setTimeout(r, 0));
+  heard("generate.scene");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(queued, 1);
+  assert.match(document.body.textContent.replace(before, ""), /already going/);
+  finish("cancelled");
+});

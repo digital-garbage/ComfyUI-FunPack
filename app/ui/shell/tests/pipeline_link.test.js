@@ -189,7 +189,7 @@ test("a project whose pipeline could not get through mid-session keeps being ret
   assert.deepStrictEqual(writes, ["edited"]);
 });
 
-test("a pipeline ComfyUI refuses says the server's reason, and the person's next edit becomes the project's pipeline", async (t) => {
+test("a pipeline ComfyUI refuses says the server's reason; a value tweak on the stand-in is refused, a change of shape becomes the project's pipeline", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const writes = [], said = [];
   let opened, heard;
@@ -203,8 +203,9 @@ test("a pipeline ComfyUI refuses says the server's reason, and the person's next
   assert.match(said.join(" "), /refused .*slot 0 role 0 has no input/);
   assert.match(link.why(), /refused/);
   heard(slots, "load");                      // the module list arriving is not the person's edit
+  heard(slots, "edit");                      // nor is a value: the saved pipeline must not go for a Steps change
   assert.deepStrictEqual(writes, []);
-  heard([{ ...slots[0], inputs: { ckpt_name: "fixed" } }], "edit");
+  heard([{ ...slots[0], inputs: { ckpt_name: "fixed" } }], "shape");
   assert.deepStrictEqual(writes, ["fixed"]);
 });
 
@@ -252,7 +253,8 @@ test("once the person's edit has replaced a refused pipeline, later edits are no
   linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
   await opened();
   for (let i = 0; i < 4; i++) { t.mock.timers.tick(6000); for (let j = 0; j < 5; j++) await new Promise((r) => setImmediate(r)); }
-  assert.strictEqual(guard(), null);                 // refused for good: the next edit replaces it
-  heard(slots, "edit");
-  assert.strictEqual(guard(), null);                 // and the one after is not blocked
+  assert.strictEqual(guard("shape"), null);          // refused for good: a change of shape replaces it...
+  assert.match(guard("edit"), /Models & Pipeline/);  // ...a value tweak on the stand-in is refused, saying how
+  heard(slots, "shape");
+  assert.strictEqual(guard("edit"), null);           // and the one after is not blocked
 });

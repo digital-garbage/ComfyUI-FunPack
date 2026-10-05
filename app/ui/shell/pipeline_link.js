@@ -49,8 +49,9 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
 
   pipeline.subscribe((slots, kind) => {
     if (waiting === "load" && owner === null) { retries = 0; adopt(); return; }
-    // Refused for good: the person's next edit of the stand-in pipeline becomes this project's pipeline.
-    if (replaceOnEdit && kind === "edit" && owner === null && project.project) { replaceOnEdit = false; owner = project.project.id; }
+    // Refused for good: the person's next change of the pipeline's SHAPE (a preset, a node) becomes this project's pipeline.
+    // A value tweak is not that: on the stand-in it is refused, or a Steps change would throw the saved pipeline away.
+    if (replaceOnEdit && kind === "shape" && owner === null && project.project) { replaceOnEdit = false; owner = project.project.id; }
     if (!project.project || project.project.id !== owner) return;
     store(project.project.models || {}, slots);
   });
@@ -58,11 +59,11 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   // Whether the live pipeline is the open project's (false while it is going in, or ComfyUI has not answered).
   const refused = () => {
     const reason = pipeline.refusal && pipeline.refusal();
-    return `ComfyUI refused this project's saved pipeline${reason ? ` (${reason})` : ""}, so the default is in use. Your next pipeline edit replaces the saved one; or open the project again to retry.`;
+    return `ComfyUI refused this project's saved pipeline${reason ? ` (${reason})` : ""}, so the default is in use. To replace it, pick a pipeline or change a node in Settings ▸ Models & Pipeline; or open the project again to retry.`;
   };
   // An edit to the stand-in while this project's pipeline could not go in would be thrown away by the next retry: refused, said.
   // Asked once the load is through, so judged by how it ended: an edit queued behind a retry that worked goes in.
-  if (pipeline.setEditGuard) pipeline.setEditGuard(() => (pipeline.adoptedOk && !pipeline.adoptedOk() && project.project && !replaceOnEdit && !owns() ? `Could not save: ${why()}` : null));
+  if (pipeline.setEditGuard) pipeline.setEditGuard((kind) => (pipeline.adoptedOk && !pipeline.adoptedOk() && project.project && !owns() && !(replaceOnEdit && kind === "shape") ? `Could not save: ${why()}` : null));
   const owns = () => !!project.project && owner === project.project.id;
   /** Why the open project's pipeline is not live, in words for the person; null when it is. */
   const why = () => owns() ? null : waiting ? "ComfyUI is not answering, so this project's pipeline is not loaded yet. It goes in as soon as ComfyUI answers."

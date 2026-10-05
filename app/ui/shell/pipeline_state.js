@@ -207,7 +207,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   // one edit before this).
   // Set by whoever ties the pipeline to a project: a reason when an edit now would land on a stand-in it could not keep.
   let editGuard = () => null;
-  const blocked = () => { const why = editGuard(); if (why) { saveNotes = [why]; _changed("load"); } return why; };    // said, and views redraw to what is true
+  const blocked = (kind = "edit") => { const why = editGuard(kind); if (why) { saveNotes = [why]; _changed("load"); } return why; };    // said, and views redraw to what is true
 
   async function save(body) {
     if (adoptGate) await adoptGate;                     // an edit made while a project's pipeline goes in lands on THAT pipeline
@@ -419,7 +419,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     await ensureLoaded();
     if (slots === null) return { refused: ["The pipeline has not loaded: is ComfyUI reachable?"] };
     if (adoptGate) await adoptGate;
-    { const why = blocked(); if (why) return { refused: [why] }; }
+    { const why = blocked("shape"); if (why) return { refused: [why] }; }
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     if (saving) return { refused: ["A save is still in progress: try again in a moment."] };
     const keep = currentValues();                       // a settings node added or swapped in starts empty: it gets these
@@ -459,7 +459,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         });
         try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
         refill = fillEmptySinks(keep);
-        _changed();
+        _changed("shape");                              // a change of shape: may replace a refused saved pipeline
       }
     } catch (e) {
       refusedNow = [e && e.message ? e.message : String(e)];
@@ -479,7 +479,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   async function restore(snap) {
     if (!snap || !Array.isArray(snap.slots)) return { refused: ["Nothing to go back to."] };
     if (adoptGate) await adoptGate;
-    { const why = blocked(); if (why) return { refused: [why] }; }
+    { const why = blocked("shape"); if (why) return { refused: [why] }; }
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     if (saving) return { refused: ["A save is still in progress: try again in a moment."] };
     const keep = currentValues();
@@ -504,7 +504,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         saveNotes = res.notes || [];
         try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
         refill = fillEmptySinks(keep);
-        _changed();
+        _changed("shape");                              // a change of shape: may replace a refused saved pipeline
       }
     } catch (e) {
       refusedNow = [e && e.message ? e.message : String(e)];

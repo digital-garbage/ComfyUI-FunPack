@@ -50,7 +50,7 @@ export default {
 
     // `times` > 1: the same shots again, only the seed differing (the prompt's random picks are drawn once), so the takes can be compared.
     async function runUnits(units, times = 1) {
-      if (busy) { if (times > 1) tell("A run is already going: wait for it, or Stop it."); return; }
+      if (busy) { tell("A run is already going: wait for it, or Stop it."); return; }
       busy = true; stopped = false; draw();
       const pid = p.project.id;
       let made = 0;
@@ -154,10 +154,10 @@ export default {
     });
     draw();
     const offRun = g.subscribe(draw);
-    const offApp = app.on((what) => { if (what === "generate.scene" && !busy && p.selected) runUnits(unitsOf([p.selected]));
-      else if (what === "generate.selected" && !busy && pickedScenes().length) runUnits(unitsOf(pickedScenes())); else draw(); });
-    const offers = [offer(app, { id: "generate-all", label: "Generate", icon: "▶", run: () => { if (!busy && p.project) runUnits(unitsOf(p.scenes)); } }),
-      offer(app, { id: "generate-selected", label: "Generate selected", icon: "▶", run: () => { if (!busy && pickedScenes().length) runUnits(unitsOf(pickedScenes())); } })];
+    const offApp = app.on((what) => { if (what === "generate.scene" && p.selected) runUnits(unitsOf([p.selected]));
+      else if (what === "generate.selected" && pickedScenes().length) runUnits(unitsOf(pickedScenes())); else draw(); });
+    const offers = [offer(app, { id: "generate-all", label: "Generate", icon: "▶", run: () => { if (p.project) runUnits(unitsOf(p.scenes)); } }),
+      offer(app, { id: "generate-selected", label: "Generate selected", icon: "▶", run: () => { if (pickedScenes().length) runUnits(unitsOf(pickedScenes())); } })];
     return () => { offRun(); offApp(); offers.forEach((f) => f()); };
   },
 };

@@ -619,3 +619,15 @@ test("a module that acts through a pipeline input counts only in a pipeline that
     assert.strictEqual(PS.usefulness()(PS.modulesById().continuity), shown);
   }
 });
+
+test("a value edit and a change of shape are told apart, to the guard and to listeners", async () => {
+  const PS = withSink("{}", [sharpen]);
+  await PS.ensureLoaded();
+  const asked = [], heard = [];
+  PS.setEditGuard((kind) => { asked.push(kind); return null; });
+  PS.subscribe((_s, kind) => heard.push(kind));
+  await PS.setModuleValue("sharpen", "enabled", true);
+  await PS.edit({ action: "remove", slot: "other" });
+  assert.deepStrictEqual([asked.includes("edit"), asked.includes("shape")], [true, true]);
+  assert.deepStrictEqual([heard.includes("edit"), heard.includes("shape")], [true, true]);
+});
