@@ -141,3 +141,21 @@ test("an edit still on its way when Generate is clicked (the Story box splitting
   await app.runner.units(["a"]);
   assert.deepEqual(seen, ["typed last"]);
 });
+
+test("a run that fails while running says which node and ComfyUI's own reason", async () => {
+  const { app } = rig("idle", { generate: async () => true, waitForTerminal: () => Object.assign(Promise.resolve("failed"), { cancel() {} }) });
+  app.generate.run.state.error = { node: "SaveVideo", message: "Saving image outside the output folder is not allowed." };
+  const before = document.body.textContent;
+  await app.runner.units(["a"]);
+  assert.match(document.body.textContent.replace(before, ""), /failed in SaveVideo: Saving image outside the output folder/);
+});
+
+test("a project that already has a run in ComfyUI's queue (another tab) is not queued again, and the click says why", async () => {
+  let queued = 0;
+  const { app } = rig("idle", { generate: async () => { queued += 1; return true; } });
+  app.api.projectQueued = async (id) => id === "P";
+  const before = document.body.textContent;
+  await app.runner.units(["a"]);
+  assert.equal(queued, 0);
+  assert.match(document.body.textContent.replace(before, ""), /already has a run in ComfyUI's queue/);
+});

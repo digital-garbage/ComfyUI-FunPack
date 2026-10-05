@@ -149,3 +149,21 @@ test("typing a value back while the change away from it is still saving puts it 
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(live[0].inputs.steps, 7);
 });
+
+test("a sampling setting that could not be saved is said in the window, not only on the Engine page", async () => {
+  const mod = { id: "sharpen", category: "sampling", settings: { enabled: { type: "bool", default: false, label: "Adjust detail" } } };
+  const ps = { slots: () => [], activeModules: () => [mod], useful: () => true, usefulness: () => () => true, currentValues: () => ({}), loading: () => false, loadError: () => null,
+    subscribe: () => () => {}, ensureLoaded: async () => {}, save: async () => {}, setModuleValue: async () => {}, settled: async () => true,
+    saveNotes: () => ["Could not save: ComfyUI refused this project's saved pipeline"] };
+  const host = document.createElement("div");
+  document.body.append(host);
+  hub.setup({ host, app: { pipeline: ps, api: { describeNodes: async () => ({ nodes: {} }) }, on: () => () => {}, actions: null } });
+  await new Promise((r) => setTimeout(r, 0));
+  host.querySelector("button").click();
+  await new Promise((r) => setTimeout(r, 0));
+  const before = document.body.textContent;
+  const box = [...document.querySelectorAll("input[type=checkbox], [role=switch]")].pop();
+  box.click();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.match(document.body.textContent.replace(before, ""), /Could not save: ComfyUI refused/);
+});

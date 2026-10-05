@@ -60,6 +60,8 @@ export default {
         // A project's pipeline still going in is the one this run uses, not the last one's.
         if (app.pipeline.settled && !(await app.pipeline.settled())) { tell("Not started: this project's pipeline is still loading. ComfyUI is slow to answer; try again in a moment."); return; }
         if (app.pipelineOwned && !app.pipelineOwned()) { tell(`Not started: ${(app.pipelineWhy && app.pipelineWhy()) || "this project's pipeline is not loaded yet."}`); return; }
+        // The page's own guard does not see another tab: ComfyUI's queue does. One GPU job per project at a time.
+        if (app.api.projectQueued && (await app.api.projectQueued(pid))) { tell("This project already has a run in ComfyUI's queue (another tab or window?). Wait for it, or Stop it there."); return; }
         // The pipeline as it is NOW, at the click: every shot of this run uses it, whatever is opened or edited meanwhile.
         const frozen = structuredClone(app.pipeline.slots() || []);
         if (times > 1 && !rolesAt(frozen, "generation.seed").length) { tell("This pipeline has no seed input the app controls, so the takes would all come out the same."); return; }
@@ -96,7 +98,11 @@ export default {
           const end = await done;
           if (end === g.CANCELLED) break;
           const images = g.run.state.images;
-          if (end !== g.DONE) { tell("Generation failed. The log has ComfyUI's message."); break; }
+          if (end !== g.DONE) {                         // ComfyUI's own words: which node, and why
+            const e = g.run.state.error;
+            tell(e && e.message ? `Generation failed${e.node ? ` in ${e.node}` : ""}: ${e.message}` : "Generation failed. The log has ComfyUI's message.");
+            break;
+          }
           if (!images.length) { tell("ComfyUI finished without a result. Try again."); break; }
           await record(pid, unit, images[images.length - 1], frames, g.run.state.promptId);       // the next shot may continue from this one: it must be on the clip first
           snap.scene_renders = structuredClone(p.project.scene_renders || {});                       // ...and in what the next shot reads

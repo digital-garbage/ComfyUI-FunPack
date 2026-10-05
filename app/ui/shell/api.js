@@ -76,6 +76,13 @@ export const api = {
     }
     return body.prompt_id;
   },
+  /** Whether ComfyUI's queue holds a run of this project (queued from any tab). Unreadable: false, the queue decides. */
+  async projectQueued(projectId) {
+    try {
+      const q = await (await fetch("/queue")).json();
+      return [...(q.queue_running || []), ...(q.queue_pending || [])].some((r) => (r[3] || {}).funpack_project_id === projectId);
+    } catch { return false; }
+  },
   /** null while it is queued or running, else {videos} | {error} | {gone} | {retry} (a dropped reply is not a failed job). */
   async upscaleResult(promptId) {
     let entry = null;

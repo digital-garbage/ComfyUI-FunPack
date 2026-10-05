@@ -49,7 +49,13 @@ export default {
       if (ps.loading()) return body.set([c.hint.default({ text: "Loading…" })]);
       if (ps.loadError()) return body.set([c.banner.warn({ text: `Could not load: ${ps.loadError()}` })]);
       const mods = sampling(), values = ps.currentValues();
-      const change = async (id, name, value) => { await ps.setModuleValue(id, name, value); draw(); };
+      const change = async (id, name, value) => {
+        await ps.setModuleValue(id, name, value);
+        if (ps.settled) await ps.settled();
+        const why = (ps.saveNotes ? ps.saveNotes() : []).find((n) => /could not save/i.test(n));
+        if (why) c.toast.warn({ text: why });          // refused, or not saved: said here, not only on the Engine page
+        draw();
+      };
       const rows = marked().map(inputRow);
       const unread = marked().length && !rows.some(Boolean) && (unreadable || marked().every(({ slot }) => slot.node in specs)) ? [c.hint.default({ text: "Steps, sampler and scheduler could not be read from the sampler node: change them in Settings ▸ Models & Pipeline." })] : [];
       body.set([...unread, ...rows, ...mods.flatMap((m) => [mods.length > 1 ? c.label.section({ text: m.title || m.id }) : null,
