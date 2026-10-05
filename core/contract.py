@@ -91,8 +91,8 @@ class ModuleSpec:
         return {key: spec["default"] for key, spec in self.settings.items()}
 
     def to_manifest(self) -> dict:
-        # `nodes` is deliberately absent: it is not JSON, and the browser has no
-        # use for it. The graph is ComfyUI's surface, the manifest is the app's.
+        # `nodes` as their ids: a module whose settings are read only by its own node is inert, so
+        # hidden, in a pipeline that does not contain that node.
         return {
             "id": self.id,
             "title": self.title,
@@ -105,4 +105,6 @@ class ModuleSpec:
             "category": self.category,
             "ui": self.ui,
             "status": self.status,
+            "nodes": [getattr(n.GET_SCHEMA(), "node_id", n.__name__) if hasattr(n, "GET_SCHEMA") else n.__name__
+                      for n in self.nodes],
         }

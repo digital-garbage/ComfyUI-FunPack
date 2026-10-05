@@ -407,7 +407,10 @@ export function createPipelineState(API) {
       refusedNow = (res && res.refused) || [];
       if (res && res.slots && !refusedNow.length) {
         slots = res.slots;
-        removed = new Set(snap.removed || []);
+        // A default slot the new pipeline lacks is removed, whatever the caller said: otherwise the next
+        // open lays the default back over it (a preset, an import or the wizard would regain the default's loaders).
+        const kept = new Set(res.slots.map((s) => s.id));
+        removed = new Set([...(snap.removed || []), ...(offered || []).map((s) => s.id).filter((id) => !kept.has(id))]);
         unwired = JSON.parse(JSON.stringify(snap.unwired || {}));
         groupEdits = {}; pendingValues = {}; pendingBody = null; pending = false;
         incomplete = res.incomplete || []; refused = []; queueable = !!res.queueable;

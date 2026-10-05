@@ -21,7 +21,7 @@ export async function call(method, path, body) {
 export const api = {
   pipeline: () => call("GET", "/api/pipeline"),
   editPipeline: (body) => call("POST", "/api/pipeline", body),
-  modules: (traits) => call("GET", `/api/modules${traits ? `?traits=${encodeURIComponent(traits)}` : ""}`),
+  modules: (traits) => call("GET", `/api/modules${traits != null ? `?traits=${encodeURIComponent(traits)}` : ""}`),
   releaseModule: (id) => call("POST", "/api/control/release", { id }),
   searchNodes: (q, limit = 40) => call("GET", `/api/nodes/search?q=${encodeURIComponent(q || "")}&limit=${limit}`),
   pipelinePresets: () => call("GET", "/api/pipeline/presets"),

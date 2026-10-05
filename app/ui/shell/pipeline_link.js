@@ -3,18 +3,23 @@
 export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   let adopted = true;        // false while the open project's pipeline is not the live one: its copy is not rewritten
   let retries = 0;
+  // Only a real change is written: opening a project must not rewrite its file.
+  const store = (base, slots) => {
+    const next = { ...base, slots: JSON.parse(JSON.stringify(slots || [])), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap() };
+    if (JSON.stringify(next) !== JSON.stringify(project.project.models || {})) project.setField("models", next, { quiet: true });
+  };
 
   async function adopt() {
     const saved = project.project && project.project.models || {};
-    let ok = false;
+    let ok = false, timer;
     try {
       // Bounded: a hung request must not hold the project behind it.
-      ok = await Promise.race([pipeline.adopt(saved.slots || [], saved.removed, saved.unwired), new Promise((r) => setTimeout(() => r(false), 20000))]);
-    } catch { ok = false; }
+      ok = await Promise.race([pipeline.adopt(saved.slots || [], saved.removed, saved.unwired), new Promise((r) => { timer = setTimeout(() => r(false), 20000); })]);
+    } catch { ok = false; } finally { clearTimeout(timer); }
     adopted = Boolean(ok && pipeline.slots());
     if (adopted) {
       retries = 0;
-      project.setField("models", { ...saved, slots: JSON.parse(JSON.stringify(pipeline.slots())), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap() }, { quiet: true });
+      store(saved, pipeline.slots());
     } else if (retries++ < 3) {
       setTimeout(adopt, 5000);
     } else {
@@ -24,8 +29,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
 
   pipeline.subscribe((slots) => {
     if (!project.project || !adopted) return;
-    const had = project.project.models || {};
-    project.setField("models", { ...had, slots: JSON.parse(JSON.stringify(slots || [])), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap() }, { quiet: true });
+    store(project.project.models || {}, slots);
   });
   onOpen(adopt);
   return { adopt };

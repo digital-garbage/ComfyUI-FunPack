@@ -251,3 +251,10 @@ def test_an_ordinary_default_still_passes():
     spec = validate({"id": "m", "title": "M", "mount": "x", "settings": {
         "strength": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "label": "S"}}})
     assert spec.defaults() == {"strength": 0.5}
+
+
+def test_the_manifest_names_a_modules_nodes_by_id(comfyui):
+    from modules.conditioning import shot_camera
+    from core import routes
+    found = next(m for m in routes.manifest()["modules"] if m["id"] == shot_camera.ID)
+    assert found["nodes"] == ["FunPackShotCamera"]

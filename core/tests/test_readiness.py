@@ -30,3 +30,12 @@ def test_the_machine_checks_never_raise_and_low_disk_is_a_warning(monkeypatch):
     rows = r.machine(disk_free_gb=3)
     assert any(x["level"] == "fail" and "ffmpeg" in x["text"] for x in rows)
     assert any(x["level"] == "warn" and "3 GB free" in x["text"] for x in rows)
+
+
+def test_an_apple_gpu_can_generate_and_is_not_told_to_install_cuda_only_libraries(monkeypatch):
+    import torch
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    rows = r.machine()
+    assert any(x["level"] == "ok" and "MPS" in x["text"] for x in rows)
+    assert not any("sageattention" in x["text"] or "NVIDIA GPU is visible" in x["text"] for x in rows)

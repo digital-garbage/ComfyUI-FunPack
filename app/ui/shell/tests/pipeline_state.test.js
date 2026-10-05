@@ -295,3 +295,15 @@ test("the settings of a Generate are taken once: frozenInputs is a copy, wired i
   frozen.model.dtype = "fp16";
   assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.dtype, "bf16");   // and is not the live object
 });
+
+test("a pipeline replaced whole (a preset) is reopened as it was: the default's own slots do not come back", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const preset = [{ id: "ckpt", node: "Checkpoint", inputs: { file: "sd.safetensors" } }, { id: "gen", node: "Gen", inputs: { steps: 20, model: ["ckpt", 0] } }];
+  await PS.restore({ slots: preset, removed: [], unwired: {} });
+  assert.deepStrictEqual(PS.removedIds(), ["model"]);
+  const saved = { slots: PS.slots(), removed: PS.removedIds() };
+  const again = load([]);
+  await again.adopt(saved.slots, saved.removed);
+  assert.deepStrictEqual(again.slots().map((s) => s.id).sort(), ["ckpt", "gen"]);
+});

@@ -33,7 +33,11 @@ def machine(disk_free_gb=None) -> List[dict]:
     try:
         import torch
         if not torch.cuda.is_available():
-            out.append(row("warn", "No NVIDIA GPU is visible to torch: this machine can edit but not generate."))
+            mps = getattr(torch.backends, "mps", None)
+            if mps is not None and mps.is_available():
+                out.append(row("ok", "Apple GPU (MPS): generates slowly, enough for small models like SD1.5; video models need an NVIDIA GPU."))
+            else:
+                out.append(row("warn", "No GPU is visible to torch: this machine can edit but not generate."))
         else:
             props = torch.cuda.get_device_properties(0)
             out.append(row("ok", f"{props.name}, {props.total_memory / 1024 ** 3:.0f} GB, sm_{props.major}{props.minor}"))
@@ -41,10 +45,10 @@ def machine(disk_free_gb=None) -> List[dict]:
                 out.append(row("fail", "This GPU does not support bf16, which the H3 VAEs need."))
             if props.major >= 12 and have("xformers"):
                 out.append(row("warn", "xformers has no masked-attention kernel for this GPU: start ComfyUI with --disable-xformers --use-sage-attention."))
+            if not have("sageattention"):                     # a CUDA-only library: nothing to install on a Mac
+                out.append(row("warn", "sageattention is not installed: attention runs slower (and the H3 SLA setting has no fast path)."))
     except Exception as exc:                                  # noqa: BLE001
         out.append(row("warn", f"torch could not be inspected ({exc})."))
-    if not have("sageattention"):
-        out.append(row("warn", "sageattention is not installed: attention runs slower (and the H3 SLA setting has no fast path)."))
     if disk_free_gb is not None and disk_free_gb < LOW_DISK_GB:
         out.append(row("warn", f"Only {disk_free_gb} GB free: renders and previews fill a disk quickly (want {LOW_DISK_GB}+)."))
     return out
