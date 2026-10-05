@@ -485,3 +485,25 @@ test("a project opened while ComfyUI is down never gets an earlier project's wai
   await PS.ensureLoaded();
   assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "");
 });
+
+test("a saved pipeline the server answers with a refusal is a refusal, not an outage; no answer is an outage", async () => {
+  for (const [err, outage] of [[Object.assign(new Error("slot 0 role 0 has no input"), { status: 400 }), false], [new Error("Failed to fetch"), true], [Object.assign(new Error("Bad gateway"), { status: 502 }), true]]) {
+    const PS = load([]);
+    await PS.ensureLoaded();
+    const real = lastApi.editPipeline;
+    lastApi.editPipeline = async () => { throw err; };
+    assert.strictEqual(await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "x" } }]), false);
+    assert.strictEqual(PS.unreachable(), outage, err.message);
+    lastApi.editPipeline = real;
+  }
+});
+
+test("settings can be read from a frozen pipeline, apart from the live one and edits not yet landed", async () => {
+  const PS = load([]);
+  lastApi.modules = async () => ({ modules: [{ id: "continuity", settings: { carry: { type: "bool", default: true } } }] });
+  await PS.adopt([{ id: "settings", node: "Sink", inputs: { settings: JSON.stringify({ continuity: { carry: true } }) } }]);
+  const frozen = structuredClone(PS.slots());
+  await PS.adopt([{ id: "settings", node: "Sink", inputs: { settings: JSON.stringify({ continuity: { carry: false }, _off: { all: true } }) } }]);
+  assert.deepStrictEqual([PS.currentValues(frozen).continuity.carry, PS.allOff(frozen)], [true, false]);
+  assert.deepStrictEqual([PS.currentValues().continuity.carry, PS.allOff()], [false, true]);
+});

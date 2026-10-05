@@ -104,10 +104,10 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   // plain object -- and only accepts a decoded key that names a module this
   // session already knows is installed, so an unrelated node's incidentally
   // JSON-shaped string can't inject a bogus entry that round-trips forever.
-  function valuesAlreadyPlaced() {
+  function valuesAlreadyPlaced(from = slots) {
     const known = new Set([...Object.keys(modulesById), "_off"]);    // _off: the modules this project turned off
     const merged = {};
-    (slots || []).forEach((slot) => {
+    (from || []).forEach((slot) => {
       Object.values(slot.inputs || {}).forEach((v) => {
         if (typeof v !== "string") return;
         let parsed;
@@ -273,18 +273,19 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   // can never hold a stale copy of each other's CONFIRMED state between
   // them -- the pending overlay above is the one deliberate exception,
   // needed so an in-flight edit from either editor isn't lost by the other.
-  function currentValues() {
+  // `from`: a pipeline other than the live one (Generate's, frozen at the click); edits not yet landed then do not count.
+  function currentValues(from) {
     const merged = {};
     Object.values(modulesById).forEach((m) => {
       const own = {};
       Object.entries(m.settings || {}).forEach(([name, spec]) => { own[name] = spec.default; });
       if (Object.keys(own).length) merged[m.id] = own;
     });
-    const already = valuesAlreadyPlaced();
+    const already = valuesAlreadyPlaced(from || slots);
     Object.entries(already).forEach(([moduleId, own]) => {
       merged[moduleId] = { ...(merged[moduleId] || {}), ...own };
     });
-    Object.entries(pendingValues).forEach(([moduleId, own]) => {
+    Object.entries(from ? {} : pendingValues).forEach(([moduleId, own]) => {
       merged[moduleId] = { ...(merged[moduleId] || {}), ...own };
     });
     return merged;
@@ -304,7 +305,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   }
   // "Disable all enhancements": one project switch that makes every run plain, for A/B tests. The per-module
   // choices are kept underneath, so switching it back restores exactly what was on.
-  const allOff = () => Boolean((currentValues()._off || {}).all);
+  const allOff = (from) => Boolean((currentValues(from)._off || {}).all);
   const setAllOff = (on) => setModuleValue("_off", "all", Boolean(on));
   // The screen is the truth: an edit is written into the live slots the moment it is made (the same blob the
   // server's place() writes), so a run started now reads what is shown without waiting for any round trip.
@@ -591,7 +592,10 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
           try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
           return true;
         }
-      } catch (_) { unreachable = true; /* the request failed (not a refusal); try the next layering */ }
+      } catch (e) {
+        // No answer, or a gateway's (a tunnel, a restarting ComfyUI): try again later. An answer refusing it is a refusal.
+        if (!e || !e.status || e.status >= 502) unreachable = true;
+      }
     }
     unreachableLast = unreachable;
     // Nothing saved was accepted (a failed request, or a file the server refuses): the default

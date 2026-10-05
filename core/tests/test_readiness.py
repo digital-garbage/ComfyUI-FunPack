@@ -52,6 +52,5 @@ def test_the_gpu_row_names_the_card_comfyui_uses(monkeypatch):
     monkeypatch.setattr(r, "gpu_index", lambda: 1)
     monkeypatch.setattr(torch.cuda, "get_device_properties",
                         lambda i: asked.append(i) or types.SimpleNamespace(name=f"GPU{i}", total_memory=32 * 1024 ** 3, major=12, minor=0))
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
     rows = r.machine()
     assert asked == [1] and any("GPU1" in x["text"] for x in rows)

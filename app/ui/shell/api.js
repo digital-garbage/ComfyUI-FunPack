@@ -14,7 +14,7 @@ export async function call(method, path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const payload = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(why(res, payload));
+  if (!res.ok) throw Object.assign(new Error(why(res, payload)), { status: res.status });      // status: a refusal (4xx) is not an outage
   return payload;
 }
 
@@ -118,7 +118,7 @@ export const api = {
       try {
         const res = await fetch(`${BASE}/api/media`, { method: "POST", body: form });
         const payload = await res.json().catch(() => null);
-        if (!res.ok) throw new Error(why(res, payload));
+        if (!res.ok) throw Object.assign(new Error(why(res, payload)), { status: res.status });      // status: a refusal (4xx) is not an outage
         out.media.push(...(payload.media || [])); out.problems.push(...(payload.problems || []));
       } catch (err) { out.problems.push(`${file.name}: ${err.message}`); }
     }

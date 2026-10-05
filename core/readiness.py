@@ -62,7 +62,7 @@ def machine(disk_free_gb=None) -> List[dict]:
         else:
             props = torch.cuda.get_device_properties(gpu_index())
             out.append(row("ok", f"{props.name}, {props.total_memory / 1024 ** 3:.0f} GB, sm_{props.major}{props.minor}"))
-            if not torch.cuda.is_bf16_supported():
+            if props.major < 8:                               # bf16 arrived with Ampere (sm_80), on the card ComfyUI uses
                 out.append(row("fail", "This GPU does not support bf16, which the H3 VAEs need."))
             if props.major >= 12 and have("xformers"):
                 out.append(row("warn", "xformers has no masked-attention kernel for this GPU: start ComfyUI with --disable-xformers --use-sage-attention."))

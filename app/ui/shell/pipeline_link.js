@@ -38,7 +38,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
       retry = setTimeout(adopt, 5000);
     } else if (!pipeline.slots() || (pipeline.unreachable && pipeline.unreachable())) {
       // ComfyUI is down: keep asking, slowly; and if a panel's own load gets there first, its announcement puts this project's in.
-      waiting = true;
+      waiting = pipeline.slots() ? "retry" : "load";       // "load": nothing loaded at all, so a panel's own load may get there first
       retry = setTimeout(adopt, 15000);
       if (retries === 4) say("ComfyUI is not answering, so this project's pipeline is not loaded yet: it goes in as soon as ComfyUI answers.");
     } else {
@@ -47,7 +47,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   }
 
   pipeline.subscribe((slots) => {
-    if (waiting && owner === null) { retries = 0; adopt(); return; }
+    if (waiting === "load" && owner === null) { retries = 0; adopt(); return; }
     if (!project.project || project.project.id !== owner) return;
     store(project.project.models || {}, slots);
   });
