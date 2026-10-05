@@ -56,6 +56,7 @@ export default {
       let made = 0;
       said = false;
       try {
+        await Promise.all((app.beforeRun || []).map((f) => f().catch(() => {})));      // an edit still on its way (the Story box) lands first
         // A project's pipeline still going in is the one this run uses, not the last one's.
         if (app.pipeline.settled && !(await app.pipeline.settled())) { tell("Not started: this project's pipeline is still loading. ComfyUI is slow to answer; try again in a moment."); return; }
         if (app.pipelineOwned && !app.pipelineOwned()) { tell(`Not started: ${(app.pipelineWhy && app.pipelineWhy()) || "this project's pipeline is not loaded yet."}`); return; }
@@ -85,7 +86,8 @@ export default {
           said = false;
           if (!(await g.generate({ sceneId: root.id, projectId: pid, inputs, slots: frozen }))) {
             done.cancel();
-            if (!said) tell((g.run.state.error && g.run.state.error.message) || "Could not queue the run. Is ComfyUI running, and is a run already going?");
+            const n = snap.scenes.findIndex((s) => s.id === root.id) + 1;          // which clip: in a run of several, the toast alone does not say
+            if (!said) tell(`Scene ${n} was not started: ${(g.run.state.error && g.run.state.error.message) || "could not queue the run. Is ComfyUI running, and is a run already going?"}`);
             break;
           }
           if (stopped) g.cancel();                      // Stop landed while this one was being queued

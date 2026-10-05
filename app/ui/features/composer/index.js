@@ -12,10 +12,11 @@ const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "
 // The box follows the scenes; typing in it rewrites them (after a short pause, or when focus leaves).
 const story = (app, own) => {
   const p = app.project;
-  let marker = "qcut", words = ["qcut"], timer = 0, asked = 0;
+  let marker = "qcut", words = ["qcut"], timer = 0, asked = 0, inFlight = Promise.resolve();
   const box = c.textarea.md({ label: "Story", rows: 14, value: p.project ? joinStory(p.project, marker) : "", onInput: (v) => { clearTimeout(timer); timer = setTimeout(() => { timer = 0; apply(v); }, 700); }, onCommit: (v) => { clearTimeout(timer); timer = 0; apply(v); } });
   const area = box.node, warn = c.hint.default({ text: "" });
-  async function apply(text) {
+  function apply(text) { return (inFlight = split(text)); }
+  async function split(text) {
     if (!p.project) return;
     const mine = ++asked, pid = p.project.id;
     try {
@@ -32,6 +33,10 @@ const story = (app, own) => {
     if (area.value !== next) box.setValue(next);
   }
   own(app.on(sync));
+  // Generate runs what the box shows: text still waiting for its pause, or still being split, lands first.
+  const flush = async () => { if (timer) { clearTimeout(timer); timer = 0; apply(area.value); } await inFlight; };
+  app.beforeRun.push(flush);
+  own(() => { flush().finally(() => app.beforeRun.splice(app.beforeRun.indexOf(flush) >>> 0, 1)); });     // closed mid-edit: still waited for
   sync();
   return c.region.stack({ gap: "sm", children: [
     templatesBar(app, own),

@@ -94,15 +94,13 @@ test("Generate refuses, saying why, while the open project's pipeline is not the
   assert.match(document.body.textContent, /Not started: this project.s pipeline is not loaded yet/);
 });
 
-test("a run uses the pipeline as it was at the click, whatever is opened or edited while it is prepared", async () => {
+test("a run uses the pipeline as it was at the click, whatever is edited while its shots are made", async () => {
   const sent = [];
-  const { host, app } = rig("idle", { generate: async (a) => { sent.push(a.slots); return true; } });
-  const at = [{ id: "s", roles: [{ at: "generation.seed", input: "seed" }], inputs: { steps: 20 } }];
-  app.pipeline.slots = () => at;
-  host.querySelector("button").click();
-  app.pipeline.slots = () => [{ id: "s", roles: [], inputs: { steps: 99 } }];   // another project's pipeline goes in
-  await new Promise((r) => setTimeout(r, 30));
-  assert.ok(sent.length >= 1);
+  const { app, doc } = rig("idle", { generate: async (a) => { sent.push(a.slots); app.pipeline.slots = () => [{ id: "s", roles: [], inputs: { steps: 99 } }]; return true; } });
+  doc.scenes.push({ id: "c", text: "y" });
+  app.pipeline.slots = () => [{ id: "s", roles: [{ at: "generation.seed", input: "seed" }], inputs: { steps: 20 } }];
+  await app.runner.units(["a", "c"]);
+  assert.equal(sent.length, 2);
   assert.ok(sent.every((s) => s[0].inputs.steps === 20));
 });
 
@@ -133,4 +131,13 @@ test("Generate this scene clicked while a run is going says so, and queues nothi
   assert.equal(queued, 1);
   assert.match(document.body.textContent.replace(before, ""), /already going/);
   finish("cancelled");
+});
+
+test("an edit still on its way when Generate is clicked (the Story box splitting) lands before the run reads the project", async () => {
+  const seen = [];
+  const { app, doc } = rig("idle", { generate: async () => true });
+  app.beforeRun = [async () => { await new Promise((r) => setTimeout(r, 10)); doc.scenes[0].text = "typed last"; }];
+  app.inputHooks = [({ scene }) => { seen.push(scene.text); return {}; }];
+  await app.runner.units(["a"]);
+  assert.deepEqual(seen, ["typed last"]);
 });

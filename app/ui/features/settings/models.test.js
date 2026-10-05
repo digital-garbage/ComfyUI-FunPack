@@ -21,3 +21,16 @@ test("Revert goes back to the pipeline of the project now open, not the one open
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(restored, "B");
 });
+
+test("a node the server says needs something shows the orange dot, whichever way the message names it", async () => {
+  const slots = [{ id: "model", node: "L", inputs: { ckpt_name: "" } }, { id: "s", node: "S", inputs: {}, roles: [{ at: "project.video", input: "amount", label: "Length" }] }];
+  const ps = { slots: () => slots, snapshot: () => ({ slots }), ensureLoaded: async () => {}, subscribe: () => () => {}, restore: async () => ({ refused: [] }),
+    loading: () => false, loadError: () => null, saveNotes: () => [], incomplete: () => ["model.ckpt_name is '', which is not one of: a", "Length is 5000, above the largest 4096 it takes"],
+    refused: () => [], queueable: () => false, removedIds: () => [], offered: () => [] };
+  const page = models({ pipeline: ps, api: { describeNodes: async () => ({ nodes: { L: { widgets: [] }, S: { widgets: [] } } }) } })();
+  document.body.append(page.node);
+  await new Promise((r) => setTimeout(r, 0));
+  const dots = [...page.node.querySelectorAll(".fp-node-state")];
+  assert.equal(dots.length, 2);
+  assert.ok(dots.every((d) => d.classList.contains("fp-needs")));
+});

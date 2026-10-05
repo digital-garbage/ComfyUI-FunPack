@@ -17,3 +17,16 @@ test("the Enhance tab follows the open project's pipeline: no enhancer there, no
   heard(live);
   assert.match(page.node.textContent, /No prompt enhancer here/);
 });
+
+test("Chat on a pipeline with no enhancer says so instead of taking comments that would reach nothing", async () => {
+  const { chat } = await import("./chat.js");
+  let slots = [{ id: "s", node: "Sampler" }], heard;
+  const app = { project: { project: { id: "P", scenes: [] }, pref: (_k, d) => d, setPref: () => {} }, selection: {}, lastRun: { n: 0 },
+    api: { enhancerRuns: async () => ({ runs: [] }) }, on: () => () => {}, pipeline: { slots: () => slots, subscribe: (fn) => { heard = fn; return () => {}; } } };
+  const page = chat(app, () => {});
+  assert.match(page.node.textContent, /No prompt enhancer here/);
+  assert.equal(page.node.querySelector("textarea"), null);
+  slots = [{ id: "e", node: "FunPackEnhancePrompt" }];
+  heard(slots, "edit");
+  assert.ok(page.node.querySelector("textarea"));
+});

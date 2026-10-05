@@ -26,10 +26,13 @@ export function chat(app, own) {
   const first = (r) => Object.values(r.rewrites || {})[0];
   function draw(force) {
     if (!alive) return;
-    const list = rounds(), ok = last && last.ok, next = JSON.stringify([p.project && p.project.id, list, last && last.after]);
+    const here = ((app.pipeline && app.pipeline.slots()) || []).some((s) => s.node === NODE);
+    const list = rounds(), ok = last && last.ok, next = JSON.stringify([p.project && p.project.id, list, last && last.after, here]);
     if (!force && (next === key || (page.node.contains(document.activeElement) && document.activeElement.tagName === "TEXTAREA"))) return;       // not under the caret
     key = next;
     if (!p.project) return page.set([c.hint.default({ text: "Open a project first." })]);
+    // Comments would reach nothing: said here, the way Enhance says it (they stay, for a pipeline that has one).
+    if (!here) return page.set([c.emptyState.default({ icon: "✎", title: "No prompt enhancer here", hint: "Chat comments go to the enhancer. Pick a preset that has one, or add the “FunPack Enhance Prompt” node in Settings ▸ Models & Pipeline." })]);
     const bubbles = [...list.flatMap((r) => [first(r) ? c.text.sm({ text: `Model: ${first(r)}` }) : null, c.text.sm({ text: `You: ${r.comment}` })]),
       ...(ok ? [c.hint.default({ text: `Last rewrite of: ${String(last.before || "").slice(0, 80)}` }), c.text.sm({ text: `Model: ${last.after}` })] : []),
       ...(!list.length && !ok ? [c.hint.default({ text: "Generate once with the enhancer on, then comment here." })] : [])].filter(Boolean);
@@ -49,6 +52,7 @@ export function chat(app, own) {
   }
   const look = () => app.api.enhancerRuns().then((r) => { last = (r.runs || []).slice(-1)[0] || null; draw(); }).catch(() => {});
   own(app.on((what) => { if (what === "open" || app.lastRun.n !== runs) { runs = app.lastRun.n; look(); } else draw(); }));
+  if (app.pipeline && app.pipeline.subscribe) own(app.pipeline.subscribe(() => draw()));      // a pipeline that gains or loses the enhancer
   draw(true);
   look();
   return page;

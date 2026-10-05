@@ -646,21 +646,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     return (adoptedOk = false);
   }
 
-  // Every slot's own values as they are NOW, as per-run overrides: a Generate is several runs, and the
-  // settings are global to it -- an edit made while it runs reaches the next Generate, never half of
-  // this one. Inputs another node feeds (arrays) are left to that node.
-  function frozenInputs() {
-    const out = {};
-    (slots || []).forEach((s) => {
-      const own = {};
-      Object.entries(s.inputs || {}).forEach(([k, v]) => { if (v !== undefined && !Array.isArray(v)) own[k] = JSON.parse(JSON.stringify(v)); });
-      out[s.id] = own;
-    });
-    return out;
-  }
-
   return {
-    frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, settled, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     setEditGuard: (fn) => { editGuard = fn; }, adoptedOk: () => adoptedOk, unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,

@@ -131,10 +131,13 @@ export const models = (app) => function mount() {
     if (first && first.type === "COMBO" && !(slot.inputs || {})[first.name]) return `${first.name} not set`;
     return shown.length ? shown.join(" · ") : `${(spec.widgets || []).length} setting${(spec.widgets || []).length === 1 ? "" : "s"}`;
   };
+  // A server message about this slot: by its id, or refused by the name the person sees. The dot and the banner both use it.
+  const mine = (t, id) => t.startsWith(`${id}:`) || t.startsWith(`${id}.`)
+    || ((slotsNow().find((s) => s.id === id) || {}).roles || []).some((r) => r.label && t.startsWith(`${r.label} is `));
   const nodeCard = (slot) => {
     const node = document.createElement("button");
     node.type = "button"; node.className = "fp-node-card cx-focusable";
-    const needs = specs[slot.node] === null || ps.incomplete().some((t) => t.startsWith(`${slot.id}:`));
+    const needs = specs[slot.node] === null || ps.incomplete().some((t) => mine(t, slot.id));
     const head = Object.assign(document.createElement("span"), { className: "fp-node-title", textContent: label(slot) });
     const dot = Object.assign(document.createElement("span"), { className: `fp-node-state${needs ? " fp-needs" : ""}`, title: needs ? "Needs attention" : "Ready" });
     const sub = Object.assign(document.createElement("span"), { className: "fp-node-sub", textContent: summary(slot) });
@@ -153,8 +156,6 @@ export const models = (app) => function mount() {
 
   function status(only) {
     const all = ps.incomplete(), refused = ps.refused(), notes = ps.saveNotes();
-    const mine = (t, id) => t.startsWith(`${id}:`) || t.startsWith(`${id}.`)
-      || ((slotsNow().find((s) => s.id === id) || {}).roles || []).some((r) => r.label && t.startsWith(`${r.label} is `));    // refused by the name the person sees
     const incomplete = only ? all.filter((t) => mine(t, only)) : all;
     return [refused.length ? c.banner.warn({ text: `Could not save: ${refused.join(" ")}` }) : null, notes.length ? c.banner.info({ text: notes.join(" ") }) : null,
       incomplete.length ? c.banner.warn({ text: only ? incomplete.join(" ") : `Not ready to generate yet: ${incomplete.length} node${incomplete.length === 1 ? "" : "s"} still need something (the orange dots). Open one to see what.` }) : ps.queueable() && !only ? c.hint.default({ text: "Every slot is filled — this pipeline is ready to generate." }) : null];
