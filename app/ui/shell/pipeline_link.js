@@ -5,7 +5,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   // it is written. A project opened while an open or a save is still in flight must never receive the other's pipeline.
   // An id, not the object: Undo puts a copy of the same project in place.
   let owner = null;
-  let retries = 0, opens = 0, retry = null;
+  let retries = 0, opens = 0, retry = null, waiting = false;      // waiting: gave up because ComfyUI did not answer
   // Only a real change is written: opening a project must not rewrite its file.
   const live = (base, slots) => ({ ...base, slots: JSON.parse(JSON.stringify(slots || [])), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap(), whole: pipeline.whole() });
   const store = (base, slots) => {
@@ -15,6 +15,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
 
   async function adopt() {
     clearTimeout(retry);                    // a retry still waiting is for a project that may no longer be open
+    waiting = false;
     if (pipeline.settled) await pipeline.settled();       // an edit on its way lands in the project it was made in first
     const here = project.project && project.project.models;
     // Undo / Redo of something else: the same project, its pipeline already live, nothing to put in (or to lose).
@@ -36,12 +37,18 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
       if (project.fresh) store(saved, pipeline.slots());
     } else if (retries++ < 3) {
       retry = setTimeout(adopt, 5000);
+    } else if (!pipeline.slots()) {
+      // ComfyUI is down: keep asking, slowly; and if a panel's own load gets there first, its announcement puts this project's in.
+      waiting = true;
+      retry = setTimeout(adopt, 15000);
+      if (retries === 4) say("ComfyUI is not answering, so this project's pipeline is not loaded yet: it goes in as soon as ComfyUI answers.");
     } else {
       say("This project's saved pipeline could not be loaded; the default is in use.");
     }
   }
 
   pipeline.subscribe((slots) => {
+    if (waiting && owner === null) { retries = 0; adopt(); return; }
     if (!project.project || project.project.id !== owner) return;
     store(project.project.models || {}, slots);
   });

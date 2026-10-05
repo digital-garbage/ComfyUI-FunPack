@@ -303,20 +303,26 @@ export function createPipelineState(API) {
   }
   function isQuarantined(id) { return !!(controlState[id] && controlState[id].quarantine); }
   // Whether anything would act on a module's settings now: its own node is in the pipeline (when it has one),
-  // and what it serves (the modifier loader, the taste store) has a user that is on, not set to a manual value,
-  // has every node it needs in the pipeline, and is itself acted on (a taste learner the loader never installs is not).
-  function useful(m, values = currentValues(), seen = new Set([m.id])) {
+  // and every capability it offers (the modifier loader, the taste store) reaches a user that is switched on for this
+  // project, not set to a manual value, has every node it needs in the pipeline, and is itself acted on (a taste learner
+  // the loader never installs is not). "Disable all enhancements" is not counted: it sits on top, and the Modules page
+  // still lists what is kept underneath it. -> a predicate; the values are read once for a whole list.
+  function usefulness() {
+    const values = currentValues(), off = new Set(((values._off || {}).modules) || []);
+    const users = Object.values(modulesById).filter((u) => (u.uses || []).length && !off.has(u.id) && !isQuarantined(u.id));
     const has = (n) => !slots || slots.some((s) => s.node === n);
-    const working = (u) => {
-      const v = values[u.id] || {};
-      return !seen.has(u.id) && (!("enabled" in (u.settings || {})) || v.enabled) && v.mode !== "manual"
-        && (u.nodes || []).every(has) && useful(u, values, new Set([...seen, u.id]));
+    const check = (m, seen) => {
+      const working = (u) => {
+        const v = values[u.id] || {};
+        return !seen.has(u.id) && (!("enabled" in (u.settings || {})) || v.enabled) && v.mode !== "manual"
+          && (u.nodes || []).every(has) && check(u, new Set([...seen, u.id]));
+      };
+      return (!(m.nodes || []).length || m.nodes.some(has))
+        && (m.serves || []).every((cap) => users.some((u) => u.uses.includes(cap) && working(u)));
     };
-    const inPipeline = !(m.nodes || []).length || m.nodes.some(has);
-    // Every capability it offers must reach a working user: the taste key is installed by the loader AND read by a learner.
-    const served = (m.serves || []).every((cap) => activeModules().some((u) => (u.uses || []).includes(cap) && working(u)));
-    return inPipeline && served;
+    return (m) => check(m, new Set([m.id]));
   }
+  const useful = (m) => usefulness()(m);
 
   function activeModules() {
     return allOff() ? [] : Object.values(modulesById).filter((m) => !isOff(m.id) && !isQuarantined(m.id));
@@ -582,7 +588,7 @@ export function createPipelineState(API) {
     frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, settled, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
-    activeModules, useful, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
+    activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
     whole: () => whole,
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),

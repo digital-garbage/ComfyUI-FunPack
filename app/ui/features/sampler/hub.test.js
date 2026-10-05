@@ -10,7 +10,7 @@ test("the Sampler window shows the pipeline's steps and sampler, and a change sa
   const saved = [];
   const slot = { id: "sampler", node: "S", inputs: { steps: 20, sampler_name: "euler", seed: 0 },
     roles: [{ at: "generation.sampling", input: "steps", label: "Steps" }, { at: "generation.sampling", input: "sampler_name", label: "Sampler" }, { at: "generation.seed", input: "seed" }] };
-  const ps = { slots: () => [slot], activeModules: () => [], useful: () => true, currentValues: () => ({}), loading: () => false, loadError: () => null,
+  const ps = { slots: () => [slot], activeModules: () => [], useful: () => true, usefulness: () => () => true, currentValues: () => ({}), loading: () => false, loadError: () => null,
     subscribe: () => () => {}, ensureLoaded: async () => {}, save: async (b) => { saved.push(b); } };
   const api = { describeNodes: async () => ({ nodes: { S: { widgets: [{ name: "steps", type: "INT", min: 1, max: 100 }, { name: "sampler_name", type: "COMBO", choices: ["euler", "dpmpp_2m"] }, { name: "seed", type: "INT" }] } } }) };
   const host = document.createElement("div");
@@ -33,7 +33,7 @@ test("the Sampler window shows the pipeline's steps and sampler, and a change sa
 
 test("when the sampler node's options cannot be read, the window says where to change them", async () => {
   const slot = { id: "sampler", node: "S", inputs: { steps: 20 }, roles: [{ at: "generation.sampling", input: "steps", label: "Steps" }] };
-  const ps = { slots: () => [slot], activeModules: () => [], useful: () => true, currentValues: () => ({}), loading: () => false, loadError: () => null,
+  const ps = { slots: () => [slot], activeModules: () => [], useful: () => true, usefulness: () => () => true, currentValues: () => ({}), loading: () => false, loadError: () => null,
     subscribe: () => () => {}, ensureLoaded: async () => {}, save: async () => {} };
   const host = document.createElement("div");
   document.body.append(host);

@@ -13,7 +13,7 @@ export default {
   setup({ host, app }) {
     const ps = app.pipeline;
     let pop = null, specs = {}, unreadable = false;
-    const sampling = () => ps.activeModules().filter((m) => (m.category || "") === "sampling" && Object.keys(m.settings || {}).length && ps.useful(m));
+    const sampling = () => { const ok = ps.usefulness(); return ps.activeModules().filter((m) => (m.category || "") === "sampling" && Object.keys(m.settings || {}).length && ok(m)); };
     const marked = () => (ps.slots() || []).flatMap((slot) => (slot.roles || []).filter((r) => r.at === "generation.sampling" && r.input && !Array.isArray((slot.inputs || {})[r.input])).map((role) => ({ slot, role })));
     const describe = async () => {
       const missing = [...new Set(marked().map(({ slot }) => slot.node))].filter((n) => !(n in specs));

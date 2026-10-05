@@ -139,3 +139,21 @@ test("opening an older project whose pipeline an update's defaults fill in does 
   await opened();
   assert.equal(writes.length, 0);
 });
+
+test("a project opened while ComfyUI is down is owned once it answers, so later edits are saved, and the toast is said once", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const writes = [], said = [];
+  let opened, heard, up = false;
+  const project = { project: { id: "a", models: { slots, removed: [], unwired: {}, whole: false } }, setField: (k, v) => { writes.push(v.slots[0].inputs.ckpt_name); project.project[k] = v; } };
+  const pipeline = { adopt: async () => up, slots: () => (up ? slots : null), removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: (fn) => { heard = fn; } };
+  linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; }, say: (x) => said.push(x) });
+  const flush = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+  await opened();
+  for (let i = 0; i < 5; i++) { t.mock.timers.tick(16000); await flush(); }
+  assert.equal(said.length, 1);
+  up = true;
+  heard(slots);                              // a panel's own load got the pipeline in and announced it
+  await flush();
+  heard([{ ...slots[0], inputs: { ckpt_name: "edited" } }]);
+  assert.deepStrictEqual(writes, ["edited"]);
+});

@@ -434,3 +434,15 @@ test("a project retried after the first load failed goes in, and nothing waits f
   assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "mine");
   await Promise.race([PS.save({ inputs: { model: { file: "next" } } }), new Promise((_, no) => setTimeout(() => no(new Error("save hung")), 1000))]);
 });
+
+test("with every enhancement disabled, the modules kept underneath still count, so the Modules page can list them", async () => {
+  const loader = { id: "mods", nodes: ["FunPackModifierSettings", "FunPackLoadModifiers"], uses: ["modifier"] };
+  const sharpen = { id: "sharpen", serves: ["modifier"], settings: { amount: { default: 0.5 } } };
+  const PS = load([]);
+  lastApi.pipeline = async () => ({ slots: [{ id: "a", node: "FunPackModifierSettings", inputs: {} }, { id: "b", node: "FunPackLoadModifiers", inputs: {} }], incomplete: [], refused: [], queueable: true });
+  lastApi.modules = async () => ({ modules: [loader, sharpen], control: {} });
+  await PS.ensureLoaded();
+  await PS.setAllOff(true);
+  assert.strictEqual(PS.allOff(), true);
+  assert.strictEqual(PS.usefulness()(PS.modulesById().sharpen), true);
+});
