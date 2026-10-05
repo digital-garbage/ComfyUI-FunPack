@@ -293,7 +293,10 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
             else:
                 problem = unacceptable(name, value, limits.get(name))
                 if problem:
-                    problems.append(f"{slot_id}.{problem}")
+                    # An input the app writes under a name the person sees (Length, Width) is refused by that name.
+                    label = next((r.get("label") for r in slot.get("roles") or []
+                                  if isinstance(r, dict) and r.get("input") == name and r.get("label")), None)
+                    problems.append(unacceptable(label, value, limits.get(name)) if label else f"{slot_id}.{problem}")
                     continue
                 inputs[name] = value
         for name in schemas.required(class_type):

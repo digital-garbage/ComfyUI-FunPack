@@ -38,15 +38,15 @@ test("a project's saved pipeline lays its values over the server's default, keep
   assert.ok(by.extra);
 });
 
-test("adopting is the project's own copy, so it is not announced as an edit; a real edit is", async () => {
+test("a project's pipeline going in is announced once it is in, so views redraw; a real edit is announced too", async () => {
   const posts = [];
   const PS = load(posts);
-  let heard = 0;
-  PS.subscribe(() => { heard++; });
+  let heard = [];
+  PS.subscribe((s) => { heard.push(s.find((x) => x.id === "model").inputs.file); });
   await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "a" } }]);
-  assert.strictEqual(heard, 0);
+  assert.deepStrictEqual(heard, ["a"]);
   await PS.save({ inputs: { model: { file: "b" } } });
-  assert.strictEqual(heard, 1);
+  assert.deepStrictEqual(heard, ["a", "b"]);
 });
 
 test("nothing saved leaves the session's pipeline as it is", async () => {
@@ -369,4 +369,54 @@ test("a save reaches listeners before the model probe answers, so a project swit
   assert.ok(heard >= 1, "announced while the probe is still out");
   answer({ detected: true, traits: [] });
   await saving;
+});
+
+const sink = (blob) => ({ id: "settings", node: "Sink", inputs: { settings: JSON.stringify(blob) } });
+
+test("a setting changed while another project's pipeline goes in is built on that project's values", async () => {
+  const posts = [];
+  const PS = load(posts, { delay: 30 });
+  lastApi.modules = async () => ({ modules: [{ id: "sharpen", settings: { enabled: { type: "bool", default: false }, amount: { type: "float", default: 0.5 } } }] });
+  const edit = lastApi.editPipeline;
+  lastApi.editPipeline = (body) => {                  // the server writes the whole values blob into the sink, as core's place() does
+    if (body.values) body.slots.filter((x) => x.node === "Sink").forEach((x) => { x.inputs = { settings: JSON.stringify(body.values) }; });
+    return edit(body);
+  };
+  await PS.adopt([sink({ sharpen: { enabled: true, amount: 0.9 } })]);
+  const opening = PS.adopt([sink({ sharpen: { enabled: false, amount: 0.1 } })]);
+  await new Promise((r) => setTimeout(r, 5));
+  await PS.setModuleValue("sharpen", "amount", 0.5);
+  await opening;
+  assert.deepStrictEqual(PS.currentValues().sharpen, { enabled: false, amount: 0.5 });
+});
+
+test("a new project made while another project's pipeline goes in inherits it, never a half-replaced one", async () => {
+  const posts = [];
+  const PS = load(posts, { delay: 30 });
+  await PS.ensureLoaded();
+  const opening = PS.adopt([{ id: "model", node: "Loader", inputs: { file: "A" } }]);
+  const fresh = PS.adopt([], [], {}, undefined, true);
+  let seenByNew = null;
+  await fresh.then(() => { seenByNew = PS.slots().find((s) => s.id === "model").inputs.file; });
+  await opening;
+  assert.strictEqual(seenByNew, "A");
+});
+
+test("a modifier's settings count only when the pipeline has both the settings node and the loader that installs it", async () => {
+  const loader = { id: "mods", nodes: ["FunPackModifierSettings", "FunPackLoadModifiers"], uses: ["modifier"] };
+  const sharpen = { id: "sharpen", serves: ["modifier"], settings: { amount: { default: 0.5 } } };
+  const learner = { id: "q", serves: ["modifier"], uses: ["taste_store"], settings: { enabled: { type: "bool", default: true } } };
+  const taste = { id: "taste", serves: ["modifier", "taste_store"], settings: { key: { default: "" } } };
+  const check = async (nodes, mods = [loader, sharpen, learner, taste]) => {
+    const PS = load([]);
+    lastApi.pipeline = async () => ({ slots: nodes.map((node, i) => ({ id: `s${i}`, node, inputs: {} })), incomplete: [], refused: [], queueable: true });
+    lastApi.modules = async () => ({ modules: mods });
+    await PS.ensureLoaded();
+    const by = PS.modulesById();
+    return [PS.useful(by.sharpen), PS.useful(by.taste)];
+  };
+  assert.deepStrictEqual(await check(["FunPackModifierSettings", "FunPackLoadModifiers"]), [true, true]);
+  assert.deepStrictEqual(await check(["FunPackModifierSettings"]), [false, false]);           // loader removed: nothing installs them, so no learner reads taste
+  assert.deepStrictEqual(await check(["CheckpointLoaderSimple", "KSampler"]), [false, false]); // a plain imported workflow
+  assert.deepStrictEqual(await check(["FunPackModifierSettings", "FunPackLoadModifiers"], [loader, sharpen, taste]), [true, false]);   // the key installed, but no learner reads it
 });

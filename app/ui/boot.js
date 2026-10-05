@@ -22,7 +22,7 @@ import { composer as c } from "./composer/composer.js";
 const heard = new Set();
 const say = (what) => heard.forEach((fn) => { try { fn(what); } catch (err) { console.error(err); } });
 const on = (fn) => { heard.add(fn); return () => heard.delete(fn); };
-const project = createProject({ keepConsistent: syncSeparated, onChange: () => say("change"), onOpen: () => say("open"), onError: (err) => console.warn(err) });
+const project = createProject({ keepConsistent: syncSeparated, onChange: () => say("change"), onOpen: () => say("open"), onError: (err) => console.warn(err), beforeSwitch: () => pipeline.settled() });
 const pipeline = createPipelineState(api);
 const generate = createGenerate({ pipeline });
 linkPipeline({ project, pipeline, onOpen: (fn) => on((what) => { if (what === "open") fn(); }), say: (text) => c.toast.warn({ text }) });

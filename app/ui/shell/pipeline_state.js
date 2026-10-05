@@ -301,12 +301,18 @@ export function createPipelineState(API) {
   }
   function isQuarantined(id) { return !!(controlState[id] && controlState[id].quarantine); }
   // Whether anything would act on a module's settings now: its own node is in the pipeline (when it has one),
-  // and what it serves (the taste store) has a user that is on and not set to a manual value.
-  function useful(m) {
-    const values = currentValues();
-    const working = (u) => { const v = values[u.id] || {}; return (!("enabled" in (u.settings || {})) || v.enabled) && v.mode !== "manual"; };
-    const inPipeline = !(m.nodes || []).length || !slots || m.nodes.some((n) => slots.some((s) => s.node === n));
-    const served = !(m.serves || []).length || activeModules().some((u) => working(u) && (u.uses || []).some((cap) => m.serves.includes(cap)));
+  // and what it serves (the modifier loader, the taste store) has a user that is on, not set to a manual value,
+  // has every node it needs in the pipeline, and is itself acted on (a taste learner the loader never installs is not).
+  function useful(m, values = currentValues(), seen = new Set([m.id])) {
+    const has = (n) => !slots || slots.some((s) => s.node === n);
+    const working = (u) => {
+      const v = values[u.id] || {};
+      return !seen.has(u.id) && (!("enabled" in (u.settings || {})) || v.enabled) && v.mode !== "manual"
+        && (u.nodes || []).every(has) && useful(u, values, new Set([...seen, u.id]));
+    };
+    const inPipeline = !(m.nodes || []).length || m.nodes.some(has);
+    // Every capability it offers must reach a working user: the taste key is installed by the loader AND read by a learner.
+    const served = (m.serves || []).every((cap) => activeModules().some((u) => (u.uses || []).includes(cap) && working(u)));
     return inPipeline && served;
   }
 
@@ -338,7 +344,8 @@ export function createPipelineState(API) {
   // get that from this promise as written -- it would need save() itself
   // reworked to resolve each queued caller at ITS OWN write's landing, not
   // at whichever write happens to be in flight when the queue drains.
-  function setModuleValue(moduleId, name, value) {
+  async function setModuleValue(moduleId, name, value) {
+    if (adoptGate) await adoptGate;                     // the values tree must be the pipeline this lands on, not the one going out
     pendingValues[moduleId] = { ...(pendingValues[moduleId] || {}), [name]: value };
     const values = currentValues();
     mirrorValues(values);
@@ -465,14 +472,23 @@ export function createPipelineState(API) {
   // files, node values, the module-settings blob), group and bypass win on every slot the
   // default still has; slots they added are kept. The server's own defaults fill in whatever
   // the saved copy predates, so an update's new settings are not lost to an old project.
-  // Not announced as a change: it IS the project's own copy.
+  // Announced once it is in, so views redraw; the project link writes nothing while a project is going in.
   // True when the project's pipeline is in (or it had none to put in); false when it could not be.
   // `inherit`: a project with nothing saved keeps the live pipeline (a new one); otherwise it gets the default.
   async function adopt(saved, removedIds, unwiredMap, wholeSaved, inherit = true) {
     let open;
-    const gate = new Promise((r) => { open = r; });
+    const gate = new Promise((r) => { open = r; }), before = adoptGate;
     adoptGate = gate;                                   // before anything awaits: an edit right behind this waits too
-    try { await ensureLoaded(); return await _adopt(saved, removedIds, unwiredMap, wholeSaved, inherit); } finally { if (adoptGate === gate) adoptGate = null; open(); }
+    try {
+      if (before) await before;                         // one at a time: a project opened behind another is put in after it, never under it
+      await ensureLoaded();
+      return await _adopt(saved, removedIds, unwiredMap, wholeSaved, inherit);
+    } finally { if (adoptGate === gate) adoptGate = null; open(); _changed(); }
+  }
+
+  /** Resolves once no edit is on its way and no project's pipeline is going in (at most ~10 s). */
+  async function settled() {
+    for (let waited = 0; (saving || adoptGate) && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
   }
 
   async function _adopt(saved, removedIds, unwiredMap, wholeSaved, inherit) {
@@ -561,7 +577,7 @@ export function createPipelineState(API) {
 
   return {
     frozenInputs,
-    ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
+    ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, settled, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     activeModules, useful, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],

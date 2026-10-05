@@ -18,13 +18,15 @@ STAGE = "load"
 CATEGORY = "system"
 STATUS = "experimental"
 
-_SIGNATURE_KEYS = ("model.diffusion_model.input_blocks.0.0.weight",
-                   "cond_stage_model.transformer.text_model.embeddings.token_embedding.weight")
+_UNET = "model.diffusion_model.input_blocks.0.0.weight"
+# Older SD1.x files name the CLIP-L embedding without `text_model.`; ComfyUI renames it on load.
+_CLIP_L = ("cond_stage_model.transformer.text_model.embeddings.token_embedding.weight",
+           "cond_stage_model.transformer.embeddings.token_embedding.weight")
 
 
 def detect(keys) -> bool:
     keyset = set(keys)
-    return all(key in keyset for key in _SIGNATURE_KEYS)
+    return _UNET in keyset and any(key in keyset for key in _CLIP_L)
 
 
 def probe_traits(keys) -> list:

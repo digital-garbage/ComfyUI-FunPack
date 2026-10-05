@@ -5,7 +5,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   // it is written. A project opened while an open or a save is still in flight must never receive the other's pipeline.
   // An id, not the object: Undo puts a copy of the same project in place.
   let owner = null;
-  let retries = 0, opens = 0;
+  let retries = 0, opens = 0, retry = null;
   // Only a real change is written: opening a project must not rewrite its file.
   const store = (base, slots, opening) => {
     const next = { ...base, slots: JSON.parse(JSON.stringify(slots || [])), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap(), whole: pipeline.whole() };
@@ -14,6 +14,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   };
 
   async function adopt() {
+    clearTimeout(retry);                    // a retry still waiting is for a project that may no longer be open
     owner = null;
     const mine = ++opens, target = project.project && project.project.id;
     const saved = project.project && project.project.models || {};
@@ -30,7 +31,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
       // An old project with nothing saved runs the default and stays as it is on disk; a new one keeps what it took.
       if (own || project.fresh) store(saved, pipeline.slots(), !project.fresh);       // a new project's whole flag is a fact, not a guess
     } else if (retries++ < 3) {
-      setTimeout(adopt, 5000);
+      retry = setTimeout(adopt, 5000);
     } else {
       say("This project's saved pipeline could not be loaded; the default is in use.");
     }
@@ -40,6 +41,6 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
     if (!project.project || project.project.id !== owner) return;
     store(project.project.models || {}, slots);
   });
-  onOpen(adopt);
+  onOpen(() => { retries = 0; return adopt(); });       // each project opened gets its own retries
   return { adopt };
 }

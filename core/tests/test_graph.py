@@ -296,6 +296,14 @@ def test_a_number_outside_what_the_node_takes_is_refused():
     assert any("above the largest" in p for p in problems), problems
 
 
+def test_a_value_the_app_writes_is_refused_by_the_name_the_person_sees():
+    _prompt, problems = graph.build(
+        [{"id": "model", "node": "Loader", "roles": [{"at": "project.video", "input": "steps", "label": "Length"}],
+          "inputs": {"ckpt_name": "a.safetensors", "steps": 1000}}],
+        _schemas_with_limits())
+    assert any(p.startswith("Length is 1000, above the largest") for p in problems), problems
+
+
 def test_a_bool_is_not_measured_against_a_number_bound():
     """True is 1 in Python, so a naive comparison lets a checkbox be judged
     against a step count -- and quietly passes it."""

@@ -287,7 +287,7 @@ def test_the_taste_key_serves_the_store_and_every_module_reading_it_says_so(comf
     from pathlib import Path
     from core import routes
     found = {m["id"]: m for m in routes.manifest()["modules"]}
-    assert found["taste"]["serves"] == ["taste_store"]
+    assert found["taste"]["serves"] == ["modifier", "taste_store"]
     root = Path(__file__).resolve().parents[2] / "modules"
     readers = {p.parent.name for p in root.rglob("*.py") if "/tests/" not in str(p)
                and re.search(r'ask\("taste_store"', p.read_text())}

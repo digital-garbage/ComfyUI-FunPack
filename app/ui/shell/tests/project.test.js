@@ -307,7 +307,7 @@ test("an edit made WHILE an import is in flight is still saved, against the old 
   };
 
   const importing = p.importProject({ name: "Imported", scenes: [] });
-  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  await new Promise((r) => setTimeout(r, 0)); await Promise.resolve(); await Promise.resolve();
   assert.equal(p.project.id, "abcdef012345", "the import switched before the edit -- this test proves nothing");
 
   p.project.editor_settings = { autosave_sec: 0.3 };
@@ -342,9 +342,9 @@ test("two imports racing land on whichever was clicked last, not whichever answe
   };
 
   const first = p.importProject({ name: "A", scenes: [] });    // clicked first
-  await Promise.resolve();
+  await new Promise((r) => setTimeout(r, 0));
   const second = p.importProject({ name: "B", scenes: [] });   // clicked second, while A is still in flight
-  await Promise.resolve();
+  await new Promise((r) => setTimeout(r, 0));
 
   // A answers LAST, after B -- a real, ordinary network race, not a
   // contrived one.
@@ -377,9 +377,9 @@ test("a superseded import deletes its own orphaned project instead of leaving it
   const p = createProject({});
   await p.start();
   const first = p.importProject({ name: "A", scenes: [] });
-  await Promise.resolve();
+  await new Promise((r) => setTimeout(r, 0));
   const second = p.importProject({ name: "B", scenes: [] });
-  await Promise.resolve();
+  await new Promise((r) => setTimeout(r, 0));
 
   pending.B(); await second;
   pending.A(); await first;
@@ -407,7 +407,7 @@ test("start() losing a race to a switch the user already made does not revert it
 
   const p = createProject({});
   const starting = p.start();          // in flight -- list() has not answered yet
-  await Promise.resolve();
+  await new Promise((r) => setTimeout(r, 0));
 
   await p.newProject("MyNewThing");    // the user's own action completes first
   assert.equal(p.project.name, "MyNewThing");
@@ -661,4 +661,19 @@ test("an undo keeps the chosen pipeline too", async () => {
   p.setField("models", { slots: ["B"] }, { quiet: true });
   p.undo();
   assert.deepEqual(p.project.models, { slots: ["B"] });
+});
+
+test("a switch waits for edits still landing elsewhere before it reads the next project", async () => {
+  const order = [];
+  let release;
+  const p = createProject({ beforeSwitch: () => new Promise((r) => { order.push("wait"); release = () => { order.push("settled"); r(); }; }) });
+  await p.start();
+  globalThis.fetch = async (path) => { order.push(`fetch ${String(path).split("/").pop()}`); return { ok: true, status: 200, json: async () => ({ id: "b", name: "B", scenes: [], video: {}, updated_at: 1 }) }; };
+  const opening = p.open("b");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepStrictEqual(order, ["wait"]);
+  release();
+  await opening;
+  assert.deepStrictEqual(order.slice(0, 2), ["wait", "settled"]);
+  assert.equal(p.project.name, "B");
 });

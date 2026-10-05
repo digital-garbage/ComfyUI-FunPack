@@ -25,6 +25,7 @@ def test_sd1_is_recognised_and_sd2_sdxl_h3_are_not(comfyui):
     from modules.models import sd15
     assert sd15.detect({UNET, CLIP_L})
     assert sd15.probe_traits({UNET, CLIP_L}) == ["spatial_latent", "predict_eps"]
+    assert sd15.detect({UNET, "cond_stage_model.transformer.embeddings.token_embedding.weight"})    # an older SD1.x file's CLIP naming
     assert not sd15.detect({UNET, "cond_stage_model.model.token_embedding.weight"})        # SD2 (OpenCLIP)
     assert not sd15.detect({UNET, "conditioner.embedders.0.transformer.text_model.embeddings.token_embedding.weight"})  # SDXL
     assert not sd15.detect({"video_patch_proj.weight", "audio_patch_proj.weight"})       # H3

@@ -92,3 +92,19 @@ test("a new project keeps the preset pipeline it inherits as whole, so it reopen
   await opened();
   assert.equal(writes[0].whole, true);
 });
+
+test("a retry left over from a project that failed to load never reloads the one opened after it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let opened, calls = 0, fail = true;
+  const project = { project: { id: "a", models: { slots, removed: [], unwired: {}, whole: false } }, setField: () => {} };
+  const pipeline = { adopt: async () => { calls += 1; return !fail; }, slots: () => slots, removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: () => {} };
+  linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
+  await opened();                          // A fails: a retry is waiting
+  fail = false;
+  project.project = { id: "b", models: { slots, removed: [], unwired: {}, whole: false } };
+  await opened();                          // B opens and loads
+  const before = calls;
+  t.mock.timers.tick(6000);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, before);
+});

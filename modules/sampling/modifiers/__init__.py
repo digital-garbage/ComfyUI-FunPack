@@ -9,6 +9,7 @@ CATEGORY = "sampling"
 STATUS = "proven"
 
 NODES = [FunPackModifierSettings, FunPackLoadModifiers]
+USES = ["modifier"]       # the modifiers it installs act only when both its nodes are in the pipeline
 
 
 def settings_sink():

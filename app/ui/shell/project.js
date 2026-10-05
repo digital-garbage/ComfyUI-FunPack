@@ -55,7 +55,7 @@ const put = (project) => json("PUT", `${BASE}/${encodeURIComponent(project.id)}`
 const TYPING = 1200;       // ms after the last keystroke that still counts as typing
 const KEPT = ["editor_settings", "models"];
 
-export function createProject({ onChange, onError, onOpen, keepConsistent } = {}) {
+export function createProject({ onChange, onError, onOpen, keepConsistent, beforeSwitch = async () => {} } = {}) {
   let project = null;
   let selected = null;
   // Every project this browser knows about, for the File menu. Read once at
@@ -216,7 +216,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
 
     async open(id) {
       const mine = ++generation;
-      await flush();
+      await beforeSwitch(); await flush();     // an edit still landing elsewhere (the pipeline) reaches THIS project first
       const found = await read(id);
       // A newer switch already won this race (another open/new/import started
       // after this one and has already landed) -- applying this one now would
@@ -232,7 +232,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
 
     async newProject(name) {
       const mine = ++generation;
-      await flush();
+      await beforeSwitch(); await flush();
       const made = await create(name);
       if (mine !== generation) {
         // Superseded by a newer switch -- this one already created a real
@@ -264,7 +264,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
      */
     async importProject(data) {
       const mine = ++generation;
-      await flush();
+      await beforeSwitch(); await flush();
       const imported = await json("POST", `${BASE}/import`, data);
       if (mine !== generation) {
         remove(imported.id).catch(() => {});   // superseded -- see newProject()
