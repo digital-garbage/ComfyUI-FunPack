@@ -35,7 +35,7 @@ def machine(disk_free_gb=None) -> List[dict]:
         if not torch.cuda.is_available():
             mps = getattr(torch.backends, "mps", None)
             if mps is not None and mps.is_available():
-                out.append(row("ok", "Apple GPU (MPS): generates slowly, enough for small models like SD1.5; video models need an NVIDIA GPU."))
+                out.append(row("ok", "Apple GPU (MPS): generates, slowly; large video models may not fit in its memory."))
             else:
                 out.append(row("warn", "No GPU is visible to torch: this machine can edit but not generate."))
         else:

@@ -296,14 +296,33 @@ test("the settings of a Generate are taken once: frozenInputs is a copy, wired i
   assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.dtype, "bf16");   // and is not the live object
 });
 
-test("a pipeline replaced whole (a preset) is reopened as it was: the default's own slots do not come back", async () => {
+test("a pipeline replaced whole (a preset) is reopened as it was: no default slot or role comes back", async () => {
   const PS = load([]);
   await PS.ensureLoaded();
-  const preset = [{ id: "ckpt", node: "Checkpoint", inputs: { file: "sd.safetensors" } }, { id: "gen", node: "Gen", inputs: { steps: 20, model: ["ckpt", 0] } }];
+  const preset = [{ id: "ckpt", node: "Checkpoint", inputs: { file: "sd.safetensors" } },
+    { id: "gen", node: "Gen", roles: [{ at: "generation.seed", input: "seed" }], inputs: { steps: 20, model: ["ckpt", 0] } }];
   await PS.restore({ slots: preset, removed: [], unwired: {} });
-  assert.deepStrictEqual(PS.removedIds(), ["model"]);
-  const saved = { slots: PS.slots(), removed: PS.removedIds() };
+  assert.deepStrictEqual([PS.removedIds(), PS.whole()], [["model"], true]);
   const again = load([]);
-  await again.adopt(saved.slots, saved.removed);
-  assert.deepStrictEqual(again.slots().map((s) => s.id).sort(), ["ckpt", "gen"]);
+  await again.adopt(PS.slots(), PS.removedIds(), {}, PS.whole());
+  assert.deepStrictEqual(again.slots(), preset);
+  assert.strictEqual(again.whole(), true);
+});
+
+test("a whole pipeline saved before the flag existed is still reopened as it was", async () => {
+  const preset = [{ id: "ckpt", node: "Checkpoint", inputs: { file: "sd.safetensors" } }, { id: "gen", node: "Gen", inputs: { steps: 20 } }];
+  const PS = load([]);
+  await PS.adopt(preset, [], {});
+  assert.deepStrictEqual(PS.slots(), preset);
+});
+
+test("an edited default stays a layer: the default's new values still fill in, and Revert to it is not whole", async () => {
+  const PS = load([]);
+  await PS.adopt([{ id: "model", node: "Loader", inputs: { file: "a" } }, { id: "gen", node: "Gen", inputs: { steps: 3 } }], [], {}, false);
+  assert.strictEqual(PS.whole(), false);
+  assert.deepStrictEqual(PS.slots().find((s) => s.id === "model").inputs, { file: "a", dtype: "bf16" });
+  const snap = PS.snapshot();
+  await PS.restore({ slots: [{ id: "x", node: "X", inputs: {} }], removed: [], unwired: {} });
+  await PS.restore(snap);
+  assert.strictEqual(PS.whole(), false);
 });

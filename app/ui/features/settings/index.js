@@ -28,7 +28,7 @@ export default {
       models(app), "Generation", "models loaders unet vae clip lora");
     add("modules", "Modules", "Switch a module off for this project; see and re-enable ones that failed.", "☷", "neutral",
       modules(app), "Generation", "modules enable disable quarantine");
-    add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys and the Absolute global-taste store.", "✦", "danger",
+    add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys.", "✦", "danger",
       taste(app), "Learning", "refinement taste keys rating");
     // only when that module is installed: a section for something absent would be a dead end
     app.pipeline.ensureLoaded().then(() => {

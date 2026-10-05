@@ -36,6 +36,7 @@ STAGE = "guidance"
 CATEGORY = "guidance"
 STATUS = "proven"
 REQUIRES = ["temporal_latent"]
+USES = ["taste_store"]
 
 SETTINGS = {
     "enabled": {

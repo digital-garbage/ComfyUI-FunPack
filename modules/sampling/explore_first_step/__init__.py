@@ -25,6 +25,7 @@ STAGE = "sampling"
 CATEGORY = "sampling"
 STATUS = "proven"
 REQUIRES = ["temporal_latent"]
+USES = ["taste_store"]
 
 SETTINGS = {
     "enabled": {

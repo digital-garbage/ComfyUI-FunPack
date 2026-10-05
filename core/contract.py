@@ -59,6 +59,7 @@ class ModuleSpec:
     mount: str
     settings: Dict[str, dict] = field(default_factory=dict)
     requires: List[str] = field(default_factory=list)   # model traits
+    uses: List[str] = field(default_factory=list)       # capabilities this module asks other modules for
     after: List[str] = field(default_factory=list)      # module ids
     before: List[str] = field(default_factory=list)
     stage: str = "sampling"
@@ -99,12 +100,21 @@ class ModuleSpec:
             "mount": self.mount,
             "settings": self.settings,
             "requires": list(self.requires),
+            "uses": list(self.uses),
             "after": list(self.after),
             "before": list(self.before),
             "stage": self.stage,
             "category": self.category,
             "ui": self.ui,
             "status": self.status,
-            "nodes": [getattr(n.GET_SCHEMA(), "node_id", n.__name__) if hasattr(n, "GET_SCHEMA") else n.__name__
-                      for n in self.nodes],
+            "nodes": [_node_id(n) for n in self.nodes],
         }
+
+
+def _node_id(node) -> str:
+    """A node's id for the browser. A node whose schema fails is not registered (core/nodes.py says why);
+    here it must not take the whole module list down with it."""
+    try:
+        return getattr(node.GET_SCHEMA(), "node_id", None) or node.__name__
+    except Exception:                                    # noqa: BLE001
+        return getattr(node, "__name__", "?")

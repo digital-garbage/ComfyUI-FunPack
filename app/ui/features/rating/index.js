@@ -31,7 +31,7 @@ export default {
       const t = target();
       if (!t) return put();
       const now = nameOf(t.root.rating);
-      const button = c.button.sm({ label: now ? `★ ${now}` : "Rate scene…", tone: now ? "neutral" : "ghost", title: "Rate this scene's render — FunPack refines from it on the next generation",
+      const button = c.button.sm({ label: now ? `★ ${now}` : "Rate scene…", tone: now ? "neutral" : "ghost", title: "Rate this scene's render: features that learn from ratings use it on the next generation",
         onClick: async () => {
           const pick = await c.modal.choice({ title: "How did it turn out?", items: [...CHOICES.map((o) => ({ id: o.value, label: o.label, hint: o.hint })), { id: FORGET, label: "Forget my rating", hint: "Clears it: nothing is learned from this clip." }] }).result;
           if (pick) rate(pick);

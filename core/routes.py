@@ -130,10 +130,13 @@ def manifest(traits=None):
         specs, incompatible = split(specs, traits)
 
     ordered, rejected = order(specs)
+    # `serves`: what a module provides that some installed module uses. Its settings matter only while one
+    # of those users is on, so the app hides them otherwise (the taste key with no learning feature).
+    used = {cap for spec in reg.specs.values() for cap in spec.uses}
 
     return {
         "contract": CONTRACT_VERSION,
-        "modules": [spec.to_manifest() for spec in ordered],
+        "modules": [dict(spec.to_manifest(), serves=sorted(used & set(spec.provides))) for spec in ordered],
         "failed": (
             [{"where": where, "why": why} for where, why in reg.failed]
             + [{"where": spec.source, "why": why} for spec, why in rejected]

@@ -30,6 +30,7 @@ STAGE = "sampling"
 CATEGORY = "guidance"
 STATUS = "experimental"
 REQUIRES = ["temporal_latent", "dit_block_hooks"]
+USES = ["taste_store"]
 # Innermost APPLY_MODEL: every other wrapper sees one guided prediction, not two calls.
 AFTER = ["score_slider"]
 

@@ -111,11 +111,11 @@ def test_an_undetected_file_carries_no_traits(tmp_path):
     assert out["traits"] == []
 
 
-def test_a_matched_module_with_no_probe_traits_provider_still_gets_a_list(tmp_path):
+def test_a_matched_module_with_no_probe_traits_provider_says_unknown_not_none(tmp_path):
     p = tmp_path / "m.safetensors"
     _write_safetensors(p, ["shared.weight"])
     out = probe.detect(p, registry=_registry(("m", "M", {"shared.weight"})))
-    assert out["traits"] == []
+    assert out["traits"] is None          # an empty list would hide every module needing a trait
 
 
 def test_a_matched_modules_probe_traits_are_carried_through(tmp_path):
@@ -141,7 +141,7 @@ def test_a_probe_traits_that_raises_is_skipped_not_fatal(tmp_path):
     out = probe.detect(p, registry=reg)
     assert out["module"] == "m"
     assert out["detected"] is True
-    assert out["traits"] == []
+    assert out["traits"] is None          # unknown: it must not narrow what the UI shows
 
 
 def test_a_missing_file_is_not_found_not_undetected(tmp_path):

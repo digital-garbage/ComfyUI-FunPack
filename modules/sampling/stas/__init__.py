@@ -37,6 +37,7 @@ STAGE = "guidance"
 CATEGORY = "guidance"
 STATUS = "experimental"
 REQUIRES = ["temporal_latent", "dit_block_hooks"]
+USES = ["taste_store"]
 
 SETTINGS = {
     "enabled": {

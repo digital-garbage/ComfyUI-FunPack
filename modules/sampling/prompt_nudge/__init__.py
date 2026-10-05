@@ -23,6 +23,7 @@ STAGE = "sampling"
 CATEGORY = "guidance"
 STATUS = "experimental"
 REQUIRES = ["temporal_latent"]
+USES = ["taste_store"]
 
 SETTINGS = {
     "enabled": {

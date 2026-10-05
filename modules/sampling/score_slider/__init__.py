@@ -29,6 +29,7 @@ STAGE = "sampling"          # innermost APPLY_MODEL: outer features see one comb
 CATEGORY = "guidance"
 STATUS = "experimental"
 REQUIRES = ["temporal_latent"]
+USES = ["taste_store"]
 
 SETTINGS = {
     "enabled": {

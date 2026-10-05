@@ -1,8 +1,10 @@
 """Stable Diffusion 1.5 support: a small model the whole pipeline can be run end to end on a Mac.
 
 It is an image model, so its pipeline holds the one picture for the clip's length: the editor gets a
-clip the length it asked for, made the same way every other pipeline makes one. The latent and the
-decode need nothing of their own (a plain 4-channel /8 latent, derived by core from the model).
+clip the length it asked for, made the same way every other pipeline makes one. Each held frame is a
+full picture in memory (about 3 MB at 512x512): a minute at 25 fps wants ~4.5 GB, and ComfyUI refuses
+more than 4096 frames. The latent and the decode need nothing of their own (a plain 4-channel /8
+latent, derived by core from the model).
 
 What this teaches the system is only what the file's header says before it loads: that it is SD1.x
 (a CLIP-L text encoder under `cond_stage_model.transformer`, which SD2's OpenCLIP and SDXL's

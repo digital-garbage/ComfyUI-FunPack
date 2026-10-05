@@ -34,6 +34,7 @@ STAGE = "guidance"
 CATEGORY = "system"
 STATUS = "experimental"
 REQUIRES = ["dit_block_hooks"]
+USES = ["taste_store"]
 # Measured before anything that changes a block's output, so the number is the
 # block's OWN push and not another mechanism's injection.
 BEFORE = ["reins", "block_repeat", "shadow_negative", "q_steer", "attention_temperature"]

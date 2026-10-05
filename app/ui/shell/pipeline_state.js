@@ -23,21 +23,17 @@ export function createPipelineState(API) {
     return slot ? slot.inputs[MODEL_FILE_INPUT[slot.node]] || null : null;
   }
 
-  // Which traits the pipeline's chosen model has, or null when that is not
-  // knowable (no loader slot, no file chosen, or the probe found nothing).
-  // null must reach API.modules() as "do not filter" rather than as an
-  // empty list -- /api/modules?traits= with an empty traits set hides every
-  // module that requires ANY trait at all, for every model this cheap,
-  // load-free probe has no opinion about yet (this cheap path only knows
-  // MiniMax H3's own traits today -- see modules/models/minimax_h3).
+  // Which traits the pipeline's chosen model has; null when that is not knowable (no file, or no model
+  // module recognised it, or the one that did names no traits): null means "do not filter", while a list,
+  // even an empty one, hides every module needing a trait it lacks. undefined: the probe failed, try again.
   async function probeModelTraits(pipelineSlots) {
     const filename = currentModelFile(pipelineSlots);
     if (!filename) return null;
     try {
       const data = await API.probeFamily(filename);
-      return data.detected ? (data.traits || []) : null;
+      return data.detected && Array.isArray(data.traits) ? data.traits : null;
     } catch (_) {
-      return null;
+      return undefined;
     }
   }
 
@@ -58,7 +54,7 @@ export function createPipelineState(API) {
     modulesById = {};
     (manifest.modules || []).forEach((m) => { modulesById[m.id] = m; });
     controlState = manifest.control || controlState;
-    lastProbedFile = file;                              // only once it worked: a failed probe is tried again
+    if (traits !== undefined) lastProbedFile = file;    // only once it worked: a failed probe is tried again
   }
   let incomplete = [];
   let refused = [];
@@ -68,8 +64,8 @@ export function createPipelineState(API) {
   let unwired = {};           // default links the person cut: {slotId: [input, ...]}
   let removed = new Set();    // default slots the person took out of this project's pipeline
   let adoptGate = null;       // a promise while a project's pipeline is being put in
-  let deferredRemoved, deferredUnwired;
-  let deferred = null;        // a project's saved pipeline waiting for the first successful load
+  let whole = false;          // the pipeline replaced the default (a preset, an import, the wizard) rather than editing it
+  let deferred = null;        // a project's saved pipeline ([slots, removed, unwired, whole]) waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
   let saving = false;
   let pending = false;
@@ -132,7 +128,7 @@ export function createPipelineState(API) {
       }
       loading = false;
       loadPromise = null;
-      if (slots !== null && deferred) { const d = deferred, r = deferredRemoved, u = deferredUnwired; deferred = null; deferredRemoved = undefined; deferredUnwired = undefined; await adopt(d, r, u); }
+      if (slots !== null && deferred) { const d = deferred; deferred = null; await adopt(...d); }
     })();
     return loadPromise;
   }
@@ -390,7 +386,7 @@ export function createPipelineState(API) {
   // The pipeline as it stands, to come back to: Models & Pipeline's Cancel puts this back.
   function snapshot() {
     if (slots === null) return null;
-    return { slots: JSON.parse(JSON.stringify(slots)), removed: [...removed], unwired: JSON.parse(JSON.stringify(unwired)) };
+    return { slots: JSON.parse(JSON.stringify(slots)), removed: [...removed], unwired: JSON.parse(JSON.stringify(unwired)), whole };
   }
   // -> {refused: [...]}; empty when the snapshot is back. Announced as a change, so the project follows.
   async function restore(snap) {
@@ -411,6 +407,7 @@ export function createPipelineState(API) {
         // open lays the default back over it (a preset, an import or the wizard would regain the default's loaders).
         const kept = new Set(res.slots.map((s) => s.id));
         removed = new Set([...(snap.removed || []), ...(offered || []).map((s) => s.id).filter((id) => !kept.has(id))]);
+        whole = snap.whole !== false;                   // only a snapshot of an edited default says otherwise
         unwired = JSON.parse(JSON.stringify(snap.unwired || {}));
         groupEdits = {}; pendingValues = {}; pendingBody = null; pending = false;
         incomplete = res.incomplete || []; refused = []; queueable = !!res.queueable;
@@ -454,18 +451,18 @@ export function createPipelineState(API) {
   // the saved copy predates, so an update's new settings are not lost to an old project.
   // Not announced as a change: it IS the project's own copy.
   // True when the project's pipeline is in (or it had none to put in); false when it could not be.
-  async function adopt(saved, removedIds, unwiredMap) {
+  async function adopt(saved, removedIds, unwiredMap, wholeSaved) {
     let open;
     const gate = new Promise((r) => { open = r; });
     adoptGate = gate;                                   // before anything awaits: an edit right behind this waits too
-    try { await ensureLoaded(); return await _adopt(saved, removedIds, unwiredMap); } finally { if (adoptGate === gate) adoptGate = null; open(); }
+    try { await ensureLoaded(); return await _adopt(saved, removedIds, unwiredMap, wholeSaved); } finally { if (adoptGate === gate) adoptGate = null; open(); }
   }
 
-  async function _adopt(saved, removedIds, unwiredMap) {
+  async function _adopt(saved, removedIds, unwiredMap, wholeSaved) {
     // Not loaded (ComfyUI unreachable): remember what the project holds and put it in the moment a
     // load succeeds, so the default is never what the next edit is built on.
     const hadSomething = (Array.isArray(saved) && saved.length) || (Array.isArray(removedIds) && removedIds.length);
-    if (slots === null) { if (hadSomething) { deferred = saved; deferredRemoved = removedIds; deferredUnwired = unwiredMap; } return !hadSomething; }
+    if (slots === null) { if (hadSomething) deferred = [saved, removedIds, unwiredMap, wholeSaved]; return !hadSomething; }
     if (!hadSomething) return true;
     if (!Array.isArray(saved)) saved = [];
     // A saved slot is only what the server would accept: a project file outlives the code that
@@ -478,7 +475,13 @@ export function createPipelineState(API) {
     const have = new Set(offered.map((s) => s.id));
     // Slots the person took out stay out; ones whose node they swapped keep their swap.
     const gone = new Set(Array.isArray(removedIds) ? removedIds.filter((x) => typeof x === "string") : []);
-    const lay = (extras) => offered.filter((def) => !gone.has(def.id)).map((def) => {
+    // A whole pipeline comes back exactly as saved: laid over the default it would regain the default's slots
+    // and roles. Files saved before the flag existed: a whole one has slots of its own and lacks default ones
+    // nobody removed. ponytail: an edited default saved before an update added a default slot reads as whole
+    // too, and simply goes without that slot.
+    const isWhole = typeof wholeSaved === "boolean" ? wholeSaved
+      : [...byId.keys()].some((id) => !have.has(id)) && offered.some((d) => !gone.has(d.id) && !byId.has(d.id));
+    const lay = (extras) => isWhole ? JSON.parse(JSON.stringify(saved.filter(sound))) : offered.filter((def) => !gone.has(def.id)).map((def) => {
       const mine = byId.get(def.id);
       if (!mine) return JSON.parse(JSON.stringify(def));
       if (mine.node !== def.node) return JSON.parse(JSON.stringify(mine));
@@ -496,6 +499,7 @@ export function createPipelineState(API) {
     const mine = ++epoch;
     pendingValues = {};                                 // the new project's values win, not an edit made to the old one
     removed = new Set(gone);
+    whole = isWhole;
     unwired = {};
     Object.entries(unwiredMap && typeof unwiredMap === "object" ? unwiredMap : {}).forEach(([id, list]) => {
       if (Array.isArray(list)) unwired[id] = list.filter((x) => typeof x === "string");
@@ -544,6 +548,7 @@ export function createPipelineState(API) {
     modulesById: () => modulesById,
     activeModules, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
+    whole: () => whole,
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),
     slots: () => slots,
     incomplete: () => incomplete,

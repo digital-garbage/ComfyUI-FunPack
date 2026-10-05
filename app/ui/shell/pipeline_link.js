@@ -5,7 +5,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   let retries = 0;
   // Only a real change is written: opening a project must not rewrite its file.
   const store = (base, slots) => {
-    const next = { ...base, slots: JSON.parse(JSON.stringify(slots || [])), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap() };
+    const next = { ...base, slots: JSON.parse(JSON.stringify(slots || [])), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap(), whole: pipeline.whole() };
     if (JSON.stringify(next) !== JSON.stringify(project.project.models || {})) project.setField("models", next, { quiet: true });
   };
 
@@ -14,7 +14,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
     let ok = false, timer;
     try {
       // Bounded: a hung request must not hold the project behind it.
-      ok = await Promise.race([pipeline.adopt(saved.slots || [], saved.removed, saved.unwired), new Promise((r) => { timer = setTimeout(() => r(false), 20000); })]);
+      ok = await Promise.race([pipeline.adopt(saved.slots || [], saved.removed, saved.unwired, saved.whole), new Promise((r) => { timer = setTimeout(() => r(false), 20000); })]);
     } catch { ok = false; } finally { clearTimeout(timer); }
     adopted = Boolean(ok && pipeline.slots());
     if (adopted) {

@@ -258,3 +258,38 @@ def test_the_manifest_names_a_modules_nodes_by_id(comfyui):
     from core import routes
     found = next(m for m in routes.manifest()["modules"] if m["id"] == shot_camera.ID)
     assert found["nodes"] == ["FunPackShotCamera"]
+
+
+def test_a_node_whose_schema_fails_does_not_take_the_module_list_down():
+    class Bad:
+        @classmethod
+        def define_schema(cls):
+            raise RuntimeError("schema boom")
+
+        @classmethod
+        def execute(cls):
+            pass
+
+        @classmethod
+        def GET_SCHEMA(cls):
+            return cls.define_schema()
+    assert validate(announce(nodes=[Bad])).to_manifest()["nodes"] == ["Bad"]
+
+
+def test_uses_is_a_list_of_capability_names():
+    assert validate(announce(uses=["taste_store"])).to_manifest()["uses"] == ["taste_store"]
+    with pytest.raises(SchemaError, match="uses"):
+        validate(announce(uses="taste_store"))
+
+
+def test_the_taste_key_serves_the_store_and_every_module_reading_it_says_so(comfyui):
+    import re
+    from pathlib import Path
+    from core import routes
+    found = {m["id"]: m for m in routes.manifest()["modules"]}
+    assert found["taste"]["serves"] == ["taste_store"]
+    root = Path(__file__).resolve().parents[2] / "modules"
+    readers = {p.parent.name for p in root.rglob("*.py") if "/tests/" not in str(p)
+               and re.search(r'ask\("taste_store"', p.read_text())}
+    declared = {spec.source.split(".")[-1] for spec in routes.modules().specs.values() if "taste_store" in spec.uses}
+    assert readers and readers <= declared, readers - declared

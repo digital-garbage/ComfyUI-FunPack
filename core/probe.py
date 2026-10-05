@@ -87,7 +87,9 @@ def detect(path: Path, registry=None) -> dict:
     populated. `traits` is only ever populated when `detected` is true --
     an undetected file says nothing about what it is, so it must not narrow
     what the UI shows via `/api/modules?traits=`; the caller should treat
-    `detected: false` as "do not filter", not as "filter to nothing".
+    `detected: false` as "do not filter", not as "filter to nothing". The
+    same goes for `traits: None`: the module that claimed the file names no
+    traits (or failed to), which is unknown, not "has none".
     """
     p = Path(path)
     if not p.is_file():
@@ -112,7 +114,7 @@ def detect(path: Path, registry=None) -> dict:
             log.failed(f"{spec.id}.detect", exc)
             continue
         if matched:
-            traits: list = []
+            traits = None                              # unknown, not empty: a module that never says hides nothing
             probe_traits = spec.provides.get("probe_traits")
             if probe_traits is not None:
                 try:
