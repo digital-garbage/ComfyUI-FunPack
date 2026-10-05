@@ -157,3 +157,16 @@ test("a project opened while ComfyUI is down is owned once it answers, so later 
   heard([{ ...slots[0], inputs: { ckpt_name: "edited" } }]);
   assert.deepStrictEqual(writes, ["edited"]);
 });
+
+test("a slow pipeline load is waited for, never retried over while it can still land", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let opened, calls = 0, finish;
+  const project = { project: { id: "a", models: { slots, removed: [], unwired: {}, whole: false } }, setField: () => {} };
+  const pipeline = { adopt: () => { calls += 1; return new Promise((r) => { finish = r; }); }, slots: () => slots, removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: () => {} };
+  linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
+  const opening = opened();
+  for (let i = 0; i < 4; i++) { t.mock.timers.tick(10000); await new Promise((r) => setImmediate(r)); }
+  finish(true);
+  await opening;
+  assert.equal(calls, 1);
+});

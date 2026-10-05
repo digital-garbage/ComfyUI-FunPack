@@ -520,9 +520,11 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     } finally { adopting -= 1; if (adoptGate === gate) adoptGate = null; open(); _changed(); }
   }
 
-  /** Resolves once no edit is on its way and no project's pipeline is going in (at most ~10 s). */
+  /** Resolves true once no edit is on its way and no project's pipeline is going in; false if that took over
+   *  three minutes (every request gives up after ANSWER_MS, so only a server failing again and again gets there). */
   async function settled() {
-    for (let waited = 0; (saving || adoptGate) && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+    for (let waited = 0; (saving || adoptGate) && waited < 180000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+    return !(saving || adoptGate);
   }
 
   async function _adopt(saved, removedIds, unwiredMap, wholeSaved, inherit) {

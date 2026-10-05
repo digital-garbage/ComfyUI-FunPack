@@ -57,7 +57,8 @@ export default {
       let made = 0;
       said = false;
       try {
-        if (app.pipeline.settled) await app.pipeline.settled();   // a project's pipeline still going in is the one this run uses, not the last one's
+        // A project's pipeline still going in is the one this run uses, not the last one's.
+        if (app.pipeline.settled && !(await app.pipeline.settled())) { tell("Not started: this project's pipeline is still loading. ComfyUI is slow to answer; try again in a moment."); return; }
         const snap = times > 1 ? structuredClone(p.project) : null;        // takes differ in the seed alone: later edits to the project do not reach them
         const drawn = new Map();
         const same = times > 1 ? (body) => { const key = JSON.stringify(body); if (!drawn.has(key)) drawn.set(key, expand(body)); return drawn.get(key); } : expand;

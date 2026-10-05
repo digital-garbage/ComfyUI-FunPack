@@ -24,11 +24,10 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
     owner = null;
     const mine = ++opens, target = project.project && project.project.id;
     const saved = project.project && project.project.models || {};
-    let ok = false, timer;
-    try {
-      // Bounded: a hung request must not hold the project behind it.
-      ok = await Promise.race([pipeline.adopt(saved.slots || [], saved.removed, saved.unwired, saved.whole, project.fresh), new Promise((r) => { timer = setTimeout(() => r(false), 20000); })]);
-    } catch { ok = false; } finally { clearTimeout(timer); }
+    let ok = false;
+    // Not raced against a timer: every request under it gives up on its own, and a retry started while this one could
+    // still land would lay the saved copy over edits made in between.
+    try { ok = await pipeline.adopt(saved.slots || [], saved.removed, saved.unwired, saved.whole, project.fresh); } catch { ok = false; }
     if (mine !== opens) return;                                  // opened again meanwhile (another project, or this one): the latest open handles it
     if (ok && pipeline.slots()) {
       owner = target;
