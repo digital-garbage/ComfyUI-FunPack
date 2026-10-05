@@ -13,6 +13,7 @@ export default {
   setup({ host, app }) {
     const ps = app.pipeline;
     let pop = null, specs = {}, unreadable = false;
+    const latest = {};              // the last value the person set per input: an older edit's save is judged by the newest
     const sampling = () => { const ok = ps.usefulness(); return ps.activeModules().filter((m) => (m.category || "") === "sampling" && Object.keys(m.settings || {}).length && ok(m)); };
     const marked = () => (ps.slots() || []).flatMap((slot) => (slot.roles || []).filter((r) => r.at === "generation.sampling" && r.input && !Array.isArray((slot.inputs || {})[r.input])).map((role) => ({ slot, role })));
     const describe = async () => {
@@ -25,8 +26,11 @@ export default {
       const set = async (v) => {            // compared with the slot as it is NOW: the one drawn may be several saves old
         const now = (ps.slots() || []).find((s) => s.id === slot.id) || slot;
         if (JSON.stringify((now.inputs || {})[role.input]) === JSON.stringify(v)) return;
+        const key = `${slot.id}.${role.input}`;
+        latest[key] = v;
         await ps.save({ inputs: { [slot.id]: { [role.input]: v } } });
         if (ps.settled) await ps.settled();       // a save queued behind another returns before it lands
+        if (latest[key] !== v) return;            // a newer edit of this input is the one that counts
         const after = (ps.slots() || []).find((s) => s.id === slot.id) || {};
         if (JSON.stringify((after.inputs || {})[role.input]) !== JSON.stringify(v)) {      // not saved: show what will really run, and why
           c.toast.warn({ text: [...(ps.saveNotes ? ps.saveNotes() : [])].find((n) => /could not save/i.test(n)) || `${role.label || role.input} was not saved.` });

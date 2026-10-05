@@ -60,6 +60,8 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
     const reason = pipeline.refusal && pipeline.refusal();
     return `ComfyUI refused this project's saved pipeline${reason ? ` (${reason})` : ""}, so the default is in use. Your next pipeline edit replaces the saved one; or open the project again to retry.`;
   };
+  // An edit to the stand-in while this project's pipeline could not go in would be thrown away by the next retry: refused, said.
+  if (pipeline.setEditGuard) pipeline.setEditGuard(() => (owner === null && project.project && (waiting || retries > 0) && !replaceOnEdit ? `Could not save: ${why()}` : null));
   const owns = () => !!project.project && owner === project.project.id;
   /** Why the open project's pipeline is not live, in words for the person; null when it is. */
   const why = () => owns() ? null : waiting ? "ComfyUI is not answering, so this project's pipeline is not loaded yet. It goes in as soon as ComfyUI answers."

@@ -204,8 +204,13 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   // predates the other's. See engine_settings.js's original fix for why the
   // retry-after-in-flight shape exists (a same-panel double-edit dropped
   // one edit before this).
+  // Set by whoever ties the pipeline to a project: a reason when an edit now would land on a stand-in it could not keep.
+  let editGuard = () => null;
+  const blocked = () => { const why = editGuard(); if (why) { saveNotes = [why]; _changed("load"); } return why; };    // said, and views redraw to what is true
+
   async function save(body) {
     if (adoptGate) await adoptGate;                     // an edit made while a project's pipeline goes in lands on THAT pipeline
+    if (blocked()) return;
     pendingBody = mergeBodies(pendingBody, body);
     if (saving) { pending = true; return; }
     saving = true;
@@ -391,6 +396,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   // at whichever write happens to be in flight when the queue drains.
   async function setModuleValue(moduleId, name, value) {
     if (adoptGate) await adoptGate;                     // the values tree must be the pipeline this lands on, not the one going out
+    if (blocked()) return;
     pendingValues[moduleId] = { ...(pendingValues[moduleId] || {}), [name]: value };
     const values = currentValues();
     mirrorValues(values);
@@ -404,6 +410,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     await ensureLoaded();
     if (slots === null) return { refused: ["The pipeline has not loaded: is ComfyUI reachable?"] };
     if (adoptGate) await adoptGate;
+    { const why = blocked(); if (why) return { refused: [why] }; }
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     if (saving) return { refused: ["A save is still in progress: try again in a moment."] };
     const mine = epoch;
@@ -460,6 +467,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   async function restore(snap) {
     if (!snap || !Array.isArray(snap.slots)) return { refused: ["Nothing to go back to."] };
     if (adoptGate) await adoptGate;
+    { const why = blocked(); if (why) return { refused: [why] }; }
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     if (saving) return { refused: ["A save is still in progress: try again in a moment."] };
     const mine = epoch;
@@ -617,6 +625,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     // runs, said, and the caller must NOT save it over the project's own copy.
     slots = JSON.parse(JSON.stringify(offered));
     removed = new Set(); unwired = {}; whole = false;   // the stand-in is the plain default: no flags of the project it could not load
+    incomplete = []; refused = []; queueable = false;   // nor the last project's readiness
     saveNotes = ["This project's saved pipeline could not be loaded, so the default is in use and edits are not being saved."];
     return false;
   }
@@ -638,7 +647,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, settled, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
-    unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
+    setEditGuard: (fn) => { editGuard = fn; }, unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
     whole: () => whole,
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),

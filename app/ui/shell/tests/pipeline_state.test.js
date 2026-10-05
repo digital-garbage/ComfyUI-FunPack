@@ -558,3 +558,21 @@ test("a second setting changed while the first is saving survives the first land
   assert.strictEqual(PS.currentValues().sharpen.amount, 0.9);
   assert.strictEqual(JSON.parse(PS.slots().find((s) => s.id === "settings").inputs.settings).sharpen.amount, 0.9);   // what a run reads
 });
+
+test("a guarded edit is refused, said, and leaves nothing on screen that will not run", async () => {
+  const PS = withSink("{}", [sharpen]);
+  await PS.ensureLoaded();
+  PS.setEditGuard(() => "Could not save: not loaded");
+  await PS.setModuleValue("sharpen", "enabled", true);
+  assert.deepStrictEqual([PS.currentValues().sharpen.enabled, PS.saveNotes()], [false, ["Could not save: not loaded"]]);
+  assert.deepStrictEqual((await PS.edit({ action: "remove", slot: "other" })).refused, ["Could not save: not loaded"]);
+});
+
+test("the stand-in for a pipeline that could not go in does not inherit the last project's readiness", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  assert.strictEqual(PS.queueable(), true);
+  lastApi.editPipeline = async () => { throw Object.assign(new Error("refused"), { status: 400 }); };
+  await PS.adopt([{ id: "model", node: "Loader", inputs: {} }]);
+  assert.strictEqual(PS.queueable(), false);
+});

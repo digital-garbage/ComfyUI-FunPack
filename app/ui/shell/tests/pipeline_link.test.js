@@ -207,3 +207,22 @@ test("a pipeline ComfyUI refuses says the server's reason, and the person's next
   heard([{ ...slots[0], inputs: { ckpt_name: "fixed" } }], "edit");
   assert.deepStrictEqual(writes, ["fixed"]);
 });
+
+test("while a project's pipeline could not go in, edits to the stand-in are refused with the reason; once it is in, they are not", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let opened, guard, up = false;
+  const project = { project: { id: "a", models: { slots, removed: [], unwired: {}, whole: false } }, setField: () => {} };
+  const pipeline = { adopt: async () => up, slots: () => slots, unreachable: () => true, setEditGuard: (fn) => { guard = fn; },
+    removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: () => {} };
+  linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
+  const flush = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+  const first = opened();
+  assert.strictEqual(guard(), null);                 // a first load under way: an edit waits for it, it is not refused
+  await first;
+  assert.match(guard(), /^Could not save: .*still loading/);
+  for (let i = 0; i < 4; i++) { t.mock.timers.tick(6000); await flush(); }
+  assert.match(guard(), /ComfyUI is not answering/);
+  up = true;
+  t.mock.timers.tick(16000); await flush();
+  assert.strictEqual(guard(), null);
+});
