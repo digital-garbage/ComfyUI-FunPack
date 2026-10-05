@@ -618,3 +618,14 @@ test("a value edit and a change of shape are told apart, to the guard and to lis
   assert.deepStrictEqual([asked.includes("edit"), asked.includes("shape")], [true, true]);
   assert.deepStrictEqual([heard.includes("edit"), heard.includes("shape")], [true, true]);
 });
+
+test("Revert to what is already live changes nothing and is not a change of shape", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  const heard = [];
+  PS.subscribe((_s, kind) => heard.push(kind));
+  const posts = [];
+  lastApi.editPipeline = async (b) => { posts.push(b); return { slots: b.slots, incomplete: [], refused: [], queueable: true }; };
+  assert.deepStrictEqual((await PS.restore(PS.snapshot())).refused, []);
+  assert.deepStrictEqual([posts.length, heard], [0, []]);
+});

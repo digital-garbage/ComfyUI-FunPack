@@ -159,3 +159,21 @@ test("a project that already has a run in ComfyUI's queue (another tab) is not q
   assert.equal(queued, 0);
   assert.match(document.body.textContent.replace(before, ""), /already has a run in ComfyUI's queue/);
 });
+
+test("another tab's run that starts between this run's shots stops this run before its next shot", async () => {
+  let queued = 0, asks = 0;
+  const { app, doc } = rig("idle", { generate: async () => { queued += 1; return true; } });
+  doc.scenes.push({ id: "c", text: "y" });
+  app.api.projectQueued = async () => ++asks > 1;
+  await app.runner.units(["a", "c"]);
+  assert.equal(queued, 1);
+});
+
+test("a refusal said while a shot is being queued names the scene", async () => {
+  const handlers = {};
+  const { app, doc } = rig("idle", { on: (k, fn) => { handlers[k] = fn; }, generate: async () => { handlers.say("Length is 5000, above the largest 4096 it takes"); return false; } });
+  doc.scenes.push({ id: "c", text: "y" });
+  const before = document.body.textContent;
+  await app.runner.units(["c"]);
+  assert.match(document.body.textContent.replace(before, ""), /Scene 3: Length is 5000/);
+});

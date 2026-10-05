@@ -478,6 +478,8 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   // -> {refused: [...]}; empty when the snapshot is back. Announced as a change, so the project follows.
   async function restore(snap) {
     if (!snap || !Array.isArray(snap.slots)) return { refused: ["Nothing to go back to."] };
+    // Already what is live: nothing to do. Above all not a change of shape, which would let Revert replace a refused saved pipeline.
+    if (JSON.stringify(snap.slots) === JSON.stringify(slots)) return { refused: [] };
     if (adoptGate) await adoptGate;
     { const why = blocked("shape"); if (why) return { refused: [why] }; }
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
@@ -570,7 +572,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     // load succeeds, so the default is never what the next edit is built on.
     const hadSomething = (Array.isArray(saved) && saved.length) || (Array.isArray(removedIds) && removedIds.length);
     if (slots === null) { if (hadSomething) deferred = [saved, removedIds, unwiredMap, wholeSaved]; return (adoptedOk = !hadSomething); }
-    if (!hadSomething && inherit) return (adoptedOk = true);
+    if (!hadSomething && inherit) { saveNotes = []; return (adoptedOk = true); }      // a new project: no note about the last one's load
     if (!Array.isArray(saved)) saved = [];
     // A saved slot is only what the server would accept: a project file outlives the code that
     // wrote it (v4 files name the node differently), and one bad slot refuses every later edit.

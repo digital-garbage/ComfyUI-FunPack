@@ -36,6 +36,8 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
     notes.push(...(out.notes || []));
   }
   // Not refused (a picture alone may be the point), but a shot with nothing to go on is said, not silently made.
-  if (prompt && !String((raw[prompt.slot.id] || {})[prompt.role.input] ?? "").trim() && !scene.source_image) notes.push("This shot has no text and no start picture, so the model makes whatever it likes.");
+  // Judged on what is SENT (a carried frame counts; a picture t2v blanks, or one this pipeline has no input for, does not).
+  const picture = (source && (raw[source.slot.id] || {}).media_id) || Object.keys(overrides).length;
+  if (prompt && !String((raw[prompt.slot.id] || {})[prompt.role.input] ?? "").trim() && !picture) notes.push("This shot has no text and no start picture, so the model makes whatever it likes.");
   return { inputs: raw, unwired, noPrompt: !prompt, notes };
 }

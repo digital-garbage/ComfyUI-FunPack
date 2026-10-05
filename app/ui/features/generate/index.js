@@ -22,7 +22,8 @@ export default {
     const p = app.project, g = app.generate;
     let said = false;
     const tell = (text) => { said = true; c.toast.warn({ text }); };
-    g.on("say", tell); g.on("warn", tell);
+    let current = 0;                                    // the scene being queued: a refusal said meanwhile names it
+    g.on("say", (t) => tell(current ? `Scene ${current}: ${t}` : t)); g.on("warn", tell);
     g.on("hold", () => { held = true; draw(); }); g.on("release", () => { held = false; draw(); });   // while the page asks ComfyUI whether a run is already going          // the pipeline check's refusals: said where the person is looking
     let busy = false, stopped = false, held = false;
 
@@ -60,8 +61,6 @@ export default {
         // A project's pipeline still going in is the one this run uses, not the last one's.
         if (app.pipeline.settled && !(await app.pipeline.settled())) { tell("Not started: this project's pipeline is still loading. ComfyUI is slow to answer; try again in a moment."); return; }
         if (app.pipelineOwned && !app.pipelineOwned()) { tell(`Not started: ${(app.pipelineWhy && app.pipelineWhy()) || "this project's pipeline is not loaded yet."}`); return; }
-        // The page's own guard does not see another tab: ComfyUI's queue does. One GPU job per project at a time.
-        if (app.api.projectQueued && (await app.api.projectQueued(pid))) { tell("This project already has a run in ComfyUI's queue (another tab or window?). Wait for it, or Stop it there."); return; }
         // The pipeline as it is NOW, at the click: every shot of this run uses it, whatever is opened or edited meanwhile.
         const frozen = structuredClone(app.pipeline.slots() || []);
         if (times > 1 && !rolesAt(frozen, "generation.seed").length) { tell("This pipeline has no seed input the app controls, so the takes would all come out the same."); return; }
@@ -84,9 +83,15 @@ export default {
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
           notes.forEach(tell);
           if (unwired) tell(`${unwired} reference(s) did not fit this pipeline and are not used.`);
+          // The page's own guard does not see another tab: ComfyUI's queue does. Asked per shot: between this run's shots it is empty.
+          if (app.api.projectQueued && (await app.api.projectQueued(pid))) { tell("This project already has a run in ComfyUI's queue (another tab or window?). Wait for it, or Stop it there."); break; }
+          if (stopped) break;
           const done = g.waitForTerminal();             // listening before the run starts, so a fast one is not missed
           said = false;
-          if (!(await g.generate({ sceneId: root.id, projectId: pid, inputs, slots: frozen }))) {
+          current = snap.scenes.findIndex((s) => s.id === root.id) + 1;
+          const queued = await g.generate({ sceneId: root.id, projectId: pid, inputs, slots: frozen });
+          current = 0;
+          if (!queued) {
             done.cancel();
             const n = snap.scenes.findIndex((s) => s.id === root.id) + 1;          // which clip: in a run of several, the toast alone does not say
             if (!said) tell(`Scene ${n} was not started: ${(g.run.state.error && g.run.state.error.message) || "could not queue the run. Is ComfyUI running, and is a run already going?"}`);

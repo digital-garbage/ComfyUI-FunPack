@@ -62,3 +62,11 @@ test("a shot with no text and no start picture is said; text from the project's 
   assert.equal(await said({ anchor: "a cat" }, { text: "" }), false);
   assert.equal(await said({}, { text: "", source_image: "m1" }), false);
 });
+
+test("the no-text note goes by what is sent: a carried frame counts, a picture t2v blanks does not", async () => {
+  const expand = async ({ text }) => ({ text });
+  const carry = [async () => ({ inputs: { s: { media_id: "frame" } } })];
+  const noted = async (project, scene, hooks = []) => (await buildInputs({ project, scene, slots, expand, hooks })).notes.some((n) => /no text/.test(n));
+  assert.equal(await noted({}, { text: "" }, carry), false);
+  assert.equal(await noted({ generation_mode: "t2v" }, { text: "", source_image: "m1" }), true);
+});
