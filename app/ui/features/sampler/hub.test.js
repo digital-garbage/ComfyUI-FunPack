@@ -30,3 +30,16 @@ test("the Sampler window shows the pipeline's steps and sampler, and a change sa
   await new Promise((r) => setTimeout(r, 0));
   assert.deepStrictEqual(saved, [{ inputs: { sampler: { sampler_name: "dpmpp_2m" } } }]);
 });
+
+test("when the sampler node's options cannot be read, the window says where to change them", async () => {
+  const slot = { id: "sampler", node: "S", inputs: { steps: 20 }, roles: [{ at: "generation.sampling", input: "steps", label: "Steps" }] };
+  const ps = { slots: () => [slot], activeModules: () => [], useful: () => true, currentValues: () => ({}), loading: () => false, loadError: () => null,
+    subscribe: () => () => {}, ensureLoaded: async () => {}, save: async () => {} };
+  const host = document.createElement("div");
+  document.body.append(host);
+  hub.setup({ host, app: { pipeline: ps, api: { describeNodes: async () => { throw new Error("offline"); } }, on: () => () => {}, actions: null } });
+  await new Promise((r) => setTimeout(r, 0));
+  host.querySelector("button").click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(document.body.textContent, /could not be read from the sampler node/);
+});

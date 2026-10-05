@@ -108,3 +108,34 @@ test("a retry left over from a project that failed to load never reloads the one
   await new Promise((r) => setImmediate(r));
   assert.equal(calls, before);
 });
+
+test("Undo of something else, with a pipeline edit still landing, keeps the edit and puts nothing back in", async () => {
+  const writes = [];
+  let opened, heard, land, adopts = 0;
+  let live = slots;
+  const models = { slots, removed: [], unwired: {}, whole: false };
+  const project = { project: { id: "a", models }, setField: (k, v) => { writes.push(v.slots[0].inputs.ckpt_name); project.project[k] = v; } };
+  const pipeline = { adopt: async () => { adopts += 1; return true; }, slots: () => live, removedIds: () => [], unwiredMap: () => ({}), whole: () => false,
+    subscribe: (fn) => { heard = fn; }, settled: () => new Promise((r) => { land = r; }) };
+  linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
+  const first = opened(); land(); await first;
+  const before = adopts;
+  project.project = JSON.parse(JSON.stringify(project.project));          // Undo puts a copy of the project in place
+  const undo = opened();
+  live = [{ ...slots[0], inputs: { ckpt_name: "b" } }];                    // the edit's answer arrives
+  heard(live);
+  land();
+  await undo;
+  assert.deepStrictEqual([writes, adopts - before], [["b"], 0]);
+});
+
+test("opening an older project whose pipeline an update's defaults fill in does not rewrite it", async () => {
+  const writes = [];
+  let opened;
+  const project = { project: { id: "o", models: { slots, removed: [], unwired: {} } }, setField: (k, v) => { writes.push(v); } };
+  const filled = [{ ...slots[0], inputs: { ...slots[0].inputs, denoise: 1 } }];
+  const pipeline = { adopt: async () => true, slots: () => filled, removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: () => {} };
+  linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
+  await opened();
+  assert.equal(writes.length, 0);
+});

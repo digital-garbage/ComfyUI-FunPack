@@ -42,3 +42,16 @@ def test_the_row_names_the_device_comfyui_generates_on(monkeypatch):
     monkeypatch.setattr(r, "device", lambda: "xpu")                       # an Intel GPU is not the CPU
     rows = r.machine()
     assert any("'xpu'" in x["text"] for x in rows) and not any("on the CPU" in x["text"] for x in rows)
+
+
+def test_the_gpu_row_names_the_card_comfyui_uses(monkeypatch):
+    import types
+    import torch
+    asked = []
+    monkeypatch.setattr(r, "device", lambda: "cuda")
+    monkeypatch.setattr(r, "gpu_index", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "get_device_properties",
+                        lambda i: asked.append(i) or types.SimpleNamespace(name=f"GPU{i}", total_memory=32 * 1024 ** 3, major=12, minor=0))
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    rows = r.machine()
+    assert asked == [1] and any("GPU1" in x["text"] for x in rows)

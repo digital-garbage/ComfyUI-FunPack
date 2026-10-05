@@ -47,6 +47,8 @@ export function enhance(app, own) {
   }
   draw();
   ps.ensureLoaded().then(draw);
+  // Another project's pipeline, or an edit made elsewhere: redraw, but never under a field being typed in.
+  own(ps.subscribe(() => { if (!page.node.contains(document.activeElement)) draw(); }));
   app.api.enhancerDefaults().then((d) => { defaults = d; draw(); }).catch(() => {});
   app.api.enhancerRuns().then((r) => { last = (r.runs || []).slice(-1)[0] || null; draw(); }).catch(() => {});
   return page;

@@ -36,6 +36,15 @@ def device() -> str:
         return "cuda" if torch.cuda.is_available() else "mps" if mps is not None and mps.is_available() else "cpu"
 
 
+def gpu_index() -> int:
+    """Which CUDA device ComfyUI uses (a rental may start it with --cuda-device 1)."""
+    try:
+        import comfy.model_management as mm
+        return mm.get_torch_device().index or 0
+    except Exception:                                         # noqa: BLE001 -- not inside ComfyUI
+        return 0
+
+
 def machine(disk_free_gb=None) -> List[dict]:
     out = []
     for tool, why in (("ffmpeg", "the final render and previews"), ("ffprobe", "reading clip lengths")):
@@ -51,7 +60,7 @@ def machine(disk_free_gb=None) -> List[dict]:
         elif kind != "cuda":
             out.append(row("warn", f"ComfyUI generates on a '{kind}' device, which FunPack is not tested on: expect slow runs, and some features may fail."))
         else:
-            props = torch.cuda.get_device_properties(0)
+            props = torch.cuda.get_device_properties(gpu_index())
             out.append(row("ok", f"{props.name}, {props.total_memory / 1024 ** 3:.0f} GB, sm_{props.major}{props.minor}"))
             if not torch.cuda.is_bf16_supported():
                 out.append(row("fail", "This GPU does not support bf16, which the H3 VAEs need."))

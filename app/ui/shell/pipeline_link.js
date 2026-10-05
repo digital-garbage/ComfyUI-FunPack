@@ -7,18 +7,22 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   let owner = null;
   let retries = 0, opens = 0, retry = null;
   // Only a real change is written: opening a project must not rewrite its file.
-  const store = (base, slots, opening) => {
-    const next = { ...base, slots: JSON.parse(JSON.stringify(slots || [])), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap(), whole: pipeline.whole() };
-    if (opening && !("whole" in base)) delete next.whole;          // an older file is not rewritten just to record the guess; an edit records it
+  const live = (base, slots) => ({ ...base, slots: JSON.parse(JSON.stringify(slots || [])), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap(), whole: pipeline.whole() });
+  const store = (base, slots) => {
+    const next = live(base, slots);
     if (JSON.stringify(next) !== JSON.stringify(project.project.models || {})) project.setField("models", next, { quiet: true });
   };
 
   async function adopt() {
     clearTimeout(retry);                    // a retry still waiting is for a project that may no longer be open
+    if (pipeline.settled) await pipeline.settled();       // an edit on its way lands in the project it was made in first
+    const here = project.project && project.project.models;
+    // Undo / Redo of something else: the same project, its pipeline already live, nothing to put in (or to lose).
+    if (owner && project.project && owner === project.project.id && here && pipeline.slots()
+        && JSON.stringify(live(here, pipeline.slots())) === JSON.stringify(here)) return;
     owner = null;
     const mine = ++opens, target = project.project && project.project.id;
     const saved = project.project && project.project.models || {};
-    const own = (saved.slots || []).length > 0 || (saved.removed || []).length > 0;
     let ok = false, timer;
     try {
       // Bounded: a hung request must not hold the project behind it.
@@ -28,8 +32,8 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
     if (ok && pipeline.slots()) {
       owner = target;
       retries = 0;
-      // An old project with nothing saved runs the default and stays as it is on disk; a new one keeps what it took.
-      if (own || project.fresh) store(saved, pipeline.slots(), !project.fresh);       // a new project's whole flag is a fact, not a guess
+      // Opening writes nothing: what an update's defaults fill in is laid again on every open. A new project keeps what it took.
+      if (project.fresh) store(saved, pipeline.slots());
     } else if (retries++ < 3) {
       retry = setTimeout(adopt, 5000);
     } else {

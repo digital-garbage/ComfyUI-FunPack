@@ -420,3 +420,17 @@ test("a modifier's settings count only when the pipeline has both the settings n
   assert.deepStrictEqual(await check(["CheckpointLoaderSimple", "KSampler"]), [false, false]); // a plain imported workflow
   assert.deepStrictEqual(await check(["FunPackModifierSettings", "FunPackLoadModifiers"], [loader, sharpen, taste]), [true, false]);   // the key installed, but no learner reads it
 });
+
+test("a project retried after the first load failed goes in, and nothing waits forever", async () => {
+  const posts = [];
+  const PS = load(posts);
+  const real = lastApi.pipeline;
+  lastApi.pipeline = async () => { throw new Error("tunnel blip"); };
+  const saved = [{ id: "model", node: "Loader", inputs: { file: "mine" } }];
+  assert.strictEqual(await PS.adopt(saved), false);
+  lastApi.pipeline = real;
+  const done = await Promise.race([PS.adopt(saved), new Promise((r) => setTimeout(() => r("HUNG"), 1000))]);
+  assert.strictEqual(done, true);
+  assert.strictEqual(PS.slots().find((s) => s.id === "model").inputs.file, "mine");
+  await Promise.race([PS.save({ inputs: { model: { file: "next" } } }), new Promise((_, no) => setTimeout(() => no(new Error("save hung")), 1000))]);
+});

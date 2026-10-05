@@ -69,6 +69,7 @@ export function createPipelineState(API) {
   let removed = new Set();    // default slots the person took out of this project's pipeline
   let adoptGate = null;       // a promise while a project's pipeline is being put in
   let whole = false;          // the pipeline replaced the default (a preset, an import, the wizard) rather than editing it
+  let adopting = 0;           // adopts under way (waiting for the load, or putting a pipeline in)
   let deferred = null;        // a project's saved pipeline ([slots, removed, unwired, whole]) waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
   let saving = false;
@@ -132,7 +133,8 @@ export function createPipelineState(API) {
       }
       loading = false;
       loadPromise = null;
-      if (slots !== null && deferred) { const d = deferred; deferred = null; await adopt(...d); }
+      // An adopt already under way carries the newest project and lays it itself; waiting on it from here would deadlock.
+      if (slots !== null && deferred) { const d = deferred; deferred = null; if (!adopting) await adopt(...d); }
     })();
     return loadPromise;
   }
@@ -479,11 +481,12 @@ export function createPipelineState(API) {
     let open;
     const gate = new Promise((r) => { open = r; }), before = adoptGate;
     adoptGate = gate;                                   // before anything awaits: an edit right behind this waits too
+    adopting += 1;
     try {
       if (before) await before;                         // one at a time: a project opened behind another is put in after it, never under it
       await ensureLoaded();
       return await _adopt(saved, removedIds, unwiredMap, wholeSaved, inherit);
-    } finally { if (adoptGate === gate) adoptGate = null; open(); _changed(); }
+    } finally { adopting -= 1; if (adoptGate === gate) adoptGate = null; open(); _changed(); }
   }
 
   /** Resolves once no edit is on its way and no project's pipeline is going in (at most ~10 s). */

@@ -12,12 +12,12 @@ export default {
   needs: ["pipeline"],
   setup({ host, app }) {
     const ps = app.pipeline;
-    let pop = null, specs = {};
+    let pop = null, specs = {}, unreadable = false;
     const sampling = () => ps.activeModules().filter((m) => (m.category || "") === "sampling" && Object.keys(m.settings || {}).length && ps.useful(m));
     const marked = () => (ps.slots() || []).flatMap((slot) => (slot.roles || []).filter((r) => r.at === "generation.sampling" && r.input && !Array.isArray((slot.inputs || {})[r.input])).map((role) => ({ slot, role })));
     const describe = async () => {
       const missing = [...new Set(marked().map(({ slot }) => slot.node))].filter((n) => !(n in specs));
-      if (missing.length) try { Object.assign(specs, (await app.api.describeNodes(missing)).nodes || {}); } catch { /* the rows just stay out until the next change */ }
+      if (missing.length) try { Object.assign(specs, (await app.api.describeNodes(missing)).nodes || {}); unreadable = false; } catch { unreadable = true; }   // asked again on the next change
     };
     const inputRow = ({ slot, role }) => {
       const w = ((specs[slot.node] || {}).widgets || []).find((x) => x.name === role.input);
@@ -35,7 +35,9 @@ export default {
       if (ps.loadError()) return body.set([c.banner.warn({ text: `Could not load: ${ps.loadError()}` })]);
       const mods = sampling(), values = ps.currentValues();
       const change = async (id, name, value) => { await ps.setModuleValue(id, name, value); draw(); };
-      body.set([...marked().map(inputRow), ...mods.flatMap((m) => [mods.length > 1 ? c.label.section({ text: m.title || m.id }) : null,
+      const rows = marked().map(inputRow);
+      const unread = marked().length && !rows.some(Boolean) && (unreadable || marked().every(({ slot }) => slot.node in specs)) ? [c.hint.default({ text: "Steps, sampler and scheduler could not be read from the sampler node: change them in Settings ▸ Models & Pipeline." })] : [];
+      body.set([...unread, ...rows, ...mods.flatMap((m) => [mods.length > 1 ? c.label.section({ text: m.title || m.id }) : null,
         ...Object.entries(m.settings).filter(([, spec]) => whenSatisfied(values, m.id, spec.when)).map(([name, spec]) => settingRow(m.id, name, spec, values, change))])].filter(Boolean));
     };
     const typing = () => body.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName);
