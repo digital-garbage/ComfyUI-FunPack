@@ -26,11 +26,11 @@ export function createGenerate({ pipeline }) {
 
   // Which scenes/project the next run belongs to, read when it actually queues (and sent as extra_data so a
   // reload mid-run can find it again). `inputs` is {slotId: {input: value}}.
-  let ranFor = null, ranForList = [], ranForProject = null, pendingInputs = null;
+  let ranFor = null, ranForList = [], ranForProject = null, pendingInputs = null, pendingSlots = null;
 
   const session = wire({
     run, page: { transport }, check, id, queuedFor, finishedFor,
-    slots: () => pipeline.slots(),
+    slots: () => pendingSlots || pipeline.slots(),     // the pipeline as it was at the click, when the caller froze it
     inputs: async () => pendingInputs || {},
     extra: () => (ranForProject && ranFor
       ? { funpack_scene_id: ranFor, funpack_scene_ids: ranForList, funpack_project_id: ranForProject } : null),
@@ -63,7 +63,8 @@ export function createGenerate({ pipeline }) {
     waitForTerminal: () => waitForTerminal(run),
     ready: session.ready,
     /** Queue one run; resolves true once it is on ComfyUI's queue. */
-    async generate({ sceneId, sceneIds, projectId, inputs } = {}) {
+    async generate({ sceneId, sceneIds, projectId, inputs, slots } = {}) {
+      pendingSlots = slots || null;
       ranFor = sceneId || null;
       ranForList = (sceneIds && sceneIds.length) ? sceneIds : (sceneId ? [sceneId] : []);
       ranForProject = projectId || null;

@@ -170,3 +170,21 @@ test("a slow pipeline load is waited for, never retried over while it can still 
   await opening;
   assert.equal(calls, 1);
 });
+
+test("a project whose pipeline could not get through mid-session keeps being retried, and is owned once ComfyUI answers", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const writes = [];
+  let opened, heard, up = false;
+  const project = { project: { id: "a", models: { slots, removed: [], unwired: {}, whole: false } }, setField: (k, v) => { writes.push(v.slots[0].inputs.ckpt_name); project.project[k] = v; } };
+  const pipeline = { adopt: async () => up, slots: () => slots, unreachable: () => !up, removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: (fn) => { heard = fn; } };
+  const link = linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
+  const flush = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+  await opened();
+  for (let i = 0; i < 4; i++) { t.mock.timers.tick(6000); await flush(); }
+  assert.match(link.why(), /ComfyUI is not answering/);
+  up = true;
+  t.mock.timers.tick(16000); await flush();
+  assert.equal(link.owns(), true);
+  heard([{ ...slots[0], inputs: { ckpt_name: "edited" } }]);
+  assert.deepStrictEqual(writes, ["edited"]);
+});

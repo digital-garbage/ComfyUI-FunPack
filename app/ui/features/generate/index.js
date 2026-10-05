@@ -58,8 +58,10 @@ export default {
       try {
         // A project's pipeline still going in is the one this run uses, not the last one's.
         if (app.pipeline.settled && !(await app.pipeline.settled())) { tell("Not started: this project's pipeline is still loading. ComfyUI is slow to answer; try again in a moment."); return; }
-        if (app.pipelineOwned && !app.pipelineOwned()) { tell("Not started: this project's pipeline is not loaded yet (ComfyUI did not answer). It goes in as soon as ComfyUI answers."); return; }
-        if (times > 1 && !rolesAt(app.pipeline.slots(), "generation.seed").length) { tell("This pipeline has no seed input the app controls, so the takes would all come out the same."); return; }
+        if (app.pipelineOwned && !app.pipelineOwned()) { tell(`Not started: ${(app.pipelineWhy && app.pipelineWhy()) || "this project's pipeline is not loaded yet."}`); return; }
+        // The pipeline as it is NOW, at the click: every shot of this run uses it, whatever is opened or edited meanwhile.
+        const frozen = structuredClone(app.pipeline.slots() || []);
+        if (times > 1 && !rolesAt(frozen, "generation.seed").length) { tell("This pipeline has no seed input the app controls, so the takes would all come out the same."); return; }
         const snap = times > 1 ? structuredClone(p.project) : null;        // takes differ in the seed alone: later edits to the project do not reach them
         const drawn = new Map();
         const same = times > 1 ? (body) => { const key = JSON.stringify(body); if (!drawn.has(key)) drawn.set(key, expand(body)); return drawn.get(key); } : expand;
@@ -71,7 +73,7 @@ export default {
           if (!root || group.every((s) => s.excluded) || !isGenerative(root)) continue;        // removed, all left out, or not made by the model
           // The unit is made once at the length of its clips together (each cut adds one shared frame).
           const frames = group.reduce((t, s) => t + effFrames(s, snap || p.project), 0) - (group.length - 1);
-          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap || p.project, scene: root, slots: app.pipeline.slots(), expand: same, frames, hooks: app.inputHooks, prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root); } catch { return []; } }) });
+          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap || p.project, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root); } catch { return []; } }) });
           app.lastRun.typed = (root.text || "").trim();        // what a Chat comment made now would be about
           if (stopped) break;
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
@@ -79,7 +81,7 @@ export default {
           if (unwired) tell(`${unwired} reference(s) did not fit this pipeline and are not used.`);
           const done = g.waitForTerminal();             // listening before the run starts, so a fast one is not missed
           said = false;
-          if (!(await g.generate({ sceneId: root.id, projectId: pid, inputs }))) {
+          if (!(await g.generate({ sceneId: root.id, projectId: pid, inputs, slots: frozen }))) {
             done.cancel();
             if (!said) tell((g.run.state.error && g.run.state.error.message) || "Could not queue the run. Is ComfyUI running, and is a run already going?");
             break;

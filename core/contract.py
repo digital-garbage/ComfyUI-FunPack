@@ -60,7 +60,7 @@ class ModuleSpec:
     settings: Dict[str, dict] = field(default_factory=dict)
     requires: List[str] = field(default_factory=list)   # model traits
     uses: List[str] = field(default_factory=list)       # capabilities this module asks other modules for
-    uses_when: Dict[str, Any] = field(default_factory=dict)   # its own setting values under which it asks (empty: whenever on)
+    uses_when: Dict[str, Any] = field(default_factory=dict)   # its own setting values under which it asks (USES_WHEN absent: whenever on)
     after: List[str] = field(default_factory=list)      # module ids
     before: List[str] = field(default_factory=list)
     stage: str = "sampling"

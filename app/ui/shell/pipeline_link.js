@@ -36,7 +36,7 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
       if (project.fresh) store(saved, pipeline.slots());
     } else if (retries++ < 3) {
       retry = setTimeout(adopt, 5000);
-    } else if (!pipeline.slots()) {
+    } else if (!pipeline.slots() || (pipeline.unreachable && pipeline.unreachable())) {
       // ComfyUI is down: keep asking, slowly; and if a panel's own load gets there first, its announcement puts this project's in.
       waiting = true;
       retry = setTimeout(adopt, 15000);
@@ -53,5 +53,10 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   });
   onOpen(() => { retries = 0; return adopt(); });       // each project opened gets its own retries
   // Whether the live pipeline is the open project's (false while it is going in, or ComfyUI has not answered).
-  return { adopt, owns: () => !!project.project && owner === project.project.id };
+  const owns = () => !!project.project && owner === project.project.id;
+  /** Why the open project's pipeline is not live, in words for the person; null when it is. */
+  const why = () => owns() ? null : waiting ? "ComfyUI is not answering, so this project's pipeline is not loaded yet. It goes in as soon as ComfyUI answers."
+    : retries > 3 ? "This project's saved pipeline could not be loaded. Open the project again to retry, or rebuild it in Settings ▸ Models & Pipeline."
+    : "This project's pipeline is still loading. Try again in a moment.";
+  return { adopt, owns, why };
 }

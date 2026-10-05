@@ -91,5 +91,17 @@ test("Generate refuses, saying why, while the open project's pipeline is not the
   host.querySelector("button").click();
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(queued, 0);
-  assert.match(document.body.textContent, /pipeline is not loaded yet/);
+  assert.match(document.body.textContent, /Not started: this project.s pipeline is not loaded yet/);
+});
+
+test("a run uses the pipeline as it was at the click, whatever is opened or edited while it is prepared", async () => {
+  const sent = [];
+  const { host, app } = rig("idle", { generate: async (a) => { sent.push(a.slots); return true; } });
+  const at = [{ id: "s", roles: [{ at: "generation.seed", input: "seed" }], inputs: { steps: 20 } }];
+  app.pipeline.slots = () => at;
+  host.querySelector("button").click();
+  app.pipeline.slots = () => [{ id: "s", roles: [], inputs: { steps: 99 } }];   // another project's pipeline goes in
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(sent.length >= 1);
+  assert.ok(sent.every((s) => s[0].inputs.steps === 20));
 });

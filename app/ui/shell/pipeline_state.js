@@ -87,6 +87,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   let removed = new Set();    // default slots the person took out of this project's pipeline
   let adoptGate = null;       // a promise while a project's pipeline is being put in
   let whole = false;          // the pipeline replaced the default (a preset, an import, the wizard) rather than editing it
+  let unreachableLast = false; // the last project's pipeline failed because a request did not get through, not because it was refused
   let adopting = 0;           // adopts under way (waiting for the load, or putting a pipeline in)
   let deferred = null;        // a project's saved pipeline ([slots, removed, unwired, whole]) waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
@@ -576,6 +577,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     groupEdits = {};
     pendingBody = null; pending = false;
     for (let waited = 0; saving && waited < 10000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+    let unreachable = false;
     for (const extras of [true, false]) {
       try {
         const res = await API.editPipeline({ slots: lay(extras) });
@@ -589,8 +591,9 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
           try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
           return true;
         }
-      } catch (_) { /* this layering was refused; try the next */ }
+      } catch (_) { unreachable = true; /* the request failed (not a refusal); try the next layering */ }
     }
+    unreachableLast = unreachable;
     // Nothing saved was accepted (a failed request, or a file the server refuses): the default
     // runs, said, and the caller must NOT save it over the project's own copy.
     slots = JSON.parse(JSON.stringify(offered));
@@ -615,7 +618,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, settled, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
-    activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
+    unreachable: () => slots === null || unreachableLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
     whole: () => whole,
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),
