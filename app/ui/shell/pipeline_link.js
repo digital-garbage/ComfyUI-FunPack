@@ -47,10 +47,10 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
     }
   }
 
-  pipeline.subscribe((slots) => {
+  pipeline.subscribe((slots, kind) => {
     if (waiting === "load" && owner === null) { retries = 0; adopt(); return; }
     // Refused for good: the person's next edit of the stand-in pipeline becomes this project's pipeline.
-    if (replaceOnEdit && owner === null && project.project) { replaceOnEdit = false; owner = project.project.id; }
+    if (replaceOnEdit && kind === "edit" && owner === null && project.project) { replaceOnEdit = false; owner = project.project.id; }
     if (!project.project || project.project.id !== owner) return;
     store(project.project.models || {}, slots);
   });

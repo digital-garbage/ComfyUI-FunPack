@@ -532,3 +532,29 @@ test("settings of a module the current model hides are kept when another setting
   const blob = JSON.parse(PS.slots().find((s) => s.id === "settings").inputs.settings);
   assert.deepStrictEqual([blob.reins, blob.sharpen.enabled, PS.currentValues().sharpen.amount], [{ enabled: true }, true, 0.5]);
 });
+
+test("a pipeline the server refuses leaves the plain default with no flags from the project it could not load", async () => {
+  const PS = load([]);
+  await PS.ensureLoaded();
+  lastApi.editPipeline = async () => { throw Object.assign(new Error("refused"), { status: 400 }); };
+  assert.strictEqual(await PS.adopt([{ id: "model", node: "Loader", inputs: {} }], ["gen"], { model: ["x"] }, true), false);
+  assert.deepStrictEqual([PS.removedIds(), PS.unwiredMap(), PS.whole()], [[], {}, false]);
+});
+
+test("a second setting changed while the first is saving survives the first landing, and a failure of its own save", async () => {
+  const PS = withSink(JSON.stringify({ sharpen: { enabled: false, amount: 0.5 } }), [sharpen]);
+  await PS.ensureLoaded();
+  let calls = 0;
+  const real = lastApi.editPipeline;
+  lastApi.editPipeline = async (body) => {
+    const sent = structuredClone(body), n = ++calls;              // what left the browser at the call, as a network takes it
+    await new Promise((r) => setTimeout(r, 20));
+    if (n === 2) throw new Error("502");
+    return real(sent);
+  };
+  const first = PS.setModuleValue("sharpen", "enabled", true);
+  await PS.setModuleValue("sharpen", "amount", 0.9);
+  await first;
+  assert.strictEqual(PS.currentValues().sharpen.amount, 0.9);
+  assert.strictEqual(JSON.parse(PS.slots().find((s) => s.id === "settings").inputs.settings).sharpen.amount, 0.9);   // what a run reads
+});

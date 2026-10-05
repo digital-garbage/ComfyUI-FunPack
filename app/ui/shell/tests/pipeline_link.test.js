@@ -202,6 +202,8 @@ test("a pipeline ComfyUI refuses says the server's reason, and the person's next
   for (let i = 0; i < 4; i++) { t.mock.timers.tick(6000); await flush(); }
   assert.match(said.join(" "), /refused .*slot 0 role 0 has no input/);
   assert.match(link.why(), /refused/);
-  heard([{ ...slots[0], inputs: { ckpt_name: "fixed" } }]);
+  heard(slots, "load");                      // the module list arriving is not the person's edit
+  assert.deepStrictEqual(writes, []);
+  heard([{ ...slots[0], inputs: { ckpt_name: "fixed" } }], "edit");
   assert.deepStrictEqual(writes, ["fixed"]);
 });

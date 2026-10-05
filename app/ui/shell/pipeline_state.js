@@ -139,7 +139,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   async function ensureLoaded() {
     if (slots !== null && !loadError) return; // session-wide: every consumer shares this one load
     if (slots !== null) {                       // the pipeline came, its modules did not: ask for those again
-      if (!loadPromise) loadPromise = refreshManifest().then(() => { loadPromise = null; _changed(); }, () => { loadPromise = null; });
+      if (!loadPromise) loadPromise = refreshManifest().then(() => { loadPromise = null; _changed("load"); }, () => { loadPromise = null; });
       return loadPromise;
     }
     if (loadPromise) return loadPromise;
@@ -221,12 +221,13 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         // this answer is about the old one and must not overwrite the new.
         if (mine !== epoch) continue;
         if (res && res.slots) slots = res.slots;
+        if (Object.keys(pendingValues).length) mirrorValues(currentValues());    // an edit queued behind this one stays in the slots a run reads
         applyGroups();
         incomplete = (res && res.incomplete) || [];
         refused = (res && res.refused) || [];
         queueable = !!(res && res.queueable);
         saveNotes = (res && res.notes) || [];
-        _changed();                                     // now: the project this edit was made in takes it, even if another opens during the probe
+        _changed("edit");                               // now: the project this edit was made in takes it, even if another opens during the probe
         // A no-op for the common case (same file as last time) -- see
         // refreshManifest()'s own guard. Only a Models & Pipeline edit that
         // actually changes the loader's file does a second round trip here.
@@ -239,7 +240,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         } catch (e) {
           console.warn(`[FunPack] could not refresh modules for the new model: ${e && e.message ? e.message : e}`);
         }
-        if (fresh && mine === epoch) _changed();        // again once a new model's modules are known: a listener sees those
+        if (fresh && mine === epoch) _changed("edit");        // again once a new model's modules are known: a listener sees those
       } catch (e) {
         saveNotes = [`Could not save: ${e && e.message ? e.message : e}`];
       }
@@ -260,6 +261,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   let pendingValues = {};
 
   function _reconcilePending() {
+    if (saving) return;                         // a save still on its way may answer with older values: judge only once the queue is empty
     const already = valuesAlreadyPlaced();
     Object.keys(pendingValues).forEach((moduleId) => {
       const pend = pendingValues[moduleId];
@@ -318,6 +320,8 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   function mirrorValues(values) {
     const known = new Set([...Object.keys(modulesById), "_off"]);
     (slots || []).forEach((slot) => {
+      // a settings node just added starts with no input at all
+      if (sinks) sinks.forEach((k) => { if (k.node === slot.node && !((slot.inputs ||= {})[k.input] !== undefined)) slot.inputs[k.input] = "{}"; });
       Object.entries(slot.inputs || {}).forEach(([key, v]) => {
         if (sinks) { if (isSink(slot, key) && !Array.isArray(v)) slot.inputs[key] = JSON.stringify(values); return; }    // a fresh "{}" too
         if (typeof v !== "string") return;
@@ -507,7 +511,8 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
 
   // Whoever keeps the pipeline with the project hears every landed edit.
   const listeners = new Set();
-  function _changed() { listeners.forEach((fn) => { try { fn(slots); } catch (e) { console.error(e); } }); }
+  // kind: "edit" (a change the person made landed) or "load" (a project's pipeline went in, or the module list came).
+  function _changed(kind = "edit") { listeners.forEach((fn) => { try { fn(slots, kind); } catch (e) { console.error(e); } }); }
 
   // Put a project's saved pipeline over the one the server offers: the person's inputs (model
   // files, node values, the module-settings blob), group and bypass win on every slot the
@@ -526,7 +531,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       if (before) await before;                         // one at a time: a project opened behind another is put in after it, never under it
       await ensureLoaded();
       return await _adopt(saved, removedIds, unwiredMap, wholeSaved, inherit);
-    } finally { adopting -= 1; if (adoptGate === gate) adoptGate = null; open(); _changed(); }
+    } finally { adopting -= 1; if (adoptGate === gate) adoptGate = null; open(); _changed("load"); }
   }
 
   /** Resolves true once no edit is on its way and no project's pipeline is going in; false if that took over
@@ -611,6 +616,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     // Nothing saved was accepted (a failed request, or a file the server refuses): the default
     // runs, said, and the caller must NOT save it over the project's own copy.
     slots = JSON.parse(JSON.stringify(offered));
+    removed = new Set(); unwired = {}; whole = false;   // the stand-in is the plain default: no flags of the project it could not load
     saveNotes = ["This project's saved pipeline could not be loaded, so the default is in use and edits are not being saved."];
     return false;
   }
