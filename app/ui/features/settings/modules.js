@@ -11,7 +11,7 @@ export const modules = (app) => function mount() {
     if (ps.loading()) return page.set([c.hint.default({ text: "Loading…" })]);
     if (ps.loadError()) return page.set([c.banner.warn({ text: `Could not load: ${ps.loadError()}` })]);
     const control = ps.control();
-    const mine = Object.values(ps.modulesById()).filter((m) => control[m.id] && control[m.id].controllable);
+    const mine = Object.values(ps.modulesById()).filter((m) => control[m.id] && control[m.id].controllable && (control[m.id].quarantine || ps.useful(m)));
     if (!mine.length) return page.set([c.emptyState.default({ icon: "☷", title: "Nothing to switch", hint: "No installed module can be switched off." })]);
     const name = (m) => m.title || m.id;
     const row = (m) => {

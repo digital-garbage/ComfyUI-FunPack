@@ -25,6 +25,17 @@ def have(module) -> bool:
         return False
 
 
+def device() -> str:
+    """"cuda", "mps" or "cpu": what ComfyUI generates on (it can be started with --cpu), else what torch offers."""
+    try:
+        import comfy.model_management as mm
+        return mm.get_torch_device().type
+    except Exception:                                         # noqa: BLE001 -- not inside ComfyUI
+        import torch
+        mps = getattr(torch.backends, "mps", None)
+        return "cuda" if torch.cuda.is_available() else "mps" if mps is not None and mps.is_available() else "cpu"
+
+
 def machine(disk_free_gb=None) -> List[dict]:
     out = []
     for tool, why in (("ffmpeg", "the final render and previews"), ("ffprobe", "reading clip lengths")):
@@ -32,12 +43,11 @@ def machine(disk_free_gb=None) -> List[dict]:
     out.append(row("ok", "Pillow found") if have("PIL") else row("fail", "Pillow is not installed: 'continue from the previous clip' cannot read the last frame. pip install pillow"))
     try:
         import torch
-        if not torch.cuda.is_available():
-            mps = getattr(torch.backends, "mps", None)
-            if mps is not None and mps.is_available():
-                out.append(row("ok", "Apple GPU (MPS): generates, slowly; large video models may not fit in its memory."))
-            else:
-                out.append(row("warn", "No GPU is visible to torch: this machine can edit but not generate."))
+        kind = device()
+        if kind == "mps":
+            out.append(row("ok", "Apple GPU (MPS): generates, slowly; large video models may not fit in its memory."))
+        elif kind != "cuda":
+            out.append(row("warn", "ComfyUI runs on the CPU: generating is very slow, and only small models fit."))
         else:
             props = torch.cuda.get_device_properties(0)
             out.append(row("ok", f"{props.name}, {props.total_memory / 1024 ** 3:.0f} GB, sm_{props.major}{props.minor}"))

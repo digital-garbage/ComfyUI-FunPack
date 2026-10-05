@@ -326,3 +326,26 @@ test("an edited default stays a layer: the default's new values still fill in, a
   await PS.restore(snap);
   assert.strictEqual(PS.whole(), false);
 });
+
+const withCheckpoint = (PS) => { lastApi.pipeline = async () => ({ slots: [{ id: "model", node: "FunPackCheckpointLoader", inputs: { ckpt_name: "a" } }], incomplete: [], refused: [], queueable: true }); return PS; };
+
+test("a module's settings count only when something would read them: its own node, or a user of what it serves that is on", async () => {
+  const learner = (mode, enabled = true) => ({ id: "learner", settings: { enabled: { type: "bool", default: enabled }, mode: { type: "enum", default: mode } }, uses: ["taste_store"] });
+  const cam = { id: "cam", nodes: ["CamNode"], settings: { on: { default: false } } }, taste = { id: "taste", serves: ["taste_store"], settings: { key: { default: "" } } };
+  const check = async (mods) => { const PS = withCheckpoint(load([])); lastApi.modules = async () => ({ modules: mods }); await PS.ensureLoaded(); const by = PS.modulesById(); return [PS.useful(by.cam), PS.useful(by.taste)]; };
+  assert.deepStrictEqual(await check([cam, taste, learner("learned")]), [false, true]);     // the pipeline has no CamNode
+  assert.deepStrictEqual(await check([cam, taste, learner("manual")]), [false, false]);    // its one user is on a manual value
+  assert.deepStrictEqual(await check([cam, taste, learner("learned", false)]), [false, false]);
+  assert.deepStrictEqual(await check([{ ...cam, nodes: ["FunPackCheckpointLoader"] }, taste]), [true, false]);
+});
+
+test("a file picked in a save is announced after its modules are known", async () => {
+  const PS = withCheckpoint(load([]));
+  await PS.ensureLoaded();
+  lastApi.probeFamily = async () => ({ detected: true, traits: [] });
+  lastApi.modules = async () => ({ modules: [{ id: "new" }] });
+  let seen = null;
+  PS.subscribe(() => { seen = Object.keys(PS.modulesById()); });
+  await PS.save({ inputs: { model: { ckpt_name: "picked" } } });
+  assert.deepStrictEqual(seen, ["new"]);
+});

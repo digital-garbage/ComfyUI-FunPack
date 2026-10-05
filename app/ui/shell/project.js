@@ -86,6 +86,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
   // NEWER switch already won and abandon its own result instead of clobbering
   // whatever the user is actually looking at now.
   let generation = 0;
+  let fresh = false;          // the open project was made just now (it takes the live pipeline as its own)
 
   // `keepConsistent(project)` restates what must follow from an edit (audio lanes follow their clips) before anyone is told.
   const changed = () => { if (project && keepConsistent) keepConsistent(project); if (onChange) onChange(); };
@@ -183,6 +184,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
 
   return {
     get project() { return project; },
+    get fresh() { return fresh; },
     get scenes() { return project ? project.scenes || [] : []; },
     get selectedId() { return selected; },
     get selected() { return sceneAt(selected); },
@@ -204,6 +206,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
       const opened_ = found.length ? await read(found[0].id) : await create("Untitled");
       if (mine !== generation) return project;
       project = opened_;
+      fresh = !found.length;
       if (!found.length) recent = [{ id: project.id, name: project.name }];
       selected = (project.scenes || [])[0]?.id ?? null;
       forget();                           // a project just opened has no past
@@ -220,6 +223,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
       // silently pull the user back to a project they already left.
       if (mine !== generation) return project;
       project = found;
+      fresh = false;
       selected = (project.scenes || [])[0]?.id ?? null;
       forget();                           // a project just opened has no past
       opened();
@@ -239,6 +243,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
         return project;
       }
       project = made;
+      fresh = true;
       recent = [{ id: project.id, name: project.name }, ...recent];
       selected = (project.scenes || [])[0]?.id ?? null;
       forget();                           // a project just opened has no past
@@ -266,6 +271,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent } = {}
         return project;
       }
       project = imported;
+      fresh = false;
       recent = [{ id: project.id, name: project.name }, ...recent];
       selected = (project.scenes || [])[0]?.id ?? null;
       forget();

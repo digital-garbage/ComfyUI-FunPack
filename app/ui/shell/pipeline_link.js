@@ -6,20 +6,23 @@ export function linkPipeline({ project, pipeline, onOpen, say = () => {} }) {
   // Only a real change is written: opening a project must not rewrite its file.
   const store = (base, slots) => {
     const next = { ...base, slots: JSON.parse(JSON.stringify(slots || [])), removed: pipeline.removedIds(), unwired: pipeline.unwiredMap(), whole: pipeline.whole() };
+    if (!("whole" in base) && !next.whole) delete next.whole;     // an older file reads as not whole anyway: no rewrite just to say so
     if (JSON.stringify(next) !== JSON.stringify(project.project.models || {})) project.setField("models", next, { quiet: true });
   };
 
   async function adopt() {
     const saved = project.project && project.project.models || {};
+    const own = (saved.slots || []).length > 0 || (saved.removed || []).length > 0;
     let ok = false, timer;
     try {
       // Bounded: a hung request must not hold the project behind it.
-      ok = await Promise.race([pipeline.adopt(saved.slots || [], saved.removed, saved.unwired, saved.whole), new Promise((r) => { timer = setTimeout(() => r(false), 20000); })]);
+      ok = await Promise.race([pipeline.adopt(saved.slots || [], saved.removed, saved.unwired, saved.whole, project.fresh), new Promise((r) => { timer = setTimeout(() => r(false), 20000); })]);
     } catch { ok = false; } finally { clearTimeout(timer); }
     adopted = Boolean(ok && pipeline.slots());
     if (adopted) {
       retries = 0;
-      store(saved, pipeline.slots());
+      // An old project with nothing saved runs the default and stays as it is on disk; a new one keeps what it took.
+      if (own || project.fresh) store(saved, pipeline.slots());
     } else if (retries++ < 3) {
       setTimeout(adopt, 5000);
     } else {

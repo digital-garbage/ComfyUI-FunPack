@@ -191,7 +191,6 @@ export function createPipelineState(API) {
         refused = (res && res.refused) || [];
         queueable = !!(res && res.queueable);
         saveNotes = (res && res.notes) || [];
-        _changed();
         // A no-op for the common case (same file as last time) -- see
         // refreshManifest()'s own guard. Only a Models & Pipeline edit that
         // actually changes the loader's file does a second round trip here.
@@ -203,6 +202,7 @@ export function createPipelineState(API) {
         } catch (e) {
           console.warn(`[FunPack] could not refresh modules for the new model: ${e && e.message ? e.message : e}`);
         }
+        _changed();                                     // after the modules: a listener sees the ones for this model
       } catch (e) {
         saveNotes = [`Could not save: ${e && e.message ? e.message : e}`];
       }
@@ -294,6 +294,16 @@ export function createPipelineState(API) {
     return controlState;
   }
   function isQuarantined(id) { return !!(controlState[id] && controlState[id].quarantine); }
+  // Whether anything would act on a module's settings now: its own node is in the pipeline (when it has one),
+  // and what it serves (the taste store) has a user that is on and not set to a manual value.
+  function useful(m) {
+    const values = currentValues();
+    const working = (u) => { const v = values[u.id] || {}; return (!("enabled" in (u.settings || {})) || v.enabled) && v.mode !== "manual"; };
+    const inPipeline = !(m.nodes || []).length || !slots || m.nodes.some((n) => slots.some((s) => s.node === n));
+    const served = !(m.serves || []).length || activeModules().some((u) => working(u) && (u.uses || []).some((cap) => m.serves.includes(cap)));
+    return inPipeline && served;
+  }
+
   function activeModules() {
     return allOff() ? [] : Object.values(modulesById).filter((m) => !isOff(m.id) && !isQuarantined(m.id));
   }
@@ -451,19 +461,20 @@ export function createPipelineState(API) {
   // the saved copy predates, so an update's new settings are not lost to an old project.
   // Not announced as a change: it IS the project's own copy.
   // True when the project's pipeline is in (or it had none to put in); false when it could not be.
-  async function adopt(saved, removedIds, unwiredMap, wholeSaved) {
+  // `inherit`: a project with nothing saved keeps the live pipeline (a new one); otherwise it gets the default.
+  async function adopt(saved, removedIds, unwiredMap, wholeSaved, inherit = true) {
     let open;
     const gate = new Promise((r) => { open = r; });
     adoptGate = gate;                                   // before anything awaits: an edit right behind this waits too
-    try { await ensureLoaded(); return await _adopt(saved, removedIds, unwiredMap, wholeSaved); } finally { if (adoptGate === gate) adoptGate = null; open(); }
+    try { await ensureLoaded(); return await _adopt(saved, removedIds, unwiredMap, wholeSaved, inherit); } finally { if (adoptGate === gate) adoptGate = null; open(); }
   }
 
-  async function _adopt(saved, removedIds, unwiredMap, wholeSaved) {
+  async function _adopt(saved, removedIds, unwiredMap, wholeSaved, inherit) {
     // Not loaded (ComfyUI unreachable): remember what the project holds and put it in the moment a
     // load succeeds, so the default is never what the next edit is built on.
     const hadSomething = (Array.isArray(saved) && saved.length) || (Array.isArray(removedIds) && removedIds.length);
     if (slots === null) { if (hadSomething) deferred = [saved, removedIds, unwiredMap, wholeSaved]; return !hadSomething; }
-    if (!hadSomething) return true;
+    if (!hadSomething && inherit) return true;
     if (!Array.isArray(saved)) saved = [];
     // A saved slot is only what the server would accept: a project file outlives the code that
     // wrote it (v4 files name the node differently), and one bad slot refuses every later edit.
@@ -546,7 +557,7 @@ export function createPipelineState(API) {
     frozenInputs,
     ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
-    activeModules, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
+    activeModules, useful, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],
     whole: () => whole,
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),

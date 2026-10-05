@@ -21,8 +21,20 @@ test("opening a project whose pipeline is unchanged does not rewrite it; an edit
   assert.equal(r.writes.length, 1);
 });
 
-test("a project with no saved pipeline gets the live one on open", async () => {
-  const r = rig(undefined);
+test("an older project with no saved pipeline gets the default and is not rewritten; a new one keeps the live pipeline", async () => {
+  for (const fresh of [false, true]) {
+    const writes = [], asked = [];
+    let opened;
+    const project = { fresh, project: { models: { slots: [] } }, setField: (k, v) => { writes.push(v); project.project[k] = v; } };
+    const pipeline = { adopt: async (...a) => { asked.push(a[4]); return true; }, slots: () => slots, removedIds: () => [], unwiredMap: () => ({}), whole: () => false, subscribe: () => {} };
+    linkPipeline({ project, pipeline, onOpen: (fn) => { opened = fn; } });
+    await opened();
+    assert.deepStrictEqual([asked[0], writes.length], [fresh, fresh ? 1 : 0]);
+  }
+});
+
+test("an older file with no whole flag is not rewritten just to add one", async () => {
+  const r = rig({ slots, removed: [], unwired: {} });
   await r.open();
-  assert.deepEqual(r.writes[0].slots, slots);
+  assert.equal(r.writes.length, 0);
 });
