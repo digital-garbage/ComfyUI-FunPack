@@ -45,3 +45,24 @@ test("a file input nothing has chosen shows “choose”, not the first file, an
   select.dispatchEvent(new Event("change", { bubbles: true }));
   assert.deepEqual(picked, ["only.safetensors"]);
 });
+
+test("the simple view shows only nodes that ask for a choice (files, sampler, broken); “Show all nodes” brings back the rest", async () => {
+  globalThis.localStorage = window.localStorage; localStorage.clear();
+  const slots = [{ id: "m", node: "FunPackDiffusionModelLoader", group: "Loaders", inputs: { model_name: "h3.safetensors" } },
+    { id: "k", node: "FunPackSampler", group: "Sampling", inputs: { steps: 8 } },
+    { id: "pm", node: "FunPackPromptMarkup", group: "Prompt", inputs: { text: "" } }];
+  const ps = { slots: () => slots, snapshot: () => ({ slots }), ensureLoaded: async () => {}, subscribe: () => () => {}, restore: async () => ({ refused: [] }),
+    loading: () => false, loadError: () => null, saveNotes: () => [], incomplete: () => [], refused: () => [], queueable: () => true, removedIds: () => [], offered: () => [] };
+  const nodes = { FunPackDiffusionModelLoader: { widgets: [{ name: "model_name", type: "COMBO", choices: ["h3.safetensors"] }] },
+    FunPackSampler: { widgets: [{ name: "steps", type: "INT" }] }, FunPackPromptMarkup: { widgets: [{ name: "text", type: "STRING" }] } };
+  const page = models({ pipeline: ps, api: { describeNodes: async () => ({ nodes }) } })();
+  document.body.append(page.node);
+  await new Promise((r) => setTimeout(r, 0));
+  const cards = () => [...page.node.querySelectorAll(".fp-node-card .fp-node-title")].map((n) => n.textContent).join("|");
+  assert.equal(page.node.querySelectorAll(".fp-node-card").length, 2, cards());
+  assert.match(page.node.textContent, /1 more only connect features/);
+  [...page.node.querySelectorAll(".cx-toggle-row")].find((r) => /Show all nodes/.test(r.textContent)).querySelector("input").click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(page.node.textContent.includes("Prompt"), "the groups are back");
+  page.node.remove(); localStorage.clear(); delete globalThis.localStorage;
+});

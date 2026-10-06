@@ -25,6 +25,14 @@ export const widgetControl = (w, current, set) => {
   return w.multiline ? c.textarea.md({ label, value: current ?? "", rows: 4, onCommit: set }) : c.input.md({ label, value: current ?? "", onCommit: set });
 };
 
+const FILE = /\.(safetensors|sft|gguf|ckpt|pt|pth|bin|onnx)$/i;
+/** Whether a node asks something of the person: a model file to pick, the sampler, or a problem. The rest is plumbing
+ *  features need wired in, shown only under "Show all nodes" (v4 kept it inside a fixed graph). */
+export const needsChoice = (slot, spec, broken) => broken || !spec || /Loader$/.test(slot.node)
+  || (spec.widgets || []).some((w) => w.name === "steps" || w.name === "sampler_name"
+    || (w.type === "COMBO" && [...(w.choices || []), (slot.inputs || {})[w.name]].some((v) => typeof v === "string" && FILE.test(v))));
+const ALL_KEY = "funpack_models_all";
+
 export const models = (app) => function mount() {
   const ps = app.pipeline, api = app.api;
   const page = c.region.stack({ gap: "md" });
@@ -212,11 +220,19 @@ export const models = (app) => function mount() {
       detail.node.classList.add("fp-card");
       return page.set([back, note ? c.banner.warn({ text: note }) : null, ...status(open.id), detail].filter(Boolean));
     }
-    const grid = c.region.stack({ gap: "none", children: [...slots.filter((x) => (x.group || "Other") === group).map(nodeCard), group ? addCard() : null].filter(Boolean) });
+    let everything = false;
+    try { everything = localStorage.getItem(ALL_KEY) === "1"; } catch { /* the simple view */ }
+    const show = (on) => { try { on ? localStorage.setItem(ALL_KEY, "1") : localStorage.removeItem(ALL_KEY); } catch { /* this visit only */ } draw(); };
+    const chosen = slots.filter((x) => needsChoice(x, specs[x.node], specs[x.node] === null || ps.incomplete().some((t) => mine(t, x.id))));
+    const grid = c.region.stack({ gap: "none", children: everything
+      ? [...slots.filter((x) => (x.group || "Other") === group).map(nodeCard), group ? addCard() : null].filter(Boolean)
+      : chosen.map(nodeCard) });
     grid.node.classList.add("fp-node-grid");
+    const rest = slots.length - chosen.length;
     page.set([tools(), note ? c.banner.warn({ text: note }) : null, ...status(),
       !slots.length ? c.emptyState.default({ icon: "⬡", title: "No pipeline loaded", hint: "Is ComfyUI reachable? Or start from a model's starting point above." }) : null,
-      all.length ? c.tabs.underline({ label: "Group", tabs: all.map((g) => ({ value: g, label: g })), value: group, onChange: (g) => { group = g; draw(); } }) : null,
+      slots.length ? c.toggle.default({ label: "Show all nodes", hint: everything ? "Every node, by group: add, swap, rewire." : `Only what needs a choice: model files, the sampler, anything broken.${rest ? ` ${rest} more only connect features, nothing to pick there.` : ""}`, checked: everything, onChange: show }) : null,
+      everything && all.length ? c.tabs.underline({ label: "Group", tabs: all.map((g) => ({ value: g, label: g })), value: group, onChange: (g) => { group = g; draw(); } }) : null,
       grid].filter(Boolean));
   }
   // A redraw while a box has focus would eat what is being typed: it waits for the focus to leave.
