@@ -1,7 +1,7 @@
 // The media bin as a choice, for fields that need one picture or several: a window listing what is in it.
 import { composer as c } from "../../composer/composer.js";
 
-import { learn, names } from "../../shell/bin.js";
+import { bin, learn, names } from "../../shell/bin.js";
 
 let asked = false;
 
@@ -14,15 +14,15 @@ export async function look(api) {
 /** The names behind some ids; looks the bin up once if any are not known yet, then says so with `again`. */
 export function namesOf(ids, api, again) {
   if (!asked && ids.some((id) => !names.has(id))) { asked = true; look(api).then(again, () => { asked = false; }); }
-  return ids.map((id) => names.get(id) || "…");
+  return ids.map((id) => names.get(id) || (bin.version ? "(deleted)" : "…"));       // a listing has been seen and this id was not in it
 }
 
 /** -> the chosen ids in the order picked, or null when the window was closed. `multiple` false gives at most one. */
 export async function pick(api, { title, kinds, multiple, current = [] }) {
   asked = false;
-  const bin = (await look(api)).filter((m) => kinds.includes(m.kind));
-  if (!bin.length) { c.toast.warn({ text: `Nothing to pick: the media bin has no ${kinds.join(" or ")} yet.` }); return null; }
-  const items = bin.map((m) => ({ value: m.id, label: `${m.name} (${m.kind})` }));
+  const found = (await look(api)).filter((m) => kinds.includes(m.kind));
+  if (!found.length) { c.toast.warn({ text: `Nothing to pick: the media bin has no ${kinds.join(" or ")} yet.` }); return null; }
+  const items = found.map((m) => ({ value: m.id, label: `${m.name} (${m.kind})` }));
   return new Promise((resolve) => {
     let chosen = multiple ? current.filter((id) => names.has(id)) : [];
     const body = multiple ? c.checklist.default({ label: title, items, values: chosen, onChange: (v) => { chosen = v; } })

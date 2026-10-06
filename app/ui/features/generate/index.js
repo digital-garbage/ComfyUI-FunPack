@@ -70,6 +70,16 @@ export default {
         if (times > 1 && !rolesAt(frozen, "generation.seed").length) { tell("This pipeline has no seed input the app controls, so the takes would all come out the same."); return; }
         // The project too: text, lengths and references edited after the click reach the next Generate, not this one's later shots.
         const snap = structuredClone(p.project);
+        // A picture deleted from the bin (in another project, or on another machine) is still named by id here: it would fail the run in ComfyUI.
+        const bin = await Promise.resolve().then(() => app.api.media()).then((r) => new Set((r.media || []).map((m) => m.id)), () => null);
+        const dead = (id) => bin && id && !bin.has(id);
+        const prune = (pr) => pr.scenes.reduce((hit, s) => {
+          const had = dead(s.source_image) || (s.references || []).some(dead);
+          if (dead(s.source_image)) s.source_image = "";
+          if (had) s.references = (s.references || []).filter((r) => !dead(r));
+          return hit || had;
+        }, false);
+        if (prune(snap)) { tell("Some pictures this project used are no longer in the media bin; they were removed from their scenes."); p.edit(prune); }
         const drawn = new Map();
         const same = times > 1 ? (body) => { const key = JSON.stringify(body); if (!drawn.has(key)) drawn.set(key, expand(body)); return drawn.get(key); } : expand;
         for (const unit of Array.from({ length: times }, () => units).flat()) {

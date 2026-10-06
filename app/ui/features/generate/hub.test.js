@@ -185,3 +185,14 @@ test("a scene removed while it was being made: the result is not dropped in sile
   await app.runner.units(["a"]);
   assert.match(document.body.textContent.replace(before, ""), /was removed while it was being made.*a\.mp4/);
 });
+
+test("a picture no longer in the media bin is dropped from the scene before the run, and said, instead of failing in ComfyUI", async () => {
+  const { app, doc } = rig("idle", { generate: async () => true });
+  doc.scenes[0].references = ["deadbeef0000", "aaaaaaaaaaaa"];
+  doc.scenes[0].source_image = "deadbeef0001";
+  app.api.media = async () => ({ media: [{ id: "aaaaaaaaaaaa" }] });
+  await app.runner.units(["a"], 1);
+  assert.deepEqual(doc.scenes[0].references, ["aaaaaaaaaaaa"]);
+  assert.equal(doc.scenes[0].source_image, "");
+  assert.match(document.body.textContent, /no longer in the media bin/);
+});
