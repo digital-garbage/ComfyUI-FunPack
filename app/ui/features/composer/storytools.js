@@ -71,7 +71,7 @@ export function variablesPanel(app, own) {
   const draw = () => { shown = JSON.stringify([p.project && p.project.id, rows()]); page.set([
     ...rows().map((v, i) => c.toolbar.default({
       items: [c.input.sm({ label: "Name", value: v.name, placeholder: "name", onCommit: (x) => { const l = clone(rows()); l[i].name = x; write(l); } }),
-        c.input.sm({ label: "Value", value: v.value, placeholder: "text", onCommit: (x) => { const l = clone(rows()); l[i].value = x; write(l); } })],
+        c.textarea.md({ fold: true, label: "Value", value: v.value, placeholder: "text", onCommit: (x) => { const l = clone(rows()); l[i].value = x; write(l); } })],
       trailing: [c.button.sm({ label: "✕", tone: "ghost", title: "Remove", onClick: () => { write(rows().filter((_, k) => k !== i)); draw(); } })] })),
     c.button.sm({ label: "+ Add variable", tone: "ghost", disabled: !p.project, onClick: () => { write([...rows(), { name: "name", value: "" }]); draw(); } }),
     c.hint.default({ text: "Write $name in a prompt; it becomes the variable's text when you generate." }),

@@ -138,21 +138,27 @@ define("stepper", "md", ({ value = 0, min, max, step = 1, onChange, label } = {}
   return { node, get value() { return current; }, setValue: set, destroy: () => node.remove() };
 });
 
-define("textarea", "md", ({ value = "", rows = 4, autoGrow = false, placeholder, onInput, onCommit, label } = {}) => {
+// `fold`: one line like an input until clicked, then as tall as its text (Enter is a new line); one line again on leaving.
+define("textarea", "md", ({ value = "", rows = 4, autoGrow = false, fold = false, placeholder, onInput, onCommit, label } = {}) => {
   const node = el("textarea", {
-    cls: ["cx-textarea", "cx-focusable", autoGrow ? "cx-autogrow" : null],
-    attrs: { rows, placeholder, "aria-label": label },
+    cls: ["cx-textarea", "cx-focusable", autoGrow || fold ? "cx-autogrow" : null, fold ? "cx-fold" : null],
+    attrs: { rows: fold ? 1 : rows, placeholder, "aria-label": label },
   });
   node.value = value;
 
   const grow = () => { node.style.height = "auto"; node.style.height = `${node.scrollHeight}px`; };
   if (autoGrow) { node.addEventListener("input", grow); queueMicrotask(grow); }
+  if (fold) {
+    node.addEventListener("focus", grow);
+    node.addEventListener("input", grow);
+    node.addEventListener("blur", () => { node.style.height = ""; node.scrollTop = 0; });
+  }
   wire(node, { onInput, onCommit });
 
   return {
     node,
     get value() { return node.value; },
-    setValue(v) { node.value = v ?? ""; if (autoGrow) grow(); },
+    setValue(v) { node.value = v ?? ""; if (autoGrow || (fold && document.activeElement === node)) grow(); },
     destroy: () => node.remove(),
   };
 });

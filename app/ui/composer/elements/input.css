@@ -31,6 +31,8 @@
   resize: vertical; min-height: var(--ctl-h-xl);
 }
 .cx-autogrow { resize: none; overflow: hidden; }
+.cx-fold { min-height: var(--ctl-h-md); height: var(--ctl-h-md); padding: var(--sp-2) var(--ctl-pad-x-sm); font-size: var(--fs-5); }
+.cx-fold:not(:focus) { padding-block: 0; line-height: calc(var(--ctl-h-md) - 2px); }      /* folded: the first line centred, the rest fully out of sight */
 
 .cx-search { appearance: none; }
 .cx-search::-webkit-search-cancel-button { filter: grayscale(1) opacity(.6); }
