@@ -21,3 +21,19 @@ refinements/
 
 # Never track saved ComfyUI workflow dumps — they carry whatever was typed in the graph.
 movie_editor/backend/reference/*.workflow.json
+
+# v5's user data, left in the folder when switching back from the v5 branch. Not ignored, it reads as
+# local changes: Update refuses, and the next branch switch stashes the projects away.
+/projects/
+/media/
+/taste/
+/shortcuts.json
+/markers.json
+/quarantine.json
+/shortcut_categories.json
+/shortcut_revolver.json
+/block_influence.enabled
+/block_influence.latest.json
+/phrase_probe.enabled
+/phrase_probe.latest.json
+node_modules/
