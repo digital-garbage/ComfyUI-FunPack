@@ -7,12 +7,12 @@ what ComfyUI's own LoraLoader does, every strength is a real socket, and the gra
 shows how many LoRAs are actually applied instead of hiding the count in a string.
 """
 
-import comfy.sd
 import comfy.utils
 import folder_paths
 from comfy_api.latest import io
 
 from ..._core import log
+from .keys import match
 
 
 NONE = "None"
@@ -61,11 +61,24 @@ class FunPackLoraLoader(io.ComfyNode):
 
         path = folder_paths.get_full_path_or_raise("loras", lora_name)
         lora = comfy.utils.load_torch_file(path, safe_load=True)
-        patched_model, patched_clip = comfy.sd.load_lora_for_models(
-            model, clip, lora, strength_model, strength_clip)
+        patches, how, dropped = match(model, clip, lora)
+        if not patches:
+            log.alert("FunPack LoRA Loader", f"{lora_name} matched NOTHING in this model, so it does nothing: "
+                      "it is for another model, or names its layers in a way not known here")
+            return io.NodeOutput(model, clip, f"{lora_name}: matched nothing, not applied")
+        patched_model = model.clone()
+        patched_model.add_patches(patches, strength_model)
+        patched_clip = None
+        if clip is not None:
+            patched_clip = clip.clone()
+            patched_clip.add_patches(patches, strength_clip)
+        if dropped:
+            log.alert("FunPack LoRA Loader", f"{lora_name}: {dropped} of {len(patches) + dropped} weights do not fit this "
+                      "model's shapes and were left out (trained on another variant of it)")
 
         applied = [f"model={strength_model}"]
         applied.append(f"clip={strength_clip}" if clip is not None else "clip=not wired")
-        log.info("FunPack LoRA Loader", f"{lora_name} applied ({', '.join(applied)})")
+        found = f"{len(patches)} weights" + (f", keys {how}" if how != "as-is" else "") + (f", {dropped} dropped" if dropped else "")
+        log.info("FunPack LoRA Loader", f"{lora_name} applied ({', '.join(applied)}; {found})")
         return io.NodeOutput(patched_model, patched_clip,
-                             f"FunPack LoRA Loader | {lora_name} ({', '.join(applied)})")
+                             f"FunPack LoRA Loader | {lora_name} ({', '.join(applied)}; {found})")

@@ -18,6 +18,14 @@ def row(level, text):
     return {"level": level, "text": text}
 
 
+def xformers_on() -> bool:
+    try:
+        import comfy.model_management as mm
+        return bool(mm.xformers_enabled())
+    except Exception:  # noqa: BLE001
+        return have("xformers")
+
+
 def have(module) -> bool:
     try:
         return importlib.util.find_spec(module) is not None
@@ -64,7 +72,7 @@ def machine(disk_free_gb=None) -> List[dict]:
             out.append(row("ok", f"{props.name}, {props.total_memory / 1024 ** 3:.0f} GB, sm_{props.major}{props.minor}"))
             if props.major < 8:                               # bf16 arrived with Ampere (sm_80), on the card ComfyUI uses
                 out.append(row("warn", "This GPU has no native bf16 (before sm_80): the H3 VAEs, which need it, run emulated and slowly."))
-            if props.major >= 12 and have("xformers"):
+            if props.major >= 12 and xformers_on():                  # installed is not active: --disable-xformers turns it off
                 out.append(row("warn", "xformers has no masked-attention kernel for this GPU: start ComfyUI with --disable-xformers --use-sage-attention."))
             if not have("sageattention"):                     # a CUDA-only library: nothing to install on a Mac
                 out.append(row("warn", "sageattention is not installed: attention runs slower (and the H3 SLA setting has no fast path)."))

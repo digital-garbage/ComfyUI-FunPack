@@ -14,7 +14,7 @@ from comfy_api.latest import io
 from ..._core import log
 from .. import gguf_support, sla_attention
 from .. import int8_convrot as int8_convrot_module
-from ..common import (COMPUTE_DTYPES, WEIGHT_DTYPES, attention_choices,
+from ..common import (COMPUTE_DTYPES, WEIGHT_DTYPES, attention_choices, unsupported_dtypes,
                       attention_override, dtype_of, set_fp16_accumulation,
                       weight_model_options)
 
@@ -176,6 +176,9 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                 f"Could not detect a diffusion model in {model_name}. Loading a text "
                 f"encoder or a VAE file here is the usual cause.")
 
+        for line in unsupported_dtypes(model, weight_dtype, compute_dtype):
+            log.alert("FunPack Diffusion Model Loader", f"{line}; expect noise or broken sound. Set it to default.")
+            notes.append(line)
         dtype = dtype_of(compute_dtype)
         if dtype is not None and hasattr(model, "set_model_compute_dtype"):
             # Do NOT clear force_cast_weights afterwards. set_model_compute_dtype

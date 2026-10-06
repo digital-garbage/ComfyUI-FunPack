@@ -337,7 +337,7 @@ test("an adopted run can be cancelled by its own id", async () => {
   const { run, sent } = runner(ok({}));
   run.adopt("was-running");
   await run.cancel();
-  assert.equal(sent[0].url, "/api/jobs/was-running/cancel");
+  assert.ok(sent.some((x) => x.url === "/api/jobs/was-running/cancel"));
 });
 
 // --- a run that finishes while the page is loading ---------------------------
@@ -469,4 +469,30 @@ test("a run adopted while it is still waiting its turn says Queued, not Working"
   // And it becomes running when the server says it did, not before.
   run.handle(JSON.parse(message("execution_start", { prompt_id: "waiting" }).data));
   assert.equal(run.state.phase, RUNNING);
+});
+
+// --- a finish the socket never delivered ------------------------------------
+
+test("a run whose finish was missed (socket down, or finished before the page heard of it) is read from ComfyUI's history", async () => {
+  const history = { p9: { status: { status_str: "success", completed: true }, outputs: { "7": { images: [{ filename: "late.mp4", type: "output" }] } } } };
+  const { run } = runner(async (url) => ({ ok: true, status: 200, json: async () => (url === "/history/p9" ? history : {}) }));
+  run.adopt("p9");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(run.state.phase, DONE);
+  assert.deepEqual(run.state.images.map((i) => i.filename), ["late.mp4"]);
+});
+
+test("a missed failure is read from history with ComfyUI's own reason", async () => {
+  const history = { p9: { status: { status_str: "error", messages: [["execution_error", { node_type: "SaveVideo", exception_message: "disk full" }]] }, outputs: {} } };
+  const { run } = runner(async (url) => ({ ok: true, status: 200, json: async () => (url === "/history/p9" ? history : {}) }));
+  run.adopt("p9");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual([run.state.phase, run.state.error.node, run.state.error.message], ["failed", "SaveVideo", "disk full"]);
+});
+
+test("a run still going (no history entry yet) stays as it is", async () => {
+  const { run } = runner(ok({}));
+  run.adopt("p9");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(run.state.phase, "running");
 });

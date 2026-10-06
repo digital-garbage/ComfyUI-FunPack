@@ -57,14 +57,14 @@ class Judge(nn.Module):
         pairs = list(zip(descriptors, rewards))[-BUFFER:]
         if len(pairs) < MIN_SAMPLES or len({r for _d, r in pairs}) < 2:
             return None
-        judge = cls(seed)
         pick = random.Random(seed)
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        xs = torch.stack([d.float().reshape(-1) for d, _r in pairs]).to(device)
         rs = [float(r) for _d, r in pairs]
         n = len(rs)
+        # ComfyUI runs the whole prompt under inference_mode: weights or inputs made there cannot be trained.
         with torch.inference_mode(False), torch.enable_grad():
-            judge.to(device)
+            judge = cls(seed).to(device)
+            xs = torch.stack([d.float().reshape(-1).clone() for d, _r in pairs]).to(device)
             opt = torch.optim.Adam(judge.parameters(), lr=2e-3)
             for _ in range(STEPS):
                 opt.zero_grad()
@@ -92,9 +92,9 @@ class Judge(nn.Module):
     def gradient(self, video):
         """d(score)/d(video), same shape, scaled by the members' agreement."""
         device = video.device
-        if next(self.parameters()).device != device:
-            self.to(device)
         with torch.inference_mode(False), torch.enable_grad():
+            if next(self.parameters()).device != device:
+                self.to(device)                         # moved here, not under inference_mode: its copies must stay differentiable
             x = torch.empty(video.shape, dtype=torch.float32, device=device)
             x.copy_(video)
             x.requires_grad_(True)

@@ -39,6 +39,16 @@ def dtype_of(name):
     return _BY_NAME.get(str(name or "default"))
 
 
+def unsupported_dtypes(model, weight_dtype, compute_dtype):
+    """A forced dtype the model does not run in, one line each. A model says which it runs in (H3: bf16/fp32;
+    v4 measured fp16 breaking it). Allowed, but said."""
+    supported = getattr(getattr(getattr(model, "model", None), "model_config", None), "supported_inference_dtypes", None) or []
+    runs_in = ", ".join(str(d).replace("torch.", "") for d in supported)
+    return [f"{what} dtype {picked} is not one this model runs in ({runs_in})"
+            for what, picked in (("weight", weight_dtype), ("compute", compute_dtype))
+            if picked in ("fp16", "bf16", "fp32") and supported and dtype_of(picked) not in supported]
+
+
 def weight_model_options(weight_dtype):
     """comfy `model_options` for a weight dtype. The mapping core's UNETLoader uses."""
     options = {}

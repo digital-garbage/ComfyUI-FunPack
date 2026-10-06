@@ -33,3 +33,13 @@ def test_its_push_raises_the_score_and_points_at_liked():
     shift = value.describe(moved) - value.describe(video)
     assert torch.nn.functional.cosine_similarity(shift, liked_dir, dim=0) > 0.3
     assert torch.allclose((moved - video).norm(), 0.05 * video.norm(), rtol=1e-3)
+
+
+def test_the_judge_trains_and_steers_under_comfyuis_inference_mode():
+    # ComfyUI runs every prompt under torch.inference_mode(): weights made there cannot be trained.
+    import torch
+    from modules.system.taste import value as v
+    with torch.inference_mode():
+        judge = v.Judge.train_on([torch.randn(v.DIM) for _ in range(v.MIN_SAMPLES + 2)], [i % 2 for i in range(v.MIN_SAMPLES + 2)])
+        assert judge is not None
+        assert judge.gradient(torch.randn(1, 4, 2, 8, 8)).shape == (1, 4, 2, 8, 8)

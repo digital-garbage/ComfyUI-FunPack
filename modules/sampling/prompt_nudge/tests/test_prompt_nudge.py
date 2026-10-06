@@ -93,7 +93,7 @@ def test_off_installs_nothing(tiny_h3):
 
 
 def test_the_sounds_text_channels_are_left_alone():
-    from modules.sampling.prompt_nudge import nudged, picture_width
+    from modules.sampling.prompt_nudge import nudged, picture_widths
 
     class Dm:
         cross_attention_dim, audio_cross_attention_dim = 6, 2
@@ -102,8 +102,8 @@ def test_the_sounds_text_channels_are_left_alone():
         model = type("M", (), {"diffusion_model": Dm()})()
 
     c = torch.ones(1, 3, 8)
-    width = picture_width(P(), c)
-    assert width == 6 and picture_width(P(), torch.ones(1, 3, 5)) is None
+    width = picture_widths(P())(c)
+    assert width == 6 and picture_widths(P())(torch.ones(1, 3, 5)) is None
     out = nudged(c, torch.ones(3, dtype=torch.bool), torch.ones(8) / 8 ** 0.5, 1.0, width)
     assert (out[..., :6] > 1).all() and torch.equal(out[..., 6:], c[..., 6:])
 
@@ -176,3 +176,21 @@ def test_a_probe_does_not_teach_the_taste_key(tiny_h3):
     wrap(lambda x, t, *a, **k: x, torch.zeros(1, 1, 4), ts[3:4], None, c, None, {**_to(3), dit_hooks.PROBE: True})
     pending = store._dir("fox") / "prompt_taste.pending.pt"
     assert not pending.exists()                              # nothing was captured from the probe
+
+
+def test_the_installed_wrapper_does_not_hold_its_patcher():
+    # v4 8bc7cb64: a wrapper closing over its own patcher keeps the model alive past the run ("Potential memory leak").
+    import gc, weakref
+    from modules.sampling import prompt_nudge as pn
+
+    class P:
+        model = None
+    p = P()
+    ref = weakref.ref(p)
+    fn = pn.picture_widths(p)
+    del p
+    gc.disable()
+    try:
+        assert ref() is None and fn is not None
+    finally:
+        gc.enable()

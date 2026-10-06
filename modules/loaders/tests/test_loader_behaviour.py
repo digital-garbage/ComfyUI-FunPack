@@ -100,22 +100,72 @@ def test_a_lora_at_zero_strength_passes_the_originals_through(monkeypatch):
 def test_a_model_only_lora_still_applies_at_zero_clip_strength(monkeypatch):
     """clip is unwired, so strength_clip is meaningless -- but strength_model is
     not, and skipping the whole thing would silently drop the LoRA."""
-    import comfy.sd
     import comfy.utils
     import folder_paths
     from modules.loaders.lora import nodes
 
-    called = {}
+    added = {}
+
+    class M:
+        def clone(self):
+            return self
+
+        def add_patches(self, patches, strength):
+            added.update(n=len(patches), s=strength)
+
     monkeypatch.setattr(folder_paths, "get_full_path_or_raise", lambda kind, name: f"/fake/{name}")
     monkeypatch.setattr(comfy.utils, "load_torch_file", lambda p, **kw: {"fake": 1})
-    monkeypatch.setattr(comfy.sd, "load_lora_for_models",
-                        lambda m, c, l, sm, sc: called.update(sm=sm, sc=sc) or ("patched", None))
+    monkeypatch.setattr(nodes, "match", lambda m, c, l: ({"w": object()}, "as-is", 0))
+    out = nodes.FunPackLoraLoader.execute(model=M(), lora_name="x.safetensors", strength_model=0.8, clip=None)
+    assert added == {"n": 1, "s": 0.8}
+    assert "1 weights" in out.result[2]
 
-    out = nodes.FunPackLoraLoader.execute(
-        model=object(), lora_name="x.safetensors", strength_model=0.8, clip=None)
 
-    assert called["sm"] == 0.8
-    assert out.result[0] == "patched"
+def _lora_world(monkeypatch, weight_shape=(4, 3)):
+    import torch
+    import comfy.lora
+
+    class Inner:
+        def state_dict(self):
+            return {"diffusion_model.blocks.0.attn.weight": torch.zeros(weight_shape)}
+
+    class M:
+        model = Inner()
+    monkeypatch.setattr(comfy.lora, "model_lora_keys_unet", lambda m, km: {**km, "diffusion_model.blocks.0.attn": "diffusion_model.blocks.0.attn.weight"})
+    return M()
+
+
+def test_a_lora_under_a_training_wrapper_is_unwrapped_and_lands(monkeypatch):
+    # v4: an H3 adapter keyed base_model.model.dit.* matched 0 of 532 keys and did nothing, silently.
+    import torch
+    from modules.loaders.lora.keys import match
+    model = _lora_world(monkeypatch)
+    lora = {"base_model.model.dit.blocks.0.attn.lora_up.weight": torch.zeros(4, 2),
+            "base_model.model.dit.blocks.0.attn.lora_down.weight": torch.zeros(2, 3)}
+    patches, how, dropped = match(model, None, lora)
+    assert list(patches) == ["diffusion_model.blocks.0.attn.weight"] and dropped == 0 and "dit." in how
+
+
+def test_a_lora_pair_of_the_wrong_shape_is_dropped_not_merged_scrambled(monkeypatch):
+    import torch
+    from modules.loaders.lora.keys import match
+    model = _lora_world(monkeypatch, weight_shape=(6, 2))          # same element count (12), other shape
+    lora = {"diffusion_model.blocks.0.attn.lora_up.weight": torch.zeros(4, 2),
+            "diffusion_model.blocks.0.attn.lora_down.weight": torch.zeros(2, 3)}
+    patches, _how, dropped = match(model, None, lora)
+    assert patches == {} and dropped == 1
+
+
+def test_a_lora_that_matches_nothing_is_not_applied_and_says_so(monkeypatch):
+    import comfy.utils
+    import folder_paths
+    from modules.loaders.lora import nodes
+    monkeypatch.setattr(folder_paths, "get_full_path_or_raise", lambda kind, name: f"/fake/{name}")
+    monkeypatch.setattr(comfy.utils, "load_torch_file", lambda p, **kw: {})
+    monkeypatch.setattr(nodes, "match", lambda m, c, l: ({}, "as-is", 0))
+    model = object()
+    out = nodes.FunPackLoraLoader.execute(model=model, lora_name="x.safetensors", strength_model=1.0, clip=None)
+    assert out.result[0] is model and "matched nothing" in out.result[2]
 
 
 def test_the_attention_override_calls_the_unwrapped_backend(monkeypatch):
@@ -336,3 +386,14 @@ def test_no_lora_picked_passes_the_originals_through_without_reading_a_file():
     model, clip = object(), object()
     out = nodes.FunPackLoraLoader.execute(model=model, lora_name="None", strength_model=1.0, clip=clip)
     assert out.result[0] is model and out.result[1] is clip
+
+
+def test_a_forced_dtype_the_model_does_not_run_in_is_said():
+    # v4: fp16 broke MiniMax H3, which ComfyUI lists as bf16/fp32 only.
+    import torch
+    from types import SimpleNamespace as NS
+    from modules.loaders.common import unsupported_dtypes
+    h3 = NS(model=NS(model_config=NS(supported_inference_dtypes=[torch.bfloat16, torch.float32])))
+    assert len(unsupported_dtypes(h3, "fp16", "default")) == 1 and "fp16" in unsupported_dtypes(h3, "fp16", "default")[0]
+    assert unsupported_dtypes(h3, "default", "bf16") == []
+    assert unsupported_dtypes(h3, "fp8_e4m3fn", "fp16")[0].startswith("compute dtype fp16")

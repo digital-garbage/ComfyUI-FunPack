@@ -54,3 +54,15 @@ def test_the_gpu_row_names_the_card_comfyui_uses(monkeypatch):
                         lambda i: asked.append(i) or types.SimpleNamespace(name=f"GPU{i}", total_memory=32 * 1024 ** 3, major=12, minor=0))
     rows = r.machine()
     assert asked == [1] and any("GPU1" in x["text"] for x in rows)
+
+
+def test_the_blackwell_xformers_warning_follows_whether_xformers_is_on_not_installed(monkeypatch):
+    import types
+    import torch
+    monkeypatch.setattr(r, "device", lambda: "cuda")
+    monkeypatch.setattr(r, "gpu_index", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_properties",
+                        lambda i: types.SimpleNamespace(name="B", total_memory=96 * 1024 ** 3, major=12, minor=0))
+    for on, warned in ((True, True), (False, False)):
+        monkeypatch.setattr(r, "xformers_on", lambda: on)
+        assert any("xformers" in x["text"] for x in r.machine()) is warned

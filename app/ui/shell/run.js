@@ -57,7 +57,32 @@ export function createRun({
     for (const fn of listeners) {
       try { fn(state); } catch { /* one listener must not stop the others */ }
     }
+    watch();
   };
+
+  // The socket is the fast path, not the only one: a run whose finish arrived while the socket was down (a tunnel
+  // blip, a reload) would otherwise sit at "Generating" forever. ComfyUI's history is the record; asked on
+  // reconnect, on adopt, and every half minute while a run is going.
+  let poll = null;
+  function watch() {
+    const going = state.promptId && (state.phase === QUEUED || state.phase === RUNNING);
+    if (going && !poll) { poll = setInterval(reconcile, 30000); if (poll.unref) poll.unref(); }      // unref: never what keeps a process alive
+    if (!going && poll) { clearInterval(poll); poll = null; }
+  }
+  async function reconcile() {
+    const id = state.promptId;
+    if (!id || !(state.phase === QUEUED || state.phase === RUNNING) || typeof doFetch !== "function") return;
+    let entry;
+    try { const res = await doFetch(`${base}/history/${encodeURIComponent(id)}`); entry = res.ok ? (await res.json())[id] : null; } catch { return; }
+    if (!entry || state.promptId !== id || !(state.phase === QUEUED || state.phase === RUNNING)) return;     // still going, or moved on
+    const st = entry.status || {}, outs = Object.values(entry.outputs || {});
+    if (st.status_str === "error") {
+      const m = ((st.messages || []).find((x) => x[0] === "execution_error") || [])[1] || {};
+      emit({ phase: FAILED, progress: null, error: { node: m.node_type || m.node_id || null, message: m.exception_message || "the run failed", traceback: m.traceback || null } });
+    } else if (st.completed) {
+      emit({ images: outs.flatMap((o) => o.images || []), audio: outs.flatMap((o) => o.audio || []), phase: DONE, progress: null, node: null });
+    }
+  }
 
   // Only messages carrying OUR prompt id are acted on. ComfyUI broadcasts some
   // of them (an interrupt is broadcast to every client), so a second tab
@@ -234,7 +259,7 @@ export function createRun({
     socket = connect(clientId);
     if (!socket) return null;
 
-    socket.addEventListener("open", () => { attempt = 0; emit({ connection: LIVE }); });
+    socket.addEventListener("open", () => { attempt = 0; emit({ connection: LIVE }); reconcile(); });
     socket.addEventListener("message", (event) => {
       // Binary frames are previews, which nothing here consumes yet. A parse
       // failure must not take the socket down with it.
@@ -366,6 +391,7 @@ export function createRun({
       emit({ phase: running ? RUNNING : QUEUED, images: [], audio: [],
              error: null, node: null });
       settle(promptId);
+      reconcile();                              // a run that finished before this page heard of it
       return true;
     },
 
