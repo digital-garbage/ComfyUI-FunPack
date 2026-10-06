@@ -604,3 +604,16 @@ test("no overlay paints a backdrop with a viewport-sized shadow spread", () => {
     "a shadow spread that large is a stale-compositor-layer bug waiting to happen; " +
     "dim with a .cx-backdrop element instead");
 });
+
+test("a button inside a drag handle is pressed, not dragged (a window's ✕ in its title bar)", async () => {
+  const { drag } = await import("../internals/drag.js");
+  const handle = document.createElement("div"), x = document.createElement("button");
+  handle.append(x); document.body.append(handle);
+  let started = 0;
+  drag(handle, { onStart: () => { started += 1; } });
+  const down = (target) => target.dispatchEvent(Object.assign(new window.Event("pointerdown", { bubbles: true, cancelable: true }), { button: 0, clientX: 1, clientY: 1, pointerId: 1 }));
+  down(x);
+  assert.equal(started, 0);
+  down(handle);
+  assert.equal(started, 1);
+});

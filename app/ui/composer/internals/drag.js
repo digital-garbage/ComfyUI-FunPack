@@ -16,6 +16,9 @@ export function drag(handle, { onStart, onMove, onEnd, button = 0 } = {}) {
 
   const onPointerDown = (event) => {
     if (event.button !== button || origin) return;
+    // A control inside the handle (a window's ✕ in its title bar) is pressed, not dragged: capturing the pointer
+    // here would retarget its click to the handle, and the button would never fire.
+    if (event.target !== handle && event.target.closest && event.target.closest("button, input, select, textarea, a")) return;
     origin = { x: event.clientX, y: event.clientY };
     pointerId = event.pointerId;
     if (handle.setPointerCapture) handle.setPointerCapture(pointerId);

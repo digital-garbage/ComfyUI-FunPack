@@ -15,7 +15,8 @@ export default {
   setup({ app }) {
     const p = app.project, on = () => p.pref("suggestions", true);
     let box = null, node = null, layer = null, pop = null, hold = 0;
-    const closeBulb = () => { if (pop) pop.close(); if (node) { node.remove(); layer.release(); node = layer = box = null; } };
+    let frame = 0;
+    const closeBulb = () => { cancelAnimationFrame(frame); if (pop) pop.close(); if (node) { node.remove(); layer.release(); node = layer = box = null; } };
     const prevText = () => {                       // the previous shot's prompt, for "your usual next shot" (scene prompt only)
       const open = p.project; if (!open || box.getAttribute("aria-label") !== "Prompt") return "";
       const roots = open.scenes.filter((s) => isGenerative(s) && unitRoot(open, genUnitId(s)) === s), at = roots.findIndex((s) => s.id === app.selection.focus);
@@ -65,7 +66,10 @@ export default {
       node = button.node;
       Object.assign(node.style, { position: "fixed" });
       document.body.append(node); layer = claimFor("popover", node);
-      place();
+      // Followed every frame while shown: the box moves with its window (dragged, resized, scrolled inside),
+      // which no page-level event reports.
+      const follow = () => { place(); if (node) frame = requestAnimationFrame(follow); };
+      follow();
     }
     function place() {
       if (!box || !node) return;
