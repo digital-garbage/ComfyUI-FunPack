@@ -629,3 +629,19 @@ test("Revert to what is already live changes nothing and is not a change of shap
   assert.deepStrictEqual((await PS.restore(PS.snapshot())).refused, []);
   assert.deepStrictEqual([posts.length, heard], [0, []]);
 });
+
+test("a typed node value is in the live slots at once, not when the server answers; one typed during the round trip survives it", async () => {
+  const posts = [];
+  const PS = load(posts, { delay: 30 });
+  await PS.ensureLoaded();
+  const steps = () => PS.slots().find((s) => s.id === "gen").inputs.steps;
+  const first = PS.save({ inputs: { gen: { steps: 12 } } });
+  assert.strictEqual(steps(), 12, "Generate now reads what was typed");
+  await new Promise((r) => setTimeout(r, 5));
+  const second = PS.save({ inputs: { gen: { steps: 20 } } });          // typed while the first is on its way
+  assert.strictEqual(steps(), 20);
+  await new Promise((r) => setTimeout(r, 32));                         // the first answer lands, carrying 12
+  assert.strictEqual(steps(), 20, "the older answer does not put the old value back on screen");
+  await Promise.all([first, second]);
+  assert.strictEqual(steps(), 20);
+});

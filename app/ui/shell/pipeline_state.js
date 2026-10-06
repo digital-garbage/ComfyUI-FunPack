@@ -209,9 +209,18 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   let editGuard = () => null;
   const blocked = (kind = "edit") => { const why = editGuard(kind); if (why) { saveNotes = [why]; _changed("load"); } return why; };    // said, and views redraw to what is true
 
+  // A typed node value is live at once: a run reads these slots now, and the server's answer only confirms it.
+  function placeInputs(inputs) {
+    if (!inputs || !slots) return;
+    Object.entries(inputs).forEach(([id, kv]) => {
+      const slot = slots.find((x) => x.id === id);
+      if (slot && kv && typeof kv === "object" && !Array.isArray(kv)) slot.inputs = { ...(slot.inputs || {}), ...kv };
+    });
+  }
   async function save(body) {
     if (adoptGate) await adoptGate;                     // an edit made while a project's pipeline goes in lands on THAT pipeline
     if (blocked()) return;
+    placeInputs(body && body.inputs);
     pendingBody = mergeBodies(pendingBody, body);
     if (saving) { pending = true; return; }
     saving = true;
@@ -227,6 +236,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         // this answer is about the old one and must not overwrite the new.
         if (mine !== epoch) continue;
         if (res && res.slots) slots = res.slots;
+        placeInputs(pendingBody && pendingBody.inputs);   // typed while this was in flight: still what is on screen
         if (Object.keys(pendingValues).length) mirrorValues(currentValues());    // an edit queued behind this one stays in the slots a run reads
         applyGroups();
         incomplete = (res && res.incomplete) || [];

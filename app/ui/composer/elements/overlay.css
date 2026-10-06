@@ -91,6 +91,8 @@
   animation: cx-pop var(--dur-1) var(--ease-standard);
 }
 .cx-popover-menu { min-width: 180px; }
+/* a popover holding a panel (settings, fields), not a list of items, needs room to the sides */
+.cx-popover[role="dialog"] { padding: var(--sp-5) var(--sp-6); }
 
 .cx-menu { display: flex; flex-direction: column; gap: 1px; }
 .cx-menu-item {

@@ -340,7 +340,19 @@ test("clearing a number field keeps the last committed value", () => {
   fire(input, "blur");
   assert.equal(n.value, 7, "an emptied field is not a zero");
   assert.equal(input.value, "7", "and the field shows what is actually held");
-  assert.deepEqual(seen, [7, 7]);
+  assert.deepEqual(seen, [7], "nothing changed, so nothing is saved again");
+});
+
+test("a spinner-arrow click commits at once; leaving afterwards does not save it twice", () => {
+  // the arrows fire "change" and no blur: committed on blur alone, a redraw put the old value back
+  const seen = [];
+  const n = mount(composer.number.md({ value: 3, min: 1, max: 10, onChange: (v) => seen.push(v) }));
+  const input = n.node.querySelector("input") || n.node;
+  input.value = "4";
+  fire(input, "change");
+  assert.deepEqual(seen, [4]);
+  fire(input, "blur");
+  assert.deepEqual(seen, [4]);
 });
 
 test("a number field ignores unparseable text on commit", () => {

@@ -44,6 +44,9 @@ export function mount(node) {
 export function unmount(node) {
   // Both halves matter: with no root yet, an unparented node's parentNode is
   // also null, and `null === null` would send removeChild to nothing.
+  // A field still focused would vanish without its blur, and a value typed there with it: let it commit first.
+  const active = typeof document !== "undefined" && document.activeElement;
+  if (node && active && active !== document.body && node.contains(active) && typeof active.blur === "function") active.blur();
   if (root && node && node.parentNode === root) root.removeChild(node);
 }
 

@@ -71,7 +71,7 @@ export default {
       win = c.floating.window({ id: "composer", title: "Composer", subtitle: "prompt craft", body, width: 420, height: 520, x: 320, y: 90,
         onClose: () => { cleanup(); win = null; } });
     };
-    host.append(c.button.sm({ label: "◆ Composer", tone: "neutral", onClick: open }).node);
+    host.append(c.button.sm({ label: "◆ Composer", tone: "neutral", onClick: () => (win ? win.close() : open()) }).node);       // the button toggles it, as v4
     app.inputHooks.push(chatHook);          // last, so a setup that failed above leaves nothing behind
     return () => { cleanup(); app.inputHooks.splice(app.inputHooks.indexOf(chatHook) >>> 0, 1); };
   },

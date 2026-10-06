@@ -57,6 +57,8 @@ export default {
       let made = 0;
       said = false;
       try {
+        const typing = document.activeElement;           // a field still being typed in commits first, however Generate was started
+        if (typing && typing !== document.body && typeof typing.blur === "function") typing.blur();
         await Promise.all((app.beforeRun || []).map((f) => f().catch(() => {})));      // an edit still on its way (the Story box) lands first
         // A project's pipeline still going in is the one this run uses, not the last one's.
         if (app.pipeline.settled && !(await app.pipeline.settled())) { tell("Not started: this project's pipeline is still loading. ComfyUI is slow to answer; try again in a moment."); return; }

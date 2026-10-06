@@ -636,3 +636,13 @@ test("a popover whose content grows after opening is placed again for its new si
     pop.close(); anchor.remove();
   } finally { delete globalThis.ResizeObserver; }
 });
+
+test("closing a window while a field in it is focused still commits what was typed", () => {
+  let got = null;
+  const field = composer.input.md({ label: "Taste key", onCommit: (v) => { got = v; } });
+  const win = composer.floating.window({ id: "commit-on-close", title: "T", body: composer.region.stack({ children: [field] }) });
+  field.node.focus();
+  field.node.value = "portraits";
+  win.close();
+  assert.equal(got, "portraits");
+});

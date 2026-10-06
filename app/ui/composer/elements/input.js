@@ -77,11 +77,14 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChan
   const commit = () => {
     const raw = input.value.trim();
     const parsed = raw === "" ? NaN : Number(raw);
-    const next = Number.isFinite(parsed) ? clamp(parsed) : committed;
+    const next = Number.isFinite(parsed) ? clamp(parsed) : committed, changed = next !== committed;
     committed = next;
     input.value = String(next);
-    if (onChange) onChange(next);
+    if (changed && onChange) onChange(next);
   };
+  // "change" is the browser's commit: each spinner-arrow click, the wheel, and leaving a typed edit. Blur alone missed
+  // the arrows, so a redraw put the old value back. Typing does not fire it, so mid-typing values stay typeable.
+  input.addEventListener("change", commit);
   input.addEventListener("blur", commit);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
 
