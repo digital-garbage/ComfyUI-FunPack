@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import mimetypes
 import os
+import secrets
 import time
 from collections import OrderedDict
 
@@ -118,6 +119,11 @@ async def playable(path: str) -> str:
         raise web.HTTPBadGateway(reason="Video could not be prepared for playback (remux failed).")
 
 
+def saved_name(path) -> str:
+    """What the browser's own "Save video as" calls the file: a random hash, never ComfyUI's FunPack_00001_."""
+    return secrets.token_hex(6) + (os.path.splitext(str(path))[1] or ".mp4")
+
+
 async def result(request) -> "web.StreamResponse":
     """GET/HEAD a ComfyUI render by (filename, subfolder, type), seekable and Range-served."""
     q = request.query
@@ -131,7 +137,7 @@ async def result(request) -> "web.StreamResponse":
             raise _unavailable("Video file is still being written.")
         return web.Response()
     ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
-    name = q.get("filename", "") or os.path.basename(path)
+    name = saved_name(path)
     if ctype.startswith("video/"):
         path = await playable(path)
     return web.FileResponse(path, headers={"Content-Type": ctype,
@@ -288,11 +294,8 @@ async def segment(request, project) -> "web.StreamResponse":
     key = (f"{project.id}:{scene_id}:{clip['filename']}:{clip['subfolder']}:{clip['type']}:"
            f"{clip['in']}:{clip['dur']}:{'rev' if reverse else ''}:{sig[0]}:{sig[1]}")
     async with _lock(key):
-        # the browser's own "Save video as" names the file from this: the render's unique name, not the route's
-        stem = os.path.splitext(os.path.basename(str(clip["filename"])))[0] or "clip"
-        cut = f"_from{float(clip.get('in') or 0):g}s".replace(".", "p") if float(clip.get("in") or 0) else ""
         headers = {"Cache-Control": "private, max-age=3600",
-                   "Content-Disposition": f'inline; filename="{projects.safe_part(stem + cut + ("_rev" if reverse else ""))}.mp4"'}
+                   "Content-Disposition": f'inline; filename="{saved_name(".mp4")}"'}
         hit = _segments.get(key)
         if hit and os.path.isfile(hit[1]):
             return web.FileResponse(hit[1], headers=headers)
