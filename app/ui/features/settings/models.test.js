@@ -66,3 +66,17 @@ test("the simple view shows only nodes that ask for a choice (files, sampler, br
   assert.ok(page.node.textContent.includes("Prompt"), "the groups are back");
   page.node.remove(); localStorage.clear(); delete globalThis.localStorage;
 });
+
+test("a problem that names no slot first (a loop) still shows its nodes in the simple view, and says its words", async () => {
+  const slots = [{ id: "a", node: "PlumbA", inputs: {} }, { id: "b", node: "PlumbB", inputs: {} }, { id: "c", node: "PlumbC", inputs: {} }];
+  const ps = { slots: () => slots, snapshot: () => ({ slots }), ensureLoaded: async () => {}, subscribe: () => () => {}, restore: async () => ({ refused: [] }),
+    loading: () => false, loadError: () => null, saveNotes: () => [], incomplete: () => ["a feeds b feeds a: a slot cannot end up feeding itself"],
+    refused: () => [], queueable: () => false, removedIds: () => [], offered: () => [] };
+  const nodes = { PlumbA: { widgets: [] }, PlumbB: { widgets: [] }, PlumbC: { widgets: [] } };
+  const page = models({ pipeline: ps, api: { describeNodes: async () => ({ nodes }) } })();
+  document.body.append(page.node);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(page.node.querySelectorAll(".fp-node-card").length, 2, "a and b, not c");
+  assert.match(page.node.textContent, /cannot end up feeding itself/);
+  page.node.remove();
+});

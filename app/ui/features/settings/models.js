@@ -48,7 +48,8 @@ export const models = (app) => function mount() {
     missing.forEach((n) => { if (!(n in specs)) specs[n] = null; });
   }
   const setInput = (slot, name) => async (value) => {
-    if (JSON.stringify((slot.inputs || {})[name]) === JSON.stringify(value)) return;          // a blur that changed nothing saves nothing
+    const live = slotsNow().find((x) => x.id === slot.id) || slot;           // the slot as it is now, not as drawn: an answer may have replaced it
+    if (JSON.stringify((live.inputs || {})[name]) === JSON.stringify(value)) return;          // a blur that changed nothing saves nothing
     await ps.save({ inputs: { [slot.id]: { [name]: value } } });
     say([...(ps.refused() || []), ...ps.saveNotes()].join(" "));
   };
@@ -165,11 +166,15 @@ export const models = (app) => function mount() {
     return { node };
   };
 
+  // A problem that names no slot first (a loop: "a feeds b feeds a") has no card of its own: its words are shown as they are,
+  // and every slot it names counts as broken, so the simple view cannot hide it.
+  const unclaimed = () => ps.incomplete().filter((t) => !slotsNow().some((x) => mine(t, x.id)));
+  const namedIn = (id, texts) => texts.some((t) => new RegExp(`(^|[^\\w.])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w])`).test(t));
   function status(only) {
-    const all = ps.incomplete(), refused = ps.refused(), notes = ps.saveNotes();
+    const all = ps.incomplete(), refused = ps.refused(), notes = ps.saveNotes(), loose = unclaimed();
     const incomplete = only ? all.filter((t) => mine(t, only)) : all;
     return [refused.length ? c.banner.warn({ text: `Could not save: ${refused.join(" ")}` }) : null, notes.length ? c.banner.info({ text: notes.join(" ") }) : null,
-      incomplete.length ? c.banner.warn({ text: only ? incomplete.join(" ") : `Not ready to generate yet: ${incomplete.length} node${incomplete.length === 1 ? "" : "s"} still need something (the orange dots). Open one to see what.` }) : ps.queueable() && !only ? c.hint.default({ text: "Every slot is filled — this pipeline is ready to generate." }) : null];
+      incomplete.length ? c.banner.warn({ text: only ? incomplete.join(" ") : `Not ready to generate yet: ${incomplete.length} node${incomplete.length === 1 ? "" : "s"} still need something (the orange dots). Open one to see what.${loose.length ? ` ${loose.join(" ")}` : ""}` }) : ps.queueable() && !only ? c.hint.default({ text: "Every slot is filled — this pipeline is ready to generate." }) : null];
   }
 
   const tools = () => c.toolbar.default({ items: [c.button.sm({ label: "Start from…", tone: "ghost", title: "Replace this pipeline with a model's own starting point", onClick: presets }),
@@ -223,7 +228,8 @@ export const models = (app) => function mount() {
     let everything = false;
     try { everything = localStorage.getItem(ALL_KEY) === "1"; } catch { /* the simple view */ }
     const show = (on) => { try { on ? localStorage.setItem(ALL_KEY, "1") : localStorage.removeItem(ALL_KEY); } catch { /* this visit only */ } draw(); };
-    const chosen = slots.filter((x) => needsChoice(x, specs[x.node], specs[x.node] === null || ps.incomplete().some((t) => mine(t, x.id))));
+    const loose = unclaimed();
+    const chosen = slots.filter((x) => needsChoice(x, specs[x.node], specs[x.node] === null || ps.incomplete().some((t) => mine(t, x.id)) || namedIn(x.id, loose)));
     const grid = c.region.stack({ gap: "none", children: everything
       ? [...slots.filter((x) => (x.group || "Other") === group).map(nodeCard), group ? addCard() : null].filter(Boolean)
       : chosen.map(nodeCard) });

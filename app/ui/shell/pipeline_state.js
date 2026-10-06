@@ -95,7 +95,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   let deferred = null;        // a project's saved pipeline ([slots, removed, unwired, whole]) waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
   let saving = false;
-  let shaping = false;         // a structural edit (node swapped, added, removed) waiting for the server
+  let shaping = 0;             // node changes (swap, add, remove, preset, import) asked for and not yet answered: counted from the ask
   let pending = false;
   let pendingBody = null;
   let saveNotes = [];
@@ -220,8 +220,16 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   }
   // An answer replaces the slots with the server's copy of what was SENT: whatever was typed while it was on its way
   // (node values still queued, module values) goes back on, or the screen and the next run lose it.
-  function keepTyped() {
-    placeInputs(pendingBody && pendingBody.inputs);
+  // A value typed for a node that the answer swapped for another belongs to nothing now: it is dropped, not put on the
+  // new node (which has no such input, and would be refused for it).
+  function keepTyped(before) {
+    const was = new Map((before || []).map((x) => [x.id, x.node]));
+    const typed = pendingBody && pendingBody.inputs;
+    if (typed && slots) for (const id of Object.keys(typed)) {
+      const now = slots.find((x) => x.id === id);
+      if (!now || (was.has(id) && was.get(id) !== now.node)) delete typed[id];
+    }
+    placeInputs(typed);
     if (Object.keys(pendingValues).length) mirrorValues(currentValues());
   }
   async function save(body) {
@@ -242,8 +250,9 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         // A different pipeline was put in while this was in flight (another project opened):
         // this answer is about the old one and must not overwrite the new.
         if (mine !== epoch) continue;
+        const before = slots;
         if (res && res.slots) slots = res.slots;
-        keepTyped();    // an edit queued behind this one stays in the slots a run reads
+        keepTyped(before);    // an edit queued behind this one stays in the slots a run reads
         applyGroups();
         incomplete = (res && res.incomplete) || [];
         refused = (res && res.refused) || [];
@@ -431,7 +440,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   // A change to the pipeline's SHAPE (add / replace / remove / wire / unwire), sent on its own: two
   // of these folded into one request would lose the first. Waits for any value edit in flight and
   // for a project's pipeline going in. -> {refused: [...]}; empty when it happened.
-  async function edit(body) {
+  async function editNow(body) {
     await ensureLoaded();
     if (slots === null) return { refused: ["The pipeline has not loaded: is ComfyUI reachable?"] };
     if (adoptGate) await adoptGate;
@@ -441,14 +450,14 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     const keep = currentValues();                       // a settings node added or swapped in starts empty: it gets these
     let refill = false;
     const mine = epoch;
-    saving = true; shaping = true;
+    saving = true;
     let refusedNow = [];
     try {
       applyGroups();
       const res = await API.editPipeline({ slots, ...body });
       if (mine !== epoch) return { refused: ["The project was changed while this was being sent."] };
       refusedNow = (res && res.refused) || [];
-      if (res && res.slots && !refusedNow.length) { slots = res.slots; keepTyped(); applyGroups(); }
+      if (res && res.slots && !refusedNow.length) { const before = slots; slots = res.slots; keepTyped(before); applyGroups(); }
       incomplete = (res && res.incomplete) || [];
       refused = refusedNow;
       queueable = !!(res && res.queueable);
@@ -480,7 +489,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     } catch (e) {
       refusedNow = [e && e.message ? e.message : String(e)];
     } finally {
-      saving = false; shaping = false;
+      saving = false;
     }
     if (refill || pending) await save({});              // the filled settings, or a value edit queued behind this one
     return { refused: refusedNow };
@@ -492,7 +501,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     return { slots: JSON.parse(JSON.stringify(slots)), removed: [...removed], unwired: JSON.parse(JSON.stringify(unwired)), whole };
   }
   // -> {refused: [...]}; empty when the snapshot is back. Announced as a change, so the project follows.
-  async function restore(snap) {
+  async function restoreNow(snap) {
     if (!snap || !Array.isArray(snap.slots)) return { refused: ["Nothing to go back to."] };
     // Already what is live: nothing to do. Above all not a change of shape, which would let Revert replace a refused saved pipeline.
     if (JSON.stringify(snap.slots) === JSON.stringify(slots)) return { refused: [] };
@@ -503,15 +512,16 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     const keep = currentValues();
     let refill = false;
     const mine = epoch;
-    saving = true; shaping = true;
+    saving = true;
     let refusedNow = [];
     try {
       const res = await API.editPipeline({ slots: JSON.parse(JSON.stringify(snap.slots)) });
       if (mine !== epoch) return { refused: ["The project was changed while this was being sent."] };
       refusedNow = (res && res.refused) || [];
       if (res && res.slots && !refusedNow.length) {
+        const before = slots;
         slots = res.slots;
-        keepTyped();
+        keepTyped(before);
         // A default slot the new pipeline lacks is removed, whatever the caller said: otherwise the next
         // open lays the default back over it (a preset, an import or the wizard would regain the default's loaders).
         const kept = new Set(res.slots.map((s) => s.id));
@@ -528,7 +538,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     } catch (e) {
       refusedNow = [e && e.message ? e.message : String(e)];
     } finally {
-      saving = false; shaping = false;
+      saving = false;
     }
     if (refill) await save({});
     return { refused: refusedNow };
@@ -580,6 +590,10 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
 
   /** Resolves true once no edit is on its way and no project's pipeline is going in; false if that took over
    *  three minutes (every request gives up after ANSWER_MS, so only a server failing again and again gets there). */
+  // Counted from the moment one is asked for, not from when it gets its turn behind a save: a run started in between
+  // would freeze the pipeline as it was before the change.
+  const shape = (fn) => async (...args) => { shaping += 1; try { return await fn(...args); } finally { shaping -= 1; } };
+  const edit = shape(editNow), restore = shape(restoreNow);
   // What a run needs finished: a project's pipeline going in, or a node swapped/added/removed (that shape exists only once
   // the server answers). A value save is not waited on: the value is already in the slots (placeInputs, mirrorValues).
   async function readyToRun() {

@@ -13,6 +13,7 @@ function load(posts, opts = {}) {
       editPipeline: async (body) => {
         body = JSON.parse(JSON.stringify(body));     // sent over HTTP: the server never shares the page's objects
         posts.push(body);
+        if (body.action === "replace") { const sl = body.slots.find((x) => x.id === body.slot); if (sl) { sl.node = body.node; sl.inputs = {}; } }
         if (opts.delay) await new Promise((r) => setTimeout(r, opts.delay));
         const bad = (body.slots || []).findIndex((s) => typeof s.node !== "string");
         if (bad >= 0) { const e = new Error(`slot ${bad} has no node`); throw e; } for (const [id, edits] of Object.entries(body.inputs || {})) { const sl = body.slots.find((x) => x.id === id); if (sl) sl.inputs = { ...sl.inputs, ...edits }; }
@@ -685,4 +686,28 @@ test("after a preset or import goes in, a run is ready at once (the node-change 
   const t0 = Date.now();
   assert.strictEqual(await PS.readyToRun(), true);
   assert.ok(Date.now() - t0 < 100);
+});
+
+test("a value typed for a node while it is being swapped is dropped, not put on the node that replaces it", async () => {
+  const posts = [];
+  const PS = load(posts, { delay: 40 });
+  await PS.ensureLoaded();
+  const swap = PS.edit({ action: "replace", slot: "gen", node: "Other" });
+  await new Promise((r) => setTimeout(r, 10));
+  const typed = PS.save({ inputs: { gen: { steps: 33 } } });
+  await swap; await typed; await PS.settled();
+  const gen = PS.slots().find((x) => x.id === "gen");
+  assert.strictEqual(gen.node, "Other");
+  assert.strictEqual(gen.inputs.steps, undefined, "no stray input the new node cannot take");
+  assert.ok(posts.every((b) => !(b.inputs && b.inputs.gen && "steps" in b.inputs.gen) || !b.slots.some((x) => x.id === "gen" && x.node === "Other")));
+});
+
+test("a node change asked for while a value save is on its way holds a run back until it lands", async () => {
+  const PS = load([], { delay: 60 });
+  await PS.ensureLoaded();
+  PS.save({ inputs: { gen: { steps: 12 } } });
+  const swap = PS.edit({ action: "replace", slot: "gen", node: "Other" });   // queued behind the save
+  await PS.readyToRun();
+  assert.strictEqual(PS.slots().find((x) => x.id === "gen").node, "Other", "the run freezes the pipeline after the swap");
+  await swap;
 });
