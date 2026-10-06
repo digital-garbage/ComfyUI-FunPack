@@ -10,9 +10,12 @@ const fed = (v) => Array.isArray(v);
 export const widgetControl = (w, current, set) => {
   const label = w.name;
   if (w.type === "COMBO") {
-    const choices = [...(w.choices || [])];
-    if (current != null && !choices.includes(current)) choices.unshift(current);       // a file gone from disk still shows, so saving something else cannot swap it out
-    return choices.length ? c.select.md({ label, value: current ?? choices[0], options: choices.map((v) => ({ value: v, label: String(v) })), onChange: set })
+    const choices = [...(w.choices || [])], unset = current == null || current === "";
+    if (!unset && !choices.includes(current)) choices.unshift(current);       // a file gone from disk still shows, so saving something else cannot swap it out
+    // Nothing chosen shows as nothing chosen: showing the first file would look picked while the run has none
+    // (and with one file there is nothing to change to, so it could never be picked).
+    const options = [...(unset ? [{ value: "", label: "— choose —" }] : []), ...choices.map((v) => ({ value: v, label: String(v) }))];
+    return choices.length ? c.select.md({ label, value: unset ? "" : current, options, onChange: (v) => { if (v !== "") set(v); } })
       : c.hint.default({ text: "No choices available — nothing found in the models folder." });
   }
   if (w.type === "INT" || w.type === "FLOAT") {

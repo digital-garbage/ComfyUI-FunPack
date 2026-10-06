@@ -34,3 +34,14 @@ test("a node the server says needs something shows the orange dot, whichever way
   assert.equal(dots.length, 2);
   assert.ok(dots.every((d) => d.classList.contains("fp-needs")));
 });
+
+test("a file input nothing has chosen shows “choose”, not the first file, and the one file can be picked", async () => {
+  const { widgetControl } = await import("./models.js");
+  const picked = [];
+  const ctl = widgetControl({ name: "model_name", type: "COMBO", choices: ["only.safetensors"] }, undefined, (v) => picked.push(v));
+  const select = ctl.node.querySelector("select") || ctl.node;
+  assert.equal(select.value, "");
+  select.value = "only.safetensors";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  assert.deepEqual(picked, ["only.safetensors"]);
+});
