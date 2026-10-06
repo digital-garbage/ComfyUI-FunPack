@@ -109,7 +109,8 @@ export default {
             break;
           }
           if (!images.length) { tell("ComfyUI finished without a result. Try again."); break; }
-          await record(pid, unit, images[images.length - 1], frames, g.run.state.promptId);       // the next shot may continue from this one: it must be on the clip first
+          const kept = await record(pid, unit, images[images.length - 1], frames, g.run.state.promptId);       // the next shot may continue from this one: it must be on the clip first
+          if (kept === false) tell(`Scene ${snap.scenes.findIndex((s) => s.id === root.id) + 1} was removed while it was being made, so its result is not on the timeline. It is in ComfyUI's output folder as ${images[images.length - 1].filename}.`);
           snap.scene_renders = structuredClone(p.project.scene_renders || {});                       // ...and in what the next shot reads
         }
         if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out or is a video clip.");

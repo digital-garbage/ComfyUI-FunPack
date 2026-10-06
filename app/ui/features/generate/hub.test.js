@@ -177,3 +177,11 @@ test("a refusal said while a shot is being queued names the scene", async () => 
   await app.runner.units(["c"]);
   assert.match(document.body.textContent.replace(before, ""), /Scene 3: Length is 5000/);
 });
+
+test("a scene removed while it was being made: the result is not dropped in silence, it says where the file is", async () => {
+  const { app, doc } = rig("idle", { generate: async () => { doc.scenes.splice(0, 2); return true; } });
+  app.project.editFor = async (_id, fn) => fn(doc);
+  const before = document.body.textContent;
+  await app.runner.units(["a"]);
+  assert.match(document.body.textContent.replace(before, ""), /was removed while it was being made.*a\.mp4/);
+});

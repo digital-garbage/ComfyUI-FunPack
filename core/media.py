@@ -107,15 +107,16 @@ def get(mid: str) -> dict | None:
     return next((it for it in _load_index() if it.get("id") == mid), None)
 
 
-def save_upload(orig_name: str, data: bytes) -> dict:
+def save_upload(orig_name: str, data: bytes, limit=...) -> dict:
     """Write one uploaded file and record it. Raises ValueError for anything
     this store refuses -- an empty upload, an extension not on the allowlist,
     or a file over MAX_BYTES -- so the route can turn that into a 400 naming
     why, rather than a file silently written and then never explained."""
     if not data:
         raise ValueError("that file is empty")
-    if len(data) > MAX_BYTES:
-        raise ValueError(f"that file is over the {MAX_BYTES // (1024 * 1024)}MB limit")
+    limit = MAX_BYTES if limit is ... else limit       # an upload's limit (read now); a file the server made itself has none
+    if limit is not None and len(data) > limit:
+        raise ValueError(f"that file is over the {limit // (1024 * 1024)}MB limit")
     ext = Path(orig_name or "").suffix.lower()
     if ext not in ALLOWED_EXT:
         raise ValueError(f"{ext or 'that file type'} is not something FunPack imports")

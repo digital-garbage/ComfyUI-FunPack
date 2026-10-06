@@ -139,7 +139,7 @@ def routes(table, base, web):
             name += ".mp4"
         try:
             data = await asyncio.to_thread(_clip_bytes, clip)
-            entry = media.save_upload(name, data)
+            entry = media.save_upload(name, data, limit=None)      # our own render: a long one is over the upload limit
         except (files.ClipError, stitch.RenderError) as exc:
             return bad(str(exc), 400)
         except ValueError as exc:

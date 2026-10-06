@@ -24,9 +24,14 @@ export default {
       app.title && app.title("inspector", `Scene · ${p.scenes.indexOf(sc) + 1}${unit.length > 1 ? ` · cut ${unit.indexOf(sc) + 1}/${unit.length}` : ""}`);
     };
     const sections = app.sceneSections || [];       // extra rows other features put under the scene's own: { rows(scene, project), key(scene, project) }
+    // The scene's text is in the key, so an edit made elsewhere (the Story box) is shown -- but not while this panel's
+    // own box is being typed in: that would rebuild it under the caret. It catches up when the focus leaves.
+    let shownText;
+    const typing = () => body.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName);
+    body.node.addEventListener("focusout", () => setTimeout(() => { if (!typing()) draw(); }));
     function draw(force) {      // not on every keystroke: that would rebuild the box being typed in
       const sc = p.selected, open = p.project;
-      const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "project" && open ? [open.postfix_enabled !== false, open.generation_mode, open.export_size_from, open.width, open.height, open.scenes.map((s) => s.frames_mode === "custom"), Object.keys(open.scene_renders || {}), open.scenes.length] : ""}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length, sc.source_image, (sc.references || []).join(), sc.source_in, sc.source_dur, sc.removed_from_plan, ((open.scene_renders || {})[sc.id] || {}).durationSec, Boolean(((open.scene_renders || {})[sc.id] || {}).media), bin.version, ...sections.map((s) => { try { return s.key(sc, open); } catch { return ""; } })] : ""}`;
+      const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "project" && open ? [open.postfix_enabled !== false, open.generation_mode, open.export_size_from, open.width, open.height, open.scenes.map((s) => s.frames_mode === "custom"), Object.keys(open.scene_renders || {}), open.scenes.length] : ""}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length, sc.source_image, (sc.references || []).join(), sc.source_in, sc.source_dur, sc.removed_from_plan, (sc.source || {}).type, sc.excluded, typing() ? shownText : (shownText = sc.text), ((open.scene_renders || {})[sc.id] || {}).durationSec, Boolean(((open.scene_renders || {})[sc.id] || {}).media), bin.version, ...sections.map((s) => { try { return s.key(sc, open); } catch { return ""; } })] : ""}`;
       titled();
       if (!force && next === key) return;
       key = next;

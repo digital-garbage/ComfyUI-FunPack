@@ -322,3 +322,15 @@ def test_a_photo_thumbnail_is_turned_upright_like_the_browser_shows_it(store):
     img.save(buf, "JPEG", exif=exif)
     entry = media.save_upload("p.jpg", buf.getvalue())
     assert Image.open(media.thumb_path_for(entry["id"])).size == (160, 320)
+
+
+def test_a_file_the_server_made_itself_is_not_held_to_the_upload_limit(store, monkeypatch):
+    from core import media
+    monkeypatch.setattr(media, "MAX_BYTES", 10)
+    import pytest
+    with pytest.raises(ValueError, match="limit"):
+        media.save_upload("a.mp4", b"x" * 11)
+    try:
+        media.save_upload("a.mp4", b"x" * 11, limit=None)
+    except ValueError as exc:
+        assert "limit" not in str(exc)
