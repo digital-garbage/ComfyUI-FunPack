@@ -646,3 +646,10 @@ test("closing a window while a field in it is focused still commits what was typ
   win.close();
   assert.equal(got, "portraits");
 });
+
+test("a toast with no words is not shown at all", () => {
+  const before = document.querySelectorAll(".cx-toast").length;
+  for (const text of [null, undefined, "", "   "]) composer.toast.warn({ text }).destroy();
+  composer.toast.warn({ text: null });
+  assert.equal(document.querySelectorAll(".cx-toast").length, before);
+});

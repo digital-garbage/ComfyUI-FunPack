@@ -21,9 +21,9 @@ export default {
   setup({ host, app }) {
     const p = app.project, g = app.generate;
     let said = false;
-    const tell = (text) => { said = true; c.toast.warn({ text }); };
+    const tell = (text) => { if (!text) return; said = true; c.toast.warn({ text }); };       // no words, no toast: an empty one read as a message gone missing
     let current = 0;                                    // the scene being queued: a refusal said meanwhile names it
-    g.on("say", (t) => tell(current ? `Scene ${current}: ${t}` : t)); g.on("warn", tell);
+    g.on("say", (t) => tell(t && (current ? `Scene ${current}: ${t}` : t))); g.on("warn", tell);
     g.on("hold", () => { held = true; draw(); }); g.on("release", () => { held = false; draw(); });   // while the page asks ComfyUI whether a run is already going          // the pipeline check's refusals: said where the person is looking
     let busy = false, stopped = false, held = false;
 

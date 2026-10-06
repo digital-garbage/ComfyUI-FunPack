@@ -135,6 +135,8 @@ function toastStack() {
 
 for (const tone of ["info", "good", "warn", "danger"]) {
   define("toast", tone, ({ text, action, duration = 3200 } = {}) => {
+    // Nothing to say: nothing shown. An empty bubble reads as a message that went missing.
+    if (!String(text ?? "").trim() && !(action && action.node)) return { node: null, setText() {}, destroy() {} };
     const node = el("div", { cls: ["cx-toast", `cx-toast-${tone}`],
       attrs: { role: tone === "danger" ? "alert" : "status" }, children: [
         el("span", { cls: "cx-toast-text", text }),
