@@ -84,9 +84,16 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChan
   };
   // "change" is the browser's commit: each spinner-arrow click, the wheel, and leaving a typed edit. Blur alone missed
   // the arrows, so a redraw put the old value back. Typing does not fire it, so mid-typing values stay typeable.
-  input.addEventListener("change", commit);
-  input.addEventListener("blur", commit);
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
+  // Keyboard arrows count as typing (committed on Enter or leaving): committed per press, a panel that redraws on a change
+  // would rebuild the field under the caret and the second press would go nowhere.
+  let keyed = false;
+  input.addEventListener("change", () => { if (keyed) { keyed = false; return; } commit(); });
+  input.addEventListener("blur", () => { keyed = false; commit(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); keyed = false; commit(); }
+    else if (/^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key)) keyed = true;
+  });
+  input.addEventListener("pointerdown", () => { keyed = false; });
 
   const node = unit
     ? el("span", { cls: "cx-number-wrap", children: [input, el("span", { cls: "cx-unit", text: unit })] })

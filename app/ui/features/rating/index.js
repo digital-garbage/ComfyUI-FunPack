@@ -4,6 +4,15 @@ import { inPlace } from "../../shell/place.js";
 import { genUnitId, isGenerative, unitRoot } from "../../shell/scenes.js";
 import { CHOICES, FORGET, nameOf, tasteOf } from "./choices.js";
 
+/** What to say when a rating taught nothing, or "" when it did. The run captured nothing, a learner is on and no key is
+ *  set: the missing key is why. Any other reason is the server's own (the key on screen now may not be the run's). */
+export function notTaught(r, ps) {
+  if (!(r && r.why)) return "";
+  const taste = ps.modulesById && ps.modulesById().taste;
+  const keyless = r.reason === "nothing" && taste && ps.useful(taste) && !String((ps.currentValues().taste || {}).key || "").trim();
+  return keyless ? "Taste not taught: no Taste key is set, so nothing learns from ratings. Name one in Settings ▸ Engine ▸ System ▸ Taste key." : `Taste not taught: ${r.why}.`;
+}
+
 export default {
   id: "rating",
   mount: "timeline.actions",
@@ -27,9 +36,8 @@ export default {
       const body = taste === "clear" ? { rating: null, axis: null } : taste;
       try {
         const r = await app.api.rateTaste(t.render.promptId, body.rating, body.axis);
-        // with no key nothing is ever captured: that, not the server's list of other causes, is the reason
-        const keyless = !String((app.pipeline.currentValues().taste || {}).key || "").trim();
-        if (r && r.why) c.toast.warn({ text: keyless ? "Taste not taught: no Taste key is set, so nothing learns from ratings. Name one in Settings ▸ Engine ▸ System ▸ Taste key." : `Taste not taught: ${r.why}.` });
+        const text = notTaught(r, app.pipeline);
+        if (text) c.toast.warn({ text });
       } catch { /* no taste module here: the rating stays a label */ }
     };
     const draw = () => {

@@ -200,8 +200,9 @@ def test_a_clip_that_captured_nothing_is_not_blamed_on_a_later_generate():
     store.capture("k", "vel", {"a": torch.zeros(2)}, prompt_id="p1")
     store.new_generation()
     store.capture("k", "vel", {"a": torch.zeros(2)}, prompt_id="p2")   # p2 ran and kept p1's forgetting on record
-    assert "new Generate" in store.rate("p1", "liked")["why"]
-    assert "captured nothing" in store.rate("p3", "liked")["why"]
+    first, third = store.rate("p1", "liked"), store.rate("p3", "liked")
+    assert "new Generate" in first["why"] and first["reason"] == "forgotten"
+    assert "captured nothing" in third["why"] and third["reason"] == "nothing"
 
 
 def test_deleting_a_key_leaves_other_keys_runs_ratable_and_one_run_can_wait_under_two_keys():

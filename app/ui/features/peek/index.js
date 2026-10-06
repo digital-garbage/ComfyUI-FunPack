@@ -24,7 +24,7 @@ export default {
     const paint = () => { root.classList.toggle("fp-peek", on); place(); const z = zone(); if (sizer && z) sizer.observe(z); };
     paint();
     const tab = c.button.sm({ label: "Auto-hide", tone: "neutral", pressed: on, title: "Show the timeline only while the pointer is on it", onClick: () => {
-      on = !on; paint(); tab.setPressed && tab.setPressed(on);
+      on = !on; clearTimeout(timer); timer = null; root.classList.remove("fp-peek-open"); paint(); tab.setPressed && tab.setPressed(on);
       try { on ? localStorage.setItem(KEY, "1") : localStorage.removeItem(KEY); } catch { /* lasts until reload */ }
     } });
     host.append(tab.node);

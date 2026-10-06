@@ -353,6 +353,12 @@ test("a spinner-arrow click commits at once; leaving afterwards does not save it
   assert.deepEqual(seen, [4]);
   fire(input, "blur");
   assert.deepEqual(seen, [4]);
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+  input.value = "5";
+  fire(input, "change");
+  assert.deepEqual(seen, [4], "a keyboard arrow is typing: not committed per press");
+  fire(input, "blur");
+  assert.deepEqual(seen, [4, 5]);
 });
 
 test("a number field ignores unparseable text on commit", () => {

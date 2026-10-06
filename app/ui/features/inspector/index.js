@@ -28,7 +28,9 @@ export default {
     // own box is being typed in: that would rebuild it under the caret. It catches up when the focus leaves.
     let shownText;
     const typing = () => body.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName);
-    body.node.addEventListener("focusout", () => setTimeout(() => { if (!typing()) draw(); }));
+    // Catch up once focus leaves the panel. Focus moving to a button or select inside it is a click under way: rebuilding
+    // between its mouse-down and mouse-up dropped the click; the change it makes redraws afterwards anyway.
+    body.node.addEventListener("focusout", (e) => { if (!(e.relatedTarget && body.node.contains(e.relatedTarget))) setTimeout(() => { if (!typing()) draw(); }); });
     function draw(force) {      // not on every keystroke: that would rebuild the box being typed in
       const sc = p.selected, open = p.project;
       const next = `${tab}|${open && open.id}|${p.selectedId}|${tab === "project" && open ? [open.postfix_enabled !== false, open.generation_mode, open.export_size_from, open.width, open.height, open.scenes.map((s) => s.frames_mode === "custom"), Object.keys(open.scene_renders || {}), open.scenes.length] : ""}|${tab === "scene" && sc && open ? [effFrames(sc, open), effFps(sc, open), p.scenes.indexOf(sc), sc.frames_mode, sc.fps_mode, p.scenes.length, sc.source_image, (sc.references || []).join(), sc.source_in, sc.source_dur, sc.removed_from_plan, (sc.source || {}).type, sc.excluded, typing() ? shownText : (shownText = sc.text), ((open.scene_renders || {})[sc.id] || {}).durationSec, Boolean(((open.scene_renders || {})[sc.id] || {}).media), bin.version, ...sections.map((s) => { try { return s.key(sc, open); } catch { return ""; } })] : ""}`;

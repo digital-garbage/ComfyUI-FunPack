@@ -106,7 +106,7 @@ export default {
       const v = viewer.element;
       if (seg && v && !v.paused) onTime(v);                        // timeupdate is too slow to catch a short clip's end
       else head.set(head.at + 0.04);
-      if (head.at >= total()) { pause(); head.set(Math.min(head.at, total())); }
+      if (head.at >= total()) { head.set(Math.min(head.at, total())); pause(); }       // back on the end first: past it there is no clip, and the picture would drop and reload
     }, 40);
     function start() { if (!total()) return; if (head.at >= total() - 0.02) head.set(0); playing = true; sync(); }
     function pause() { playing = false; sync(); }

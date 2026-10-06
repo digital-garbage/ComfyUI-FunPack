@@ -262,8 +262,9 @@ def rate(prompt_id, rating, axis=None):
             return out
 
         if not entry:
+            out["reason"] = "forgotten" if prompt_id in state.get("forgot", []) else "nothing"   # a label the app can act on; `why` is for people
             out["why"] = ("a new Generate started before this clip was rated, and unrated clips are forgotten then"
-                          if prompt_id in state.get("forgot", []) else
+                          if out["reason"] == "forgotten" else
                           "this run captured nothing: no learning feature acted on it, or ComfyUI reused an "
                           "earlier result instead of sampling again")
             return out
