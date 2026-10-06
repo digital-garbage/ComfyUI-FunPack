@@ -168,7 +168,7 @@ def capture(key, kind, rows, prompt_id=None, keep=MAX_ROWS, only=None, mixed=Fal
         if kind not in kinds:
             kinds.append(kind)
         ROOT.mkdir(parents=True, exist_ok=True)
-        _latest_path().write_text(json.dumps({"key": key, "prompt_id": prompt_id, "runs": runs}))
+        _latest_path().write_text(json.dumps({"key": key, "prompt_id": prompt_id, "runs": runs, "forgot": state.get("forgot", [])}))
 
 
 def new_generation():
@@ -182,7 +182,9 @@ def new_generation():
                 dropped += 1
         state = _read_latest()
         if state:
-            _latest_path().write_text(json.dumps({"key": state.get("key"), "runs": {}}))
+            # remembered so a late rating can say this was why, and only then
+            forgot = [*state.get("forgot", []), *state.get("runs", {})][-256:]
+            _latest_path().write_text(json.dumps({"key": state.get("key"), "runs": {}, "forgot": forgot}))
     return dropped
 
 
@@ -231,7 +233,8 @@ def rate(prompt_id, rating, axis=None):
         raise ValueError("only a dislike can name what went wrong")
     out = {"recorded": [], "updated": [], "why": None}
     with _LOCK:
-        entry = _read_latest().get("runs", {}).get(prompt_id) or {}
+        state = _read_latest()
+        entry = state.get("runs", {}).get(prompt_id) or {}
         # A clip already recorded: change or remove its row, in every key/kind.
         for key in keys():
             for path in _dir(key).glob("*.pt"):
@@ -259,9 +262,10 @@ def rate(prompt_id, rating, axis=None):
             return out
 
         if not entry:
-            out["why"] = ("no capture is waiting for this clip: a new Generate started before it was rated, "
-                          "or this run captured nothing (no learning feature was on, or ComfyUI reused an "
-                          "earlier result instead of sampling again)")
+            out["why"] = ("a new Generate started before this clip was rated, and unrated clips are forgotten then"
+                          if prompt_id in state.get("forgot", []) else
+                          "this run captured nothing: no learning feature acted on it, or ComfyUI reused an "
+                          "earlier result instead of sampling again")
             return out
         if rating is None:
             return out

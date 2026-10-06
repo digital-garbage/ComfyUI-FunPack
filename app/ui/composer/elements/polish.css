@@ -39,6 +39,8 @@ body { -webkit-font-smoothing: antialiased; letter-spacing: -.003em; }
 /* fields: filled, borderless until focused */
 .cx-input, .cx-textarea, .cx-select { border-color: transparent; background: var(--elev-2); }
 .cx-input:hover:not(:disabled), .cx-textarea:hover:not(:disabled), .cx-select:hover:not(:disabled) { border-color: var(--line-2); }
+/* a settings row is itself --elev-2: a field on it would vanish, so it sits sunken with an edge */
+.cx-settings-row :is(.cx-input, .cx-textarea, .cx-select) { background: var(--elev-1); border-color: var(--line); }
 .cx-step-btn { border-color: transparent; }
 .cx-filter-list { border-color: var(--line); border-radius: var(--r-4); }
 

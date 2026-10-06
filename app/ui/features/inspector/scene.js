@@ -69,6 +69,6 @@ export function sceneRows(p, app) {
     drift(sc, open),
     c.button.md({ label: "Generate this scene", tone: "primary", onClick: () => app.say("generate.scene") })),
     ...trimRows(p, sc, open),
-    card(c.checkbox.default({ label: "Exclude from full generation", checked: Boolean(sc.excluded), onChange: (v) => p.setScene(sc.id, "excluded", v) })),
+    card(c.checkboxRow.default({ label: "Exclude from full generation", hint: "Generate leaves this scene out.", checked: Boolean(sc.excluded), onChange: (v) => p.setScene(sc.id, "excluded", v) })),
   ];
 }

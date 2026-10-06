@@ -193,6 +193,15 @@ def test_a_cleared_rating_beside_a_newer_run_goes_aside_not_over_it():
 def test_a_rating_says_why_when_nothing_was_kept_for_the_clip():
     out = store.rate("never-captured", "liked")
     assert out["recorded"] == [] and "captured nothing" in out["why"]
+    assert "new Generate" not in out["why"]          # nothing started since: blaming one would be false
+
+
+def test_a_clip_that_captured_nothing_is_not_blamed_on_a_later_generate():
+    store.capture("k", "vel", {"a": torch.zeros(2)}, prompt_id="p1")
+    store.new_generation()
+    store.capture("k", "vel", {"a": torch.zeros(2)}, prompt_id="p2")   # p2 ran and kept p1's forgetting on record
+    assert "new Generate" in store.rate("p1", "liked")["why"]
+    assert "captured nothing" in store.rate("p3", "liked")["why"]
 
 
 def test_deleting_a_key_leaves_other_keys_runs_ratable_and_one_run_can_wait_under_two_keys():

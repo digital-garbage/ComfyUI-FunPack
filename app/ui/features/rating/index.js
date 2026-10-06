@@ -7,7 +7,7 @@ import { CHOICES, FORGET, nameOf, tasteOf } from "./choices.js";
 export default {
   id: "rating",
   mount: "timeline.actions",
-  needs: ["project", "api", "selection"],
+  needs: ["project", "api", "selection", "pipeline"],
   setup({ host, app }) {
     const p = app.project, sel = app.selection;
     const put = inPlace(host);
@@ -25,7 +25,12 @@ export default {
       const taste = tasteOf(value);
       if (!t.render.promptId || taste === null) return;      // no run to pair it with, or a word that teaches nothing: it stays a label
       const body = taste === "clear" ? { rating: null, axis: null } : taste;
-      try { const r = await app.api.rateTaste(t.render.promptId, body.rating, body.axis); if (r && r.why) c.toast.warn({ text: `Taste not taught: ${r.why}.` }); } catch { /* no taste module here: the rating stays a label */ }
+      try {
+        const r = await app.api.rateTaste(t.render.promptId, body.rating, body.axis);
+        // with no key nothing is ever captured: that, not the server's list of other causes, is the reason
+        const keyless = !String((app.pipeline.currentValues().taste || {}).key || "").trim();
+        if (r && r.why) c.toast.warn({ text: keyless ? "Taste not taught: no Taste key is set, so nothing learns from ratings. Name one in Settings ▸ Engine ▸ System ▸ Taste key." : `Taste not taught: ${r.why}.` });
+      } catch { /* no taste module here: the rating stays a label */ }
     };
     const draw = () => {
       const t = target();

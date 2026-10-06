@@ -529,6 +529,7 @@ def test_no_log_file_is_an_answer_with_a_reason(server, monkeypatch):
     """An empty list looks exactly like a quiet log. The difference matters when
     the reason somebody opened the panel is that something already broke."""
     from core import backend_log
+    monkeypatch.setattr(backend_log, "_memory", lambda: None)
     monkeypatch.setattr(backend_log, "log_file", lambda: None)
 
     status, body = _request(server["port"], "GET", "/funpack/api/log")
@@ -541,6 +542,7 @@ def test_a_log_that_cannot_be_read_says_so_rather_than_raising(server, monkeypat
     from core import backend_log
     missing = tmp_path / "gone.log"
     missing.write_text("x\n")
+    monkeypatch.setattr(backend_log, "_memory", lambda: None)
     monkeypatch.setattr(backend_log, "log_file", lambda: missing)
     missing.unlink()
 
@@ -548,6 +550,21 @@ def test_a_log_that_cannot_be_read_says_so_rather_than_raising(server, monkeypat
     assert status == 200, body
     assert body["lines"] == []
     assert "gone.log" in body["detail"]
+
+
+def test_comfyuis_own_output_is_read_when_it_writes_no_file(server, monkeypatch):
+    """Plain ComfyUI keeps its output in memory and writes no file; that copy is the log.
+    A progress bar's carriage returns keep only its last state."""
+    from collections import deque
+    from core import backend_log
+    writes = deque([{"m": "boot\n"}, {"m": "  5%|#\r 100%|##########"}, {"m": "\n"}, {"m": "\x1b[33mPrompt executed\x1b[0m\n"}])
+    monkeypatch.setattr(backend_log, "_memory", lambda: writes)
+    monkeypatch.setattr(backend_log, "log_file", lambda: None)
+
+    status, body = _request(server["port"], "GET", "/funpack/api/log")
+    assert status == 200, body
+    assert body["lines"] == ["boot", " 100%|##########", "Prompt executed"]
+    assert body["detail"] == ""
 
 
 def test_a_silly_limit_does_not_read_a_whole_session_into_memory(server):

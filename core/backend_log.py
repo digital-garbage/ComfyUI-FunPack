@@ -3,12 +3,10 @@
 Users do not open devtools, and "it did not work" with nothing to read is where
 a bug report dies. This is the log they can actually reach.
 
-Read from ComfyUI's own file rather than from a buffer in this process. v4 kept
-both and its own docstring says why the file is the half that matters: a
-CRASH AND RESTART empties an in-memory buffer, and the lines before the crash
-are exactly the ones worth reading. A file survives it. So this is the smaller
-half and the more useful one, and the buffer can be added if a case turns up
-that the file misses.
+Read from ComfyUI's own in-memory copy of its output (`app.logger.logs`, what
+its terminal printed). Current ComfyUI writes no log file unless ComfyUI-Manager
+adds one, so a file-only reader found nothing on a plain install. The copy is
+lengthened here from 300 writes, and a file is read only when there is no copy.
 
 Never raises. A log panel that fails is worse than one that says it found no
 file, because the reason someone opened it is that something else already broke.
@@ -16,12 +14,30 @@ file, because the reason someone opened it is that something else already broke.
 
 from __future__ import annotations
 
+import re
+from collections import deque
 from pathlib import Path
 
 #: Read from the end. A ComfyUI log runs to megabytes over a long session and
 #: nobody scrolls back through a boot from three days ago.
 MAX_BYTES = 512 * 1024
 MAX_LINES = 2000
+
+
+def _memory():
+    """ComfyUI's deque of `{t, m}` writes, lengthened once; None outside ComfyUI's main."""
+    try:
+        import app.logger as comfy_log
+    except Exception:  # noqa: BLE001
+        return None
+    logs = comfy_log.logs
+    if logs is not None and (logs.maxlen or 0) < 8000:
+        # its interceptor looks the global up on every write, so the longer deque takes over
+        comfy_log.logs = logs = deque(logs, maxlen=8000)
+    return logs
+
+
+_memory()
 
 
 def log_file() -> Path | None:
@@ -31,11 +47,12 @@ def log_file() -> Path | None:
         base = Path(folder_paths.base_path)
     except Exception:  # noqa: BLE001
         return None
-    for name in ("comfyui.log", "comfyui.prev.log"):
-        candidate = base / "user" / name
-        if candidate.is_file():
-            return candidate
-    return None
+    # ComfyUI-Manager names it per port (comfyui_8188.log); the newest is this run's
+    try:
+        found = [(p.stat().st_mtime, p) for p in (base / "user").glob("comfyui*.log") if ".prev" not in p.name]
+    except OSError:
+        return None
+    return max(found, default=(0, None))[1]
 
 
 def recent(limit: int = 600) -> dict:
@@ -46,6 +63,13 @@ def recent(limit: int = 600) -> dict:
     that looks like a quiet log.
     """
     limit = max(1, min(int(limit or 600), MAX_LINES))
+    logs = _memory()
+    if logs:
+        text = re.sub(r"\x1b\[[0-9;]*m", "", "".join(str(e.get("m", "")) for e in list(logs)))   # terminal colours
+        lines = [ln.rsplit("\r", 1)[-1] for ln in text.split("\n")]   # a progress bar keeps its last state
+        if lines and not lines[-1]:
+            lines.pop()
+        return {"lines": lines[-limit:], "path": None, "detail": ""}
     path = log_file()
     if path is None:
         return {"lines": [], "path": None,

@@ -19,12 +19,12 @@
 .cx-zone .cx-stack-fill > .cx-empty { flex: 1 1 auto; justify-content: center; }
 
 /* Splitters: thin hit areas straddling the zone borders. */
-.fp-main { position: relative; }
+.fp-main, .fp-row { position: relative; }   /* side bars live in the row, so they stop above the timeline */
 .fp-split { position: absolute; z-index: 20; background: transparent; touch-action: none; }
 .fp-split:hover { background: var(--accent, var(--line)); opacity: .5; }
 .fp-split-left, .fp-split-right { top: 0; bottom: 0; inline-size: 7px; cursor: col-resize; }
-.fp-split-left { left: calc(var(--pad) + var(--media-w) + var(--pgap) / 2 - 3.5px); }
-.fp-split-right { right: calc(var(--pad) + var(--properties-w) + var(--pgap) / 2 - 3.5px); }
+.fp-split-left { left: calc(var(--media-w) + var(--pgap) / 2 - 3.5px); }
+.fp-split-right { right: calc(var(--properties-w) + var(--pgap) / 2 - 3.5px); }
 .fp-split-bottom { left: 0; right: 0; block-size: 7px; bottom: calc(var(--pad) + var(--timeline-h) + var(--pgap) / 2 - 3.5px); cursor: row-resize; }
 
 /* Dock: a hidden zone leaves the row (and the splitter beside it). */
