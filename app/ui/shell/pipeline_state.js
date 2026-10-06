@@ -218,6 +218,12 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       if (slot && kv && typeof kv === "object" && !Array.isArray(kv)) slot.inputs = { ...(slot.inputs || {}), ...kv };
     });
   }
+  // An answer replaces the slots with the server's copy of what was SENT: whatever was typed while it was on its way
+  // (node values still queued, module values) goes back on, or the screen and the next run lose it.
+  function keepTyped() {
+    placeInputs(pendingBody && pendingBody.inputs);
+    if (Object.keys(pendingValues).length) mirrorValues(currentValues());
+  }
   async function save(body) {
     if (adoptGate) await adoptGate;                     // an edit made while a project's pipeline goes in lands on THAT pipeline
     if (blocked()) return;
@@ -237,8 +243,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         // this answer is about the old one and must not overwrite the new.
         if (mine !== epoch) continue;
         if (res && res.slots) slots = res.slots;
-        placeInputs(pendingBody && pendingBody.inputs);   // typed while this was in flight: still what is on screen
-        if (Object.keys(pendingValues).length) mirrorValues(currentValues());    // an edit queued behind this one stays in the slots a run reads
+        keepTyped();    // an edit queued behind this one stays in the slots a run reads
         applyGroups();
         incomplete = (res && res.incomplete) || [];
         refused = (res && res.refused) || [];
@@ -443,7 +448,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       const res = await API.editPipeline({ slots, ...body });
       if (mine !== epoch) return { refused: ["The project was changed while this was being sent."] };
       refusedNow = (res && res.refused) || [];
-      if (res && res.slots && !refusedNow.length) { slots = res.slots; applyGroups(); }
+      if (res && res.slots && !refusedNow.length) { slots = res.slots; keepTyped(); applyGroups(); }
       incomplete = (res && res.incomplete) || [];
       refused = refusedNow;
       queueable = !!(res && res.queueable);
@@ -506,6 +511,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       refusedNow = (res && res.refused) || [];
       if (res && res.slots && !refusedNow.length) {
         slots = res.slots;
+        keepTyped();
         // A default slot the new pipeline lacks is removed, whatever the caller said: otherwise the next
         // open lays the default back over it (a preset, an import or the wizard would regain the default's loaders).
         const kept = new Set(res.slots.map((s) => s.id));
@@ -522,7 +528,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     } catch (e) {
       refusedNow = [e && e.message ? e.message : String(e)];
     } finally {
-      saving = false;
+      saving = false; shaping = false;
     }
     if (refill) await save({});
     return { refused: refusedNow };
@@ -543,7 +549,8 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     groupEdits[slotId] = String(group || "").trim();
     applyGroups();
     const mine = groupEdits[slotId];
-    return save({}).then(() => { if (groupEdits[slotId] === mine) delete groupEdits[slotId]; });
+    // save() returns once queued behind a save in flight: let go of the move only when the queue has landed
+    return save({}).then(() => settled()).then(() => { if (groupEdits[slotId] === mine) delete groupEdits[slotId]; });
   }
 
   // Whoever keeps the pipeline with the project hears every landed edit.

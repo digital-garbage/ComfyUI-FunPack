@@ -11,6 +11,7 @@ function load(posts, opts = {}) {
   const API = {
       pipeline: async () => ({ slots: JSON.parse(JSON.stringify(defaults)), incomplete: [], refused: [], queueable: true }),
       editPipeline: async (body) => {
+        body = JSON.parse(JSON.stringify(body));     // sent over HTTP: the server never shares the page's objects
         posts.push(body);
         if (opts.delay) await new Promise((r) => setTimeout(r, opts.delay));
         const bad = (body.slots || []).findIndex((s) => typeof s.node !== "string");
@@ -661,4 +662,27 @@ test("a run does not wait on a value save (the value is already live), but does 
   await PS.readyToRun();
   assert.ok(Date.now() - t1 > 100, "a node change is waited for");
   await shape;
+});
+
+test("a value typed while a node change is on its way survives the change's answer, and the run sees it", async () => {
+  const PS = load([], { delay: 60 });
+  await PS.ensureLoaded();
+  const shape = PS.edit({ remove: [] });
+  await new Promise((r) => setTimeout(r, 10));
+  PS.save({ inputs: { gen: { steps: 33 } } });                       // typed during it
+  await PS.readyToRun();
+  assert.strictEqual(PS.slots().find((s) => s.id === "gen").inputs.steps, 33);
+  await shape;
+});
+
+test("after a preset or import goes in, a run is ready at once (the node-change wait is released)", async () => {
+  const PS = load([], { delay: 5 });
+  await PS.ensureLoaded();
+  const next = JSON.parse(JSON.stringify(PS.slots()));
+  next.find((s) => s.id === "gen").inputs.steps = 40;               // a different pipeline: restore really sends it
+  await PS.restore({ slots: next });
+  assert.strictEqual(PS.slots().find((s) => s.id === "gen").inputs.steps, 40);
+  const t0 = Date.now();
+  assert.strictEqual(await PS.readyToRun(), true);
+  assert.ok(Date.now() - t0 < 100);
 });

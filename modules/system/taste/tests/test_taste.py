@@ -269,3 +269,10 @@ def test_a_new_generate_spares_the_run_it_already_queued():
     store.new_generation(keep="mine")
     assert store.rate("mine", "liked")["recorded"] == ["vel"]
     assert store.rate("old", "liked")["reason"] == "forgotten"
+
+
+def test_an_unreadable_waiting_capture_does_not_stop_a_new_generate_forgetting_the_rest():
+    store.capture("k", "vel", {"a": torch.zeros(2)}, prompt_id="old")
+    store._pending_path("k", "vel").write_bytes(b"not a tensor file")
+    assert store.new_generation(keep="mine") >= 1
+    assert not store._pending_path("k", "vel").exists()

@@ -171,6 +171,17 @@ def capture(key, kind, rows, prompt_id=None, keep=MAX_ROWS, only=None, mixed=Fal
         _latest_path().write_text(json.dumps({"key": key, "prompt_id": prompt_id, "runs": runs, "forgot": state.get("forgot", [])}))
 
 
+def _held_by(path, prompt_id):
+    """Whether a waiting capture is `prompt_id`'s. An earlier run's carries its id in the name; only the latest
+    (`<kind>.pending.pt`) is opened, and one that cannot be read is nobody's (it must not stop the rest going)."""
+    if path.name.count(".") > 2:
+        return path.name.split(".")[1] == prompt_id
+    try:
+        return (_read(path, None) or {}).get("prompt_id") == prompt_id
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def new_generation(keep=None):
     """A Generate is starting: every capture still waiting for a rating is forgotten, but `keep`'s (the run this
     Generate already queued, which may have captured before this call). -> how many were dropped."""
@@ -178,7 +189,7 @@ def new_generation(keep=None):
         dropped = 0
         for key in keys():
             for path in _dir(key).glob("*.pending.pt"):
-                if keep is not None and (_read(path, None) or {}).get("prompt_id") == keep:
+                if keep is not None and _held_by(path, keep):
                     continue
                 path.unlink(missing_ok=True)
                 dropped += 1
