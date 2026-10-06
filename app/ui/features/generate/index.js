@@ -61,7 +61,9 @@ export default {
         if (typing && typing !== document.body && typeof typing.blur === "function") typing.blur();
         await Promise.all((app.beforeRun || []).map((f) => f().catch(() => {})));      // an edit still on its way (the Story box) lands first
         // A project's pipeline still going in is the one this run uses, not the last one's.
-        if (app.pipeline.settled && !(await app.pipeline.settled())) { tell("Not started: this project's pipeline is still loading. ComfyUI is slow to answer; try again in a moment."); return; }
+        // a typed value is already live and is never waited on; only a pipeline still going in, or a node change, is
+        const ready = app.pipeline.readyToRun || app.pipeline.settled;
+        if (ready && !(await ready())) { tell("Not started: this project's pipeline, or a node change in it, is still on its way. ComfyUI is slow to answer; try again in a moment."); return; }
         if (app.pipelineOwned && !app.pipelineOwned()) { tell(`Not started: ${(app.pipelineWhy && app.pipelineWhy()) || "this project's pipeline is not loaded yet."}`); return; }
         // The pipeline as it is NOW, at the click: every shot of this run uses it, whatever is opened or edited meanwhile.
         const frozen = structuredClone(app.pipeline.slots() || []);
@@ -100,7 +102,7 @@ export default {
             break;
           }
           if (stopped) g.cancel();                      // Stop landed while this one was being queued
-          if (!made) app.api.newTasteGeneration().catch(() => {});        // a run really started: the last run's unrated clips can no longer be paired with what it learned
+          if (!made) app.api.newTasteGeneration(g.run.state.promptId).catch(() => {});        // a run really started: the last run's unrated clips can no longer be paired with what it learned
           made += 1;
           const end = await done;
           if (end === g.CANCELLED) break;

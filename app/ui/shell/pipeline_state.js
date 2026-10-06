@@ -95,6 +95,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   let deferred = null;        // a project's saved pipeline ([slots, removed, unwired, whole]) waiting for the first successful load
   let epoch = 0;              // bumped whenever a project's pipeline replaces the live one
   let saving = false;
+  let shaping = false;         // a structural edit (node swapped, added, removed) waiting for the server
   let pending = false;
   let pendingBody = null;
   let saveNotes = [];
@@ -435,7 +436,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     const keep = currentValues();                       // a settings node added or swapped in starts empty: it gets these
     let refill = false;
     const mine = epoch;
-    saving = true;
+    saving = true; shaping = true;
     let refusedNow = [];
     try {
       applyGroups();
@@ -474,7 +475,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     } catch (e) {
       refusedNow = [e && e.message ? e.message : String(e)];
     } finally {
-      saving = false;
+      saving = false; shaping = false;
     }
     if (refill || pending) await save({});              // the filled settings, or a value edit queued behind this one
     return { refused: refusedNow };
@@ -497,7 +498,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     const keep = currentValues();
     let refill = false;
     const mine = epoch;
-    saving = true;
+    saving = true; shaping = true;
     let refusedNow = [];
     try {
       const res = await API.editPipeline({ slots: JSON.parse(JSON.stringify(snap.slots)) });
@@ -572,6 +573,12 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
 
   /** Resolves true once no edit is on its way and no project's pipeline is going in; false if that took over
    *  three minutes (every request gives up after ANSWER_MS, so only a server failing again and again gets there). */
+  // What a run needs finished: a project's pipeline going in, or a node swapped/added/removed (that shape exists only once
+  // the server answers). A value save is not waited on: the value is already in the slots (placeInputs, mirrorValues).
+  async function readyToRun() {
+    for (let waited = 0; (shaping || adoptGate) && waited < 180000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+    return !(shaping || adoptGate);
+  }
   async function settled() {
     for (let waited = 0; (saving || adoptGate) && waited < 180000; waited += 20) await new Promise((r) => setTimeout(r, 20));
     return !(saving || adoptGate);
@@ -659,7 +666,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   }
 
   return {
-    ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, settled, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
+    ensureLoaded, save, edit, restore, snapshot, setGroup, adopt, settled, readyToRun, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); }, valuesAlreadyPlaced, currentValues, setModuleValue,
     modulesById: () => modulesById,
     setEditGuard: (fn) => { editGuard = fn; }, adoptedOk: () => adoptedOk, unreachable: () => slots === null || unreachableLast, refusal: () => refusalLast, activeModules, useful, usefulness, isOff, setOff, allOff, setAllOff, refreshControl, control: () => controlState,
     removedIds: () => [...removed],

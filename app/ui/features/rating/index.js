@@ -5,12 +5,13 @@ import { genUnitId, isGenerative, unitRoot } from "../../shell/scenes.js";
 import { CHOICES, FORGET, nameOf, tasteOf } from "./choices.js";
 
 /** What to say when a rating taught nothing, or "" when it did. The run captured nothing, a learner is on and no key is
- *  set: the missing key is why. Any other reason is the server's own (the key on screen now may not be the run's). */
+ *  set: both are said. Any other reason is the server's own. */
 export function notTaught(r, ps) {
   if (!(r && r.why)) return "";
   const taste = ps.modulesById && ps.modulesById().taste;
   const keyless = r.reason === "nothing" && taste && ps.useful(taste) && !String((ps.currentValues().taste || {}).key || "").trim();
-  return keyless ? "Taste not taught: no Taste key is set, so nothing learns from ratings. Name one in Settings ▸ Engine ▸ System ▸ Taste key." : `Taste not taught: ${r.why}.`;
+  // two facts, both true, not a claimed cause: the key on screen now may not be the one the run had
+  return keyless ? "Taste not taught: this run captured nothing, and no Taste key is set. Ratings teach only under a key: name one in Settings ▸ Engine ▸ System ▸ Taste key." : `Taste not taught: ${r.why}.`;
 }
 
 export default {

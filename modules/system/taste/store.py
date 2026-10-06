@@ -171,20 +171,23 @@ def capture(key, kind, rows, prompt_id=None, keep=MAX_ROWS, only=None, mixed=Fal
         _latest_path().write_text(json.dumps({"key": key, "prompt_id": prompt_id, "runs": runs, "forgot": state.get("forgot", [])}))
 
 
-def new_generation():
-    """A Generate is starting: every capture still waiting for a rating is forgotten.
-    -> how many were dropped."""
+def new_generation(keep=None):
+    """A Generate is starting: every capture still waiting for a rating is forgotten, but `keep`'s (the run this
+    Generate already queued, which may have captured before this call). -> how many were dropped."""
     with _LOCK:
         dropped = 0
         for key in keys():
             for path in _dir(key).glob("*.pending.pt"):
+                if keep is not None and (_read(path, None) or {}).get("prompt_id") == keep:
+                    continue
                 path.unlink(missing_ok=True)
                 dropped += 1
         state = _read_latest()
         if state:
+            runs = state.get("runs", {})
             # remembered so a late rating can say this was why, and only then
-            forgot = [*state.get("forgot", []), *state.get("runs", {})][-256:]
-            _latest_path().write_text(json.dumps({"key": state.get("key"), "runs": {}, "forgot": forgot}))
+            forgot = [*state.get("forgot", []), *(p for p in runs if p != keep)][-256:]
+            _latest_path().write_text(json.dumps({"key": state.get("key"), "runs": {p: v for p, v in runs.items() if p == keep}, "forgot": forgot}))
     return dropped
 
 

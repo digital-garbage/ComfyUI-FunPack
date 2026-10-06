@@ -260,3 +260,12 @@ def test_a_kind_of_mixed_sizes_exports_and_imports(tmp_path):
     store.export_key("bear", tmp_path / "b.zip")
     with pytest.raises(ValueError):
         store.import_key("cub", tmp_path / "b.zip")
+
+
+def test_a_new_generate_spares_the_run_it_already_queued():
+    """The 'new Generate' call goes out after its first run is queued; a short run may have captured first."""
+    store.capture("k", "vel", {"a": torch.zeros(2)}, prompt_id="old")
+    store.capture("k", "vel", {"a": torch.zeros(2)}, prompt_id="mine")
+    store.new_generation(keep="mine")
+    assert store.rate("mine", "liked")["recorded"] == ["vel"]
+    assert store.rate("old", "liked")["reason"] == "forgotten"

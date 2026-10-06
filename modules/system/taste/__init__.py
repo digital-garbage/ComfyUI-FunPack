@@ -177,9 +177,12 @@ def routes(table, base, web):
         return web.json_response(out)
 
     @table.post(base + "/generation")
-    async def _generation(_req):
-        """A Generate is starting: captures still waiting for a rating are forgotten."""
-        return web.json_response({"dropped": store.new_generation()})
+    async def _generation(req):
+        """A Generate is starting: captures still waiting for a rating are forgotten, except the run it just queued
+        (`{prompt_id}`): a short run can capture before this request lands."""
+        body = await req.json() if req.can_read_body else {}
+        keep = body.get("prompt_id") if isinstance(body, dict) and isinstance(body.get("prompt_id"), str) else None
+        return web.json_response({"dropped": store.new_generation(keep=keep)})
 
     @table.delete(base + "/keys/{name}")
     async def _delete(req):

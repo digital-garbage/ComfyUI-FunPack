@@ -645,3 +645,20 @@ test("a typed node value is in the live slots at once, not when the server answe
   await Promise.all([first, second]);
   assert.strictEqual(steps(), 20);
 });
+
+test("a run does not wait on a value save (the value is already live), but does wait for a node change", async () => {
+  const posts = [];
+  const PS = load(posts, { delay: 200 });
+  await PS.ensureLoaded();
+  const valueSave = PS.save({ inputs: { gen: { steps: 12 } } });
+  const t0 = Date.now();
+  assert.strictEqual(await PS.readyToRun(), true);
+  assert.ok(Date.now() - t0 < 100, "ready while the value save is still on its way");
+  await valueSave;
+  const shape = PS.edit({ remove: [] });
+  await new Promise((r) => setTimeout(r, 10));
+  const t1 = Date.now();
+  await PS.readyToRun();
+  assert.ok(Date.now() - t1 > 100, "a node change is waited for");
+  await shape;
+});
