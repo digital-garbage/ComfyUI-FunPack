@@ -117,7 +117,10 @@
   max-width: 260px;
 }
 
-.cx-autocomplete { min-width: 220px; padding: var(--sp-1); }
+.cx-autocomplete { min-width: 220px; inline-size: min(92vw, 420px); padding: var(--sp-1); }
+/* a suggestion is one line: the trigger, then as much of its prompt as fits */
+.cx-autocomplete .cx-menu-label { flex: none; max-inline-size: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-autocomplete .cx-menu-hint { flex: 1 1 0; min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .cx-split-btn { display: inline-flex; }
 .cx-split-btn .cx-btn:first-child { border-radius: var(--ctl-r) 0 0 var(--ctl-r); }

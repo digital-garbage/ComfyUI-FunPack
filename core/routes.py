@@ -863,8 +863,15 @@ def register(routes, prefix=None):
         # FileResponse, not a hand-read body: it answers Range requests on its
         # own, which is what lets a <video> scrub an imported clip instead of
         # re-downloading it whole on every seek.
+        item = media.get(req.match_info["mid"]) or {}
+        name = str(item.get("name") or path.name)
+        if not name.lower().endswith(path.suffix.lower()):
+            name += path.suffix
+        from urllib.parse import quote
         return web.FileResponse(path, headers={
-            "Content-Type": media.content_type(req.match_info["mid"])})
+            "Content-Type": media.content_type(req.match_info["mid"]),
+            # "Save video as" names the file from this; the route itself ends in /file
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(name)}"})
 
     @routes.get(P + "/api/media/{mid}/thumb")
     async def _media_thumb(req):

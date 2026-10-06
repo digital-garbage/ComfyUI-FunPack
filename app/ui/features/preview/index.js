@@ -18,6 +18,13 @@ export function sourceOf(sc, open, dur) {
   return { url: `/funpack/api/m/render/projects/${encodeURIComponent(open.id)}/preview-segment/${encodeURIComponent(sc.id)}?${q}`, from: 0 };
 }
 
+/** The clip on screen at `t`: a clip owns [start, end), and at the very end of the cut the last one keeps its final frame. */
+export function segmentAt(open, t) {
+  const all = segments(open).filter((s) => s.kind === "scene");
+  return all.find((s) => t >= s.start - 1e-6 && t < s.start + s.dur - 1e-6)
+    || (t > 0 && t >= totalSeconds(open) - 1e-6 ? all.find((s) => Math.abs(s.start + s.dur - t) < 1e-3) : null) || null;
+}
+
 export default {
   id: "preview",
   mount: "preview",
@@ -48,7 +55,7 @@ export default {
 
     let playing = false, shown = null, seg = null, from = 0, quiet = false;
     const open = () => p.project;
-    const segAt = (t) => (open() ? segments(open()).find((s) => s.kind === "scene" && t >= s.start - 1e-6 && t < s.start + s.dur - 1e-6) : null);
+    const segAt = (t) => (open() ? segmentAt(open(), t) : null);
     const total = () => (open() ? totalSeconds(open()) : 0);
 
     function show(next) {

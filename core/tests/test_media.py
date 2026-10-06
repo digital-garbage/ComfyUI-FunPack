@@ -195,7 +195,7 @@ def _request(port, method, path, body=None, raw=None, content_type="application/
     try:
         return status, json.loads(rest.decode() or "{}")
     except ValueError:
-        return status, {"raw": rest}
+        return status, {"raw": rest, "head": header.decode("latin-1")}
 
 
 def _upload(port, filename, data, field="file"):
@@ -220,6 +220,7 @@ def test_upload_list_file_delete(server):
 
     status, body = _request(server, "GET", f"/funpack/api/media/{mid}/file")
     assert status == 200 and body["raw"] == b"fake png bytes"
+    assert "filename*=UTF-8''ref.png" in body["head"], "Save as names it after the upload, not 'file'"
 
     assert _request(server, "DELETE", f"/funpack/api/media/{mid}")[0] == 200
     assert _request(server, "GET", f"/funpack/api/media/{mid}/file")[0] == 404

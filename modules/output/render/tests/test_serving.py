@@ -117,6 +117,7 @@ def test_a_scene_segment_is_exactly_the_window_the_export_would_use(comfy, serve
     proj = _project(comfy, source_in=0.5, frames=50, frames_mode="timeline")     # 2 s at 25 fps, from 0.5 + 0.5
     status, headers, body = get(server, f"{BASE}/projects/{proj.id}/preview-segment/s1")
     assert status == 200 and headers["Cache-Control"] == "private, max-age=3600"
+    assert headers["Content-Disposition"] == 'inline; filename="a_from1s.mp4"', "Save video as: named after its render"
     (comfy.root / "seg.mp4").write_bytes(body)
     assert files.moov_position(str(comfy.root / "seg.mp4")) == "front"
     assert probe(comfy.root / "seg.mp4")[0] == pytest.approx(2.0, abs=0.2)

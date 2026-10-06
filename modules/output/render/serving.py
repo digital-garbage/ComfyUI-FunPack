@@ -288,9 +288,14 @@ async def segment(request, project) -> "web.StreamResponse":
     key = (f"{project.id}:{scene_id}:{clip['filename']}:{clip['subfolder']}:{clip['type']}:"
            f"{clip['in']}:{clip['dur']}:{'rev' if reverse else ''}:{sig[0]}:{sig[1]}")
     async with _lock(key):
+        # the browser's own "Save video as" names the file from this: the render's unique name, not the route's
+        stem = os.path.splitext(os.path.basename(str(clip["filename"])))[0] or "clip"
+        cut = f"_from{float(clip.get('in') or 0):g}s".replace(".", "p") if float(clip.get("in") or 0) else ""
+        headers = {"Cache-Control": "private, max-age=3600",
+                   "Content-Disposition": f'inline; filename="{projects.safe_part(stem + cut + ("_rev" if reverse else ""))}.mp4"'}
         hit = _segments.get(key)
         if hit and os.path.isfile(hit[1]):
-            return web.FileResponse(hit[1], headers={"Cache-Control": "private, max-age=3600"})
+            return web.FileResponse(hit[1], headers=headers)
         try:
             out = files.temp_file(f"funpack_preview_{projects.safe_part(project.id)[:8]}_"
                                   f"{projects.safe_part(scene_id)}_{int(time.time() * 1000)}.mp4")
@@ -304,4 +309,4 @@ async def segment(request, project) -> "web.StreamResponse":
         except files.ClipError as exc:         # ffmpeg itself failed: not "still being written", so not a retry
             return web.json_response({"detail": str(exc)}, status=502)
         _segments.put(key, (None, out))
-    return web.FileResponse(out, headers={"Cache-Control": "private, max-age=3600"})
+    return web.FileResponse(out, headers=headers)

@@ -36,14 +36,16 @@
 .fp-hide-assets.fp-hide-preview .fp-row > :nth-child(3) { flex: 1 1 auto; }
 .fp-split { border: 0 !important; }
 
-/* Auto-hide timeline: a strip the height of its title bar, full height under the pointer or during a drag. */
-:root.fp-peek .fp-main { position: relative; padding-block-end: 34px; }
-:root.fp-peek .fp-main > :nth-child(2) { position: absolute; inset-inline: 0; bottom: 0; block-size: 34px; min-block-size: 0; z-index: 20; overflow: hidden; }
+/* Auto-hide timeline: its title bar and a strip; full height once the pointer rests on the strip or the timeline, or during a drag. */
+:root.fp-peek .fp-main { position: relative; padding-block-end: calc(var(--peek-h, 64px) + var(--pgap)); }
+:root.fp-peek .fp-main > :nth-child(2) { position: absolute; inset-inline: 0; bottom: 0; block-size: auto; min-block-size: 0; z-index: 20; overflow: hidden; }
 :root.fp-peek .fp-main > :nth-child(2) .cx-panel-body { display: none; }
-:root.fp-peek .fp-main > :nth-child(2):hover,
 :root.fp-peek.fp-peek-open .fp-main > :nth-child(2) { block-size: var(--timeline-h); overflow: visible; }
-:root.fp-peek .fp-main > :nth-child(2):hover .cx-panel-body,
 :root.fp-peek.fp-peek-open .fp-main > :nth-child(2) .cx-panel-body { display: block; }
+.fp-peek-strip { display: none; }
+:root.fp-peek .fp-peek-strip { display: flex; align-items: center; justify-content: center; block-size: 26px; flex: none; font-size: var(--fs-6); color: var(--faint); user-select: none; }
+:root.fp-peek .fp-peek-strip:hover { color: var(--text); }
+:root.fp-peek.fp-peek-open .fp-peek-strip { display: none; }
 :root.fp-peek .fp-split-bottom { display: none; }
 
 /* Welcome: the maintenance actions as a 2x2 of tiles */

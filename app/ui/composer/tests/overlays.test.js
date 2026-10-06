@@ -617,3 +617,22 @@ test("a button inside a drag handle is pressed, not dragged (a window's ✕ in i
   down(handle);
   assert.equal(started, 1);
 });
+
+test("a popover whose content grows after opening is placed again for its new size, not at the next scroll", () => {
+  let observed = null;
+  globalThis.ResizeObserver = class { constructor(fn) { observed = fn; } observe() {} disconnect() {} };
+  try {
+    const anchor = document.createElement("button");
+    anchor.getBoundingClientRect = () => ({ x: 500, y: 400, width: 40, height: 20 });
+    document.body.append(anchor);
+    const body = composer.region.stack({});
+    const pop = composer.popover.anchored({ anchor, body, side: "top", align: "end" });
+    let width = 100;
+    pop.node.getBoundingClientRect = () => ({ x: 0, y: 0, width, height: 50 });
+    pop.reposition();
+    assert.equal(pop.node.style.left, "440px", "end-aligned to the anchor's right edge");
+    width = 300; observed();                                   // the sampler's rows arrive
+    assert.equal(pop.node.style.left, "240px");
+    pop.close(); anchor.remove();
+  } finally { delete globalThis.ResizeObserver; }
+});

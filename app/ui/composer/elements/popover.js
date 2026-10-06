@@ -31,6 +31,9 @@ function floatOn(rung, cls, { anchor, side = "bottom", align = "start", gap = 6,
   window.addEventListener("resize", reposition);
   // Capture, because the scroller is usually an ancestor panel, not the window.
   window.addEventListener("scroll", reposition, true);
+  // Content that arrives after opening changes the size: placed for the old one, it sat wrong until the next scroll.
+  const resized = typeof ResizeObserver === "function" ? new ResizeObserver(reposition) : null;
+  if (resized) resized.observe(node);
 
   const dismissal = push({
     nodes: [node, anchorNode].filter(Boolean),
@@ -49,6 +52,7 @@ function floatOn(rung, cls, { anchor, side = "bottom", align = "start", gap = 6,
       dismissal.release();
       window.removeEventListener("resize", reposition);
       window.removeEventListener("scroll", reposition, true);
+      if (resized) resized.disconnect();
       layer.release();
       unmount(node);
       if (onClose) onClose(reason);
@@ -172,7 +176,7 @@ define("autocomplete", "default", ({ input, source, onPick, minChars = 1 } = {})
     items.forEach((item, i) => {
       live.node.append(el("button", {
         cls: ["cx-menu-item", i === index ? "cx-on" : null],
-        attrs: { type: "button", role: "option", "aria-selected": String(i === index) },
+        attrs: { type: "button", role: "option", "aria-selected": String(i === index), title: item.hint ? `${item.label}: ${item.hint}` : undefined },
         children: [
           el("span", { cls: "cx-menu-label", text: item.label }),
           item.hint ? el("span", { cls: "cx-menu-hint", text: item.hint }) : null,
