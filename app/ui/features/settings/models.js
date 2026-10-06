@@ -49,6 +49,7 @@ export const models = (app) => function mount() {
   }
   const setInput = (slot, name) => async (value) => {
     const live = slotsNow().find((x) => x.id === slot.id) || slot;           // the slot as it is now, not as drawn: an answer may have replaced it
+    if (live.node !== slot.node) return say(`That field belonged to ${slot.node}, which was swapped for ${live.node}: the value was not kept.`);
     if (JSON.stringify((live.inputs || {})[name]) === JSON.stringify(value)) return;          // a blur that changed nothing saves nothing
     await ps.save({ inputs: { [slot.id]: { [name]: value } } });
     say([...(ps.refused() || []), ...ps.saveNotes()].join(" "));

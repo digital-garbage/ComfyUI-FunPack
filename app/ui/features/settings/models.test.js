@@ -80,3 +80,24 @@ test("a problem that names no slot first (a loop) still shows its nodes in the s
   assert.match(page.node.textContent, /cannot end up feeding itself/);
   page.node.remove();
 });
+
+test("a field still on screen for a node that was swapped away does not put its value on the new node", async () => {
+  let slots = [{ id: "k", node: "FunPackSampler", inputs: { steps: 8 } }];
+  const saved = [];
+  const ps = { slots: () => slots, snapshot: () => ({ slots }), ensureLoaded: async () => {}, subscribe: () => () => {}, restore: async () => ({ refused: [] }),
+    save: async (b) => { saved.push(b); }, loading: () => false, loadError: () => null, saveNotes: () => [], incomplete: () => [], refused: () => [],
+    queueable: () => true, removedIds: () => [], offered: () => [] };
+  const nodes = { FunPackSampler: { widgets: [{ name: "steps", type: "INT", min: 1, max: 100 }] }, Other: { widgets: [] } };
+  const page = models({ pipeline: ps, api: { describeNodes: async () => ({ nodes }), packProviders: async () => ({}) } })();
+  document.body.append(page.node);
+  await new Promise((r) => setTimeout(r, 0));
+  page.node.querySelector(".fp-node-card").click();                    // open it
+  const field = page.node.querySelector("input[type=number]");
+  slots = [{ id: "k", node: "Other", inputs: {} }];                     // the swap's answer lands; the field stays
+  field.value = "20";
+  field.dispatchEvent(new window.Event("change", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(saved, []);
+  assert.match(page.node.textContent, /was swapped for Other: the value was not kept/);
+  page.node.remove();
+});
