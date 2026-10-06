@@ -33,7 +33,10 @@ export default {
     };
     const extras = (it) => (app.mediaMenu || []).flatMap((f) => { try { return f(it, items.find((m) => m.id === it.id)) || []; } catch { return []; } });       // entries other features add to a tile's menu: { id, label, run }
     const context = (it, e) => c.menu.context({ x: e.clientX, y: e.clientY, onPick: (id) => (act[id] ? act[id](it) : extras(it).find((x) => x.id === id)?.run()),
-      items: [{ id: "look", label: "Look at it on the monitor" }, { id: "res", label: "Use as the selected scene's resolution source", disabled: !p.selected || it.kind === "audio" || !items.some((m) => m.id === it.id && m.kind === "image") }, { id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected || (p.selected.references || []).includes(it.id) }, { id: "rename", label: "Rename…" },
+      items: [{ id: "look", label: "Look at it on the monitor" }, ...(p.selected && p.selected.source_image === it.id ? [{ id: "unres", label: "Stop using as the selected scene's resolution source" }]
+          : [{ id: "res", label: "Use as the selected scene's resolution source", disabled: !p.selected || it.kind === "audio" || !items.some((m) => m.id === it.id && m.kind === "image") }]),
+        p.selected && (p.selected.references || []).includes(it.id) ? { id: "unref", label: "Stop using as a reference for the selected scene" }
+          : { id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected }, { id: "rename", label: "Rename…" },
         { id: "export", label: "Save to your computer", disabled: !items.some((m) => m.id === it.id && m.kind !== "audio") }, ...extras(it).map(({ id, label, disabled }) => ({ id, label, disabled })), { separator: true }, { id: "delete", label: "Delete from the bin", danger: true }] });
     /** Delete these from the bin, and nothing in this project may keep pointing at them. */
     async function gone(ids) {
@@ -55,6 +58,8 @@ export default {
     const act = {
       look: (it) => peek(it), res: (it) => pick(it),
       ref: (it) => p.setScene(p.selected.id, "references", [...(p.selected.references || []), it.id]),
+      unref: (it) => p.setScene(p.selected.id, "references", (p.selected.references || []).filter((r) => r !== it.id)),
+      unres: () => p.setScene(p.selected.id, "source_image", ""),
       rename: async (it) => {
         const name = await c.modal.prompt({ title: "Rename media", label: "Name", value: (items.find((m) => m.id === it.id) || {}).name || "", confirmLabel: "Rename" }).result;
         if (!name || !name.trim()) return;
@@ -90,7 +95,8 @@ export default {
 
     let drawn = "";
     function draw(force) {
-      const key = `${(p.selected || {}).source_image}|${items.map((m) => m.id)}|${selecting}|${[...chosen]}|${show.filter}`;
+      const sc = p.selected, refs = (sc && sc.references) || [];
+      const key = `${(sc || {}).source_image}|${refs}|${items.map((m) => m.id)}|${selecting}|${[...chosen]}|${show.filter}`;
       if (!force && key === drawn) return;           // typing elsewhere must not rebuild the thumbnails
       drawn = key;
       const visible = new Set(items.filter((m) => show.filter === "all" || m.kind === show.filter).map((m) => m.id));
@@ -101,9 +107,10 @@ export default {
       const g = galleries[show.view];
       shelf.set([g]);
       if (g.setCols) g.setCols(Number(show.cols));
-      g.setItems(shown.map((m) => ({ id: m.id, label: m.name, thumb: m.kind === "audio" ? undefined : `${base(m.id)}/thumb`, badge: m.kind })));
-      const sc = p.selected;
-      g.setValue(selecting ? [...chosen] : sc && sc.source_image ? [sc.source_image] : []);
+      // what the selected scene uses is marked on its tile, so a reference can be told from the rest
+      const role = (m) => [sc && sc.source_image === m.id ? "source" : null, refs.includes(m.id) ? `ref ${refs.indexOf(m.id) + 1}` : null].filter(Boolean);
+      g.setItems(shown.map((m) => ({ id: m.id, label: m.name, thumb: m.kind === "audio" ? undefined : `${base(m.id)}/thumb`, badge: [...role(m), m.kind].join(" · ") })));
+      g.setValue(selecting ? [...chosen] : sc ? [sc.source_image, ...refs].filter(Boolean) : []);
       selectBtn.setLabel(selecting ? "Done" : "Select");
       bulk.node.hidden = !selecting;
       bulk.setLabel(`Delete (${chosen.size})`);

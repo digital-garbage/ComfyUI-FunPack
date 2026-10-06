@@ -27,3 +27,22 @@ test("a click on a tile looks at it on the monitor; the context menu's resolutio
   assert.deepEqual(set, [["s1", "source_image", "m1"]]);
 });
 
+
+test("the selected scene's references are marked on their tiles, and the menu takes one back off", async () => {
+  const set = [];
+  const project = { selected: { id: "s1", references: ["m2", "m1"] }, setScene: (...a) => set.push(a) };
+  const api = { media: async () => ({ media: [{ id: "m1", name: "cat.png", kind: "image" }, { id: "m2", name: "dog.png", kind: "image" }, { id: "m3", name: "owl.png", kind: "image" }] }) };
+  const host = document.createElement("div");
+  hub.setup({ host, app: { project, api, mediaPeek: {}, say: () => {}, on: () => () => {} } });
+  await new Promise((r) => setTimeout(r, 10));
+  const named = (n) => [...host.querySelectorAll(".cx-cell")].find((x) => x.textContent.includes(n));
+  assert.match(named("dog.png").textContent, /ref 1/);
+  assert.match(named("cat.png").textContent, /ref 2/);
+  assert.doesNotMatch(named("owl.png").textContent, /ref/);
+  document.querySelectorAll(".cx-popover").forEach((n) => n.remove());
+  named("dog.png").dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+  const stop = [...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent.includes("Stop using as a reference"));
+  assert.ok(stop && !stop.disabled, "not greyed: it can be taken off");
+  stop.click();
+  assert.deepEqual(set, [["s1", "references", ["m1"]]]);
+});
