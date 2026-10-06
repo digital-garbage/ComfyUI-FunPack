@@ -1,13 +1,14 @@
-// ◆ Composer: the floating "prompt craft" window. Opens from the timeline header; its tabs are the five v4 had.
+// ◆ Composer: the floating "prompt craft" window. Opens from the timeline header; its tabs are the ones v4 had.
 import { composer as c } from "../../composer/composer.js";
 import { applyStory, clash, joinStory } from "./story.js";
 import { shortcuts } from "./shortcuts.js";
 import { cuts } from "./cuts.js";
 import { enhance } from "./enhance.js";
 import { chat, chatHook } from "./chat.js";
+import { files } from "./files.js";
 import { pickShortcut, templatesBar, variablesPanel } from "./storytools.js";
 
-const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }];
+const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }, { value: "files", label: "Files" }];
 
 // The box follows the scenes; typing in it rewrites them (after a short pause, or when focus leaves).
 const story = (app, own) => {
@@ -53,7 +54,7 @@ const story = (app, own) => {
 };
 
 const sheets = { story, shortcuts, cuts,
-  enhance, chat };
+  enhance, chat, files };
 
 export default {
   id: "composer",

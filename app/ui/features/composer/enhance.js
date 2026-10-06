@@ -48,8 +48,16 @@ export function enhance(app, own) {
   draw();
   ps.ensureLoaded().then(draw);
   // Another project's pipeline, or an edit made elsewhere: redraw, but never under a field being typed in.
-  own(ps.subscribe(() => { if (!page.node.contains(document.activeElement)) draw(); }));
+  const typing = () => page.node.contains(document.activeElement);
+  own(ps.subscribe(() => { if (!typing()) draw(); }));
   app.api.enhancerDefaults().then((d) => { defaults = d; draw(); }).catch(() => {});
-  app.api.enhancerRuns().then((r) => { last = (r.runs || []).slice(-1)[0] || null; draw(); }).catch(() => {});
+  const fetchRuns = () => app.api.enhancerRuns().then((r) => { last = (r.runs || []).slice(-1)[0] || null; if (!typing()) draw(); }).catch(() => {});
+  fetchRuns();
+  // a run that ends while this tab is open shows its prompt here without reopening it
+  let phase = null;
+  if (app.generate && app.generate.subscribe) own(app.generate.subscribe((st) => {
+    const was = phase; phase = st && st.phase;
+    if (was && was !== phase && (phase === "done" || phase === "failed")) fetchRuns();
+  }));
   return page;
 }

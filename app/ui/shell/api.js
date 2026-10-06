@@ -54,6 +54,8 @@ export const api = {
   shotMemory: () => call("GET", "/api/m/conditioning_shot_camera/memory"),
   forgetShotMemory: (kind, name) => call("POST", "/api/m/conditioning_shot_camera/forget", { kind, name }),
   tasteKeys: () => call("GET", "/api/m/taste/keys"),
+  libraryFiles: () => call("GET", "/api/files"),
+  deleteLibraryFile: (name) => call("DELETE", `/api/files/${encodeURIComponent(name)}`),
   deleteTasteKey: (name) => call("DELETE", `/api/m/taste/keys/${encodeURIComponent(name)}`),
   tasteKeyUrl: (name) => `${BASE}/api/m/taste/keys/${encodeURIComponent(name)}/export`,
   /** The zip as the raw body; `exists: true` comes back (not thrown) when the name is taken and `overwrite` was not asked. */

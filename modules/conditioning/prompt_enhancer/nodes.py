@@ -85,6 +85,9 @@ class FunPackEnhancePrompt(io.ComfyNode):
                 presence_penalty=0.0, seed=0, thinking=False, image=None, use_image=True, shortcuts="",
                 lorebooks="", reference_intro="", chat="") -> io.NodeOutput:
         if not enabled:
+            # still the final prompt, and the Composer's Enhance tab shows what was encoded either way
+            RUNS.append({"prompt_id": _prompt_id(), "status": "off: the prompt ran as typed", "before": text, "after": text,
+                         "thinking": "", "sent": "", "ok": True})
             return io.NodeOutput(text, "off")
         if _MARKUP.search(text or ""):
             log.once("prompt_enhancer:markup", log.ALERT, "FunPack Prompt enhancer",

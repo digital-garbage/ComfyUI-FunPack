@@ -18,6 +18,20 @@ test("the Enhance tab follows the open project's pipeline: no enhancer there, no
   assert.match(page.node.textContent, /No prompt enhancer here/);
 });
 
+test("a run that ends while Enhance is open shows its final prompt without reopening the tab", async () => {
+  const ps = { slots: () => [{ id: "e", node: "FunPackEnhancePrompt", inputs: {} }], ensureLoaded: async () => {}, save: async () => {}, subscribe: () => () => {} };
+  let runs = [], tell;
+  const api = { enhancerDefaults: async () => ({}), enhancerRuns: async () => ({ runs }) };
+  const generate = { subscribe: (fn) => { tell = fn; fn({ phase: "idle" }); return () => {}; } };
+  const page = enhance({ pipeline: ps, api, generate }, () => {});
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(page.node.textContent, /Nothing yet/);
+  runs = [{ prompt_id: "p", status: "off: the prompt ran as typed", before: "a red fox", after: "a red fox at dusk" }];
+  tell({ phase: "running" }); tell({ phase: "done" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(page.node.textContent, /a red fox at dusk/);
+});
+
 test("Chat on a pipeline with no enhancer says so instead of taking comments that would reach nothing", async () => {
   const { chat } = await import("./chat.js");
   let slots = [{ id: "s", node: "Sampler" }], heard;

@@ -873,6 +873,27 @@ def register(routes, prefix=None):
             # "Save video as" names the file from this; the route itself ends in /file
             "Content-Disposition": f"inline; filename*=UTF-8''{quote(name)}"})
 
+    # Composer ▸ Files: FunPack's own library files on disk, to see and delete (v4 had it). Only these names: no path reaches here.
+    library = lambda: {f.name: f for f in (config.SHORTCUTS_FILE, config.SHORTCUT_CATEGORIES_FILE, config.REVOLVER_FILE, config.MARKERS_FILE)}
+
+    @routes.get(P + "/api/files")
+    async def _files(_req):
+        rows = []
+        for name, f in library().items():
+            try:
+                rows.append({"name": name, "size": f.stat().st_size})
+            except OSError:
+                pass                                    # not written yet
+        return web.json_response({"dir": str(config.ROOT), "files": rows})
+
+    @routes.delete(P + "/api/files/{name}")
+    async def _file_delete(req):
+        f = library().get(req.match_info["name"])
+        if f is None:
+            return web.json_response({"why": "not a FunPack library file"}, status=404)
+        f.unlink(missing_ok=True)
+        return await _files(req)
+
     @routes.get(P + "/api/media/{mid}/thumb")
     async def _media_thumb(req):
         # to_thread: an ffmpeg frame grab, which must never run on the one event loop ComfyUI has

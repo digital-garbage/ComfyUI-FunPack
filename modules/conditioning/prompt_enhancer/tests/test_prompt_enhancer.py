@@ -207,6 +207,7 @@ def test_the_node_passes_through_when_off_and_never_touches_the_model(node):
     clip = FakeClip()
     out = node.FunPackEnhancePrompt.execute(clip, "a fox", enabled=False)
     assert tuple(out.args) == ("a fox", "off") and clip.seen == {}
+    assert node.RUNS[-1]["after"] == "a fox", "the Enhance tab still shows the final prompt"
 
 
 def test_the_node_enhances_records_the_run_and_warns_on_failure(node, caplog):

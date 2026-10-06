@@ -335,3 +335,18 @@ def test_a_file_the_server_made_itself_is_not_held_to_the_upload_limit(store, mo
         media.save_upload("a.mp4", b"x" * 11, limit=None)
     except ValueError as exc:
         assert "limit" not in str(exc)
+
+
+def test_the_files_tab_lists_and_deletes_library_files_and_nothing_else(server, monkeypatch, tmp_path):
+    from core import config
+    for attr, name in (("SHORTCUTS_FILE", "shortcuts.json"), ("SHORTCUT_CATEGORIES_FILE", "shortcut_categories.json"),
+                       ("REVOLVER_FILE", "shortcut_revolver.json"), ("MARKERS_FILE", "markers.json")):
+        monkeypatch.setattr(config, attr, tmp_path / name)          # never the real library
+    config.MARKERS_FILE.write_text('{"words": []}')
+    status, body = _request(server, "GET", "/funpack/api/files")
+    assert status == 200 and {"name": "markers.json", "size": 13} in body["files"]
+    assert _request(server, "DELETE", "/funpack/api/files/index.json")[0] == 404          # the media index is not one of them
+    assert _request(server, "DELETE", "/funpack/api/files/..%2Fshortcuts.json")[0] == 404
+    status, body = _request(server, "DELETE", "/funpack/api/files/markers.json")
+    assert status == 200 and not config.MARKERS_FILE.exists()
+    assert all(f["name"] != "markers.json" for f in body["files"])
