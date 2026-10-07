@@ -49,6 +49,12 @@ GENERIC = {"camera", "video", "scene", "shot", "frame", "background", "foregroun
 PARTS = {"lip", "mouth", "tongue", "tooth", "teeth", "eye", "eyes", "face", "cheek", "hand",
          "finger", "hair", "neck", "shoulder", "waist", "hip", "leg", "foot", "feet", "arm",
          "skin", "expression", "smile", "gaze", "back", "chin", "brow"}
+# A liked detail may name one of these. Hair, face, skin and the like are appearance: the old
+# refiner refused to auto-inject those, and a like of a clip cannot tell the person from the act.
+DETAIL_PARTS = PARTS - {"hair", "face", "skin", "expression", "smile", "gaze", "back"}
+# Adjectives that locate a part ("lower lip") are not a detail worth repeating everywhere.
+_NOT_A_DETAIL = {"left", "right", "other", "same", "whole", "own", "both", "each", "another",
+                 "first", "next", "last", "upper", "lower", "front", "back"}
 PLACES = {"room", "street", "kitchen", "bedroom", "bed", "table", "floor", "stage", "hall",
           "garden", "beach", "forest", "city", "car", "office", "bathroom", "field"}
 MOVES_DETAIL = ("The camera pushes in toward {x}.", "The camera racks focus to {x}.",
@@ -201,6 +207,129 @@ def candidates(picture):
         text = (f"{owner}'s " if m.group(1) else f"{owner} " if owner else "") + " ".join(words)
         out.append((lemma, text.strip(), bool(owner), m.start(), "obj"))
     return out
+
+
+def _content_amods(root):
+    """Adjectives that describe `root`, ignoring ones that only say which side it is on."""
+    return sorted((c for c in root.children
+                   if c.dep_ == "amod" and c.is_alpha and c.lemma_.lower() not in _NOT_A_DETAIL),
+                  key=lambda t: t.i)
+
+
+def detail_phrases(picture):
+    """[(lemma, phrase)] for a short detail already written on a body part ("detailed lips").
+
+    A bare noun is not a detail. Neither is a place, a person, or hair and face: those are who
+    the clip is about, and a like must not paste them onto the next one. With no tagger, one
+    adjective in front of a body-part word is the same idea."""
+    hidden = _hide(picture or "")
+    nlp = _spacy()
+    if nlp is None:
+        return _detail_phrases_plain(hidden)
+    out, seen = [], set()
+    for root in (c.root for c in nlp(hidden).noun_chunks):
+        lemma = root.lemma_.lower()
+        if lemma not in DETAIL_PARTS:
+            continue
+        amods = _content_amods(root)
+        if not amods:
+            continue
+        phrase = " ".join(c.text.lower() for c in amods) + " " + root.text.lower()
+        phrase = re.sub(r"\s+", " ", phrase).strip()
+        if not phrase or phrase in seen or len(phrase.split()) > 5:
+            continue
+        seen.add(phrase)
+        out.append((lemma, phrase))
+    return out
+
+
+def _detail_phrases_plain(hidden):
+    parts = "|".join(sorted(DETAIL_PARTS, key=len, reverse=True))
+    skip = DETERMINERS | POSSESSIVE_PRONOUNS | _NOT_A_DETAIL | {"and", "with", "from", "into", "onto", "over"}
+    out, seen = [], set()
+    for m in re.finditer(rf"\b([A-Za-z]{{3,}})\s+({parts})s?\b", hidden):
+        adj = m.group(1).lower()
+        if adj in skip:
+            continue
+        word = m.group(2).lower()
+        lemma = word if word in DETAIL_PARTS else word[:-1]
+        phrase = f"{adj} {m.group(2).lower()}"
+        if phrase in seen:
+            continue
+        seen.add(phrase)
+        out.append((lemma, phrase))
+    return out
+
+
+def qualified_lemmas(picture):
+    """Body-part lemmas this shot already describes with an adjective. A second detail would
+    argue with that adjective, so nothing is added onto them."""
+    hidden = _hide(picture or "")
+    nlp = _spacy()
+    if nlp is None:
+        return {lemma for lemma, _phrase in _detail_phrases_plain(hidden)}
+    out = set()
+    for tok in nlp(hidden):
+        if tok.lemma_.lower() in DETAIL_PARTS and any(c.dep_ == "amod" and c.is_alpha for c in tok.children):
+            out.add(tok.lemma_.lower())
+    return out
+
+
+def detail_phrases_in(text):
+    """Every detail phrase in a prompt, one per wording, read per shot so the sound track is skipped."""
+    marks = list(SHOT.finditer(text or ""))
+    chunks = ([text] if not marks else
+              [text[m.end():(marks[i + 1].start() if i + 1 < len(marks) else len(text))] for i, m in enumerate(marks)])
+    out, seen = [], set()
+    for chunk in chunks:
+        picture, _sound = _split_sound(chunk)
+        for lemma, phrase in detail_phrases(picture):
+            if phrase not in seen:
+                seen.add(phrase)
+                out.append((lemma, phrase))
+    return out
+
+
+def _as_sentence(phrase):
+    phrase = (phrase or "").strip().rstrip(".")
+    return (phrase[:1].upper() + phrase[1:] + ".") if phrase else ""
+
+
+def add_detail_notes(text, seed=0, chance=0.5, bank=()):
+    """-> (prompt, {"added": [{"shot", "lemma", "phrase"}], "why"}).
+
+    A banked detail is added once, as its own sentence at the end of a shot, and only when that
+    shot already names the body part, the part is not already described, and the words are not
+    already there. One detail per shot: the one ratings have kept most. The original sentence
+    is never rewritten, so it cannot be made ungrammatical. `chance` of 0 or 1 is kept as set;
+    anything between is the caller's, already tilted per phrase."""
+    marks = list(SHOT.finditer(text or ""))
+    info = {"added": [], "why": ""}
+    if not marks:
+        info["why"] = "no shots"
+        return text, info
+    usable = [b for b in bank or () if isinstance(b, dict) and b.get("lemma") and b.get("phrase") and float(b.get("good") or 0) >= 1]
+    if not usable:
+        info["why"] = "nothing learned yet"
+        return text, info
+    out = [text[:marks[0].start()]]
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        picture, sound = _split_sound(text[m.end():end])
+        present = {c[0] for c in candidates(picture)}
+        taken = qualified_lemmas(picture)
+        low = picture.lower()
+        options = [b for b in usable
+                   if b["lemma"] in present and b["lemma"] not in taken and b["phrase"].lower() not in low]
+        options.sort(key=lambda b: (-(float(b["good"]) - float(b["bad"])), -float(b["good"]), b["phrase"]))
+        if options and random.Random(f"{seed}:detail:{i}:{options[0]['phrase']}").random() < float(options[0].get("chance", chance)):
+            sentence = _as_sentence(options[0]["phrase"])
+            picture = picture.rstrip() + " " + sentence + " "
+            info["added"].append({"shot": int(m.group(1)), "lemma": options[0]["lemma"], "phrase": options[0]["phrase"]})
+        out.append(m.group(0) + picture + sound)
+    if not info["added"]:
+        info["why"] = "nothing matched"
+    return "".join(out), info
 
 
 def _score(c, prior=None):

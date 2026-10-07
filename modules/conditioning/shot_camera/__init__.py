@@ -8,6 +8,7 @@ pick the move. Off by default:
 * cut within the same shot: "[Shot 1] DANCE KISS" and "[Shot 1] DANCE DANCE" are cut between the shortcuts, so each part gets a time, a view and a focus. Its chance slider is hidden until this is on
 * views: your own trusted list (side view, from above, POV...), never on shot 1, never the same twice in a row
 * camera moves: one to three per shot, aimed at the most specific thing in it ("<Subject 1>'s hand", not "<Subject 1>")
+* liked details: a short detail you liked ("detailed lips") may be added, once, at the end of a later shot that already names that body part. Its chance slider is hidden until this is on
 
 Deterministic: the same prompt gives the same shots; "Variation" re-rolls. Ratings teach it: which views and moves are liked
 (a dislike that blames the picture alone teaches nothing here), and the words your prompts keep returning to are favoured.
@@ -44,6 +45,11 @@ SETTINGS = {
                    "hint": "Later shots open on a view (side, from above, POV…), never the same twice in a row."},
     "shot_views_chance": {"type": "float", "default": 0.4, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance a shot gets a view",
                           "when": {"shot_views": True}},
+    "detail_notes": {"type": "bool", "default": False, "label": "Liked details",
+                     "hint": "When a shot already names a body part, a short detail you liked of that part (such as \"detailed lips\") may be added once, as its own sentence at the end of the shot."},
+    "detail_notes_chance": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of a liked detail",
+                            "hint": "1 = always add a matching detail, 0 = never. Ratings nudge the values in between. A detail that keeps coming back bad is dropped.",
+                            "when": {"detail_notes": True}},
     "variation": {"type": "int", "default": 0, "min": 0, "max": 9999, "label": "Variation",
                   "hint": "The same prompt always gets the same shots. Change this number to draw different ones."},
 }

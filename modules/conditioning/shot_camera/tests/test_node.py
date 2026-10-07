@@ -1,6 +1,8 @@
 """The node's rewrite, the rating hook and the module contract."""
 import importlib
 
+import pytest
+
 from .. import memory, nodes
 
 
@@ -44,6 +46,30 @@ def test_rating_teaches_once_and_skips_picture_only(tmp_path, monkeypatch):
     assert memory.on_rating("p1", "liked") == 0                      # the same rating again counts once
     assert memory.view_stats()["side view"] == (1.0, 0.0)
     assert memory.on_rating("unknown", "liked") == 0
+
+
+def test_a_like_teaches_a_detail_and_a_bad_composition_can_retire_it(tmp_path, monkeypatch):
+    pytest.importorskip("spacy")
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    m = _mod()
+    assert m.SETTINGS["detail_notes"]["type"] == "bool" and "when" not in m.SETTINGS["detail_notes"]
+    assert m.SETTINGS["detail_notes_chance"]["when"] == {"detail_notes": True}
+    text = "[Shot 1] She kisses his lips."
+    memory.record_run("liked", {"views": [], "arms": [], "text": "[Shot 1] She has detailed lips.", "details": []})
+    assert memory.on_rating("liked", "disliked", "image") == 0
+    assert memory.detail_bank() == []
+    assert memory.on_rating("liked", "liked") == 1
+    assert memory.detail_bank()[0]["phrase"] == "detailed lips"
+    out, said, chose = nodes.rewrite(text, {"detail_notes": True, "detail_notes_chance": 1})
+    assert "Detailed lips." in out and "shot 1 detailed lips" in said
+    assert out.startswith("[Shot 1] She kisses his lips.")
+    memory.record_run("bad1", {"views": [], "arms": [], "text": out, "details": chose["details"]})
+    memory.record_run("bad2", {"views": [], "arms": [], "text": out, "details": chose["details"]})
+    memory.on_rating("bad1", "disliked", "composition")
+    memory.on_rating("bad2", "disliked", "composition")
+    assert memory.detail_bank() == []
+    quiet, _, _ = nodes.rewrite(text, {"detail_notes": True, "detail_notes_chance": 1})
+    assert quiet == text
 
 
 def test_contract():

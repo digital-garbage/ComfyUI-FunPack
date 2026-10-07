@@ -15,6 +15,30 @@ MUSIC = "Upbeat jazz music with a soft bassline plays throughout."
 PROMPT = HEAD + S1 + S2 + S3 + MUSIC
 
 
+def test_a_liked_detail_is_added_only_where_that_body_part_already_is():
+    """The sentence already written is left as it is. The detail is a new sentence at the end,
+    and only in a shot that already names that part without describing it."""
+    pytest.importorskip("spacy")
+    bank = [{"lemma": "lip", "phrase": "detailed lips", "good": 2, "bad": 0, "chance": 1}]
+    bare = "[Shot 1] She kisses his lips. The music plays."
+    out, info = sc.add_detail_notes(bare, seed=1, chance=1, bank=bank)
+    assert info["added"] == [{"shot": 1, "lemma": "lip", "phrase": "detailed lips"}]
+    assert out.index("his lips") < out.index("Detailed lips.")
+    assert out.index("Detailed lips.") < out.index("music")
+    assert "She kisses his lips" in out
+
+    described = "[Shot 1] She presses her wet lips to his cheek."
+    kept, none = sc.add_detail_notes(described, seed=1, chance=1, bank=bank)
+    assert kept == described and none["added"] == []
+
+    elsewhere = "[Shot 1] A lamp sits on the table while the music plays."
+    same, skipped = sc.add_detail_notes(elsewhere, seed=1, chance=1, bank=bank)
+    assert same == elsewhere and skipped["added"] == []
+
+    never, _ = sc.add_detail_notes(bare, seed=1, chance=0, bank=[{**bank[0], "chance": 0}])
+    assert never == bare
+
+
 def test_no_shot_markers_leaves_the_prompt_alone():
     assert sc.add_camera_moves("A woman walks. Music plays.") == ("A woman walks. Music plays.", [])
 

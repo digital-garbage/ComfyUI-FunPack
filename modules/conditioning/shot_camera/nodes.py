@@ -66,7 +66,19 @@ def rewrite(text, values, seconds=None, pieces=None):
             memory.observe(engine.content_fingerprint(before), [w for r in report for w in r.get("lemmas", [])])
         moved = [r for r in report if r["move"]]
         said.append(f"moves: {len(moved)} of {len(report)} shots" + ("" if moved else " (" + "; ".join(f"shot {r['shot']} {r['why']}" for r in report) + ")"))
-    return text, "; ".join(said), {"views": views, "arms": arms}
+    details = []
+    if values.get("detail_notes") and engine.SHOT.search(text or ""):
+        base = float(values.get("detail_notes_chance", 0.5))
+        bank = []
+        for row in memory.detail_bank():
+            row = dict(row)
+            row["chance"] = memory.detail_chance(base, row["good"], row["bad"])
+            bank.append(row)
+        text, info = engine.add_detail_notes(text, seed=seed, chance=base, bank=bank)
+        details = info.get("added") or []
+        said.append("details: " + (", ".join(f"shot {d['shot']} {d['phrase']}" for d in details) if details else info.get("why") or "none"))
+    return text, "; ".join(said), {"views": views, "arms": arms, "details": details,
+                                   "text": text if values.get("detail_notes") else None}
 
 
 class FunPackShotCamera(io.ComfyNode):
@@ -93,7 +105,7 @@ class FunPackShotCamera(io.ComfyNode):
     @classmethod
     def execute(cls, text: str, length: int, frame_rate: float, settings=None) -> io.NodeOutput:
         values = _values(settings)
-        if not any(values.get(k) for k in ("camera_moves", "shot_cuts", "shot_views", "cut_same_shot")) or not engine.SHOT.search(text or ""):
+        if not any(values.get(k) for k in ("camera_moves", "shot_cuts", "shot_views", "cut_same_shot", "detail_notes")) or not engine.SHOT.search(text or ""):
             return io.NodeOutput(text, "unchanged")
         try:
             out, said, chose = rewrite(text, values, seconds=length / frame_rate if frame_rate else None)
@@ -101,7 +113,7 @@ class FunPackShotCamera(io.ComfyNode):
             log.failed("FunPack Shot Camera", exc)
             return io.NodeOutput(text, f"left as written ({exc})")
         pid = _prompt_id()
-        if pid and (chose["views"] or chose["arms"]):
+        if pid and (chose["views"] or chose["arms"] or chose.get("text") is not None):
             try:
                 memory.record_run(pid, chose)
             except Exception as exc:                           # noqa: BLE001 -- only the learning is lost, not the run

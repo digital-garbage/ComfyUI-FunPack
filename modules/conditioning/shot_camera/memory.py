@@ -40,7 +40,7 @@ def _path():
 
 
 _LOCK = threading.RLock()      # the worker thread (observe, record_run) and the rating route write the same file
-_DICTS = ("picks", "rejects", "seen", "views", "arms", "runs", "rated")
+_DICTS = ("picks", "rejects", "seen", "views", "arms", "runs", "rated", "details")
 
 
 def _locked(fn):
@@ -200,6 +200,61 @@ def rate_arms(used, sign, k=1.0):
     return len(used)
 
 
+def detail_chance(chance, good, bad):
+    """The chance of adding one learned detail. 0 and 1 stay as the user set them. In between,
+    a detail that was liked is more likely and one that was blamed is less, gently: one vote
+    cannot flip it."""
+    chance = float(chance)
+    if chance <= 0.0 or chance >= 1.0:
+        return max(0.0, min(1.0, chance))
+    rate = (float(good) + 1.0) / (float(good) + float(bad) + 2.0)
+    return max(0.0, min(1.0, chance * 2.0 * rate))
+
+
+def detail_bank():
+    """Details a like has taught, still allowed to be added: good at least once, and not
+    suppressed by bad-composition votes outrunning the likes."""
+    rows = []
+    for phrase, row in (_read().get("details") or {}).items():
+        if not isinstance(row, dict):
+            continue
+        good, bad = float(row.get("good") or 0), float(row.get("bad") or 0)
+        lemma = str(row.get("lemma") or "")
+        if good < 1 or not lemma or (bad >= 2 and bad > good):
+            continue
+        rows.append({"lemma": lemma, "phrase": str(phrase), "good": good, "bad": bad})
+    return rows
+
+
+def _detail_pairs(run, sign):
+    """What a like credits (details written in that prompt) or a dislike blames (details this
+    run actually added)."""
+    if sign > 0:
+        from . import engine
+        return engine.detail_phrases_in((run or {}).get("text") or "")
+    return [(d.get("lemma") or "", str(d.get("phrase") or "").strip().lower())
+            for d in (run or {}).get("details") or []
+            if isinstance(d, dict) and str(d.get("phrase") or "").strip()]
+
+
+def _apply_detail_lesson(run, sign, undo=False):
+    """Credit or blame the details of one run. `undo` takes that same lesson back. -> phrases touched."""
+    pairs = [(lemma, phrase) for lemma, phrase in _detail_pairs(run, sign) if phrase]
+    if not pairs or not sign:
+        return 0
+    delta = -1.0 if undo else 1.0
+    field = "good" if sign > 0 else "bad"
+    data = _read()
+    store = data.setdefault("details", {})
+    for lemma, phrase in pairs:
+        row = store.setdefault(phrase, {"lemma": lemma or "", "good": 0.0, "bad": 0.0})
+        if lemma:
+            row["lemma"] = lemma
+        row[field] = max(0.0, round(float(row.get(field) or 0) + delta, 4))
+    _save(data)
+    return len(pairs)
+
+
 def summary(limit=40):
     """What is remembered, for the person to read and prune: words (picked / replaced / merely
     recurring) and views (good / bad, with the per-trait rows folded under their view)."""
@@ -212,7 +267,16 @@ def summary(limit=40):
     views.sort(key=lambda r: -(r["good"] + r["bad"]))
     arms = [{"arm": k, "good": g, "bad": b} for k, (g, b) in arm_stats().items() if not k.startswith("word:")]
     arms.sort(key=lambda r: -(r["good"] + r["bad"]))
+    details = []
+    for phrase, row in (data.get("details") or {}).items():
+        if not isinstance(row, dict):
+            continue
+        good, bad = float(row.get("good") or 0), float(row.get("bad") or 0)
+        details.append({"phrase": phrase, "lemma": row.get("lemma") or "", "good": good, "bad": bad,
+                        "kept": good >= 1 and not (bad >= 2 and bad > good)})
+    details.sort(key=lambda r: (-(r["good"] + r["bad"]), r["phrase"]))
     return {"words": words[:limit], "more": max(0, len(words) - limit), "views": views, "arms": arms,
+            "details": details[:limit],
             "prompts": int(data.get("prompts", 0)), "shots": int(data.get("shots", 0)),
             "kept": int(data.get("kept", 0))}
 
@@ -238,6 +302,8 @@ def forget(kind, name=None):
             views.pop(k)
     elif kind == "arm":
         existed = (data.get("arms") or {}).pop(name, None) is not None
+    elif kind == "detail":
+        existed = (data.get("details") or {}).pop(str(name or "").strip().lower(), None) is not None
     else:
         raise ValueError(f"unknown kind {kind!r}")
     if existed:                       # a forgotten lesson must not be rebuilt by re-rating the run that taught it
@@ -333,7 +399,9 @@ def on_rating(prompt_id, rating, axis=None):
     if before:
         rate_views(run.get("views"), before, -1.0)
         rate_arms(run.get("arms"), before, -1.0)
-    n = (rate_views(run.get("views"), sign) + rate_arms(run.get("arms"), sign)) if sign else 0
+        _apply_detail_lesson(run, before, undo=True)
+    n = (rate_views(run.get("views"), sign) + rate_arms(run.get("arms"), sign)
+         + _apply_detail_lesson(run, sign)) if sign else 0
     data = _read()
     data.setdefault("rated", {})[pid] = sign
     data["rated"] = dict(list(data["rated"].items())[-MAX_RUNS:])
