@@ -21,6 +21,8 @@ second definition of the same rule, and the two would drift the first time
 upstream touched theirs.
 """
 
+import time
+
 import comfy.model_management
 import torch
 from comfy.nested_tensor import NestedTensor
@@ -156,7 +158,9 @@ def decode(latent, model=None, vae=None, audio_vae=None, tile_size=0):
             f"expected a video and an audio branch, got {len(parts)} parts")
     video_latent, audio_latent = parts
 
+    t0 = time.perf_counter()
     images = _video_images(vae, video_latent, tile_size)
+    t1 = time.perf_counter()
     if len(images.shape) == 5:
         images = images.reshape(-1, *images.shape[-3:])
 
@@ -168,7 +172,18 @@ def decode(latent, model=None, vae=None, audio_vae=None, tile_size=0):
 
     from comfy_extras.nodes_audio import vae_decode_audio
     audio = vae_decode_audio(audio_vae, {"samples": audio_latent})
+    log.info("FunPack H3 decode", f"picture {t1 - t0:.1f}s ({_vae_state(vae)}, {tuple(images.shape[:3])}) · sound {time.perf_counter() - t1:.1f}s ({_vae_state(audio_vae)})")
     return images, audio
+
+
+def _vae_state(vae):
+    """Precision and how much of the VAE sat on the GPU: a partly loaded VAE re-reads its weights from RAM for every tile."""
+    try:
+        p = vae.patcher
+        on, size = p.loaded_size() / 2**20, p.model_size() / 2**20
+        return f"{str(vae.vae_dtype).replace('torch.', '')}, {on:.0f} of {size:.0f} MB on the GPU{'' if on >= size * 0.99 else ' -- PARTLY LOADED'}"
+    except Exception:                                       # noqa: BLE001 -- a report, never the reason a decode fails
+        return "state unknown"
 
 
 def _video_images(vae, video_latent, tile_size):
