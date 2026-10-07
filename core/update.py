@@ -297,23 +297,6 @@ def status(*, remote: bool = True) -> dict:
 REQUIREMENTS = "requirements.txt"
 
 
-def requirements_changed(before: str, after: str) -> bool:
-    """Did this update touch requirements.txt?
-
-    The only honest trigger for installing: running pip on every pull would be slow and
-    surprising, and running it on none leaves an update that added a dependency looking
-    like a broken build instead of an unfinished install.
-    """
-    if not before or not after or before == after:
-        return False
-    proc = _run_git("diff", "--name-only", f"{before}..{after}", "--", REQUIREMENTS)
-    if proc.returncode != 0:
-        # Cannot tell — install rather than skip. A redundant pip run costs seconds; a
-        # skipped one costs a broken node pack and a confusing error.
-        return True
-    return bool((proc.stdout or "").strip())
-
-
 def parse_requirement(line: str):
     """(name, specifier) for one requirements line, or None for a blank/comment.
 
@@ -367,6 +350,8 @@ def requirement_status() -> dict:
         have = _installed_version(name)
         if have is None:
             out["missing"].append(name)
+            # what pip is given: the line itself, so a version pin or a URL (spaCy's model is not on PyPI) survives
+            out.setdefault("install", []).append(line.split("#", 1)[0].split(";", 1)[0].strip())
             continue
         out["present"].append(name)
         if spec and not _satisfies(have, spec):
@@ -425,14 +410,14 @@ def install_requirements(timeout: int = 900) -> dict:
     # nothing under it is not installed, it is broken. The freeze diff below is what says
     # whether anything already present moved as a result.
     cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-           *status["missing"]]
+           *status["install"]]
     try:
         proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True,
                               timeout=timeout)
     except subprocess.TimeoutExpired:
         return {"ran": True, "ok": False,
                 "detail": f"pip did not finish within {timeout}s — run it yourself: "
-                          f"pip install {' '.join(status['missing'])}"}
+                          f"pip install {' '.join(status['install'])}"}
     except OSError as e:
         return {"ran": True, "ok": False, "detail": f"could not run pip: {e}"}
     if proc.returncode != 0:
@@ -440,7 +425,7 @@ def install_requirements(timeout: int = 900) -> dict:
         return {"ran": True, "ok": False,
                 "detail": f"pip install failed — run it yourself:\n"
                           f"  {sys.executable} -m pip install "
-                          f"{' '.join(status['missing'])}\n\n{tail}"}
+                          f"{' '.join(status['install'])}\n\n{tail}"}
     changed = _pip_diff(before, _pip_freeze())
     if changed:
         print("[FunPack update] pip changed these packages: " + ", ".join(changed))
@@ -530,8 +515,8 @@ def pull(branch: str | None = None, *, install_deps: bool = False) -> dict:
     # Dependencies are part of the update. Done BEFORE the response, so the restart the
     # caller schedules cannot race an install that is still running.
     deps = None
-    if install_deps and before != after and requirements_changed(before, after):
-        deps = install_requirements()
+    if install_deps:
+        deps = install_requirements()       # a no-op unless something is missing; a branch switch's own requirements are not in this pull's diff
     return {
         "branch": branch,
         "before": before,
@@ -587,11 +572,8 @@ def checkout(branch: str, *, pull_after: bool = True, install_deps: bool = False
         else:
             result["after"] = _current_commit()
             result["updated"] = result["before"] != result["after"]
-            # A branch switch alone can cross a requirements change just as a pull can — the
-            # checkout above already moved the working tree onto the other branch's files.
-            if install_deps and result["updated"] and requirements_changed(before_commit,
-                                                                          result["after"]):
-                result["requirements"] = install_requirements()
+            if install_deps:
+                result["requirements"] = install_requirements()       # whatever the branch needs and this environment lacks
         return result
 
     result = _disclosing(stashed, _do)

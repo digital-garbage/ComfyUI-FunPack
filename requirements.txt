@@ -5,3 +5,8 @@
 # not pull CUDA or any model. Without it a .gguf needs the ComfyUI-GGUF node
 # pack instead.
 gguf
+
+# Shot camera picks the word a camera move aims at. Without it, simple word rules are used.
+# Pinned to the model's own version: a newer spaCy will not load a 3.8 model.
+spacy>=3.8,<3.9
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

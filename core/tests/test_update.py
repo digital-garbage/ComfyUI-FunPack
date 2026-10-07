@@ -221,3 +221,26 @@ def test_a_stash_is_disclosed_even_when_the_failure_is_not_a_gitupdateerror(repo
         update.rollback()
 
     assert "FunPack: auto-stashed" in _git(repo, "stash", "list").stdout
+
+
+def test_a_missing_requirement_is_installed_by_its_whole_line_so_a_pin_or_url_survives(repo, monkeypatch):
+    (repo / "requirements.txt").write_text(
+        "# comment\nnumpy\nzz_absent_pkg>=3.8,<3.9  # why\nzz_model @ https://example.com/zz_model.whl\n")
+    monkeypatch.setattr(update, "_installed_version", lambda n: "1.0" if n == "numpy" else None)
+    ran = []
+    monkeypatch.setattr(update.subprocess, "run", lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.setattr(update, "_pip_freeze", lambda: {})
+    assert update.install_requirements()["ok"]
+    assert ran[0][-2:] == ["zz_absent_pkg>=3.8,<3.9", "zz_model @ https://example.com/zz_model.whl"]
+
+
+def test_a_branch_switch_installs_what_is_missing_even_when_the_requirements_file_did_not_change(repo, monkeypatch):
+    _git(repo, "checkout", "-q", "-b", "other")
+    (repo / "b.txt").write_text("x\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-q", "-m", "other")
+    _git(repo, "checkout", "-q", "main")
+    called = []
+    monkeypatch.setattr(update, "install_requirements", lambda: called.append(1) or {"ok": True})
+    update.checkout("other", pull_after=False, install_deps=True)
+    assert called, "the switch itself must check for missing packages"
