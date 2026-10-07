@@ -1,10 +1,10 @@
-"""Save a video as MP4 into ComfyUI's output folder, fast: H.265 on the GPU's encoder by default.
+"""Save a video as MP4 into ComfyUI's output folder, fast: H.264 on the GPU's encoder by default.
 
 Core's SaveVideo encodes with libx264 through PyAV, and FFmpeg's library default is ONE thread -- on a
 rental's CPU that is where a run's last half-minute went. Here the GPU's own encoder (NVENC) does it when
-this PyAV build and the card have one -- H.265 (smaller at the same quality), tagged hvc1 so Chrome/Safari
-on a Mac play it; H.264 for a browser that cannot. With no NVENC it is libx264 on every core: CPU H.265 is
-several times slower and would undo the point. Same names and metadata as SaveVideo.
+this PyAV build and the card have one. H.264 by default: it plays in every browser, Firefox included, and
+NVENC makes it as fast as H.265. H.265 (smaller files, tagged hvc1) is an option for Chrome/Safari. With no
+NVENC it is libx264 on every core: CPU H.265 is several times slower. Same names and metadata as SaveVideo.
 """
 
 import json
@@ -20,7 +20,7 @@ from comfy_api.latest import io, ui
 from ..._core import log
 
 ENCODERS = ("auto", "gpu", "cpu")
-CODECS = ("h265", "h264")
+CODECS = ("h264", "h265")
 # NVENC's constant-quality mode at libx264's default number (crf 23).
 NVENC = {"h265": ("hevc_nvenc", {"preset": "p5", "rc": "vbr", "cq": "23", "b:v": "0"}),
          "h264": ("h264_nvenc", {"preset": "p5", "rc": "vbr", "cq": "23", "b:v": "0"})}
@@ -55,7 +55,7 @@ def _write(path, frames, fps, audio, metadata, codec):
             out.mux(sound.encode(None))
 
 
-def encode(path, frames, fps, audio=None, metadata=None, encoder="auto", codec="h265"):
+def encode(path, frames, fps, audio=None, metadata=None, encoder="auto", codec="h264"):
     """-> which encoder wrote the file. `frames`: uint8 [T, H, W, 3]. GPU first unless told otherwise;
     a GPU attempt that fails leaves no half file and falls back to CPU H.264, unless "gpu" was demanded."""
     gpu = NVENC[codec]
@@ -72,8 +72,8 @@ def encode(path, frames, fps, audio=None, metadata=None, encoder="auto", codec="
     elif encoder == "gpu":
         raise RuntimeError(f"this PyAV build has no NVENC encoder ({gpu[0]}); pick auto or cpu")
     _write(path, frames, fps, audio, metadata, X264)
-    if encoder == "auto" and codec == "h265":
-        log.once("save_no_nvenc", log.ALERT, "FunPack Save Video", f"no NVENC in this PyAV build ({gpu[0]} missing): saved as H.264 on the CPU")
+    if encoder == "auto":
+        log.once("save_no_nvenc", log.ALERT, "FunPack Save Video", f"no NVENC in this PyAV build ({gpu[0]} missing): saved on the CPU")
     return "H.264 on libx264 (CPU, all cores)"
 
 
@@ -84,14 +84,14 @@ class FunPackSaveVideo(io.ComfyNode):
             node_id="FunPackSaveVideo",
             display_name="FunPack Save Video",
             category="FunPack/Output",
-            description="Save as MP4: H.265 on the GPU's encoder when there is one, otherwise H.264 on every CPU core.",
+            description="Save as MP4 (H.264): on the GPU's encoder when there is one, otherwise on every CPU core.",
             inputs=[
                 io.Video.Input("video"),
                 io.String.Input("filename_prefix", default="FunPack"),
                 io.Combo.Input("encoder", options=list(ENCODERS), default="auto", optional=True,
                                tooltip="auto: GPU (NVENC) if available, else H.264 on the CPU. gpu: fail rather than use the CPU. cpu: H.264 (libx264) on every core."),
-                io.Combo.Input("codec", options=list(CODECS), default="h265", optional=True,
-                               tooltip="For the GPU encoder. H.265: smaller files, plays in Chrome/Safari on a Mac. H.264: plays everywhere (Firefox, Linux)."),
+                io.Combo.Input("codec", options=list(CODECS), default="h264", optional=True,
+                               tooltip="For the GPU encoder. H.264: plays in every browser. H.265: smaller files, but Firefox may not play it."),
             ],
             hidden=[io.Hidden.prompt, io.Hidden.extra_pnginfo],
             is_output_node=True,
@@ -99,7 +99,7 @@ class FunPackSaveVideo(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, video, filename_prefix="FunPack", encoder="auto", codec="h265") -> io.NodeOutput:
+    def execute(cls, video, filename_prefix="FunPack", encoder="auto", codec="h264") -> io.NodeOutput:
         parts = video.get_components()
         frames = (parts.images * 255).clamp(0, 255).byte().cpu().numpy()
         width, height = frames.shape[2], frames.shape[1]
