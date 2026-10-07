@@ -33,6 +33,19 @@ def routes(table, base, web):
         except Exception as exc:  # noqa: BLE001 -- keep an optional feature from taking down Composer
             return web.json_response({"why": str(exc)}, status=400)
 
+    @table.post(base + "/generate")
+    async def _generate(req):
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"why": "that is not JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"why": "send a prompt object"}, status=400)
+        try:
+            return web.json_response(await asyncio.to_thread(engine.generate, body))
+        except Exception as exc:  # noqa: BLE001 -- the prompt feature cannot stop the Composer
+            return web.json_response({"why": str(exc)}, status=400)
+
     @table.post(base + "/learn")
     async def _learn(req):
         try:
@@ -51,7 +64,7 @@ def routes(table, base, web):
         try:
             body = await req.json()
             return web.json_response(await asyncio.to_thread(
-                engine.capture, body.get("prompt_id"), body.get("text")))
+                engine.capture, body.get("prompt_id"), body.get("text"), body.get("source_text")))
         except (ValueError, AttributeError, OSError) as exc:
             return web.json_response({"why": str(exc)}, status=400)
 
