@@ -16,29 +16,42 @@ export default {
     const latest = {};              // per input, the value whose save is still on its way: newer than the slot
     const sampling = () => { const ok = ps.usefulness(); return ps.activeModules().filter((m) => (m.category || "") === "sampling" && Object.keys(m.settings || {}).length && ok(m)); };
     const marked = () => (ps.slots() || []).flatMap((slot) => (slot.roles || []).filter((r) => r.at === "generation.sampling" && r.input && !Array.isArray((slot.inputs || {})[r.input])).map((role) => ({ slot, role })));
+    const seeds = () => (ps.slots() || []).flatMap((slot) => (slot.roles || []).filter((r) => r.at === "generation.seed" && r.input).map((role) => ({ slot, role })));
     const describe = async () => {
-      const missing = [...new Set(marked().map(({ slot }) => slot.node))].filter((n) => !(n in specs));
+      const missing = [...new Set([...marked(), ...seeds()].map(({ slot }) => slot.node))].filter((n) => !(n in specs));
       if (missing.length) try { Object.assign(specs, (await app.api.describeNodes(missing)).nodes || {}); unreadable = false; } catch { unreadable = true; }   // asked again on the next change
+    };
+    const setter = ({ slot, role }) => async (v) => {            // compared with the newest value: the one drawn may be several saves old
+      const key = `${slot.id}.${role.input}`;
+      const now = (ps.slots() || []).find((s) => s.id === slot.id) || slot;
+      if (JSON.stringify(key in latest ? latest[key] : (now.inputs || {})[role.input]) === JSON.stringify(v)) return;
+      latest[key] = v;
+      await ps.save({ inputs: { [slot.id]: { [role.input]: v } } });
+      if (ps.settled) await ps.settled();       // a save queued behind another returns before it lands
+      if (latest[key] !== v) return;            // a newer edit of this input is the one that counts
+      delete latest[key];                       // landed or not, the slot is the truth again
+      const after = (ps.slots() || []).find((s) => s.id === slot.id) || {};
+      if (JSON.stringify((after.inputs || {})[role.input]) !== JSON.stringify(v)) {      // not saved: show what will really run, and why
+        c.toast.warn({ text: [...(ps.saveNotes ? ps.saveNotes() : [])].find((n) => /could not save/i.test(n)) || `${role.label || role.input} was not saved.` });
+        draw();
+      }
     };
     const inputRow = ({ slot, role }) => {
       const w = ((specs[slot.node] || {}).widgets || []).find((x) => x.name === role.input);
       if (!w) return null;
-      const set = async (v) => {            // compared with the newest value: the one drawn may be several saves old
-        const key = `${slot.id}.${role.input}`;
-        const now = (ps.slots() || []).find((s) => s.id === slot.id) || slot;
-        if (JSON.stringify(key in latest ? latest[key] : (now.inputs || {})[role.input]) === JSON.stringify(v)) return;
-        latest[key] = v;
-        await ps.save({ inputs: { [slot.id]: { [role.input]: v } } });
-        if (ps.settled) await ps.settled();       // a save queued behind another returns before it lands
-        if (latest[key] !== v) return;            // a newer edit of this input is the one that counts
-        delete latest[key];                       // landed or not, the slot is the truth again
-        const after = (ps.slots() || []).find((s) => s.id === slot.id) || {};
-        if (JSON.stringify((after.inputs || {})[role.input]) !== JSON.stringify(v)) {      // not saved: show what will really run, and why
-          c.toast.warn({ text: [...(ps.saveNotes ? ps.saveNotes() : [])].find((n) => /could not save/i.test(n)) || `${role.label || role.input} was not saved.` });
-          draw();
-        }
-      };
+      const set = setter({ slot, role });
       return c.settingsRow.default({ label: role.label || w.name, hint: w.tooltip || "", control: widgetControl({ ...w, name: role.label || w.name }, (slot.inputs || {})[role.input] ?? w.default, set) });
+    };
+    // Seed: fresh every Generate (the default), or the seed node's own number, so the same settings give the same clip.
+    const seedRows = () => {
+      const p = app.project, list = seeds();
+      if (!list.length || !p || !p.project) return [];
+      const fresh = p.pref("random_seed", true) !== false, last = app.lastRun && app.lastRun.seed;
+      const keep = () => { p.setPref("random_seed", false); Promise.all(list.map((x) => setter(x)(last))).then(draw); };
+      return [c.toggle.default({ label: "New seed every Generate", hint: fresh ? "Each Generate picks a random seed; the number on the seed node is not used." : "Every Generate uses the Seed below: same settings, same clip. Takes ×N still use fresh seeds.",
+        checked: fresh, onChange: (v) => { p.setPref("random_seed", v); draw(); } }),
+        ...(fresh ? [] : list.map(inputRow)),
+        ...(Number.isInteger(last) ? [c.settingsRow.default({ label: "Last seed used", hint: "The seed of the last clip generated.", control: c.button.sm({ label: `Keep ${last}`, tone: "ghost", title: "Use this seed from now on", onClick: keep }) })] : [])];
     };
     const button = c.button.sm({ label: "⏱ Sampler", tone: "neutral", title: "Steps, sampler, scheduler and sampling settings: one click, no modal.", onClick: () => (pop ? pop.close() : open()) });
     button.node.hidden = true;
@@ -55,15 +68,15 @@ export default {
         const why = (ps.saveNotes ? ps.saveNotes() : []).find((n) => /could not save/i.test(n));
         if (why) c.toast.warn({ text: why });          // refused, or not saved: said here, not only on the Engine page
         draw();
-      };
-      const rows = marked().map(inputRow);
+    };
+      const rows = [...marked().map(inputRow), ...seedRows()];
       const unread = marked().length && !rows.some(Boolean) && (unreadable || marked().every(({ slot }) => slot.node in specs)) ? [c.hint.default({ text: "Steps, sampler and scheduler could not be read from the sampler node: change them in Settings ▸ Models & Pipeline." })] : [];
       body.set([...unread, ...rows, ...mods.flatMap((m) => [mods.length > 1 ? c.label.section({ text: m.title || m.id }) : null,
         ...Object.entries(m.settings).filter(([, spec]) => whenSatisfied(values, m.id, spec.when)).map(([name, spec]) => settingRow(m.id, name, spec, values, change))])].filter(Boolean));
     };
     const typing = () => body.node.contains(document.activeElement) && /^(input|textarea)$/i.test(document.activeElement.tagName);
     const off = ps.subscribe(() => { if (pop && !typing()) describe().then(draw); });
-    const show = () => { button.node.hidden = !sampling().length && !marked().length; if (button.node.hidden && pop) pop.close(); };
+    const show = () => { button.node.hidden = !sampling().length && !marked().length && !seeds().length; if (button.node.hidden && pop) pop.close(); };
     ps.ensureLoaded().then(show);
     const offShow = ps.subscribe(show);
 

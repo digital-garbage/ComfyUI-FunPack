@@ -13,7 +13,7 @@ const rig = (phase, extra = {}) => {
     state() { return this.run.state; }, on: (k, fn) => { handlers[k] = fn; }, subscribe: () => () => {}, cancel() {},
     waitForTerminal: () => Object.assign(Promise.resolve("done"), { cancel() {} }), ...extra };
   const project = { project: doc, get scenes() { return doc.scenes; }, selected: null,
-    edit: (fn) => fn(doc), editFor: async (_id, fn) => fn(doc) };
+    edit: (fn) => fn(doc), editFor: async (_id, fn) => fn(doc), pref: (k, d) => ((doc.editor_settings || {})[k] ?? d) };
   const app = { project, selection: { ids: [] }, lastRun: { n: 0 }, runner: {}, pipeline: { slots: () => [{ id: "s", roles: [{ at: "generation.seed", input: "seed" }], inputs: {} }] }, generate: g, api: { newTasteGeneration: () => Promise.resolve({}) }, on: () => () => {} };
   const host = document.createElement("div");
   hub.setup({ host, app });
@@ -195,4 +195,17 @@ test("a picture no longer in the media bin is dropped from the scene before the 
   assert.deepEqual(doc.scenes[0].references, ["aaaaaaaaaaaa"]);
   assert.equal(doc.scenes[0].source_image, "");
   assert.match(document.body.textContent, /no longer in the media bin/);
+});
+
+test("with New seed every Generate off, the seed node's own number runs, and the seed used is kept for the Sampler window", async () => {
+  const sent = [];
+  const { app, doc } = rig("idle", { generate: async ({ inputs }) => { sent.push(inputs); return true; } });
+  app.pipeline.slots = () => [{ id: "s", roles: [{ at: "generation.seed", input: "seed" }], inputs: { seed: 42 } }];
+  doc.editor_settings = { random_seed: false };
+  await app.runner.units(["a"], 1);
+  assert.equal((sent[0].s || {}).seed, undefined, "nothing overrides the node's 42");
+  assert.equal(app.lastRun.seed, 42);
+  doc.editor_settings = {};
+  await app.runner.units(["a"], 1);
+  assert.notEqual(sent[1].s.seed, undefined, "the default draws a fresh one");
 });

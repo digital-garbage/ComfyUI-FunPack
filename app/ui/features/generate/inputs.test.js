@@ -70,3 +70,9 @@ test("the no-text note goes by what is sent: a carried frame counts, a picture t
   assert.equal(await noted({}, { text: "" }, carry), false);
   assert.equal(await noted({ generation_mode: "t2v" }, { text: "", source_image: "m1" }), true);
 });
+
+test("a fixed seed (seed: null) sends no seed: the seed node's own number runs", async () => {
+  const s = [{ id: "n", roles: [{ at: "generation.seed", input: "seed" }], inputs: { seed: 7 } }];
+  const { inputs } = await buildInputs({ project: {}, scene: {}, slots: s, expand: async () => null, seed: null });
+  assert.equal((inputs.n || {}).seed, undefined);
+});

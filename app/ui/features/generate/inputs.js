@@ -5,7 +5,7 @@ import { DRIVEN } from "../../shell/scenes.js";
 
 export const rolesAt = (slots, at) => (slots || []).flatMap((s) => (s.roles || []).filter((r) => r.at === at).map((role) => ({ slot: s, role })));
 
-/** `frames`: how long this unit is (its clips together); a fresh `seed` per call so a re-roll is a different result. */
+/** `frames`: how long this unit is (its clips together); a fresh `seed` per call so a re-roll is a different result (`seed: null` keeps the node's own). */
 export async function buildInputs({ project, scene, slots, expand, frames, hooks = [], prefix = [], seed = () => Math.floor(Math.random() * 2 ** 31) }) {
   const raw = {};
   const put = (slot, name, value) => { raw[slot.id] = { ...raw[slot.id], [name]: value }; };
@@ -14,7 +14,7 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
     const v = role.at === "project.negative" ? project.negative : DRIVEN[role.drives] ? (role.drives === "frames" && frames ? frames : project[DRIVEN[role.drives]]) : (project.video || {})[role.input];
     if (v !== undefined && v !== null && v !== "") put(slot, role.input, v);
   }
-  for (const { slot, role } of rolesAt(slots, "generation.seed")) put(slot, role.input, seed());
+  if (seed) for (const { slot, role } of rolesAt(slots, "generation.seed")) put(slot, role.input, seed());      // null: the seed node's own number runs
   const source = rolesAt(slots, "assets.source_image")[0];
   if (source) put(source.slot, "media_id", project.generation_mode === "t2v" ? "" : scene.source_image || "");    // "from a prompt" starts every shot without a picture
   const { overrides, unwired } = wireReferences(scene.references || [], slots, source ? [source.slot.id] : []);

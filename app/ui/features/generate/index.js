@@ -80,6 +80,7 @@ export default {
           return hit || had;
         }, false);
         if (prune(snap)) { tell("Some pictures this project used are no longer in the media bin; they were removed from their scenes."); p.edit(prune); }
+        const fixedSeed = times === 1 && p.pref("random_seed", true) === false;        // takes are compared across seeds: always fresh ones
         const drawn = new Map();
         const same = times > 1 ? (body) => { const key = JSON.stringify(body); if (!drawn.has(key)) drawn.set(key, expand(body)); return drawn.get(key); } : expand;
         for (const unit of Array.from({ length: times }, () => units).flat()) {
@@ -91,8 +92,10 @@ export default {
           if (group.every((s) => s.excluded) || !isGenerative(root)) continue;                  // all left out, or not made by the model
           // The unit is made once at the length of its clips together (each cut adds one shared frame).
           const frames = group.reduce((t, s) => t + effFrames(s, snap), 0) - (group.length - 1);
-          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root); } catch { return []; } }) });
+          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, ...(fixedSeed ? { seed: null } : {}), prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root); } catch { return []; } }) });
           app.lastRun.typed = (root.text || "").trim();        // what a Chat comment made now would be about
+          const seeded = rolesAt(frozen, "generation.seed")[0];
+          if (seeded) app.lastRun.seed = (inputs[seeded.slot.id] || {})[seeded.role.input] ?? (seeded.slot.inputs || {})[seeded.role.input];      // shown in ⏱ Sampler, to keep a liked one
           if (stopped) break;
           if (noPrompt && !made) tell("This pipeline has no prompt input, so the scene text is not sent.");
           notes.forEach(tell);
