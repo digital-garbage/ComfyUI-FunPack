@@ -45,7 +45,7 @@ export function createMaintenance({ api, flush }) {
     }
     return reloadWhenBack(card);
   }
-  const deps = (res) => (res && res.requirements && res.requirements.ran ? (res.requirements.ok ? " Dependencies installed." : " Dependency install FAILED: FunPack may not load until it is run by hand.") : "");
+  const deps = (res) => (res && res.requirements && res.requirements.ran ? (res.requirements.ok ? " Dependencies installed." : ` Dependency install FAILED: ${String(res.requirements.detail || "").split("\n").slice(0, 2).join(" ")}`) : "");
 
   return {
     /** What each action would do right now: {update, branch, rollback, ok} for the cards' hints. */
@@ -62,7 +62,7 @@ export function createMaintenance({ api, flush }) {
       const gs = await status(true); if (!gs) return;
       const branch = gs.branch || "dev";
       if (!(await ask("Update", `Pull the latest "${branch}" from origin and restart ComfyUI? Any running generation will be lost.${gs.behind > 0 ? ` ${gs.behind} commit(s) available.` : ""}`))) return;
-      return run(`Pulling origin/${branch}…`, () => api.git("update", { branch }), (r) => (r.updated ? `Updated ${r.before} → ${r.after}.${deps(r)}` : "Already up to date."));
+      return run(`Pulling origin/${branch}…`, () => api.git("update", { branch }), (r) => `${r.updated ? `Updated ${r.before} → ${r.after}.` : "Already up to date."}${deps(r)}`);       // missing packages are installed even when the code is current
     },
     async switchBranch() {
       const gs = await status(true); if (!gs) return;
