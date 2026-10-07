@@ -75,7 +75,9 @@ export default {
       if (!box || !node) return;
       const r = box.isConnected ? box.getBoundingClientRect() : null;
       if (!r || !r.width) return closeBulb();        // gone, or hidden with its panel
-      Object.assign(node.style, { left: `${Math.max(4, r.right - 40)}px`, top: `${Math.max(4, r.top - 30)}px` });
+      // Inside the box's own bottom-right corner (left of the resize grip): on the box it belongs to, never over a neighbour's controls.
+      const b = node.getBoundingClientRect();
+      Object.assign(node.style, { left: `${Math.max(r.left + 4, r.right - b.width - 16)}px`, top: `${Math.max(r.top + 2, r.bottom - b.height - 4)}px` });
     }
     const onFocus = (e) => { const t = e.target; if (t instanceof HTMLTextAreaElement && BOXES.has(t.getAttribute("aria-label"))) { clearTimeout(hold); show(t); } };
     const settle = () => { clearTimeout(hold); hold = setTimeout(() => { if (node && box !== document.activeElement && !node.contains(document.activeElement) && !pop) closeBulb(); }, 400); };
