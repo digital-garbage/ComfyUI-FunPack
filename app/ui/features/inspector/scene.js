@@ -1,7 +1,8 @@
 // The Scene tab: this clip's prompt, where it starts from, how long it runs.
 import { composer as c } from "../../composer/composer.js";
 import { namesOf, pick } from "./mediapick.js";
-import { effFrames, effFps, genUnitId, isSubclip, seconds } from "../../shell/scenes.js";
+import { effFrames, effFps, genUnitId, isSubclip, seconds, snapFrames } from "../../shell/scenes.js";
+import { gridOf } from "../../shell/frame_grid.js";
 import { restoreToPlan } from "../../shell/edits.js";
 
 const SOURCES = [{ value: "image", label: "Image · i2v anchor" }, { value: "carry", label: "From generated frame" }, { value: "video", label: "Video clip" }];
@@ -18,12 +19,12 @@ const mediaField = (app, p, sc, { label, hint, key, multiple, kinds, empty }) =>
 };
 
 /** A number-or-mode pair: "Project default / Timeline trim / Custom", and the number only when Custom. */
-const lengthField = (p, sc, label, modeKey, valueKey, shown) => {
+const lengthField = (p, sc, label, modeKey, valueKey, shown, grid) => {
   const mode = sc[modeKey] || "project";
   return c.field.default({ label, control: c.region.stack({ gap: "xs", children: [
     c.select.md({ label, options: MODES, value: mode, onChange: (v) => p.setScene(sc.id, modeKey, v) }),
-    mode === "custom" ? c.number.md({ label: `${label} (custom)`, min: 1, max: 16384, precision: 0, value: sc[valueKey] ?? shown,
-      onChange: (v) => p.setScene(sc.id, valueKey, v) }) : null,
+    mode === "custom" ? c.number.md({ label: `${label} (custom)`, min: grid ? grid.step + grid.base : 1, max: 16384, step: grid ? grid.step : 1, precision: 0, value: sc[valueKey] ?? shown,
+      onChange: (v) => p.setScene(sc.id, valueKey, grid ? snapFrames(v, "round", grid) : v) }) : null,
   ] }) });
 };
 
@@ -63,7 +64,7 @@ export function sceneRows(p, app) {
     mediaField(app, p, sc, { label: "References", key: "references", multiple: true, kinds: ["image", "video", "audio"], empty: "+ Add reference" })),
     c.label.section({ text: "Length" }),
     card(c.field.row({ fields: [
-      lengthField(p, sc, "Frames", "frames_mode", "frames", effFrames(sc, open)),
+      lengthField(p, sc, "Frames", "frames_mode", "frames", effFrames(sc, open), gridOf(app.pipeline && app.pipeline.slots())),
       lengthField(p, sc, "FPS", "fps_mode", "fps", effFps(sc, open)),
     ] }),
     drift(sc, open),

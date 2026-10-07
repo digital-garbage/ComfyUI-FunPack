@@ -1,6 +1,7 @@
 // The Project tab: what the whole project makes.
 import { composer as c } from "../../composer/composer.js";
-import { DRIVEN, isVideoClip, segments } from "../../shell/scenes.js";
+import { DRIVEN, isVideoClip, segments, snapFrames } from "../../shell/scenes.js";
+import { gridOf } from "../../shell/frame_grid.js";
 import { card } from "./scene.js";
 
 const STARTS = [{ value: "i2v", label: "From an image" }, { value: "t2v", label: "From a prompt" }];
@@ -11,9 +12,11 @@ const videoControls = (p, slots) => (slots || []).flatMap((slot) => (slot.roles 
   const field = DRIVEN[role.drives];
   const now = field ? p.project[field] : p.video[role.input] ?? (slot.inputs || {})[role.input];
   if (!Number.isInteger(now)) return null;                  // the project file keeps whole numbers only
-  const label = role.label || role.input;
-  return { key: field || role.input, label, field: c.field.default({ label, control: c.number.md({ label, min: 1, max: role.drives === "fps" ? 1000 : 16384, step: 1, precision: 0, value: now,
-    onChange: (v) => (field ? p.setField(field, v) : p.setVideo(role.input, v)) }) }) };
+  const label = role.label || role.input, grid = role.drives === "frames" ? gridOf(slots) : null;
+  // On a model with a frame grid the arrows walk it (H3: 22, 39, 56 …) and a typed number lands on it: what runs is what shows.
+  return { key: field || role.input, label, field: c.field.default({ label, hint: grid ? `This model makes ${grid.step}k+${grid.base} frames; other numbers snap to the nearest.` : undefined,
+    control: c.number.md({ label, min: grid ? grid.step + grid.base : 1, max: role.drives === "fps" ? 1000 : 16384, step: grid ? grid.step : 1, precision: 0, value: now,
+      onChange: (v) => { if (grid) v = snapFrames(v, "round", grid); return field ? p.setField(field, v) : p.setVideo(role.input, v); } }) }) };
 }).filter(Boolean)).filter((r, i, all) => all.findIndex((x) => x.key === r.key) === i);
 
 const num = (p, label, key, fallback) => ({ key, label, field: c.field.default({ label, control: c.number.md({ label, min: 1, max: key === "frame_rate" ? 1000 : 16384, step: 1, precision: 0,

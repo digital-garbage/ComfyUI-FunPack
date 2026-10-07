@@ -2,7 +2,10 @@
 // that act on the cut, the zoom controls, and the count in the zone's head. They share only the app's
 // selection, playhead and message bus.
 import { composer as c } from "../../composer/composer.js";
-import { segments, totalSeconds, clock } from "../../shell/scenes.js";
+import { segments, totalSeconds, clock, LTX_GRID } from "../../shell/scenes.js";
+import { gridOf } from "../../shell/frame_grid.js";
+
+const gridFor = (app) => gridOf(app.pipeline && app.pipeline.slots()) || LTX_GRID;       // trims and cuts land on frame counts this model can make
 import { inPlace } from "../../shell/place.js";
 import * as edits from "../../shell/edits.js";
 import { videoLane, audioLane, framesAt } from "./lanes.js";
@@ -30,7 +33,7 @@ const stage = {
         if (own) return own.trim(id, edge, d);
         if (edge === "slip") return edit((pr) => Boolean(((pr.scene_renders || {})[id] || {}).media) && edits.slip(pr, id, d));       // slides what plays; only a rendered clip has more to show
         const dur = segments(p.project).find((s) => s.id === id).dur;
-        edit((pr) => edge === "out" ? edits.resize(pr, id, dur + d) : d > 0 && edits.trimLeft(pr, id, d));   // the left edge only cuts in
+        edit((pr) => edge === "out" ? edits.resize(pr, id, dur + d, gridFor(app)) : d > 0 && edits.trimLeft(pr, id, d, gridFor(app)));   // the left edge only cuts in
       },
       onReorder: (id, index) => edit((pr) => {      // the stage counts ghosts and pauses too; the cut counts scenes
         const all = segments(pr).filter((s) => s.id !== id);
@@ -71,7 +74,7 @@ const tools = {
       const seg = segments(p.project).find((s) => s.id === sel.focus && s.kind === "scene");
       if (!seg) return;
       const inside = head.at > seg.start && head.at < seg.start + seg.dur;
-      if (!p.edit((pr) => edits.split(pr, seg.id, inside ? framesAt(seg.scene, pr, head.at - seg.start) : undefined))) c.toast.warn({ text: "Too close to the clip's edge to cut there." });
+      if (!p.edit((pr) => edits.split(pr, seg.id, inside ? framesAt(seg.scene, pr, head.at - seg.start) : undefined, gridFor(app)))) c.toast.warn({ text: "Too close to the clip's edge to cut there." });
     };
     const draw = () => {
       const open = p.project, ids = open ? sel.ids : [];
