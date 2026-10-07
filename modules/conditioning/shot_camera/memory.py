@@ -265,7 +265,10 @@ def _lean(yes, no):
 
 
 def split_chance(chance):
-    """The chance of cutting a shot in two, tilted by whether split runs were liked."""
+    """The chance of cutting a shot in two, tilted by whether split runs were liked. 0 and 1 are the user's
+    never/always and are kept as set."""
+    if chance <= 0.0 or chance >= 1.0:
+        return max(0.0, min(1.0, chance))
     return max(0.0, min(1.0, chance * _lean("split:yes", "split:no")))
 
 

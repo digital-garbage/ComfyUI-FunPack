@@ -186,6 +186,7 @@ def test_ratings_teach_the_camera_its_own_choices(store):
     p = fm.prior()
     assert p["lamp"] > 0 > p["door"]
     assert fm.split_chance(0.0) == 0.0                         # a chance the user turned off stays off
+    assert fm.split_chance(1.0) == 1.0                         # and "always" stays always
     assert fm.forget("word", "lamp") and "lamp" not in fm.prior()
 
 
