@@ -1,10 +1,7 @@
 """Latent to pictures, and to sound where there is any.
 
-This is the only part of getting a result out that FunPack needs to own. Core
-already turns images into a video (`CreateVideo`) and writes the file
-(`SaveVideo`, `SaveWEBM`, `SaveImage`), and those handle containers, codecs and
-audio muxing properly -- writing our own would be duplication with a worse
-version of somebody else's tested code. VHS is unnecessary either way.
+Writing the file is FunPack Save Video's job (core's SaveVideo encoded on one
+CPU thread); VHS is unnecessary either way.
 
 What core cannot generalise is the decode itself for a model whose latent is not
 one tensor. An AV latent carries a video branch and an audio branch that need

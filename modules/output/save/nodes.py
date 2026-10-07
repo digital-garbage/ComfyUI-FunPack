@@ -4,7 +4,8 @@ Core's SaveVideo encodes with libx264 through PyAV, and FFmpeg's library default
 rental's CPU that is where a run's last half-minute went. Here the GPU's own encoder (NVENC) does it when
 this PyAV build and the card have one. H.264 by default: it plays in every browser, Firefox included, and
 NVENC makes it as fast as H.265. H.265 (smaller files, tagged hvc1) is an option for Chrome/Safari. With no
-NVENC it is libx264 on every core: CPU H.265 is several times slower. Same names and metadata as SaveVideo.
+NVENC it is libx264 on every core: CPU H.265 is several times slower. Same names and metadata as SaveVideo. Takes the frames and sound directly: core's
+CreateVideo step in between only bundled them.
 """
 
 import json
@@ -86,7 +87,9 @@ class FunPackSaveVideo(io.ComfyNode):
             category="FunPack/Output",
             description="Save as MP4 (H.264): on the GPU's encoder when there is one, otherwise on every CPU core.",
             inputs=[
-                io.Video.Input("video"),
+                io.Image.Input("images"),
+                io.Audio.Input("audio", optional=True),
+                io.Float.Input("fps", default=24.0, min=1.0, max=240.0, step=0.01),
                 io.String.Input("filename_prefix", default="FunPack"),
                 io.Combo.Input("encoder", options=list(ENCODERS), default="auto", optional=True,
                                tooltip="auto: GPU (NVENC) if available, else H.264 on the CPU. gpu: fail rather than use the CPU. cpu: H.264 (libx264) on every core."),
@@ -95,13 +98,12 @@ class FunPackSaveVideo(io.ComfyNode):
             ],
             hidden=[io.Hidden.prompt, io.Hidden.extra_pnginfo],
             is_output_node=True,
-            outputs=[io.Video.Output("video")],
+            outputs=[],
         )
 
     @classmethod
-    def execute(cls, video, filename_prefix="FunPack", encoder="auto", codec="h264") -> io.NodeOutput:
-        parts = video.get_components()
-        frames = (parts.images * 255).clamp(0, 255).byte().cpu().numpy()
+    def execute(cls, images, fps=24.0, filename_prefix="FunPack", audio=None, encoder="auto", codec="h264") -> io.NodeOutput:
+        frames = (images * 255).clamp(0, 255).byte().cpu().numpy()
         width, height = frames.shape[2], frames.shape[1]
         folder, filename, counter, subfolder, _ = folder_paths.get_save_image_path(
             filename_prefix, folder_paths.get_output_directory(), width, height)
@@ -110,6 +112,6 @@ class FunPackSaveVideo(io.ComfyNode):
             metadata = {**(cls.hidden.extra_pnginfo or {}), **({"prompt": cls.hidden.prompt} if cls.hidden.prompt is not None else {})} or None
         file = f"{filename}_{counter:05}_.mp4"
         t = time.perf_counter()
-        used = encode(os.path.join(folder, file), frames, float(parts.frame_rate), parts.audio, metadata, encoder, codec)
+        used = encode(os.path.join(folder, file), frames, float(fps), audio, metadata, encoder, codec)
         log.info("FunPack Save Video", f"{file}: {len(frames)} frames in {time.perf_counter() - t:.1f}s with {used}")
-        return io.NodeOutput(video, ui=ui.PreviewVideo([ui.SavedResult(file, subfolder, io.FolderType.output)]))
+        return io.NodeOutput(ui=ui.PreviewVideo([ui.SavedResult(file, subfolder, io.FolderType.output)]))

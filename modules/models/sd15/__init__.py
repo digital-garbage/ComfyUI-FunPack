@@ -65,10 +65,8 @@ def text_to_image():
         {"id": "hold", "group": "Render", "node": "RepeatImageBatch",
          "roles": [{"at": "project.video", "input": "amount", "label": "Length", "drives": "frames"}],
          "inputs": {"image": ["decode", 0], "amount": 1}},
-        {"id": "video", "group": "Render", "node": "CreateVideo", "roles": [video],
-         "inputs": {"images": ["hold", 0], "fps": 24.0}},
-        {"id": "save", "group": "Render", "node": "FunPackSaveVideo",
-         "inputs": {"video": ["video", 0], "filename_prefix": "FunPack"}},
+        {"id": "save", "group": "Render", "node": "FunPackSaveVideo", "roles": [video],
+         "inputs": {"images": ["hold", 0], "fps": 24.0, "filename_prefix": "FunPack"}},
     ]
 
 

@@ -106,11 +106,9 @@ def _base(image_to_video: bool, as_guide: bool = False):
         *_uncrop(as_guide),
         {"id": "decode", "group": "Render", "node": "FunPackDecode", "inputs": {
             "samples": ["rejoin", 0] if as_guide else ["sampler", 0], "vae": ["model", 2], "model": ["model", 0], "audio_vae": ["audio_vae", 0]}},
-        {"id": "video", "group": "Render", "node": "CreateVideo",
+        {"id": "save", "group": "Render", "node": "FunPackSaveVideo",
          "roles": [{"at": "project.video", "input": "fps", "label": "FPS", "drives": "fps"}],
-         "inputs": {"images": ["decode", 0], "fps": 25.0, "audio": ["decode", 1]}},
-        {"id": "save", "group": "Render", "node": "FunPackSaveVideo", "inputs": {
-            "video": ["video", 0], "filename_prefix": "FunPack"}},
+         "inputs": {"images": ["decode", 0], "audio": ["decode", 1], "fps": 25.0, "filename_prefix": "FunPack"}},
     ]
     return slots
 
