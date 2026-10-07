@@ -116,6 +116,11 @@ export default {
           }
           if (stopped) g.cancel();                      // Stop landed while this one was being queued
           if (!made) app.api.newTasteGeneration(g.run.state.promptId).catch(() => {});        // a run really started: the last run's unrated clips can no longer be paired with what it learned
+          const promptInput = rolesAt(frozen, "generation.prompt")[0];
+          const promptText = promptInput && (inputs[promptInput.slot.id] || {})[promptInput.role.input];
+          if (g.run.state.promptId && typeof promptText === "string") {
+            app.api.promptBuilderCapture(g.run.state.promptId, promptText).catch(() => {});
+          }
           made += 1;
           const end = await done;
           if (end === g.CANCELLED) break;

@@ -4,11 +4,12 @@ import { applyStory, clash, joinStory } from "./story.js";
 import { shortcuts } from "./shortcuts.js";
 import { cuts } from "./cuts.js";
 import { enhance } from "./enhance.js";
+import { promptBuilder } from "./prompt_builder.js";
 import { chat, chatHook } from "./chat.js";
 import { files } from "./files.js";
 import { pickShortcut, templatesBar, variablesPanel } from "./storytools.js";
 
-const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }, { value: "files", label: "Files" }];
+const TABS = [{ value: "story", label: "Story" }, { value: "shortcuts", label: "Shortcuts" }, { value: "build", label: "Build" }, { value: "cuts", label: "Cuts" }, { value: "enhance", label: "Enhance" }, { value: "chat", label: "Chat" }, { value: "files", label: "Files" }];
 
 // The box follows the scenes; typing in it rewrites them (after a short pause, or when focus leaves).
 const story = (app, own) => {
@@ -53,7 +54,7 @@ const story = (app, own) => {
   ] });
 };
 
-const sheets = { story, shortcuts, cuts,
+const sheets = { story, shortcuts, build: promptBuilder, cuts,
   enhance, chat, files };
 
 export default {
