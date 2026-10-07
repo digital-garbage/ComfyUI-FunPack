@@ -54,6 +54,7 @@ FROZEN = {
     "FunPackLoadModifiers": ["model", "settings"],
     "FunPackLatentUpscalerLoader": ["upscaler_name"],
     "FunPackCutOpening": ["images", "frames", "fps", "audio"],
+    "FunPackSaveVideo": ["video", "filename_prefix", "encoder", "codec"],
     "FunPackPromptMarkup": ["text"],
     "FunPackNegativeErase": ["positive", "negative", "strength", "mode", "keep_size"],
     "FunPackShotCamera": ["text", "settings", "length", "frame_rate"],
