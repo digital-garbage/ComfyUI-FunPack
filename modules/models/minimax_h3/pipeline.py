@@ -140,9 +140,8 @@ def h3_reference_to_video():
          "inputs": {"images": ["decode", 0], "audio": ["decode", 1], "frames": 0, "fps": 24.0}},
         {"id": "video", "group": "Render", "node": "CreateVideo", "inputs": {
             "images": ["cut", 0], "fps": 24.0, "audio": ["cut", 1]}},
-        {"id": "save", "group": "Render", "node": "SaveVideo", "inputs": {
-            "video": ["video", 0], "filename_prefix": "FunPack",
-            "format": "auto"}},
+        {"id": "save", "group": "Render", "node": "FunPackSaveVideo", "inputs": {
+            "video": ["video", 0], "filename_prefix": "FunPack"}},
     ]
 
     for n in range(1, MAX_REFERENCES + 1):

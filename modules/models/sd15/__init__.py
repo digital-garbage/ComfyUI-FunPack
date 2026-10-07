@@ -67,8 +67,8 @@ def text_to_image():
          "inputs": {"image": ["decode", 0], "amount": 1}},
         {"id": "video", "group": "Render", "node": "CreateVideo", "roles": [video],
          "inputs": {"images": ["hold", 0], "fps": 24.0}},
-        {"id": "save", "group": "Render", "node": "SaveVideo",
-         "inputs": {"video": ["video", 0], "filename_prefix": "FunPack", "format": "auto"}},
+        {"id": "save", "group": "Render", "node": "FunPackSaveVideo",
+         "inputs": {"video": ["video", 0], "filename_prefix": "FunPack"}},
     ]
 
 

@@ -109,8 +109,8 @@ def _base(image_to_video: bool, as_guide: bool = False):
         {"id": "video", "group": "Render", "node": "CreateVideo",
          "roles": [{"at": "project.video", "input": "fps", "label": "FPS", "drives": "fps"}],
          "inputs": {"images": ["decode", 0], "fps": 25.0, "audio": ["decode", 1]}},
-        {"id": "save", "group": "Render", "node": "SaveVideo", "inputs": {
-            "video": ["video", 0], "filename_prefix": "FunPack", "format": "auto"}},
+        {"id": "save", "group": "Render", "node": "FunPackSaveVideo", "inputs": {
+            "video": ["video", 0], "filename_prefix": "FunPack"}},
     ]
     return slots
 
