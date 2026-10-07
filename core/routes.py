@@ -366,6 +366,12 @@ def register(routes, prefix=None):
                 {"refused": malformed, "incomplete": [], "queueable": False,
                  "slots": [], "prompt": None},
                 status=400)
+        # A pipeline saved under older nodes, brought up to date by the module that replaced them.
+        for spec, upgrade in modules().providers("upgrade_slots"):
+            try:
+                slots = upgrade(slots, graph_mod.from_comfyui().outputs)
+            except Exception as exc:  # noqa: BLE001
+                log.failed(f"{spec.id}.upgrade_slots", exc)
 
         # An id and a node name are strings, and only a string can be looked up
         # in the dicts below: `{"slot": ["a"]}` reaches a `in`-on-dict as an
