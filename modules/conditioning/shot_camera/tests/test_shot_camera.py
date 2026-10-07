@@ -204,6 +204,7 @@ CUTS = ("Two friends in a sunlit loft, <Subject 1> is a tall woman, <Subject 2> 
 
 
 def test_a_shot_whose_point_changes_is_cut_in_two_with_whole_second_times():
+    """PA then PB are two shortcuts in one shot, so the shot is cut between them."""
     pytest.importorskip("spacy")
     out, info = sc.add_shot_cuts(CUTS, 12, seed=1, chance=1.0, pieces=PIECES)
     assert (info["before"], info["after"]) == (2, 3)
@@ -270,13 +271,64 @@ def test_a_view_goes_after_the_cut_opener_and_before_the_action():
 
 
 def test_a_shot_is_never_cut_inside_one_shortcut():
-    """The topic changes between PA and PB. If PA+PB is ONE shortcut, nothing may be split."""
+    """The topic changes between PA and PB. If PA+PB is ONE shortcut, nothing may be split,
+    even when PA and PB are also shortcuts on their own."""
     pytest.importorskip("spacy")
     one = f"{PA} {PB}"
     out, info = sc.add_shot_cuts(CUTS, 12, seed=1, chance=1.0, pieces=[one, PC])
     assert info["after"] == 2 and out.count("[Shot ") == 2
+    out, info = sc.add_shot_cuts(CUTS, 12, seed=1, chance=1.0, pieces=[one, PA, PB, PC])
+    assert info["after"] == 2 and out.count("[Shot ") == 2
     out, info = sc.add_shot_cuts(CUTS, 12, seed=1, chance=1.0)          # no shortcut texts known
     assert info["after"] == 2
+
+
+def test_different_shortcuts_stacked_in_one_shot_each_become_a_shot():
+    """[Shot 1] DANCE KISS MARRIAGE: three shortcuts, three shots, even where a word is shared."""
+    dance = "<Subject 1> sways <Subject 1>'s hips and smiles."
+    kiss = "<Subject 1> kisses <Subject 2>'s cheek and smiles."
+    marriage = "<Subject 2> holds <Subject 1>'s hand under the arch."
+    prompt = HEAD + f"[Shot 1] {dance} {kiss} {marriage}"
+    out, info = sc.add_shot_cuts(prompt, 15, seed=1, chance=1.0, pieces=[dance, kiss, marriage])
+    assert info["after"] == 3 and out.count("[Shot ") == 3
+    assert info["times"] == ["00:05.000", "00:10.000"]
+    assert "hips" in out and "cheek" in out and "arch" in out
+
+
+def test_the_same_shortcut_repeated_in_one_shot_is_cut_into_takes():
+    """[Shot 1] DANCE DANCE DANCE: each copy is its own take, with a view and a focus."""
+    pytest.importorskip("spacy")
+    prompt = HEAD + f"[Shot 1] {PA} {PA} {PA}"
+    out, info = sc.add_shot_cuts(prompt, 15, seed=1, chance=1.0, pieces=[PA])
+    assert info["after"] == 3 and out.count("[Shot ") == 3
+    viewed, added = sc.add_shot_views(out, seed=3, chance=1.0)
+    assert [a["shot"] for a in added] == [2, 3]
+    assert added[0]["view"] != added[1]["view"]
+    _moved, rep = sc.add_camera_moves(viewed, seed=3, chance=1.0)
+    assert all(r["move"] for r in rep), [r["why"] for r in rep]
+    opts = sc.focus_options(viewed)
+    assert len({o["key"] for o in opts}) == 3
+
+
+def test_repeated_shots_keep_a_focus_and_a_view_of_their_own():
+    """Three shots of the same shortcut are not one locked camera. A pick on the first
+    does not blank the others, and each later shot can take a different view."""
+    pytest.importorskip("spacy")
+    prompt = HEAD + f"[Shot 1] {PA} [Shot 2] {PA} [Shot 3] {PA}"
+    opts = sc.focus_options(prompt)
+    assert len({o["key"] for o in opts}) == 3
+    _out, rep = sc.add_camera_moves(prompt, seed=1, chance=1.0)
+    assert all(r["move"] for r in rep), [r["why"] for r in rep]
+    _out, rep = sc.add_camera_moves(prompt, seed=1, chance=1.0,
+                                    choices={opts[0]["key"]: {"mode": "none"}})
+    assert rep[0]["move"] is None and rep[1]["move"] and rep[2]["move"]
+    vopts = sc.view_options(prompt)
+    assert [o["shot"] for o in vopts] == [2, 3] and vopts[0]["key"] != vopts[1]["key"]
+    _out, added = sc.add_shot_views(prompt, seed=1, chance=0.0, choices={
+        vopts[0]["key"]: {"view": "Side view"},
+        vopts[1]["key"]: {"view": "View from above"},
+    })
+    assert [a["view"] for a in added] == ["Side view", "View from above"]
 
 
 @pytest.mark.parametrize("view", sc.VIEWS)

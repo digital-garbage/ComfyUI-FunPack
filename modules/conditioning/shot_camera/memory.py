@@ -171,7 +171,7 @@ def learn_views(decisions):
 def arm_stats():
     """{arm: (good, bad)} for what ratings taught about the camera's own choices: "move:yes" /
     "move:no" (a shot got a move / was left alone), "style:hold|travel|k1|k2|k3", "word:<lemma>",
-    "split:yes|no" (a shot whose point changes was cut in two / kept whole)."""
+    "split:yes|no" (a shortcut boundary inside a shot was cut / kept whole)."""
     return {k: (float(v[0]), float(v[1])) for k, v in (_read().get("arms") or {}).items()
             if isinstance(v, (list, tuple)) and len(v) == 2}
 

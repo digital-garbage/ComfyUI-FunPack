@@ -14,6 +14,20 @@ def test_off_by_default_leaves_text_alone(tmp_path, monkeypatch):
     assert nodes.rewrite(text, {}, seconds=5.0, pieces=[])[0] == text
 
 
+def test_cut_within_the_same_shot_is_its_own_switch(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    m = _mod()
+    assert m.SETTINGS["cut_same_shot"]["type"] == "bool" and "when" not in m.SETTINGS["cut_same_shot"]
+    assert m.SETTINGS["shot_cuts_chance"]["when"] == {"cut_same_shot": True}
+    dance = "She sways her hips from side to side, smiling at the room."
+    text = f"[Shot 1] {dance} {dance} {dance}"
+    kept, _, _ = nodes.rewrite(text, {"shot_cuts": True, "cut_same_shot": False, "shot_cuts_chance": 1},
+                               seconds=12, pieces=[dance])
+    assert kept.count("[Shot ") == 1
+    cut, said, _ = nodes.rewrite(text, {"cut_same_shot": True, "shot_cuts_chance": 1}, seconds=12, pieces=[dance])
+    assert cut.count("[Shot ") == 3 and "00:04.000" in cut and "00:08.000" in cut and "cuts at" in said
+
+
 def test_cuts_add_times(tmp_path, monkeypatch):
     monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
     text = "[Shot 1] A woman walks along the street.\n[Shot 2] She sits down at a table."

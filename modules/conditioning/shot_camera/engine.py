@@ -331,24 +331,55 @@ def _analyse(text):
     parts = [_split_sound(b) for b in bodies]
     cands = [candidates(own_words_removed(p[0])) for p in parts]
     header_lemmas = {c[0] for c in candidates(header)}
-    # In (nearly) every shot = about the whole prompt, not this shot. 70%: with three shots a
-    # noun shared by two of them is still a topic of those two, only all three is a constant.
-    need = max(2, math.ceil(0.7 * len(bodies))) if len(bodies) > 1 else 10 ** 9
-    seen = {}
-    for lst in cands:
-        for lemma in {c[0] for c in lst}:
-            seen[lemma] = seen.get(lemma, 0) + 1
-    constant = {l for l, n in seen.items() if n >= need} | header_lemmas
+    constant = _constants([p[0] for p in parts], cands, header_lemmas)
     return marks, header, parts, [[c for c in lst if c[0] not in constant] for lst in cands]
 
 
-def shot_key(picture):
-    """A stable name for a shot's content: the same whatever cut opener, view or camera sentence
-    was added, so a choice made about a shot still finds it after the prompt is regenerated."""
+def _content_key(picture):
+    """Hash of a shot's own words. Cut times, views and camera sentences are not part of it."""
     import hashlib
     body = own_words_removed(picture or "")
     body = re.sub(r"\s+", " ", body).strip().lower()
     return hashlib.md5(body.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def shot_key(picture, occurrence=0):
+    """A stable name for one take of a shot. The same whatever cut opener, view or camera
+    sentence was added, so a choice still finds it after the prompt is regenerated.
+    The same shortcut used again is a later take (`:1`, `:2`), so a focus or view chosen
+    for the first does not lock the next."""
+    base = _content_key(picture)
+    return base if not occurrence else f"{base}:{int(occurrence)}"
+
+
+def _take_keys():
+    """A counter: the first copy of a shot's words keeps the plain key, the next get :1, :2."""
+    seen = {}
+
+    def key(picture):
+        base = _content_key(picture)
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        return shot_key(picture, n)
+    return key
+
+
+def _constants(pictures, lists, header_lemmas):
+    """Lemmas in (nearly) every distinct shot, plus whatever the intro already named.
+    Two copies of the same shortcut count once: DANCE DANCE must not strip the only
+    things the next take can focus on. 70%: with three different shots, a noun shared
+    by two of them is still a topic of those two."""
+    groups = {}
+    for picture, lst in zip(pictures, lists):
+        groups.setdefault(_content_key(picture), set()).update(c[0] for c in lst)
+    if len(groups) <= 1:
+        return set(header_lemmas)
+    need = max(2, math.ceil(0.7 * len(groups)))
+    seen = {}
+    for lemmas in groups.values():
+        for lemma in lemmas:
+            seen[lemma] = seen.get(lemma, 0) + 1
+    return {lemma for lemma, n in seen.items() if n >= need} | set(header_lemmas)
 
 
 def focus_options(text, prior=None):
@@ -356,7 +387,7 @@ def focus_options(text, prior=None):
     -> [{"shot", "key", "already", "candidates": [{"lemma", "text", "score"}], "auto": str|None}]
     `auto` is what the rewriter would pick with no say from anyone (its plain, top choice)."""
     marks, _header, parts, pools = _analyse(text)
-    out = []
+    out, keys = [], _take_keys()
     for i, m in enumerate(marks):
         picture = parts[i][0]
         pool = pools[i]
@@ -369,7 +400,7 @@ def focus_options(text, prior=None):
         auto = None
         if opts and not CAMERA.search(CUT.sub("", picture)):
             auto = _plan(pool, None, None, prior)[1]
-        out.append({"shot": int(m.group(1)), "key": shot_key(picture),
+        out.append({"shot": int(m.group(1)), "key": keys(picture),
                     "auto_lemma": opts[0]["lemma"] if opts else None,
                     "already": bool(CAMERA.search(CUT.sub("", picture))),
                     "candidates": opts, "auto": auto})
@@ -387,11 +418,11 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None, arms
     marks, header, parts, pools = _analyse(text)
     if not marks:
         return text, []
-    report, out, last = [], [header], None
+    report, out, last, keys = [], [header], None, _take_keys()
     for i, m in enumerate(marks):
         picture, sound = parts[i]
         entry = {"shot": int(m.group(1)), "move": None, "target": None, "why": "", "lemmas": [],
-                 "key": shot_key(picture), "arms": []}
+                 "key": keys(picture), "arms": []}
         rng = random.Random(f"{seed}:{i}") if seed is not None else None
         pool = pools[i]
         # What the person said about this shot, if anything: "none", or a target and/or a mode.
@@ -436,48 +467,60 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None, arms
 # ── shot cuts ───────────────────────────────────────────────────────────────────────
 # H3 wants every shot after the first to open with its cut time and a cut phrase
 # ("[Shot 2] At 00:03.000, the camera cuts to ..."), times increasing and inside the video.
-# Nothing in a prompt knows the video's length, so the caller hands it in (seconds).
+# A shot that holds several shortcuts is cut between them, the same shortcut used again
+# included ("[Shot 1] DANCE KISS", "[Shot 1] DANCE DANCE"), so each part can take a time,
+# a view and a focus. Never inside one shortcut. Nothing in a prompt knows the video's
+# length, so the caller hands it in (seconds).
 STAMP = re.compile(r"\b\d\d:\d\d\.\d{3}\b")
 CUT_OPENERS = ("the camera cuts to a new angle", "the shot transitions to the next moment",
-               "the shot changes to a new view", "the shot switches to the next beat")
+               "the shot changes to a new view", "the shot switches to what follows")
 LEAD_CUT = re.compile(r"^\s*(?:the\s+)?(?:camera|shot)\s+(?:cuts|transitions|changes|switches)\s+to\b",
                       re.I)
 MIN_SHOT_SECONDS = 2
-SENTENCE = re.compile(r"[^.!?]+[.!?]*\s*")
 
 
 def _stamp(t):
     return f"{int(t) // 60:02d}:{int(t) % 60:02d}.000"
 
 
-def _sentence_topics(sentence, constant):
-    return {c[0] for c in candidates(sentence) if c[0] not in constant and _score(c) > 0.5}
+def _whole_piece(picture, i, piece):
+    """True when `piece` starts at `i` on a word edge, not as a prefix of a longer word."""
+    end = i + len(piece)
+    before = i == 0 or picture[i - 1].isspace()
+    after = end >= len(picture) or picture[end].isspace() or picture[end] in ".!?,;:"
+    return before and after and picture.startswith(piece, i)
 
 
-def _switch_point(picture, constant, pieces):
-    """Index of the first sentence that (a) starts exactly where a known shortcut text starts and
-    (b) shares no topic with everything before it, both sides having some: the shot's main
-    point changes between two of the user's shortcuts. Never inside one."""
-    sentences = SENTENCE.findall(picture)
-    seen, offset = set(), 0
-    for j, sent in enumerate(sentences):
-        topics = _sentence_topics(sent, constant)
-        starts_piece = j and any(picture.startswith(r, offset + len(sent) - len(sent.lstrip()))
-                                 for r in pieces)
-        if starts_piece and seen and topics and not (topics & seen):
-            return j, sentences
-        seen |= topics
-        offset += len(sent)
-    return None, sentences
+def _cut_points(picture, pieces):
+    """Indexes where a later shortcut starts inside this one shot. The same text used again
+    counts, so DANCE DANCE is two takes. Longest shortcut wins, so a cut never lands inside one."""
+    ordered = sorted({p.strip() for p in pieces if isinstance(p, str) and p.strip()}, key=len, reverse=True)
+    if not ordered or not picture:
+        return []
+    hits, i = [], 0
+    while i < len(picture):
+        match = next((p for p in ordered if _whole_piece(picture, i, p)), None) if (
+            i == 0 or picture[i - 1].isspace()) else None
+        if match:
+            hits.append(i)
+            i += len(match)
+        else:
+            i += 1
+    return hits[1:]
+
+
+def _fresh_piece(text):
+    """A part cut off the front of a shot: drop a leading 'Then', keep the capital."""
+    text = re.sub(r"^\s*(?:then|next|after that|afterwards),?\s+", "", text or "", flags=re.I)
+    return (text[:1].upper() + text[1:]) if text else text
 
 
 def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
-    """-> (new prompt, info). Shots whose main point changes are split in two; every shot after
-    the first then opens with its cut time, spread evenly over `seconds` and rounded
-    to whole seconds. A prompt that already carries cut times is left alone.
-    `pieces`: the texts of the user's shortcuts; a shot is only ever cut BETWEEN two of them,
-    so with none given nothing is split (times are still added).
-    info = {"before", "after", "times": [...], "why": str}."""
+    """-> (new prompt, info). A shot is cut between the shortcuts inside it, including the same
+    shortcut used again; every shot after the first then opens with its cut time, spread evenly
+    over `seconds` and rounded to whole seconds. A prompt that already carries cut times is left
+    alone. `pieces`: the texts of the user's shortcuts. With none given nothing is split (times
+    are still added). info = {"before", "after", "times": [...], "why": str}."""
     marks = list(SHOT.finditer(text or ""))
     info = {"before": len(marks), "after": len(marks), "times": [], "why": "", "arms": []}
     if not marks:
@@ -492,28 +535,23 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
         return text, info
     header = text[:marks[0].start()]
     parts = [_split_sound(b) for b in bodies]
-    cands = [candidates(own_words_removed(p[0])) for p in parts]
-    header_lemmas = {c[0] for c in candidates(header)}
-    need = max(2, math.ceil(0.7 * len(bodies))) if len(bodies) > 1 else 10 ** 9
-    seen = {}
-    for lst in cands:
-        for lemma in {c[0] for c in lst}:
-            seen[lemma] = seen.get(lemma, 0) + 1
-    constant = {l for l, n in seen.items() if n >= need} | header_lemmas
     blocks = []                                   # [picture text, sound text]
     for i, (picture, sound) in enumerate(parts):
-        rng = random.Random(f"{seed}:cut:{i}")
-        j, sentences = _switch_point(picture, constant, pieces)
-        split = j is not None and rng.random() < chance
-        if j is not None:
-            info["arms"].append("split:yes" if split else "split:no")
-        if split:
-            first, second = "".join(sentences[:j]), "".join(sentences[j:])
-            blocks.append([first.rstrip() + " ", ""])
-            second = re.sub(r"^\s*(?:then|next|after that|afterwards),?\s+", "", second, flags=re.I)
-            blocks.append([second[:1].upper() + second[1:], sound])
-        else:
+        chosen = []
+        for n, at in enumerate(_cut_points(picture, pieces)):
+            rng = random.Random(f"{seed}:cut:{i}" if n == 0 else f"{seed}:cut:{i}:{n}")
+            take = rng.random() < chance
+            info["arms"].append("split:yes" if take else "split:no")
+            if take:
+                chosen.append(at)
+        if not chosen:
             blocks.append([picture, sound])
+            continue
+        prev = 0
+        for at in chosen:
+            blocks.append([picture[prev:at].rstrip() + " ", ""])
+            prev = at
+        blocks.append([_fresh_piece(picture[prev:]), sound])
     if len(blocks) > len(marks) and (len(blocks) > seconds or seconds / len(blocks) < MIN_SHOT_SECONDS):
         blocks = [[p, s] for p, s in parts]         # not enough seconds for the splits
         info["arms"] = []
@@ -622,17 +660,18 @@ def view_options(text, stats=None):
     """What each `[Shot N]` after the first could open with, for a person to choose from.
     -> [{"shot", "key", "traits", "already", "candidates": [{"view", "score"}], "auto"}]"""
     marks = list(SHOT.finditer(text or ""))
-    out = []
+    out, keys = [], _take_keys()
     for i, m in enumerate(marks):
-        if not i and len(marks) > 1:        # see add_shot_views: a lone shot may take a view
-            continue
         end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
         picture, _sound = _split_sound(text[m.end():end])
+        key = keys(picture)                  # count shot 1 too, even though it is not offered
+        if not i and len(marks) > 1:         # see add_shot_views: a lone shot may take a view
+            continue
         traits = view_traits(picture)
         cands = sorted(((v, _view_weight(v, traits, stats)) for v in allowed_views(traits)),
                        key=lambda c: -c[1])
         stated = VIEW_STATED.search(CUT.sub("", picture))
-        out.append({"shot": int(m.group(1)), "key": shot_key(picture), "traits": traits,
+        out.append({"shot": int(m.group(1)), "key": key, "traits": traits,
                     "already": bool(stated), "stated": stated.group(0) if stated else "",
                     "candidates": [{"view": v, "score": round(w, 2)} for v, w in cands],
                     "auto": cands[0][0] if cands else None})
@@ -644,7 +683,8 @@ def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None, skipped=N
     views that can show them as a sentence of its own (after the cut opener, if there is one),
     never the same as the shot before, drawn per shot from the seed and weighted by `stats`
     (what ratings taught). `choices` {shot_key: {"mode": "auto"|"none"|"pick", "view": str}}:
-    a person's pick is always used, "none" leaves the shot alone. `skipped`, if a list, gets one
+    a person's pick is always used, "none" leaves the shot alone. The same shortcut used again
+    is a different key, so one pick does not lock the next take. `skipped`, if a list, gets one
     "shot N: reason" per shot that got no view."""
     marks = list(SHOT.finditer(text or ""))
     if not marks:
@@ -652,19 +692,20 @@ def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None, skipped=N
     # Shot 1 of several may sit on a reference image or a pinned first frame, which a view would
     # contradict, so views open shots 2+. A prompt with ONE shot has nothing else to open.
     lone = len(marks) == 1
-    out, added, last = [text[:marks[0].start()]], [], None
+    out, added, last, keys = [text[:marks[0].start()]], [], None, _take_keys()
     for i, m in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
         body = text[m.end():end]
         rng = random.Random(f"{seed}:view:{i}")
         picture, sound = _split_sound(body)
+        key = keys(picture)
         view = None
         stated = VIEW_STATED.search(CUT.sub("", picture)) if (i or lone) else None
         if stated and skipped is not None:
             skipped.append(f"shot {m.group(1)}: already states “{stated.group(0)}”")
         if (i or lone) and not stated:
             traits = view_traits(picture)
-            said = (choices or {}).get(shot_key(picture)) or {}
+            said = (choices or {}).get(key) or {}
             allowed = allowed_views(traits)
             if said.get("mode") == "none":
                 pass

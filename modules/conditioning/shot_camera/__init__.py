@@ -2,9 +2,10 @@
 
 MiniMax H3 reads shots written into the prompt ("[Shot 2] At 00:03.000, the camera cuts to... The camera pushes in toward the
 lamp."). This writes them for you, with no language model: a small spaCy tagger finds what each shot is about, a few words
-pick the move. Three independent, off-by-default switches, each with a chance:
+pick the move. Off by default:
 
-* cut times: shots after the first open with their time; a shot whose point changes between two of your shortcuts is split
+* cut times: shots after the first open with their time
+* cut within the same shot: "[Shot 1] DANCE KISS" and "[Shot 1] DANCE DANCE" are cut between the shortcuts, so each part gets a time, a view and a focus. Its chance slider is hidden until this is on
 * views: your own trusted list (side view, from above, POV...), never on shot 1, never the same twice in a row
 * camera moves: one to three per shot, aimed at the most specific thing in it ("<Subject 1>'s hand", not "<Subject 1>")
 
@@ -33,10 +34,12 @@ SETTINGS = {
     "camera_moves_chance": {"type": "float", "default": 0.7, "min": 0.05, "max": 1.0, "step": 0.05, "label": "Chance a shot gets a move",
                             "when": {"camera_moves": True}},
     "shot_cuts": {"type": "bool", "default": False, "label": "Shot cut times",
-                  "hint": "Shots after the first open with their cut time; a shot whose point changes between two shortcuts is split in two."},
-    "shot_cuts_chance": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Split inside a shot",
-                         "hint": "Chance a shot is cut in two where it moves from one shortcut to a different one. 1 = always, 0 = never (cuts only between your shots). Learns from ratings in between.",
-                         "when": {"shot_cuts": True}},
+                  "hint": "Shots after the first open with their cut time, spread across the length of the video."},
+    "cut_same_shot": {"type": "bool", "default": False, "label": "Cut within the same shot",
+                      "hint": "Cut a shot apart where one shortcut ends and the next begins, including the same shortcut used again. Each part then gets its own time, view and focus."},
+    "shot_cuts_chance": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of a cut within the shot",
+                         "hint": "1 = always cut between those shortcuts, 0 = never. Ratings nudge the values in between.",
+                         "when": {"cut_same_shot": True}},
     "shot_views": {"type": "bool", "default": False, "label": "Shot views",
                    "hint": "Later shots open on a view (side, from above, POV…), never the same twice in a row."},
     "shot_views_chance": {"type": "float", "default": 0.4, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance a shot gets a view",
