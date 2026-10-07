@@ -15,7 +15,7 @@ export const widgetControl = (w, current, set) => {
     // Nothing chosen shows as nothing chosen: showing the first file would look picked while the run has none
     // (and with one file there is nothing to change to, so it could never be picked).
     const options = [...(unset ? [{ value: "", label: "— choose —" }] : []), ...choices.map((v) => ({ value: v, label: String(v) }))];
-    return choices.length ? c.select.md({ label, value: unset ? "" : current, options, onChange: (v) => { if (v !== "") set(v); } })
+    return choices.length ? c.select.md({ label, value: unset ? "" : current, options, onChange: (v) => { if (v !== "") set(choices.find((x) => String(x) === String(v)) ?? v); } })       // the choice itself: a select gives back text, and ComfyUI refuses "8" for 8
       : c.hint.default({ text: "No choices available — nothing found in the models folder." });
   }
   if (w.type === "INT" || w.type === "FLOAT") {

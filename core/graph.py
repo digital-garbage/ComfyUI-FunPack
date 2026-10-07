@@ -291,6 +291,7 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
                     continue
                 inputs[name] = [source, index]
             else:
+                value = as_choice(value, limits.get(name))
                 problem = unacceptable(name, value, limits.get(name))
                 if problem:
                     # An input the app writes under a name the person sees (Length, Width) is refused by that name.
@@ -309,6 +310,15 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
 
     problems.extend(cycles(prompt))
     return prompt, problems
+
+
+def as_choice(value: Any, bounds: Optional[dict]) -> Any:
+    """A combo choice saved as text ("8") back to the choice it names (8). A web page's select hands back
+    text whatever it was given, and ComfyUI refuses "8" from a list holding the number 8."""
+    choices = (bounds or {}).get("choices")
+    if isinstance(value, str) and choices and value not in choices:
+        return next((c for c in choices if not isinstance(c, str) and str(c) == value), value)
+    return value
 
 
 def unacceptable(name: str, value: Any, bounds: Optional[dict]) -> Optional[str]:

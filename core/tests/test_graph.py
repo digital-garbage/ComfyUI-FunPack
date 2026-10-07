@@ -595,3 +595,10 @@ def test_a_swap_keeps_only_the_roles_the_new_node_can_still_take():
     swapped, problems = graph.replace(slots, "empty", "Empty", SCHEMAS)
     assert problems == []
     assert graph.slots_by_id(swapped)["empty"]["roles"] == [{"at": "project.video", "input": "width"}]
+
+
+def test_a_numeric_combo_choice_saved_as_text_is_sent_as_the_number():
+    bounds = {"choices": ["auto", 8, 10]}
+    assert graph.as_choice("8", bounds) == 8 and graph.unacceptable("bit_depth", 8, bounds) is None
+    assert graph.as_choice("auto", bounds) == "auto"
+    assert graph.as_choice("9", bounds) == "9", "not a choice: left as it is, and refused by name"
