@@ -185,7 +185,7 @@ def _training_counts(data):
                 transitions[(left.casefold(), right.casefold(), "good")] += weight
             elif weight < 0:
                 transitions[(left.casefold(), right.casefold(), "bad")] += -weight
-    return item_by_name, use, transitions, neutral
+    return use, transitions, neutral
 
 
 def generate(body):
@@ -197,7 +197,7 @@ def generate(body):
         return {"why": "There are no enabled shortcuts with replacements yet.", "draft": _body_text(body), "generated": False}
     with _LOCK:
         data = _read()
-        item_by_name, usage, transitions, neutral = _training_counts(data)
+        usage, transitions, neutral = _training_counts(data)
     units = _shortcut_units(idea, items)
     idea_words = {word.casefold() for word in _WORD.findall(idea) if word.casefold() not in _STOP}
     chosen = []
