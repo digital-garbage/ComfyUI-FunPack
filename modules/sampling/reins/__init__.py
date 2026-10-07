@@ -18,7 +18,7 @@ import torch
 from ..._core import dit_hooks, log, registry
 
 ID = "reins"
-TITLE = "Taste steering"
+TITLE = "Taste steering (REINS)"
 MOUNT = "generation.sampling"
 STAGE = "guidance"
 CATEGORY = "guidance"
@@ -29,8 +29,8 @@ USES = ["taste_store"]
 SETTINGS = {
     "enabled": {
         "type": "bool", "default": False,
-        "label": "Taste steering",
-        "hint": "Learns from your ratings and nudges the picture toward what you liked.",
+        "label": "Taste steering (REINS)",
+        "hint": "REINS: at the chosen blocks, shifts the picture by (your liked runs − your disliked runs): toward liked AND away from disliked. Does nothing until the Taste key has 2+ liked and 2+ disliked runs. Picture only; sound follows.",
     },
     "strength": {
         "type": "float", "default": 0.01, "min": 0.0, "max": 2.0, "step": 0.01,
@@ -50,7 +50,7 @@ KIND = "reins"
 
 
 def _say(message):
-    log.once(f"{ID}:{message}", log.ALERT, "FunPack Taste steering", message)
+    log.once(f"{ID}:{message}", log.ALERT, "FunPack Taste steering (REINS)", message)
 
 
 def install(patcher, values, key):
@@ -72,7 +72,7 @@ def install(patcher, values, key):
     def fresh():
         live["dirs"], summary = taste.directions(KIND, steer, strength)
         cast.clear()
-        log.once(f"{ID}:state", log.INFO, "FunPack Taste steering", summary)
+        log.once(f"{ID}:state", log.INFO, "FunPack Taste steering (REINS)", summary)
 
     captured = taste.collect(patcher, key, KIND, fresh=fresh)
     spans = {}
