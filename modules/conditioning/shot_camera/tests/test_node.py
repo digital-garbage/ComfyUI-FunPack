@@ -113,3 +113,12 @@ def test_forget_is_complete_and_stays_forgotten(tmp_path, monkeypatch):
     assert memory.view_stats() == {}
     assert [a["arm"] for a in memory.summary()["arms"]] == ["split:yes"]
     assert memory.forget("arm", "split:yes") and memory.summary()["arms"] == []
+
+
+def test_a_bad_composition_dislike_blames_the_camera_choices(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    memory.record_run("c", {"views": [{"view": "low angle", "traits": ["none"]}], "arms": ["move:yes", "style:travel"]})
+    assert memory.on_rating("c", "disliked", "composition") == 3
+    assert memory.arm_stats()["style:travel"] == (0.0, 0.5)          # two camera choices share one blame
+    assert memory.view_stats()["low angle"] == (0.0, 1.0)
+    assert memory.split_chance(0.5) == 0.5 and memory.effective_chance(0.7) < 0.7      # the next run moves the camera less often
