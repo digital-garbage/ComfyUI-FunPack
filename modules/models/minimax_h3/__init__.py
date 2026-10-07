@@ -175,7 +175,8 @@ def _video_images(vae, video_latent, tile_size):
     """The picture branch. An X2 Detail VAE can only be read by the tiled decoder
     (its output is packed), so it always goes that way -- and has no stock path to fall
     back to, so a failure there is raised, naming the VAE. For a stock VAE, tiles are
-    asked for by `tile_size` and, if the tiled decode fails, said once and decoded plain."""
+    asked for by `tile_size` (0 = each frame in one piece) and, if that decode fails, said
+    once and decoded the stock way."""
     x2 = _decode.x2_ratio(vae)
     if x2 > 1:
         try:
@@ -184,12 +185,20 @@ def _video_images(vae, video_latent, tile_size):
             raise RuntimeError(
                 f"this VAE is an X2 Detail VAE (x{x2} packed output) and only the tiled decoder "
                 f"can read it, and that failed: {type(exc).__name__}: {exc}") from exc
-    if tile_size and tile_size > 0:
+    import comfy.model_management as mm
+    # 0 = one piece (fastest); out of memory steps down to big tiles, then core's 256.
+    for size in ([tile_size] if tile_size and tile_size > 0 else [0, 512, 256]):
         try:
-            return _decode.decode_fast(vae, video_latent, tile_size)
+            return _decode.decode_fast(vae, video_latent, size)
         except Exception as exc:                            # noqa: BLE001
+            if "out of memory" in str(exc).lower():
+                mm.soft_empty_cache()
+                log.once(f"h3_decode_oom:{size}", log.ALERT, "FunPack H3 decode",
+                         f"out of memory decoding {'in one piece' if not size else f'in {size}px tiles'}; trying smaller tiles")
+                continue
             log.once(f"h3_decode_tiles:{type(exc).__name__}", log.ALERT, "FunPack H3 decode",
-                     f"the tiled decode failed ({type(exc).__name__}: {exc}); decoded in one piece instead")
+                     f"the fast decode failed ({type(exc).__name__}: {exc}); decoded the stock way instead (slower)")
+            break
     return vae.decode(video_latent)
 
 

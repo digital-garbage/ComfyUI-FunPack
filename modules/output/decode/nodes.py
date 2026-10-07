@@ -49,8 +49,9 @@ class FunPackDecode(io.ComfyNode):
                              tooltip="Only for models that generate sound alongside the video."),
                 io.Int.Input("tile_size", default=0, min=0, max=4096, step=64, optional=True,
                              tooltip="Decode in tiles of this many pixels, to fit less VRAM. 0 = in one "
-                                     "piece. Bigger = faster and more VRAM. An X2 Detail VAE is always "
-                                     "tiled (256 at least)."),
+                                     "piece, the fastest (MiniMax H3: falls back to 512, then 256 tiles "
+                                     "if memory runs out). Bigger = faster and more VRAM. An X2 Detail "
+                                     "VAE is always tiled (256 at least)."),
             ],
             outputs=[
                 io.Image.Output(display_name="images"),

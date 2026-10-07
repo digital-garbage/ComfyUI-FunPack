@@ -51,17 +51,19 @@ def tiles(tile_px):
 
 def decode_fast(vae, video, tile_px):
     """Decode an H3 video latent in `tile_px`-pixel spatial tiles straight through H3's
-    decoder. Returns IMAGES (B, T, H, W, C) on the intermediate device. The VAE's flags
-    are restored even when the decode raises."""
+    decoder; `tile_px` 0 = each frame in one piece (core's own default is 256px tiles with
+    64px overlaps: ~1.8x the pixels in many small pieces, the slow part). Returns IMAGES
+    (B, T, H, W, C) on the intermediate device. The VAE's flags are restored even when the
+    decode raises."""
     import comfy.model_management as mm
     inner = vae.first_stage_model
     up = x2_ratio(vae)
-    tile, overlap = tiles(tile_px)
+    tile, overlap = tiles(tile_px) if tile_px and tile_px > 0 else (inner.tile_size, inner.tile_overlap_min)
     saved = (inner.tiling, inner.tile_size, inner.tile_overlap_min,
              inner.decoder.out_channels, inner.pixel_mean, inner.pixel_std)
     vae.throw_exception_if_invalid()
     try:
-        inner.tiling, inner.tile_size, inner.tile_overlap_min = True, tile, overlap
+        inner.tiling, inner.tile_size, inner.tile_overlap_min = bool(tile_px and tile_px > 0), tile, overlap
         if up > 1:
             inner.decoder.out_channels = 3 * up * up
         with mm.cuda_device_context(vae.device):

@@ -30,6 +30,7 @@ class _Inner:
         self.pixel_mean, self.pixel_std = torch.arange(3.).view(1, 3, 1, 1, 1), torch.ones(1, 3, 1, 1, 1)
         self.during = None
         self.fail = False
+        self.tried = []
 
     def decode_output_shape(self, shape):
         b, _, t, h, w = shape
@@ -38,8 +39,9 @@ class _Inner:
     def decode(self, x, output_buffer):
         self.during = (self.tiling, self.tile_size, self.tile_overlap_min,
                        self.decoder.out_channels, self.pixel_mean.shape[1])
+        self.tried.append(self.tile_size if self.tiling else 0)
         if self.fail:
-            raise RuntimeError("out of memory")
+            raise RuntimeError(self.fail if isinstance(self.fail, str) else "CUDA out of memory")
         output_buffer.copy_(torch.arange(output_buffer.numel(), dtype=output_buffer.dtype).view_as(output_buffer))
 
 
@@ -151,10 +153,10 @@ def _provider_decode(vae, tile):
     return h3._video_images(vae, torch.zeros(1, 4, 2, 8, 8), tile)
 
 
-def test_tile_size_zero_on_a_stock_vae_is_the_plain_decode(patched):
+def test_tile_size_zero_on_a_stock_vae_decodes_each_frame_in_one_piece(patched):
     vae = _Vae(12)
-    out = _provider_decode(vae, 0)
-    assert vae.plain_calls == 1 and vae.first_stage_model.during is None and out.shape == (1, 2, 4, 4, 3)
+    _provider_decode(vae, 0)
+    assert vae.plain_calls == 0 and vae.first_stage_model.during[0] is False      # core's own 256px tiling is off
 
 
 def test_a_stock_vae_with_tiles_goes_through_the_tiled_decoder(patched):
@@ -163,14 +165,24 @@ def test_a_stock_vae_with_tiles_goes_through_the_tiled_decoder(patched):
     assert vae.plain_calls == 0 and vae.first_stage_model.during[:3] == (True, 512, 128)
 
 
-def test_a_failing_tiled_decode_falls_back_to_plain_and_says_so_once(patched):
+def test_out_of_memory_in_one_piece_steps_down_to_512_then_256_then_stock(patched):
     from core import log
     log._reset()
     vae = _Vae(12)
     vae.first_stage_model.fail = True
-    out = _provider_decode(vae, 512)
-    assert vae.plain_calls == 1 and out.shape == (1, 2, 4, 4, 3)
-    assert any("decoded in one piece" in r["message"] for r in log.history())
+    out = _provider_decode(vae, 0)
+    assert vae.first_stage_model.tried == [0, 512, 256] and vae.plain_calls == 1 and out.shape == (1, 2, 4, 4, 3)
+    assert any("out of memory decoding in one piece" in r["message"] for r in log.history())
+
+
+def test_any_other_failure_goes_straight_to_the_stock_decode_and_says_so(patched):
+    from core import log
+    log._reset()
+    vae = _Vae(12)
+    vae.first_stage_model.fail = "shape mismatch"
+    _provider_decode(vae, 512)
+    assert vae.first_stage_model.tried == [512] and vae.plain_calls == 1
+    assert any("stock way" in r["message"] for r in log.history())
 
 
 def test_an_x2_vae_never_falls_back_it_names_itself(patched):
