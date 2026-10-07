@@ -1116,3 +1116,8 @@ if web is not None and PromptServer is not None:
         log.failed("route registration", exc)
     else:
         log.info("routes", f"serving the app at {config.UI_PREFIX}/")
+    try:
+        from . import node_timing
+        node_timing.install(PromptServer.instance)       # "FunPack Timing" log line: where each run's time went
+    except Exception as exc:  # noqa: BLE001
+        log.failed("node timing", exc)
