@@ -90,7 +90,8 @@ export default {
       await gone(ids);
     } });
     bulk.node.hidden = true;
-    host.append(c.toolbar.default({ items: [c.text.sm({ text: "Media" })], trailing: [selectBtn, bulk] }).node, drop.node, note.node, seg("Show", FILTERS, "filter").node, sort.node,
+    const clearRefs = c.button.sm({ label: "Clear references", tone: "ghost", title: "Stop using every reference picture in the selected scene", onClick: () => p.selected && p.setScene(p.selected.id, "references", []) });
+    host.append(c.toolbar.default({ items: [c.text.sm({ text: "Media" })], trailing: [clearRefs, selectBtn, bulk] }).node, drop.node, note.node, seg("Show", FILTERS, "filter").node, sort.node,
       seg("View", VIEWS, "view").node, seg("Tile size", DENSITY, "cols").node, shelf.node);
 
     let drawn = "";
@@ -108,13 +109,16 @@ export default {
       shelf.set([g]);
       if (g.setCols) g.setCols(Number(show.cols));
       // what the selected scene uses is marked on its tile, so a reference can be told from the rest
-      const role = (m) => [sc && sc.source_image === m.id ? "source" : null, refs.includes(m.id) ? `ref ${refs.indexOf(m.id) + 1}` : null].filter(Boolean);
-      g.setItems(shown.map((m) => ({ id: m.id, label: m.name, thumb: m.kind === "audio" ? undefined : `${base(m.id)}/thumb`, badge: [...role(m), m.kind].join(" · ") })));
+      const flags = (m) => [sc && sc.source_image === m.id ? { text: "◐", title: "The selected scene's resolution source" } : null,
+        refs.includes(m.id) ? { text: `R${refs.indexOf(m.id) + 1}`, title: `Reference ${refs.indexOf(m.id) + 1} of ${refs.length} for the selected scene` } : null].filter(Boolean);
+      g.setItems(shown.map((m) => ({ id: m.id, label: m.name, thumb: m.kind === "audio" ? undefined : `${base(m.id)}/thumb`, badge: m.kind, flags: flags(m) })));
       g.setValue(selecting ? [...chosen] : sc ? [sc.source_image, ...refs].filter(Boolean) : []);
       selectBtn.setLabel(selecting ? "Done" : "Select");
       bulk.node.hidden = !selecting;
       bulk.setLabel(`Delete (${chosen.size})`);
       bulk.setDisabled(!chosen.size);
+      clearRefs.node.hidden = !refs.length;
+      clearRefs.setLabel(`Clear references (${refs.length})`);
     }
     async function refresh() {
       try { items = (await api.media()).media || []; learn(items); app.say("bin"); } catch (err) { tell(err.message); }

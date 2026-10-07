@@ -34,6 +34,8 @@ function thumbOf(item, cls = "cx-cell-thumb", marks = true) {
   }
   if (marks && item.badge) thumb.append(el("span", { cls: "cx-cell-badge", text: item.badge }));
   if (marks && item.duration) thumb.append(el("span", { cls: "cx-cell-duration", text: item.duration }));
+  // `flags` [{text, title}]: what this item IS to the work (a reference, say): small and solid, in every view, readable at a glance.
+  if ((item.flags || []).length) thumb.append(el("span", { cls: "cx-cell-flags", children: item.flags.map((f) => el("span", { cls: "cx-cell-flag", text: f.text, attrs: { title: f.title || f.text } })) }));
   return thumb;
 }
 

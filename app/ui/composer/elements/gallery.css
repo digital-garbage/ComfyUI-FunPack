@@ -31,6 +31,8 @@
 }
 .cx-cell-badge { left: var(--sp-1); }
 .cx-cell-duration { right: var(--sp-1); font-variant-numeric: tabular-nums; }
+.cx-cell-flags { position: absolute; top: 2px; right: 2px; display: flex; gap: 2px; pointer-events: none; }
+.cx-cell-flag { font-size: 10px; font-weight: 700; line-height: 1; padding: 2px 4px; border-radius: var(--r-1); background: var(--accent); color: var(--void); }
 .cx-cell-name {
   font-size: clamp(10px, calc(var(--cell, 96px) * .115), 13px);
   line-height: var(--lh-snug); padding: 0 var(--sp-3) var(--sp-3);
