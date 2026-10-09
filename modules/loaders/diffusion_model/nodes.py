@@ -31,6 +31,12 @@ def _model_file_choices():
         gguf_support.gguf_names("diffusion_models")
 
 
+
+def shows(*conditions):
+    """Draw an input only while each (other input, values) holds: SLA's fields belong to one method
+    or engine each, and a field that does nothing in the mode picked is noise. Read by core/widgets."""
+    return {"funpack_shows": [{"input": name, "when": list(values)} for name, values in conditions]}
+
 class FunPackDiffusionModelLoader(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -64,14 +70,14 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                          "that is not MiniMax H3 or on a machine without Triton."),
                 # SLA settings. Every one is validated at its default (see sla_attention);
                 # they are here because a knob whose value was measured is still a knob.
-                io.Float.Input("sla_sparsity", default=sla_attention.SLA_DEFAULTS["sparsity_ratio"],
+                io.Float.Input("sla_sparsity", extra_dict=shows(("sla", [True]), ("sla_method", ["sla", "vsa"])), default=sla_attention.SLA_DEFAULTS["sparsity_ratio"],
                               min=0.0, max=0.95, step=0.05, optional=True,
                               tooltip="Fraction of key blocks skipped, when attention is "
                                       "sla_h3. 0.90 is validated; 0.85 is lightx2v's own value "
                                       "and ~15% slower. Break-even is around 0.60 -- below that "
                                       "the kernel is SLOWER than dense, so a low value is a "
                                       "loss, not a safe fallback."),
-                io.Combo.Input("sla_block_size",
+                io.Combo.Input("sla_block_size", extra_dict=shows(("sla", [True]), ("sla_method", ["sla"]), ("sla_engine", ["triton"])),
                                options=["32", "64", "128"],
                                default=str(sla_attention.SLA_DEFAULTS["block_size"]),
                                optional=True,
@@ -81,21 +87,21 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                        "the same rows are 3% of a video frame. Use 128 only "
                                        "when the audio does not matter; 32 routes finer still for "
                                        "about the same time. Triton engine only."),
-                io.Boolean.Input("sla_protect_audio",
+                io.Boolean.Input("sla_protect_audio", extra_dict=shows(("sla", [True]), ("sla_method", ["sla", "sol-attn"])),
                                  default=sla_attention.SLA_DEFAULTS["protect_audio"], optional=True,
                                  tooltip="Always attend the prompt's words and every audio "
                                          "stream, whatever top-k picks. Audio is ~1% of the packed "
                                          "sequence, so plain top-k regularly drops all of it "
                                          "and the soundtrack degrades while the video still "
                                          "looks fine. Reference images stay sparse: see sla_references."),
-                io.Int.Input("sla_min_seq_len",
+                io.Int.Input("sla_min_seq_len", extra_dict=shows(("sla", [True])),
                             default=sla_attention.SLA_DEFAULTS["min_seq_len"],
                             min=0, max=1000000, step=1024, optional=True,
                             tooltip="Sequences shorter than this stay dense. Guards the short "
                                     "text refiner, which must never be sparsified, and "
                                     "low-resolution runs where block selection costs more "
                                     "than it saves."),
-                io.Int.Input("sla_dense_last_steps",
+                io.Int.Input("sla_dense_last_steps", extra_dict=shows(("sla", [True]), ("sla_method", ["sla", "sol-attn"])),
                             default=sla_attention.SLA_DEFAULTS["dense_last_steps"],
                             min=0, max=8, optional=True,
                             tooltip="Run the last N sampling steps at full attention. 0 "
@@ -112,38 +118,38 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                          "always holds; the speed-up is lost on layers a LoRA is applied "
                                          "to and when compute dtype is forced."),
                 # Added later, so after everything: saved workflows can store widget values by position.
-                io.Combo.Input("sla_engine", options=list(sla_attention.ENGINES),
+                io.Combo.Input("sla_engine", extra_dict=shows(("sla", [True]), ("sla_method", ["sla"])), options=list(sla_attention.ENGINES),
                                default=sla_attention.SLA_DEFAULTS["engine"], optional=True,
                                tooltip="What runs the sparse calls. comfy_kitchen: ComfyUI's compiled "
                                        "int8 sol_attn (needs comfy-kitchen 0.2.32+; the Triton kernel "
                                        "runs instead where it is missing, and the status says so). "
                                        "triton: FunPack's own kernel, the only one with block size and "
                                        "stabilize motion."),
-                io.String.Input("sla_dense_steps", default=sla_attention.SLA_DEFAULTS["dense_steps"],
+                io.String.Input("sla_dense_steps", extra_dict=shows(("sla", [True]), ("sla_method", ["sla", "sol-attn"])), default=sla_attention.SLA_DEFAULTS["dense_steps"],
                                 optional=True,
                                 tooltip="Steps at full attention, counted from 0: '0' or '0,1' or "
                                         "'0-2'. The first steps set the layout and how closely the "
                                         "prompt is followed, so the first one is kept exact by "
                                         "default. Blank: none. Adds to dense last steps. Not used by vsa."),
-                io.Combo.Input("sla_references", options=list(sla_attention.REFERENCES),
+                io.Combo.Input("sla_references", extra_dict=shows(("sla", [True]), ("sla_method", ["sla", "sol-attn"])), options=list(sla_attention.REFERENCES),
                                default=sla_attention.SLA_DEFAULTS["references"], optional=True,
                                tooltip="Reference images, conditioning frames and the prompt's vision "
                                        "tokens. off: sparse like the video. light: each keeps its best "
                                        "15% for every query block. heavy: all of them exact, slow with "
                                        "big references. On comfy_kitchen, light picks one 15% for all "
                                        "query blocks."),
-                io.Boolean.Input("sla_tail", default=sla_attention.SLA_DEFAULTS["tail"], optional=True,
+                io.Boolean.Input("sla_tail", extra_dict=shows(("sla", [True]), ("sla_method", ["sla"]), ("sla_engine", ["comfy_kitchen"])), default=sla_attention.SLA_DEFAULTS["tail"], optional=True,
                                  tooltip="comfy_kitchen engine: the skipped blocks still count, as one "
                                          "averaged term per query block, instead of not at all. Off "
                                          "matches what the SLA turbo LoRA was trained against; untested "
                                          "on H3."),
-                io.Boolean.Input("sla_stabilize_motion",
+                io.Boolean.Input("sla_stabilize_motion", extra_dict=shows(("sla", [True]), ("sla_method", ["sla"]), ("sla_engine", ["triton"])),
                                  default=sla_attention.SLA_DEFAULTS["stabilize_motion"], optional=True,
                                  tooltip="Triton engine: each layer leans toward the blocks it picked last "
                                          "step, so near ties stop flipping and showing as a faint double "
                                          "exposure on fast motion. A fix for that one symptom; a little "
                                          "more memory."),
-                io.Combo.Input("sla_method", options=list(sla_attention.METHODS),
+                io.Combo.Input("sla_method", extra_dict=shows(("sla", [True])), options=list(sla_attention.METHODS),
                                default=sla_attention.SLA_DEFAULTS["method"], optional=True,
                                tooltip="How the blocks worth attending are chosen. sla: a fixed share "
                                        "(sla_sparsity), what SLA turbo LoRAs were trained against. "
@@ -152,7 +158,7 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                        "for it (the status says when the model lacks VSA's layers); run "
                                        "by ComfyUI's own Model Sparse Attention, keeping 1 - sla_sparsity "
                                        "of the cubes."),
-                io.Float.Input("sla_tau", default=sla_attention.SLA_DEFAULTS["tau"], min=0.0, max=4.0,
+                io.Float.Input("sla_tau", extra_dict=shows(("sla", [True]), ("sla_method", ["sol-attn"])), default=sla_attention.SLA_DEFAULTS["tau"], min=0.0, max=4.0,
                                step=0.05, optional=True,
                                tooltip="sol-attn only: higher skips more. About 1.0 keeps ~16% of key "
                                        "blocks exact, 1.5 ~7%, 2.0 ~3%."),

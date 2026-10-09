@@ -53,7 +53,7 @@ export const models = (app) => function mount() {
     if (JSON.stringify((live.inputs || {})[name]) === JSON.stringify(value)) return;          // a blur that changed nothing saves nothing
     await ps.save({ inputs: { [slot.id]: { [name]: value } } });
     const spec = specs[slot.node];
-    if (spec && (spec.widgets || []).some((w) => w.shows && w.shows.input === name)) {      // a choice that brings fields: what they show is what runs
+    if (spec && (spec.widgets || []).some((w) => (w.shows || []).some((c) => c.input === name))) {      // a choice that brings fields: what they show is what runs
       const now = slotsNow().find((x) => x.id === slot.id);
       const fill = now && shownValues(now, spec);
       if (fill && Object.keys(fill).length) await ps.save({ inputs: { [slot.id]: fill } });

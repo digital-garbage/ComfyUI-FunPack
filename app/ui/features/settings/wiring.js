@@ -19,18 +19,18 @@ export function sourcesFor(slot, type, slots, specs) {
 }
 
 // The dropdowns' own values as the form would fill them, so a new node's revealed fields follow its default choice.
-const shownParents = (slot, spec) => Object.fromEntries(((spec && spec.widgets) || []).filter((w) => w.type === "COMBO" && !(slot.inputs && slot.inputs[w.name] !== undefined))
-  .map((w) => [w.name, w.default !== undefined ? w.default : (w.choices || [])[0]]));
+const shownParents = (slot, spec) => Object.fromEntries(((spec && spec.widgets) || []).filter((w) => !(slot.inputs && slot.inputs[w.name] !== undefined))
+  .map((w) => [w.name, w.default !== undefined ? w.default : w.type === "BOOLEAN" ? false : (w.choices || [])[0]]));
 
 /** A node that is new, or whose input was just unwired, has nothing SET on it while its form shows defaults:
  *  these are the values to send so that what runs is what is seen. */
-/** Whether a field a dynamic dropdown's choice brings is showing: its dropdown (as set, else its default) is on one of its choices. */
-export const showing = (w, slot, spec) => {
-  if (!w.shows) return true;
-  const parent = ((spec && spec.widgets) || []).find((x) => x.name === w.shows.input);
-  const picked = slot.inputs && slot.inputs[w.shows.input] !== undefined ? slot.inputs[w.shows.input] : parent && (parent.default !== undefined ? parent.default : (parent.choices || [])[0]);
-  return w.shows.when.includes(picked);
-};
+/** Whether a field is drawn: every input its `shows` names ([{input, when}]: a dynamic dropdown's choice, or a
+ *  node's own rule) holds one of the listed values -- as set, else as the form shows it by default. */
+export const showing = (w, slot, spec) => (w.shows || []).every(({ input, when }) => {
+  const parent = ((spec && spec.widgets) || []).find((x) => x.name === input);
+  const picked = slot.inputs && slot.inputs[input] !== undefined ? slot.inputs[input] : parent && (parent.default !== undefined ? parent.default : parent.type === "BOOLEAN" ? false : (parent.choices || [])[0]);
+  return when.includes(picked);
+});
 
 export function shownValues(slot, spec, onlyInput) {
   const out = {};

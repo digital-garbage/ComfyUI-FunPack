@@ -53,6 +53,9 @@ def _one(name: str, declared: Any, required: bool) -> Dict[str, Any]:
     for key in KEPT:
         if key in options:
             widget[key] = options[key]
+    # [{input, when}]: the form draws this only while every named input holds one of its values.
+    if isinstance(options.get("funpack_shows"), list):
+        widget["shows"] = options["funpack_shows"]
     return widget
 
 
@@ -96,7 +99,7 @@ def describe(class_type: str) -> Optional[dict]:
             kind, options = comfy_types.declared(declared)
             if comfy_types.is_combo(kind) and comfy_types.reveals(options):
                 for dotted, decl, req, parent, keys in comfy_types.revealed(name, options):
-                    sub = dict(_one(dotted, decl, req), shows={"input": parent, "when": keys})
+                    sub = dict(_one(dotted, decl, req), shows=[{"input": parent, "when": keys}])
                     (widgets if sub["type"] in PRIMITIVE and not sub.get("forceInput") else sockets).append(sub)
 
     outputs = list(getattr(node, "RETURN_TYPES", ()) or ())
