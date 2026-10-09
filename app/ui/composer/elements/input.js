@@ -96,7 +96,7 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, snap, 
     if (skipped) { skipped = false; commit(); }
   };
   input.addEventListener("change", () => { if (held) skipped = true; else commit(); });
-  input.addEventListener("blur", () => { held = skipped = false; commit(); });      // also ends a hold whose release never came
+  input.addEventListener("blur", () => { if (swapping.depth) return; held = skipped = false; commit(); });      // ends a hold whose release never came; a redraw's blur does not: the release still commits
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); commit(); }
     else if (e.repeat && /^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key)) held = true;

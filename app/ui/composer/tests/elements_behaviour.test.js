@@ -755,3 +755,21 @@ test("a field Chromium blurs mid-redraw (still attached) does not commit then; t
     region.node.remove();
   }
 });
+
+test("a held spinner interrupted by a redraw (with Chromium's blur on removal) still commits on release", () => {
+  let state = 15;
+  const region = mount(composer.region.stack());
+  const redraw = () => { const kids = [composer.number.md({ label: "N", value: state, onChange: (v) => { state = v; redraw(); } })]; region.set(kids); };
+  redraw();
+  const real = region.node.replaceChildren.bind(region.node);
+  region.node.replaceChildren = (...kids) => { const f = document.activeElement; if (region.node.contains(f)) { fire(f, "change"); fire(f, "blur"); } real(...kids); };
+  const box = () => region.node.querySelector('[aria-label="N"]');
+  box().focus(); fire(box(), "pointerdown");
+  box().value = "16"; fire(box(), "change");               // a step while held: not committed yet
+  redraw();                                               // something else redraws mid-hold
+  delete region.node.replaceChildren;
+  window.dispatchEvent(new window.Event("pointerup"));
+  assert.equal(state, 16);
+  assert.equal(box().value, "16");
+  region.node.remove();
+});
