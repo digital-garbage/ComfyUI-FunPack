@@ -56,7 +56,7 @@ SLA_DEFAULTS = {
     "protect_audio": True,
     "enabled": True,
     "engine": "comfy_kitchen",
-    "dense_steps": "0",
+    "dense_steps": "1",
     "method": "sla",
     "tau": 1.3,
     "references": "off",
@@ -151,18 +151,30 @@ def minus(ranges, cut):
 
 
 def parse_steps(spec):
-    """"0,2,4-6" -> {0, 2, 4, 5, 6} (0-based steps). A token that is not a number is skipped and named."""
+    """"1,3-4" -> {0, 2, 3}: steps as a person counts them (1 is the first) -> the sampler's 0-based
+    indices. A token that is not such a number (0, a letter, past step 1000) is skipped and named."""
     steps, bad = set(), []
     for tok in str(spec or "").replace(" ", "").split(","):
         if not tok:
             continue
         a, _, b = tok.partition("-")
-        if a.isdigit() and (not b or b.isdigit()):
+        if a.isdigit() and (not b or b.isdigit()) and 1 <= min(int(a), int(b or a)) and max(int(a), int(b or a)) <= 1000:
             lo, hi = sorted((int(a), int(b or a)))
-            steps.update(range(lo, hi + 1))
+            steps.update(range(lo - 1, hi))
         else:
             bad.append(tok)
     return frozenset(steps), bad
+
+
+def _runs(numbers):
+    """[1, 2, 3, 6] -> "1-3, 6"."""
+    out = []
+    for n in sorted(numbers):
+        if out and n == out[-1][1] + 1:
+            out[-1][1] = n
+        else:
+            out.append([n, n])
+    return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in out)
 
 
 def spans(payload):
@@ -218,6 +230,8 @@ def new_state():
         "history": {},     # layer -> last step's choices, for stabilize_motion
         "order": None,     # comfy_kitchen: (S, protected spans, key order, sink blocks), same every layer
         "last": None,      # last step index read from the schedule
+        "dense_at": set(), # steps (counted from 1) that ran at full attention this run
+        "n": 0,            # this run's step count
         "summed": False,   # this run's summary is logged
     }
 
@@ -236,6 +250,8 @@ def _summarise(state, cfg):
         "| %d pinned | %d dense fall-throughs | displaced %s",
         cfg["engine"], state["calls"], state["seq"], state["kept"], state["blocks"], real * 100.0,
         cfg["sparsity_ratio"] * 100.0, state["pinned"], state["dense"], state["backend"] or "?")
+    logging.info("[FunPack SLA] full attention on %s of %d", f"steps {_runs(state['dense_at'])}"
+                 if state["dense_at"] else "no step", state["n"])
     if state["failed"] is not None:
         logging.warning("[FunPack SLA] kernel fell back to dense at least once: %s",
                         state["failed"])
@@ -414,7 +430,7 @@ def make_wrapper(state, cfg):
                 minimax_payload=None, **kwargs):
         to = transformer_options
         new_run = lambda: (state.update(step=0, calls=0, dense=0, failed=None, order=None, last=None, summed=False),
-                           state["history"].clear())
+                           state["history"].clear(), state["dense_at"].clear())
         counted = not _dit_hooks.probing(to)
         if to.get("sigmas") is not None and to.get("sample_sigmas") is not None:
             # The schedule says which step this is, so a cancelled run or a sampler calling the model twice
@@ -443,6 +459,9 @@ def make_wrapper(state, cfg):
         to["_funpack_sla_spans"] = (video, tuple(keep), tuple(refs))
         to["_funpack_sla_dense"] = bool(
             (last > 0 and state["step"] > n_steps - last) or (state["step"] - 1) in dense_steps)
+        state["n"] = n_steps
+        if to["_funpack_sla_dense"] and counted:
+            state["dense_at"].add(state["step"])
 
         # Forward minimax_payload only when H3 actually supplied one: every other
         # diffusion model would raise TypeError on the unexpected kwarg, turning a
@@ -522,7 +541,7 @@ def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
     cfg["tau"] = float(cfg["tau"])
     cfg["dense_steps"], bad = parse_steps(cfg["dense_steps"])
     if bad:
-        notes.append(f"dense_steps: ignored {', '.join(bad)} (use numbers like 0,2,4-6)")
+        notes.append(f"dense_steps: ignored {', '.join(bad)} (steps count from 1: '1' is the first, '1-2' the first two)")
     if cfg["engine"] == "comfy_kitchen":
         ignored = [n for n, on in (("block_size", cfg["block_size"] != 64), ("stabilize_motion", cfg["stabilize_motion"])) if on]
         if ignored:
@@ -541,7 +560,7 @@ def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
     how = f"tau={cfg['tau']:.2f}" if cfg["method"] == "sol-attn" else f"sparsity={cfg['sparsity_ratio']:.2f}"
     return patched, (f"SLA on | {cfg['method']} on {cfg['engine']} | {how} BLK={blk} "
                      f"min_seq_len={cfg['min_seq_len']} dense_last_steps={cfg['dense_last_steps']} "
-                     f"dense_steps={sorted(cfg['dense_steps']) or '-'} protect_audio={cfg['protect_audio']} "
+                     f"full attention on steps {_runs(i + 1 for i in cfg['dense_steps']) or 'none'} and the last {cfg['dense_last_steps']} protect_audio={cfg['protect_audio']} "
                      f"references={cfg['references']} tail={cfg['tail']} stabilize_motion={cfg['stabilize_motion']} "
                      f"| dense calls -> {dense_label or 'as launched'}"
                      + "".join(f"\nSLA: {n}" for n in notes)), True
@@ -579,7 +598,7 @@ def _install_vsa(model, cfg, dense_fn, dense_label):
     if not trained:
         notes.append("SLA: this model has no VSA layers (to_gate_compress): it was not trained for VSA, so it runs "
                      "without VSA's coarse branch and quality may drop. sla or sol-attn suits it better.")
-    ignored = [n for n, on in (("dense_steps", cfg["dense_steps"] not in ("", "0")), ("references", cfg["references"] != "off"),
+    ignored = [n for n, on in (("dense_steps", cfg["dense_steps"].strip() not in ("", "1")), ("references", cfg["references"] != "off"),
                                ("stabilize_motion", cfg["stabilize_motion"]), ("tail", cfg["tail"])) if on]
     if ignored:
         notes.append(f"SLA: {', '.join(ignored)}: not used by vsa")

@@ -168,11 +168,11 @@ def test_untagged_text_is_all_language_and_no_layout_protects_nothing():
     assert sla.spans(None) == (0, [], [])
 
 
-def test_dense_steps_are_0_based_and_stack_with_the_last_steps():
+def test_dense_steps_stack_with_the_last_steps():
     state = sla.new_state()
     w = sla.make_wrapper(state, _cfg(dense_last_steps=1, dense_steps=frozenset({0, 2})))
     assert _run(w, 5) == [True, False, True, False, True]
-    assert sla.parse_steps("0, 2-4,x,6-5") == (frozenset({0, 2, 3, 4, 5, 6}), ["x"])
+    assert sla.parse_steps("1, 3-5,x,7-6,0,1-5000") == (frozenset({0, 2, 3, 4, 5, 6}), ["x", "0", "1-5000"])
 
 
 def test_the_wrapper_calls_the_next_wrapper_not_the_bare_model():
@@ -264,7 +264,7 @@ def test_the_defaults_are_the_validated_ones():
     assert sla.SLA_DEFAULTS == {"sparsity_ratio": 0.90, "block_size": 64,
                                 "min_seq_len": 8192, "dense_last_steps": 0,
                                 "protect_audio": True, "enabled": True,
-                                "engine": "comfy_kitchen", "dense_steps": "0", "method": "sla", "tau": 1.3,
+                                "engine": "comfy_kitchen", "dense_steps": "1", "method": "sla", "tau": 1.3,
                                 "references": "off",
                                 "tail": False, "stabilize_motion": False}
 
@@ -410,7 +410,7 @@ def test_light_references_keep_a_share_and_stabilize_remembers_only_the_edge():
 def test_install_reports_the_engine_and_what_it_ignores(monkeypatch):
     monkeypatch.setattr(sla, "sla_available", lambda: True)
     monkeypatch.setattr(sla, "ck_available", lambda: False)
-    out, note, installed = sla.install_sla(_Patcher("MiniMaxH3Model"), dense_steps="0,x", tail=True)
+    out, note, installed = sla.install_sla(_Patcher("MiniMaxH3Model"), dense_steps="1,x", tail=True)
     assert installed and "| sla on triton |" in note
     assert "sol_attn is not here" in note and "ignored x" in note and "tail: comfy_kitchen engine only" in note
     monkeypatch.setattr(sla, "ck_available", lambda: True)
@@ -508,3 +508,13 @@ def test_the_loaders_fields_are_listed_in_reading_order():
     from modules.loaders.diffusion_model.nodes import FunPackDiffusionModelLoader as L
     named = [i.id for i in L.define_schema().inputs]
     assert sorted(L.WIDGET_ORDER) == sorted(named)            # every field placed, none invented
+
+
+def test_the_run_log_names_the_full_attention_steps_as_a_person_counts_them(caplog):
+    import logging
+    state = sla.new_state()
+    w = sla.make_wrapper(state, _cfg(dense_last_steps=1, dense_steps=sla.parse_steps("1-2")[0]))
+    state["calls"] = 1                          # as though the sparse path ran
+    with caplog.at_level(logging.INFO):
+        _run(w, 6)
+    assert "full attention on steps 1-2, 6 of 6" in caplog.text

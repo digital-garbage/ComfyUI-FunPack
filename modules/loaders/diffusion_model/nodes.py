@@ -134,10 +134,11 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                        "stabilize motion."),
                 io.String.Input("sla_dense_steps", extra_dict=shows(("sla", [True]), ("sla_method", ["sla", "sol-attn"])), default=sla_attention.SLA_DEFAULTS["dense_steps"],
                                 optional=True,
-                                tooltip="Steps at full attention, counted from 0: '0' or '0,1' or "
-                                        "'0-2'. The first steps set the layout and how closely the "
-                                        "prompt is followed, so the first one is kept exact by "
-                                        "default. Blank: none. Adds to dense last steps. Not used by vsa."),
+                                tooltip="Steps at full attention, counted from 1: '1' is the first "
+                                        "step, '1-2' the first two, '1,6' the first and sixth; blank, "
+                                        "none. The first steps set the layout and how closely the "
+                                        "prompt is followed, so the first is exact by default. Adds to "
+                                        "dense last steps. The log names the steps that ran this way."),
                 io.Combo.Input("sla_references", extra_dict=shows(("sla", [True]), ("sla_method", ["sla", "sol-attn"])), options=list(sla_attention.REFERENCES),
                                default=sla_attention.SLA_DEFAULTS["references"], optional=True,
                                tooltip="Reference images, conditioning frames and the prompt's vision "
