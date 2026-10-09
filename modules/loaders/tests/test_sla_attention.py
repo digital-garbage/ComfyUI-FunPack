@@ -518,3 +518,18 @@ def test_the_run_log_names_the_full_attention_steps_as_a_person_counts_them(capl
     with caplog.at_level(logging.INFO):
         _run(w, 6)
     assert "full attention on steps 1-2, 6 of 6" in caplog.text
+
+
+def test_k_in_another_layout_than_q_still_reaches_the_kernel_contiguous(monkeypatch):
+    """Rental (ComfyUI 0.39): K arrived non-contiguous while Q did not; only Q was checked, so the
+    block map's contiguity assert failed every call and SLA ran dense the whole time."""
+    import sys
+    seen = []
+    monkeypatch.setitem(sys.modules, "comfy_kitchen", types.SimpleNamespace(
+        sol_attn=lambda q, k, v, **kw: seen.append((q.is_contiguous(), k.is_contiguous(), v.is_contiguous())) or q))
+    state = sla.new_state()
+    ov = sla.make_override(state, _cfg(engine="comfy_kitchen", min_seq_len=0))
+    q = torch.zeros(1, 128, H, D, dtype=torch.bfloat16).transpose(1, 2)          # H3's own: contiguous once turned back
+    k = torch.zeros(1, H, 128, D, dtype=torch.bfloat16)                          # another layout
+    _call(ov, q, k, k.clone(), transformer_options={"_funpack_sla_spans": (0, (), ())})
+    assert seen == [(True, True, True)] and state["failed"] is None

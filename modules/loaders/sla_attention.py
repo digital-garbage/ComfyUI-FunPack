@@ -361,9 +361,9 @@ def make_override(state, cfg, dense_fn=None, dense_label=None):
             # [1, H, S, D] -> [1, S, H, D]. H3 builds q/k/v as [S, H, D] and transposes
             # for the call, so this transposes back onto the original memory and the
             # copy is a no-op. A BHSD kernel would cost a real ~1.3 GB copy per tensor.
-            qb, kb, vb = (t.transpose(1, 2) for t in (q, k, v))
-            if not qb.is_contiguous():
-                qb, kb, vb = qb.contiguous(), kb.contiguous(), vb.contiguous()
+            # Each checked on its own: newer ComfyUI hands K over in another layout than Q (its fused
+            # norm+RoPE), and assuming they match failed every call into dense.
+            qb, kb, vb = (t if t.is_contiguous() else t.contiguous() for t in (x.transpose(1, 2) for x in (q, k, v)))
 
             video, keep, refs = to.get("_funpack_sla_spans") or (0, (), ())
             keep = tuple(keep if cfg["protect_audio"] else ()) + tuple(refs if heavy else ())
