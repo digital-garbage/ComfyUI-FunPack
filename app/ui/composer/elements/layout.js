@@ -121,9 +121,19 @@ define("region", "stack", ({ children = [], gap = "md", label, fill = false } = 
   const node = el("div", { cls: ["cx-stack", `cx-stack-${gap}`, fill ? "cx-stack-fill" : null],
     attrs: { "aria-label": label } });
   const set = (next = []) => {
+    // A redraw replaces the field under the caret (an arrow press commits, and the panel redraws): the caret moves to
+    // its twin (same kind, same label, same place), carrying an edit not committed yet unless the value changed under it.
+    const was = node.contains(document.activeElement) && document.activeElement.matches("input, textarea, select") ? document.activeElement : null;
+    const twins = () => [...node.querySelectorAll(was.tagName)].filter((x) => x.type === was.type && x.getAttribute("aria-label") === was.getAttribute("aria-label"));
+    const at = was ? twins().indexOf(was) : -1;
     // Handles, not nodes, like everywhere else -- so a caller cannot slip a
     // document node in through the one element that takes children late.
     node.replaceChildren(...next.filter(Boolean).map((c) => nodeOf(c, "region.stack")));
+    const twin = at >= 0 && twins()[at];
+    if (!twin || twin === was) return;
+    if ("committed" in was.dataset && was.value !== was.dataset.committed && twin.value === was.dataset.committed) twin.value = was.value;
+    twin.focus({ preventScroll: true });
+    try { twin.setSelectionRange(was.selectionStart, was.selectionEnd); } catch { /* a number field has no caret position */ }
   };
   set(children);
   return { node, set, destroy: () => node.remove() };

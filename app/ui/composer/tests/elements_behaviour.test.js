@@ -356,9 +356,40 @@ test("a spinner-arrow click commits at once; leaving afterwards does not save it
   input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
   input.value = "5";
   fire(input, "change");
-  assert.deepEqual(seen, [4], "a keyboard arrow is typing: not committed per press");
-  fire(input, "blur");
-  assert.deepEqual(seen, [4, 5]);
+  assert.deepEqual(seen, [4, 5], "a keyboard arrow commits per press, like the spinner");
+});
+
+test("a held spinner commits once, on release", () => {
+  // committed mid-hold, the panel's redraw took the field from under the mouse and the hold stopped
+  const seen = [];
+  const n = mount(composer.number.md({ value: 3, min: 1, max: 10, onChange: (v) => seen.push(v) }));
+  const input = n.node.querySelector("input") || n.node;
+  fire(input, "pointerdown");
+  for (const v of ["4", "5", "6"]) { input.value = v; fire(input, "change"); }
+  assert.deepEqual(seen, []);
+  window.dispatchEvent(new window.Event("pointerup"));
+  assert.deepEqual(seen, [6]);
+  fire(input, "pointerdown"); window.dispatchEvent(new window.Event("pointerup"));
+  assert.deepEqual(seen, [6], "a click that stepped nothing commits nothing");
+});
+
+test("a panel redraw keeps the caret in the field, and an edit not committed yet", () => {
+  let value = 3;
+  const region = mount(composer.region.stack());
+  const draw = () => region.set([composer.number.md({ label: "Steps", value, onChange: (v) => { value = v; draw(); } }),
+    composer.number.md({ label: "CFG", value: 7 })]);
+  draw();
+  const steps = () => region.node.querySelector('input[aria-label="Steps"]');
+  steps().focus();
+  steps().value = "4"; fire(steps(), "change");
+  assert.equal(value, 4);
+  assert.equal(document.activeElement, steps(), "the next arrow press lands in the redrawn field");
+  steps().value = "5";                       // typed, not committed yet
+  draw();                                    // a redraw from elsewhere (a server answer)
+  assert.equal(steps().value, "5", "the uncommitted edit survives the redraw");
+  assert.equal(document.activeElement, steps());
+  value = 9; draw();                         // the value really changed underneath: that wins
+  assert.equal(steps().value, "9");
 });
 
 test("a number field ignores unparseable text on commit", () => {

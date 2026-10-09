@@ -57,7 +57,7 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChan
     cls: ["cx-input", "cx-input-md", "cx-number", "cx-focusable"],
     attrs: { type: "number", min, max, step, disabled, id: id || uid("num"), "aria-label": label },
   });
-  input.value = String(value);
+  input.value = input.dataset.committed = String(value);    // data-committed: region.stack carries an uncommitted edit across a redraw
 
   let committed = Number(value);
 
@@ -79,21 +79,26 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChan
     const parsed = raw === "" ? NaN : Number(raw);
     const next = Number.isFinite(parsed) ? clamp(parsed) : committed, changed = next !== committed;
     committed = next;
-    input.value = String(next);
+    input.value = input.dataset.committed = String(next);
     if (changed && onChange) onChange(next);
   };
-  // "change" is the browser's commit: each spinner-arrow click, the wheel, and leaving a typed edit. Blur alone missed
-  // the arrows, so a redraw put the old value back. Typing does not fire it, so mid-typing values stay typeable.
-  // Keyboard arrows count as typing (committed on Enter or leaving): committed per press, a panel that redraws on a change
-  // would rebuild the field under the caret and the second press would go nowhere.
-  let keyed = false;
-  input.addEventListener("change", () => { if (keyed) { keyed = false; return; } commit(); });
-  input.addEventListener("blur", () => { keyed = false; commit(); });
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); keyed = false; commit(); }
-    else if (/^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key)) keyed = true;
+  // "change" is the browser's commit: each spinner-arrow click, each keyboard arrow, the wheel, and leaving a typed edit.
+  // Typing does not fire it, so mid-typing values stay typeable. A panel redrawing on the commit keeps the caret in the
+  // redrawn field (region.stack), so the next arrow press still lands. A held spinner commits once, on release:
+  // a redraw mid-hold would take the field out from under the mouse and stop it.
+  let held = false, skipped = false;
+  const release = () => {
+    window.removeEventListener("pointerup", release, true); window.removeEventListener("pointercancel", release, true);
+    held = false;
+    if (skipped) { skipped = false; commit(); }
+  };
+  input.addEventListener("change", () => { if (held) skipped = true; else commit(); });
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
+  input.addEventListener("pointerdown", () => {
+    held = true; skipped = false;
+    window.addEventListener("pointerup", release, true); window.addEventListener("pointercancel", release, true);
   });
-  input.addEventListener("pointerdown", () => { keyed = false; });
 
   const node = unit
     ? el("span", { cls: "cx-number-wrap", children: [input, el("span", { cls: "cx-unit", text: unit })] })
@@ -105,7 +110,7 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChan
     setValue(v) {
       const parsed = Number(v);
       committed = Number.isFinite(parsed) ? clamp(parsed) : committed;
-      input.value = String(committed);
+      input.value = input.dataset.committed = String(committed);
     },
     destroy: () => node.remove(),
   };
