@@ -72,21 +72,22 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                       "the kernel is SLOWER than dense, so a low value is a "
                                       "loss, not a safe fallback."),
                 io.Combo.Input("sla_block_size",
-                               options=["64", "128"],
+                               options=["32", "64", "128"],
                                default=str(sla_attention.SLA_DEFAULTS["block_size"]),
                                optional=True,
                                tooltip="How many sequence tokens share one key selection. H3 "
                                        "packs audio at 80 rows per second, so a 128-row block "
                                        "forces 1.6s of speech down one attention pattern while "
                                        "the same rows are 3% of a video frame. Use 128 only "
-                                       "when the audio does not matter."),
+                                       "when the audio does not matter; 32 routes finer still for "
+                                       "about the same time. Triton engine only."),
                 io.Boolean.Input("sla_protect_audio",
                                  default=sla_attention.SLA_DEFAULTS["protect_audio"], optional=True,
-                                 tooltip="Always attend the [text | cond | audio] prefix, "
-                                         "whatever top-k picks. Audio is ~1% of the packed "
+                                 tooltip="Always attend the prompt's words and every audio "
+                                         "stream, whatever top-k picks. Audio is ~1% of the packed "
                                          "sequence, so plain top-k regularly drops all of it "
                                          "and the soundtrack degrades while the video still "
-                                         "looks fine. Costs about 7%."),
+                                         "looks fine. Reference images stay sparse: see sla_references."),
                 io.Int.Input("sla_min_seq_len",
                             default=sla_attention.SLA_DEFAULTS["min_seq_len"],
                             min=0, max=1000000, step=1024, optional=True,
@@ -110,6 +111,38 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                          "is skipped when a weight dtype is forced above. The memory saving "
                                          "always holds; the speed-up is lost on layers a LoRA is applied "
                                          "to and when compute dtype is forced."),
+                # Added later, so after everything: saved workflows can store widget values by position.
+                io.Combo.Input("sla_engine", options=list(sla_attention.ENGINES),
+                               default=sla_attention.SLA_DEFAULTS["engine"], optional=True,
+                               tooltip="What runs the sparse calls. comfy_kitchen: ComfyUI's compiled "
+                                       "int8 sol_attn (needs comfy-kitchen 0.2.32+; the Triton kernel "
+                                       "runs instead where it is missing, and the status says so). "
+                                       "triton: FunPack's own kernel, the only one with block size and "
+                                       "stabilize motion."),
+                io.String.Input("sla_dense_steps", default=sla_attention.SLA_DEFAULTS["dense_steps"],
+                                optional=True,
+                                tooltip="Steps at full attention, counted from 0: '0' or '0,1' or "
+                                        "'0-2'. The first steps set the layout and how closely the "
+                                        "prompt is followed, so keeping just those exact can fix "
+                                        "prompt-following for little time. Adds to dense last steps."),
+                io.Combo.Input("sla_references", options=list(sla_attention.REFERENCES),
+                               default=sla_attention.SLA_DEFAULTS["references"], optional=True,
+                               tooltip="Reference images, conditioning frames and the prompt's vision "
+                                       "tokens. off: sparse like the video. light: each keeps its best "
+                                       "15% for every query block. heavy: all of them exact, slow with "
+                                       "big references. On comfy_kitchen, light picks one 15% for all "
+                                       "query blocks."),
+                io.Boolean.Input("sla_tail", default=sla_attention.SLA_DEFAULTS["tail"], optional=True,
+                                 tooltip="comfy_kitchen engine: the skipped blocks still count, as one "
+                                         "averaged term per query block, instead of not at all. Off "
+                                         "matches what the SLA turbo LoRA was trained against; untested "
+                                         "on H3."),
+                io.Boolean.Input("sla_stabilize_motion",
+                                 default=sla_attention.SLA_DEFAULTS["stabilize_motion"], optional=True,
+                                 tooltip="Triton engine: each layer leans toward the blocks it picked last "
+                                         "step, so near ties stop flipping and showing as a faint double "
+                                         "exposure on fast motion. A fix for that one symptom; a little "
+                                         "more memory."),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -122,7 +155,9 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                 attention: str, fp16_accumulation: bool = False, sla: bool = False,
                 sla_sparsity: float = None, sla_block_size: str = None,
                 sla_protect_audio: bool = None, sla_min_seq_len: int = None,
-                sla_dense_last_steps: int = None, int8_convrot: bool = False) -> io.NodeOutput:
+                sla_dense_last_steps: int = None, int8_convrot: bool = False,
+                sla_engine: str = None, sla_dense_steps: str = None, sla_references: str = None,
+                sla_tail: bool = None, sla_stabilize_motion: bool = None) -> io.NodeOutput:
         notes = [f"FunPack Diffusion Model Loader | {model_name}"]
 
         accumulation = set_fp16_accumulation(fp16_accumulation)
@@ -208,7 +243,9 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                 sparsity_ratio=sla_sparsity, block_size=sla_block_size,
                 min_seq_len=sla_min_seq_len, dense_last_steps=sla_dense_last_steps,
                 protect_audio=sla_protect_audio,
-                dense_fn=override, dense_label=attention)
+                dense_fn=override, dense_label=attention,
+                engine=sla_engine, dense_steps=sla_dense_steps, references=sla_references,
+                tail=sla_tail, stabilize_motion=sla_stabilize_motion)
             notes.append(sla_note)
         if not installed:
             if override is not None:

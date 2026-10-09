@@ -121,6 +121,8 @@ _LADDER = {
     (128, 128): ((8, 2), (4, 2), (8, 1), (4, 1)),
     (64, 128): ((4, 2), (8, 2), (4, 1)),
     (64, 64): ((4, 1), (4, 3), (8, 3), (8, 1)),
+    # Not measured here: ComfyUI-H3-SLA-Attention's order, which measured 32x32 as fast as 64x64.
+    (32, 32): ((4, 2), (2, 1), (4, 1), (2, 2)),
 }
 _CHOSEN: dict = {}
 
@@ -133,7 +135,7 @@ def block_sparse_attention(q, k, v, lut, topk, BLOCK_M, BLOCK_N, qk_scale=None):
     """
     assert q.is_contiguous() and k.is_contiguous() and v.is_contiguous()
     assert lut.is_contiguous()
-    assert BLOCK_M in (64, 128) and BLOCK_N in (64, 128)
+    assert BLOCK_M in (32, 64, 128) and BLOCK_N in (32, 64, 128)
 
     B, LQ, H, D = q.shape
     LK = k.shape[1]

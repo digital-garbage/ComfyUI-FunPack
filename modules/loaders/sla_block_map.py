@@ -31,9 +31,13 @@ Three changes against upstream, marked FIX:
 
 from __future__ import annotations
 
+import math
+
 import torch
 import triton
 import triton.language as tl
+
+from .sla_attention import block_ranges, minus
 
 
 @triton.jit
@@ -85,19 +89,32 @@ def mean_pool(x, BLK):
     return x_mean
 
 
-def get_block_map(q, k, topk_ratio, BLKQ=128, BLKK=128, protect_upto=0):
-    """Return ``(lut, topk)``: the key blocks each query block should attend to.
+# stabilize_motion: a block chosen last step gets 5% of its row's best score, enough to settle a near tie,
+# never to beat a clearly better block. Only the 8 choices nearest the cut-off are kept between steps:
+# keeping whole tables for 50 layers is gigabytes at 768p, for a nudge that only matters at the edge.
+_STICKY = 0.05
+_HISTORY = 8
+
+
+def get_block_map(q, k, topk_ratio, BLKQ=128, BLKK=128, protect=(), refs=(), ref_keep=None,
+                  prev=None, sticky_from=0, remember=False):
+    """Return ``(lut, topk, history)``: the key blocks each query block should attend to.
 
     ``q``/``k`` are ``(B, L, H, D)`` contiguous. ``lut`` comes back as
     ``(B, H, ceil(LQ/BLKQ), topk)`` int32, contiguous, ready for the kernel.
 
-    ``protect_upto`` pins the first N tokens into every query block's selection.
-    For H3 that is the ``[text | cond | audio]`` prefix, and it exists because
-    plain top-k starves audio: at 768p/15s the audio is ~1% of the packed
-    sequence (19 key blocks of 1794), so nothing makes a query keep any of it,
-    and the smooth-k mean it is scored against is 99% video. The pinned blocks
-    are added on top of the top-k budget rather than displacing video, so video
-    coverage is unchanged and the extra cost is the prefix itself (~7%).
+    ``protect`` (token spans) is in every query block's selection. For H3 that is the language
+    tokens and the audio: plain top-k starves audio, ~1% of the packed sequence, so nothing makes a
+    query keep any of it. Pinned blocks come on top of the top-k budget rather than displacing
+    video, so video coverage is unchanged.
+
+    ``refs`` with ``ref_keep`` (0..1): each query block also keeps that share of each reference
+    span, its best-scoring blocks, again on top of the budget.
+
+    ``prev``: last step's ``history`` for this same layer, nudged up before top-k from query
+    token ``sticky_from`` on (the target video), so a near tie does not flip step to step and
+    show as a faint double exposure on fast motion. ``remember``: also return ``history``, what
+    to pass as ``prev`` next step (None otherwise).
     """
     pooled_q = mean_pool(q, BLKQ)
     # Smooth-k (SageAttention's trick), folded in rather than materialised.
@@ -112,19 +129,36 @@ def get_block_map(q, k, topk_ratio, BLKQ=128, BLKK=128, protect_upto=0):
 
     pooled_score = pooled_q @ pooled_k.transpose(-1, -2)      # (B, H, NQ, NK)
 
-    NK = pooled_score.shape[-1]
+    NQ, NK = pooled_score.shape[-2:]
+    sticky = pooled_score[..., min(NQ, (max(0, int(sticky_from)) + BLKQ - 1) // BLKQ):, :]
+    if prev is not None and prev.shape[:3] == sticky.shape[:3]:
+        bonus = sticky.abs().amax(dim=-1, keepdim=True).clamp(min=1e-6) * _STICKY
+        sticky.scatter_add_(-1, prev.long(), bonus.expand(*prev.shape))
+
     # FIX vs upstream: keep at least one key block.
     topk = max(1, min(NK, int(topk_ratio * NK)))
 
-    n_pinned = 0
-    if protect_upto > 0:
-        n_pinned = min((int(protect_upto) + BLKK - 1) // BLKK, NK)
-        # Ranking them above everything else is what pins them; widening topk by
-        # the same amount is what stops them evicting the blocks top-k chose.
-        if n_pinned > 0:
-            pooled_score[..., :n_pinned] = float("inf")
-            topk = min(NK, topk + n_pinned)
+    # Ranking them above everything else is what pins them; widening topk by
+    # the same amount is what stops them evicting the blocks top-k chose.
+    pinned = block_ranges(protect, BLKK, NK)
+    extra = 0
+    if ref_keep:
+        for a, b in minus(block_ranges(refs, BLKK, NK), pinned):
+            keep = max(1, min(b - a, math.ceil(ref_keep * (b - a))))
+            pooled_score.scatter_(-1, torch.topk(pooled_score[..., a:b], keep, dim=-1, sorted=False).indices + a, float("inf"))
+            extra += keep
+    for a, b in pinned:
+        pooled_score[..., a:b] = float("inf")
+        extra += b - a
+    topk = min(NK, topk + extra)
 
-    lut = torch.topk(pooled_score, topk, dim=-1, sorted=False).indices
-
-    return lut.to(torch.int32).contiguous(), topk
+    chosen = torch.topk(pooled_score, topk, dim=-1, sorted=False)
+    lut = chosen.indices.to(torch.int32).contiguous()
+    if not remember:
+        return lut, topk, None
+    rows = sticky.shape[-2]
+    idx, val = chosen.indices[..., NQ - rows:, :], chosen.values[..., NQ - rows:, :]
+    if topk > _HISTORY:      # the choices nearest the cut-off: the only ones that can flip
+        edge = torch.topk(val, _HISTORY, dim=-1, largest=False, sorted=False).indices
+        idx = torch.gather(idx, -1, edge)
+    return lut, topk, idx.to(torch.int32).contiguous()
