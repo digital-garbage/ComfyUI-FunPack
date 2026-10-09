@@ -28,7 +28,8 @@ def test_pairs_follows_counts_come_from_typed_triggers_only():
 
 
 def test_no_projects_or_no_shortcuts_is_an_empty_answer():
-    assert suggestions.stats() == {"scenes": 0, "counts": {}, "pairs": [], "follows": [], "scores": {}, "rated_pairs": []}
+    assert suggestions.stats() == {"scenes": 0, "counts": {}, "pairs": [], "follows": [], "scores": {}, "rated_pairs": [],
+                                   "guess": {"ready": False, "right": 0, "of": 0, "prompts": 0, "weights": {}}}
 
 
 def test_excluded_scenes_and_sub_clips_are_skipped_and_follows_use_timeline_order():
@@ -122,3 +123,30 @@ def test_a_rating_given_to_an_empty_prompt_does_not_follow_the_text_written_late
     shortcuts.save({"name": "neon", "triggers": ["neon"], "replacements": ["r"]})
     projects.save(projects.Project(name="x", scenes=[projects.Scene(text="neon", rating="10", rated={"text": "", "at": 1})]))
     assert suggestions.stats()["scores"] == {}
+
+
+def test_like_guess_turns_on_only_when_it_calls_held_out_prompts_right():
+    import random
+    rng = random.Random(1)
+    subjects = ["fox", "cat", "owl", "deer", "wolf", "crow", "hare", "seal", "lynx", "mole", "toad", "newt"]
+    clear = [(f"a {s} {mood}", 1 if mood == "neon" else -1) for s in subjects for mood in ("neon", "fog") for _ in range(2)]
+    g = suggestions.guess(clear)
+    assert g["ready"] and g["prompts"] == 24 and g["weights"]["neon"] > 0 > g["weights"]["fog"]
+    assert abs(g["weights"].get("fox", 0)) < g["weights"]["neon"]
+    # One prompt rated over and over: seeds, not words. Never on, however many.
+    assert not suggestions.guess([("a fox, neon", rng.choice((1, -1))) for _ in range(60)])["ready"]
+    # Votes that ignore the words: off (no weights sent either).
+    for seed in range(200):
+        r = random.Random(seed)
+        noise = suggestions.guess([(f"a {s} {m}", r.choice((1, -1))) for s in subjects for m in ("neon", "fog", "sun")])
+        assert not noise["ready"] and noise["weights"] == {}, seed
+    assert not suggestions.guess(clear[:8])["ready"]           # too few prompts to tell
+    assert suggestions.guess([])["of"] == 0
+
+
+def test_stats_feeds_the_like_guess_the_rated_text():
+    p = projects.Project(name="x", scenes=[projects.Scene(text="now", rating="10", rated={"text": "then", "at": 1}),
+                                           projects.Scene(text="b", rating="Disliked: bad image")])
+    projects.save(p)
+    g = suggestions.stats()["guess"]
+    assert (g["of"], g["prompts"]) == (1, 1)

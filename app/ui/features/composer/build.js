@@ -1,6 +1,6 @@
 // Build: a scene drafted from your own shortcuts, those in scenes you liked first. Rating renders is what teaches it.
 import { composer as c } from "../../composer/composer.js";
-import { compose } from "../../shell/habits.js";
+import { compose, likelier } from "../../shell/habits.js";
 import { genUnitId, isGenerative, unitRoot } from "../../shell/scenes.js";
 
 export function build(app, own) {
@@ -11,7 +11,7 @@ export function build(app, own) {
   const number = (sc) => p.scenes.indexOf(sc) + 1;
   const idea = c.textarea.md({ label: "Idea", rows: 3, placeholder: "Optional: a few words or triggers to start from.", onInput: () => { typed = true; } });
   const draft = c.textarea.md({ label: "Draft", rows: 4, value: "", placeholder: "Press Build.", onCommit: () => preview() });
-  const said = c.hint.default({ text: "" }), full = c.text.sm({ text: "" });
+  const said = c.hint.default({ text: "" }), learn = c.hint.default({ text: "" }), full = c.text.sm({ text: "" });
   // The idea follows the selected scene until you type in it; another scene starts it again.
   const follow = () => { const sc = root(); if ((sc && sc.id) !== shown) typed = false; shown = sc && sc.id; if (!typed) idea.setValue((sc && sc.text) || ""); };      // by id: Undo puts a copy of the same scene in
   follow();
@@ -35,7 +35,10 @@ export function build(app, own) {
       await p.flush();                          // a rating or edit made a moment ago is in the projects the ratings are read from
       const [library, stats] = await Promise.all([app.api.shortcuts().then((r) => r.shortcuts || []), app.api.suggestionStats()]);
       if (!alive) return;
-      const { text, added } = compose(library, stats, words);
+      const { text, added } = likelier(Array.from({ length: 12 }, () => compose(library, stats, words)), stats.guess);
+      const g = stats.guess;
+      learn.setText(!g ? "" : g.ready ? `Like-guess on: it called ${g.right} of your ${g.of} past ratings right.`
+        : `Like-guess learning: ${g.of} ratings over ${g.prompts} different prompts so far. It starts helping once it guesses them clearly better than chance.`);
       target = sc.id;
       draft.setValue(text);
       said.setText(`For scene ${number(sc)}. ${added.length ? `Added: ${added.map((s) => s.name).join(", ")}` : library.length ? "Nothing to add: every category is already used." : "No shortcuts yet: add some in the Shortcuts tab."}`);
@@ -54,7 +57,7 @@ export function build(app, own) {
     c.hint.default({ text: "Drafts a scene from your shortcuts. Each like makes one come up more often; each dislike less, and dislikes in a row much less." }),
     idea,
     c.toolbar.default({ items: [button] }),
-    draft, said,
+    draft, said, learn,
     c.field.default({ label: "Full prompt", hint: "One draw: a shortcut with several choices picks again each run.", control: full }),
     c.toolbar.default({ items: [c.button.sm({ label: "Use in scene", tone: "neutral", onClick: use })] }),
   ] });

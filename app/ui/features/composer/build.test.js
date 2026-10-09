@@ -8,13 +8,13 @@ test.after(() => teardownDom());
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const LIB = [{ name: "neon", triggers: ["neon"], replacements: ["neon lights"], category: "light" }];
 
-function rig({ expand } = {}) {
+function rig({ expand, stats = { scores: { neon: 2.25 } } } = {}) {
   const scenes = [{ id: "a", text: "a fox" }, { id: "b", text: "a cat" }, { id: "c", text: "", gen_unit_id: "b", cut_offset_frames: 8 }, { id: "v", text: "", source: { type: "video" } }];
   const heard = new Set(), writes = [];
   const p = { project: { scenes }, scenes, selectedId: "a", get selected() { return scenes.find((s) => s.id === this.selectedId); },
     anchor: "", postfix: "", postfixEnabled: true, variables: [], flush: async () => {},
     setText: (id, t) => { writes.push([id, t]); scenes.find((s) => s.id === id).text = t; heard.forEach((f) => f()); } };
-  const api = { shortcuts: async () => ({ shortcuts: LIB }), suggestionStats: async () => ({ scores: { neon: 2.25 } }),
+  const api = { shortcuts: async () => ({ shortcuts: LIB }), suggestionStats: async () => stats,
     expandPrompt: expand || (async (body) => ({ text: body.text.replace("neon", "neon lights") })) };
   const page = build({ project: p, api, on: (f) => { heard.add(f); return () => heard.delete(f); } }, () => {});
   document.body.replaceChildren(page.node);
@@ -82,4 +82,14 @@ test("Undo (copies of the same scenes) keeps what was typed in the idea", () => 
   q("Idea").value = "typed"; q("Idea").dispatchEvent(new window.Event("input"));
   undo();
   assert.equal(q("Idea").value, "typed");
+});
+
+test("Build says where the like-guess stands: learning, or on with how often it was right", async () => {
+  const learning = rig({ stats: { scores: {}, guess: { ready: false, right: 3, of: 7, prompts: 4, weights: {} } } });
+  learning.press("Build"); await tick(); await tick();
+  assert.match(learning.page.node.textContent, /Like-guess learning: 7 ratings over 4 different prompts/);
+  const on = rig({ stats: { scores: {}, guess: { ready: true, right: 70, of: 80, prompts: 60, weights: { neon: 2 } } } });
+  on.press("Build"); await tick(); await tick();
+  assert.match(on.page.node.textContent, /Like-guess on: it called 70 of your 80 past ratings right/);
+  assert.equal(on.q("Draft").value, "a fox, neon");
 });

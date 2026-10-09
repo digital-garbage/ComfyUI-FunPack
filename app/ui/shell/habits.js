@@ -71,3 +71,14 @@ export function compose(library, stats = {}, idea = "", { add = 3, random = Math
   // Commas between: two triggers side by side must not read as a third ("golden" + "hour" = "golden hour").
   return { text: [String(idea || "").trim(), ...added.map((s) => trigger(s).trim())].filter(Boolean).join(", "), added };
 }
+
+/** The like-guess (stats.guess, core/suggestions.py guess): of several drafts, one picked with odds = how much likelier
+ *  a like its words make it (e^score), so a likelier draft comes up more, never always. Off until the guess is ready. */
+export function likelier(drafts, guess, random = Math.random) {
+  if (!guess || !guess.ready || drafts.length < 2) return drafts[0];
+  const words = (t) => new Set(String(t || "").toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_'’-]*/gu) || []);      // core twin: suggestions.words
+  const score = (d) => [...words(d.text)].reduce((s, w) => s + (guess.weights[w] || 0), 0);
+  const top = Math.max(...drafts.map(score)), odds = drafts.map((d) => Math.exp(score(d) - top));
+  let r = random() * odds.reduce((a, b) => a + b, 0);
+  return drafts.find((_, i) => (r -= odds[i]) < 0) || drafts[drafts.length - 1];
+}

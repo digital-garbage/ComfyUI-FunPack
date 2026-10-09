@@ -72,3 +72,15 @@ test("compose never assembles a third shortcut from two side by side, weighs the
   assert.deepEqual(compose(twins, {}, "").added, [], "its trigger could fire the other one");
   assert.deepEqual(compose([{ name: "cut", triggers: ["cut"], replacements: [""], category: "w" }], {}, "").added, [], "removes itself: adds nothing");
 });
+
+test("the like-guess picks likelier drafts more often, never always, and only once it is ready", async () => {
+  const { likelier } = await import("../habits.js");
+  const drafts = [{ text: "a fox, fog" }, { text: "a fox, Neon" }];
+  const guess = { ready: true, weights: { neon: Math.log(3), fog: 0 } };
+  let seed = 7; const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const picks = Array.from({ length: 4000 }, () => likelier(drafts, guess, random).text);
+  const neon = picks.filter((t) => t.includes("Neon")).length / picks.length;
+  assert.ok(neon > 0.7 && neon < 0.8, `3 to 1 odds: ${neon}`);
+  assert.equal(likelier(drafts, { ...guess, ready: false }), drafts[0]);
+  assert.equal(likelier(drafts, undefined), drafts[0]);
+});
