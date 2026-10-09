@@ -63,3 +63,15 @@ def test_a_rating_counts_for_the_text_it_was_given_to_not_a_rewrite():
     s = suggestions.stats()
     assert s["scores"] == {"rain": 1} and s["counts"] == {"neon": 1}
     assert projects.Scene.from_dict({"rated_text": "rain"}).rated_text == "rain"
+
+
+def test_the_miner_finds_exactly_what_the_expander_replaces():
+    import random
+    words = ["rain", "golden", "hour", "fox", "tail", "neon-lit", "neon", "a", "the", "end", ",", "fox's", "\n", "raining", "GOLDEN"]
+    items = [shortcuts.Shortcut(name=f"n{i}", triggers=[w], replacements=[f"<{i}>"])
+             for i, w in enumerate(["rain", "golden hour", "golden", "fox", "fox tail", "neon-lit", "a", "the end"])]
+    fired, rng = shortcuts.matcher(items), random.Random(7)
+    for _ in range(500):
+        text = " ".join(rng.choice(words) for _ in range(12))
+        out = shortcuts.expand(text, shortcuts=items, seed=1)
+        assert fired(text) == {f"n{i}" for i in range(len(items)) if f"<{i}>" in out}, text

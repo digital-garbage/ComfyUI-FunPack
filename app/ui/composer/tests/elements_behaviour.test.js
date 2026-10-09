@@ -392,6 +392,48 @@ test("a panel redraw keeps the caret in the field, and an edit not committed yet
   assert.equal(steps().value, "9");
 });
 
+test("a held arrow key commits on its first press and once on release, not per repeat; a lost release ends at blur", () => {
+  const seen = [];
+  const n = mount(composer.number.md({ value: 3, onChange: (v) => seen.push(v) }));
+  const input = n.node.querySelector("input") || n.node;
+  const step = (v, repeat) => { input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowUp", repeat, bubbles: true })); input.value = v; fire(input, "change"); };
+  step("4", false); step("5", true); step("6", true);
+  assert.deepEqual(seen, [4]);
+  input.dispatchEvent(new window.KeyboardEvent("keyup", { key: "ArrowUp", bubbles: true }));
+  assert.deepEqual(seen, [4, 6]);
+  fire(input, "pointerdown");                              // a mouse-up that never arrives
+  input.value = "7"; fire(input, "change");
+  fire(input, "blur");
+  assert.deepEqual(seen, [4, 6, 7]);
+  input.value = "8"; fire(input, "change");
+  assert.deepEqual(seen, [4, 6, 7, 8], "not stuck afterwards");
+});
+
+test("a number field shows the value its owner can use (a length snapped to the model's grid)", () => {
+  const seen = [];
+  const n = mount(composer.number.md({ value: 39, snap: (v) => Math.round((v - 5) / 17) * 17 + 5, onChange: (v) => seen.push(v) }));
+  const input = n.node.querySelector("input") || n.node;
+  input.value = "40"; fire(input, "blur");
+  assert.equal(input.value, "39");
+  assert.deepEqual(seen, [], "39 is what it already was");
+  input.value = "50"; fire(input, "blur");
+  assert.deepEqual(seen, [56]);
+});
+
+test("a redraw keeps typed text in a text field too, and moves the caret only when it knows which field is which", () => {
+  let shown = "old", extra = true;
+  const region = mount(composer.region.stack());
+  const draw = () => region.set([extra ? composer.input.md({ label: "Name", value: "other" }) : null, composer.input.md({ label: "Name", value: shown, onCommit: (v) => { shown = v; } })]);
+  draw();
+  const box = () => [...region.node.querySelectorAll('input[aria-label="Name"]')].pop();
+  box().focus(); box().value = "old plus typed";
+  draw();
+  assert.equal(box().value, "old plus typed");
+  assert.equal(document.activeElement, box());
+  extra = false; draw();                                   // the first "Name" went away: index alone would pick the wrong one
+  assert.notEqual(document.activeElement && document.activeElement.getAttribute("aria-label"), "Name");
+});
+
 test("a number field ignores unparseable text on commit", () => {
   const n = mount(composer.number.md({ value: 5, min: 0, max: 10 }));
   const input = n.node.querySelector("input") || n.node;

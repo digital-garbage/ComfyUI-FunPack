@@ -369,6 +369,42 @@ def _cleanup_removed_phrases(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", text)
 
 
+def _combined(items) -> tuple[list, str]:
+    """Every enabled trigger with something to put in, longest first, as one pattern: -> (candidates, pattern)."""
+    candidates = [(t, _trigger_pattern(t), sc.replacements, sc.name) for sc in items
+                  if sc.enabled and sc.replacements for t in sc.triggers if _trigger_pattern(t)]
+    candidates.sort(key=lambda c: len(c[0]), reverse=True)
+    return candidates, "|".join(f"(?P<t{i}>{p})" for i, (_, p, _, _) in enumerate(candidates))
+
+
+_TOKEN = re.compile(r"[\w'’-]+|[^\w\s]")
+
+
+def matcher(items=None):
+    """-> fired(text): the names of the shortcuts expand() would replace in `text`, by its own rules. A trigger can only
+    fire when every one of its tokens stands whole in the text, so each text is searched for those triggers alone."""
+    candidates, _ = _combined(listing() if items is None else items)
+    compiled = [re.compile(pattern, re.IGNORECASE) for _, pattern, _, _ in candidates]
+    needs = [set(_TOKEN.findall(trigger.lower())) for trigger, *_rest in candidates]
+    by_first: dict[str, list[int]] = {}
+    for i, (trigger, *_rest) in enumerate(candidates):
+        by_first.setdefault(_TOKEN.findall(trigger.lower())[0], []).append(i)
+
+    def fired(text) -> set:
+        text = str(text or "")
+        tokens = set(_TOKEN.findall(text.lower()))
+        near = [i for t in tokens for i in by_first.get(t, ()) if needs[i] <= tokens]
+        # As the expander's one pattern does: the leftmost match wins, the longest trigger (lowest i) first at a tie,
+        # and the search goes on after it.
+        out, pos = set(), 0
+        for start, i, end in sorted((m.start(), i, m.end()) for i in near for m in compiled[i].finditer(text)):
+            if start >= pos:
+                out.add(candidates[i][3])
+                pos = end
+        return out
+    return fired
+
+
 def expand(text: str, shortcuts: list[Shortcut] | None = None, seed: int = 0, commit: bool = False) -> str:
     with _REVOLVER_LOCK:
         return _expand(text, shortcuts, seed, commit)
@@ -392,20 +428,9 @@ def _expand(text: str, shortcuts, seed: int, commit: bool) -> str:
     original = str(text or "")
     if not original:
         return original
-    items = listing() if shortcuts is None else shortcuts
-    candidates = []
-    for sc in items:
-        if not sc.enabled or not sc.replacements:
-            continue
-        for trigger in sc.triggers:
-            pattern = _trigger_pattern(trigger)
-            if pattern:
-                candidates.append((trigger, pattern, sc.replacements, sc.name.lower()))
+    candidates, combined = _combined(listing() if shortcuts is None else shortcuts)
     if not candidates:
         return original
-
-    candidates.sort(key=lambda c: len(c[0]), reverse=True)
-    combined = "|".join(f"(?P<t{i}>{p})" for i, (_, p, _, _) in enumerate(candidates))
     revolver = load_revolver()
     drew = False
     rng_seed = int(seed or 0) or int(hashlib.md5(original.encode("utf-8")).hexdigest()[:12], 16)
@@ -414,9 +439,10 @@ def _expand(text: str, shortcuts, seed: int, commit: bool) -> str:
 
     def replace(m):
         nonlocal removed, drew
-        for i, (_, _, replacements, key) in enumerate(candidates):
+        for i, (_, _, replacements, name) in enumerate(candidates):
             if m.group(f"t{i}") is None:
                 continue
+            key = name.lower()
             if revolver["enabled"] and len(replacements) > 1:
                 choice = _draw(revolver["state"], key, replacements, revolver["random"], rng)
                 drew = True

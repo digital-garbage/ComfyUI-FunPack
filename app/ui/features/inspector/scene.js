@@ -24,7 +24,7 @@ const lengthField = (p, sc, label, modeKey, valueKey, shown, grid) => {
   return c.field.default({ label, control: c.region.stack({ gap: "xs", children: [
     c.select.md({ label, options: MODES, value: mode, onChange: (v) => p.setScene(sc.id, modeKey, v) }),
     mode === "custom" ? c.number.md({ label: `${label} (custom)`, min: grid ? grid.step + grid.base : 1, max: 16384, step: grid ? grid.step : 1, precision: 0, value: sc[valueKey] ?? shown,
-      onChange: (v) => p.setScene(sc.id, valueKey, grid ? snapFrames(v, "round", grid) : v) }) : null,
+      snap: grid ? (v) => snapFrames(v, "round", grid) : undefined, onChange: (v) => p.setScene(sc.id, valueKey, v) }) : null,
   ] }) });
 };
 

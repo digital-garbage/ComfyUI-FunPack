@@ -11,8 +11,8 @@ import { uid } from "../internals/ids.js";
 function wire(node, { onInput, onCommit }) {
   if (onInput) node.addEventListener("input", () => onInput(node.value));
   if (onCommit) {
-    let last = node.value;
-    const commit = () => { if (node.value !== last) { last = node.value; onCommit(node.value); } };
+    let last = node.dataset.committed = node.value;           // region.stack carries an edit not committed yet across a redraw
+    const commit = () => { if (node.value !== last) { last = node.dataset.committed = node.value; onCommit(node.value); } };
     node.addEventListener("blur", commit);
     // And `change`, which is what autofill, a password manager and a script
     // setting the value all fire without ever taking focus. commit() only acts
@@ -37,7 +37,7 @@ function textLike(tag, cls, { value = "", placeholder, onInput, onCommit, disabl
   return {
     node,
     get value() { return node.value; },
-    setValue(v) { node.value = v ?? ""; },
+    setValue(v) { node.value = v ?? ""; if ("committed" in node.dataset) node.dataset.committed = node.value; },
     focus: () => node.focus(),
     destroy: () => node.remove(),
   };
@@ -52,7 +52,7 @@ define("search", "md", (props = {}) => {
   return handle;
 });
 
-define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChange, disabled, id, label } = {}) => {
+define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, snap, onChange, disabled, id, label } = {}) => {
   const input = el("input", {
     cls: ["cx-input", "cx-input-md", "cx-number", "cx-focusable"],
     attrs: { type: "number", min, max, step, disabled, id: id || uid("num"), "aria-label": label },
@@ -77,15 +77,16 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChan
   const commit = () => {
     const raw = input.value.trim();
     const parsed = raw === "" ? NaN : Number(raw);
-    const next = Number.isFinite(parsed) ? clamp(parsed) : committed, changed = next !== committed;
+    // `snap`: the values the owner can use (a model's frame grid), so the field shows what is used, not what was typed.
+    const next = Number.isFinite(parsed) ? clamp(snap ? snap(clamp(parsed)) : parsed) : committed, changed = next !== committed;
     committed = next;
     input.value = input.dataset.committed = String(next);
     if (changed && onChange) onChange(next);
   };
   // "change" is the browser's commit: each spinner-arrow click, each keyboard arrow, the wheel, and leaving a typed edit.
   // Typing does not fire it, so mid-typing values stay typeable. A panel redrawing on the commit keeps the caret in the
-  // redrawn field (region.stack), so the next arrow press still lands. A held spinner commits once, on release:
-  // a redraw mid-hold would take the field out from under the mouse and stop it.
+  // redrawn field (region.stack), so the next arrow press still lands. A held spinner or arrow key commits once more, on
+  // release: a redraw mid-hold would take the field out from under the mouse, and each step would be its own undo.
   let held = false, skipped = false;
   const release = () => {
     window.removeEventListener("pointerup", release, true); window.removeEventListener("pointercancel", release, true);
@@ -93,8 +94,12 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, onChan
     if (skipped) { skipped = false; commit(); }
   };
   input.addEventListener("change", () => { if (held) skipped = true; else commit(); });
-  input.addEventListener("blur", commit);
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
+  input.addEventListener("blur", () => { held = skipped = false; commit(); });      // also ends a hold whose release never came
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.repeat && /^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key)) held = true;
+  });
+  input.addEventListener("keyup", () => { if (held) release(); });
   input.addEventListener("pointerdown", () => {
     held = true; skipped = false;
     window.addEventListener("pointerup", release, true); window.addEventListener("pointercancel", release, true);
@@ -163,7 +168,7 @@ define("textarea", "md", ({ value = "", rows = 4, autoGrow = false, fold = false
   return {
     node,
     get value() { return node.value; },
-    setValue(v) { node.value = v ?? ""; if (autoGrow || (fold && document.activeElement === node)) grow(); },
+    setValue(v) { node.value = v ?? ""; if ("committed" in node.dataset) node.dataset.committed = node.value; if (autoGrow || (fold && document.activeElement === node)) grow(); },
     destroy: () => node.remove(),
   };
 });

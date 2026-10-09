@@ -1,13 +1,11 @@
 """What a person's own prompting habits say about shortcuts: which ones land in
 the same scene (pairs), which shot follows which (follows), and how the scenes
 using them were rated (scores, rated_pairs: liked +1, disliked -1). Mined on demand
-by reading every saved project's scene text for triggers typed verbatim, so
+by reading every saved project's scene text for the triggers the expander would replace, so
 there is nothing learned to store and nothing to go stale. Keyed by shortcut
 name, which is what the picker identifies a shortcut by."""
 
 from __future__ import annotations
-
-import re
 
 from . import projects, shortcuts
 
@@ -21,14 +19,7 @@ def vote(label: str) -> int:
 
 
 def stats() -> dict:
-    pats = []
-    for sc in shortcuts.listing():
-        if not sc.enabled:
-            continue
-        for trig in sc.triggers:
-            t = trig.strip().lower()
-            if t:
-                pats.append((sc.name, re.compile(r"(?<![a-z0-9_])" + re.escape(t) + r"(?![a-z0-9_])")))
+    fired = shortcuts.matcher()
     counts: dict[str, int] = {}
     pairs: dict[tuple, int] = {}
     follows: dict[tuple, int] = {}
@@ -48,14 +39,13 @@ def stats() -> dict:
             # Editorial cuts share the root's text: only the root owns the prompt.
             if sc.excluded or (sc.gen_unit_id and sc.cut_offset_frames):
                 continue
-            text = (sc.text or "").strip().lower()
-            if not text:
+            if not (sc.text or "").strip():
                 continue
-            present = {k for k, pat in pats if pat.search(text)}
+            present = fired(sc.text)
             scanned += 1
             v = vote(sc.rating)
             # A rating is about the text it was given to (older ratings carry none: the text as it is now).
-            rated = {k for k, pat in pats if pat.search(sc.rated_text.lower())} if v and sc.rated_text.strip() else present
+            rated = fired(sc.rated_text) if v and sc.rated_text.strip() else present
             for k in present:
                 counts[k] = counts.get(k, 0) + 1
             for a in present:
