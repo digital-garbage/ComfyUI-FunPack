@@ -75,3 +75,24 @@ def test_the_miner_finds_exactly_what_the_expander_replaces():
         text = " ".join(rng.choice(words) for _ in range(12))
         out = shortcuts.expand(text, shortcuts=items, seed=1)
         assert fired(text) == {f"n{i}" for i in range(len(items)) if f"<{i}>" in out}, text
+
+
+def test_ratings_outlive_a_regenerate_a_cleared_text_and_a_left_out_clip():
+    for n in ("rain", "neon", "fox"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    shown = {"media": {"filename": "3.mp4"}, "promptId": "p3"}
+    projects.save(projects.Project(name="x", scenes=[
+        projects.Scene(id="a", text="fox", rating="", rated_text=""),
+        projects.Scene(id="b", text="", rating="10", rated_text="neon"),
+        projects.Scene(id="c", text="fox", rating="10", rated_text="fox", excluded=True)],
+        scene_renders={"a": shown},
+        scene_variants={"a": [{"media": {"filename": "1.mp4"}, "promptId": "p1", "rating": "1", "rated_text": "rain"},
+                              {**shown, "rating": "10", "rated_text": "fox"}]}))   # the take on the clip: its head speaks for it
+    assert suggestions.stats()["scores"] == {"rain": -1, "neon": 1, "fox": 1}
+
+
+def test_a_trigger_lower_reshapes_is_still_found_as_the_expander_finds_it():
+    items = [shortcuts.Shortcut(name="big", triggers=["İstanbul"], replacements=["<b>"]),
+             shortcuts.Shortcut(name="small", triggers=["istanbul"], replacements=["<s>"])]
+    out = shortcuts.expand("istanbul", shortcuts=items, seed=1)
+    assert shortcuts.matcher(items)("istanbul") == {"big" if "<b>" in out else "small"}

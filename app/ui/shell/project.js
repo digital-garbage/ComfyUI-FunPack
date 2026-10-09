@@ -162,7 +162,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent, befor
 
   async function flush(target = project) {
     if (timer) { clearTimeout(timer); timer = null; }
-    if (!target || !dirty) return;
+    if (!target || !dirty) return saving;           // nothing new to write, but one on its way is waited for
     // One PUT at a time. Two overlapping writes of a whole project can land in
     // either order, and the loser is a version of the project the user has
     // already moved past.

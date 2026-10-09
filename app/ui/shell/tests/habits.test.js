@@ -33,7 +33,7 @@ const pool = [
 
 test("compose keeps the idea, adds one shortcut per unused category, never one with nothing to put in", () => {
   const { text, added } = compose(pool, {}, "a fox in the rain", { random: () => 0 });
-  assert.equal(text, "a fox in the rain dolly in");
+  assert.equal(text, "a fox in the rain, dolly in");
   assert.deepEqual(added.map((s) => s.name), ["dolly"]);
   assert.equal(compose(pool, {}, "", { random: () => 0 }).added.length, 2, "weather + camera; the empty style is skipped");
 });
@@ -57,4 +57,16 @@ test("a trigger is matched as the expander matches it", () => {
   assert.deepEqual(presentIn(lib, "a fox-like fox's walk").map((s) => s.name), []);
   assert.deepEqual(presentIn(lib, "GOLDEN\n  hour").map((s) => s.name), ["gh"]);
   assert.deepEqual(presentIn(lib, "(fox)").map((s) => s.name), ["fox"]);
+});
+
+test("compose never builds what was rated down: not by two triggers side by side, not as a pair it makes itself, not via a shared trigger", () => {
+  const lib = [{ name: "G", triggers: ["golden"], replacements: ["g"], category: "a" }, { name: "H", triggers: ["hour"], replacements: ["h"], category: "b" },
+    { name: "GH", triggers: ["golden hour"], replacements: ["gh"], category: "c" }];
+  const { text } = compose(lib, { scores: { GH: -3 } }, "", { random: () => 0, add: 2 });
+  assert.doesNotMatch(text, /golden\s+hour/i, "joined with a comma, so the rated-down one cannot fire");
+  const pq = [{ name: "P", triggers: ["p"], replacements: ["p"], category: "x" }, { name: "Q", triggers: ["q"], replacements: ["q"], category: "y" }];
+  assert.equal(compose(pq, { rated_pairs: [["P", "Q", -4]] }, "").added.length, 1, "the second would make the disliked pair");
+  const twins = [{ name: "bad", triggers: ["x"], replacements: ["b"], category: "u" }, { name: "good", triggers: ["x"], replacements: ["g"], category: "v" }];
+  assert.deepEqual(compose(twins, { scores: { bad: -1 } }, "").added, [], "its trigger would fire the other one");
+  assert.deepEqual(compose([{ name: "cut", triggers: ["cut"], replacements: [""], category: "w" }], {}, "").added, [], "removes itself: adds nothing");
 });

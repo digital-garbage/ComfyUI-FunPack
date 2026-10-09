@@ -28,11 +28,11 @@ test("Build drafts from the selected scene, shows the full prompt, and Use puts 
   const { page, q, press, writes } = rig();
   assert.equal(q("Idea").value, "a fox");
   press("Build"); await tick(); await tick();
-  assert.equal(q("Draft").value, "a fox neon");
+  assert.equal(q("Draft").value, "a fox, neon");
   assert.match(page.node.textContent, /For scene 1\. Added: neon/);
-  assert.match(page.node.textContent, /a fox neon lights/);
+  assert.match(page.node.textContent, /a fox, neon lights/);
   press("Use in scene");
-  assert.deepEqual(writes, [["a", "a fox neon"]]);
+  assert.deepEqual(writes, [["a", "a fox, neon"]]);
 });
 
 test("Use before Build, or with an emptied draft, never wipes the scene", async () => {
@@ -57,7 +57,7 @@ test("the idea follows the selection until typed in; the draft goes to the scene
   select("a");
   assert.equal(q("Idea").value, "a fox", "another scene starts the idea again");
   press("Use in scene");
-  assert.deepEqual(writes, [["b", "my words neon"]], "the scene it was built for, not the one selected since");
+  assert.deepEqual(writes, [["b", "my words, neon"]], "the scene it was built for, not the one selected since");
 });
 
 test("an imported video clip is refused: it has no prompt", async () => {

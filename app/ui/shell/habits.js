@@ -51,21 +51,23 @@ export const shuffled = (list, random = Math.random) => {
  *  A shortcut rated down overall, or rated down alongside what is already here, is never drawn. `stats` is
  *  /suggestion_stats. -> { text, added: [shortcut] } */
 export function compose(library, stats = {}, idea = "", { add = 3, random = Math.random } = {}) {
-  const cat = (s) => s.category || `\0${s.name}`;
-  const here = presentIn(library, idea), names = new Set(here.map((s) => s.name)), cats = new Set(here.map(cat));
-  const scores = stats.scores || {}, near = new Map();
-  for (const [a, b, n] of stats.rated_pairs || []) for (const [x, y] of [[a, b], [b, a]]) if (names.has(x)) near.set(y, (near.get(y) || 0) + n);
-  const pool = usable(library).filter((s) => !names.has(s.name) && (s.replacements || []).length && (scores[s.name] || 0) >= 0 && (near.get(s.name) || 0) >= 0)
-    .map((s) => ({ s, w: 1 + 2 * ((scores[s.name] || 0) + (near.get(s.name) || 0)) }));
-  const added = [];
+  const cat = (s) => s.category || `\0${s.name}`, key = (t) => String(t).trim().toLowerCase().replace(/\s+/g, " ");
+  const owners = new Map();        // a trigger two shortcuts share fires whichever the expander meets first: never offered
+  for (const s of usable(library)) for (const t of s.triggers) if (key(t)) owners.set(key(t), (owners.get(key(t)) || 0) + 1);
+  const trigger = (s) => s.triggers.find((t) => key(t) && owners.get(key(t)) === 1);
+  const here = presentIn(library, idea), cats = new Set(here.map(cat)), taken = new Set(here.map((s) => s.name));
+  const scores = stats.scores || {}, near = new Map(), added = [];
+  const meet = (name) => { for (const [a, b, n] of stats.rated_pairs || []) for (const [x, y] of [[a, b], [b, a]]) if (x === name) near.set(y, (near.get(y) || 0) + n); };
+  here.forEach((s) => meet(s.name));
+  const pool = usable(library).filter((s) => (s.replacements || []).some((r) => String(r).trim()) && (scores[s.name] || 0) >= 0 && trigger(s));
   while (added.length < add) {
-    const open = pool.filter((x) => !cats.has(cat(x.s)));
+    const open = pool.filter((s) => !taken.has(s.name) && !cats.has(cat(s)) && (near.get(s.name) || 0) >= 0)       // nor rated down beside one already in
+      .map((s) => ({ s, w: 1 + 2 * ((scores[s.name] || 0) + (near.get(s.name) || 0)) }));
     if (!open.length) break;
     let r = random() * open.reduce((t, x) => t + x.w, 0);
-    const pick = open.find((x) => (r -= x.w) < 0) || open[open.length - 1];
-    added.push(pick.s);
-    cats.add(cat(pick.s));
+    const { s } = open.find((x) => (r -= x.w) < 0) || open[open.length - 1];
+    added.push(s); taken.add(s.name); cats.add(cat(s)); meet(s.name);
   }
-  const trigger = (s) => s.triggers.find((t) => String(t).trim()).trim();
-  return { text: [String(idea || "").trim(), ...added.map(trigger)].filter(Boolean).join(" "), added };
+  // Commas between: two triggers side by side must not read as a third ("golden" + "hour" = "golden hour").
+  return { text: [String(idea || "").trim(), ...added.map((s) => trigger(s).trim())].filter(Boolean).join(", "), added };
 }

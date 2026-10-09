@@ -723,3 +723,11 @@ test("Enter is a newline in a textarea, not a commit", () => {
   fire(box.node, "blur");
   assert.deepEqual(committed, ["first line"], "blur is what commits a textarea");
 });
+
+test("a field blurred as a redraw removes it saves nothing then; the redrawn field carries the edit", () => {
+  const seen = [];
+  const n = mount(composer.number.md({ value: 3, onChange: (v) => seen.push(v) }));
+  const input = n.node.querySelector("input") || n.node;
+  input.value = "9"; input.remove(); fire(input, "blur");
+  assert.deepEqual(seen, []);
+});

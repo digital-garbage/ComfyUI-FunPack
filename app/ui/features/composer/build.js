@@ -29,12 +29,13 @@ export function build(app, own) {
   const go = async () => {
     const sc = root();
     if (!sc || !isGenerative(sc)) return said.setText(sc ? "This clip is an imported video: it has no prompt." : "Select a scene first.");
+    const words = idea.value;                   // as it reads at the click: the selection may change while this works
     button.setBusy(true);
     try {
       await p.flush();                          // a rating or edit made a moment ago is in the projects the ratings are read from
       const [library, stats] = await Promise.all([app.api.shortcuts().then((r) => r.shortcuts || []), app.api.suggestionStats()]);
       if (!alive) return;
-      const { text, added } = compose(library, stats, idea.value);
+      const { text, added } = compose(library, stats, words);
       target = sc.id;
       draft.setValue(text);
       said.setText(`For scene ${number(sc)}. ${added.length ? `Added: ${added.map((s) => s.name).join(", ")}` : library.length ? "Nothing to add: every category is used, or what is left was rated down." : "No shortcuts yet: add some in the Shortcuts tab."}`);

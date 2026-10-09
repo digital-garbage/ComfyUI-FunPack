@@ -387,13 +387,17 @@ def matcher(items=None):
     compiled = [re.compile(pattern, re.IGNORECASE) for _, pattern, _, _ in candidates]
     needs = [set(_TOKEN.findall(trigger.lower())) for trigger, *_rest in candidates]
     by_first: dict[str, list[int]] = {}
+    always = []           # a trigger lower() reshapes ("İ" -> "i̇") matches case-blind in ways tokens cannot tell
     for i, (trigger, *_rest) in enumerate(candidates):
-        by_first.setdefault(_TOKEN.findall(trigger.lower())[0], []).append(i)
+        if len(trigger.lower()) != len(trigger):
+            always.append(i)
+        else:
+            by_first.setdefault(_TOKEN.findall(trigger.lower())[0], []).append(i)
 
     def fired(text) -> set:
         text = str(text or "")
         tokens = set(_TOKEN.findall(text.lower()))
-        near = [i for t in tokens for i in by_first.get(t, ()) if needs[i] <= tokens]
+        near = [i for t in tokens for i in by_first.get(t, ()) if needs[i] <= tokens] + always
         # As the expander's one pattern does: the leftmost match wins, the longest trigger (lowest i) first at a tie,
         # and the search goes on after it.
         out, pos = set(), 0

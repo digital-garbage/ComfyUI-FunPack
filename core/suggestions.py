@@ -36,27 +36,35 @@ def stats() -> dict:
         order = [i for i in proj.timeline_order if i in by_id] or [sc.id for sc in proj.scenes]
         for sid in order:
             sc = by_id[sid]
-            # Editorial cuts share the root's text: only the root owns the prompt.
-            if sc.excluded or (sc.gen_unit_id and sc.cut_offset_frames):
+            # Editorial cuts share the root's text and rating: only the root owns them.
+            if sc.gen_unit_id and sc.cut_offset_frames:
                 continue
-            if not (sc.text or "").strip():
+            # Every rating counts for the text it was given to (older ones carry none: the text as it is now): the
+            # clip's own, and each earlier take's -- regenerating moves a rating there. A clip left out still was rated.
+            now = proj.scene_renders.get(sc.id) if isinstance(proj.scene_renders.get(sc.id), dict) else {}
+            on_clip = (lambda t: t.get("promptId") == now.get("promptId")) if now.get("promptId") else \
+                (lambda t: (t.get("media") or {}).get("filename") == (now.get("media") or {}).get("filename"))
+            takes = [(t.get("rating"), t.get("rated_text")) for t in proj.scene_variants.get(sc.id) or []
+                     if isinstance(t, dict) and isinstance(t.get("rated_text"), str) and not (now and on_clip(t))]
+            for label, text in [(sc.rating, sc.rated_text or sc.text), *takes]:
+                v = vote(label)
+                rated = fired(text) if v and str(text or "").strip() else ()
+                for k in rated:
+                    scores[k] = scores.get(k, 0) + v
+                    for b in rated:
+                        if k < b:
+                            rated_pairs[(k, b)] = rated_pairs.get((k, b), 0) + v
+            # Habits: what the cut uses now.
+            if sc.excluded or not (sc.text or "").strip():
                 continue
             present = fired(sc.text)
             scanned += 1
-            v = vote(sc.rating)
-            # A rating is about the text it was given to (older ratings carry none: the text as it is now).
-            rated = fired(sc.rated_text) if v and sc.rated_text.strip() else present
             for k in present:
                 counts[k] = counts.get(k, 0) + 1
             for a in present:
                 for b in present:
                     if a < b:
                         pairs[(a, b)] = pairs.get((a, b), 0) + 1
-            for k in rated if v else ():
-                scores[k] = scores.get(k, 0) + v
-                for b in rated:
-                    if k < b:
-                        rated_pairs[(k, b)] = rated_pairs.get((k, b), 0) + v
             for a in prev or ():
                 for b in present:
                     follows[(a, b)] = follows.get((a, b), 0) + 1

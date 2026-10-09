@@ -13,7 +13,8 @@ function wire(node, { onInput, onCommit }) {
   if (onCommit) {
     let last = node.dataset.committed = node.value;           // region.stack carries an edit not committed yet across a redraw
     const commit = () => { if (node.value !== last) { last = node.dataset.committed = node.value; onCommit(node.value); } };
-    node.addEventListener("blur", commit);
+    // Not from a field being removed (a redraw): committing mid-redraw would redraw inside it. region.stack carries the edit.
+    node.addEventListener("blur", () => { if (node.isConnected) commit(); });
     // And `change`, which is what autofill, a password manager and a script
     // setting the value all fire without ever taking focus. commit() only acts
     // on a real difference, so the pair costs nothing when both arrive.
@@ -94,7 +95,7 @@ define("number", "md", ({ value = 0, min, max, step = 1, precision, unit, snap, 
     if (skipped) { skipped = false; commit(); }
   };
   input.addEventListener("change", () => { if (held) skipped = true; else commit(); });
-  input.addEventListener("blur", () => { held = skipped = false; commit(); });      // also ends a hold whose release never came
+  input.addEventListener("blur", () => { held = skipped = false; if (input.isConnected) commit(); });      // ends a lost hold; not from a removal (see wire)
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); commit(); }
     else if (e.repeat && /^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key)) held = true;
