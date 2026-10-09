@@ -14,13 +14,13 @@ export function takesOf(p, scene) {
 export function pickTake(p, scene, to) {
   const { head, list, at } = takesOf(p, scene);
   if (at < 0 || to < 0 || to >= list.length || to === at) return false;
-  list[at].rating = head.rating || ""; list[at].rated_text = head.rated_text || "";
+  list[at].rating = head.rating || ""; list[at].rated = head.rated || {};
   const take = list[to];
   p.scenes.filter((s) => genUnitId(s) === genUnitId(head)).forEach((s) => {
     const r = (p.scene_renders || {})[s.id];
-    if (r) p.scene_renders[s.id] = { ...r, media: take.media, ...(take.promptId ? { promptId: take.promptId } : {}), ...(take.secs && r.durationSec !== undefined ? { durationSec: take.secs } : {}) };       // a take made at another length plays at its own
+    if (r) p.scene_renders[s.id] = { ...r, media: take.media, ...(take.promptId ? { promptId: take.promptId } : {}), text: take.text, ...(take.secs && r.durationSec !== undefined ? { durationSec: take.secs } : {}) };       // a take made at another length plays at its own
   });
-  head.rating = take.rating || ""; head.rated_text = take.rated_text || "";
+  head.rating = take.rating || ""; head.rated = take.rated || {};
   return true;
 }
 

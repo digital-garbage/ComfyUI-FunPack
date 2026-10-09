@@ -166,7 +166,7 @@ export function createProject({ onChange, onError, onOpen, keepConsistent, befor
     // One PUT at a time. Two overlapping writes of a whole project can land in
     // either order, and the loser is a version of the project the user has
     // already moved past.
-    if (saving) { await saving.catch(() => {}); if (!dirty) return; }
+    if (saving) { await saving.catch(() => {}); if (!dirty) return saving; }      // another flush wrote it meanwhile: wait for that write
     dirty = false;
     const body = { ...target };
     saving = put(body).then((saved) => {

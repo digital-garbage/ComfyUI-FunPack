@@ -38,17 +38,19 @@ test("compose keeps the idea, adds one shortcut per unused category, never one w
   assert.equal(compose(pool, {}, "", { random: () => 0 }).added.length, 2, "weather + camera; the empty style is skipped");
 });
 
-test("compose favours what was liked and never draws what was rated down, alone or beside the idea", () => {
-  assert.equal(compose(pool, { scores: { fog: 5 } }, "", { random: () => 0.5, add: 1 }).added[0].name, "fog", "11 against 1, either order");
-  assert.equal(compose(pool, { scores: { rain: -1 } }, "", { random: () => 0, add: 1 }).added[0].name, "fog");
-  assert.deepEqual(compose(pool, { rated_pairs: [["dolly", "rain", -1]] }, "rain", { random: () => 0 }).added.map((s) => s.name), ["pan"]);
-  assert.deepEqual(compose(pool, { scores: { dolly: -1, pan: -2 } }, "rain").added, [], "nothing left to add");
+test("ratings set the odds: liked comes up more, disliked sits out as often as it was disliked, even with no rival, but is never banned", () => {
+  assert.equal(compose(pool, { scores: { fog: 4 } }, "", { random: () => 0.3, add: 1 }).added[0].name, "fog", "4 against 1 each");
+  assert.deepEqual(compose(pool, { scores: { dolly: 0.25 } }, "rain", { random: () => 0.5 }).added.map((s) => s.name), ["pan"]);
+  assert.deepEqual(compose(pool, { scores: { dolly: 0.25 } }, "rain", { random: () => 0.1 }).added.map((s) => s.name), ["dolly"], "still possible");
+  assert.deepEqual(compose(pool, { rated_pairs: [["dolly", "rain", 0.25]] }, "rain", { random: () => 0.5 }).added.map((s) => s.name), ["pan"], "disliked beside the idea");
+  const lone = [{ name: "x", triggers: ["x"], replacements: ["x"], category: "c" }];
+  assert.deepEqual(compose(lone, { scores: { x: 0.25 } }, "", { random: () => 0.5 }).added, [], "alone in its category, still sits out");
 });
 
 test("compose: only ratings weigh, never how often a shortcut is typed; uncategorised shortcuts are each their own", () => {
   const two = [{ name: "liked", triggers: ["liked"], replacements: ["l"] }, { name: "habit", triggers: ["habit"], replacements: ["h"] }];
-  const one = (r) => compose(two.map((s) => ({ ...s, category: "same" })), { scores: { liked: 1 }, counts: { habit: 500 } }, "", { add: 1, random: () => r }).added[0].name;
-  assert.equal(one(0.7), "liked", "3 against 1: typing a shortcut 500 times teaches nothing");
+  const one = (r) => compose(two.map((s) => ({ ...s, category: "same" })), { scores: { liked: 1.5 }, counts: { habit: 500 } }, "", { add: 1, random: () => r }).added[0].name;
+  assert.equal(one(0.55), "liked", "typing a shortcut 500 times teaches nothing");
   assert.equal(compose(two, {}, "").added.length, 2);
 });
 
@@ -59,14 +61,14 @@ test("a trigger is matched as the expander matches it", () => {
   assert.deepEqual(presentIn(lib, "(fox)").map((s) => s.name), ["fox"]);
 });
 
-test("compose never builds what was rated down: not by two triggers side by side, not as a pair it makes itself, not via a shared trigger", () => {
+test("compose never assembles a third shortcut from two side by side, weighs the pairs it makes, never offers a shared trigger", () => {
   const lib = [{ name: "G", triggers: ["golden"], replacements: ["g"], category: "a" }, { name: "H", triggers: ["hour"], replacements: ["h"], category: "b" },
     { name: "GH", triggers: ["golden hour"], replacements: ["gh"], category: "c" }];
-  const { text } = compose(lib, { scores: { GH: -3 } }, "", { random: () => 0, add: 2 });
-  assert.doesNotMatch(text, /golden\s+hour/i, "joined with a comma, so the rated-down one cannot fire");
+  const { text } = compose(lib, { scores: { GH: 1e-12 } }, "", { random: () => 0, add: 2 });
+  assert.doesNotMatch(text, /golden\s+hour/i, "joined with a comma, so the disliked one cannot fire");
   const pq = [{ name: "P", triggers: ["p"], replacements: ["p"], category: "x" }, { name: "Q", triggers: ["q"], replacements: ["q"], category: "y" }];
-  assert.equal(compose(pq, { rated_pairs: [["P", "Q", -4]] }, "").added.length, 1, "the second would make the disliked pair");
+  assert.equal(compose(pq, { rated_pairs: [["P", "Q", 0.25]] }, "", { random: () => 0.5 }).added.length, 1, "the second would make the disliked pair");
   const twins = [{ name: "bad", triggers: ["x"], replacements: ["b"], category: "u" }, { name: "good", triggers: ["x"], replacements: ["g"], category: "v" }];
-  assert.deepEqual(compose(twins, { scores: { bad: -1 } }, "").added, [], "its trigger would fire the other one");
+  assert.deepEqual(compose(twins, {}, "").added, [], "its trigger could fire the other one");
   assert.deepEqual(compose([{ name: "cut", triggers: ["cut"], replacements: [""], category: "w" }], {}, "").added, [], "removes itself: adds nothing");
 });

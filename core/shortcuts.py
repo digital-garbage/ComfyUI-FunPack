@@ -16,6 +16,7 @@ no-repeat cycling (a stateful commit-vs-preview split).
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import random
 import re
@@ -385,26 +386,32 @@ def matcher(items=None):
     fire when every one of its tokens stands whole in the text, so each text is searched for those triggers alone."""
     candidates, _ = _combined(listing() if items is None else items)
     compiled = [re.compile(pattern, re.IGNORECASE) for _, pattern, _, _ in candidates]
-    needs = [set(_TOKEN.findall(trigger.lower())) for trigger, *_rest in candidates]
+    folded = [trigger.casefold() for trigger, *_rest in candidates]
+    needs = [set(_TOKEN.findall(f)) for f in folded]
     by_first: dict[str, list[int]] = {}
-    always = []           # a trigger lower() reshapes ("İ" -> "i̇") matches case-blind in ways tokens cannot tell
-    for i, (trigger, *_rest) in enumerate(candidates):
-        if len(trigger.lower()) != len(trigger):
-            always.append(i)
-        else:
-            by_first.setdefault(_TOKEN.findall(trigger.lower())[0], []).append(i)
+    for i, f in enumerate(folded):
+        by_first.setdefault(_TOKEN.findall(f)[0], []).append(i)
+    # Folding that reshapes a letter ("İ" -> "i̇") makes tokens unreliable: such a trigger or text is searched in full.
+    always = [i for i, (trigger, *_rest) in enumerate(candidates) if len(folded[i]) != len(trigger)]
 
     def fired(text) -> set:
         text = str(text or "")
-        tokens = set(_TOKEN.findall(text.lower()))
-        near = [i for t in tokens for i in by_first.get(t, ()) if needs[i] <= tokens] + always
-        # As the expander's one pattern does: the leftmost match wins, the longest trigger (lowest i) first at a tie,
-        # and the search goes on after it.
+        low = text.casefold()
+        tokens = set(_TOKEN.findall(low))
+        near = range(len(candidates)) if len(low) != len(text) else \
+            {i for t in tokens for i in by_first.get(t, ()) if needs[i] <= tokens}.union(always)
+        # The expander's one pattern, replayed: the leftmost match wins, the longest trigger (lowest i) at a tie, and
+        # the search goes on from its end. Each trigger's next match is kept and searched again once passed.
+        heap = [(m.start(), i, m) for i in near if (m := compiled[i].search(text))]
+        heapq.heapify(heap)
         out, pos = set(), 0
-        for start, i, end in sorted((m.start(), i, m.end()) for i in near for m in compiled[i].finditer(text)):
+        while heap:
+            start, i, m = heapq.heappop(heap)
             if start >= pos:
                 out.add(candidates[i][3])
-                pos = end
+                pos = m.end()
+            if (m := compiled[i].search(text, pos)):
+                heapq.heappush(heap, (m.start(), i, m))
         return out
     return fired
 

@@ -46,10 +46,9 @@ export const shuffled = (list, random = Math.random) => {
   return a;
 };
 
-/** A scene from the person's shortcuts, the best-rated first: the idea's own triggers kept, plus up to `add` more, one per
- *  category the text does not use yet (an uncategorised shortcut is its own), drawn at random weighted by ratings alone.
- *  A shortcut rated down overall, or rated down alongside what is already here, is never drawn. `stats` is
- *  /suggestion_stats. -> { text, added: [shortcut] } */
+/** A scene from the person's shortcuts: the idea's own triggers kept, plus up to `add` more, one per category the text
+ *  does not use yet (an uncategorised shortcut is its own), drawn at random. Ratings set the odds: `stats.scores` and
+ *  `stats.rated_pairs` (beside what is already in) multiply a shortcut's chance (/suggestion_stats). -> { text, added } */
 export function compose(library, stats = {}, idea = "", { add = 3, random = Math.random } = {}) {
   const cat = (s) => s.category || `\0${s.name}`, key = (t) => String(t).trim().toLowerCase().replace(/\s+/g, " ");
   const owners = new Map();        // a trigger two shortcuts share fires whichever the expander meets first: never offered
@@ -57,12 +56,13 @@ export function compose(library, stats = {}, idea = "", { add = 3, random = Math
   const trigger = (s) => s.triggers.find((t) => key(t) && owners.get(key(t)) === 1);
   const here = presentIn(library, idea), cats = new Set(here.map(cat)), taken = new Set(here.map((s) => s.name));
   const scores = stats.scores || {}, near = new Map(), added = [];
-  const meet = (name) => { for (const [a, b, n] of stats.rated_pairs || []) for (const [x, y] of [[a, b], [b, a]]) if (x === name) near.set(y, (near.get(y) || 0) + n); };
+  const meet = (name) => { for (const [a, b, n] of stats.rated_pairs || []) for (const [x, y] of [[a, b], [b, a]]) if (x === name) near.set(y, (near.get(y) ?? 1) * n); };
   here.forEach((s) => meet(s.name));
-  const pool = usable(library).filter((s) => (s.replacements || []).some((r) => String(r).trim()) && (scores[s.name] || 0) >= 0 && trigger(s));
+  const pool = usable(library).filter((s) => (s.replacements || []).some((r) => String(r).trim()) && trigger(s));
   while (added.length < add) {
-    const open = pool.filter((s) => !taken.has(s.name) && !cats.has(cat(s)) && (near.get(s.name) || 0) >= 0)       // nor rated down beside one already in
-      .map((s) => ({ s, w: 1 + 2 * ((scores[s.name] || 0) + (near.get(s.name) || 0)) }));
+    // Below 1 (disliked), a shortcut sits a draw out that often, even with no rival; above, it outweighs the rest.
+    const open = pool.filter((s) => !taken.has(s.name) && !cats.has(cat(s))).map((s) => ({ s, w: (scores[s.name] ?? 1) * (near.get(s.name) ?? 1) }))
+      .filter((x) => x.w >= 1 || random() < x.w).map((x) => ({ s: x.s, w: Math.max(x.w, 1) }));
     if (!open.length) break;
     let r = random() * open.reduce((t, x) => t + x.w, 0);
     const { s } = open.find((x) => (r -= x.w) < 0) || open[open.length - 1];

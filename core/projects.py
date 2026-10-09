@@ -166,8 +166,8 @@ class Scene:
     #: timeline decision and a regenerate is a new scene.
     length: int | None = None
     rating: str = ""
-    #: The scene text when it was rated: what the rating is about, even after the text is rewritten.
-    rated_text: str = ""
+    #: {text, at}: the scene text when it was rated (what the rating is about, even after a rewrite) and when (ms).
+    rated: dict = field(default_factory=dict)
     #: A media library id, picked to size this scene's generation -- not
     #: included in it. v4's "drop a picture on the timeline" only ever fed a
     #: resolution/aspect-ratio node; the picture's own pixels went nowhere. Per
@@ -239,7 +239,7 @@ class Scene:
             result=result if isinstance(result, str) else None,
             length=_whole(d.get("length")),
             rating=_str(rating, "", MAX_RATING),
-            rated_text=_str(d.get("rated_text")),
+            rated=_blob(d.get("rated"), dict),
             source_image=source_image if media.is_id(source_image) else None,
             references=[r for r in raw_refs if media.is_id(r)] if isinstance(raw_refs, list) else [],
             transition_to_next=_str(d.get("transition_to_next"), "", 200),

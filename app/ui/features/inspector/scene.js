@@ -39,7 +39,8 @@ function trimRows(p, sc, open) {
   if (!((open.scene_renders || {})[sc.id] || {}).media) return [];
   return [c.label.section({ text: "Source trim (slip)" }), card(c.field.row({ fields: [
     c.field.default({ label: "Source in (s)", control: c.number.md({ label: "Source in", value: sc.source_in || 0, min: 0, step: 0.05, onChange: (v) => p.setScene(sc.id, "source_in", v) }) }),
-    c.field.default({ label: "Source dur (s, 0 = full)", control: c.number.md({ label: "Source duration", value: sc.source_dur != null ? sc.source_dur : 0, min: 0, step: 0.05, onChange: (v) => p.setScene(sc.id, "source_dur", v > 0 ? Math.max(0.1, v) : null) }) })] }),
+    c.field.default({ label: "Source dur (s, 0 = full)", control: c.number.md({ label: "Source duration", value: sc.source_dur != null ? sc.source_dur : 0, min: 0, step: 0.05,
+      snap: (v, was) => (v > 0 && v < 0.1 ? (v < was ? 0 : 0.1) : v), onChange: (v) => p.setScene(sc.id, "source_dur", v > 0 ? v : null) }) })] }),       // 0 = full; nothing shorter than 0.1 s
   c.button.sm({ label: "Reset source trim", tone: "ghost", disabled: !sc.source_in && sc.source_dur == null, onClick: () => { p.setScene(sc.id, "source_in", 0); p.setScene(sc.id, "source_dur", null); } }))];
 }
 

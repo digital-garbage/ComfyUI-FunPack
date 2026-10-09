@@ -31,8 +31,8 @@ export default {
     const rate = async (value) => {
       const t = target();
       if (!t) return;
-      // The text is kept with the rating: what was rated is the prompt that ran, even after the scene is rewritten.
-      p.edit((pr) => { const s = pr.scenes.find((x) => x.id === t.root.id); if (s) { s.rating = value; s.rated_text = nameOf(value) ? s.text || "" : ""; } return s; });
+      // What was rated and when: the prompt that made the render (the scene's text, for a render that did not keep it); when, for a run of dislikes.
+      p.edit((pr) => { const s = pr.scenes.find((x) => x.id === t.root.id); if (s) { s.rating = value; s.rated = nameOf(value) ? { text: t.render.text ?? s.text ?? "", at: Date.now() } : {}; } return s; });
       const taste = tasteOf(value);
       if (!t.render.promptId || taste === null) return;      // no run to pair it with, or a word that teaches nothing: it stays a label
       const body = taste === "clear" ? { rating: null, axis: null } : taste;

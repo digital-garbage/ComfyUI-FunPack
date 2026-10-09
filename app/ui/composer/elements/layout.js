@@ -8,6 +8,7 @@ import { define } from "../internals/register.js";
 import { el } from "../internals/el.js";
 import { setText } from "../internals/text.js";
 import { uid } from "../internals/ids.js";
+import { swapping } from "../internals/swapping.js";
 import { drag } from "../internals/drag.js";
 import { roving } from "../internals/focus.js";
 
@@ -129,7 +130,9 @@ define("region", "stack", ({ children = [], gap = "md", label, fill = false } = 
     const before = was ? twins() : [], at = before.indexOf(was);
     // Handles, not nodes, like everywhere else -- so a caller cannot slip a
     // document node in through the one element that takes children late.
-    node.replaceChildren(...next.filter(Boolean).map((c) => nodeOf(c, "region.stack")));
+    const kids = next.filter(Boolean).map((c) => nodeOf(c, "region.stack"));
+    swapping.depth += 1;
+    try { node.replaceChildren(...kids); } finally { swapping.depth -= 1; }
     const after = at >= 0 ? twins() : [], twin = after.length === before.length && after[at];      // a field appearing or going: no guessing which
     if (!twin || twin === was) return;
     if ("committed" in was.dataset && was.value !== was.dataset.committed && twin.value === was.dataset.committed) twin.value = was.value;

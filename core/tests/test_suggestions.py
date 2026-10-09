@@ -51,18 +51,18 @@ def test_ratings_score_shortcuts_and_pairs_and_a_bad_image_blames_nothing():
         projects.Scene(text="neon fox", rating="Disliked: bad composition"),
         projects.Scene(text="fox", rating="Disliked: bad image"), projects.Scene(text="fox", rating="")]))
     s = suggestions.stats()
-    assert s["scores"] == {"rain": 2, "neon": 1, "fox": -1}
-    assert sorted(map(tuple, s["rated_pairs"])) == [("fox", "neon", -1), ("neon", "rain", 2)]
+    assert s["scores"] == {"rain": 2.25, "neon": 1.125, "fox": 0.5}
+    assert sorted(map(tuple, s["rated_pairs"])) == [("fox", "neon", 0.5), ("neon", "rain", 2.25)]
     assert [suggestions.vote(x) for x in ("1", "6", "5", "Disliked: bad image", "odd")] == [-1, 1, -1, 0, 0]
 
 
 def test_a_rating_counts_for_the_text_it_was_given_to_not_a_rewrite():
     for n in ("rain", "neon"):
         shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
-    projects.save(projects.Project(name="x", scenes=[projects.Scene(text="neon", rating="10", rated_text="rain")]))
+    projects.save(projects.Project(name="x", scenes=[projects.Scene(text="neon", rating="10", rated={"text": "rain", "at": 1})]))
     s = suggestions.stats()
-    assert s["scores"] == {"rain": 1} and s["counts"] == {"neon": 1}
-    assert projects.Scene.from_dict({"rated_text": "rain"}).rated_text == "rain"
+    assert s["scores"] == {"rain": 1.5} and s["counts"] == {"neon": 1}
+    assert projects.Scene.from_dict({"rated": {"text": "rain", "at": 1}}).rated == {"text": "rain", "at": 1}
 
 
 def test_the_miner_finds_exactly_what_the_expander_replaces():
@@ -82,13 +82,13 @@ def test_ratings_outlive_a_regenerate_a_cleared_text_and_a_left_out_clip():
         shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
     shown = {"media": {"filename": "3.mp4"}, "promptId": "p3"}
     projects.save(projects.Project(name="x", scenes=[
-        projects.Scene(id="a", text="fox", rating="", rated_text=""),
-        projects.Scene(id="b", text="", rating="10", rated_text="neon"),
-        projects.Scene(id="c", text="fox", rating="10", rated_text="fox", excluded=True)],
+        projects.Scene(id="a", text="fox", rating=""),
+        projects.Scene(id="b", text="", rating="10", rated={"text": "neon"}),
+        projects.Scene(id="c", text="fox", rating="10", rated={"text": "fox"}, excluded=True)],
         scene_renders={"a": shown},
-        scene_variants={"a": [{"media": {"filename": "1.mp4"}, "promptId": "p1", "rating": "1", "rated_text": "rain"},
-                              {**shown, "rating": "10", "rated_text": "fox"}]}))   # the take on the clip: its head speaks for it
-    assert suggestions.stats()["scores"] == {"rain": -1, "neon": 1, "fox": 1}
+        scene_variants={"a": [{"media": {"filename": "1.mp4"}, "promptId": "p1", "rating": "1", "rated": {"text": "rain"}},
+                              {**shown, "rating": "10", "rated": {"text": "fox"}}]}))   # the take on the clip: its head speaks for it
+    assert suggestions.stats()["scores"] == {"rain": 0.5, "neon": 1.5, "fox": 1.5}
 
 
 def test_a_trigger_lower_reshapes_is_still_found_as_the_expander_finds_it():
@@ -96,3 +96,29 @@ def test_a_trigger_lower_reshapes_is_still_found_as_the_expander_finds_it():
              shortcuts.Shortcut(name="small", triggers=["istanbul"], replacements=["<s>"])]
     out = shortcuts.expand("istanbul", shortcuts=items, seed=1)
     assert shortcuts.matcher(items)("istanbul") == {"big" if "<b>" in out else "small"}
+
+
+def test_each_dislike_in_a_row_cuts_deeper_a_like_lifts_and_ends_the_run_and_nothing_reaches_zero():
+    shortcuts.save({"name": "fox", "triggers": ["fox"], "replacements": ["r"]})
+    rate = lambda label, at: projects.Scene(text="fox", rating=label, rated={"text": "fox", "at": at})
+    projects.save(projects.Project(name="x", scenes=[rate("1", 4), rate("10", 3), rate("1", 1), rate("1", 2)]))      # scene order is not time order
+    assert suggestions.stats()["scores"] == {"fox": 0.5 * 0.25 * 1.5 * 0.5}
+    assert suggestions.weigh([-1] * 100) > 0 and suggestions.weigh([-1] * 100 + [1]) > suggestions.weigh([-1] * 100)
+
+
+def test_the_miner_agrees_with_the_expander_on_overlapping_triggers_and_folded_letters():
+    cases = [(["a b", "b c b"], "a b c b c b"), (["smile"], "ſmile"), (["istanbul"], "İstanbul"), (["İstanbul", "istanbul"], "istanbul")]
+    for triggers, text in cases:
+        items = [shortcuts.Shortcut(name=f"n{i}", triggers=[t], replacements=[f"<{i}>"]) for i, t in enumerate(triggers)]
+        out = shortcuts.expand(text, shortcuts=items, seed=1)
+        assert shortcuts.matcher(items)(text) == {f"n{i}" for i in range(len(items)) if f"<{i}>" in out}, (triggers, text)
+
+
+def test_an_odd_rating_word_teaches_nothing_and_breaks_nothing():
+    assert suggestions.vote("²") == 0 and suggestions.vote("１０") == 0
+
+
+def test_a_rating_given_to_an_empty_prompt_does_not_follow_the_text_written_later():
+    shortcuts.save({"name": "neon", "triggers": ["neon"], "replacements": ["r"]})
+    projects.save(projects.Project(name="x", scenes=[projects.Scene(text="neon", rating="10", rated={"text": "", "at": 1})]))
+    assert suggestions.stats()["scores"] == {}

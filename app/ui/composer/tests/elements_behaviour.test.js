@@ -434,6 +434,15 @@ test("a redraw keeps typed text in a text field too, and moves the caret only wh
   assert.notEqual(document.activeElement && document.activeElement.getAttribute("aria-label"), "Name");
 });
 
+test("snap is told the value it moves from: a rule can depend on the direction", () => {
+  const n = mount(composer.number.md({ value: 0.1, step: 0.05, snap: (v, was) => (v > 0 && v < 0.1 ? (v < was ? 0 : 0.1) : v) }));
+  const input = n.node.querySelector("input") || n.node;
+  input.value = "0.05"; fire(input, "change");
+  assert.equal(input.value, "0");
+  input.value = "0.05"; fire(input, "change");
+  assert.equal(input.value, "0.1");
+});
+
 test("a number field ignores unparseable text on commit", () => {
   const n = mount(composer.number.md({ value: 5, min: 0, max: 10 }));
   const input = n.node.querySelector("input") || n.node;
@@ -724,10 +733,25 @@ test("Enter is a newline in a textarea, not a commit", () => {
   assert.deepEqual(committed, ["first line"], "blur is what commits a textarea");
 });
 
-test("a field blurred as a redraw removes it saves nothing then; the redrawn field carries the edit", () => {
-  const seen = [];
-  const n = mount(composer.number.md({ value: 3, onChange: (v) => seen.push(v) }));
-  const input = n.node.querySelector("input") || n.node;
-  input.value = "9"; input.remove(); fire(input, "blur");
-  assert.deepEqual(seen, []);
+test("a field Chromium blurs mid-redraw (still attached) does not commit then; the redrawn field keeps the edit and commits it", () => {
+  for (const kind of ["number", "text"]) {
+    let state = kind === "number" ? 100 : "old";
+    const region = mount(composer.region.stack());
+    const field = () => kind === "number" ? composer.number.md({ label: "F", value: state, onChange: (v) => { state = v; redraw(); } })
+      : composer.input.md({ label: "F", value: state, onCommit: (v) => { state = v; redraw(); } });
+    const redraw = () => { const kids = [field()]; region.set(kids); };        // children built before the swap, as the inspector does
+    redraw();
+    const real = region.node.replaceChildren.bind(region.node);
+    region.node.replaceChildren = (...kids) => { const f = document.activeElement; if (region.node.contains(f)) { fire(f, "change"); fire(f, "blur"); } real(...kids); };
+    const box = () => region.node.querySelector('[aria-label="F"]');
+    box().focus(); box().value = kind === "number" ? "150" : "old plus typed";
+    redraw();                                                                  // something else redraws the panel
+    assert.equal(state, kind === "number" ? 100 : "old", `${kind}: nothing committed mid-swap`);
+    assert.equal(box().value, kind === "number" ? "150" : "old plus typed", `${kind}: the redrawn field holds the edit`);
+    assert.equal(document.activeElement, box());
+    delete region.node.replaceChildren;
+    box().dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    assert.equal(state, kind === "number" ? 150 : "old plus typed", `${kind}: and commits it afterwards`);
+    region.node.remove();
+  }
 });

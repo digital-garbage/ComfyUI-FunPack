@@ -11,7 +11,7 @@ const expand = (body) => fetch("/funpack/api/prompt/expand", { method: "POST", h
   body: JSON.stringify({ ...body, seed: Math.floor(Math.random() * 2 ** 31) || 1 }) }).then((r) => (r.ok ? r.json() : null));
 
 /** The render a scene gets from its unit's one clip: a cut half plays from where its half begins. */
-export const renderFor = (sc, p, media, unitSec, promptId) => ({ media, ...(promptId ? { promptId } : {}), inSec: (sc.cut_offset_frames || 0) / effFps(sc, p),
+export const renderFor = (sc, p, media, unitSec, promptId, text) => ({ media, ...(promptId ? { promptId } : {}), ...(typeof text === "string" ? { text } : {}), inSec: (sc.cut_offset_frames || 0) / effFps(sc, p),
   ...((sc.frames_mode || "project") === "project" ? { durationSec: unitSec } : {}) });
 
 export default {
@@ -27,7 +27,7 @@ export default {
     g.on("hold", () => { held = true; draw(); }); g.on("release", () => { held = false; draw(); });   // while the page asks ComfyUI whether a run is already going          // the pipeline check's refusals: said where the person is looking
     let busy = false, stopped = false, held = false;
 
-    const record = (pid, unit, image, frames, promptId) => { app.lastRun.n += 1; return p.editFor(pid, (pr) => {
+    const record = (pid, unit, image, frames, promptId, text) => { app.lastRun.n += 1; return p.editFor(pid, (pr) => {
       const group = pr.scenes.filter((s) => genUnitId(s) === unit);
       if (!group.length) return false;
       const secs = (frames || group.reduce((t, s) => t + effFrames(s, pr), 0) - (group.length - 1)) / (pr.frame_rate || 25);   // as queued, not as the project reads now
@@ -37,14 +37,14 @@ export default {
       const was = (pr.scene_renders || {})[head.id];
       const sameTake = (t) => was && (was.promptId ? t.promptId === was.promptId : t.media.filename === (was.media || {}).filename);
       const old = was && was.media && takes.find(sameTake);
-      if (old) Object.assign(old, { rating: head.rating || "", rated_text: head.rated_text || "" });
-      else if (was && was.media) takes.push({ media: was.media, ...(was.promptId ? { promptId: was.promptId } : {}), rating: head.rating || "", rated_text: head.rated_text || "", ...(was.durationSec ? { secs: was.durationSec } : {}) });       // a render from before takes is a take too
-      takes.push({ media, ...(promptId ? { promptId } : {}), rating: "", secs });
+      if (old) Object.assign(old, { rating: head.rating || "", rated: head.rated || {} });
+      else if (was && was.media) takes.push({ media: was.media, ...(was.promptId ? { promptId: was.promptId } : {}), rating: head.rating || "", rated: head.rated || {}, ...(was.durationSec ? { secs: was.durationSec } : {}), ...(was.text !== undefined ? { text: was.text } : {}) });       // a render from before takes is a take too
+      takes.push({ media, ...(promptId ? { promptId } : {}), rating: "", secs, ...(typeof text === "string" ? { text } : {}) });       // the prompt that made it: what a rating of it is about
       while (takes.length > MAX_TAKES) { const at = takes.findIndex((t) => !t.rating); takes.splice(at < 0 || at === takes.length - 1 ? 0 : at, 1); }       // the oldest unrated goes first; a rated take stays as long as anything else can go
       group.forEach((s) => {
-        (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs, promptId);
+        (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs, promptId, text);
         if (!isVideoClip(s)) s.source_in = 0;
-        if (!(s.cut_offset_frames > 0)) s.rating = s.rated_text = "";       // a new render has not been rated yet      // a fresh render was made at this length: an earlier trim's window no longer applies
+        if (!(s.cut_offset_frames > 0)) Object.assign(s, { rating: "", rated: {} });       // a new render has not been rated yet      // a fresh render was made at this length: an earlier trim's window no longer applies
       });
       return true;
     }).catch(() => tell("The result could not be saved to its project.")); };
@@ -126,7 +126,7 @@ export default {
             break;
           }
           if (!images.length) { tell("ComfyUI finished without a result. Try again."); break; }
-          const kept = await record(pid, unit, images[images.length - 1], frames, g.run.state.promptId);       // the next shot may continue from this one: it must be on the clip first
+          const kept = await record(pid, unit, images[images.length - 1], frames, g.run.state.promptId, root.text || "");       // the next shot may continue from this one: it must be on the clip first
           if (kept === false) tell(`Scene ${snap.scenes.findIndex((s) => s.id === root.id) + 1} was removed while it was being made, so its result is not on the timeline. It is in ComfyUI's output folder as ${images[images.length - 1].filename}.`);
           snap.scene_renders = structuredClone(p.project.scene_renders || {});                       // ...and in what the next shot reads
         }

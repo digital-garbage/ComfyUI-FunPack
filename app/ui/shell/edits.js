@@ -43,7 +43,7 @@ export function removeScene(p, id, { pending = false } = {}) {
     const next = mates.find((s) => s.id !== id);
     next.cut_offset_frames = 0;
     next.text = sc.text || next.text;
-    if (sc.rating) { next.rating = sc.rating; next.rated_text = sc.rated_text || ""; }
+    if (sc.rating) { next.rating = sc.rating; next.rated = sc.rated || {}; }
     next.source = clone(sc.source || next.source || {});
     if (p.scene_variants && p.scene_variants[id]) { p.scene_variants[next.id] = p.scene_variants[id]; delete p.scene_variants[id]; }       // the takes follow the unit's new root
     const removedFrames = sc.frames || 0;
@@ -181,7 +181,7 @@ export function split(p, id, atFrames, grid = LTX_GRID) {
   second.cut_offset_frames = (sc.cut_offset_frames || 0) + cut;
   second.frames = snapFrames(frames - cut, "round", grid);
   second.text = "";
-  second.rating = second.rated_text = "";
+  second.rating = ""; second.rated = {};
   if (sc.audio_separated) { const lane = trackFor(p, sc.id); second.audio_separated = false; second.audio_volume = lane && lane.volume != null ? lane.volume : 1; }       // the lane stays with the first half; the second plays its own sound
   sc.gen_unit_id = unit;
   // The seam between the halves is an internal hard cut: the outgoing edge now belongs to the second half.

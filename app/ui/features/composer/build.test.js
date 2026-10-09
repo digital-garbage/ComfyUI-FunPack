@@ -14,14 +14,15 @@ function rig({ expand } = {}) {
   const p = { project: { scenes }, scenes, selectedId: "a", get selected() { return scenes.find((s) => s.id === this.selectedId); },
     anchor: "", postfix: "", postfixEnabled: true, variables: [], flush: async () => {},
     setText: (id, t) => { writes.push([id, t]); scenes.find((s) => s.id === id).text = t; heard.forEach((f) => f()); } };
-  const api = { shortcuts: async () => ({ shortcuts: LIB }), suggestionStats: async () => ({ scores: { neon: 2 } }),
+  const api = { shortcuts: async () => ({ shortcuts: LIB }), suggestionStats: async () => ({ scores: { neon: 2.25 } }),
     expandPrompt: expand || (async (body) => ({ text: body.text.replace("neon", "neon lights") })) };
   const page = build({ project: p, api, on: (f) => { heard.add(f); return () => heard.delete(f); } }, () => {});
   document.body.replaceChildren(page.node);
   const q = (label) => page.node.querySelector(`[aria-label="${label}"]`);
   const press = (label) => [...page.node.querySelectorAll("button")].find((b) => b.textContent === label).click();
   const select = (id) => { p.selectedId = id; heard.forEach((f) => f()); };
-  return { page, q, press, select, writes };
+  const undo = () => { scenes.splice(0, scenes.length, ...scenes.map((x) => ({ ...x }))); heard.forEach((f) => f()); };      // Undo: copies of the same scenes
+  return { page, q, press, select, writes, undo };
 }
 
 test("Build drafts from the selected scene, shows the full prompt, and Use puts the draft in that scene", async () => {
@@ -74,4 +75,11 @@ test("a slow full-prompt answer never replaces a newer one", async () => {
   waits[1](); await tick(); waits[0](); await tick();
   assert.match(page.node.textContent, /X\(second\)/);
   assert.doesNotMatch(page.node.textContent, /X\(first\)/);
+});
+
+test("Undo (copies of the same scenes) keeps what was typed in the idea", () => {
+  const { q, undo } = rig();
+  q("Idea").value = "typed"; q("Idea").dispatchEvent(new window.Event("input"));
+  undo();
+  assert.equal(q("Idea").value, "typed");
 });

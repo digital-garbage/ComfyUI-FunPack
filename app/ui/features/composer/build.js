@@ -5,7 +5,7 @@ import { genUnitId, isGenerative, unitRoot } from "../../shell/scenes.js";
 
 export function build(app, own) {
   const p = app.project;
-  let alive = true, typed = false, shown = null, target = null, asked = 0;
+  let alive = true, typed = false, shown, target = null, asked = 0;
   // The scene whose prompt a clip runs on: a cut's is its unit's first clip.
   const root = () => p.selected && unitRoot(p.project, genUnitId(p.selected)) || p.selected;
   const number = (sc) => p.scenes.indexOf(sc) + 1;
@@ -13,7 +13,7 @@ export function build(app, own) {
   const draft = c.textarea.md({ label: "Draft", rows: 4, value: "", placeholder: "Press Build.", onCommit: () => preview() });
   const said = c.hint.default({ text: "" }), full = c.text.sm({ text: "" });
   // The idea follows the selected scene until you type in it; another scene starts it again.
-  const follow = () => { const sc = root(); if (sc !== shown) typed = false; shown = sc; if (!typed) idea.setValue((sc && sc.text) || ""); };
+  const follow = () => { const sc = root(); if ((sc && sc.id) !== shown) typed = false; shown = sc && sc.id; if (!typed) idea.setValue((sc && sc.text) || ""); };      // by id: Undo puts a copy of the same scene in
   follow();
   own(app.on(() => { if (alive) follow(); }));
   own(() => { alive = false; });
@@ -38,7 +38,7 @@ export function build(app, own) {
       const { text, added } = compose(library, stats, words);
       target = sc.id;
       draft.setValue(text);
-      said.setText(`For scene ${number(sc)}. ${added.length ? `Added: ${added.map((s) => s.name).join(", ")}` : library.length ? "Nothing to add: every category is used, or what is left was rated down." : "No shortcuts yet: add some in the Shortcuts tab."}`);
+      said.setText(`For scene ${number(sc)}. ${added.length ? `Added: ${added.map((s) => s.name).join(", ")}` : library.length ? "Nothing to add: every category is already used." : "No shortcuts yet: add some in the Shortcuts tab."}`);
       preview();
     } catch (err) { if (alive) said.setText(err.message); }
     finally { if (alive) button.setBusy(false); }
@@ -51,7 +51,7 @@ export function build(app, own) {
   };
   const button = c.button.sm({ label: "Build", tone: "primary", onClick: go });
   return c.region.stack({ gap: "sm", children: [
-    c.hint.default({ text: "Drafts a scene from your shortcuts, favouring those in scenes you liked. Rate renders to teach it." }),
+    c.hint.default({ text: "Drafts a scene from your shortcuts. Each like makes one come up more often; each dislike less, and dislikes in a row much less." }),
     idea,
     c.toolbar.default({ items: [button] }),
     draft, said,
