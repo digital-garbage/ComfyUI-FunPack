@@ -38,6 +38,13 @@ def shows(*conditions):
     return {"funpack_shows": [{"input": name, "when": list(values)} for name, values in conditions]}
 
 class FunPackDiffusionModelLoader(io.ComfyNode):
+    # How the form lists them (core/widgets): the file, how it is stored and computed, attention, then SLA in the
+    # order its choices narrow it. Not the schema's order, which saved canvas workflows read by position.
+    WIDGET_ORDER = ("model_name", "weight_dtype", "int8_convrot", "compute_dtype", "fp16_accumulation", "attention",
+                    "sla", "sla_method", "sla_engine", "sla_sparsity", "sla_tau", "sla_block_size",
+                    "sla_dense_steps", "sla_dense_last_steps", "sla_min_seq_len", "sla_protect_audio",
+                    "sla_references", "sla_tail", "sla_stabilize_motion")
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(

@@ -502,3 +502,9 @@ def test_the_loader_draws_each_sla_field_only_in_its_mode():
     assert rules["sla_block_size"]["sla_engine"] == ["triton"] and rules["sla_tail"]["sla_engine"] == ["comfy_kitchen"]
     assert all(r.get("sla") == [True] for name, r in rules.items() if name.startswith("sla_"))
     assert rules["sla"] == {} and rules["int8_convrot"] == {}
+
+
+def test_the_loaders_fields_are_listed_in_reading_order():
+    from modules.loaders.diffusion_model.nodes import FunPackDiffusionModelLoader as L
+    named = [i.id for i in L.define_schema().inputs]
+    assert sorted(L.WIDGET_ORDER) == sorted(named)            # every field placed, none invented

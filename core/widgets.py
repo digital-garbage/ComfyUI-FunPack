@@ -102,6 +102,11 @@ def describe(class_type: str) -> Optional[dict]:
                     sub = dict(_one(dotted, decl, req), shows=[{"input": parent, "when": keys}])
                     (widgets if sub["type"] in PRIMITIVE and not sub.get("forceInput") else sockets).append(sub)
 
+    # A node may say how its fields read best (WIDGET_ORDER); unnamed ones keep their place after those.
+    order = list(getattr(node, "WIDGET_ORDER", ()) or ())
+    if order:
+        widgets.sort(key=lambda w: order.index(w["name"]) if w["name"] in order else len(order))
+
     outputs = list(getattr(node, "RETURN_TYPES", ()) or ())
     # RETURN_NAMES is optional even on a well-formed node -- absent means
     # "named after its type", which is what ComfyUI's own frontend falls back
