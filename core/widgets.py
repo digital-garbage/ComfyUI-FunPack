@@ -49,11 +49,6 @@ def _one(name: str, declared: Any, required: bool) -> Dict[str, Any]:
         # in it and no explanation.
         widget["choices"] = (list(kind) if isinstance(kind, (list, tuple))
                              else comfy_types.choices(options))
-        if comfy_types.reveals(options):
-            # Each choice carries its own further inputs. Nothing renders those
-            # yet, and a form that dropped them silently would offer an
-            # incomplete node as a complete one.
-            widget["reveals_more"] = True
 
     for key in KEPT:
         if key in options:
@@ -97,6 +92,12 @@ def describe(class_type: str) -> Optional[dict]:
             editable = (described["type"] in PRIMITIVE
                         and not described.get("forceInput"))
             (widgets if editable else sockets).append(described)
+            # A dynamic combo's choice brings fields of its own, drawn under it while that choice is picked.
+            kind, options = comfy_types.declared(declared)
+            if comfy_types.is_combo(kind) and comfy_types.reveals(options):
+                for dotted, decl, req, parent, keys in comfy_types.revealed(name, options):
+                    sub = dict(_one(dotted, decl, req), shows={"input": parent, "when": keys})
+                    (widgets if sub["type"] in PRIMITIVE and not sub.get("forceInput") else sockets).append(sub)
 
     outputs = list(getattr(node, "RETURN_TYPES", ()) or ())
     # RETURN_NAMES is optional even on a well-formed node -- absent means

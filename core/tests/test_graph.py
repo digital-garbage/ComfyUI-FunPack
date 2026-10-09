@@ -602,3 +602,61 @@ def test_a_numeric_combo_choice_saved_as_text_is_sent_as_the_number():
     assert graph.as_choice("8", bounds) == 8 and graph.unacceptable("bit_depth", 8, bounds) is None
     assert graph.as_choice("auto", bounds) == "auto"
     assert graph.as_choice("9", bounds) == "9", "not a choice: left as it is, and refused by name"
+
+
+# --- splicing an added pass-through node ------------------------------------
+
+def test_an_added_model_patch_goes_last_before_the_sampler():
+    """Added beside the chain it feeds nothing, and ComfyUI never runs a node nothing reads:
+    a sparse-attention patch wired only from the LoRA was silently never run."""
+    slots, _ = graph.add(pipeline(), "AddLora", None, SCHEMAS)
+    slots, note = graph.splice(slots, "addlora", SCHEMAS)
+    by = graph.slots_by_id(slots)
+    assert note is None
+    assert by["addlora"]["inputs"]["model"] == ["lora", 0] and by["sample"]["inputs"]["model"] == ["addlora", 0]
+    assert graph.build(slots, SCHEMAS)[1] == []
+
+
+def test_splice_never_guesses():
+    two_samplers = pipeline() + [{"id": "sample2", "node": "Sampler", "inputs": {"model": ["lora", 0], "latent": ["latent", 0]}}]
+    slots, _ = graph.add(two_samplers, "AddLora", None, SCHEMAS)
+    spliced, note = graph.splice(slots, "addlora", SCHEMAS)
+    assert spliced == slots and "not connected" in note and "sample.model" in note and "sample2.model" in note
+    for node in ("TwoIn", "PrimitiveInt", "Wrong", "Empty"):      # two MODEL inputs; a widget value; not a pass-through
+        slots, _ = graph.add(pipeline(), node, None, SCHEMAS)
+        assert graph.splice(slots, slots[-1]["id"], SCHEMAS) == (slots, None)
+
+
+def test_wiring_a_loose_pass_through_from_x_puts_it_after_x():
+    """Dex wired a sparse-attention node's model from the LoRA; the sampler still read the LoRA,
+    so the node fed nothing and never ran."""
+    slots = pipeline() + [{"id": "patch", "node": "AddLora", "inputs": {}}]
+    slots, problems = graph.wire(slots, "patch", "model", "lora", 0, SCHEMAS)
+    slots, note = graph.forward(slots, "patch", "model", SCHEMAS)
+    assert problems == [] and graph.slots_by_id(slots)["sample"]["inputs"]["model"] == ["patch", 0]
+    assert note == "sample.model now reads AddLora"
+    # Already read by something: the person wired its output; nothing moves.
+    again, note = graph.forward(slots, "patch", "model", SCHEMAS)
+    assert again == slots and note is None
+    # Not its pass-through input, or not a pass-through at all: nothing moves.
+    loose = pipeline() + [{"id": "s2", "node": "Sampler", "inputs": {"model": ["lora", 0]}}]
+    assert graph.forward(loose, "s2", "model", SCHEMAS) == (loose, None)
+
+
+def test_a_dynamic_dropdowns_fields_are_inputs_and_needed_only_for_their_choice():
+    """Model Sparse Attention: picking vsa brings selection.keep_percent; ComfyUI refused the
+    prompt ("Required input is missing: keep_percent") because v5 never drew or sent it."""
+    from core import comfy_types
+    opts = {"options": [{"key": "sol-attn", "inputs": {"required": {"tau": ("FLOAT", {"default": 1.3})}}},
+                        {"key": "sla", "inputs": {"required": {"keep_percent": ("FLOAT", {"min": 0.5})}}},
+                        {"key": "vsa", "inputs": {"required": {"keep_percent": ("FLOAT", {"min": 0.5})}}}]}
+    got = {d: (req, parent, keys) for d, _, req, parent, keys in comfy_types.revealed("selection", opts)}
+    assert got == {"selection.tau": (True, "selection", ["sol-attn"]),
+                   "selection.keep_percent": (True, "selection", ["sla", "vsa"])}
+    schemas = graph.Schemas({"Sparse": {"inputs": {"model": "MODEL", "selection": "COMBO", "selection.tau": "FLOAT",
+                                                    "selection.keep_percent": "FLOAT"},
+                                         "outputs": ["MODEL"], "required": ["model", "selection"],
+                                         "required_when": {"selection.tau": ("selection", ["sol-attn"]),
+                                                           "selection.keep_percent": ("selection", ["sla", "vsa"])}}}.get)
+    assert schemas.required("Sparse", {"selection": "vsa"}) == ["model", "selection", "selection.keep_percent"]
+    assert schemas.required("Sparse", {"selection": "sol-attn"}) == ["model", "selection", "selection.tau"]

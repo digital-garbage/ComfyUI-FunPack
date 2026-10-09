@@ -2,7 +2,7 @@
 // The server refuses what would not build (a type that does not fit, a loop) and says why; the reason is shown and nothing changes.
 import { composer as c } from "../../composer/composer.js";
 import { pickNode } from "./nodepick.js";
-import { labelOf, shownValues, sourcesFor } from "./wiring.js";
+import { labelOf, showing, shownValues, sourcesFor } from "./wiring.js";
 
 const SEP = "\0", NEW_GROUP = "\0new";
 const fed = (v) => Array.isArray(v);
@@ -52,6 +52,12 @@ export const models = (app) => function mount() {
     if (live.node !== slot.node) return say(`That field belonged to ${slot.node}, which was swapped for ${live.node}: the value was not kept.`);
     if (JSON.stringify((live.inputs || {})[name]) === JSON.stringify(value)) return;          // a blur that changed nothing saves nothing
     await ps.save({ inputs: { [slot.id]: { [name]: value } } });
+    const spec = specs[slot.node];
+    if (spec && (spec.widgets || []).some((w) => w.shows && w.shows.input === name)) {      // a choice that brings fields: what they show is what runs
+      const now = slotsNow().find((x) => x.id === slot.id);
+      const fill = now && shownValues(now, spec);
+      if (fill && Object.keys(fill).length) await ps.save({ inputs: { [slot.id]: fill } });
+    }
     say([...(ps.refused() || []), ...ps.saveNotes()].join(" "));
   };
   async function structural(body) {
@@ -62,7 +68,7 @@ export const models = (app) => function mount() {
       const values = target && shownValues(target, specs[target.node], body.action === "unwire" ? body.input : undefined);
       if (values && Object.keys(values).length) await ps.save({ inputs: { [target.id]: values } });
     }
-    say(res.refused.length ? `Not changed: ${res.refused.join(" ")}` : "");
+    say(res.refused.length ? `Not changed: ${res.refused.join(" ")}` : (res.notes || []).join(" "));
     return !res.refused.length;
   }
   const confirm = (title, message, tone) => c.modal.dialogue({ title, message, tone, confirmLabel: title.split(" ")[0] }).result;
@@ -121,8 +127,8 @@ export const models = (app) => function mount() {
     if (spec === undefined) return [c.hint.default({ text: "Loading…" })];
     const head = c.header.sm({ text: label(slot) });
     if (spec === null) return [head, structure(slot), c.banner.warn({ text: `${slot.node} is not installed — this slot can't be edited or run. Install the pack that provides it, swap it for another node, or remove it.` }), installRow(slot.node)];
-    const sockets = (spec.sockets || []).map((s) => c.field.default({ label: s.name, hint: s.required ? `${s.type} · needed` : s.type, control: wiring(slot, s.name, s.type, slot.inputs && slot.inputs[s.name], "Not connected") }));
-    const rows = (spec.widgets || []).flatMap((w) => {
+    const sockets = (spec.sockets || []).filter((w) => showing(w, slot, spec)).map((s) => c.field.default({ label: s.name, hint: s.required ? `${s.type} · needed` : s.type, control: wiring(slot, s.name, s.type, slot.inputs && slot.inputs[s.name], "Not connected") }));
+    const rows = (spec.widgets || []).filter((w) => showing(w, slot, spec)).flatMap((w) => {
       const cur = slot.inputs && slot.inputs[w.name];
       if (fed(cur)) return [c.field.default({ label: w.name, hint: "Fed by another node: change it there, or pick “A value” to type one here.", control: wiring(slot, w.name, w.type, cur, "A value (typed here)") })];
       const value = cur !== undefined ? cur : w.default;

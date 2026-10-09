@@ -410,11 +410,16 @@ def register(routes, prefix=None):
                                   f"{type(from_output).__name__}"],
                      "queueable": False}, status=400)
 
+        notes = []
         if action == "add":
             if not isinstance(body.get("node"), str):
                 return web.json_response(
                     {"problems": ["a node is named by a string"], "queueable": False}, status=400)
             slots, problems = graph_mod.add(slots, body.get("node"), body.get("group"))
+            if not problems:
+                slots, said = graph_mod.splice(slots, slots[-1]["id"])
+                if said:
+                    notes.append(said)
         elif action == "replace":
             slots, problems = graph_mod.replace(slots, slot_id, body.get("node"))
         elif action == "remove":
@@ -422,6 +427,10 @@ def register(routes, prefix=None):
         elif action == "wire":
             slots, problems = graph_mod.wire(
                 slots, slot_id, body.get("input"), body.get("from_slot"), body.get("from_output"))
+            if not problems:
+                slots, said = graph_mod.forward(slots, slot_id, body.get("input"))
+                if said:
+                    notes.append(said)
         elif action == "unwire":
             slots, problems = graph_mod.unwire(slots, slot_id, body.get("input"))
         elif action in (None, "check"):
@@ -448,7 +457,7 @@ def register(routes, prefix=None):
         # rather than held on the server: two stores of "what the user picked"
         # is two answers to what a run used, and the one believed would be
         # whichever was written last.
-        values, notes = body.get("values"), []
+        values = body.get("values")
         if values is not None:
             if not isinstance(values, dict):
                 return web.json_response(

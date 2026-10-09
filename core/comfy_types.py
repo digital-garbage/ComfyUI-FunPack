@@ -130,13 +130,36 @@ def reveals(options: Optional[dict]) -> bool:
     """Whether picking a choice brings inputs with it.
 
     A dynamic combo's options can each carry their own `inputs`, so the form
-    changes with the choice. Nothing here renders those yet, and a window that
-    dropped them silently would be offering an incomplete node as a complete
-    one.
+    changes with the choice: revealed() lists them.
     """
     options = options or {}
     raw = options.get("options") or []
     return any(isinstance(option, dict) and option.get("inputs") for option in raw)
+
+
+def revealed(name: str, options: Optional[dict]) -> List[Tuple[str, Any, bool, str, List[Any]]]:
+    """(dotted name, declaration, required, parent, choices showing it) for every input a dynamic
+    combo's choices bring. ComfyUI names them under the combo -- picking "vsa" in `selection`
+    brings `selection.keep_percent` -- and only the picked choice's are read, so only those may
+    be required. Two choices bringing the same name share one field. A choice bringing its own
+    dynamic combo is followed the same way."""
+    found: Dict[str, list] = {}
+    for option in (options or {}).get("options") or []:
+        if not isinstance(option, dict) or not isinstance(option.get("inputs"), dict):
+            continue
+        key = _plain(option.get("key"))
+        for section in ("required", "optional"):
+            for sub, decl in (option["inputs"].get(section) or {}).items():
+                dotted = f"{name}.{sub}"
+                if dotted in found:
+                    found[dotted][4].append(key)
+                    continue
+                found[dotted] = [dotted, decl, section == "required", name, [key]]
+                kind, sub_options = declared(decl)
+                if is_combo(kind) and reveals(sub_options):
+                    for entry in revealed(dotted, sub_options):
+                        found.setdefault(entry[0], list(entry))
+    return [tuple(v) for v in found.values()]
 
 
 def autogrow_instances(options: Optional[dict]) -> List[Tuple[str, Any, Dict[str, Any]]]:

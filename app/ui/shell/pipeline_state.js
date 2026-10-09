@@ -451,7 +451,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     let refill = false;
     const mine = epoch;
     saving = true;
-    let refusedNow = [];
+    let refusedNow = [], notesNow = [];
     try {
       applyGroups();
       const res = await API.editPipeline({ slots, ...body });
@@ -461,7 +461,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       incomplete = (res && res.incomplete) || [];
       refused = refusedNow;
       queueable = !!(res && res.queueable);
-      saveNotes = (res && res.notes) || [];
+      saveNotes = notesNow = (res && res.notes) || [];
       if (!refusedNow.length) {
         if (body.action === "remove" && offered.some((s) => s.id === body.slot)) removed.add(body.slot);   // the person's own additions just go
         if (body.action === "add") (res.slots || []).forEach((s) => removed.delete(s.id));
@@ -492,7 +492,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       saving = false;
     }
     if (refill || pending) await save({});              // the filled settings, or a value edit queued behind this one
-    return { refused: refusedNow };
+    return { refused: refusedNow, notes: notesNow };   // notes: this edit's own (a node added but left unconnected), not a later save's
   }
 
   // The pipeline as it stands, to come back to: Models & Pipeline's Cancel puts this back.

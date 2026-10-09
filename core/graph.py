@@ -58,10 +58,16 @@ class Schemas:
         found = self.of(class_type)
         return dict(found["inputs"]) if found else {}
 
-    def required(self, class_type: str) -> List[str]:
-        """Inputs that must be filled. Absent from a schema means none are."""
+    def required(self, class_type: str, inputs: Optional[dict] = None) -> List[str]:
+        """Inputs that must be filled. Absent from a schema means none are. A field a dynamic combo's
+        choice brings (`required_when`: {field: (combo, choices)}) only while `inputs` picks that choice."""
         found = self.of(class_type)
-        return list(found.get("required", [])) if found else []
+        if not found:
+            return []
+        picked = inputs or {}
+        return list(found.get("required", [])) + [
+            name for name, (parent, keys) in (found.get("required_when") or {}).items()
+            if picked.get(parent) in keys]
 
     def limits(self, class_type: str) -> Dict[str, dict]:
         """What each input will ACCEPT: a combo's choices, a number's bounds.
@@ -82,7 +88,7 @@ def from_comfyui() -> Schemas:
         if node is None:
             return None
         spec = node.INPUT_TYPES()
-        inputs, required, limits = {}, [], {}
+        inputs, required, limits, when = {}, [], {}, {}
         for section in ("required", "optional"):
             for name, declared in (spec.get(section) or {}).items():
                 kind, options = comfy_types.declared(declared)
@@ -112,6 +118,22 @@ def from_comfyui() -> Schemas:
                 # and none of them can be fed by a wire.
                 edited = comfy_types.widget_type(kind, options)
                 inputs[name] = edited if edited else kind
+                if comfy_types.is_combo(kind) and comfy_types.reveals(options):
+                    for dotted, decl, req, parent, keys in comfy_types.revealed(name, options):
+                        sub_kind, sub_options = comfy_types.declared(decl)
+                        sub_edited = comfy_types.widget_type(sub_kind, sub_options)
+                        inputs[dotted] = sub_edited if sub_edited else sub_kind
+                        if req:
+                            when[dotted] = (parent, keys)
+                        sub_bounds = {}
+                        if inputs[dotted] == comfy_types.COMBO:
+                            sub_bounds["choices"] = (list(sub_kind) if isinstance(sub_kind, (list, tuple))
+                                                     else comfy_types.choices(sub_options))
+                        for edge in ("min", "max"):
+                            if edge in sub_options:
+                                sub_bounds[edge] = sub_options[edge]
+                        if sub_bounds:
+                            limits[dotted] = sub_bounds
                 if section == "required":
                     # Kept, because flattening the two sections loses the only
                     # thing that says a slot is incomplete -- and a slot missing
@@ -146,7 +168,7 @@ def from_comfyui() -> Schemas:
                     outputs[i] = resolved
 
         return {"inputs": inputs, "outputs": outputs,
-                "required": required, "limits": limits}
+                "required": required, "limits": limits, "required_when": when}
     return Schemas(lookup)
 
 
@@ -301,7 +323,7 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
                     refused_here.add(name)
                     continue
                 inputs[name] = value
-        for name in schemas.required(class_type):
+        for name in schemas.required(class_type, inputs):
             if name not in inputs and name not in refused_here:       # a refused value was just said; "nothing fills it" would be false
                 problems.append(f"{slot_id}: {class_type} needs {name!r} and nothing "
                                 f"fills it")
@@ -566,7 +588,8 @@ def add(slots: Sequence[dict], class_type: str, group: Optional[str] = None,
     """Put a new slot at the end, holding `class_type`, with nothing set and nothing wired.
 
     The id is made from the node's name and is never one already taken, so adding the same
-    node twice gives two slots, not a collision. Wiring it in is a separate, checked step.
+    node twice gives two slots, not a collision. Wiring it in is a separate, checked step:
+    splice(), for a pass-through node.
     """
     schemas = schemas or from_comfyui()
     if schemas.of(class_type) is None:
@@ -584,6 +607,79 @@ def add(slots: Sequence[dict], class_type: str, group: Optional[str] = None,
     if group:
         slot["group"] = group.strip()
     return [dict(s) for s in slots] + [slot], []
+
+
+def splice(slots: Sequence[dict], slot_id: str,
+           schemas: Optional[Schemas] = None) -> Tuple[List[dict], Optional[str]]:
+    """Put a just-added pass-through node (a MODEL in and a MODEL out, say) into its chain, last:
+    between the chain's end and what uses it -- the sampler, for a model patch. Left out, it would
+    feed nothing, and ComfyUI never runs a node nothing reads. -> (slots, what to tell the person).
+
+    Only where there is one answer: a node taking and giving more than one kind, or a chain whose
+    end several nodes read, is left unwired and the note says to wire it."""
+    schemas = schemas or from_comfyui()
+    by_id = slots_by_id(slots)
+    node = by_id[slot_id]["node"]
+    shape = _pass_through(node, schemas)
+    if not shape:
+        return list(slots), None              # not a pass-through: wiring it is the person's call
+    kind, into, out_index = shape
+    # The chain's end: a link of this kind into a node that does not hand the kind on.
+    ends = []
+    for slot in slots:
+        if slot["id"] == slot_id or kind in schemas.outputs(slot["node"]):
+            continue
+        for name, value in (slot.get("inputs") or {}).items():
+            if (is_link(value) and value[0] in by_id
+                    and schemas.outputs(by_id[value[0]]["node"])[value[1]:value[1] + 1] == [kind]):
+                ends.append((slot["id"], name, value))
+    if len(ends) != 1:
+        where = ", ".join(f"{c}.{n}" for c, n, _ in ends) or "nothing"
+        return list(slots), (f"{node} was added but not connected: its {kind} could go before "
+                             f"{where}. Wire its {into} and what reads it under Show all nodes, "
+                             f"or it will not run.")
+    consumer, name, source = ends[0]
+    out, problems = wire(slots, slot_id, into, source[0], source[1], schemas)
+    if not problems:
+        out, problems = wire(out, consumer, name, slot_id, out_index, schemas)
+    if problems:
+        return list(slots), f"{node} was added but could not be connected: {' '.join(problems)}"
+    return out, None
+
+
+def _pass_through(node: str, schemas: Schemas) -> Optional[Tuple[str, str, int]]:
+    """(kind, its one input, its output index) for a node that takes and gives one kind (MODEL in, MODEL
+    out), or None: any other node's wiring is the person's call."""
+    produced = schemas.outputs(node)
+    kinds = []
+    for kind in dict.fromkeys(k for k in produced if k not in comfy_types.PRIMITIVE and k != "*"):
+        ins = [n for n, wants in schemas.inputs(node).items() if wants == kind]
+        if len(ins) == 1:
+            kinds.append((kind, ins[0], produced.index(kind)))
+    return kinds[0] if len(kinds) == 1 else None
+
+
+def forward(slots: Sequence[dict], slot_id: str, to_input: str,
+            schemas: Optional[Schemas] = None) -> Tuple[List[dict], Optional[str]]:
+    """After a pass-through node's input was wired from X: if nothing reads the node yet, everything that
+    read X (that output) reads the node instead -- it goes in after X. A node nothing reads never runs.
+    -> (slots, what to tell the person)."""
+    schemas = schemas or from_comfyui()
+    by_id = slots_by_id(slots)
+    me = by_id[slot_id]
+    shape = _pass_through(me["node"], schemas)
+    source = (me.get("inputs") or {}).get(to_input)
+    if not shape or shape[1] != to_input or not is_link(source) or consumers(slots, slot_id):
+        return list(slots), None
+    out, moved = list(slots), []
+    for consumer, name, index in consumers(slots, source[0]):
+        if consumer == slot_id or index != source[1]:
+            continue
+        out, problems = wire(out, consumer, name, slot_id, shape[2], schemas)
+        if problems:
+            return list(slots), f"{me['node']} was wired in but could not take over {consumer}.{name}: {' '.join(problems)}"
+        moved.append(f"{consumer}.{name}")
+    return out, (f"{', '.join(moved)} now read{'s' if len(moved) == 1 else ''} {me['node']}" if moved else None)
 
 
 def replace(slots: Sequence[dict], slot_id: str, class_type: str,
