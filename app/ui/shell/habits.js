@@ -47,3 +47,25 @@ export const shuffled = (list, random = Math.random) => {
   for (let i = a.length - 1; i > 0; i -= 1) { const j = Math.floor(random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
   return a;
 };
+
+/** A scene from the person's shortcuts, the best-rated first: the idea's own triggers kept, plus up to `add` more, one per
+ *  category the text does not use yet, drawn at random by weight. A shortcut rated down overall, or rated down alongside
+ *  what is already here, is never drawn. `stats` is /suggestion_stats. -> { text, added: [shortcut] } */
+export function compose(library, stats = {}, idea = "", { add = 3, random = Math.random } = {}) {
+  const here = presentIn(library, idea), names = new Set(here.map((s) => s.name)), cats = new Set(here.map((s) => s.category || "other"));
+  const scores = stats.scores || {}, counts = stats.counts || {}, near = new Map();
+  for (const [a, b, n] of stats.rated_pairs || []) for (const [x, y] of [[a, b], [b, a]]) if (names.has(x)) near.set(y, (near.get(y) || 0) + n);
+  const pool = usable(library).filter((s) => !names.has(s.name) && (s.replacements || []).length && (scores[s.name] || 0) >= 0 && (near.get(s.name) || 0) >= 0)
+    .map((s) => ({ s, w: 1 + 2 * ((scores[s.name] || 0) + (near.get(s.name) || 0)) + (counts[s.name] || 0) / 4 }));
+  const added = [];
+  while (added.length < add) {
+    const open = pool.filter((x) => !cats.has(x.s.category || "other"));
+    if (!open.length) break;
+    let r = random() * open.reduce((t, x) => t + x.w, 0);
+    const pick = open.find((x) => (r -= x.w) < 0) || open[open.length - 1];
+    added.push(pick.s);
+    cats.add(pick.s.category || "other");
+  }
+  const trigger = (s) => s.triggers.find((t) => String(t).trim()).trim();
+  return { text: [String(idea || "").trim(), ...added.map(trigger)].filter(Boolean).join(" "), added };
+}

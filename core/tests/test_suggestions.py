@@ -28,7 +28,7 @@ def test_pairs_follows_counts_come_from_typed_triggers_only():
 
 
 def test_no_projects_or_no_shortcuts_is_an_empty_answer():
-    assert suggestions.stats() == {"scenes": 0, "counts": {}, "pairs": [], "follows": []}
+    assert suggestions.stats() == {"scenes": 0, "counts": {}, "pairs": [], "follows": [], "scores": {}, "rated_pairs": []}
 
 
 def test_excluded_scenes_and_sub_clips_are_skipped_and_follows_use_timeline_order():
@@ -41,3 +41,16 @@ def test_excluded_scenes_and_sub_clips_are_skipped_and_follows_use_timeline_orde
     s = suggestions.stats()
     assert s["scenes"] == 2 and s["counts"] == {"rain": 1, "neon": 1}
     assert s["follows"] == [["neon", "rain", 1]]
+
+
+def test_ratings_score_shortcuts_and_pairs_and_a_bad_image_blames_nothing():
+    for n in ("rain", "neon", "fox"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    projects.save(projects.Project(name="x", scenes=[
+        projects.Scene(text="rain neon", rating="10"), projects.Scene(text="rain neon", rating="10|loved"),
+        projects.Scene(text="neon fox", rating="Disliked: bad composition"),
+        projects.Scene(text="fox", rating="Disliked: bad image"), projects.Scene(text="fox", rating="")]))
+    s = suggestions.stats()
+    assert s["scores"] == {"rain": 2, "neon": 1, "fox": -1}
+    assert sorted(map(tuple, s["rated_pairs"])) == [("fox", "neon", -1), ("neon", "rain", 2)]
+    assert [suggestions.vote(x) for x in ("1", "6", "5", "Disliked: bad image", "odd")] == [-1, 1, -1, 0, 0]

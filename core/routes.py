@@ -1079,13 +1079,6 @@ def register(routes, prefix=None):
             seed=seed if isinstance(seed, int) and not isinstance(seed, bool) else 0,
             commit=body.get("commit") is True,
         )
-        # Optional prompt editors can apply a user's reviewed transformation
-        # at this final boundary. The feature owns its memory; the core only
-        # asks registered providers and leaves the ordinary prompt untouched
-        # when none has a matching learned draft.
-        transformed = modules().ask("prompt_transform", expanded)
-        if isinstance(transformed, str):
-            expanded = transformed
         return web.json_response({"text": expanded})
 
     @routes.get(P + "/api/log/funpack")

@@ -3,7 +3,7 @@
 import { composer as c } from "../../composer/composer.js";
 import { claimFor } from "../../composer/internals/zlayer.js";
 import { genUnitId, isGenerative, unitRoot } from "../../shell/scenes.js";
-import { analyze, byHabit, presentIn, shuffled } from "./ideas.js";
+import { analyze, byHabit, presentIn, shuffled } from "../../shell/habits.js";
 
 const BOXES = new Set(["Story", "Prompt"]);
 const first = (sc) => String((sc.triggers || [])[0] || "").trim();

@@ -92,9 +92,7 @@ export default {
           if (group.every((s) => s.excluded) || !isGenerative(root)) continue;                  // all left out, or not made by the model
           // The unit is made once at the length of its clips together (each cut adds one shared frame).
           const frames = group.reduce((t, s) => t + effFrames(s, snap), 0) - (group.length - 1);
-          const promptPrefix = (app.promptPrefix || []).flatMap((f) => { try { return f(root); } catch { return []; } });
-          const authoredPrompt = [...promptPrefix, snap.anchor, root.text].filter((x) => x && String(x).trim()).join(" ");
-          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, ...(fixedSeed ? { seed: null } : {}), prefix: promptPrefix });
+          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, ...(fixedSeed ? { seed: null } : {}), prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root); } catch { return []; } }) });
           app.lastRun.typed = (root.text || "").trim();        // what a Chat comment made now would be about
           const seeded = rolesAt(frozen, "generation.seed")[0];
           if (seeded) app.lastRun.seed = (inputs[seeded.slot.id] || {})[seeded.role.input] ?? (seeded.slot.inputs || {})[seeded.role.input];      // shown in ⏱ Sampler, to keep a liked one
@@ -118,19 +116,8 @@ export default {
           }
           if (stopped) g.cancel();                      // Stop landed while this one was being queued
           if (!made) app.api.newTasteGeneration(g.run.state.promptId).catch(() => {});        // a run really started: the last run's unrated clips can no longer be paired with what it learned
-          const promptInput = rolesAt(frozen, "generation.prompt")[0];
-          const promptText = promptInput && (inputs[promptInput.slot.id] || {})[promptInput.role.input];
-          if (g.run.state.promptId && typeof promptText === "string") {
-            app.api.promptBuilderCapture(g.run.state.promptId, promptText, authoredPrompt).catch(() => {});
-          }
           made += 1;
           const end = await done;
-          // Shot Camera runs inside ComfyUI after the queue request. Refresh this
-          // prompt's capture when it has finished so its actual cuts/views/moves
-          // are attached before the user rates the result.
-          if (g.run.state.promptId && typeof promptText === "string") {
-            app.api.promptBuilderCapture(g.run.state.promptId, promptText, authoredPrompt).catch(() => {});
-          }
           if (end === g.CANCELLED) break;
           const images = g.run.state.images;
           if (end !== g.DONE) {                         // ComfyUI's own words: which node, and why

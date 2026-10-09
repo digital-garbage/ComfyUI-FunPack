@@ -4,7 +4,7 @@ import { applyStory, clash, joinStory } from "./story.js";
 import { shortcuts } from "./shortcuts.js";
 import { cuts } from "./cuts.js";
 import { enhance } from "./enhance.js";
-import { promptBuilder } from "./prompt_builder.js";
+import { build } from "./build.js";
 import { chat, chatHook } from "./chat.js";
 import { files } from "./files.js";
 import { pickShortcut, templatesBar, variablesPanel } from "./storytools.js";
@@ -54,7 +54,7 @@ const story = (app, own) => {
   ] });
 };
 
-const sheets = { story, shortcuts, build: promptBuilder, cuts,
+const sheets = { story, shortcuts, build, cuts,
   enhance, chat, files };
 
 export default {

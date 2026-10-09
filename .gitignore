@@ -39,7 +39,6 @@ app/playwright-report/
 /quarantine.json
 /shortcut_categories.json
 /shortcut_revolver.json
-/prompt_composer_memory.json
 
 # Taste keys: what your ratings taught, per rental
 /taste/

@@ -1,5 +1,6 @@
 """What a person's own prompting habits say about shortcuts: which ones land in
-the same scene (pairs) and which shot follows which (follows). Mined on demand
+the same scene (pairs), which shot follows which (follows), and how the scenes
+using them were rated (scores, rated_pairs: liked +1, disliked -1). Mined on demand
 by reading every saved project's scene text for triggers typed verbatim, so
 there is nothing learned to store and nothing to go stale. Keyed by shortcut
 name, which is what the picker identifies a shortcut by."""
@@ -9,6 +10,14 @@ from __future__ import annotations
 import re
 
 from . import projects, shortcuts
+
+
+def vote(label: str) -> int:
+    """A scene's saved rating as +1 / -1 / 0. A bad-image dislike blames the picture, not the prompt: 0."""
+    v = str(label or "").removesuffix("|loved").strip()
+    if v.isdigit():
+        return 1 if int(v) >= 6 else -1
+    return -1 if v == "Disliked: bad composition" else 0
 
 
 def stats() -> dict:
@@ -23,6 +32,8 @@ def stats() -> dict:
     counts: dict[str, int] = {}
     pairs: dict[tuple, int] = {}
     follows: dict[tuple, int] = {}
+    scores: dict[str, int] = {}
+    rated_pairs: dict[tuple, int] = {}
     scanned = 0
     for meta in projects.listing():
         proj = projects.get(meta["id"])
@@ -42,16 +53,22 @@ def stats() -> dict:
                 continue
             present = {k for k, pat in pats if pat.search(text)}
             scanned += 1
+            v = vote(sc.rating)
             for k in present:
                 counts[k] = counts.get(k, 0) + 1
+                if v:
+                    scores[k] = scores.get(k, 0) + v
             for a in present:
                 for b in present:
                     if a < b:
                         pairs[(a, b)] = pairs.get((a, b), 0) + 1
+                        if v:
+                            rated_pairs[(a, b)] = rated_pairs.get((a, b), 0) + v
             for a in prev or ():
                 for b in present:
                     follows[(a, b)] = follows.get((a, b), 0) + 1
             prev = present
     return {"scenes": scanned, "counts": counts,
             "pairs": [[a, b, n] for (a, b), n in pairs.items()],
-            "follows": [[a, b, n] for (a, b), n in follows.items()]}
+            "follows": [[a, b, n] for (a, b), n in follows.items()],
+            "scores": scores, "rated_pairs": [[a, b, n] for (a, b), n in rated_pairs.items()]}

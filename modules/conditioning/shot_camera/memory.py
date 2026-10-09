@@ -378,15 +378,6 @@ def record_run(prompt_id, chose):
     _save(data)
 
 
-@_locked
-def run_for_prompt(prompt_id):
-    """Return the shot-camera choices made for one queued prompt, if they are ready."""
-    if not isinstance(prompt_id, str) or not prompt_id:
-        return None
-    run = (_read().get("runs") or {}).get(prompt_id)
-    return dict(run) if isinstance(run, dict) else None
-
-
 def _sign(rating, axis):
     """+1 liked; -1 disliked for the camera; 0 for no rating, or a dislike that blames the picture alone."""
     return 1 if rating == "liked" else -1 if rating == "disliked" and axis != "image" else 0
