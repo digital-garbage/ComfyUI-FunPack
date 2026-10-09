@@ -264,7 +264,8 @@ def test_the_defaults_are_the_validated_ones():
     assert sla.SLA_DEFAULTS == {"sparsity_ratio": 0.90, "block_size": 64,
                                 "min_seq_len": 8192, "dense_last_steps": 0,
                                 "protect_audio": True, "enabled": True,
-                                "engine": "comfy_kitchen", "dense_steps": "", "references": "off",
+                                "engine": "comfy_kitchen", "dense_steps": "0", "method": "sla", "tau": 1.3,
+                                "references": "off",
                                 "tail": False, "stabilize_motion": False}
 
 
@@ -410,11 +411,11 @@ def test_install_reports_the_engine_and_what_it_ignores(monkeypatch):
     monkeypatch.setattr(sla, "sla_available", lambda: True)
     monkeypatch.setattr(sla, "ck_available", lambda: False)
     out, note, installed = sla.install_sla(_Patcher("MiniMaxH3Model"), dense_steps="0,x", tail=True)
-    assert installed and "| triton |" in note
+    assert installed and "| sla on triton |" in note
     assert "sol_attn is not here" in note and "ignored x" in note and "tail: comfy_kitchen engine only" in note
     monkeypatch.setattr(sla, "ck_available", lambda: True)
     _, note, _ = sla.install_sla(_Patcher("MiniMaxH3Model"), block_size=32, stabilize_motion=True)
-    assert "| comfy_kitchen |" in note and "block_size, stabilize_motion: Triton engine only" in note
+    assert "| sla on comfy_kitchen |" in note and "block_size, stabilize_motion: Triton engine only" in note
 
 
 def test_the_comfy_kitchen_engine_puts_scattered_protected_blocks_first(monkeypatch):
@@ -437,3 +438,55 @@ def test_the_comfy_kitchen_engine_puts_scattered_protected_blocks_first(monkeypa
     assert first[1] == [0, 2] and first[0][:128:64] == [0.0, 256.0] and first[2:] == (0.1, False)
     assert second[1] == [1, 3] and second[0][64] == 64.0             # one run: used where it is, no copy
     assert state["calls"] == 2 and state["failed"] is None
+
+
+def test_dense_steps_follow_the_schedule_through_a_cancel_and_a_two_call_sampler():
+    """Counting calls drifted for good after a cancelled render, and a sampler calling the
+    model twice a step ended the 'run' halfway."""
+    sched = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
+    state = sla.new_state()
+    w = sla.make_wrapper(state, _cfg(dense_steps=frozenset({0, 1})))
+    seen = []
+    ex = lambda *a, **kw: seen.append(kw["transformer_options"]["_funpack_sla_dense"])
+    call = lambda s: w(ex, None, None, None, transformer_options={"sample_sigmas": sched, "sigmas": torch.tensor([s])})
+    for s in (1.0, 0.8, 0.6):           # cancelled after three steps
+        call(s)
+    seen.clear()
+    for s in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1):     # a full run, two calls a step
+        call(s)
+    assert seen == [True, True, True, True, False, False, False, False, False, False]
+
+
+def test_sol_attn_routes_by_threshold_and_vsa_hands_over_to_comfyui(monkeypatch):
+    import sys
+    calls = []
+    monkeypatch.setitem(sys.modules, "comfy_kitchen", types.SimpleNamespace(
+        sol_attn=lambda q, k, v, **kw: calls.append(kw) or q))
+    state = sla.new_state()
+    ov = sla.make_override(state, _cfg(engine="comfy_kitchen", method="sol-attn", tau=1.7, min_seq_len=0))
+    q = torch.zeros(1, H, 128, D, dtype=torch.bfloat16)
+    _call(ov, q, q.clone(), q.clone(), transformer_options={"_funpack_sla_spans": (64, ((0, 64),), ())})
+    assert calls[0]["tau"] == 1.7 and "topk_ratio" not in calls[0]
+
+    monkeypatch.setattr(sla, "sla_available", lambda: True)
+    monkeypatch.setattr(sla, "ck_available", lambda: False)
+    _, note, _ = sla.install_sla(_Patcher("MiniMaxH3Model"), method="sol-attn")
+    assert "sla runs instead" in note and "| sla on triton |" in note
+
+    monkeypatch.setattr(sla, "ck_available", lambda: True)
+    got = {}
+
+    def apply(model, **kw):
+        got.update(kw, override=model.model_options["transformer_options"].get("optimized_attention_override"))
+        return model
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_sparse_attention",
+                        types.SimpleNamespace(apply_block_sparse_attention=apply))
+    patcher = _Patcher("MiniMaxH3Model")
+    patcher.get_model_object = lambda name: types.SimpleNamespace(
+        blocks=[types.SimpleNamespace(attn=types.SimpleNamespace(to_gate_compress=None))])
+    patcher.clone = lambda: patcher
+    backend = lambda func, *a, **kw: func(*a, **kw)
+    _, note, installed = sla.install_sla(patcher, method="vsa", sparsity_ratio=0.9, dense_fn=backend)
+    assert installed and got["vsa"] is True and abs(got["topk_ratio"] - 0.1) < 1e-9
+    assert got["override"] is backend                 # dense calls still go to the chosen backend
+    assert "no VSA layers" in note

@@ -75,7 +75,7 @@ FROZEN = {
         "model_name", "weight_dtype", "compute_dtype", "attention", "fp16_accumulation",
         "sla", "sla_sparsity", "sla_block_size", "sla_protect_audio", "sla_min_seq_len",
         "sla_dense_last_steps", "int8_convrot", "sla_engine", "sla_dense_steps", "sla_references",
-        "sla_tail", "sla_stabilize_motion",
+        "sla_tail", "sla_stabilize_motion", "sla_method", "sla_tau",
     ],
     "FunPackLoraLoader": [
         "model", "lora_name", "strength_model", "clip", "strength_clip",

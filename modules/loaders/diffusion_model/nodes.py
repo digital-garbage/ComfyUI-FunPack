@@ -123,8 +123,8 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                 optional=True,
                                 tooltip="Steps at full attention, counted from 0: '0' or '0,1' or "
                                         "'0-2'. The first steps set the layout and how closely the "
-                                        "prompt is followed, so keeping just those exact can fix "
-                                        "prompt-following for little time. Adds to dense last steps."),
+                                        "prompt is followed, so the first one is kept exact by "
+                                        "default. Blank: none. Adds to dense last steps. Not used by vsa."),
                 io.Combo.Input("sla_references", options=list(sla_attention.REFERENCES),
                                default=sla_attention.SLA_DEFAULTS["references"], optional=True,
                                tooltip="Reference images, conditioning frames and the prompt's vision "
@@ -143,6 +143,19 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                                          "step, so near ties stop flipping and showing as a faint double "
                                          "exposure on fast motion. A fix for that one symptom; a little "
                                          "more memory."),
+                io.Combo.Input("sla_method", options=list(sla_attention.METHODS),
+                               default=sla_attention.SLA_DEFAULTS["method"], optional=True,
+                               tooltip="How the blocks worth attending are chosen. sla: a fixed share "
+                                       "(sla_sparsity), what SLA turbo LoRAs were trained against. "
+                                       "sol-attn: a per-block threshold (sla_tau), no training needed; "
+                                       "comfy_kitchen engine. vsa: video cubes, only for models trained "
+                                       "for it (the status says when the model lacks VSA's layers); run "
+                                       "by ComfyUI's own Model Sparse Attention, keeping 1 - sla_sparsity "
+                                       "of the cubes."),
+                io.Float.Input("sla_tau", default=sla_attention.SLA_DEFAULTS["tau"], min=0.0, max=4.0,
+                               step=0.05, optional=True,
+                               tooltip="sol-attn only: higher skips more. About 1.0 keeps ~16% of key "
+                                       "blocks exact, 1.5 ~7%, 2.0 ~3%."),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -157,7 +170,8 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                 sla_protect_audio: bool = None, sla_min_seq_len: int = None,
                 sla_dense_last_steps: int = None, int8_convrot: bool = False,
                 sla_engine: str = None, sla_dense_steps: str = None, sla_references: str = None,
-                sla_tail: bool = None, sla_stabilize_motion: bool = None) -> io.NodeOutput:
+                sla_tail: bool = None, sla_stabilize_motion: bool = None,
+                sla_method: str = None, sla_tau: float = None) -> io.NodeOutput:
         notes = [f"FunPack Diffusion Model Loader | {model_name}"]
 
         accumulation = set_fp16_accumulation(fp16_accumulation)
@@ -245,7 +259,7 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                 protect_audio=sla_protect_audio,
                 dense_fn=override, dense_label=attention,
                 engine=sla_engine, dense_steps=sla_dense_steps, references=sla_references,
-                tail=sla_tail, stabilize_motion=sla_stabilize_motion)
+                tail=sla_tail, stabilize_motion=sla_stabilize_motion, method=sla_method, tau=sla_tau)
             notes.append(sla_note)
         if not installed:
             if override is not None:

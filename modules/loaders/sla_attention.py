@@ -56,12 +56,18 @@ SLA_DEFAULTS = {
     "protect_audio": True,
     "enabled": True,
     "engine": "comfy_kitchen",
-    "dense_steps": "",
+    "dense_steps": "0",
+    "method": "sla",
+    "tau": 1.3,
     "references": "off",
     "tail": False,
     "stabilize_motion": False,
 }
 ENGINES = ("comfy_kitchen", "triton")
+# sla: each query block keeps the top (1 - sparsity) of key blocks, what SLA turbo LoRAs were distilled against.
+# sol-attn: comfy_kitchen picks per head and block by a threshold (tau), training-free. vsa: FastVideo's cube
+# tiling, for models trained for it -- ComfyUI's own Model Sparse Attention runs it, handed the settings here.
+METHODS = ("sla", "sol-attn", "vsa")
 REFERENCES = ("off", "light", "heavy")
 _LIGHT_KEEP = 0.15          # "light": each reference span keeps its best 15% of blocks for every query
 _CK_BLOCK = 64              # sol_attn's fixed key block
@@ -211,6 +217,8 @@ def new_state():
         "layer": 0,        # this step's call count: the Nth call is the same layer every step
         "history": {},     # layer -> last step's choices, for stabilize_motion
         "order": None,     # comfy_kitchen: (S, protected spans, key order, sink blocks), same every layer
+        "last": None,      # last step index read from the schedule
+        "summed": False,   # this run's summary is logged
     }
 
 
@@ -273,8 +281,11 @@ def _ck_attention(state, cfg, qb, kb, vb, keep, refs, scale):
         kb, vb = kb.index_select(1, idx), vb.index_select(1, idx)
     cast = qb.dtype != torch.bfloat16           # the compiled kernel takes bf16 only
     q, k, v = ((t.to(torch.bfloat16) if cast else t) for t in (qb, kb, vb))
-    out = ck.sol_attn(q, k, v, scale=scale, sink_blocks=sink, sink_q=[0, 0],
-                      topk_ratio=1.0 - cfg["sparsity_ratio"], tail=cfg["tail"])
+    if cfg["method"] == "sol-attn":       # threshold routing: the pooled tail is part of the method
+        out = ck.sol_attn(q, k, v, tau=cfg["tau"], scale=scale, sink_blocks=sink, sink_q=[0, 0])
+    else:
+        out = ck.sol_attn(q, k, v, scale=scale, sink_blocks=sink, sink_q=[0, 0],
+                          topk_ratio=1.0 - cfg["sparsity_ratio"], tail=cfg["tail"])
     return (out.to(qb.dtype) if cast else out), nk, sink[1] - sink[0]
 
 
@@ -402,16 +413,28 @@ def make_wrapper(state, cfg):
     def wrapper(executor, x, timestep, context, transformer_options={},
                 minimax_payload=None, **kwargs):
         to = transformer_options
-        n_steps = max(1, len(to.get("sample_sigmas", [])) - 1)
-
-        # A throwaway call (a probe, late-branch's weakened copy) is not a step of the
-        # schedule: counting it would slide the "dense last steps" window onto the wrong call.
+        new_run = lambda: (state.update(step=0, calls=0, dense=0, failed=None, order=None, last=None, summed=False),
+                           state["history"].clear())
         counted = not _dit_hooks.probing(to)
-        if counted and state["step"] >= n_steps:      # new run
-            state.update(step=0, calls=0, dense=0, failed=None, order=None)
-            state["history"].clear()
-        if counted:
-            state["step"] += 1
+        if to.get("sigmas") is not None and to.get("sample_sigmas") is not None:
+            # The schedule says which step this is, so a cancelled run or a sampler calling the model twice
+            # a step (heun, res_2s) cannot shift the dense steps. A call between scheduled sigmas (a
+            # sampler's second evaluation) belongs to the step it is inside.
+            where = _dit_hooks.current_step(to)
+            n_steps = where[1] if where else max(1, len(to["sample_sigmas"]) - 1)
+            if where and counted:
+                idx = where[0]
+                if state["last"] is not None and (idx < state["last"] or (state["summed"] and idx <= state["last"])):
+                    new_run()
+                state["last"], state["step"] = idx, idx + 1
+        else:       # no schedule to read (a caller that is not ComfyUI's sampler): count calls
+            n_steps = max(1, len(to.get("sample_sigmas", [])) - 1)
+            # A throwaway call (a probe, late-branch's weakened copy) is not a step of the
+            # schedule: counting it would slide the dense steps onto the wrong call.
+            if counted and state["step"] >= n_steps:
+                new_run()
+            if counted:
+                state["step"] += 1
         state["layer"] = 0
 
         # The layout lives on the payload, which never reaches the attention call site,
@@ -433,8 +456,9 @@ def make_wrapper(state, cfg):
             state["history"].clear()            # an OOM must not leave the next attempt less memory
             raise
 
-        if counted and state["step"] >= n_steps:
+        if counted and state["step"] >= n_steps and not state["summed"]:
             _summarise(state, cfg)
+            state["summed"] = True
             state["history"].clear()            # only needed step to step, not while the model sits cached
         return out
 
@@ -444,7 +468,7 @@ def make_wrapper(state, cfg):
 def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
                 dense_last_steps=None, protect_audio=None, enabled=None,
                 dense_fn=None, dense_label=None, engine=None, dense_steps=None,
-                references=None, tail=None, stabilize_motion=None):
+                references=None, tail=None, stabilize_motion=None, method=None, tau=None):
     """Give `model` block-sparse H3 attention. Returns (model, status line, installed).
 
     Weights are untouched: this installs an attention override and a per-step wrapper on
@@ -457,7 +481,7 @@ def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
     given = dict(sparsity_ratio=sparsity_ratio, block_size=block_size, min_seq_len=min_seq_len,
                  dense_last_steps=dense_last_steps, protect_audio=protect_audio, enabled=enabled,
                  engine=engine, dense_steps=dense_steps, references=references, tail=tail,
-                 stabilize_motion=stabilize_motion)
+                 stabilize_motion=stabilize_motion, method=method, tau=tau)
     cfg = {key: SLA_DEFAULTS[key] if value is None else value for key, value in given.items()}
 
     if not bool(cfg["enabled"]):
@@ -471,6 +495,10 @@ def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
         return model, ("SLA: skipped — this machine has neither comfy_kitchen's sol_attn nor CUDA+Triton"), False
 
     notes = []
+    if cfg["method"] not in METHODS:
+        cfg["method"] = SLA_DEFAULTS["method"]
+    if cfg["method"] == "vsa":
+        return _install_vsa(model, cfg, dense_fn, dense_label)
     cfg.update(sparsity_ratio=float(cfg["sparsity_ratio"]), block_size=int(cfg["block_size"]),
                min_seq_len=int(cfg["min_seq_len"]), dense_last_steps=int(cfg["dense_last_steps"]),
                protect_audio=bool(cfg["protect_audio"]), tail=bool(cfg["tail"]),
@@ -484,6 +512,14 @@ def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
     elif cfg["engine"] == "triton" and not triton_ok:
         cfg["engine"] = "comfy_kitchen"
         notes.append("no Triton here: comfy_kitchen's sol_attn runs")
+    if cfg["method"] == "sol-attn" and cfg["engine"] != "comfy_kitchen":
+        if ck_ok:
+            cfg["engine"] = "comfy_kitchen"
+            notes.append("sol-attn is comfy_kitchen's: that engine runs")
+        else:
+            cfg["method"] = "sla"
+            notes.append("sol-attn needs comfy_kitchen's sol_attn (comfy-kitchen 0.2.32+), not here: sla runs instead")
+    cfg["tau"] = float(cfg["tau"])
     cfg["dense_steps"], bad = parse_steps(cfg["dense_steps"])
     if bad:
         notes.append(f"dense_steps: ignored {', '.join(bad)} (use numbers like 0,2,4-6)")
@@ -502,9 +538,49 @@ def install_sla(model, sparsity_ratio=None, block_size=None, min_seq_len=None,
     patched.add_wrapper_with_key("diffusion_model", "funpack_sla_state", make_wrapper(state, cfg))
 
     blk = cfg["block_size"] if cfg["engine"] == "triton" else 64
-    return patched, (f"SLA on | {cfg['engine']} | sparsity={cfg['sparsity_ratio']:.2f} BLK={blk} "
+    how = f"tau={cfg['tau']:.2f}" if cfg["method"] == "sol-attn" else f"sparsity={cfg['sparsity_ratio']:.2f}"
+    return patched, (f"SLA on | {cfg['method']} on {cfg['engine']} | {how} BLK={blk} "
                      f"min_seq_len={cfg['min_seq_len']} dense_last_steps={cfg['dense_last_steps']} "
                      f"dense_steps={sorted(cfg['dense_steps']) or '-'} protect_audio={cfg['protect_audio']} "
                      f"references={cfg['references']} tail={cfg['tail']} stabilize_motion={cfg['stabilize_motion']} "
                      f"| dense calls -> {dense_label or 'as launched'}"
                      + "".join(f"\nSLA: {n}" for n in notes)), True
+
+
+def _install_vsa(model, cfg, dense_fn, dense_label):
+    """VSA through ComfyUI's own Model Sparse Attention (cube tiling and the trained coarse branch are
+    its), the chosen backend underneath for every dense call. Its own sigma window keeps the first
+    20% of the schedule dense; dense_steps and the span protection are this file's and do not apply."""
+    try:
+        from comfy_extras.nodes_sparse_attention import apply_block_sparse_attention
+    except ImportError:
+        return model, "SLA: vsa needs ComfyUI's Model Sparse Attention (ComfyUI 0.39 or later), not here", False
+    if not ck_available():
+        return model, "SLA: vsa needs comfy_kitchen's sol_attn (comfy-kitchen 0.2.32+), not here", False
+    base = patching.clone(model)
+    if dense_fn is not None:        # Model Sparse Attention hands what it does not take to the override it found
+        to = base.model_options.get("transformer_options", {}).copy()
+        to["optimized_attention_override"] = dense_fn
+        base.model_options["transformer_options"] = to
+    keep = 1.0 - float(cfg["sparsity_ratio"])
+    try:
+        patched = apply_block_sparse_attention(
+            base, tau=float(cfg["tau"]), topk_ratio=keep, vsa=True, start_percent=0.2, end_percent=1.0,
+            min_tokens=int(cfg["min_seq_len"]), dense_blocks=set(), sink_conditioning="exact_kv_and_rows",
+            extra_tokens=0, verbose=False)
+    except (TypeError, ValueError) as exc:      # another ComfyUI's version of it, or a model it refuses
+        return model, f"SLA: vsa could not be set up by this ComfyUI's Model Sparse Attention: {exc}", False
+    notes = [f"SLA on | vsa (ComfyUI's Model Sparse Attention) | keeps {keep:.0%} of video cubes, first 20% of "
+             f"the schedule dense, min_seq_len={int(cfg['min_seq_len'])} | dense calls -> {dense_label or 'as launched'}"]
+    try:
+        trained = getattr(patched.get_model_object("diffusion_model").blocks[0].attn, "to_gate_compress", None) is not None
+    except Exception:  # noqa: BLE001 - a description must never fail the load
+        trained = True
+    if not trained:
+        notes.append("SLA: this model has no VSA layers (to_gate_compress): it was not trained for VSA, so it runs "
+                     "without VSA's coarse branch and quality may drop. sla or sol-attn suits it better.")
+    ignored = [n for n, on in (("dense_steps", cfg["dense_steps"] not in ("", "0")), ("references", cfg["references"] != "off"),
+                               ("stabilize_motion", cfg["stabilize_motion"]), ("tail", cfg["tail"])) if on]
+    if ignored:
+        notes.append(f"SLA: {', '.join(ignored)}: not used by vsa")
+    return patched, "\n".join(notes), True
