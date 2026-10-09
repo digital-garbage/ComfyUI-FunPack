@@ -54,16 +54,19 @@ def stats() -> dict:
             present = {k for k, pat in pats if pat.search(text)}
             scanned += 1
             v = vote(sc.rating)
+            # A rating is about the text it was given to (older ratings carry none: the text as it is now).
+            rated = {k for k, pat in pats if pat.search(sc.rated_text.lower())} if v and sc.rated_text.strip() else present
             for k in present:
                 counts[k] = counts.get(k, 0) + 1
-                if v:
-                    scores[k] = scores.get(k, 0) + v
             for a in present:
                 for b in present:
                     if a < b:
                         pairs[(a, b)] = pairs.get((a, b), 0) + 1
-                        if v:
-                            rated_pairs[(a, b)] = rated_pairs.get((a, b), 0) + v
+            for k in rated if v else ():
+                scores[k] = scores.get(k, 0) + v
+                for b in rated:
+                    if k < b:
+                        rated_pairs[(k, b)] = rated_pairs.get((k, b), 0) + v
             for a in prev or ():
                 for b in present:
                     follows[(a, b)] = follows.get((a, b), 0) + 1

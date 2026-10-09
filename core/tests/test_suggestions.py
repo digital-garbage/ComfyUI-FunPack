@@ -54,3 +54,12 @@ def test_ratings_score_shortcuts_and_pairs_and_a_bad_image_blames_nothing():
     assert s["scores"] == {"rain": 2, "neon": 1, "fox": -1}
     assert sorted(map(tuple, s["rated_pairs"])) == [("fox", "neon", -1), ("neon", "rain", 2)]
     assert [suggestions.vote(x) for x in ("1", "6", "5", "Disliked: bad image", "odd")] == [-1, 1, -1, 0, 0]
+
+
+def test_a_rating_counts_for_the_text_it_was_given_to_not_a_rewrite():
+    for n in ("rain", "neon"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    projects.save(projects.Project(name="x", scenes=[projects.Scene(text="neon", rating="10", rated_text="rain")]))
+    s = suggestions.stats()
+    assert s["scores"] == {"rain": 1} and s["counts"] == {"neon": 1}
+    assert projects.Scene.from_dict({"rated_text": "rain"}).rated_text == "rain"

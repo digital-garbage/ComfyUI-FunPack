@@ -37,14 +37,14 @@ export default {
       const was = (pr.scene_renders || {})[head.id];
       const sameTake = (t) => was && (was.promptId ? t.promptId === was.promptId : t.media.filename === (was.media || {}).filename);
       const old = was && was.media && takes.find(sameTake);
-      if (old) old.rating = head.rating || "";
-      else if (was && was.media) takes.push({ media: was.media, ...(was.promptId ? { promptId: was.promptId } : {}), rating: head.rating || "", ...(was.durationSec ? { secs: was.durationSec } : {}) });       // a render from before takes is a take too
+      if (old) Object.assign(old, { rating: head.rating || "", rated_text: head.rated_text || "" });
+      else if (was && was.media) takes.push({ media: was.media, ...(was.promptId ? { promptId: was.promptId } : {}), rating: head.rating || "", rated_text: head.rated_text || "", ...(was.durationSec ? { secs: was.durationSec } : {}) });       // a render from before takes is a take too
       takes.push({ media, ...(promptId ? { promptId } : {}), rating: "", secs });
       while (takes.length > MAX_TAKES) { const at = takes.findIndex((t) => !t.rating); takes.splice(at < 0 || at === takes.length - 1 ? 0 : at, 1); }       // the oldest unrated goes first; a rated take stays as long as anything else can go
       group.forEach((s) => {
         (pr.scene_renders ||= {})[s.id] = renderFor(s, pr, media, secs, promptId);
         if (!isVideoClip(s)) s.source_in = 0;
-        if (!(s.cut_offset_frames > 0)) s.rating = "";       // a new render has not been rated yet      // a fresh render was made at this length: an earlier trim's window no longer applies
+        if (!(s.cut_offset_frames > 0)) s.rating = s.rated_text = "";       // a new render has not been rated yet      // a fresh render was made at this length: an earlier trim's window no longer applies
       });
       return true;
     }).catch(() => tell("The result could not be saved to its project.")); };
