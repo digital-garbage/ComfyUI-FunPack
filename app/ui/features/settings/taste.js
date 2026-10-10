@@ -74,12 +74,14 @@ export const taste = (app) => function mount() {
   function drawResearch() {
     const rows = [c.label.section({ text: "Block influence (research)" })];
     if (influence && influence.error) rows.push(c.banner.warn({ text: `Could not read the recording: ${influence.error}` }));
+    // The switch is always here, even when the report could not be read: a failed read must not take away the way to turn recording off.
+    rows.push(c.toggle.default({ label: "Record block influence", hint: "On: each run on a Taste key is measured, and kept once you rate it. Off: nothing is recorded.",
+      checked: influence && influence.state ? !!influence.state.enabled : true,
+      onChange: async (on) => { try { await app.api.setBlockInfluence(on); } catch (err) { tell(err.message); } refreshResearch(); } }));
     if (influence && influence.state) {
       const { state, four } = influence;
-      rows.push(c.toggle.default({ label: "Record block influence", hint: "On: each run on a Taste key is measured, and kept once you rate it. Off: nothing is recorded.",
-        checked: !!state.enabled, onChange: async (on) => { try { await app.api.setBlockInfluence(on); } catch (err) { tell(err.message); } refreshResearch(); } }));
       if (state.problem) rows.push(c.banner.warn({ text: state.problem }));
-      rows.push(c.settingsRow.default({ label: "Runs measured", hint: `Runs on this key that have a rating: ${state.runs}, of which ${state.skipped} had no usable picture rows`,
+      rows.push(c.settingsRow.default({ label: "Rated runs kept", hint: `Runs on this key that have a rating: ${state.runs}, of which ${state.skipped} had no usable picture rows`,
         control: c.hint.default({ text: `${state.used} kept` }) }));
       if (state.used) rows.push(c.settingsRow.default({ label: "Flatness", hint: "How evenly the blocks move the picture. Near 0 means every block moves it equally, so there is nothing to aim at.",
         control: c.hint.default({ text: state.flatness == null ? "n/a" : state.flatness.toFixed(3) }) }));

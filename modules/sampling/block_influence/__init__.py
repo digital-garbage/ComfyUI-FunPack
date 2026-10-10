@@ -129,6 +129,8 @@ def routes(table, base, web):
             state = measure.state(key_of(req, body))     # refuse BEFORE flipping the switch
         except ValueError as exc:
             return web.json_response({"why": str(exc)}, status=400)
+        except Exception:                                 # a damaged file must not keep the switch from going off
+            state = {}
         measure.set_enabled(body.get("enabled") is True)
         return web.json_response({**state, "enabled": measure.enabled()})
 

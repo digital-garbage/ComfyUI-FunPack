@@ -60,3 +60,12 @@ def test_the_panel_report_reads_the_key_and_says_its_counts(monkeypatch):
     assert out["key"] == "fox" and out["used"] == 6
     assert out["counts"]["image"] == 2 and out["counts"]["composition"] == 2
     assert "composition vs image" in out["cos"]
+
+
+def test_a_block_some_clip_never_measured_is_left_out_not_guessed():
+    nan = float("nan")
+    rows = [_row(1, None, [1, 0, nan]), _row(1, None, [1, 0, nan]), _row(-1, "image", [0, 1, nan]),
+            _row(-1, "image", [0, 1, nan]), _row(-1, "composition", [0, -1, 0.5]), _row(-1, "composition", [0, -1, 0.5])]
+    out = measure.groups(rows, shuffles=10)
+    assert out["cos"], "the blocks everyone measured still compare"
+    assert out["counts"]["composition"] == 2

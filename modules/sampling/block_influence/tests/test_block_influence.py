@@ -349,3 +349,12 @@ def test_the_panel_says_a_taste_key_is_needed_even_when_toggled_on_after_install
     assert "Taste key" in measure.state("default")["problem"]
     _load(tiny_h3)                                    # a key is set: the banner goes
     assert measure.state("default")["problem"] is None
+
+
+def test_flatness_reads_raw_push_so_a_growing_stream_with_equal_pushes_is_flat():
+    from modules.sampling.block_influence.measure import profile
+    # every block pushes 1.0 raw, but the stream grows with depth: the ratio falls, the raw push does not
+    ratio = [1.0 / (1.0 + i * 0.5) for i in range(10)]
+    rows = [{"reward": w, "rows": {"ratio": torch.tensor(ratio), "raw": torch.ones(10),
+                                   "novelty": torch.full((10,), 0.5)}} for w in (1.0, 1.0, -1.0, -1.0)]
+    assert profile(rows)["flatness"] == pytest.approx(0.0, abs=1e-6)

@@ -78,3 +78,20 @@ test("the block influence readout shows flatness, and Clear asks before it clear
   assert.match(page.node.textContent, /Download/);
   assert.match(page.node.textContent, /Clear/);
 });
+
+test("a failed status request still shows the switch, so recording can be turned off", async () => {
+  const sets = [];
+  const app = { api: {
+    tasteKeys: async () => ({ keys: [] }),
+    blockInfluence: async () => { throw new Error("HTTP 500"); },
+    blockInfluenceGroups: async () => ({ key: "fox", used: 0, counts: {}, cos: {}, chance: {}, note: "nothing recorded yet" }),
+    setBlockInfluence: async (on) => { sets.push(on); return { enabled: on }; },
+  } };
+  const page = taste(app)();
+  document.body.append(page.node);
+  await tick(); await tick();
+  const toggle = page.node.querySelector('input[type="checkbox"]');
+  assert.ok(toggle, "the switch is still there");
+  toggle.click(); await tick(); await tick();
+  assert.deepEqual(sets, [false], "the unknown state shows on, so one click turns it off");
+});

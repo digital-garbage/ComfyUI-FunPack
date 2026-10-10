@@ -106,7 +106,7 @@ def profile(rows) -> dict:
     `overall` is where the model does its work regardless of ratings; `share` is
     each block's RAW push as a fraction of all blocks' (rank by this: the ratio
     shrinks with depth by construction, since the stream grows); `difference` is
-    liked minus disliked; `flatness` is the spread of `overall` as a fraction of
+    liked minus disliked; `flatness` is the spread of RAW push as a fraction of
     its mean -- near 0 means every block moves the stream equally and there is
     nothing to aim at. `novelty` ~1: a block amplifies its predecessor, ~0 it
     adds something new, negative it partly undoes it.
@@ -135,7 +135,9 @@ def profile(rows) -> dict:
     difference = None
     if int(liked.sum()) >= MIN_PER_GROUP and int(disliked.sum()) >= MIN_PER_GROUP:
         difference = table(mean("ratio", liked) - mean("ratio", disliked))
-    vals = overall[torch.isfinite(overall)]
+    # Flatness is read on RAW push: the ratio falls with depth by construction (the stream grows), so
+    # a flat model would read as uneven on it.
+    vals = raw[torch.isfinite(raw)]
     flat = float(vals.std(unbiased=False) / vals.mean()) if len(vals) and abs(float(vals.mean())) > 1e-12 else None
     nov = novelty[torch.isfinite(novelty)]
     return {"used": len(rows), "overall": table(overall), "difference": difference, "share": share,
@@ -170,7 +172,11 @@ def groups(rows, shuffles=200, seed=0) -> dict:
     n = len(rows[-1]["rows"]["ratio"])
     rows = [r for r in rows if len(r["rows"]["ratio"]) == n]
     stack = torch.stack([r["rows"]["ratio"].float() for r in rows])
-    stack = torch.where(torch.isfinite(stack), stack, torch.nanmean(stack, dim=0).nan_to_num(0.0))
+    # A block some clip never measured is left out of every group, not filled in with a guess.
+    stack = stack[:, torch.isfinite(stack).all(dim=0)]
+    if stack.shape[1] == 0:
+        return {"used": len(rows), "counts": {g: sum(1 for r in rows if _group(r) == g) for g in GROUPS},
+                "cos": {}, "note": "no block was measured on every clip"}
     labels = [_group(r) for r in rows]
     counts = {g: labels.count(g) for g in GROUPS}
 
