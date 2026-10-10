@@ -14,10 +14,11 @@ problem = None
 
 
 def enabled() -> bool:
+    # On until someone turns it off: with no switch file yet (a fresh rental) recording runs.
     try:
-        return SWITCH.read_text().strip() == "1"
+        return SWITCH.read_text().strip() != "0"
     except OSError:
-        return False
+        return True
 
 
 def set_enabled(on: bool) -> bool:
@@ -140,6 +141,68 @@ def profile(rows) -> dict:
     return {"used": len(rows), "overall": table(overall), "difference": difference, "share": share,
             "novelty": table(novelty), "mean_novelty": float(nov.mean()) if len(nov) else None,
             "flatness": flat, "n_liked": int(liked.sum()), "n_disliked": int(disliked.sum())}
+
+
+GROUPS = ("liked", "image", "composition", "both")
+
+
+def _group(row):
+    """liked; or a dislike sorted by its axis: image, composition, or both (plain dislike)."""
+    reward = float(row["reward"])
+    if reward > 0:
+        return "liked"
+    if reward == 0:
+        return None
+    return row.get("axis") if row.get("axis") in ("image", "composition") else "both"
+
+
+def groups(rows, shuffles=200, seed=0) -> dict:
+    """Do the four groups point in different directions over the block profile?
+
+    For each dislike group, `d = mean(group) - mean(liked)`; the answer is the cosine between
+    those directions. The control reshuffles the group labels over the same clips (same group
+    sizes) and asks how often that cosine comes out as high. A real difference should sit
+    above the shuffled range; inside it, the ratings are not telling the groups apart yet.
+    """
+    rows = [r for r in rows if "ratio" in r["rows"]]
+    if not rows:
+        return {"used": 0, "counts": {}, "cos": {}, "note": "nothing recorded yet"}
+    n = len(rows[-1]["rows"]["ratio"])
+    rows = [r for r in rows if len(r["rows"]["ratio"]) == n]
+    stack = torch.stack([r["rows"]["ratio"].float() for r in rows])
+    stack = torch.where(torch.isfinite(stack), stack, torch.nanmean(stack, dim=0).nan_to_num(0.0))
+    labels = [_group(r) for r in rows]
+    counts = {g: labels.count(g) for g in GROUPS}
+
+    def directions(labs):
+        means = {}
+        for g in GROUPS:
+            idx = [i for i, x in enumerate(labs) if x == g]
+            if len(idx) >= MIN_PER_GROUP:
+                means[g] = stack[idx].mean(dim=0)
+        if "liked" not in means:
+            return {}
+        return {g: means[g] - means["liked"] for g in ("image", "composition", "both") if g in means}
+
+    def cosines(d):
+        pairs = {}
+        names = sorted(d)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                pairs[f"{a} vs {b}"] = float(torch.nn.functional.cosine_similarity(d[a], d[b], dim=0))
+        return pairs
+
+    observed = cosines(directions(labels))
+    if not observed:
+        return {"used": len(rows), "counts": counts, "cos": {}, "note": "not enough clips in each group yet"}
+    gen = torch.Generator().manual_seed(seed)
+    null = {k: [] for k in observed}
+    for _ in range(shuffles):
+        perm = torch.randperm(len(labels), generator=gen).tolist()
+        for k, v in cosines(directions([labels[i] for i in perm])).items():
+            null[k].append(v)
+    chance = {k: {"mean": sum(v) / len(v), "p95": sorted(v)[int(0.95 * (len(v) - 1))]} for k, v in null.items() if v}
+    return {"used": len(rows), "counts": counts, "cos": observed, "chance": chance}
 
 
 def _kind(key):

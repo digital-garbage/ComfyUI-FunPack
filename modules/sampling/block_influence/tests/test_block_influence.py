@@ -26,9 +26,11 @@ def _load(tiny, key="fox"):
     return FunPackLoadModifiers.execute(tiny.patcher, settings).result
 
 
-def test_off_by_default_it_stores_nothing_changes_nothing_and_says_so(tiny_h3):
+def test_switched_off_it_stores_nothing_changes_nothing_and_says_so(tiny_h3):
     from core import log
+    from modules.sampling.block_influence import measure
     from modules.system.taste import store
+    measure.set_enabled(False)
     base = tiny_h3.run()
     patched, _ = _load(tiny_h3)
     log.new_run()
@@ -199,6 +201,7 @@ def test_a_bad_key_is_refused_before_the_switch_flips_and_a_placeholder_finds_th
         async def json(self):
             return self._body
 
+    measure.set_enabled(False)
     out = asyncio.run(handlers[("POST", "/b/enabled")](Req({"enabled": True, "key": "no/slash"})))
     assert out.status == 400 and not measure.enabled()
     patched, _ = _load(tiny_h3, key="mystyle")

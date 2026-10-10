@@ -168,6 +168,16 @@ def _quarantine_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "QUARANTINE_FILE", tmp_path / "quarantine.json")
 
 
+@pytest.fixture(autouse=True)
+def _block_influence_off_in_tmp(tmp_path, monkeypatch):
+    """Recording is on by default, so a test that rates a clip would also pick up its block-influence
+    capture. Off here; a test that wants it on turns it on itself."""
+    from modules.sampling.block_influence import measure
+    switch = tmp_path / "block_influence.enabled"
+    switch.write_text("0")
+    monkeypatch.setattr(measure, "SWITCH", switch)
+
+
 class TinyLTX:
     """A REAL LTX audio+video model -- ComfyUI's own LTXAVModel, four blocks wide as a thumb.
 
