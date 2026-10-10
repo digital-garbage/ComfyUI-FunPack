@@ -22,7 +22,8 @@ export default {
       title: "SLA and ComfyUI's Model Sparse Attention node are both in this pipeline. Both sparsify attention; remove one." }).node;
     twice.hidden = true;
     // A torch build that halves int8 speed on this GPU (cu12x on Blackwell). Asked once: the build cannot change while ComfyUI runs.
-    const slow = c.button.sm({ label: "⚠ Slow torch for int8", tone: "ghost", disabled: true, title: "" }).node;
+    const slow = c.button.sm({ label: "⚠ Slow torch for int8", tone: "ghost", title: "",
+      onClick: () => app.maintenance?.cuda13(slow.title) }).node;
     slow.hidden = true;
     host.append(chip, plain, keyless, twice, slow);
     Promise.resolve().then(() => app.api?.torchBuild?.()).then((r) => {

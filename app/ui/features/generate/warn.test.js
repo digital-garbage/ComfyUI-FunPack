@@ -46,6 +46,12 @@ test("the slow-torch chip shows the server's sentence when this build runs int8 
   await tick();
   assert.equal(slowChip(host).hidden, false);
   assert.match(slowChip(host).title, /CUDA 12\.8/);
+  let asked = null;
+  host = document.createElement("div");
+  warn.setup({ host, app: { pipeline, maintenance: { cuda13: (why) => { asked = why; } }, api: { torchBuild: async () => ({ slow_int8: "torch is built for CUDA 12.8: reinstall" }) } } });
+  await tick();
+  slowChip(host).click();
+  assert.match(asked, /CUDA 12\.8/, "the chip offers the switch, with the reason");
   host = document.createElement("div");
   warn.setup({ host, app: { pipeline, api: { torchBuild: async () => ({ slow_int8: null }) } } });
   await tick();

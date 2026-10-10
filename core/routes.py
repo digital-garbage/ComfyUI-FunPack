@@ -17,6 +17,7 @@ from . import (backend_log, config, control as control_mod, graph as graph_mod, 
                story,
                sysinfo,
                temp_files,
+               torch_swap,
                readiness, update as update_mod, workflow_import,
                registry as registry_mod, serve as static, widgets)
 from .contract import CONTRACT_VERSION
@@ -572,6 +573,47 @@ def register(routes, prefix=None):
             _pending_restart = False
             _schedule_restart()
             return web.json_response({"restarting": True})
+
+    # The torch switch runs as a task the client polls: a multi-GB download outlives the ~100s a
+    # rental's proxy keeps one request open. Shares the git lock and its restart rules.
+    torch_job = {"running": False, "result": None, "task": None}
+
+    async def _torch_run():
+        global _pending_restart
+        async with _git_lock:
+            try:
+                result = await asyncio.to_thread(torch_swap.swap)
+            except Exception as exc:  # noqa: BLE001
+                log.broke("torch switch", exc, doing="swap")
+                result = {"installed": False, "message": f"{type(exc).__name__}: {exc}"}
+            if not result.get("installed"):
+                result = {"restarting": False, **result}
+            elif _generation_running():
+                _pending_restart = True
+                result = {"restarting": False, "blocked": "The new torch is installed, but a generation started: restart once it finishes.", **result}
+            else:
+                _pending_restart = False
+                result = {"restarting": True, **result}
+            # Written BEFORE the restart is scheduled, so a poll can read it while the server is still up.
+            torch_job.update(running=False, result=result)
+            if result["restarting"]:
+                _schedule_restart()
+
+    @routes.post(P + "/api/torch/cuda13")
+    async def _torch_cuda13(_req):
+        """Start switching torch to the CUDA 13 build of the same versions; GET says how it goes."""
+        if _generation_running():
+            return web.json_response({"detail": "A generation is running. Switch torch when it has finished."}, status=409)
+        if torch_job["running"] or _git_lock.locked():
+            return web.json_response({"detail": "An update or a torch switch is already running."}, status=409)
+        if _pending_restart:
+            return web.json_response({"detail": "An earlier change is waiting on a restart. Restart first."}, status=409)
+        torch_job.update(running=True, result=None, task=asyncio.ensure_future(_torch_run()))
+        return web.json_response({"started": True})
+
+    @routes.get(P + "/api/torch/cuda13")
+    async def _torch_cuda13_state(_req):
+        return web.json_response({"running": torch_job["running"], "step": torch_swap.step, "result": torch_job["result"]})
 
     @routes.get(P + "/api/git/status")
     async def _git_status(req):

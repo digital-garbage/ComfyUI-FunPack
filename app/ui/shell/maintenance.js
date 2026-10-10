@@ -32,7 +32,7 @@ export function createMaintenance({ api, flush }) {
     const card = c.modal.generic({ title: "Working", size: "sm", closeOnOutside: false, closeOnEsc: false, body: c.region.stack({ gap: "md", children: [c.progress.indeterminate({ label: "Working" }), text] }) });
     card.setText = (t) => text.setText ? text.setText(t) : (text.node.textContent = t);
     try {
-      const res = await action();
+      const res = await action(card);
       if (res && res.restarting === false) {       // nothing restarted: say what is true, and stay on the page
         card.close();
         return c.modal.dialogue({ title: "Not restarted", message: `${res.blocked || (said ? said(res) : "Nothing changed.")} ${res.blocked ? "Restart ComfyUI yourself when the generation has finished." : ""}`.trim(), confirmLabel: "OK", cancelLabel: "Close" }).result;
@@ -78,6 +78,23 @@ export function createMaintenance({ api, flush }) {
       if (!target) return tell("Nothing to roll back to — no update or branch switch on record.");
       if (!(await ask("Roll back", `Roll back to ${String(target.commit).slice(0, 8)}${target.subject ? ` ("${target.subject}")` : ""}? If that update changed requirements.txt, dependencies are not reinstalled: run pip by hand afterwards if things do not load.`))) return;
       return run(`Rolling back to ${String(target.commit).slice(0, 8)}…`, () => api.git("rollback"), (r) => `Rolled back ${r.before} → ${r.after}.`);
+    },
+    /** Switch torch to its CUDA 13 build (same versions), then restart. `why` is the warning that offered it. */
+    async cuda13(why) {
+      if (!(await ask("Switch torch to CUDA 13", `${why || ""}\n\nDownload the CUDA 13 build of the same torch, torchvision and torchaudio versions (several GB), install it, check it imports, and restart ComfyUI. If it fails, the old build is put back. This can take 10+ minutes.`.trim()))) return;
+      // Started, then polled: the download outlives one request through a rental's proxy. A server that comes back
+      // with no job and no result has restarted on its own after a success -- run() then waits for it and reloads.
+      const action = async (card) => {
+        await api.torchSwap();
+        for (;;) {
+          await wait(1000);
+          let s; try { s = await api.torchSwapState(); } catch { continue; }         // down while restarting: keep asking
+          if (s.step) card.setText(s.step);
+          if (s.result) return s.result;
+          if (!s.running) return { restarting: true };
+        }
+      };
+      return run("Switching torch to CUDA 13…", action, (r) => r.message || "");
     },
     async restart() {
       if (!(await ask("Restart ComfyUI", "Restart now? The server is down for 10–40 s and any running generation is lost. This page reloads when it is back."))) return;
