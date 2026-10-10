@@ -370,6 +370,17 @@ def _satisfies(have: str, spec: str) -> bool:
         return True
 
 
+def _spacy_model_loads() -> bool:
+    """Whether spaCy can load its English model, checked in a fresh interpreter: this process may
+    already hold an older spaCy. False when spaCy is not installed at all."""
+    try:
+        proc = subprocess.run([sys.executable, "-c", "import spacy; spacy.load('en_core_web_sm')"],
+                              capture_output=True, timeout=180)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return proc.returncode == 0
+
+
 def install_requirements(timeout: int = 900) -> dict:
     """Install ONLY the requirements that are absent. Never upgrades anything.
 
@@ -399,7 +410,11 @@ def install_requirements(timeout: int = 900) -> dict:
                                    for n, h, sp in status["below_floor"])
                       + f"\n\nTo do it yourself:\n  {sys.executable} -m pip install -r {req}")
         print(f"[FunPack update] {floor_note}")
-    if not status["missing"]:
+    # The spaCy model is a package the metadata can see even when it does not load (a half-finished
+    # install, a model built for another spaCy). Presence is judged by loading it, when spaCy is here.
+    model_broken = ("en_core_web_sm" in status["present"] and _installed_version("spacy") is not None
+                    and not _spacy_model_loads())
+    if not status["missing"] and not model_broken:
         return {"ran": False, "ok": True, "changed": [],
                 "detail": ("Nothing to install — every requirement is already present."
                            + (f"\n\n{floor_note}" if floor_note else ""))}
@@ -412,7 +427,7 @@ def install_requirements(timeout: int = 900) -> dict:
     # with nothing under it is not installed, it is broken. The freeze diff says whether anything
     # already present moved as a result.
     failed, done = [], []
-    for line in status["install"]:
+    for line in status.get("install", []):
         cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", line]
         try:
             proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
@@ -426,6 +441,17 @@ def install_requirements(timeout: int = 900) -> dict:
             failed.append((line, ((proc.stderr or proc.stdout or "").strip() or "pip failed")[-400:]))
         else:
             done.append(line)
+    if model_broken:
+        cmd = [sys.executable, "-m", "spacy", "download", "en_core_web_sm"]
+        try:
+            proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
+            if proc.returncode != 0 or not _spacy_model_loads():
+                failed.append(("en_core_web_sm (spacy download)",
+                               ((proc.stderr or proc.stdout or "").strip() or "the model still does not load")[-400:]))
+            else:
+                done.append("en_core_web_sm (spacy download)")
+        except (subprocess.TimeoutExpired, OSError) as e:
+            failed.append(("en_core_web_sm (spacy download)", str(e)))
     changed = _pip_diff(before, _pip_freeze())
     if changed:
         print("[FunPack update] pip changed these packages: " + ", ".join(changed))

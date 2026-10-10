@@ -261,3 +261,14 @@ def test_a_branch_switch_installs_what_is_missing_even_when_the_requirements_fil
     monkeypatch.setattr(update, "install_requirements", lambda: called.append(1) or {"ok": True})
     update.checkout("other", pull_after=False, install_deps=True)
     assert called, "the switch itself must check for missing packages"
+
+
+def test_a_spacy_model_that_does_not_load_is_downloaded_on_the_switch(repo, monkeypatch):
+    (repo / "requirements.txt").write_text("spacy>=3.8,<3.9\nen_core_web_sm @ https://example.com/m.whl\n")
+    monkeypatch.setattr(update, "_installed_version", lambda n: "3.8.0")
+    ran = []
+    monkeypatch.setattr(update, "_spacy_model_loads", lambda: bool(ran) and ran[-1] == ["spacy", "download", "en_core_web_sm"])
+    monkeypatch.setattr(update.subprocess, "run", lambda cmd, **k: ran.append(cmd[-3:]) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.setattr(update, "_pip_freeze", lambda: {})
+    assert update.install_requirements()["ok"]
+    assert ran[-1] == ["spacy", "download", "en_core_web_sm"]
