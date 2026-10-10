@@ -12,10 +12,12 @@ feature: no module can announce the thing that updates every module.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -426,9 +428,25 @@ def install_requirements(timeout: int = 900) -> dict:
     # stop every other one from installing too. Dependencies are resolved normally: a new package
     # with nothing under it is not installed, it is broken. The freeze diff says whether anything
     # already present moved as a result.
+    if not before:
+        return {"ran": False, "ok": False,
+                "detail": "Could not read the installed packages, so nothing is installed (an install could move them). "
+                          f"Run it yourself: {sys.executable} -m pip install <the missing packages>"}
+    # Constraints: every installed package stays at its version, so a new package's dependencies can be added
+    # but never bump one that is already here. A dependency that needs a newer one fails, and says so.
+    constraints = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
+    try:
+        constraints.write("\n".join(f"{n}=={v}" for n, v in before.items()) + "\n")
+        constraints.close()
+        return _install_each(status, constraints.name, before, floor_note, timeout, model_broken)
+    finally:
+        os.unlink(constraints.name)
+
+
+def _install_each(status, constraints_path, before, floor_note, timeout, model_broken):
     failed, done = [], []
     for line in status.get("install", []):
-        cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", line]
+        cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-c", constraints_path, line]
         try:
             proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -442,7 +460,7 @@ def install_requirements(timeout: int = 900) -> dict:
         else:
             done.append(line)
     if model_broken:
-        cmd = [sys.executable, "-m", "spacy", "download", "en_core_web_sm"]
+        cmd = [sys.executable, "-m", "spacy", "download", "en_core_web_sm"]     # the model is data, not a dependency: no constraints
         try:
             proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
             if proc.returncode != 0 or not _spacy_model_loads():

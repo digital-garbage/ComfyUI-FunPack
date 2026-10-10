@@ -229,7 +229,7 @@ def test_a_missing_requirement_is_installed_by_its_whole_line_so_a_pin_or_url_su
     monkeypatch.setattr(update, "_installed_version", lambda n: "1.0" if n == "numpy" else None)
     ran = []
     monkeypatch.setattr(update.subprocess, "run", lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
-    monkeypatch.setattr(update, "_pip_freeze", lambda: {})
+    monkeypatch.setattr(update, "_pip_freeze", lambda: {"numpy": "1.26.4"})
     assert update.install_requirements()["ok"]
     assert [c[-1] for c in ran] == ["zz_absent_pkg>=3.8,<3.9", "zz_model @ https://example.com/zz_model.whl"]
 
@@ -244,7 +244,7 @@ def test_one_package_that_cannot_install_does_not_stop_the_others(repo, monkeypa
         return subprocess.CompletedProcess(cmd, 1 if "zz_bad_url" in cmd[-1] else 0, "", "404 not found")
 
     monkeypatch.setattr(update.subprocess, "run", fake_run)
-    monkeypatch.setattr(update, "_pip_freeze", lambda: {})
+    monkeypatch.setattr(update, "_pip_freeze", lambda: {"numpy": "1.26.4"})
     out = update.install_requirements()
     assert ran == ["zz_bad_url @ https://example.com/missing.whl", "zz_good_pkg"], "the second still installs"
     assert out["ok"] is False and "zz_bad_url" in out["detail"] and "404 not found" in out["detail"]
@@ -269,6 +269,32 @@ def test_a_spacy_model_that_does_not_load_is_downloaded_on_the_switch(repo, monk
     ran = []
     monkeypatch.setattr(update, "_spacy_model_loads", lambda: bool(ran) and ran[-1] == ["spacy", "download", "en_core_web_sm"])
     monkeypatch.setattr(update.subprocess, "run", lambda cmd, **k: ran.append(cmd[-3:]) or subprocess.CompletedProcess(cmd, 0, "", ""))
-    monkeypatch.setattr(update, "_pip_freeze", lambda: {})
+    monkeypatch.setattr(update, "_pip_freeze", lambda: {"numpy": "1.26.4"})
     assert update.install_requirements()["ok"]
     assert ran[-1] == ["spacy", "download", "en_core_web_sm"]
+
+
+def test_an_install_pins_every_installed_package_so_nothing_already_here_moves(repo, monkeypatch):
+    (repo / "requirements.txt").write_text("zz_new_pkg\n")
+    monkeypatch.setattr(update, "_installed_version", lambda n: None)
+    seen = {}
+
+    def fake_run(cmd, **k):
+        if "-c" in cmd:
+            seen["constraints"] = open(cmd[cmd.index("-c") + 1]).read()
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+    monkeypatch.setattr(update, "_pip_freeze", lambda: {"numpy": "1.26.4", "torch": "2.9.0"})
+    assert update.install_requirements()["ok"]
+    assert "numpy==1.26.4" in seen["constraints"] and "torch==2.9.0" in seen["constraints"]
+
+
+def test_an_unreadable_installed_list_installs_nothing(repo, monkeypatch):
+    (repo / "requirements.txt").write_text("zz_new_pkg\n")
+    monkeypatch.setattr(update, "_installed_version", lambda n: None)
+    ran = []
+    monkeypatch.setattr(update.subprocess, "run", lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.setattr(update, "_pip_freeze", lambda: {})
+    out = update.install_requirements()
+    assert out["ok"] is False and ran == []
