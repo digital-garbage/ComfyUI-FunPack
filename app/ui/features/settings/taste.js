@@ -51,8 +51,10 @@ export const taste = (app) => function mount() {
   const pct = (x) => (x >= 0 ? "+" : "") + x.toFixed(2);
   async function refreshResearch() {
     try {
-      const [state, four] = await Promise.all([app.api.blockInfluence("default"), app.api.blockInfluenceGroups("default")]);
-      influence = { state, four, error: "" };
+      // Separately: a failed report must not hide the switch, or the user cannot turn recording off.
+      const state = await app.api.blockInfluence("default").catch((err) => ({ error: err.message }));
+      const four = await app.api.blockInfluenceGroups("default").catch((err) => ({ error: err.message }));
+      influence = { state: state.error ? null : state, four: four.error ? null : four, error: [state.error, four.error].filter(Boolean).join("; ") };
     } catch (err) { influence = { state: null, four: null, error: err.message }; }
     drawResearch();
   }
@@ -61,13 +63,15 @@ export const taste = (app) => function mount() {
     if (influence && influence.error) rows.push(c.banner.warn({ text: `Could not read the recording: ${influence.error}` }));
     if (influence && influence.state) {
       const { state, four } = influence;
-      rows.push(c.toggle.default({ label: "Record block influence", hint: "On: every rated run on a Taste key is measured. Off: nothing is recorded.",
+      rows.push(c.toggle.default({ label: "Record block influence", hint: "On: each run on a Taste key is measured, and kept once you rate it. Off: nothing is recorded.",
         checked: !!state.enabled, onChange: async (on) => { try { await app.api.setBlockInfluence(on); } catch (err) { tell(err.message); } refreshResearch(); } }));
       if (state.problem) rows.push(c.banner.warn({ text: state.problem }));
-      rows.push(c.settingsRow.default({ label: "Clips rated", hint: `Key: ${four.key || state.key || "none yet"}`,
+      if (four) rows.push(c.settingsRow.default({ label: "Clips rated", hint: `Key: ${four.key || state.key || "none yet"}`,
         control: c.hint.default({ text: four.used ? Object.entries(four.counts || {}).map(([g, n]) => `${g} ${n}`).join(", ") : "none yet" }) }));
-      if (four.note) rows.push(c.hint.default({ text: four.note }));
-      for (const [pair, cos] of Object.entries(four.cos || {})) {
+      if (four && four.note) rows.push(c.hint.default({ text: four.note }));
+      if (four && four.used && Object.values(four.counts || {}).some((n) => n < 5))
+        rows.push(c.hint.default({ text: "Few clips in a group: a difference this size can be chance. Rate more before reading it." }));
+      for (const [pair, cos] of Object.entries((four && four.cos) || {})) {
         const c0 = four.chance[pair];
         rows.push(c.settingsRow.default({ label: pair, hint: `Chance from shuffled labels: mean ${pct(c0.mean)}, 95th ${pct(c0.p95)}`,
           control: c.hint.default({ text: pct(cos) }) }));

@@ -42,3 +42,21 @@ test("nothing recorded yet is said, not shown as a comparison", async () => {
   await tick(); await tick();
   assert.match(page.node.textContent, /nothing recorded yet/);
 });
+
+test("a failed report still shows the switch, so recording can be turned off", async () => {
+  const sets = [];
+  const app = { api: {
+    tasteKeys: async () => ({ keys: [] }),
+    blockInfluence: async () => ({ key: "fox", enabled: true, problem: null }),
+    blockInfluenceGroups: async () => { throw new Error("HTTP 500"); },
+    setBlockInfluence: async (on) => { sets.push(on); return { enabled: on }; },
+  } };
+  const page = taste(app)();
+  document.body.append(page.node);
+  await tick(); await tick();
+  const toggle = page.node.querySelector('input[type="checkbox"]');
+  assert.ok(toggle, "the switch is still there");
+  toggle.click(); await tick(); await tick();
+  assert.deepEqual(sets, [false]);
+  assert.match(page.node.textContent, /HTTP 500/);
+});

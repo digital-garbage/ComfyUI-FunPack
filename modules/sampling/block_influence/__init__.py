@@ -14,9 +14,10 @@ nothing to aim at. A flat result is a real answer here, not a failure.
 
 Prior art: per-block steering from ratings was built in v4 and removed (block
 activity differed in the 4th decimal). That version averaged over steps before
-looking; this keeps every step separate until the end.
+looking. Each block's push is averaged over the steps of a run, so a per-step
+signal that cancels within a run is lost (a known limit, not yet fixed).
 
-Switched on from Settings > Refinement & Taste (off by default: it is research
+Switched on from Settings > Refinement & Taste (on by default; it is research
 data). The hooks sit on the model whenever a taste key is set and read the
 switch at the start of each run, because ComfyUI caches the node that installs
 them and a toggle must reach the next generation.
@@ -55,7 +56,7 @@ def install(patcher, values, key):
         return None                              # no key: nothing to pair a profile with
     n = dit_hooks.block_count(patcher)
     if n == 0:
-        measure.problem = "this model's blocks can't be read, so nothing is measured"
+        measure.problem = "this model type is not supported yet (only H3 blocks are read), so nothing is measured"
         _say("off: " + measure.problem)
         return None
     measure.problem = None
