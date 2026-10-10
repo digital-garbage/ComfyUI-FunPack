@@ -533,3 +533,15 @@ def test_k_in_another_layout_than_q_still_reaches_the_kernel_contiguous(monkeypa
     k = torch.zeros(1, H, 128, D, dtype=torch.bfloat16)                          # another layout
     _call(ov, q, k, k.clone(), transformer_options={"_funpack_sla_spans": (0, (), ())})
     assert seen == [(True, True, True)] and state["failed"] is None
+
+
+def test_the_torch_pool_averages_real_rows_only_so_light_runs_without_triton():
+    import torch
+    from modules.loaders.sla_attention import _mean_pool_torch
+    x = torch.arange(1 * 5 * 2 * 3, dtype=torch.float32).reshape(1, 5, 2, 3)     # (B, L=5, H=2, D=3)
+    pooled = _mean_pool_torch(x, 2)
+    assert pooled.shape == (1, 2, 3, 3)                                          # (B, H, blocks, D)
+    for h in range(2):
+        assert torch.allclose(pooled[0, h, 0], (x[0, 0, h] + x[0, 1, h]) / 2)
+        assert torch.allclose(pooled[0, h, 1], (x[0, 2, h] + x[0, 3, h]) / 2)
+        assert torch.allclose(pooled[0, h, 2], x[0, 4, h])                       # the short block: its one real row

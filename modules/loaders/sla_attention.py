@@ -257,6 +257,17 @@ def _summarise(state, cfg):
                         state["failed"])
 
 
+def _mean_pool_torch(x, blk):
+    """``(B, L, H, D)`` -> ``(B, H, ceil(L/blk), D)`` fp32, the mean over each block: the same numbers as the
+    Triton pool in sla_block_map, in plain torch, so Light works without Triton."""
+    import torch
+    B, L, H, D = x.shape
+    pad = (-L) % blk
+    x = torch.nn.functional.pad(x.float().transpose(1, 2), (0, 0, 0, pad))      # (B, H, L+pad, D)
+    counts = torch.nn.functional.pad(torch.ones(L, device=x.device), (0, pad)).reshape(1, 1, -1, blk, 1).sum(dim=3)
+    return x.reshape(B, H, -1, blk, D).sum(dim=3) / counts      # the last, short block averages its real rows only
+
+
 def _ck_attention(state, cfg, qb, kb, vb, keep, refs, scale):
     """comfy_kitchen's sol_attn: one 64-token key-block range (`sink_blocks`) is always exact. Attention
     does not care about key order, so when the protected blocks are not one run, K and V are put in an
@@ -273,9 +284,8 @@ def _ck_attention(state, cfg, qb, kb, vb, keep, refs, scale):
     else:
         pinned = block_ranges(keep, _CK_BLOCK, nk)
         if light:       # one set for every query here: ranked by the average query, not each one (Triton does that)
-            from .sla_block_map import mean_pool         # Triton's pooling: Light needs Triton on this engine too
-            score = (mean_pool(qb, _CK_BLOCK).mean(dim=2, keepdim=True)
-                     @ (mean_pool(kb, _CK_BLOCK) - kb.mean(dim=1, dtype=torch.float32)[:, :, None, :]).transpose(-1, -2))
+            score = (_mean_pool_torch(qb, _CK_BLOCK).mean(dim=2, keepdim=True)
+                     @ (_mean_pool_torch(kb, _CK_BLOCK) - kb.mean(dim=1, dtype=torch.float32)[:, :, None, :]).transpose(-1, -2))
             score = score.mean(dim=(0, 1, 2))
             for a, b in minus(block_ranges(refs, _CK_BLOCK, nk), pinned):
                 best = torch.topk(score[a:b], max(1, round(_LIGHT_KEEP * (b - a)))).indices + a
