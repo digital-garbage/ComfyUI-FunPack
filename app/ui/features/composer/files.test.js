@@ -17,3 +17,14 @@ test("Files lists the library files and the taste keys; with no taste module it 
   assert.match(bare.node.textContent, /shortcuts\.json/);
   assert.doesNotMatch(bare.node.textContent, /Taste keys/);
 });
+
+test("a taste key splits into its kinds, each with what it is for and its own delete", async () => {
+  const lib = { dir: "/x", files: [] };
+  const api = { libraryFiles: async () => lib, tasteKeys: async () => ({ keys: ["portraits"] }),
+    tasteKindsOf: async () => ({ kinds: [{ kind: "reins", title: "Taste steering (REINS)", hint: "Per-block steering", bytes: 2048 }] }),
+    clearTasteKind: async () => ({ kinds: [] }) };
+  const page = files({ api });
+  await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0));
+  assert.match(page.node.textContent, /Taste steering \(REINS\).*Per-block steering.*2\.0 KB/);
+  assert.ok([...page.node.querySelectorAll("button")].some((b) => /Delete key/.test(b.textContent)));
+});

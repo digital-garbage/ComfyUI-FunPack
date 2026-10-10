@@ -11,6 +11,26 @@ export function files(app) {
     try { lib = await app.api.libraryFiles(); } catch (err) { return page.set([c.banner.warn({ text: `Could not list the files: ${err.message}` })]); }
     try { keys = (await app.api.tasteKeys()).keys || []; } catch { /* no taste module: no keys to show */ }
     const row = (label, hint, onDelete) => c.settingsRow.default({ label, hint, control: c.button.sm({ label: "✕ Delete", tone: "danger", onClick: onDelete }) });
+    // A key's kinds: one module's learning each. Deleting one kind leaves the key's other kinds as they are.
+    const kindRows = async (k) => {
+      let kinds = [];
+      try { kinds = (await app.api.tasteKindsOf(k)).kinds || []; } catch (err) { return [c.hint.default({ text: `Could not list ${k}: ${err.message}` })]; }
+      if (!kinds.length) return [c.hint.default({ text: "Nothing learned under this key yet." })];
+      return kinds.map((kd) => c.settingsRow.default({ label: kd.title, hint: `${kd.hint} · ${size(kd.bytes)}`,
+        control: c.button.sm({ label: "✕ Delete", tone: "danger", onClick: async () => {
+          if (!(await sure("Delete what was learned", `Delete “${kd.title}” under “${k}”? The key's other learning stays.`))) return;
+          try { await app.api.clearTasteKind(k, kd.kind); } catch (err) { c.toast.warn({ text: err.message }); }
+          draw();
+        } }) }));
+    };
+    const keyBlocks = keys ? await Promise.all(keys.map(async (k) => [
+      c.settingsRow.default({ label: k, hint: "what your ratings taught under this name", control: c.button.sm({ label: "✕ Delete key", tone: "danger", onClick: async () => {
+        if (!(await sure("Delete taste key", `Delete “${k}” and everything it learned?`))) return;
+        try { await app.api.deleteTasteKey(k); } catch (err) { c.toast.warn({ text: err.message }); }
+        draw();
+      } }) }),
+      ...(await kindRows(k)),
+    ])) : null;
     page.set([
       c.toolbar.default({ items: [c.button.sm({ label: "↻ Refresh", tone: "ghost", onClick: draw })] }),
       c.label.section({ text: "Prompt library" }),
@@ -20,12 +40,8 @@ export function files(app) {
         try { await app.api.deleteLibraryFile(f.name); } catch (err) { c.toast.warn({ text: err.message }); }
         draw();
       })) : [c.hint.default({ text: "No files." })]),
-      ...(keys ? [c.label.section({ text: "Taste keys" }),
-        ...(keys.length ? keys.map((k) => row(k, "what your ratings taught under this name", async () => {
-          if (!(await sure("Delete taste key", `Delete “${k}” and everything it learned?`))) return;
-          try { await app.api.deleteTasteKey(k); } catch (err) { c.toast.warn({ text: err.message }); }
-          draw();
-        })) : [c.hint.default({ text: "No keys." })])] : []),
+      ...(keyBlocks ? [c.label.section({ text: "Taste keys" }),
+        ...(keys.length ? keyBlocks.flat() : [c.hint.default({ text: "No keys." })])] : []),
     ]);
   }
   draw();

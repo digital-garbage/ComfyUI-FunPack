@@ -11,6 +11,7 @@ import asyncio
 import os
 import tempfile
 
+import re
 from . import store, value
 from ... import _core
 
@@ -154,10 +155,65 @@ def taste_kind(key, kind):
     return Kind(key, kind)
 
 
+# What each kind of learning is for, for the Files panel. Kinds are written by modules; an unknown kind shows its name.
+KIND_INFO = {
+    "reins": ("Taste steering (REINS)", "Per-block steering learned from liked and disliked clips"),
+    "block_influence": ("Block influence", "Research: how much each block pushes the picture, for the four-group report"),
+    "shot_memory": ("Shot memory", "Camera and shot choices that were liked or disliked"),
+    "q_steer": ("Taste attention", "Attention steering learned from ratings"),
+    "dynashift": ("DynaShift", "Steers the picture away from disliked results, late in the run"),
+    "decisiveness": ("Decisiveness", "How firmly steps commit, learned from ratings"),
+    "stas": ("Massive-activation steering", "Steering on the strongest channels, learned from ratings"),
+    "x0_final": ("Taste guidance", "Output guidance learned from ratings"),
+    "prompt_taste": ("Taste slider", "Prompt direction for the score slider"),
+    "first_step": ("First-step seed search", "Which seeds start well, learned from ratings"),
+    "late_branch": ("Late-branch guidance", "Guidance applied late in the run, learned from ratings"),
+    "velocity": ("Velocity bias", "Motion bias learned from ratings"),
+    "x0_quarters": ("Early taste guidance", "Guidance from the first quarters of the run, learned from ratings"),
+}
+_KIND = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
+
+
+def key_kinds(key):
+    """-> [{kind, title, hint, bytes}] for every kind a key holds (pending captures count toward their kind)."""
+    folder = store._dir(key)
+    if not folder.is_dir():
+        return []
+    found = {}
+    for path in folder.glob("*.pt"):
+        kind = path.name.split(".", 1)[0]
+        if _KIND.match(kind):
+            found[kind] = found.get(kind, 0) + path.stat().st_size
+    out = []
+    for kind in sorted(found):
+        title, hint = KIND_INFO.get(kind, (kind, "Learned from ratings"))
+        out.append({"kind": kind, "title": title, "hint": hint, "bytes": found[kind]})
+    return out
+
+
 def routes(table, base, web):
     @table.get(base + "/keys")
     async def _keys(_req):
         return web.json_response({"keys": store.keys()})
+
+    @table.get(base + "/keys/{name}/kinds")
+    async def _kinds(req):
+        try:
+            return web.json_response({"kinds": key_kinds(req.match_info["name"])})
+        except ValueError as exc:
+            return web.json_response({"why": str(exc)}, status=400)
+
+    @table.delete(base + "/keys/{name}/kinds/{kind}")
+    async def _clear_kind(req):
+        """Forget one kind of one key: its rated rows and waiting captures. The rest of the key stays."""
+        name, kind = req.match_info["name"], req.match_info["kind"]
+        if not _KIND.match(kind):
+            return web.json_response({"why": f"{kind!r} is not a kind name"}, status=400)
+        try:
+            store.clear_kind(name, kind)
+        except ValueError as exc:
+            return web.json_response({"why": str(exc)}, status=400)
+        return web.json_response({"kinds": key_kinds(name)})
 
     @table.post(base + "/rate")
     async def _rate(req):

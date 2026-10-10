@@ -61,6 +61,8 @@ export const api = {
   setBlockInfluence: (on) => call("POST", `/api/m/block_influence/enabled?key=default`, { enabled: !!on }),
   libraryFiles: () => call("GET", "/api/files"),
   deleteLibraryFile: (name) => call("DELETE", `/api/files/${encodeURIComponent(name)}`),
+  tasteKindsOf: (name) => call("GET", `/api/m/taste/keys/${encodeURIComponent(name)}/kinds`),
+  clearTasteKind: (name, kind) => call("DELETE", `/api/m/taste/keys/${encodeURIComponent(name)}/kinds/${encodeURIComponent(kind)}`),
   deleteTasteKey: (name) => call("DELETE", `/api/m/taste/keys/${encodeURIComponent(name)}`),
   tasteKeyUrl: (name) => `${BASE}/api/m/taste/keys/${encodeURIComponent(name)}/export`,
   /** The zip as the raw body; `exists: true` comes back (not thrown) when the name is taken and `overwrite` was not asked. */
