@@ -52,6 +52,13 @@ def rewrite(text, values, seconds=None, pieces=None):
         text, info = engine.add_shot_cuts(text, seconds, seed=seed, chance=chance, pieces=_pieces() if pieces is None else pieces)
         arms += info.get("arms", [])
         said.append(f"cuts at {', '.join(info['times'])}" + (f" ({info['before']}→{info['after']} shots)" if info["after"] != info["before"] else "") if info["times"] else f"cuts: {info['why']}")
+    if values.get("reframe_same_shot") and engine.SHOT.search(text or ""):
+        text, info = engine.add_reframes(text, seed=seed, chance=memory.reframe_chance(float(values.get("reframe_chance", 0.5))),
+                                         pieces=_pieces() if pieces is None else pieces, stats=memory.view_stats())
+        arms += info["arms"]
+        views += [{"view": a["view"], "traits": a["traits"]} for a in info["added"]]
+        said.append("reframes: " + (", ".join(f"shot {a['shot']} {a['view']}" + (f" on {a['target']}" if a["target"] else "") for a in info["added"])
+                                    if info["added"] else "none" + ("" if info["arms"] else " (no shortcut boundary inside a shot)")))
     if values.get("shot_views") and engine.SHOT.search(text or ""):
         skipped = []
         text, added = engine.add_shot_views(text, seed=seed, chance=float(values.get("shot_views_chance", 0.4)), stats=memory.view_stats(), skipped=skipped)
@@ -105,7 +112,7 @@ class FunPackShotCamera(io.ComfyNode):
     @classmethod
     def execute(cls, text: str, length: int, frame_rate: float, settings=None) -> io.NodeOutput:
         values = _values(settings)
-        if not any(values.get(k) for k in ("camera_moves", "shot_cuts", "shot_views", "cut_same_shot", "detail_notes")) or not engine.SHOT.search(text or ""):
+        if not any(values.get(k) for k in ("camera_moves", "shot_cuts", "shot_views", "cut_same_shot", "reframe_same_shot", "detail_notes")) or not engine.SHOT.search(text or ""):
             return io.NodeOutput(text, "unchanged")
         try:
             out, said, chose = rewrite(text, values, seconds=length / frame_rate if frame_rate else None)

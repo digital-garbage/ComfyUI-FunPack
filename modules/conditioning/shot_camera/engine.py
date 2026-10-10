@@ -717,6 +717,60 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
     return "".join(out), info
 
 
+# ── reframes ────────────────────────────────────────────────────────────────────────
+# A shortcut boundary inside a shot that is NOT cut can turn the camera instead: one continuous
+# take, the actions follow on, and only the view and the focus change. Run after the cuts, so
+# the boundaries left are exactly the ones that were kept whole.
+REFRAMES = ("Without a cut, the camera smoothly moves to {view}{x}.",
+            "Without a cut, the camera glides around to {view}{x}.",
+            "Without a cut, the camera drifts over to {view}{x}.")
+_REFRAME = re.compile(r"\s*Without a cut, the camera [^.!?]*[.!?]", re.I)
+
+
+def _a_view(view):
+    return "a " + (view if view.startswith("POV") else view.lower())
+
+
+def add_reframes(text, seed=0, chance=0.5, pieces=(), stats=None):
+    """-> (new prompt, info). At each shortcut boundary inside a shot, with odds `chance`, a
+    sentence moves the camera to a new view (never the one just used) aimed at the most specific
+    thing in what follows, without a cut. info = {"added": [{"shot", "view", "traits",
+    "target"}], "arms": ["reframe:yes"|"reframe:no", ...]}."""
+    marks = list(SHOT.finditer(text or ""))
+    info = {"added": [], "arms": []}
+    if not marks:
+        return text, info
+    out, last = [text[:marks[0].start()]], None
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        picture, sound = _split_sound(text[m.end():end])
+        points = _cut_points(picture, pieces)
+        chosen = []
+        for n, at in enumerate(points):
+            rng = random.Random(f"{seed}:reframe:{i}:{n}")
+            take = rng.random() < chance
+            info["arms"].append("reframe:yes" if take else "reframe:no")
+            if not take:
+                continue
+            following = picture[at:(points[n + 1] if n + 1 < len(points) else len(picture))]
+            traits = view_traits(following)
+            allowed = allowed_views(traits)
+            pool = [v for v in allowed if v != last] or allowed
+            view = rng.choices(pool, weights=[_view_weight(v, traits, stats) for v in pool])[0]
+            cands = [c for c in candidates(own_words_removed(following)) if _score(c) > 0.5]
+            target = _name(_draw(cands, None, None, 1)[0]) if cands else None
+            sentence = rng.choice(REFRAMES).format(view=_a_view(view), x=f", framing {target}" if target else "")
+            chosen.append((at, sentence))
+            info["added"].append({"shot": int(m.group(1)), "view": view, "traits": traits, "target": target})
+            last = view
+        for at, sentence in reversed(chosen):          # right to left: earlier indexes stay valid
+            head = picture[:at].rstrip()
+            picture = head + ("" if head.endswith((".", "!", "?")) else ".") + " " + sentence + " " \
+                + _fresh_piece(picture[at:])
+        out.append(m.group(0) + picture + sound)
+    return "".join(out), info
+
+
 # ── views ───────────────────────────────────────────────────────────────────────────
 # Chosen, not detected: a prompt seldom says which view it wants. The user's own trusted
 # wording, verbatim. Shot 1 is skipped: it may sit on a reference image or a pinned first
@@ -799,7 +853,7 @@ def view_options(text, stats=None):
         traits = view_traits(picture)
         cands = sorted(((v, _view_weight(v, traits, stats)) for v in allowed_views(traits)),
                        key=lambda c: -c[1])
-        stated = VIEW_STATED.search(CUT.sub("", picture))
+        stated = VIEW_STATED.search(CUT.sub("", _REFRAME.sub("", picture)))
         out.append({"shot": int(m.group(1)), "key": key, "traits": traits,
                     "already": bool(stated), "stated": stated.group(0) if stated else "",
                     "candidates": [{"view": v, "score": round(w, 2)} for v, w in cands],
@@ -829,7 +883,7 @@ def add_shot_views(text, seed=0, chance=0.4, stats=None, choices=None, skipped=N
         picture, sound = _split_sound(body)
         key = keys(picture)
         view = None
-        stated = VIEW_STATED.search(CUT.sub("", picture)) if (i or lone) else None
+        stated = VIEW_STATED.search(CUT.sub("", _REFRAME.sub("", picture))) if (i or lone) else None
         if stated and skipped is not None:
             skipped.append(f"shot {m.group(1)}: already states “{stated.group(0)}”")
         if (i or lone) and not stated:
@@ -872,7 +926,7 @@ def own_words_removed(picture):
     become a target or a topic."""
     picture = _OUR_OPENER.sub("", picture, count=1)
     picture = _CUT_WORDS.sub("", picture, count=1)
-    return _VIEW_SENTENCE.sub("", picture, count=1)
+    return _REFRAME.sub("", _VIEW_SENTENCE.sub("", picture, count=1))
 
 
 _OUR_OPENER = re.compile(r"^\s*At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in CUT_OPENERS)
@@ -888,6 +942,7 @@ def content_fingerprint(text):
     body = re.sub(r"\[\s*Shot\s+\d+\s*\]", " ", text or "", flags=re.I)
     body = re.sub(r"At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in CUT_OPENERS) + r")\.",
                   " ", body, flags=re.I)
+    body = _REFRAME.sub(" ", body)
     body = re.sub(r"\s+", " ", body)
     body = re.sub(r"(?:^|(?<=[.!?]\s))(?:" + "|".join(re.escape(v) for v in VIEWS) + r")\.", " ", body)
     body = re.sub(r"\s+", " ", body).strip().lower()

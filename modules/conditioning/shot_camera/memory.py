@@ -171,7 +171,8 @@ def learn_views(decisions):
 def arm_stats():
     """{arm: (good, bad)} for what ratings taught about the camera's own choices: "move:yes" /
     "move:no" (a shot got a move / was left alone), "style:hold|travel|k1|k2|k3", "word:<lemma>",
-    "split:yes|no" (a shortcut boundary inside a shot was cut / kept whole)."""
+    "split:yes|no" (a shortcut boundary inside a shot was cut / kept whole), "reframe:yes|no" (a kept
+    boundary turned the camera without a cut / did not)."""
     return {k: (float(v[0]), float(v[1])) for k, v in (_read().get("arms") or {}).items()
             if isinstance(v, (list, tuple)) and len(v) == 2}
 
@@ -339,6 +340,13 @@ def split_chance(chance):
     if chance <= 0.0 or chance >= 1.0:
         return max(0.0, min(1.0, chance))
     return max(0.0, min(1.0, chance * _lean("split:yes", "split:no")))
+
+
+def reframe_chance(chance):
+    """The chance of reframing at a kept boundary, tilted by whether reframed runs were liked (0 and 1 kept as set)."""
+    if chance <= 0.0 or chance >= 1.0:
+        return max(0.0, min(1.0, chance))
+    return max(0.0, min(1.0, chance * _lean("reframe:yes", "reframe:no")))
 
 
 def _save(data):

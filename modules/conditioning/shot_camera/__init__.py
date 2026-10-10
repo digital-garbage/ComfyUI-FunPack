@@ -6,6 +6,7 @@ pick the move. Off by default:
 
 * cut times: shots after the first open with their time
 * cut within the same shot: "[Shot 1] DANCE KISS" and "[Shot 1] DANCE DANCE" are cut between the shortcuts, so each part gets a time, a view and a focus. Its chance slider is hidden until this is on
+* reframe within the shot: at a boundary that was not cut, the camera changes view and focus with no cut, in one continuous take
 * views: your own trusted list (side view, from above, POV...), never on shot 1, never the same twice in a row
 * camera moves: one to three per shot, aimed at the most specific thing in it ("<Subject 1>'s hand", not "<Subject 1>")
 * liked details: a short detail you liked ("detailed lips") may be added, once, at the end of a later shot that already names that body part. Its chance slider is hidden until this is on
@@ -41,6 +42,11 @@ SETTINGS = {
     "shot_cuts_chance": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of a cut within the shot",
                          "hint": "1 = always cut between those shortcuts, 0 = never. Ratings nudge the values in between.",
                          "when": {"cut_same_shot": True}},
+    "reframe_same_shot": {"type": "bool", "default": False, "label": "Reframe within the shot",
+                          "hint": "Where one shortcut ends and the next begins inside a shot that is not cut, the camera moves to a new view and focus without a cut: one continuous take, the actions follow on. A shot that reframes gets no extra camera move."},
+    "reframe_chance": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of a reframe",
+                       "hint": "1 = always reframe between those shortcuts, 0 = never. Ratings nudge the values in between.",
+                       "when": {"reframe_same_shot": True}},
     "shot_views": {"type": "bool", "default": False, "label": "Shot views",
                    "hint": "Later shots open on a view (side, from above, POV…), never the same twice in a row."},
     "shot_views_chance": {"type": "float", "default": 0.4, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance a shot gets a view",
