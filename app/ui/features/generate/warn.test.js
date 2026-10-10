@@ -21,3 +21,17 @@ test("the No Taste key chip shows only while a learning feature is on and the ke
   values = { taste: { key: "" } }; learning = false; listener();
   assert.equal(chip(host).hidden, true, "nothing learns, so a missing key changes nothing");
 });
+
+test("the two-sparse-attentions chip shows only when SLA and a native sparse node are both in the pipeline", () => {
+  let slots = [{ id: "loader", node: "FunPackLoader", inputs: { sla: true } }, { id: "sa", node: "BlockSparseAttention", inputs: {} }];
+  let listener;
+  const pipeline = { slots: () => slots, allOff: () => false, modulesById: () => ({}), activeModules: () => [], useful: () => false,
+    currentValues: () => ({}), subscribe: (fn) => { listener = fn; return () => {}; } };
+  const host = document.createElement("div");
+  warn.setup({ host, app: { pipeline } });
+  const twice = () => [...host.querySelectorAll("button")].find((b) => /Two sparse attentions/.test(b.textContent));
+  assert.equal(twice().hidden, false, "both present: said");
+  slots = [{ id: "loader", node: "FunPackLoader", inputs: { sla: false } }, { id: "sa", node: "BlockSparseAttention", inputs: {} }];
+  listener();
+  assert.equal(twice().hidden, true, "SLA off: the native node alone is not a clash");
+});

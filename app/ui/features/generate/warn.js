@@ -15,8 +15,18 @@ export default {
     const keyless = c.button.sm({ label: "⚠ No Taste key", tone: "ghost", title: "A feature that learns from ratings is on, but no Taste key is set: ratings teach nothing. Name one in Settings ▸ Engine ▸ System.",
       onClick: () => app.openSettings?.("engine") }).node;
     keyless.hidden = true;
-    host.append(chip, plain, keyless);
+    // Two sparse attentions at once: the pipeline's own SLA and a native Model Sparse Attention node. Both run on
+    // every block; the native one's dense fall-throughs print their own log lines, and nothing else says it is there.
+    const twice = c.button.sm({ label: "⚠ Two sparse attentions", tone: "ghost", disabled: true,
+      title: "SLA and ComfyUI's Model Sparse Attention node are both in this pipeline. Both sparsify attention; remove one." }).node;
+    twice.hidden = true;
+    host.append(chip, plain, keyless, twice);
     const draw = (slots) => { chip.hidden = !(slots && !slots.some((s) => (s.roles || []).some((r) => r.at === "generation.prompt"))); };
+    const drawTwice = (slots) => {
+      const native = (slots || []).some((s) => /SparseAttention/.test(String(s.node || "")));
+      const sla = (slots || []).some((s) => (s.inputs || {}).sla === true);
+      twice.hidden = !(native && sla);
+    };
     const drawPlain = () => {
       const ps = app.pipeline, taste = ps.modulesById?.().taste;
       plain.hidden = !ps.allOff?.();
@@ -24,6 +34,7 @@ export default {
     };
     drawPlain();
     draw(app.pipeline.slots());
-    return app.pipeline.subscribe ? app.pipeline.subscribe(() => { draw(app.pipeline.slots()); drawPlain(); }) : undefined;
+    drawTwice(app.pipeline.slots());
+    return app.pipeline.subscribe ? app.pipeline.subscribe(() => { draw(app.pipeline.slots()); drawTwice(app.pipeline.slots()); drawPlain(); }) : undefined;
   },
 };
