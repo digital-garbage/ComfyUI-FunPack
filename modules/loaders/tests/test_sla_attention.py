@@ -172,7 +172,8 @@ def test_dense_steps_stack_with_the_last_steps():
     state = sla.new_state()
     w = sla.make_wrapper(state, _cfg(dense_last_steps=1, dense_steps=frozenset({0, 2})))
     assert _run(w, 5) == [True, False, True, False, True]
-    assert sla.parse_steps("1, 3-5,x,7-6,0,1-5000") == (frozenset({0, 2, 3, 4, 5, 6}), ["x", "0", "1-5000"])
+    assert sla.parse_steps("1, 3-5,x,7-6,0,1-5000") == (frozenset({0, 2, 3, 4, 5, 6}), ["x", "1-5000"])
+    assert sla.parse_steps("0") == (frozenset(), [])                # "0" is none, as the tooltip says
 
 
 def test_the_wrapper_calls_the_next_wrapper_not_the_bare_model():

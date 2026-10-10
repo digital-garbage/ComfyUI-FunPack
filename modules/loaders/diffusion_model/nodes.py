@@ -135,7 +135,7 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                 io.String.Input("sla_dense_steps", extra_dict=shows(("sla", [True]), ("sla_method", ["sla", "sol-attn"])), default=sla_attention.SLA_DEFAULTS["dense_steps"],
                                 optional=True,
                                 tooltip="Steps at full attention, counted from 1: '1' is the first "
-                                        "step, '1-2' the first two, '1,6' the first and sixth; blank, "
+                                        "step, '1-2' the first two, '1,6' the first and sixth; blank or '0', "
                                         "none. The first steps set the layout and how closely the "
                                         "prompt is followed, so the first is exact by default. Adds to "
                                         "dense last steps. The log names the steps that ran this way."),

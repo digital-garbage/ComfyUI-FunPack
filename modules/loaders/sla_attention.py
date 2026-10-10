@@ -155,7 +155,7 @@ def parse_steps(spec):
     indices. A token that is not such a number (0, a letter, past step 1000) is skipped and named."""
     steps, bad = set(), []
     for tok in str(spec or "").replace(" ", "").split(","):
-        if not tok:
+        if not tok or tok == "0":          # blank, or "0": no dense steps (the tooltip and the commit say so)
             continue
         a, _, b = tok.partition("-")
         if a.isdigit() and (not b or b.isdigit()) and 1 <= min(int(a), int(b or a)) and max(int(a), int(b or a)) <= 1000:
