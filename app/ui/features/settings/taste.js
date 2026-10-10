@@ -45,6 +45,19 @@ export const taste = (app) => function mount() {
       c.dropzone.default({ label: "Drop or choose an exported key (.zip)", hint: "from another machine", accept: ".zip,application/zip", multiple: false, onFiles: bring }),
     ].filter(Boolean));
   }
+  const exportInfluence = async (key) => {
+    try {
+      const r = await fetch(app.api.blockInfluenceExportUrl(key));
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).why || `The server refused (${r.status}).`);
+      const link = Object.assign(document.createElement("a"), { download: `${key}.block_influence.pt`, href: URL.createObjectURL(await r.blob()) });
+      link.click(); URL.revokeObjectURL(link.href);
+    } catch (err) { tell(err.message); }
+  };
+  const clearInfluence = async (key) => {
+    if (!(await c.modal.dialogue({ title: "Clear block influence", message: `Clear everything recorded for “${key}”? This cannot be undone.`, tone: "danger", confirmLabel: "Clear" }).result)) return;
+    try { await app.api.clearBlockInfluence(key); } catch (err) { tell(err.message); }
+    refreshResearch();
+  };
   // Block influence: research recording, read here. Its numbers say whether the four groups point apart; no clip changes.
   const research = c.region.stack({ gap: "sm" });
   let influence = null;
@@ -66,6 +79,15 @@ export const taste = (app) => function mount() {
       rows.push(c.toggle.default({ label: "Record block influence", hint: "On: each run on a Taste key is measured, and kept once you rate it. Off: nothing is recorded.",
         checked: !!state.enabled, onChange: async (on) => { try { await app.api.setBlockInfluence(on); } catch (err) { tell(err.message); } refreshResearch(); } }));
       if (state.problem) rows.push(c.banner.warn({ text: state.problem }));
+      rows.push(c.settingsRow.default({ label: "Runs measured", hint: `Runs on this key that have a rating: ${state.runs}, of which ${state.skipped} had no usable picture rows`,
+        control: c.hint.default({ text: `${state.used} kept` }) }));
+      if (state.used) rows.push(c.settingsRow.default({ label: "Flatness", hint: "How evenly the blocks move the picture. Near 0 means every block moves it equally, so there is nothing to aim at.",
+        control: c.hint.default({ text: state.flatness == null ? "n/a" : state.flatness.toFixed(3) }) }));
+      if (state.used && state.mean_novelty != null) rows.push(c.settingsRow.default({ label: "Novelty", hint: "Near 1: blocks amplify what came before. Near 0: they add something new.",
+        control: c.hint.default({ text: state.mean_novelty.toFixed(3) }) }));
+      rows.push(c.settingsRow.default({ label: "Recording data", hint: "Download the stored data for this key, or clear it.", control: c.toolbar.default({ items: [
+        c.button.sm({ label: "⤓ Download", tone: "ghost", onClick: () => exportInfluence(state.key) }),
+        c.button.sm({ label: "Clear", tone: "danger", onClick: () => clearInfluence(state.key) })] }) }));
       if (four) rows.push(c.settingsRow.default({ label: "Clips rated", hint: `Key: ${four.key || state.key || "none yet"}`,
         control: c.hint.default({ text: four.used ? Object.entries(four.counts || {}).map(([g, n]) => `${g} ${n}`).join(", ") : "none yet" }) }));
       if (four && four.note) rows.push(c.hint.default({ text: four.note }));

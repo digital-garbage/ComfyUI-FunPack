@@ -60,3 +60,21 @@ test("a failed report still shows the switch, so recording can be turned off", a
   assert.deepEqual(sets, [false]);
   assert.match(page.node.textContent, /HTTP 500/);
 });
+
+test("the block influence readout shows flatness, and Clear asks before it clears", async () => {
+  const cleared = [];
+  const app = { api: {
+    tasteKeys: async () => ({ keys: [] }),
+    blockInfluence: async () => ({ key: "fox", enabled: true, problem: null, runs: 9, skipped: 1, used: 8, flatness: 0.123, mean_novelty: 0.4 }),
+    blockInfluenceGroups: async () => ({ key: "fox", used: 0, counts: {}, cos: {}, chance: {}, note: "nothing recorded yet" }),
+    blockInfluenceExportUrl: (k) => `/x/${k}`,
+    clearBlockInfluence: async (k) => { cleared.push(k); return {}; },
+  } };
+  const page = taste(app)();
+  document.body.append(page.node);
+  await tick(); await tick();
+  assert.match(page.node.textContent, /0\.123/);
+  assert.match(page.node.textContent, /0\.400/);
+  assert.match(page.node.textContent, /Download/);
+  assert.match(page.node.textContent, /Clear/);
+});

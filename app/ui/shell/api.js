@@ -56,6 +56,8 @@ export const api = {
   tasteKeys: () => call("GET", "/api/m/taste/keys"),
   blockInfluence: (key) => call("GET", `/api/m/block_influence/status?key=${encodeURIComponent(key || "default")}`),
   blockInfluenceGroups: (key) => call("GET", `/api/m/block_influence/groups?key=${encodeURIComponent(key || "default")}`),
+  clearBlockInfluence: (key) => call("POST", "/api/m/block_influence/clear", { key: key || "default" }),
+  blockInfluenceExportUrl: (key) => `${BASE}/api/m/block_influence/export?key=${encodeURIComponent(key || "default")}`,
   setBlockInfluence: (on) => call("POST", `/api/m/block_influence/enabled?key=default`, { enabled: !!on }),
   libraryFiles: () => call("GET", "/api/files"),
   deleteLibraryFile: (name) => call("DELETE", `/api/files/${encodeURIComponent(name)}`),
