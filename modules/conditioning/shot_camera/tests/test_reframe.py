@@ -76,3 +76,17 @@ def test_cut_within_the_shot_at_zero_leaves_every_boundary_to_reframe(tmp_path, 
     out, _, _ = nodes.rewrite(text, {"cut_same_shot": True, "shot_cuts_chance": 0, "reframe_same_shot": True, "reframe_chance": 1},
                               seconds=10, pieces=[DANCE, WAVE])
     assert out.count("[Shot ") == 1 and out.count("Without a cut") == 2
+
+
+def test_only_one_is_always_and_only_zero_is_never(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    for _ in range(30):                                   # a long run of likes: the strongest possible lean
+        memory.record_run("r", {"views": [], "arms": ["reframe:yes", "split:yes", "move:yes"]})
+        memory.on_rating("r", "liked")
+        memory.record_run("q", {"views": [], "arms": ["reframe:no", "split:no", "move:no"]})
+        memory.on_rating("q", "disliked")
+    for fn in (memory.reframe_chance, memory.split_chance, memory.effective_chance):
+        assert fn(1.0) == 1.0 and fn(0.0) == 0.0
+        assert 0.0 < fn(0.6) < 1.0 and 0.0 < fn(0.05) < 1.0, f"{fn.__name__}: in between stays occasionally"
+        assert fn(0.6) > 0.6, "the likes still lean it up"
+    assert 0.0 < memory.detail_chance(0.9, 100, 0) < 1.0 and memory.detail_chance(1.0, 0, 100) == 1.0

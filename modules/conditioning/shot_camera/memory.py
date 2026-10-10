@@ -201,15 +201,23 @@ def rate_arms(used, sign, k=1.0):
     return len(used)
 
 
+def _odds(chance, factor):
+    """The user's slider, tilted by what ratings taught. 1.0 is always and 0.0 is never, kept exactly; anything in
+    between is "occasionally" and stays in between: the tilt works on the odds, so it can lean toward an end but
+    never reach it (a plain `chance * factor` capped at 1 turned 0.6 into always)."""
+    chance = float(chance)
+    if chance <= 0.0 or chance >= 1.0:
+        return max(0.0, min(1.0, chance))
+    o = chance / (1.0 - chance) * max(float(factor), 1e-6)
+    return o / (1.0 + o)
+
+
 def detail_chance(chance, good, bad):
     """The chance of adding one learned detail. 0 and 1 stay as the user set them. In between,
     a detail that was liked is more likely and one that was blamed is less, gently: one vote
     cannot flip it."""
-    chance = float(chance)
-    if chance <= 0.0 or chance >= 1.0:
-        return max(0.0, min(1.0, chance))
     rate = (float(good) + 1.0) / (float(good) + float(bad) + 2.0)
-    return max(0.0, min(1.0, chance * 2.0 * rate))
+    return _odds(chance, 2.0 * rate)
 
 
 def detail_bank():
@@ -319,12 +327,14 @@ def forget(kind, name=None):
 
 def effective_chance(chance):
     """The configured chance of a move, pulled toward how often the user actually keeps one
-    (of the shots they reviewed) once enough were reviewed."""
+    (of the shots they reviewed) once enough were reviewed. 1.0 stays always."""
+    if chance <= 0.0 or chance >= 1.0:
+        return max(0.0, min(1.0, chance))
     data = _read()
     total, kept = int(data.get("shots", 0)), int(data.get("kept", 0))
     if total >= MIN_SHOTS_FOR_RATE:
         chance = (chance + kept / total) / 2.0
-    return max(0.05, min(1.0, chance * _lean("move:yes", "move:no")))
+    return _odds(chance, _lean("move:yes", "move:no"))
 
 
 def _lean(yes, no):
@@ -337,16 +347,12 @@ def _lean(yes, no):
 def split_chance(chance):
     """The chance of cutting a shot in two, tilted by whether split runs were liked. 0 and 1 are the user's
     never/always and are kept as set."""
-    if chance <= 0.0 or chance >= 1.0:
-        return max(0.0, min(1.0, chance))
-    return max(0.0, min(1.0, chance * _lean("split:yes", "split:no")))
+    return _odds(chance, _lean("split:yes", "split:no"))
 
 
 def reframe_chance(chance):
     """The chance of reframing at a kept boundary, tilted by whether reframed runs were liked (0 and 1 kept as set)."""
-    if chance <= 0.0 or chance >= 1.0:
-        return max(0.0, min(1.0, chance))
-    return max(0.0, min(1.0, chance * _lean("reframe:yes", "reframe:no")))
+    return _odds(chance, _lean("reframe:yes", "reframe:no"))
 
 
 def _save(data):

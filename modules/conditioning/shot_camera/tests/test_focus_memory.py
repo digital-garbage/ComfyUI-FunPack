@@ -120,7 +120,7 @@ def test_no_move_counts_against_moves_not_against_words(store):
     fm.learn([{"auto": "chin", "picked": None, "mode": "none"}] * 12)
     assert fm.prior() == {}
     assert fm.effective_chance(0.7) < 0.4
-    assert fm.effective_chance(1.0) < 0.6
+    assert fm.effective_chance(1.0) == 1.0, "1.0 is always, whatever was chosen before (only values in between are leaned)"
 
 
 def test_the_chance_is_left_alone_until_enough_shots_were_reviewed(store):
