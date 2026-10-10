@@ -40,7 +40,7 @@ def _path():
 
 
 _LOCK = threading.RLock()      # the worker thread (observe, record_run) and the rating route write the same file
-_DICTS = ("picks", "rejects", "seen", "views", "arms", "runs", "rated", "details")
+_DICTS = ("picks", "rejects", "seen", "views", "arms", "runs", "rated", "details", "lessons")
 
 
 def _locked(fn):
@@ -237,9 +237,12 @@ def _detail_pairs(run, sign):
             if isinstance(d, dict) and str(d.get("phrase") or "").strip()]
 
 
-def _apply_detail_lesson(run, sign, undo=False):
-    """Credit or blame the details of one run. `undo` takes that same lesson back. -> phrases touched."""
-    pairs = [(lemma, phrase) for lemma, phrase in _detail_pairs(run, sign) if phrase]
+def _apply_detail_lesson(run, sign, undo=False, pairs=None):
+    """Credit or blame the details of one run. `undo` takes that same lesson back: `pairs` is what was taught
+    then (stored by on_rating), so an undo never re-reads the text with a different tagger. -> phrases touched."""
+    if pairs is None:
+        pairs = [(lemma, phrase) for lemma, phrase in _detail_pairs(run, sign) if phrase]
+    pairs = [(lemma, phrase) for lemma, phrase in pairs if phrase]
     if not pairs or not sign:
         return 0
     delta = -1.0 if undo else 1.0
@@ -396,13 +399,20 @@ def on_rating(prompt_id, rating, axis=None):
     before, sign = (data.get("rated") or {}).get(pid, 0), _sign(rating, axis)
     if before == sign:
         return 0
+    taught = [(lemma, phrase) for lemma, phrase in _detail_pairs(run, sign) if phrase] if sign else []
     if before:
         rate_views(run.get("views"), before, -1.0)
         rate_arms(run.get("arms"), before, -1.0)
-        _apply_detail_lesson(run, before, undo=True)
+        _apply_detail_lesson(run, before, undo=True, pairs=(data.get("lessons") or {}).get(pid))
     n = (rate_views(run.get("views"), sign) + rate_arms(run.get("arms"), sign)
-         + _apply_detail_lesson(run, sign)) if sign else 0
+         + _apply_detail_lesson(run, sign, pairs=taught)) if sign else 0
     data = _read()
+    lessons = data.setdefault("lessons", {})
+    if taught:
+        lessons[pid] = [list(p) for p in taught]          # the phrases this rating taught, kept for its undo
+    else:
+        lessons.pop(pid, None)
+    data["lessons"] = dict(list(lessons.items())[-MAX_RUNS:])
     data.setdefault("rated", {})[pid] = sign
     data["rated"] = dict(list(data["rated"].items())[-MAX_RUNS:])
     _save(data)
