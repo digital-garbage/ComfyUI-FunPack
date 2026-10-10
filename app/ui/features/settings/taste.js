@@ -45,6 +45,38 @@ export const taste = (app) => function mount() {
       c.dropzone.default({ label: "Drop or choose an exported key (.zip)", hint: "from another machine", accept: ".zip,application/zip", multiple: false, onFiles: bring }),
     ].filter(Boolean));
   }
-  draw(); refresh();
-  return { node: page.node, destroy: () => page.node.remove() };
+  // Block influence: research recording, read here. Its numbers say whether the four groups point apart; no clip changes.
+  const research = c.region.stack({ gap: "sm" });
+  let influence = null;
+  const pct = (x) => (x >= 0 ? "+" : "") + x.toFixed(2);
+  async function refreshResearch() {
+    try {
+      const [state, four] = await Promise.all([app.api.blockInfluence("default"), app.api.blockInfluenceGroups("default")]);
+      influence = { state, four, error: "" };
+    } catch (err) { influence = { state: null, four: null, error: err.message }; }
+    drawResearch();
+  }
+  function drawResearch() {
+    const rows = [c.label.section({ text: "Block influence (research)" })];
+    if (influence && influence.error) rows.push(c.banner.warn({ text: `Could not read the recording: ${influence.error}` }));
+    if (influence && influence.state) {
+      const { state, four } = influence;
+      rows.push(c.toggle.default({ label: "Record block influence", hint: "On: every rated run on a Taste key is measured. Off: nothing is recorded.",
+        checked: !!state.enabled, onChange: async (on) => { try { await app.api.setBlockInfluence(on); } catch (err) { tell(err.message); } refreshResearch(); } }));
+      if (state.problem) rows.push(c.banner.warn({ text: state.problem }));
+      rows.push(c.settingsRow.default({ label: "Clips rated", hint: `Key: ${four.key || state.key || "none yet"}`,
+        control: c.hint.default({ text: four.used ? Object.entries(four.counts || {}).map(([g, n]) => `${g} ${n}`).join(", ") : "none yet" }) }));
+      if (four.note) rows.push(c.hint.default({ text: four.note }));
+      for (const [pair, cos] of Object.entries(four.cos || {})) {
+        const c0 = four.chance[pair];
+        rows.push(c.settingsRow.default({ label: pair, hint: `Chance from shuffled labels: mean ${pct(c0.mean)}, 95th ${pct(c0.p95)}`,
+          control: c.hint.default({ text: pct(cos) }) }));
+      }
+    }
+    research.set(rows);
+  }
+  draw(); refresh(); refreshResearch();
+  const node = document.createElement("div");
+  node.append(page.node, research.node);
+  return { node, destroy: () => node.remove() };
 };

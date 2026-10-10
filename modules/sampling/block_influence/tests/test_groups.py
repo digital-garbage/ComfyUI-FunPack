@@ -44,3 +44,19 @@ def test_too_few_clips_says_so_instead_of_comparing():
 
 def test_nothing_recorded_is_said():
     assert measure.groups([])["note"] == "nothing recorded yet"
+
+
+def test_the_panel_report_reads_the_key_and_says_its_counts(monkeypatch):
+    rows = [_row(1, None, [1, 0]), _row(1, None, [1, 0]), _row(-1, "image", [0, 1]), _row(-1, "image", [0, 1]),
+            _row(-1, "composition", [0, -1]), _row(-1, "composition", [0, -1])]
+
+    class Kind:
+        def rows(self):
+            return rows
+
+    monkeypatch.setattr(measure, "_kind", lambda key: Kind())
+    monkeypatch.setattr(measure, "resolve", lambda key: key)
+    out = measure.four_groups("fox", fallback=False)
+    assert out["key"] == "fox" and out["used"] == 6
+    assert out["counts"]["image"] == 2 and out["counts"]["composition"] == 2
+    assert "composition vs image" in out["cos"]

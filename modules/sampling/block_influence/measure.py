@@ -234,6 +234,12 @@ def state(key, fallback=True) -> dict:
             **prof}
 
 
+def four_groups(key, fallback=True) -> dict:
+    """The four-group report for one key, for the panel (same key rules as state())."""
+    key = resolve(key) if fallback else key
+    return {"key": key, "enabled": enabled(), **groups(_kind(key).rows())}
+
+
 def clear(key):
     _kind(key).clear()
 

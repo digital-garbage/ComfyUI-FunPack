@@ -114,6 +114,13 @@ def routes(table, base, web):
         except ValueError as exc:
             return web.json_response({"why": str(exc)}, status=400)
 
+    @table.get(base + "/groups")
+    async def _groups(req):
+        try:
+            return web.json_response(measure.four_groups(key_of(req)))
+        except ValueError as exc:
+            return web.json_response({"why": str(exc)}, status=400)
+
     @table.post(base + "/enabled")
     async def _enabled(req):
         body = await req.json()
