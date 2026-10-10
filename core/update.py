@@ -405,35 +405,40 @@ def install_requirements(timeout: int = 900) -> dict:
                            + (f"\n\n{floor_note}" if floor_note else ""))}
 
     before = _pip_freeze()
-    # Only the absent ones, by name — never `-r requirements.txt`, which would upgrade
-    # anything below its floor. Dependencies are resolved normally: a new package with
-    # nothing under it is not installed, it is broken. The freeze diff below is what says
-    # whether anything already present moved as a result.
-    cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-           *status["install"]]
-    try:
-        proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True,
-                              timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return {"ran": True, "ok": False,
-                "detail": f"pip did not finish within {timeout}s — run it yourself: "
-                          f"pip install {' '.join(status['install'])}"}
-    except OSError as e:
-        return {"ran": True, "ok": False, "detail": f"could not run pip: {e}"}
-    if proc.returncode != 0:
-        tail = ((proc.stderr or proc.stdout or "").strip() or "pip failed")[-800:]
-        return {"ran": True, "ok": False,
-                "detail": f"pip install failed — run it yourself:\n"
-                          f"  {sys.executable} -m pip install "
-                          f"{' '.join(status['install'])}\n\n{tail}"}
+    # One pip call per absent requirement, never `-r requirements.txt` (that would upgrade anything
+    # below its floor). Separate calls, because one call is all-or-nothing: a single package that
+    # cannot install (a model URL that is unreachable, a wheel missing for this Python) used to
+    # stop every other one from installing too. Dependencies are resolved normally: a new package
+    # with nothing under it is not installed, it is broken. The freeze diff says whether anything
+    # already present moved as a result.
+    failed, done = [], []
+    for line in status["install"]:
+        cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", line]
+        try:
+            proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            failed.append((line, f"pip did not finish within {timeout}s"))
+            continue
+        except OSError as e:
+            failed.append((line, f"could not run pip: {e}"))
+            continue
+        if proc.returncode != 0:
+            failed.append((line, ((proc.stderr or proc.stdout or "").strip() or "pip failed")[-400:]))
+        else:
+            done.append(line)
     changed = _pip_diff(before, _pip_freeze())
     if changed:
         print("[FunPack update] pip changed these packages: " + ", ".join(changed))
+    if failed:
+        return {"ran": True, "ok": False, "changed": changed,
+                "detail": ("Could not install: " + ", ".join(line for line, _ in failed) + ".\n"
+                           + "\n".join(f"{line}:\n{tail}" for line, tail in failed)
+                           + "\n\nTo do it yourself:\n"
+                           + "\n".join(f"  {sys.executable} -m pip install {line}" for line, _ in failed))}
     return {"ran": True, "ok": True, "changed": changed,
             "detail": (f"Installed missing: {', '.join(status['missing'])}\n"
                        + (("Changed: " + ", ".join(changed) + "\n") if changed else "")
-                       + (f"\n{floor_note}\n" if floor_note else "")
-                       + (proc.stdout or "").strip()[-800:])}
+                       + (f"\n{floor_note}\n" if floor_note else ""))}
 
 
 def _pip_freeze() -> dict:

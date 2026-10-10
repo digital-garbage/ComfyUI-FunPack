@@ -231,7 +231,24 @@ def test_a_missing_requirement_is_installed_by_its_whole_line_so_a_pin_or_url_su
     monkeypatch.setattr(update.subprocess, "run", lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
     monkeypatch.setattr(update, "_pip_freeze", lambda: {})
     assert update.install_requirements()["ok"]
-    assert ran[0][-2:] == ["zz_absent_pkg>=3.8,<3.9", "zz_model @ https://example.com/zz_model.whl"]
+    assert [c[-1] for c in ran] == ["zz_absent_pkg>=3.8,<3.9", "zz_model @ https://example.com/zz_model.whl"]
+
+
+def test_one_package_that_cannot_install_does_not_stop_the_others(repo, monkeypatch):
+    (repo / "requirements.txt").write_text("zz_bad_url @ https://example.com/missing.whl\nzz_good_pkg\n")
+    monkeypatch.setattr(update, "_installed_version", lambda n: None)
+    ran = []
+
+    def fake_run(cmd, **k):
+        ran.append(cmd[-1])
+        return subprocess.CompletedProcess(cmd, 1 if "zz_bad_url" in cmd[-1] else 0, "", "404 not found")
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+    monkeypatch.setattr(update, "_pip_freeze", lambda: {})
+    out = update.install_requirements()
+    assert ran == ["zz_bad_url @ https://example.com/missing.whl", "zz_good_pkg"], "the second still installs"
+    assert out["ok"] is False and "zz_bad_url" in out["detail"] and "404 not found" in out["detail"]
+    assert "zz_good_pkg" not in out["detail"].split("Could not install:")[1].split("\n")[0]
 
 
 def test_a_branch_switch_installs_what_is_missing_even_when_the_requirements_file_did_not_change(repo, monkeypatch):
