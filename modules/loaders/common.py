@@ -49,6 +49,42 @@ def unsupported_dtypes(model, weight_dtype, compute_dtype):
             if picked in ("fp16", "bf16", "fp32") and supported and dtype_of(picked) not in supported]
 
 
+_SHORT = {"bfloat16": "bf16", "float16": "fp16", "float32": "fp32"}
+
+
+def stored_weights(state_dict):
+    """What a file's weights are stored as, by element count: "bf16", or "int8+bf16" for a
+    mixed file. Read from the tensors, not the weight_dtype widget: a pre-quantized file
+    loaded with weight_dtype bf16 still runs int8 layers, and the log must say so."""
+    sizes = {}
+    for t in state_dict.values():
+        if torch.is_tensor(t) and t.dim() >= 2:
+            name = str(t.dtype).replace("torch.", "")
+            sizes[_SHORT.get(name, name)] = sizes.get(_SHORT.get(name, name), 0) + t.numel()
+    total = sum(sizes.values())
+    return "+".join(n for n in sorted(sizes, key=sizes.get, reverse=True) if sizes[n] > total * 0.1) or None
+
+
+def slow_int8_build():
+    """Why int8 models sample slowly on this torch build, or None.
+
+    Measured on an RTX PRO 6000 Blackwell, same 4-step H3 run: torch 2.10+cu128 sampled the
+    int8 model ~2x SLOWER than bf16; the same torch from the cu130 index made int8 ~25% faster.
+    """
+    cuda = getattr(torch.version, "cuda", None)
+    try:
+        if not cuda or not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 10:
+            return None
+        if int(cuda.split(".")[0]) >= 13:
+            return None
+    except (RuntimeError, ValueError):
+        return None
+    # --force-reinstall is required: pip counts 2.10.0+cu128 as already satisfying torch==2.10.0.
+    return (f"torch is built for CUDA {cuda}: on this Blackwell GPU int8 models sample about 2x slower "
+            f"than on a CUDA 13 build. Stop ComfyUI and reinstall torch, torchvision and torchaudio "
+            f"(same versions) with --force-reinstall --index-url https://download.pytorch.org/whl/cu130")
+
+
 def weight_model_options(weight_dtype):
     """comfy `model_options` for a weight dtype. The mapping core's UNETLoader uses."""
     options = {}

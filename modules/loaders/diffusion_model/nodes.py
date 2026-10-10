@@ -16,7 +16,7 @@ from .. import gguf_support, sla_attention
 from .. import int8_convrot as int8_convrot_module
 from ..common import (COMPUTE_DTYPES, WEIGHT_DTYPES, attention_choices, unsupported_dtypes,
                       attention_override, dtype_of, set_fp16_accumulation,
-                      weight_model_options)
+                      slow_int8_build, stored_weights, weight_model_options)
 
 
 def _model_file_choices():
@@ -230,6 +230,13 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                 notes.append(note)
                 if compute_dtype != "default":
                     notes.append("int8_convrot: compute dtype is forced, so the matmuls run in that dtype -- memory is saved, speed is not")
+        # Read before the load: comfy may consume the dict.
+        gguf = gguf_support.is_gguf(model_name) or misnamed
+        stored = None if gguf else stored_weights(state_dict)
+        slow = slow_int8_build() if stored and "int8" in stored else None
+        if slow:
+            log.alert("FunPack Diffusion Model Loader", slow)
+            notes.append(slow)
         model = comfy.sd.load_diffusion_model_state_dict(
             state_dict, model_options=model_options, metadata=metadata)
         if model is None:
@@ -290,8 +297,11 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
         kind = type(getattr(model, "model", model)).__name__
         applied_attention = "sla_h3" if installed else (
             attention if override is not None else "default (as launched)")
+        # The file's own storage, not the widget: an int8 file loaded at "bf16" still runs int8.
+        weights = weight_dtype if not stored else (
+            stored if weight_dtype in ("default", stored) else f"{stored} in file ({weight_dtype} asked)")
         log.info("FunPack Diffusion Model Loader",
                  f"{model_name} loaded as {kind}, weights "
-                 f"{weight_dtype}, compute {compute_dtype}, attention "
+                 f"{weights}, compute {compute_dtype}, attention "
                  f"{applied_attention}")
         return io.NodeOutput(model, "\n".join(notes))

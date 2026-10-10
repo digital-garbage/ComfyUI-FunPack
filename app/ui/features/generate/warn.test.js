@@ -35,3 +35,23 @@ test("the two-sparse-attentions chip shows only when SLA and a native sparse nod
   listener();
   assert.equal(twice().hidden, true, "SLA off: the native node alone is not a clash");
 });
+
+test("the slow-torch chip shows the server's sentence when this build runs int8 slowly, and stays hidden otherwise", async () => {
+  const pipeline = { slots: () => [], allOff: () => false, modulesById: () => ({}), activeModules: () => [], useful: () => false,
+    currentValues: () => ({}), subscribe: () => () => {} };
+  const slowChip = (host) => [...host.querySelectorAll("button")].find((b) => /Slow torch/.test(b.textContent));
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  let host = document.createElement("div");
+  warn.setup({ host, app: { pipeline, api: { torchBuild: async () => ({ slow_int8: "torch is built for CUDA 12.8: reinstall" }) } } });
+  await tick();
+  assert.equal(slowChip(host).hidden, false);
+  assert.match(slowChip(host).title, /CUDA 12\.8/);
+  host = document.createElement("div");
+  warn.setup({ host, app: { pipeline, api: { torchBuild: async () => ({ slow_int8: null }) } } });
+  await tick();
+  assert.equal(slowChip(host).hidden, true, "a good build says nothing");
+  host = document.createElement("div");
+  warn.setup({ host, app: { pipeline, api: { torchBuild: async () => { throw new Error("offline"); } } } });
+  await tick();
+  assert.equal(slowChip(host).hidden, true, "an unreadable build is not a claim");
+});
