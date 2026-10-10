@@ -29,10 +29,10 @@ def test_every_reframe_moves_to_a_new_focus_and_the_view_may_stay():
     assert kept > 0, "keeping the view is allowed"
 
 
-def test_a_boundary_with_nothing_new_to_move_to_is_left_alone():
+def test_at_one_every_boundary_reframes_even_with_nothing_new_to_aim_at():
     plain = "She smiles warmly at the room again."
     out, info = engine.add_reframes(f"[Shot 1] {plain} {plain}", seed=1, chance=1, pieces=[plain])
-    assert "Without a cut" not in out and info["arms"] == [], "no focus change means no reframe and nothing to learn"
+    assert out.count("Without a cut") == 1 and info["added"][0]["target"] is None, "1.0 means every boundary: the camera still moves"
 
 
 def test_zero_chance_adds_nothing_and_no_boundary_says_so(tmp_path, monkeypatch):
@@ -40,7 +40,7 @@ def test_zero_chance_adds_nothing_and_no_boundary_says_so(tmp_path, monkeypatch)
     text = f"[Shot 1] {DANCE} {WAVE}"
     assert engine.add_reframes(text, seed=1, chance=0, pieces=[DANCE, WAVE])[0] == text
     out, said, _ = nodes.rewrite("[Shot 1] A woman walks.", {"reframe_same_shot": True, "reframe_chance": 1}, seconds=5, pieces=[])
-    assert out == "[Shot 1] A woman walks." and "no boundary inside a shot moves to something new" in said
+    assert out == "[Shot 1] A woman walks." and "no shortcut boundary inside a shot" in said
 
 
 def test_a_cut_boundary_is_not_also_reframed(tmp_path, monkeypatch):

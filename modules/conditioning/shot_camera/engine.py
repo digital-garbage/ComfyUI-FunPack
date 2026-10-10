@@ -719,14 +719,20 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
 
 # ── reframes ────────────────────────────────────────────────────────────────────────
 # A shortcut boundary inside a shot that is NOT cut can move the camera instead: one continuous
-# take, the actions follow on, the camera travels to what the next action is about. The focus
-# always changes and the camera always moves; the view may turn or stay as it is (the user's
-# rule: "What matters is focus change and movement"). Run after the cuts, so the boundaries
+# take, the actions follow on, the camera travels to what the next action is about. A reframe
+# moves the camera and, when what follows has something new, changes the focus; the view may
+# turn or stay ("What matters is focus change and movement"). Only `chance` decides whether a
+# boundary reframes: 1.0 is every boundary. Run after the cuts, so the boundaries
 # left are exactly the ones that were kept whole.
 REFRAMES = ("Without a cut, the camera pans over to {x}{view}.",
             "Without a cut, the camera glides to {x}{view}.",
             "Without a cut, the camera pushes in on {x}{view}.",
             "Without a cut, the camera tracks over to {x}{view}.")
+# When what follows has nothing new to aim at, the camera still moves: the chance is the only
+# thing that decides whether a boundary reframes, so 1.0 means every boundary.
+REFRAMES_PLAIN = ("Without a cut, the camera pushes in closer{view}.",
+                  "Without a cut, the camera drifts sideways{view}.",
+                  "Without a cut, the camera pulls back a little{view}.")
 _REFRAME = re.compile(r"\s*Without a cut, the camera [^.!?]*[.!?]", re.I)
 KEEP_VIEW_SHARE = 0.5          # of reframes, how many keep the view and only move to the new focus
 
@@ -744,7 +750,7 @@ def _focus(text, avoid=None):
 def add_reframes(text, seed=0, chance=0.5, pieces=(), stats=None, arms=None):
     """-> (new prompt, info). At each shortcut boundary inside a shot, with odds `chance`, a
     sentence moves the camera, without a cut, to the most specific thing in what follows that
-    differs from what the action before was about; a boundary with no such thing is left alone.
+    differs from what the action before was about; with no such thing, the camera still moves.
     About half keep the view (tilted by ratings), the rest turn to one that can show the part.
     info = {"added": [{"shot", "view" (None = kept), "traits", "target"}],
     "arms": ["reframe:yes"|"reframe:no", "reframe:keep"|"reframe:turn", ...]}."""
@@ -762,13 +768,10 @@ def add_reframes(text, seed=0, chance=0.5, pieces=(), stats=None, arms=None):
         for n, at in enumerate(points):
             following = picture[at:(points[n + 1] if n + 1 < len(points) else len(picture))]
             target = _focus(following, avoid=before[0] if before else None)
-            if target is None:                     # nothing new to move to: no reframe, nothing to learn
-                before = _focus(following) or before
-                continue
             rng = random.Random(f"{seed}:reframe:{i}:{n}")
             take = rng.random() < chance
             info["arms"].append("reframe:yes" if take else "reframe:no")
-            before = target
+            before = target or _focus(following) or before
             if not take:
                 continue
             traits = view_traits(following)
@@ -777,9 +780,12 @@ def add_reframes(text, seed=0, chance=0.5, pieces=(), stats=None, arms=None):
                 allowed = allowed_views(traits)
                 view = rng.choices(allowed, weights=[_view_weight(v, traits, stats) for v in allowed])[0]
             info["arms"].append("reframe:turn" if view else "reframe:keep")
-            sentence = rng.choice(REFRAMES).format(x=_name(target), view=f", turning to {_a_view(view)}" if view else "")
+            turn = f", turning to {_a_view(view)}" if view else ""
+            sentence = (rng.choice(REFRAMES).format(x=_name(target), view=turn) if target
+                        else rng.choice(REFRAMES_PLAIN).format(view=turn))
             chosen.append((at, sentence))
-            info["added"].append({"shot": int(m.group(1)), "view": view, "traits": traits, "target": _name(target)})
+            info["added"].append({"shot": int(m.group(1)), "view": view, "traits": traits,
+                                  "target": _name(target) if target else None})
         for at, sentence in reversed(chosen):          # right to left: earlier indexes stay valid
             head = picture[:at].rstrip()
             picture = head + ("" if head.endswith((".", "!", "?")) else ".") + " " + sentence + " " \

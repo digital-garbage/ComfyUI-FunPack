@@ -58,8 +58,8 @@ def rewrite(text, values, seconds=None, pieces=None):
                                          arms=memory.arm_stats())
         arms += info["arms"]
         views += [{"view": a["view"], "traits": a["traits"]} for a in info["added"] if a["view"]]
-        said.append("reframes: " + (", ".join(f"shot {a['shot']} to {a['target']}" + (f" ({a['view']})" if a["view"] else "") for a in info["added"])
-                                    if info["added"] else "none" + ("" if info["arms"] else " (no boundary inside a shot moves to something new)")))
+        said.append("reframes: " + (", ".join(f"shot {a['shot']} " + (f"to {a['target']}" if a["target"] else "moves") + (f" ({a['view']})" if a["view"] else "") for a in info["added"])
+                                    if info["added"] else "none" + ("" if info["arms"] else " (no shortcut boundary inside a shot)")))
     if values.get("shot_views") and engine.SHOT.search(text or ""):
         skipped = []
         text, added = engine.add_shot_views(text, seed=seed, chance=float(values.get("shot_views_chance", 0.4)), stats=memory.view_stats(), skipped=skipped)
