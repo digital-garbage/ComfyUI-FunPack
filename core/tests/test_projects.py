@@ -590,3 +590,9 @@ def test_a_project_fixed_references_survive_a_round_trip_and_bad_ones_are_droppe
     p = projects.Project.from_dict({"fixed_references": {"111111111111": 2, "222222222222": 0, "bad": 3}})
     assert p.fixed_references == {"111111111111": 2}
     assert projects.Project.from_dict(vars(p)).fixed_references == {"111111111111": 2}
+
+
+def test_a_template_never_carries_variables_and_an_old_one_loses_them():
+    from core import projects
+    kept = projects._clean_templates([{"name": "old", "scenes": ["a"], "variables": [{"name": "v", "value": "1"}]}])
+    assert kept == [{"name": "old", "scenes": ["a"]}]

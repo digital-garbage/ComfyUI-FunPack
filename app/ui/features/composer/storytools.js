@@ -1,4 +1,4 @@
-// What sits around the Story box: saved templates (scenes + variables), the $variables list, and the shortcut picker.
+// What sits around the Story box: saved templates (the scenes), the project's $variables list, and the shortcut picker.
 import { composer as c } from "../../composer/composer.js";
 import { applyStory, storyRoots } from "./story.js";
 
@@ -15,7 +15,7 @@ export function templatesBar(app, own) {
     const name = ((await ask("Template name", tpls().some((t) => t.name === active) ? active : "")) || "").trim();
     if (!name) return;
     p.edit((pr) => {
-      const snap = { name, anchor: pr.anchor || "", scenes: storyRoots(pr).map((r) => (r.text || "").trim()), variables: clone(pr.variables || []) };
+      const snap = { name, anchor: pr.anchor || "", scenes: storyRoots(pr).map((r) => (r.text || "").trim()) };
       pr.prompt_templates = [...(pr.prompt_templates || []).filter((t) => t.name !== name), snap];
       pr.active_prompt_template = name;
       return true;
@@ -24,7 +24,6 @@ export function templatesBar(app, own) {
   const apply = (name) => p.edit((pr) => {
     const tpl = (pr.prompt_templates || []).find((t) => t.name === name);
     if (!tpl) return false;
-    pr.variables = clone(tpl.variables || []);
     pr.active_prompt_template = name;
     if (typeof tpl.anchor === "string") pr.anchor = tpl.anchor;
     applyStory(pr, Array.isArray(tpl.scenes) ? tpl.scenes : [tpl.prompt || ""]);      // an older template is one prompt: it applies as one scene
@@ -54,7 +53,7 @@ export function templatesBar(app, own) {
       items: [c.select.sm({ label: "Templates", disabled: !open, value: known ? active : "",
         options: [{ value: "", label: "Templates…" }, { value: NONE, label: "— None (clear all prompts) —" }, ...tpls().map((t) => ({ value: t.name, label: t.name }))],
         onChange: async (v) => { if (v === NONE) await clear(); else if (v) apply(v); key = ""; draw(); } })],
-      trailing: [c.button.sm({ label: known ? "Update…" : "Save", tone: "ghost", disabled: !open, title: known ? `Overwrite “${active}” or save under a new name` : "Save the Story and variables as a template", onClick: save }),
+      trailing: [c.button.sm({ label: known ? "Update…" : "Save", tone: "ghost", disabled: !open, title: known ? `Overwrite “${active}” or save under a new name` : "Save the Story as a template", onClick: save }),
         ...(known ? [c.button.sm({ label: "✎", tone: "ghost", title: `Rename “${active}”`, onClick: () => rename(active) }), c.button.sm({ label: "✕", tone: "ghost", title: `Delete “${active}”`, onClick: () => remove(active) })] : [])] })]);
   };
   draw();

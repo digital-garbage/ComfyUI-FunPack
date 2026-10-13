@@ -321,7 +321,7 @@ def _clean_variables(raw) -> list:
 
 
 def _clean_templates(raw) -> list:
-    """[{"name", "anchor", "scenes": [str], "variables": [{name, value}]}]. A template is
+    """[{"name", "anchor", "scenes": [str]}]. Variables belong to the project, never to a template. A template is
     the scenes themselves, not a Story text: the cut word it was saved under
     may no longer be one. A v4 template (a single `prompt` string) is kept as
     it came, and read by whoever applies it. Nameless or non-object entries go;
@@ -335,7 +335,7 @@ def _clean_templates(raw) -> list:
         name = str(t.get("name") or "").strip()[:MAX_NAME]
         if not name:
             continue
-        item = {"name": name, "variables": _clean_variables(t.get("variables"))}
+        item = {"name": name}
         if isinstance(t.get("anchor"), str):
             item["anchor"] = t["anchor"]
         scenes = t.get("scenes")
