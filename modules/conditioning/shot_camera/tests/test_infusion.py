@@ -1,5 +1,7 @@
 """Focus infusion: a camera focus now and then aims at a word the user's prompts keep returning to."""
 
+import re
+
 import pytest
 
 from .. import engine, memory, nodes
@@ -35,7 +37,8 @@ def test_at_one_the_focus_is_a_word_from_other_prompts_not_the_shots_own():
         out, said, arms = _move(focus_infusion_chance=1, variation=variation)
         sentence = out.split(WALK)[1]
         assert "hand" in sentence or "head" in sentence, out
-        assert "legs" not in sentence and "street" not in sentence, "instead of the shot's own focus"
+        if " from " not in sentence:
+            assert "legs" not in sentence and "street" not in sentence, "instead of the shot's own focus, unless it travels between the two"
         assert "infuse:yes" in arms and any(a in arms for a in ("infused:hand", "infused:head"))
         assert "infused:" in said or "infused" in said
 
@@ -134,3 +137,16 @@ def test_the_oldest_projects_are_forgotten_past_the_cap_and_a_forgotten_word_lea
     kept = memory._read()["projects"]
     assert len(kept) == memory.MAX_PROJECTS and "proj0" not in kept and f"proj{memory.MAX_PROJECTS + 2}" in kept
     assert memory.forget("word", "lamp") and all("lamp" not in r["seen"] for r in memory._read()["projects"].values())
+
+
+def test_an_infused_shot_often_travels_from_its_own_subject_to_the_infused_word_or_back():
+    text = "[Shot 1] A woman holds a red umbrella and a lantern while she walks along the wet street."
+    travels = 0
+    for seed in range(200):
+        out, report = engine.add_camera_moves(text, seed=seed, chance=1, infuse=1.0, bank=[("window", 1.0)])
+        assert report[0]["infused"] == "window"
+        added = out[len(text):]
+        if re.search(r"from .+ to .+", added):
+            assert "window" in added, added
+            travels += 1
+    assert 60 < travels < 140, f"about half travel, got {travels}"

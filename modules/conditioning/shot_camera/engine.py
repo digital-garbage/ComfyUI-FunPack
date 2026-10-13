@@ -75,6 +75,7 @@ MOVES_THEN = ("Then the camera pans to {y}.", "Then the camera racks focus to {y
 MOVES_FINISH = ("Then the camera zooms out.", "Then the camera pulls back.",
                "Then the camera pulls back to a wider view.")
 COUNT_WEIGHTS = (6, 3, 1)      # one move / two / three, in a shot that gets any
+INFUSED_TRAVEL = 0.5          # of infused shots with a subject of their own, how many travel between the two
 TRAVEL_SHARE = 0.25            # of one-move shots with two topics, how many travel X -> Y
 HOLD_SHARE = 0.25              # of the other one-move shots, how many stay still on one thing
 MOVES_HOLD = ("The camera holds steady on {x}.", "The camera stays still, focused on {x}.",
@@ -616,7 +617,11 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None, arms
                     infused = _infused(picture, {c[0] for c in pool}, bank, roll)
                 else:
                     infuse_arm = "infuse:no"
-            moves, desc, opening, style = _plan(pool, last, rng, shot_prior, force=[infused] if infused else force, mode=mode, arms=arms)
+            aim = [infused] if infused else force
+            if infused and roll.random() < INFUSED_TRAVEL:      # "from X to Y": the infused word and the shot's own subject, either way round
+                own = _draw(pool, shot_prior, roll, 1)[0]
+                aim = [infused, own] if roll.random() < 0.5 else [own, infused]
+            moves, desc, opening, style = _plan(pool, last, rng, shot_prior, force=aim, mode=mode, arms=arms)
             entry.update(move=moves, target=desc, infused=infused[0] if infused else None)
             if rng is not None and mode == "auto" and not force:    # only what nobody dictated is learned
                 entry["arms"] = ["move:yes"] + ([f"style:{style}"] if style else [])
