@@ -48,14 +48,15 @@
 .cx-settings-content .cx-settings-text .cx-hint, .cx-settings-content .cx-settings-text > :not(:first-child) { color: var(--muted); }
 /* a plain value, as in About, reads as the quieter half of the row */
 .cx-settings-content .cx-settings-control > .cx-t { color: var(--muted); text-align: end; font-size: var(--fs-4); }
-.cx-settings-content .cx-settings-control { flex: 0 1 var(--control-col); }
+/* the control keeps its whole column, whatever the hint's length: the text wraps instead (a long hint used to squeeze the slider and push its readout out of the row) */
+.cx-settings-content .cx-settings-control { flex: 0 0 var(--control-col); }
 .cx-settings-content .cx-settings-control > .cx-t { flex: 1 1 auto; }
 
 /* the About hero */
 .cx-settings-hero { align-items: center; text-align: center; gap: var(--sp-4); padding-block: var(--sp-4) var(--sp-7); }
 .cx-settings-hero .cx-h { font-size: var(--fs-d3); }
 .cx-settings-content .cx-settings-control:has(> .cx-t) { flex: 1 1 auto; }
-.cx-settings-content .cx-settings-text { flex: 0 1 auto; }
+.cx-settings-content .cx-settings-text { flex: 0 1 auto; min-inline-size: 0; }
 
 /* rows already inside a card of their own (Engine, Models) take the same look */
 .cx-settings-content .cx-group-rows { background: var(--elev-2); border: 0; border-radius: var(--r-5); padding-inline: var(--sp-7); }
