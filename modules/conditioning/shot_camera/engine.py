@@ -25,7 +25,11 @@ AUDIO = re.compile(r"\b(music|soundtrack|score|melody|instrumental|beat|bassline
 # H3's own vocabulary (VIDEO_PROMPT_WRITING_GUIDE_base_en.md): a shot opening "the camera cuts
 # to" is a cut, not a camera move, and must not make the shot look like it already has one.
 # Every cut or transition verb this module writes or a user is likely to write after "the shot" / "the camera".
-_CUT_VERB = r"(?:cuts|transitions|changes|switches|cross-dissolves|dissolves|wipes|fades)(?:\s+(?:out|across))?"
+_CUT_VERB = r"(?:cuts|transitions|changes|switches|cross-dissolves|cross-fades|dissolves|wipes|fades)(?:\s+(?:out|across))?"
+# A cut or transition a user may open a shot with: "The shot slowly fades to", "Then the camera cuts to", "Smash cut to", "Fade to black".
+_LEAD_PHRASE = (r"(?:(?:then|suddenly|next)[,\s]+)?(?:(?:the\s+)?(?:camera|shot|scene)\s+(?:(?:then|slowly|quickly|suddenly)\s+)?" + _CUT_VERB
+                + r"|(?:an?\s+)?(?:smash\s+cut|hard\s+cut|match\s+cut|jump\s+cut|cut|cross-?dissolve|dissolve|cross-?fade|fade|wipe)(?:\s+(?:out|in|through\s+black))?)"
+                r"\s+(?:to|into|in\s+on)\b")
 CUT = re.compile(r"\b(?:the\s+)?(?:camera|shot)\s+" + _CUT_VERB + r"\s+to\b", re.I)
 # Whether a shot ALREADY has a camera move. Words like tilt, roll, pull, push, arc, focus are
 # ordinary body movement ("tilts <Subject 1>'s head up and down", "pulls out a knife"), and
@@ -603,6 +607,7 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None, arms
 # a view and a focus. Never inside one shortcut. Nothing in a prompt knows the video's
 # length, so the caller hands it in (seconds).
 STAMP = re.compile(r"\b\d\d:\d\d\.\d{3}\b")
+ANY_STAMP = re.compile(r"\bAt\s+\d{1,2}:\d{2}(?:\.\d+)?\s*,|\b\d\d:\d\d\.\d{3}\b", re.I)
 # The official MiniMax-H3 guide (docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md) approves these ordinary cut phrases.
 # Dissolve, fade and wipe are for when the user asks for them, never default.
 # Each cut says what is new: a new angle, place, subject, viewpoint, state or moment. Only these four verbs.
@@ -621,7 +626,7 @@ CUT_OPENERS = ("the camera cuts to a new angle", "the camera cuts to the next mo
                "the shot changes to a new view", "the shot changes to what comes next",
                "the shot switches to what follows", "the shot switches to the next moment")
 OUR_OPENERS = CUT_OPENERS + tuple(phrase for _, phrase in TRANSITIONS)       # everything this module writes after a cut time
-LEAD_CUT = re.compile(r"^\s*(?:the\s+)?(?:camera|shot)\s+" + _CUT_VERB + r"\s+to\b", re.I)
+LEAD_CUT = re.compile(r"^\s*" + _LEAD_PHRASE, re.I)
 MIN_SHOT_SECONDS = 2
 
 
@@ -685,7 +690,7 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=(), transition=0.0):
         return text, info
     bodies = [text[m.end():(marks[i + 1].start() if i + 1 < len(marks) else len(text))]
               for i, m in enumerate(marks)]
-    if any(STAMP.search(b[:60]) for b in bodies[1:]):
+    if any(ANY_STAMP.search(b) for b in bodies):
         info["why"] = "cut times are already written, left as they are"
         return text, info
     header = text[:marks[0].start()]
@@ -726,7 +731,7 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=(), transition=0.0):
         info["arms"] = []
         return text, info
     out = [header]
-    last = None                                   # the transition kind of the cut before this one
+    last, kinds = None, []                        # the transition kind of the cut before this one, and every kind used
     for k, (picture, sound) in enumerate(blocks):
         label = f"[Shot {k + 1}]"
         body = picture
@@ -738,11 +743,13 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=(), transition=0.0):
                 last = None
             else:
                 opener, last = _opener(rng, transition, last)
+                if last:
+                    kinds.append(last)
                 body = " " + stamp + opener + ". " + body.lstrip()
         else:
             body = body if body.startswith(" ") else " " + body
         out.append(label + body + sound)
-    info.update(after=len(blocks), times=[_stamp(t) for t in times])
+    info.update(after=len(blocks), times=[_stamp(t) for t in times], transitions=kinds)
     return "".join(out), info
 
 
@@ -983,7 +990,7 @@ def own_words_removed(picture):
 
 _OUR_OPENER = re.compile(r"^\s*At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in OUR_OPENERS)
                          + r")\.\s*", re.I)
-_CUT_WORDS = re.compile(r"^\s*(?:At \d\d:\d\d\.\d{3},\s*)?(?:the\s+)?(?:camera|shot)\s+" + _CUT_VERB + r"\s+to\b\s*", re.I)
+_CUT_WORDS = re.compile(r"^\s*(?:At \d\d:\d\d\.\d{3},\s*)?" + _LEAD_PHRASE + r"\s*", re.I)
 
 
 def content_fingerprint(text):
@@ -993,7 +1000,7 @@ def content_fingerprint(text):
     body = re.sub(r"\[\s*Shot\s+\d+\s*\]", " ", text or "", flags=re.I)
     body = re.sub(r"At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in OUR_OPENERS) + r")\.",
                   " ", body, flags=re.I)
-    body = re.sub(r"At \d\d:\d\d\.\d{3},\s*(?=(?:the\s+)?(?:camera|shot)\s+" + _CUT_VERB + r"\s+to\b)", " ", body, flags=re.I)   # the time before a cut phrase the user wrote
+    body = re.sub(r"At \d\d:\d\d\.\d{3},\s*(?=" + _LEAD_PHRASE + r")", " ", body, flags=re.I)   # the time before a cut phrase the user wrote
     body = _REFRAME.sub(" ", body)
     body = re.sub(r"\s+", " ", body)
     body = re.sub(r"(?:^|(?<=[.!?]\s))(?:" + "|".join(re.escape(v) for v in VIEWS) + r")\.", " ", body)

@@ -48,3 +48,18 @@ test("the selected scene's references are marked on their tiles, and the menu ta
   clear.click();
   assert.deepEqual(set, [["s1", "references", ["m1"]], ["s1", "references", []]]);
 });
+
+test("a changed pin repaints the slot numbers on the tiles even when the list of references is the same", async () => {
+  const fixed = { m1: 2 };
+  const project = { selected: { id: "s1", references: ["m1", "m2"] }, project: { fixed_references: fixed }, setScene: () => {} };
+  const api = { media: async () => ({ media: [{ id: "m1", name: "cat.png", kind: "image" }, { id: "m2", name: "dog.png", kind: "image" }] }) };
+  const host = document.createElement("div");
+  let fire;
+  hub.setup({ host, app: { project, api, mediaPeek: {}, say: () => {}, on: (cb) => { fire = cb; return () => {}; } } });
+  await new Promise((r) => setTimeout(r, 10));
+  const flag = (n) => [...[...host.querySelectorAll(".cx-cell")].find((x) => x.textContent.includes(n)).querySelectorAll(".cx-cell-flag")].map((x) => x.textContent).join();
+  assert.deepEqual([flag("cat.png"), flag("dog.png")], ["R2", "R1"], "pinned at 2, the other takes the free number");
+  delete fixed.m1;
+  fire("project");
+  assert.deepEqual([flag("cat.png"), flag("dog.png")], ["R1", "R2"], "unpinned: back to list order");
+});

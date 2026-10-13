@@ -53,6 +53,8 @@ def rewrite(text, values, seconds=None, pieces=None):
                                           transition=float(values.get("cut_difference_chance", 0.0)))
         arms += info.get("arms", [])
         said.append(f"cuts at {', '.join(info['times'])}" + (f" ({info['before']}→{info['after']} shots)" if info["after"] != info["before"] else "") if info["times"] else f"cuts: {info['why'] or 'none'}")
+        if info.get("transitions"):
+            said[-1] += f" · transitions: {', '.join(info['transitions'])}"
     if values.get("reframe_same_shot") and engine.SHOT.search(text or ""):
         text, info = engine.add_reframes(text, seed=seed, chance=memory.reframe_chance(float(values.get("reframe_chance", 0.5))),
                                          pieces=_pieces() if pieces is None else pieces, stats=memory.view_stats(),

@@ -86,7 +86,12 @@ import pytest
 
 
 @pytest.mark.parametrize("phrase", ["The shot fades to black.", "The shot fades out to black.", "The shot dissolves to her hand.",
-                                    "The camera wipes across to her hand.", "The shot cross-dissolves to her hand."])
+                                    "The camera wipes across to her hand.", "The shot cross-dissolves to her hand.",
+                                    "Fade to black.", "Cut to her hand.", "Dissolve to her hand.", "A cross-dissolve to her hand.",
+                                    "Smash cut to her hand.", "The shot cross-fades to her hand.", "Then the camera cuts to her hand.",
+                                    "The camera then cuts to her hand.", "The shot slowly fades to black.",
+                                    "The shot quickly wipes across to her hand.", "The shot dissolves into her hand.",
+                                    "The scene fades to black."])
 def test_the_cut_phrases_the_hint_names_are_kept_without_a_second_opener(monkeypatch, tmp_path, phrase):
     monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
     out, _ = engine.add_shot_cuts(f"[Shot 1] {DANCE} [Shot 2] {phrase} {WAVE}", 10, seed=1, chance=0, pieces=[DANCE, WAVE], transition=1.0)
@@ -115,3 +120,21 @@ def test_each_cut_rolls_for_itself_so_a_shot_can_mix_plain_and_transition_cuts(m
         plain = sum(out.count(o) for o in engine.CUT_OPENERS)
         mixes += plain > 0 and sum(out.count(p) for _, p in engine.TRANSITIONS) > 0
     assert mixes > 5
+
+
+@pytest.mark.parametrize("stamp", ["At 00:04.000, the camera cuts to the door.", "At 00:03, the camera cuts to her hand.",
+                                   "At 0:03.5, the shot cuts to her hand."])
+def test_cut_times_the_user_wrote_anywhere_leave_the_prompt_alone(monkeypatch, tmp_path, stamp):
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    text = f"[Shot 1] {DANCE} [Shot 2] {WAVE} " + "and she keeps going " * 6 + stamp
+    out, info = engine.add_shot_cuts(text, 12, seed=1, chance=1, pieces=[DANCE, WAVE], transition=1.0)
+    assert out == text and "already written" in info["why"], stamp
+
+
+def test_the_status_line_says_which_transitions_were_used(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    said = nodes.rewrite(f"[Shot 1] {DANCE} {WAVE} {DANCE}", {"cut_same_shot": True, "shot_cuts_chance": 1, "cut_difference_chance": 1},
+                         seconds=12, pieces=[DANCE, WAVE])[1]
+    assert "transitions: " in said and any(k in said for k in ("dissolve", "fade", "wipe")), said
+    plain = nodes.rewrite(f"[Shot 1] {DANCE} {WAVE} {DANCE}", {"cut_same_shot": True, "shot_cuts_chance": 1}, seconds=12, pieces=[DANCE, WAVE])[1]
+    assert "transitions" not in plain
