@@ -45,6 +45,8 @@ def rewrite(text, values, seconds=None, pieces=None):
     """-> (new text, what happened, what the run chose for the rating that follows)."""
     seed = f"{engine.content_fingerprint(text)}:{values.get('variation', 0)}"       # the same prompt gives the same shots; 'variation' re-rolls
     said, arms, views = [], [], []
+    infuse = memory.infuse_chance(float(values.get("focus_infusion_chance", 0.0)))
+    bank = memory.infusion_bank() if infuse > 0 else []
     # A payload from before the toggle had no cut_same_shot key: Shot cut times owned the chance.
     splitting = bool(values["cut_same_shot"]) if "cut_same_shot" in values else bool(values.get("shot_cuts"))
     if (values.get("shot_cuts") or splitting) and engine.SHOT.search(text or ""):
@@ -58,7 +60,7 @@ def rewrite(text, values, seconds=None, pieces=None):
     if values.get("reframe_same_shot") and engine.SHOT.search(text or ""):
         text, info = engine.add_reframes(text, seed=seed, chance=memory.reframe_chance(float(values.get("reframe_chance", 0.5))),
                                          pieces=_pieces() if pieces is None else pieces, stats=memory.view_stats(),
-                                         arms=memory.arm_stats())
+                                         arms=memory.arm_stats(), infuse=infuse, bank=bank)
         arms += info["arms"]
         views += [{"view": a["view"], "traits": a["traits"]} for a in info["added"] if a["view"]]
         said.append("reframes: " + (", ".join(f"shot {a['shot']} " + (f"to {a['target']}" if a["target"] else "moves") + (f" ({a['view']})" if a["view"] else "") for a in info["added"])
@@ -71,12 +73,13 @@ def rewrite(text, values, seconds=None, pieces=None):
     if values.get("camera_moves") and engine.SHOT.search(text or ""):
         chance = memory.effective_chance(float(values.get("camera_moves_chance", 0.7)))
         before = text
-        text, report = engine.add_camera_moves(text, seed=seed, chance=chance, prior=memory.prior(), arms=memory.arm_stats())
+        text, report = engine.add_camera_moves(text, seed=seed, chance=chance, prior=memory.prior(), arms=memory.arm_stats(), infuse=infuse, bank=bank)
         arms += [a for r in report for a in r.get("arms", [])]
         if report:
             memory.observe(engine.content_fingerprint(before), [w for r in report for w in r.get("lemmas", [])])
         moved = [r for r in report if r["move"]]
-        said.append(f"moves: {len(moved)} of {len(report)} shots" + ("" if moved else " (" + "; ".join(f"shot {r['shot']} {r['why']}" for r in report) + ")"))
+        said.append(f"moves: {len(moved)} of {len(report)} shots" + ("" if moved else " (" + "; ".join(f"shot {r['shot']} {r['why']}" for r in report) + ")")
+                    + (" · infused: " + ", ".join(r["infused"] for r in report if r.get("infused")) if any(r.get("infused") for r in report) else ""))
     details = []
     if values.get("detail_notes") and engine.SHOT.search(text or ""):
         base = float(values.get("detail_notes_chance", 0.5))

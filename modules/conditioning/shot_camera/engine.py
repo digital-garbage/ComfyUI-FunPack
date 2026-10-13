@@ -542,7 +542,30 @@ def focus_options(text, prior=None):
     return out
 
 
-def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None, arms=None):
+# ── focus infusion ──────────────────────────────────────────────────────────────────
+def _own_words():
+    """Every word this module writes into a prompt about cuts, the camera and views: never a target."""
+    texts = (*OUR_OPENERS, *MOVES_DETAIL, *MOVES_OTHER, *MOVES_TRAVEL, *MOVES_THEN, *MOVES_FINISH, *MOVES_HOLD,
+             *REFRAMES, *REFRAMES_PLAIN, *VIEWS)
+    return {w for t in texts for w in re.findall(r"[a-z]+", re.sub(r"\{[a-z]+\}", " ", t.lower()))}
+
+
+def _infused(picture, taken, bank, rng):
+    """-> a candidate for the camera to aim at, drawn from the words the user's prompts keep returning to
+    (`bank`: [(lemma, weight)]), or None. Never a word the shot already names (that would change nothing)
+    and never one of this module's own words."""
+    own = _own_words()
+    mine = lambda lemma: lemma in own or any(lemma + end in own for end in ("s", "es", "d", "ed", "ing"))   # "zoom" for "zooms", "fade" for "fades"
+    options = [(lemma, w) for lemma, w in bank if not mine(lemma) and lemma not in taken and w > 0]
+    if not options:
+        return None
+    lemma = rng.choices([o[0] for o in options], weights=[o[1] for o in options])[0]
+    whole = _resolve(lemma, lemma, False, False, set(STAND_IN.findall(_hide(picture))))
+    text, owned = whole if whole else (lemma, False)
+    return (lemma, text, owned, 0, "dobj")
+
+
+def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None, arms=None, infuse=0.0, bank=()):
     """-> (new prompt, [per-shot report dicts]). Unchanged when there is no `[Shot N]`.
 
     `seed=None`: one plain move per shot (deterministic). With a `seed`, each shot is left
@@ -583,12 +606,20 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None, arms
             entry["why"] = "left as written by chance"
             entry["arms"] = ["move:no"]
         else:
-            moves, desc, opening, style = _plan(pool, last, rng, shot_prior, force=force, mode=mode, arms=arms)
-            entry.update(move=moves, target=desc)
+            infused, infuse_arm = None, None            # focus infusion: now and then aim at a word the prompts keep returning to
+            if rng is not None and mode == "auto" and not force and infuse > 0 and bank:
+                roll = random.Random(f"{seed}:infuse:{i}")
+                if roll.random() < infuse:
+                    infused = _infused(picture, {c[0] for c in pool}, bank, roll)
+                else:
+                    infuse_arm = "infuse:no"
+            moves, desc, opening, style = _plan(pool, last, rng, shot_prior, force=[infused] if infused else force, mode=mode, arms=arms)
+            entry.update(move=moves, target=desc, infused=infused[0] if infused else None)
             if rng is not None and mode == "auto" and not force:    # only what nobody dictated is learned
                 entry["arms"] = ["move:yes"] + ([f"style:{style}"] if style else [])
                 names = desc.split(" -> ")
                 entry["arms"] += [f"word:{c[0]}" for c in {c[0]: c for c in pool if _name(c) in names}.values()]
+                entry["arms"] += ["infuse:yes", f"infused:{infused[0]}"] if infused else [infuse_arm] if infuse_arm else []
             last = opening
             core = picture.rstrip()
             gap = picture[len(core):] or (" " if sound else "")
@@ -783,7 +814,7 @@ def _focus(text, avoid=None):
     return _draw(cands, None, None, 1)[0] if cands else None
 
 
-def add_reframes(text, seed=0, chance=0.5, pieces=(), stats=None, arms=None):
+def add_reframes(text, seed=0, chance=0.5, pieces=(), stats=None, arms=None, infuse=0.0, bank=()):
     """-> (new prompt, info). At each shortcut boundary inside a shot, with odds `chance`, a
     sentence moves the camera, without a cut, to the most specific thing in what follows that
     differs from what the action before was about; with no such thing, the camera still moves.
@@ -810,6 +841,15 @@ def add_reframes(text, seed=0, chance=0.5, pieces=(), stats=None, arms=None):
             before = target or _focus(following) or before
             if not take:
                 continue
+            if infuse > 0 and bank:                       # focus infusion: aim at a word the prompts keep returning to instead
+                roll = random.Random(f"{seed}:infuse:{i}:{n}")
+                if roll.random() < infuse:
+                    pick = _infused(following, {target[0]} if target else set(), bank, roll)
+                    if pick:
+                        target = pick
+                        info["arms"] += ["infuse:yes", f"infused:{pick[0]}"]
+                else:
+                    info["arms"].append("infuse:no")
             traits = view_traits(following)
             view = None
             if rng.random() >= _tilt(KEEP_VIEW_SHARE, "reframe:keep", arms):

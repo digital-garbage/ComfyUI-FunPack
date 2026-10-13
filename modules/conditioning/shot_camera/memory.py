@@ -191,6 +191,8 @@ def rate_arms(used, sign, k=1.0):
     used = [u for u in used or [] if isinstance(u, str) and u]
     if not used or not sign:
         return 0
+    if sign < 0:                       # a bad composition looks at the infused shots first: they take the blame alone
+        used = [u for u in used if u == "infuse:yes" or u.startswith("infused:")] or used
     data = _read()
     arms = data.setdefault("arms", {})
     share = k / len(used)
@@ -277,7 +279,15 @@ def summary(limit=40):
     words.sort(key=lambda r: -(r["picks"] * 3 + r["rejects"] * 3 + r["seen"]))
     views = [{"view": k, "good": g, "bad": b} for k, (g, b) in view_stats().items() if "@" not in k]
     views.sort(key=lambda r: -(r["good"] + r["bad"]))
-    arms = [{"arm": k, "good": g, "bad": b} for k, (g, b) in arm_stats().items() if not k.startswith("word:")]
+    stats = arm_stats()
+    arms = [{"arm": k, "good": g, "bad": b} for k, (g, b) in stats.items() if not k.startswith(("word:", "infused:"))]
+    infusion = []
+    for lemma in {*seen, *(k[8:] for k in stats if k.startswith("infused:"))}:
+        g, b = stats.get(f"infused:{lemma}", (0.0, 0.0))
+        if seen.get(lemma, 0) >= 2 or g or b:
+            infusion.append({"word": lemma, "seen": int(seen.get(lemma, 0)), "good": g, "bad": b,
+                             "weight": round(seen.get(lemma, 0) * 2.0 * arm_rate(f"infused:{lemma}", stats), 2)})
+    infusion.sort(key=lambda r: (-(r["good"] + r["bad"]), -r["seen"], r["word"]))
     arms.sort(key=lambda r: -(r["good"] + r["bad"]))
     details = []
     for phrase, row in (data.get("details") or {}).items():
@@ -287,7 +297,7 @@ def summary(limit=40):
         details.append({"phrase": phrase, "lemma": row.get("lemma") or "", "good": good, "bad": bad,
                         "kept": good >= 1 and not (bad >= 2 and bad > good)})
     details.sort(key=lambda r: (-(r["good"] + r["bad"]), r["phrase"]))
-    return {"words": words[:limit], "more": max(0, len(words) - limit), "views": views, "arms": arms,
+    return {"words": words[:limit], "more": max(0, len(words) - limit), "views": views, "arms": arms, "infusion": infusion[:limit],
             "details": details[:limit],
             "prompts": int(data.get("prompts", 0)), "shots": int(data.get("shots", 0)),
             "kept": int(data.get("kept", 0))}
@@ -306,6 +316,7 @@ def forget(kind, name=None):
         for k in ("picks", "rejects", "seen"):
             (data.get(k) or {}).pop(name, None)
         existed = ((data.get("arms") or {}).pop(f"word:{name}", None) is not None) or existed
+        existed = ((data.get("arms") or {}).pop(f"infused:{name}", None) is not None) or existed
     elif kind == "view":
         views = data.get("views") or {}
         gone = [k for k in views if k == name or k.startswith(f"{name}@")]
@@ -348,6 +359,24 @@ def split_chance(chance):
     """The chance of cutting a shot in two, tilted by whether split runs were liked. 0 and 1 are the user's
     never/always and are kept as set."""
     return _odds(chance, _lean("split:yes", "split:no"))
+
+
+def infuse_chance(chance):
+    """The chance a camera focus is replaced by a word the user's prompts keep returning to, tilted by whether
+    runs that did it were liked (0 and 1 kept as set)."""
+    return _odds(chance, _lean("infuse:yes", "infuse:no"))
+
+
+def infusion_bank():
+    """[(lemma, weight)]: words that turned up in at least two different prompts (once MIN_PROMPTS were seen),
+    weighted by how often, and by how the runs that aimed at them were rated: a disliked word is drawn less
+    but never drops to nothing, so one bad rating does not end it."""
+    data = _read()
+    if int(data.get("prompts", 0)) < MIN_PROMPTS:
+        return []
+    stats = arm_stats()
+    return [(lemma, n * 2.0 * arm_rate(f"infused:{lemma}", stats))
+            for lemma, n in (data.get("seen") or {}).items() if n >= 2]
 
 
 def reframe_chance(chance):

@@ -21,12 +21,14 @@ export const shotMemory = (app) => function mount() {
     if (!data) return page.set([c.hint.default({ text: "Loading…" })]);
     const words = data.words || [], views = data.views || [];
     const details = data.details || [];
-    if (!words.length && !views.length && !(data.arms || []).length && !details.length) return page.set([c.emptyState.default({ icon: "◎", title: "Nothing learned yet", hint: "In a pipeline with the Shot camera node, turn on camera moves, shot views or liked details in Engine, then rate renders: the camera remembers which words, views and details you liked." })]);
+    const infusion = data.infusion || [];
+    if (!words.length && !views.length && !(data.arms || []).length && !details.length && !infusion.length) return page.set([c.emptyState.default({ icon: "◎", title: "Nothing learned yet", hint: "In a pipeline with the Shot camera node, turn on camera moves, shot views or liked details in Engine, then rate renders: the camera remembers which words, views and details you liked." })]);
     page.set([c.hint.default({ text: `${data.prompts} prompts seen · ${data.shots} shots reviewed. Forget anything that taught it the wrong thing.` }),
       ...(details.length ? [c.label.section({ text: "Liked details" }), ...details.map((d) => row(d.phrase, `${d.kept ? "will be added" : "dropped"} · liked ${d.good.toFixed(1)} · disliked ${d.bad.toFixed(1)}`, "detail", d.phrase))] : []),
       ...(views.length ? [c.label.section({ text: "Views" }), ...views.map((v) => row(v.view, `liked ${v.good.toFixed(1)} · disliked ${v.bad.toFixed(1)}`, "view", v.view))] : []),
       ...(words.length ? [c.label.section({ text: "Words the camera aims at" }), ...words.map((w) => row(w.word, `picked ${w.picks} · replaced ${w.rejects} · seen ${w.seen}`, "word", w.word)),
         data.more ? c.hint.default({ text: `and ${data.more} more` }) : null] : []),
+      ...(infusion.length ? [c.label.section({ text: "Subjects the camera may infuse" }), ...infusion.map((w) => row(w.word, `in ${w.seen} prompts · liked ${w.good.toFixed(1)} · disliked ${w.bad.toFixed(1)} · weight ${w.weight}`, "word", w.word))] : []),
       ...((data.arms || []).length ? [c.label.section({ text: "Camera choices" }), ...data.arms.map((a) => row(a.arm.replace(":", " · "), `liked ${a.good.toFixed(1)} · disliked ${a.bad.toFixed(1)}`, "arm", a.arm))] : []),
       c.button.sm({ label: "Forget everything", tone: "danger", onClick: () => forget("all") })].filter(Boolean));
   }
