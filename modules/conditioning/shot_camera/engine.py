@@ -24,7 +24,9 @@ AUDIO = re.compile(r"\b(music|soundtrack|score|melody|instrumental|beat|bassline
                    r"song|tempo|audio|ambient sound|sound of)\b", re.I)
 # H3's own vocabulary (VIDEO_PROMPT_WRITING_GUIDE_base_en.md): a shot opening "the camera cuts
 # to" is a cut, not a camera move, and must not make the shot look like it already has one.
-CUT = re.compile(r"\b(?:the )?(?:camera|shot) (?:cuts|transitions|changes|switches) to\b", re.I)
+# Every cut or transition verb this module writes or a user is likely to write after "the shot" / "the camera".
+_CUT_VERB = r"(?:cuts|transitions|changes|switches|cross-dissolves|dissolves|wipes|fades)(?:\s+(?:out|across))?"
+CUT = re.compile(r"\b(?:the\s+)?(?:camera|shot)\s+" + _CUT_VERB + r"\s+to\b", re.I)
 # Whether a shot ALREADY has a camera move. Words like tilt, roll, pull, push, arc, focus are
 # ordinary body movement ("tilts <Subject 1>'s head up and down", "pulls out a knife"), and
 # "the camera" is often only where someone is looking, so those count only when the CAMERA
@@ -619,8 +621,7 @@ CUT_OPENERS = ("the camera cuts to a new angle", "the camera cuts to the next mo
                "the shot changes to a new view", "the shot changes to what comes next",
                "the shot switches to what follows", "the shot switches to the next moment")
 OUR_OPENERS = CUT_OPENERS + tuple(phrase for _, phrase in TRANSITIONS)       # everything this module writes after a cut time
-LEAD_CUT = re.compile(r"^\s*(?:the\s+)?(?:camera|shot)\s+(?:cuts|transitions|changes|switches)\s+to\b",
-                      re.I)
+LEAD_CUT = re.compile(r"^\s*(?:the\s+)?(?:camera|shot)\s+" + _CUT_VERB + r"\s+to\b", re.I)
 MIN_SHOT_SECONDS = 2
 
 
@@ -982,8 +983,7 @@ def own_words_removed(picture):
 
 _OUR_OPENER = re.compile(r"^\s*At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in OUR_OPENERS)
                          + r")\.\s*", re.I)
-_CUT_WORDS = re.compile(r"^\s*(?:At \d\d:\d\d\.\d{3},\s*)?(?:the\s+)?(?:camera|shot)\s+"
-                        r"(?:cuts|transitions|changes|switches)\s+to\b\s*", re.I)
+_CUT_WORDS = re.compile(r"^\s*(?:At \d\d:\d\d\.\d{3},\s*)?(?:the\s+)?(?:camera|shot)\s+" + _CUT_VERB + r"\s+to\b\s*", re.I)
 
 
 def content_fingerprint(text):
