@@ -142,3 +142,18 @@ test("pinning the first reference repaints its tile even though no number moves;
   assert.equal(document.activeElement, cell("dog.png"), "the focused tile, rebuilt, keeps the focus");
   host.remove();
 });
+
+test("a pin on a picture that is not in the bin (empty bin, carried project) is dropped when the bin loads, never when the load fails", async () => {
+  const mk = (media) => {
+    const project = { selected: { id: "s1", references: [] }, project: { fixed_references: { gone: 1 } }, setScene: () => {}, edit: (fn) => fn(project.project) };
+    const api = { media: media };
+    hub.setup({ host: document.createElement("div"), app: { project, api, mediaPeek: {}, say: () => {}, on: () => () => {} } });
+    return project;
+  };
+  const failed = mk(async () => { throw new Error("offline"); });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(failed.project.fixed_references, { gone: 1 }, "a failed load proves nothing");
+  const empty = mk(async () => ({ media: [] }));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(empty.project.fixed_references, {}, "an empty bin cannot hold a pin");
+});

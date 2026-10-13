@@ -138,7 +138,12 @@ export default {
       clearRefs.setLabel(`Clear references (${refs.length})`);
     }
     async function refresh() {
-      try { items = (await api.media()).media || []; learn(items); app.say("bin"); } catch (err) { tell(err.message); }
+      try {
+        items = (await api.media()).media || []; learn(items); app.say("bin");
+        // a pin on a picture the bin no longer has can never be unpinned from a tile: it goes with the picture
+        const have = new Set(items.map((m) => m.id)), fx = (p.project || {}).fixed_references || {};
+        if (Object.keys(fx).some((id) => !have.has(id))) p.edit((pr) => { pr.fixed_references = Object.fromEntries(Object.entries(pr.fixed_references || {}).filter(([id]) => have.has(id))); return true; });
+      } catch (err) { tell(err.message); }
       draw(true);
     }
     refresh();
