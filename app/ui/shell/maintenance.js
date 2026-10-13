@@ -45,7 +45,13 @@ export function createMaintenance({ api, flush }) {
     }
     return reloadWhenBack(card);
   }
-  const deps = (res) => (res && res.requirements && res.requirements.ran ? (res.requirements.ok ? " Dependencies installed." : ` Dependency install FAILED: ${String(res.requirements.detail || "").split("\n").slice(0, 2).join(" ")}`) : "");
+  // Said after every update, whether or not anything was missing: the check is part of the update, so its result is too.
+  const deps = (res) => {
+    const q = res && res.requirements;
+    if (!q) return "";
+    if (!q.ran) return q.ok === false ? ` Requirements could not be checked: ${String(q.detail || "").split("\n")[0]}` : " Requirements: all present.";
+    return q.ok ? " Requirements installed." : ` Requirement install FAILED: ${String(q.detail || "").split("\n").slice(0, 2).join(" ")}`;
+  };
 
   return {
     /** What each action would do right now: {update, branch, rollback, ok} for the cards' hints. */
@@ -59,10 +65,20 @@ export function createMaintenance({ api, flush }) {
         rollback: gs.rollback_target ? `Undo last update — back to ${String(gs.rollback_target.commit).slice(0, 8)}` : "Nothing to undo yet" };
     },
     async update() {
-      const gs = await status(true); if (!gs) return;
+      const gs = await status(false); if (!gs) return;
       const branch = gs.branch || "dev";
-      if (!(await ask("Update", `Pull the latest "${branch}" from origin and restart ComfyUI? Any running generation will be lost.${gs.behind > 0 ? ` ${gs.behind} commit(s) available.` : ""}`))) return;
-      return run(`Pulling origin/${branch}…`, () => api.git("update", { branch }), (r) => `${r.updated ? `Updated ${r.before} → ${r.after}.` : "Already up to date."}${deps(r)}`);       // missing packages are installed even when the code is current
+      // Local changes stop the code from moving, not the packages: the requirements check still runs, on its own.
+      if (gs.dirty) {
+        if (!(await ask("Check requirements", "FunPack has local changes, so the code cannot be updated. Check this install's requirements and install any that are missing?"))) return;
+        return run("Checking requirements…", () => api.requirements(), (r) => deps({ requirements: r }));
+      }
+      if (!(await ask("Update", `Pull the latest "${branch}" from origin, check requirements and install any that are missing, then restart ComfyUI? Any running generation will be lost.${gs.behind > 0 ? ` ${gs.behind} commit(s) available.` : ""}`))) return;
+      // Requirements first and on their own, so a failed pull (no network, a refused merge) does not skip them.
+      const action = async () => {
+        let requirements; try { requirements = await api.requirements(); } catch (err) { requirements = { ran: false, ok: false, detail: err.message }; }
+        return { ...(await api.git("update", { branch })), requirements };
+      };
+      return run(`Pulling origin/${branch}…`, action, (r) => `${r.updated ? `Updated ${r.before} → ${r.after}.` : "Already up to date."}${deps(r)}`);
     },
     async switchBranch() {
       const gs = await status(true); if (!gs) return;

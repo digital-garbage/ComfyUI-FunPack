@@ -648,3 +648,19 @@ def test_the_listing_is_bounded(server, monkeypatch, tmp_path):
     assert len(body["files"]) == 10
     status, body = _request(server["port"], "GET", "/funpack/api/temp?limit=999999")
     assert len(body["files"]) <= temp_files.MAX_FILES
+
+
+def test_requirements_route_runs_the_check_and_says_what_it_did(server, monkeypatch):
+    monkeypatch.setattr(routes, "_generation_running", lambda: False)
+    monkeypatch.setattr(update_mod, "install_requirements",
+                        lambda: {"ran": False, "ok": True, "detail": "Nothing to install — every requirement is already present."})
+    status, body = _request(server["port"], "POST", "/funpack/api/requirements")
+    assert status == 200 and body["ran"] is False and "already present" in body["detail"]
+
+
+def test_requirements_route_refuses_during_a_generation(server, monkeypatch):
+    monkeypatch.setattr(routes, "_generation_running", lambda: True)
+    monkeypatch.setattr(update_mod, "install_requirements",
+                        lambda: (_ for _ in ()).throw(AssertionError("must not install during a generation")))
+    status, body = _request(server["port"], "POST", "/funpack/api/requirements")
+    assert status == 409 and "generation" in body["detail"]

@@ -118,6 +118,7 @@ export const api = {
   pack: (action, body) => call("POST", `/api/packs/${action}`, body || {}),
   git: (action, body) => call("POST", `/api/git/${action}`, body || {}),
   health: () => call("GET", "/api/health"),
+  requirements: () => call("POST", "/api/requirements"),
   torchSwap: () => call("POST", "/api/torch/cuda13"),
   torchSwapState: () => call("GET", "/api/torch/cuda13"),
   gitFull: () => call("GET", "/api/git/status"),

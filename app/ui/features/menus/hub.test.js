@@ -11,7 +11,7 @@ const rig = (over = {}) => {
   const project = { project: { id: "P", name: "Demo" }, canUndo: true, canRedo: false, undo: () => calls.push("undo"), redo: () => calls.push("redo"), ...over };
   const selection = { ids: [], focus: null };
   const host = document.createElement("div");
-  hub.setup({ host, app: { project, selection } });
+  hub.setup({ host, app: { project, selection, on: () => () => {} } });
   return { host, calls };
 };
 const pick = async (host, menu, item) => {

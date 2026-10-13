@@ -70,13 +70,19 @@ export default {
         { id: "left", label: "Move Clip Left", hint: "timeline cut", disabled: !sel.focus }, { id: "right", label: "Move Clip Right", hint: "timeline cut", disabled: !sel.focus }, { separator: true },
         { id: "exclude", label: "Toggle Exclude", disabled: !sel.focus }],
       View: () => [{ id: "refresh", label: "Refresh Preview" }, { id: "reset", label: "Reset Layout" }],
-      Help: () => [...(app.has.has("tour") ? [{ id: "tour", label: "Restart tour" }, { id: "faq", label: "Skip to FAQ" }, { id: "exit", label: "Exit tour" }, { separator: true }] : []), { id: "welcome", label: "Welcome tour…" }],
+      Help: () => {
+        const running = Boolean(app.tourOn?.());
+        return [...(app.has.has("tour") ? [{ id: "tour", label: running ? "Restart tour" : "Start tour" }, { id: "faq", label: "Skip to FAQ" },
+          ...(running ? [{ id: "exit", label: "Exit tour" }] : []), { separator: true }] : []), { id: "welcome", label: "Welcome tour…" }];
+      },
     };
+    const off = app.on((what) => { if (what === "project.load") actions.load(); });
     const pick = (id) => (id.startsWith("open:") ? p.open(id.slice(5)) : actions[id] && actions[id]());
     for (const [label, items] of Object.entries(menus)) {
       const button = c.button.menu({ label, tone: "ghost", onClick: async () => c.menu.dropdown({ anchor: button, items: await items(),
         onPick: (id) => Promise.resolve(pick(id)).catch((err) => c.toast.warn({ text: err.message })) }) });
       host.append(button.node);
     }
+    return off;
   },
 };

@@ -615,6 +615,17 @@ def register(routes, prefix=None):
     async def _torch_cuda13_state(_req):
         return web.json_response({"running": torch_job["running"], "step": torch_swap.step, "result": torch_job["result"]})
 
+    @routes.post(P + "/api/requirements")
+    async def _requirements(_req):
+        """Install the requirements that are missing, and only those. Its own route so Update can run it
+        when the code itself cannot move (local changes, no network). Refused during a generation: pip
+        under a running venv is how an install breaks a working one."""
+        if _generation_running():
+            return web.json_response({"detail": "A generation is running. Install requirements when it has finished."}, status=409)
+        async with _git_lock:
+            result = await asyncio.to_thread(update_mod.install_requirements)
+        return web.json_response(result)
+
     @routes.get(P + "/api/git/status")
     async def _git_status(req):
         # `?remote=0` answers from the checkout alone. The fetch is the only part

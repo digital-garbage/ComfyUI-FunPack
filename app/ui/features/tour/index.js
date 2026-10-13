@@ -5,7 +5,7 @@ import { composer as c } from "../../composer/composer.js";
 const zone = (n) => () => document.querySelectorAll("section.cx-zone")[n];
 const button = (text) => () => [...document.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(text));
 const STEPS = [
-  { at: () => document.querySelector(".cx-frame-main"), side: "bottom", title: "Everything starts here", text: "The menu bar above has File, Edit, View and Help. Settings (top right) holds the models, the engine and the updates." },
+  { at: () => document.querySelector(".cx-frame-head"), side: "bottom", title: "Everything starts here", text: "The menu bar above has File, Edit, View and Help. Settings (top right) holds the models, the engine and the updates." },
   { at: zone(0), side: "right", title: "Assets", text: "Your projects and the media bin. Drop images, clips and audio here; right-click a tile to use it as a reference, rename or delete it." },
   { at: zone(1), side: "left", title: "Preview", text: "The monitor plays the cut wherever the playhead is. Save frame puts the current picture in the media bin." },
   { at: zone(2), side: "left", title: "Properties", text: "Project settings (size, length, postfix) and the picked scene's prompt, source, references and length." },
@@ -35,11 +35,12 @@ export default {
       pop = c.popover.anchored({ anchor: target, body, side: s.side, align: "center", gap: 10, closeOnOutside: false, onClose: () => { if (pop) { pop = null; at = -1; } } });
     }
     app.has.add("tour");
+    app.tourOn = () => pop !== null;          // Help shows "Exit tour" only while one is running
     const off = app.on((what) => {
       if (what === "tour.start") show(0);
       else if (what === "tour.faq") show(STEPS.length - 1);
       else if (what === "tour.stop") stop();
     });
-    return () => { off(); app.has.delete("tour"); };
+    return () => { off(); app.has.delete("tour"); delete app.tourOn; };
   },
 };

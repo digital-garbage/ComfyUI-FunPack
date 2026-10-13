@@ -21,11 +21,16 @@ export default {
     let win = null;
     const seen = () => { try { return localStorage.getItem(SEEN) === "1"; } catch { return true; } };
     const markSeen = () => { try { localStorage.setItem(SEEN, "1"); } catch { /* private window */ } };
+    // Saved projects, or a project file from disk: the same two ways File ▸ Load and Open recent offer.
     const load = async () => {
-      let all; try { all = await list(); } catch (err) { return c.toast.warn({ text: err.message }); }
-      if (!all.length) return c.toast.warn({ text: "There are no saved projects yet." });
-      const id = await c.modal.choice({ title: "Load a project", items: all.map((r) => ({ id: r.id, label: r.name })) }).result;
+      let all = []; try { all = await list(); } catch (err) { return c.toast.warn({ text: err.message }); }
+      const items = [{ id: "__import__", label: "Import a project file…" }, ...all.map((r) => ({ id: r.id, label: r.name }))];
+      const id = await c.modal.choice({ title: "Load a project", items }).result;
       if (!id) return;
+      if (id === "__import__") {
+        markSeen(); if (win) win.close("done");
+        return app.say("project.load");
+      }
       try { await app.project.open(id); markSeen(); if (win) win.close("done"); } catch (err) { c.toast.warn({ text: err.message }); }
     };
     const open = () => {
