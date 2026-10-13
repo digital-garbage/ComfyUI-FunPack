@@ -26,3 +26,13 @@ def test_the_transition_slider_at_zero_is_always_a_plain_cut_and_at_one_always_a
         kinds.append(last)
     assert len(set(kinds)) == 3, "a mixture of dissolve, fade and wipe"
     assert all(a != b for a, b in zip(kinds, kinds[1:])), "never the same kind twice running"
+
+
+def test_every_phrase_the_module_writes_after_a_cut_time_is_its_own_words_never_content():
+    for opener in engine.OUR_OPENERS:
+        assert not engine.CAMERA.search(opener), opener
+        picture = f" At 00:05.000, {opener}. She waves at the camera."
+        assert engine.own_words_removed(picture).strip() == "She waves at the camera.", opener
+    prints = {engine.content_fingerprint(f"[Shot 1] A woman walks in. [Shot 2] At 00:05.000, {o}. She waves at the camera.")
+              for o in engine.OUR_OPENERS}
+    assert len(prints) == 1, "a re-roll of the cut wording is the same prompt"

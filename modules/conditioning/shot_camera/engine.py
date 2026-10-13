@@ -605,19 +605,20 @@ STAMP = re.compile(r"\b\d\d:\d\d\.\d{3}\b")
 # Dissolve, fade and wipe are for when the user asks for them, never default.
 # Each cut says what is new: a new angle, place, subject, viewpoint, state or moment. Only these four verbs.
 # The guide allows dissolve, fade and wipe only when the user asks for one: the transition slider is that request.
+# Generic on purpose: a phrase that claims a new place or subject would be false for a cut inside one scene.
 TRANSITIONS = (("dissolve", "the shot cross-dissolves to a new angle"),
-               ("dissolve", "the shot cross-dissolves to a new location"),
-               ("fade", "the shot fades out to black and fades in on a new angle"),
-               ("fade", "the shot fades to white and back to the next moment"),
+               ("dissolve", "the shot cross-dissolves to the next moment"),
+               ("fade", "the shot fades out to black and fades in on the next moment"),
+               ("fade", "the shot fades to white and back to what follows"),
                ("wipe", "the shot wipes across to a new angle"),
-               ("wipe", "the shot wipes across to a new subject"))
-CUT_OPENERS = ("the camera cuts to a new angle", "the camera cuts to a closer view",
-               "the shot cuts to a new angle", "the shot cuts to a new location", "the shot cuts to a later moment",
-               "the shot transitions to the next moment", "the shot transitions to a new location",
-               "the shot transitions to a new point of view",
-               "the shot changes to a new view", "the shot changes to a different subject",
-               "the shot changes to a new state of the scene",
-               "the shot switches to what follows", "the shot switches to a wider view")
+               ("wipe", "the shot wipes across to what follows"))
+# The approved cut verbs only (cuts, transitions, changes, switches); never a distance-only change, which the guide leaves to camera motion.
+CUT_OPENERS = ("the camera cuts to a new angle", "the camera cuts to the next moment",
+               "the shot cuts to a new angle", "the shot cuts to what follows",
+               "the shot transitions to the next moment", "the shot transitions to a new view",
+               "the shot changes to a new view", "the shot changes to what comes next",
+               "the shot switches to what follows", "the shot switches to the next moment")
+OUR_OPENERS = CUT_OPENERS + tuple(phrase for _, phrase in TRANSITIONS)       # everything this module writes after a cut time
 LEAD_CUT = re.compile(r"^\s*(?:the\s+)?(?:camera|shot)\s+(?:cuts|transitions|changes|switches)\s+to\b",
                       re.I)
 MIN_SHOT_SECONDS = 2
@@ -979,7 +980,7 @@ def own_words_removed(picture):
     return _REFRAME.sub("", _VIEW_SENTENCE.sub("", picture, count=1))
 
 
-_OUR_OPENER = re.compile(r"^\s*At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in CUT_OPENERS)
+_OUR_OPENER = re.compile(r"^\s*At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in OUR_OPENERS)
                          + r")\.\s*", re.I)
 _CUT_WORDS = re.compile(r"^\s*(?:At \d\d:\d\d\.\d{3},\s*)?(?:the\s+)?(?:camera|shot)\s+"
                         r"(?:cuts|transitions|changes|switches)\s+to\b\s*", re.I)
@@ -990,7 +991,7 @@ def content_fingerprint(text):
     labels this module added on that run, so regenerating one prompt is one prompt."""
     import hashlib
     body = re.sub(r"\[\s*Shot\s+\d+\s*\]", " ", text or "", flags=re.I)
-    body = re.sub(r"At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in CUT_OPENERS) + r")\.",
+    body = re.sub(r"At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in OUR_OPENERS) + r")\.",
                   " ", body, flags=re.I)
     body = _REFRAME.sub(" ", body)
     body = re.sub(r"\s+", " ", body)
