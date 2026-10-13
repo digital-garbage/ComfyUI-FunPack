@@ -435,6 +435,8 @@ class Project:
     models: dict = field(default_factory=lambda: {"slots": []})
     guide_settings: dict = field(default_factory=dict)
     continuity_settings: dict = field(default_factory=dict)
+    #: Media ids pinned to a slot for every scene: { media id: slot number 1-16 }.
+    fixed_references: dict = field(default_factory=dict)
     generation_meta: dict = field(default_factory=dict)
     #: What each scene last rendered ({media, inSec, promptId}) and the removed scenes whose
     #: clip still previews: a reload shows the timeline the person left.
@@ -497,6 +499,7 @@ class Project:
             models=_blob(d.get("models"), dict) or {"slots": []},
             guide_settings=_blob(d.get("guide_settings"), dict),
             continuity_settings=_blob(d.get("continuity_settings"), dict),
+            fixed_references=_pins(d.get("fixed_references")),
             generation_meta=_blob(d.get("generation_meta"), dict),
             scene_renders=_blob(d.get("scene_renders"), dict),
             scene_variants=_blob(d.get("scene_variants"), dict),

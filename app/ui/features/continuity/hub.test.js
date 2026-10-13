@@ -40,14 +40,15 @@ test("a dark last frame, a failed extraction and a missing predecessor each say 
   assert.deepEqual((await broken({ project: p, scene: p.scenes[0], slots })).notes || [], []);       // the first clip has nothing to continue from: silent
 });
 
-test("an identity picture rides along as the last reference of every scene, and says so when the pipeline has no room for it", async () => {
-  const refSlots = [...slots, { id: "9", roles: [{ at: "assets.reference_1", input: "media_id" }] }];
-  const hook = make({ carry: false }, async () => assert.fail("must not ask"));
-  const p = project({ continuity_settings: { identity_pin_ref: "face" } });
-  assert.deepEqual((await hook({ project: p, scene: p.scenes[1], slots: refSlots })).inputs, { 9: { media_id: "face" } });
-  assert.match((await hook({ project: p, scene: p.scenes[1], slots })).notes[0], /no free reference input/);
-  p.scenes[1].references = ["a", "b"];       // more references than the pipeline has inputs: the picture that is dropped is the identity one, and it is said
-  assert.match((await hook({ project: p, scene: p.scenes[1], slots: refSlots })).notes[0], /no free reference input/);
-  p.scenes[1].references = ["face"];
-  assert.deepEqual((await hook({ project: p, scene: p.scenes[1], slots: refSlots })).inputs, {});       // already one of the scene's own
+test("a bin item pins to the next free slot for every scene, and unpins there", () => {
+  const pr = { id: "pj", fixed_references: {} };
+  const app = { api: {}, pipeline: { currentValues: () => ({}) }, inputHooks: [], mediaMenu: [], project: { project: pr, edit: (fn) => fn(pr) } };
+  hub.setup({ app });
+  const menu = app.mediaMenu[0];
+  const [pin] = menu({ id: "face" }, { kind: "image" });
+  assert.equal(pin.label, "Pin reference to slot R1");
+  pin.run();
+  assert.deepEqual(pr.fixed_references, { face: 1 });
+  assert.equal(menu({ id: "face" }, { kind: "image" })[0].label, "Unpin reference from slot R1");
+  assert.deepEqual(menu({ id: "text" }, { kind: "text" }), []);
 });

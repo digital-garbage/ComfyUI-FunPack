@@ -1,6 +1,6 @@
 // What one run sends: the scene's prompt (expanded with anchor/postfix/$variables), the project's video
 // settings, the scene's picked media -- each placed by the ROLE a pipeline slot declares, never by slot id.
-import { wireReferences } from "../../shell/reference_wiring.js";
+import { sceneReferences, wireReferences } from "../../shell/reference_wiring.js";
 import { DRIVEN } from "../../shell/scenes.js";
 
 export const rolesAt = (slots, at) => (slots || []).flatMap((s) => (s.roles || []).filter((r) => r.at === at).map((role) => ({ slot: s, role })));
@@ -17,7 +17,8 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
   if (seed) for (const { slot, role } of rolesAt(slots, "generation.seed")) put(slot, role.input, seed());      // null: the seed node's own number runs
   const source = rolesAt(slots, "assets.source_image")[0];
   if (source) put(source.slot, "media_id", project.generation_mode === "t2v" ? "" : scene.source_image || "");    // "from a prompt" starts every shot without a picture
-  const { overrides, unwired } = wireReferences(scene.references || [], slots, source ? [source.slot.id] : [], scene.reference_pins);
+  const plan = sceneReferences(scene, project.fixed_references);
+  const { overrides, unwired } = wireReferences(plan.ids, slots, source ? [source.slot.id] : [], plan.pins);
   for (const [id, fields] of Object.entries(overrides)) raw[id] = { ...raw[id], ...fields };
 
   const prompt = rolesAt(slots, "generation.prompt")[0];

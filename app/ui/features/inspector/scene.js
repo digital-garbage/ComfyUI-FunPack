@@ -3,7 +3,7 @@ import { composer as c } from "../../composer/composer.js";
 import { namesOf, pick } from "./mediapick.js";
 import { effFrames, effFps, genUnitId, isSubclip, seconds, snapFrames } from "../../shell/scenes.js";
 import { gridOf } from "../../shell/frame_grid.js";
-import { referenceNumbers } from "../../shell/reference_wiring.js";
+import { referenceNumbers, sceneReferences } from "../../shell/reference_wiring.js";
 import { restoreToPlan } from "../../shell/edits.js";
 
 const SOURCES = [{ value: "image", label: "Image · i2v anchor" }, { value: "carry", label: "From generated frame" }, { value: "video", label: "Video clip" }];
@@ -21,12 +21,17 @@ const mediaField = (app, p, sc, { label, hint, key, multiple, kinds, empty }) =>
 
 /** One "Pin reference to the slot" per reference: a pinned one keeps its R-number when an earlier reference is switched off. */
 const pinRows = (p, sc, app) => {
-  const ids = sc.references || [];
-  if (!ids.length) return [];
-  const pins = sc.reference_pins || {}, numbers = referenceNumbers(ids, pins);
-  return [card(...ids.map((id, i) => c.checkboxRow.default({ label: "Pin reference to the slot", hint: `R${numbers[i]} · ${namesOf([id], app.api, () => app.say("bin"))[0] || id}`,
-    checked: pins[id] != null,
-    onChange: (on) => { const next = { ...pins }; if (on) next[id] = numbers[i]; else delete next[id]; p.setScene(sc.id, "reference_pins", next); } })))];
+  const pr = app.project.project, fixed = (pr && pr.fixed_references) || {};
+  const plan = sceneReferences(sc, fixed);
+  if (!plan.ids.length) return [];
+  const numbers = referenceNumbers(plan.ids, plan.pins);
+  return [card(...plan.ids.map((id, i) => c.checkboxRow.default({ label: `Pin reference to slot R${numbers[i]}`,
+    hint: namesOf([id], app.api, () => app.say("bin"))[0] || id, checked: plan.pins[id] != null,
+    onChange: (on) => {
+      if (id in fixed) { app.project.edit((x) => { const next = { ...(x.fixed_references || {}) }; delete next[id]; x.fixed_references = next; return true; }); return; }
+      const next = { ...(sc.reference_pins || {}) }; if (on) next[id] = numbers[i]; else delete next[id];
+      p.setScene(sc.id, "reference_pins", next);
+    } })))];
 };
 
 /** A number-or-mode pair: "Project default / Timeline trim / Custom", and the number only when Custom. */

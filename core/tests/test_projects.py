@@ -594,3 +594,9 @@ def test_a_scenes_reference_pins_survive_a_round_trip_and_bad_ones_are_dropped()
     back = projects.Scene.from_dict(vars(scene))
     assert back.reference_pins == {"111111111111": 2, "222222222222": 16}
     assert projects.Scene.from_dict({"reference_pins": ["not", "a", "dict"]}).reference_pins == {}
+
+
+def test_a_project_fixed_references_survive_a_round_trip_and_bad_ones_are_dropped():
+    p = projects.Project.from_dict({"fixed_references": {"111111111111": 2, "222222222222": 0, "bad": 3}})
+    assert p.fixed_references == {"111111111111": 2}
+    assert projects.Project.from_dict(vars(p)).fixed_references == {"111111111111": 2}

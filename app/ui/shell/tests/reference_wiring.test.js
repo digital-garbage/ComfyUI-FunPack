@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { referenceNumbers, wireReferences } from "../reference_wiring.js";
+import { referenceNumbers, sceneReferences, wireReferences } from "../reference_wiring.js";
 
 function refSlot(n) {
   return { id: `ref_source_${n}`, roles: [{ at: `assets.reference_${n}`,
@@ -116,4 +116,11 @@ test("pinned references are wired to their own slot number, not their list posit
   assert.equal(overrides.ref_source_2.media_id, "bbb222222222");
   assert.equal(overrides.ref_source_1, undefined);
   assert.deepEqual(overrides.r2v["ref_images.ref_image_1"], ["ref_source_2", 0]);
+});
+
+test("a fixed reference rides in every scene at its own number, ahead of the scene's own, and wins a clash", () => {
+  const plan = sceneReferences({ references: ["x", "fx"], reference_pins: { x: 2 } }, { fx: 2 });
+  assert.deepEqual(plan.ids, ["fx", "x"]);
+  assert.deepEqual(referenceNumbers(plan.ids, plan.pins), [2, 1]);
+  assert.deepEqual(sceneReferences({ references: ["a"] }, undefined), { ids: ["a"], pins: {} });
 });
