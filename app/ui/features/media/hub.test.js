@@ -63,3 +63,26 @@ test("a changed pin repaints the slot numbers on the tiles even when the list of
   fire("project");
   assert.deepEqual([flag("cat.png"), flag("dog.png")], ["R1", "R2"], "unpinned: back to list order");
 });
+
+test("a reference's tile menu pins it at the slot number it holds, for every scene, and takes the pin off again", async () => {
+  const doc = { fixed_references: {} };
+  const project = { selected: { id: "s1", references: ["m1", "m2"] }, project: doc, setScene: () => {}, edit: (fn) => fn(doc) };
+  const api = { media: async () => ({ media: [{ id: "m1", name: "cat.png", kind: "image" }, { id: "m2", name: "dog.png", kind: "image" }, { id: "m3", name: "owl.png", kind: "image" }] }) };
+  const host = document.createElement("div");
+  hub.setup({ host, app: { project, api, mediaPeek: {}, say: () => {}, on: () => () => {} } });
+  await new Promise((r) => setTimeout(r, 10));
+  const named = (n) => [...host.querySelectorAll(".cx-cell")].find((x) => x.textContent.includes(n));
+  const menuFor = (n) => {
+    document.querySelectorAll(".cx-popover").forEach((x) => x.remove());
+    named(n).dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    return [...document.querySelectorAll(".cx-menu-item")].map((b) => b.textContent);
+  };
+  assert.ok(menuFor("dog.png").includes("Pin reference to slot R2"));
+  assert.ok(!menuFor("owl.png").some((t) => t.includes("slot R")), "a picture that is no reference has nothing to pin");
+  menuFor("dog.png");
+  [...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent === "Pin reference to slot R2").click();
+  assert.deepEqual(doc.fixed_references, { m2: 2 });
+  assert.ok(menuFor("dog.png").includes("Unpin reference from slot R2"));
+  [...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent === "Unpin reference from slot R2").click();
+  assert.deepEqual(doc.fixed_references, {});
+});

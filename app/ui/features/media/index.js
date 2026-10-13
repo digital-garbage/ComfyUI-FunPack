@@ -32,12 +32,20 @@ export default {
       p.setScene(sc.id, "source_image", item.id);
       draw();
     };
+    /** The slot number this picture holds in the selected scene, and whether it is pinned there: null when it is not one of its references. */
+    const slotOf = (id) => {
+      const sc = p.selected;
+      if (!sc) return null;
+      const plan = sceneReferences(sc, (p.project || {}).fixed_references), i = plan.ids.indexOf(id);
+      return i < 0 ? null : { n: referenceNumbers(plan.ids, plan.pins)[i], pinned: id in plan.pins };
+    };
+    const pinItem = (it) => { const s = slotOf(it.id); return s ? [{ id: "pinref", label: s.pinned ? `Unpin reference from slot R${s.n}` : `Pin reference to slot R${s.n}` }] : []; };
     const extras = (it) => (app.mediaMenu || []).flatMap((f) => { try { return f(it, items.find((m) => m.id === it.id)) || []; } catch { return []; } });       // entries other features add to a tile's menu: { id, label, run }
     const context = (it, e) => c.menu.context({ x: e.clientX, y: e.clientY, onPick: (id) => (act[id] ? act[id](it) : extras(it).find((x) => x.id === id)?.run()),
       items: [{ id: "look", label: "Look at it on the monitor" }, ...(p.selected && p.selected.source_image === it.id ? [{ id: "unres", label: "Stop using as the selected scene's resolution source" }]
           : [{ id: "res", label: "Use as the selected scene's resolution source", disabled: !p.selected || it.kind === "audio" || !items.some((m) => m.id === it.id && m.kind === "image") }]),
         p.selected && (p.selected.references || []).includes(it.id) ? { id: "unref", label: "Stop using as a reference for the selected scene" }
-          : { id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected }, { id: "rename", label: "Rename…" },
+          : { id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected }, ...pinItem(it), { id: "rename", label: "Rename…" },
         { id: "export", label: "Save to your computer", disabled: !items.some((m) => m.id === it.id && m.kind !== "audio") }, ...extras(it).map(({ id, label, disabled }) => ({ id, label, disabled })), { separator: true }, { id: "delete", label: "Delete from the bin", danger: true }] });
     /** Delete these from the bin, and nothing in this project may keep pointing at them. */
     async function gone(ids) {
@@ -59,6 +67,10 @@ export default {
     const act = {
       look: (it) => peek(it), res: (it) => pick(it),
       ref: (it) => p.setScene(p.selected.id, "references", [...(p.selected.references || []), it.id]),
+      pinref: (it) => {                                  // pin at the number it holds now, for every scene, or take the pin off
+        const s = slotOf(it.id);
+        if (s) p.edit((pr) => { const next = { ...(pr.fixed_references || {}) }; if (s.pinned) delete next[it.id]; else next[it.id] = s.n; pr.fixed_references = next; return true; });
+      },
       unref: (it) => p.setScene(p.selected.id, "references", (p.selected.references || []).filter((r) => r !== it.id)),
       unres: () => p.setScene(p.selected.id, "source_image", ""),
       rename: async (it) => {
