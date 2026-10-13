@@ -274,6 +274,8 @@ export function createProject({ onChange, onError, onOpen, keepConsistent, befor
       fresh = false;
       recent = [{ id: project.id, name: project.name }, ...recent];
       selected = (project.scenes || [])[0]?.id ?? null;
+      project.fixed_references = {};                          // a project file carries no media: the pictures it named are not in this bin
+      for (const sc of project.scenes || []) sc.references = [];
       forget();
       opened();
       return project;

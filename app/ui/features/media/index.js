@@ -137,21 +137,13 @@ export default {
       clearRefs.node.hidden = !refs.length;
       clearRefs.setLabel(`Clear references (${refs.length})`);
     }
-    // a pin on a picture the bin no longer has can never be unpinned from a tile: it goes with the picture (judged only on a bin that loaded)
-    let loaded = false;
-    function dropDeadPins() {
-      const have = new Set(items.map((m) => m.id)), fx = (p.project || {}).fixed_references || {};
-      if (loaded && Object.keys(fx).some((id) => !have.has(id))) p.edit((pr) => { pr.fixed_references = Object.fromEntries(Object.entries(pr.fixed_references || {}).filter(([id]) => have.has(id))); return true; });
-    }
     async function refresh() {
       try {
         items = (await api.media()).media || []; learn(items); app.say("bin");
-        loaded = true;
-        dropDeadPins();
       } catch (err) { tell(err.message); }
       draw(true);
     }
     refresh();
-    return app.on((what) => { if (what === "media") return refresh(); dropDeadPins(); draw(); });       // "media": another feature put something in the bin
+    return app.on((what) => (what === "media" ? refresh() : draw()));       // "media": another feature put something in the bin
   },
 };

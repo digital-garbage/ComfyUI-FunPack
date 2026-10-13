@@ -677,3 +677,16 @@ test("a switch waits for edits still landing elsewhere before it reads the next 
   assert.deepStrictEqual(order.slice(0, 2), ["wait", "settled"]);
   assert.equal(p.project.name, "B");
 });
+
+test("loading a project file clears its references and pins; restarting or opening a project keeps them", async () => {
+  const { project } = server();
+  project.fixed_references = { m1: 1 };
+  project.scenes = [{ id: "s1", text: "", references: ["m1"] }];
+  const p = createProject({});
+  await p.start();
+  assert.deepEqual([p.project.fixed_references, p.project.scenes[0].references], [{ m1: 1 }, ["m1"]], "a restart keeps them");
+  await p.open(project.id);
+  assert.deepEqual([p.project.fixed_references, p.project.scenes[0].references], [{ m1: 1 }, ["m1"]], "so does opening a project");
+  const loaded = await p.importProject({});
+  assert.deepEqual([loaded.fixed_references, loaded.scenes[0].references], [{}, []], "a project file brings no media");
+});
