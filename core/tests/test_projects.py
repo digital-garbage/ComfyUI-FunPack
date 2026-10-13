@@ -584,3 +584,13 @@ def test_free_form_project_fields_must_be_the_right_shape_and_size():
     assert p.audio_tracks == [{"id": "a"}] and p.overlay_tracks == []
     assert p.models == {"slots": []} and p.scene_renders == {} and p.timeline_order == ["a"]
     assert (p.num_frames_per_scene, p.width, p.generation_mode, p.references) == (97, 768, "i2v", ["m1"])
+
+
+def test_a_scenes_reference_pins_survive_a_round_trip_and_bad_ones_are_dropped():
+    pins = {"111111111111": 2, "222222222222": 16, "333333333333": 0, "444444444444": 17,
+            "555555555555": True, "bad": 3, "666666666666": "2"}
+    scene = projects.Scene.from_dict({"references": ["111111111111", "222222222222"], "reference_pins": pins})
+    assert scene.reference_pins == {"111111111111": 2, "222222222222": 16}
+    back = projects.Scene.from_dict(vars(scene))
+    assert back.reference_pins == {"111111111111": 2, "222222222222": 16}
+    assert projects.Scene.from_dict({"reference_pins": ["not", "a", "dict"]}).reference_pins == {}

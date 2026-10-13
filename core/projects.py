@@ -102,6 +102,13 @@ def _int(raw, default=None, lo=None, hi=None):
     return int(n) if n is not None else default
 
 
+def _pins(raw):
+    """{media id: slot number 1-16} for the references pinned to a slot; anything else is dropped."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if media.is_id(k) and isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 16}
+
+
 def _blob(raw, kind):
     """`raw` when it is a `kind` (dict/list) that survives JSON and is not huge, else empty."""
     if not isinstance(raw, kind):
@@ -177,6 +184,8 @@ class Scene:
     #: whatever the pipeline's own reference input wants them for. Per scene
     #: for the same reason source_image is: a reference is about THIS shot.
     references: list[str] = field(default_factory=list)
+    #: {media id: slot number}: a reference pinned to its reference slot (R2 stays R2 when R1 is switched off).
+    reference_pins: dict = field(default_factory=dict)
     #: A prompt trigger at the seam AFTER this scene, and the post-decode pixel
     #: transition there (length in frames): a crossfade never re-encodes to latent.
     transition_to_next: str = ""
@@ -242,6 +251,7 @@ class Scene:
             rated=_blob(d.get("rated"), dict),
             source_image=source_image if media.is_id(source_image) else None,
             references=[r for r in raw_refs if media.is_id(r)] if isinstance(raw_refs, list) else [],
+            reference_pins=_pins(d.get("reference_pins")),
             transition_to_next=_str(d.get("transition_to_next"), "", 200),
             transition_frames=_int(d.get("transition_frames"), None, 0, MAX_SETTING),
             video_transition=_str(d.get("video_transition"), "", 40),

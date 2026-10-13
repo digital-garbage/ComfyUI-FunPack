@@ -3,6 +3,7 @@ import { composer as c } from "../../composer/composer.js";
 import { namesOf, pick } from "./mediapick.js";
 import { effFrames, effFps, genUnitId, isSubclip, seconds, snapFrames } from "../../shell/scenes.js";
 import { gridOf } from "../../shell/frame_grid.js";
+import { referenceNumbers } from "../../shell/reference_wiring.js";
 import { restoreToPlan } from "../../shell/edits.js";
 
 const SOURCES = [{ value: "image", label: "Image · i2v anchor" }, { value: "carry", label: "From generated frame" }, { value: "video", label: "Video clip" }];
@@ -16,6 +17,16 @@ const mediaField = (app, p, sc, { label, hint, key, multiple, kinds, empty }) =>
     items: [c.text.sm({ text: ids.length ? `◇  ${namesOf(ids, app.api, () => app.say("bin")).join(", ")}` : `◇  ${empty}` })],
     trailing: [c.button.sm({ label: "Browse", tone: "ghost", onClick: async () => { const got = await pick(app.api, { title: label, kinds, multiple, current: ids }); if (got) set(got); } }),
       c.button.sm({ label: "✕", tone: "ghost", disabled: !ids.length, title: "Clear", onClick: () => set([]) })] }) });
+};
+
+/** One "Pin reference to the slot" per reference: a pinned one keeps its R-number when an earlier reference is switched off. */
+const pinRows = (p, sc, app) => {
+  const ids = sc.references || [];
+  if (!ids.length) return [];
+  const pins = sc.reference_pins || {}, numbers = referenceNumbers(ids, pins);
+  return [card(...ids.map((id, i) => c.checkboxRow.default({ label: "Pin reference to the slot", hint: `R${numbers[i]} · ${namesOf([id], app.api, () => app.say("bin"))[0] || id}`,
+    checked: pins[id] != null,
+    onChange: (on) => { const next = { ...pins }; if (on) next[id] = numbers[i]; else delete next[id]; p.setScene(sc.id, "reference_pins", next); } })))];
 };
 
 /** A number-or-mode pair: "Project default / Timeline trim / Custom", and the number only when Custom. */
@@ -62,7 +73,7 @@ export function sceneRows(p, app) {
     c.label.section({ text: "Reference media (v5 pipeline)" }),
     card(mediaField(app, p, sc, { label: "Resolution source", hint: "Sets this scene's aspect ratio for generation — the project's own Width/Height set the actual resolution; this image's pixels are not used.",
       key: "source_image", multiple: false, kinds: ["image"], empty: "— choose resolution source —" }),
-    mediaField(app, p, sc, { label: "References", key: "references", multiple: true, kinds: ["image", "video", "audio"], empty: "+ Add reference" })),
+    mediaField(app, p, sc, { label: "References", key: "references", multiple: true, kinds: ["image", "video", "audio"], empty: "+ Add reference" })), ...pinRows(p, sc, app),
     c.label.section({ text: "Length" }),
     card(c.field.row({ fields: [
       lengthField(p, sc, "Frames", "frames_mode", "frames", effFrames(sc, open), gridOf(app.pipeline && app.pipeline.slots())),

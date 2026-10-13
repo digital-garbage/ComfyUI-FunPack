@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { wireReferences } from "../reference_wiring.js";
+import { referenceNumbers, wireReferences } from "../reference_wiring.js";
 
 function refSlot(n) {
   return { id: `ref_source_${n}`, roles: [{ at: `assets.reference_${n}`,
@@ -86,4 +86,34 @@ test("a slot the caller already assigned (e.g. the source-image slot) is not sil
     ["AAA"], slots, ["ref_source_1"]);
   assert.equal(overrides.ref_source_1, undefined);
   assert.equal(unwired, 1);
+});
+
+test("with no pins the references take numbers 1, 2, 3 in the order they were added", () => {
+  assert.deepEqual(referenceNumbers(["a", "b", "c"], {}), [1, 2, 3]);
+  assert.deepEqual(referenceNumbers(["a", "b"], undefined), [1, 2]);
+});
+
+test("switching off R1 leaves a pinned R2 as R2, not R1", () => {
+  // The artstyle case: R1 is off (removed from the list), R2 is pinned to slot 2.
+  assert.deepEqual(referenceNumbers(["b"], { b: 2 }), [2]);
+  // Pinned references keep their numbers; the unpinned one takes the lowest free number.
+  assert.deepEqual(referenceNumbers(["a", "b"], { b: 2 }), [1, 2]);
+  assert.deepEqual(referenceNumbers(["a", "b", "c"], { c: 1 }), [2, 3, 1]);
+});
+
+test("a pin that is taken, out of range or not a whole number is ignored", () => {
+  assert.deepEqual(referenceNumbers(["a", "b"], { a: 1, b: 1 }), [1, 2]);
+  assert.deepEqual(referenceNumbers(["a", "b"], { a: 0, b: 17 }), [1, 2]);
+  assert.deepEqual(referenceNumbers(["a", "b"], { a: 1.5, b: "2" }), [1, 2]);
+});
+
+test("pinned references are wired to their own slot number, not their list position", () => {
+  const slot = (n) => ({ id: `ref_source_${n}`, roles: [{ at: `assets.reference_${n}`,
+    input: "media_id", wireTo: { slot: "r2v", input: `ref_images.ref_image_${n - 1}` } }] });
+  const slots = [slot(1), slot(2)];
+  const { overrides, unwired } = wireReferences(["bbb222222222"], slots, [], { bbb222222222: 2 });
+  assert.equal(unwired, 0);
+  assert.equal(overrides.ref_source_2.media_id, "bbb222222222");
+  assert.equal(overrides.ref_source_1, undefined);
+  assert.deepEqual(overrides.r2v["ref_images.ref_image_1"], ["ref_source_2", 0]);
 });

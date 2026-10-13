@@ -24,7 +24,7 @@ export default {
       if (!ref || (scene.references || []).includes(ref)) return {};
       if (names.size && !names.has(ref)) return { notes: ["The identity picture is no longer in the media bin, so it was not used."] };
       const reserved = startSlot(slots) ? [startSlot(slots).id] : [], own = scene.references || [];
-      const withIt = wireReferences([...own, ref], slots, reserved), without = wireReferences(own, slots, reserved);
+      const withIt = wireReferences([...own, ref], slots, reserved, scene.reference_pins), without = wireReferences(own, slots, reserved, scene.reference_pins);
       return { inputs: withIt.overrides, notes: withIt.unwired > without.unwired ? ["The identity picture was not used: this pipeline has no free reference input for it."] : [] };
     };
     const carryHook = async ({ project, scene, slots }) => {

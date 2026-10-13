@@ -16,13 +16,16 @@
  * a reference would look like it was used; the caller is the one place that
  * knows this happened and must say so.
  */
-export function wireReferences(mediaIds, slots, reservedSlotIds) {
+export function wireReferences(mediaIds, slots, reservedSlotIds, pins) {
   const pool = slots || [];
   const overrides = {};
   const claimed = new Set(reservedSlotIds || []);
   let unwired = 0;
+  // Each reference gets its slot number (1-based), so a pinned one keeps its number when a reference
+  // before it is switched off; the rest take the free numbers in the order they were added.
+  const numbers = referenceNumbers(mediaIds, pins);
   mediaIds.forEach((mediaId, i) => {
-    const at = `assets.reference_${i + 1}`;
+    const at = `assets.reference_${numbers[i]}`;
     const slot = pool.find((s) => (s.roles || []).some((r) => r.at === at));
     if (!slot) { unwired += 1; return; }
     // The wire's target is the role's own data (`wireTo`), never a slot id
@@ -47,3 +50,28 @@ export function wireReferences(mediaIds, slots, reservedSlotIds) {
   });
   return { overrides, unwired };
 }
+
+/**
+ * referenceNumbers(mediaIds, pins) -> [n per mediaId], 1-based reference numbers.
+ *
+ * `pins` is { mediaId: n } as the scene keeps it. A pinned reference is its number, as long as it is in the
+ * list; a pin that another pinned reference already holds, or that is out of range, is ignored. Everything
+ * else takes the lowest free number, in the order the references were added. With no pins this is simply
+ * 1, 2, 3, ... -- the positional wiring this file always did.
+ */
+export function referenceNumbers(mediaIds, pins) {
+  const ids = mediaIds || [], taken = new Set(), out = new Array(ids.length).fill(0);
+  ids.forEach((id, i) => {
+    const n = (pins || {})[id];
+    if (Number.isInteger(n) && n >= 1 && n <= MAX_REFERENCES && !taken.has(n)) { taken.add(n); out[i] = n; }
+  });
+  let next = 1;
+  ids.forEach((_id, i) => {
+    if (out[i]) return;
+    while (taken.has(next)) next += 1;
+    taken.add(next); out[i] = next;
+  });
+  return out;
+}
+
+export const MAX_REFERENCES = 16;
