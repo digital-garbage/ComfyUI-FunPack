@@ -185,7 +185,6 @@ class Scene:
     #: for the same reason source_image is: a reference is about THIS shot.
     references: list[str] = field(default_factory=list)
     #: {media id: slot number}: a reference pinned to its reference slot (R2 stays R2 when R1 is switched off).
-    reference_pins: dict = field(default_factory=dict)
     #: A prompt trigger at the seam AFTER this scene, and the post-decode pixel
     #: transition there (length in frames): a crossfade never re-encodes to latent.
     transition_to_next: str = ""
@@ -251,7 +250,6 @@ class Scene:
             rated=_blob(d.get("rated"), dict),
             source_image=source_image if media.is_id(source_image) else None,
             references=[r for r in raw_refs if media.is_id(r)] if isinstance(raw_refs, list) else [],
-            reference_pins=_pins(d.get("reference_pins")),
             transition_to_next=_str(d.get("transition_to_next"), "", 200),
             transition_frames=_int(d.get("transition_frames"), None, 0, MAX_SETTING),
             video_transition=_str(d.get("video_transition"), "", 40),

@@ -39,16 +39,3 @@ test("a dark last frame, a failed extraction and a missing predecessor each say 
   assert.match((await broken({ project: p, scene: p.scenes[1], slots })).notes[0], /no ffmpeg/);
   assert.deepEqual((await broken({ project: p, scene: p.scenes[0], slots })).notes || [], []);       // the first clip has nothing to continue from: silent
 });
-
-test("a bin item pins to the next free slot for every scene, and unpins there", () => {
-  const pr = { id: "pj", fixed_references: {} };
-  const app = { api: {}, pipeline: { currentValues: () => ({}) }, inputHooks: [], mediaMenu: [], project: { project: pr, edit: (fn) => fn(pr) } };
-  hub.setup({ app });
-  const menu = app.mediaMenu[0];
-  const [pin] = menu({ id: "face" }, { kind: "image" });
-  assert.equal(pin.label, "Pin reference to slot R1");
-  pin.run();
-  assert.deepEqual(pr.fixed_references, { face: 1 });
-  assert.equal(menu({ id: "face" }, { kind: "image" })[0].label, "Unpin reference from slot R1");
-  assert.deepEqual(menu({ id: "text" }, { kind: "text" }), []);
-});

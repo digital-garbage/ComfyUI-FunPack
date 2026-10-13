@@ -119,7 +119,7 @@ test("pinned references are wired to their own slot number, not their list posit
 });
 
 test("a fixed reference rides in every scene at its own number, ahead of the scene's own, and wins a clash", () => {
-  const plan = sceneReferences({ references: ["x", "fx"], reference_pins: { x: 2 } }, { fx: 2 });
+  const plan = sceneReferences({ references: ["x", "fx"] }, { fx: 2 });
   assert.deepEqual(plan.ids, ["fx", "x"]);
   assert.deepEqual(referenceNumbers(plan.ids, plan.pins), [2, 1]);
   assert.deepEqual(sceneReferences({ references: ["a"] }, undefined), { ids: ["a"], pins: {} });

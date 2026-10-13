@@ -76,12 +76,12 @@ export function referenceNumbers(mediaIds, pins) {
 
 /**
  * sceneReferences(scene, fixed) -> { ids, pins }: what one scene sends. `fixed` is the project's { mediaId: n }
- * references pinned to a slot for every scene. They come first, so a clash over a number goes to them.
+ * pins, each at the number it was pinned at, for every scene. Pinned references come first.
  */
 export function sceneReferences(scene, fixed) {
   const fx = fixed || {};
   const own = (scene.references || []).filter((id) => !(id in fx));
-  return { ids: [...Object.keys(fx), ...own], pins: { ...(scene.reference_pins || {}), ...fx } };
+  return { ids: [...Object.keys(fx), ...own], pins: fx };
 }
 
 export const MAX_REFERENCES = 16;
