@@ -92,3 +92,8 @@ def test_the_chance_follows_the_slider_at_the_ends_and_ratings_tilt_it_between()
         memory.record_run(f"d{k}", {"views": [], "arms": ["length:yes"]})
         memory.on_rating(f"d{k}", "disliked")
     assert memory.length_chance(0.5) < 0.5 and memory.length_chance(0.0) == 0.0
+
+
+def test_a_clock_time_in_the_story_does_not_count_as_a_written_cut_time():
+    assert not engine.ANY_STAMP.search("She arrives at 8:30, and sits.")
+    assert engine.ANY_STAMP.search("At 00:04.000, the shot cuts to her hand.")

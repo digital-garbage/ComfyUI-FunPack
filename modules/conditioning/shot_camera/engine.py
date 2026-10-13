@@ -638,7 +638,7 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None, arms
 # a view and a focus. Never inside one shortcut. Nothing in a prompt knows the video's
 # length, so the caller hands it in (seconds).
 STAMP = re.compile(r"\b\d\d:\d\d\.\d{3}\b")
-ANY_STAMP = re.compile(r"\bAt\s+\d{1,2}:\d{2}(?:\.\d+)?\s*,|\b\d\d:\d\d\.\d{3}\b", re.I)
+ANY_STAMP = re.compile(r"\bAt\s+\d{1,2}:\d{2}(?:\.\d+)?\s*,\s*(?:the\s+)?(?:shot|camera|scene|cut|\w+\s+cut|" + _CUT_VERB + r")\b|\b\d\d:\d\d\.\d{3}\b", re.I)
 # The official MiniMax-H3 guide (docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md) approves these ordinary cut phrases.
 # Dissolve, fade and wipe are for when the user asks for them, never default.
 # Each cut says what is new: a new angle, place, subject, viewpoint, state or moment. Only these four verbs.

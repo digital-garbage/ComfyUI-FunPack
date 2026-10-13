@@ -39,7 +39,7 @@ export default {
       const plan = sceneReferences(sc, (p.project || {}).fixed_references), i = plan.ids.indexOf(id);
       return i < 0 ? null : { n: referenceNumbers(plan.ids, plan.pins)[i], pinned: id in plan.pins };
     };
-    const pinItem = (it) => { const s = slotOf(it.id); return s ? [{ id: "pinref", label: s.pinned ? `Unpin reference from slot R${s.n}` : `Pin reference to slot R${s.n}` }] : []; };
+    const pinItem = (it) => { const s = slotOf(it.id); return s && s.n <= 16 ? [{ id: "pinref", label: s.pinned ? `Unpin reference from slot R${s.n}` : `Pin reference to slot R${s.n}` }] : []; };
     const extras = (it) => (app.mediaMenu || []).flatMap((f) => { try { return f(it, items.find((m) => m.id === it.id)) || []; } catch { return []; } });       // entries other features add to a tile's menu: { id, label, run }
     const context = (it, e) => c.menu.context({ x: e.clientX, y: e.clientY, onPick: (id) => (act[id] ? act[id](it) : extras(it).find((x) => x.id === id)?.run()),
       items: [{ id: "look", label: "Look at it on the monitor" }, ...(p.selected && p.selected.source_image === it.id ? [{ id: "unres", label: "Stop using as the selected scene's resolution source" }]
@@ -54,12 +54,16 @@ export default {
         for (const id of ids) { await api.deleteMedia(id); dead.add(id); }
       } catch (err) { tell(`${err.message}${dead.size ? ` (${dead.size} of ${ids.length} were deleted)` : ""}`); }
       try {
-        p.edit((pr) => pr.scenes.reduce((hit, s) => {
+        p.edit((pr) => {
+          const fx = pr.fixed_references || {}, stale = Object.keys(fx).filter((id) => dead.has(id));
+          if (stale.length) pr.fixed_references = Object.fromEntries(Object.entries(fx).filter(([id]) => !dead.has(id)));
+          return stale.length > 0 | pr.scenes.reduce((hit, s) => {
           const had = dead.has(s.source_image) || (s.references || []).some((r) => dead.has(r));
           if (dead.has(s.source_image)) s.source_image = "";
           if (had) s.references = (s.references || []).filter((r) => !dead.has(r));
           return hit || had;
-        }, false));
+        }, false);
+        });
         ids.forEach((id) => chosen.delete(id));
       } catch (err) { tell(err.message); }
       await refresh();
