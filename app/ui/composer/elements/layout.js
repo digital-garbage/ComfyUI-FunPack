@@ -132,7 +132,7 @@ define("region", "stack", ({ children = [], gap = "md", label, fill = false } = 
     // document node in through the one element that takes children late.
     const kids = next.filter(Boolean).map((c) => nodeOf(c, "region.stack"));
     swapping.depth += 1;
-    try { node.replaceChildren(...kids); } finally { swapping.depth -= 1; }
+    try { if (kids.length !== node.childNodes.length || kids.some((k, i) => k !== node.childNodes[i])) node.replaceChildren(...kids); } finally { swapping.depth -= 1; }
     const after = at >= 0 ? twins() : [], twin = after.length === before.length && after[at];      // a field appearing or going: no guessing which
     if (!twin || twin === was) return;
     if ("committed" in was.dataset && was.value !== was.dataset.committed && twin.value === was.dataset.committed) twin.value = was.value;

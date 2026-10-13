@@ -127,7 +127,7 @@ export default {
       if (g.setCols) g.setCols(Number(show.cols));
       // what the selected scene uses is marked on its tile, so a reference can be told from the rest
       const flags = (m) => [sc && sc.source_image === m.id ? { text: "◐", title: "The selected scene's resolution source" } : null,
-        refs.includes(m.id) ? { text: `R${nums[refs.indexOf(m.id)]}`, title: `Reference slot ${nums[refs.indexOf(m.id)]} for the selected scene` } : null].filter(Boolean);
+        refs.includes(m.id) ? { text: `${plan.pins[m.id] ? "📌" : ""}R${nums[refs.indexOf(m.id)]}`, title: `Reference slot ${nums[refs.indexOf(m.id)]} for the selected scene${plan.pins[m.id] ? ", pinned to every scene" : ""}` } : null].filter(Boolean);
       g.setItems(shown.map((m) => ({ id: m.id, label: m.name, thumb: m.kind === "audio" ? undefined : `${base(m.id)}/thumb`, badge: m.kind, flags: flags(m) })));
       g.setValue(selecting ? [...chosen] : sc ? [sc.source_image, ...refs].filter(Boolean) : []);
       selectBtn.setLabel(selecting ? "Done" : "Select");

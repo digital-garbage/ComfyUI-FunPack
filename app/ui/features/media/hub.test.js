@@ -58,7 +58,7 @@ test("a changed pin repaints the slot numbers on the tiles even when the list of
   hub.setup({ host, app: { project, api, mediaPeek: {}, say: () => {}, on: (cb) => { fire = cb; return () => {}; } } });
   await new Promise((r) => setTimeout(r, 10));
   const flag = (n) => [...[...host.querySelectorAll(".cx-cell")].find((x) => x.textContent.includes(n)).querySelectorAll(".cx-cell-flag")].map((x) => x.textContent).join();
-  assert.deepEqual([flag("cat.png"), flag("dog.png")], ["R2", "R1"], "pinned at 2, the other takes the free number");
+  assert.deepEqual([flag("cat.png"), flag("dog.png")], ["📌R2", "R1"], "pinned at 2 (marked with a pin), the other takes the free number");
   delete fixed.m1;
   fire("project");
   assert.deepEqual([flag("cat.png"), flag("dog.png")], ["R1", "R2"], "unpinned: back to list order");
@@ -105,4 +105,20 @@ test("toggling a reference leaves the other tiles untouched, so the bin does not
   assert.equal(after[2], before[2], "owl.png: same tile");
   assert.notEqual(after[1], before[1], "dog.png is the one that changed: it gained its R1 mark");
   assert.equal(after[1].querySelector(".cx-cell-flag").textContent, "R1");
+});
+
+test("redrawing the bin keeps keyboard focus on the tile that has it", async () => {
+  const project = { selected: { id: "s1", references: [] }, project: {}, setScene: () => {} };
+  const api = { media: async () => ({ media: [{ id: "m1", name: "cat.png", kind: "image" }, { id: "m2", name: "dog.png", kind: "image" }] }) };
+  const host = document.createElement("div");
+  document.body.append(host);
+  let fire;
+  hub.setup({ host, app: { project, api, mediaPeek: {}, say: () => {}, on: (cb) => { fire = cb; return () => {}; } } });
+  await new Promise((r) => setTimeout(r, 10));
+  const tile = [...host.querySelectorAll(".cx-cell")].find((x) => x.textContent.includes("dog.png"));
+  tile.focus(); const was = document.activeElement === tile;
+  project.selected.references = ["m1"];
+  fire("project");
+  const now = [...host.querySelectorAll(".cx-cell")].find((x) => x.textContent.includes("dog.png")); assert.ok(was, "focusable"); assert.equal(now, tile, "same tile node"); assert.equal(document.activeElement, tile, "the focused tile survives the redraw");
+  host.remove();
 });

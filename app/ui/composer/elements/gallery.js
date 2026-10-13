@@ -80,7 +80,9 @@ function collection({ items = [], empty = EMPTY, selection = [], onActivate, onC
     });
     kept = next;
     const now = [...host.children];
-    if (now.length !== cells.length || cells.some((cell, i) => cell !== now[i])) host.replaceChildren(...cells);
+    // a rebuilt tile swaps in place when every other tile stays where it is, so a tile with the keyboard focus keeps it
+    if (now.length === cells.length && cells.every((cell, i) => cell === now[i] || !cell.parentNode)) cells.forEach((cell, i) => { if (cell !== now[i]) now[i].replaceWith(cell); });
+    else if (now.length !== cells.length || cells.some((cell, i) => cell !== now[i])) host.replaceChildren(...cells);
   }
   draw();
 

@@ -1,6 +1,5 @@
 // Shortcuts: the library of trigger -> replacement phrases, expanded into a prompt when it is generated.
 import { composer as c } from "../../composer/composer.js";
-import { alpha } from "../../shell/alpha.js";
 
 const lines = (text) => String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
 
@@ -62,7 +61,7 @@ export function shortcuts(app, own) {
 
   function draw(lib) {
     if (!alive) return;
-    const items = [...(lib.shortcuts || [])].sort((x, y) => alpha(x.category || "", y.category || "") || alpha(x.name, y.name))       // by name: the pause mark in a label must not decide the order
+    const items = [...(lib.shortcuts || [])].sort((x, y) => (x.category || "").localeCompare(y.category || "") || x.name.localeCompare(y.name))       // by name: the pause mark in a label must not decide the order
       .map((s) => ({ id: s.name, label: `${s.enabled ? "" : "⏸ "}${s.name}`, hint: s.triggers.join(", "), keywords: `${s.category} ${s.sub_category} ${s.replacements.join(" ")}`, group: s.category || "" }));
     const query = box ? box.query : "";                    // what was typed in the search box survives a save, a delete, an import
     box = c.filterList.md({ items, query, placeholder: "Search shortcuts", empty: "No shortcuts yet. Add one with + New.", onChange: (id) => edit((lib.shortcuts || []).find((s) => s.name === id)) });
