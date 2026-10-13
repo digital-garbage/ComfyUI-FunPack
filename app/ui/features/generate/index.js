@@ -97,7 +97,7 @@ export default {
           if (group.every((s) => s.excluded) || !isGenerative(root)) continue;                  // all left out, or not made by the model
           // The unit is made once at the length of its clips together (each cut adds one shared frame).
           const frames = group.reduce((t, s) => t + effFrames(s, snap), 0) - (group.length - 1);
-          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, ...(fixedSeed ? { seed: null } : {}), prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root); } catch { return []; } }) });
+          const { inputs, unwired, noPrompt, notes } = await buildInputs({ project: snap, scene: root, slots: frozen, expand: same, frames, hooks: app.inputHooks, ...(fixedSeed ? { seed: null } : {}), prefix: (app.promptPrefix || []).flatMap((f) => { try { return f(root, snap); } catch { return []; } }) });
           app.lastRun.typed = (root.text || "").trim();        // what a Chat comment made now would be about
           const seeded = rolesAt(frozen, "generation.seed")[0];
           if (seeded) app.lastRun.seed = (inputs[seeded.slot.id] || {})[seeded.role.input] ?? (seeded.slot.inputs || {})[seeded.role.input];      // shown in ⏱ Sampler, to keep a liked one

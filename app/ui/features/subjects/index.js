@@ -3,6 +3,7 @@
 // never written into the prompt box, and leaves with the reference.
 import { composer as c } from "../../composer/composer.js";
 import { subjects } from "../../shell/bin.js";
+import { sceneReferences } from "../../shell/reference_wiring.js";
 
 export default {
   id: "subjects",
@@ -15,7 +16,7 @@ export default {
       try { await app.api.setMediaSubject(it.id, text); if (text.trim()) subjects.set(it.id, text.trim()); else subjects.delete(it.id); app.say("bin"); } catch (err) { c.toast.warn({ text: `Could not save: ${err.message}` }); }
     } }] : []);
     // Lines in the order the references were picked; a picture with no text adds nothing.
-    const prefix = (scene) => (scene.references || []).map((id) => subjects.get(id)).filter(Boolean);
+    const prefix = (scene, project) => (scene ? sceneReferences(scene, (project || {}).fixed_references).ids : []).map((id) => subjects.get(id)).filter(Boolean);       // pinned ones too: they go to every scene
     app.mediaMenu.push(menu);
     app.promptPrefix.push(prefix);
     return () => { for (const [list, x] of [[app.mediaMenu, menu], [app.promptPrefix, prefix]]) { const i = list.indexOf(x); if (i >= 0) list.splice(i, 1); } };

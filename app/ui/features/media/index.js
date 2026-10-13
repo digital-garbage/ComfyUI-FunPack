@@ -45,7 +45,7 @@ export default {
       items: [{ id: "look", label: "Look at it on the monitor" }, ...(p.selected && p.selected.source_image === it.id ? [{ id: "unres", label: "Stop using as the selected scene's resolution source" }]
           : [{ id: "res", label: "Use as the selected scene's resolution source", disabled: !p.selected || it.kind === "audio" || !items.some((m) => m.id === it.id && m.kind === "image") }]),
         p.selected && (p.selected.references || []).includes(it.id) ? { id: "unref", label: "Stop using as a reference for the selected scene" }
-          : { id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected }, ...pinItem(it), { id: "rename", label: "Rename…" },
+          : { id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected || !!(slotOf(it.id) || {}).pinned }, ...pinItem(it), { id: "rename", label: "Rename…" },
         { id: "export", label: "Save to your computer", disabled: !items.some((m) => m.id === it.id && m.kind !== "audio") }, ...extras(it).map(({ id, label, disabled }) => ({ id, label, disabled })), { separator: true }, { id: "delete", label: "Delete from the bin", danger: true }] });
     /** Delete these from the bin, and nothing in this project may keep pointing at them. */
     async function gone(ids) {
@@ -137,16 +137,21 @@ export default {
       clearRefs.node.hidden = !refs.length;
       clearRefs.setLabel(`Clear references (${refs.length})`);
     }
+    // a pin on a picture the bin no longer has can never be unpinned from a tile: it goes with the picture (judged only on a bin that loaded)
+    let loaded = false;
+    function dropDeadPins() {
+      const have = new Set(items.map((m) => m.id)), fx = (p.project || {}).fixed_references || {};
+      if (loaded && Object.keys(fx).some((id) => !have.has(id))) p.edit((pr) => { pr.fixed_references = Object.fromEntries(Object.entries(pr.fixed_references || {}).filter(([id]) => have.has(id))); return true; });
+    }
     async function refresh() {
       try {
         items = (await api.media()).media || []; learn(items); app.say("bin");
-        // a pin on a picture the bin no longer has can never be unpinned from a tile: it goes with the picture
-        const have = new Set(items.map((m) => m.id)), fx = (p.project || {}).fixed_references || {};
-        if (Object.keys(fx).some((id) => !have.has(id))) p.edit((pr) => { pr.fixed_references = Object.fromEntries(Object.entries(pr.fixed_references || {}).filter(([id]) => have.has(id))); return true; });
+        loaded = true;
+        dropDeadPins();
       } catch (err) { tell(err.message); }
       draw(true);
     }
     refresh();
-    return app.on((what) => (what === "media" ? refresh() : draw()));       // "media": another feature put something in the bin
+    return app.on((what) => { if (what === "media") return refresh(); dropDeadPins(); draw(); });       // "media": another feature put something in the bin
   },
 };

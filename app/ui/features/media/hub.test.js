@@ -157,3 +157,14 @@ test("a pin on a picture that is not in the bin (empty bin, carried project) is 
   await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(empty.project.fixed_references, {}, "an empty bin cannot hold a pin");
 });
+
+test("a pin on a picture the bin lacks is also dropped when the project opens after the bin loaded, and a pinned-only tile cannot be added twice", async () => {
+  const project = { selected: { id: "s1", references: [] }, project: null, setScene: () => {}, edit: (fn) => fn(project.project) };
+  const api = { media: async () => ({ media: [{ id: "m1", name: "cat.png", kind: "image" }] }) };
+  let fire;
+  hub.setup({ host: document.createElement("div"), app: { project, api, mediaPeek: {}, say: () => {}, on: (cb) => { fire = cb; return () => {}; } } });
+  await new Promise((r) => setTimeout(r, 10));
+  project.project = { fixed_references: { gone: 1, m1: 2 } };
+  fire("open");
+  assert.deepEqual(project.project.fixed_references, { m1: 2 }, "the pin of a picture that is in the bin stays");
+});

@@ -31,3 +31,13 @@ test("the lines go in front of the anchor of the text that is sent to be expande
   await buildInputs({ project: { anchor: "", video: {} }, scene: { text: "t" }, slots, frames: 9, prefix: [], expand: async (b) => { sent = b; return { text: "x" }; } });
   assert.equal(sent.anchor, "");
 });
+
+test("a pinned picture's subject line goes to every scene, ahead of the scene's own", async () => {
+  bin.learn([{ id: "a", name: "A", subject: "<Subject 1> is the woman." }, { id: "c", name: "C", subject: "<Subject 2> is the robot." }]);
+  const app = { api: {}, mediaMenu: [], promptPrefix: [], say() {} };
+  const off = hub.setup({ host: document.createElement("div"), app });
+  const [prefix] = app.promptPrefix;
+  assert.deepEqual(prefix({ references: [] }, { fixed_references: { a: 1 } }), ["<Subject 1> is the woman."]);
+  assert.deepEqual(prefix({ references: ["c"] }, { fixed_references: { a: 1 } }), ["<Subject 1> is the woman.", "<Subject 2> is the robot."]);
+  off();
+});

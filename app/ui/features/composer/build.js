@@ -20,7 +20,7 @@ export function build(app, own) {
 
   async function preview() {       // what Generate would send for the draft, with one draw of each shortcut
     const mine = ++asked, sc = target && p.scenes.find((s) => s.id === target);
-    const prefix = (app.promptPrefix || []).flatMap((f) => { try { return f(sc); } catch { return []; } });
+    const prefix = (app.promptPrefix || []).flatMap((f) => { try { return f(sc, p.project); } catch { return []; } });
     try {
       const r = await app.api.expandPrompt({ text: draft.value, anchor: [...prefix, p.anchor].filter((x) => x && String(x).trim()).join(" "), postfix: p.postfix, postfix_enabled: p.postfixEnabled, variables: p.variables });
       if (alive && mine === asked) full.setText(r.text || "");
