@@ -49,7 +49,8 @@ def rewrite(text, values, seconds=None, pieces=None):
     splitting = bool(values["cut_same_shot"]) if "cut_same_shot" in values else bool(values.get("shot_cuts"))
     if (values.get("shot_cuts") or splitting) and engine.SHOT.search(text or ""):
         chance = memory.split_chance(float(values.get("shot_cuts_chance", 0.5))) if splitting else 0.0
-        text, info = engine.add_shot_cuts(text, seconds, seed=seed, chance=chance, pieces=_pieces() if pieces is None else pieces)
+        text, info = engine.add_shot_cuts(text, seconds, seed=seed, chance=chance, pieces=_pieces() if pieces is None else pieces,
+                                          transition=float(values.get("cut_difference_chance", 0.0)))
         arms += info.get("arms", [])
         said.append(f"cuts at {', '.join(info['times'])}" + (f" ({info['before']}→{info['after']} shots)" if info["after"] != info["before"] else "") if info["times"] else f"cuts: {info['why'] or 'none'}")
     if values.get("reframe_same_shot") and engine.SHOT.search(text or ""):

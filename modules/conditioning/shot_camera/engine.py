@@ -604,6 +604,13 @@ STAMP = re.compile(r"\b\d\d:\d\d\.\d{3}\b")
 # The official MiniMax-H3 guide (docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md) approves these ordinary cut phrases.
 # Dissolve, fade and wipe are for when the user asks for them, never default.
 # Each cut says what is new: a new angle, place, subject, viewpoint, state or moment. Only these four verbs.
+# The guide allows dissolve, fade and wipe only when the user asks for one: the transition slider is that request.
+TRANSITIONS = (("dissolve", "the shot cross-dissolves to a new angle"),
+               ("dissolve", "the shot cross-dissolves to a new location"),
+               ("fade", "the shot fades out to black and fades in on a new angle"),
+               ("fade", "the shot fades to white and back to the next moment"),
+               ("wipe", "the shot wipes across to a new angle"),
+               ("wipe", "the shot wipes across to a new subject"))
 CUT_OPENERS = ("the camera cuts to a new angle", "the camera cuts to a closer view",
                "the shot cuts to a new angle", "the shot cuts to a new location", "the shot cuts to a later moment",
                "the shot transitions to the next moment", "the shot transitions to a new location",
@@ -652,7 +659,16 @@ def _fresh_piece(text):
     return (text[:1].upper() + text[1:]) if text else text
 
 
-def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
+def _opener(rng, difference, last):
+    """-> (opener, transition kind or None). `difference` is the user's slider: 0 is always a plain cut, 1 always a
+    transition, and in between that share of cuts is one. Transitions are mixed: never the same kind twice running."""
+    if rng.random() >= difference:
+        return rng.choice(CUT_OPENERS), None
+    kind, phrase = rng.choice([t for t in TRANSITIONS if t[0] != last] or list(TRANSITIONS))
+    return phrase, kind
+
+
+def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=(), transition=0.0):
     """-> (new prompt, info). A shot is cut between the shortcuts inside it, including the same
     shortcut used again; every shot after the first then opens with its cut time, spread evenly
     over `seconds` and rounded to whole seconds. A prompt that already carries cut times is left
@@ -708,6 +724,7 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
         info["arms"] = []
         return text, info
     out = [header]
+    last = None                                   # the transition kind of the cut before this one
     for k, (picture, sound) in enumerate(blocks):
         label = f"[Shot {k + 1}]"
         body = picture
@@ -716,8 +733,10 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=()):
             rng = random.Random(f"{seed}:opener:{k}")
             if LEAD_CUT.match(body):
                 body = " " + stamp + LEAD_CUT.sub(lambda m: m.group(0).strip().lower(), body.lstrip(), 1)
+                last = None
             else:
-                body = " " + stamp + rng.choice(CUT_OPENERS) + ". " + body.lstrip()
+                opener, last = _opener(rng, transition, last)
+                body = " " + stamp + opener + ". " + body.lstrip()
         else:
             body = body if body.startswith(" ") else " " + body
         out.append(label + body + sound)
