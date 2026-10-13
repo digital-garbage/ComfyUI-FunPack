@@ -274,10 +274,14 @@ export function createProject({ onChange, onError, onOpen, keepConsistent, befor
       fresh = false;
       recent = [{ id: project.id, name: project.name }, ...recent];
       selected = (project.scenes || [])[0]?.id ?? null;
-      project.fixed_references = {};                          // a project file carries no media: the pictures it named are not in this bin
+      // a project file carries no media: the pictures it named are not in this bin
+      const carried = Object.keys(project.fixed_references || {}).length > 0 || (project.scenes || []).some((sc) => (sc.references || []).length);
+      project.fixed_references = {};
       for (const sc of project.scenes || []) sc.references = [];
       forget();
       opened();
+      // the cleared state is what the server keeps too (not through the edit timer: a pending edit of the old project must stay pending)
+      if (carried) put({ ...imported }).then((saved) => { if (saved) imported.updated_at = saved.updated_at; }).catch((err) => { if (onError) onError(err); });
       return project;
     },
 

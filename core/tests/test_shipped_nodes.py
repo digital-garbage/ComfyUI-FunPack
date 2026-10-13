@@ -57,7 +57,7 @@ FROZEN = {
     "FunPackSaveVideo": ["images", "audio", "fps", "filename_prefix", "encoder", "codec"],
     "FunPackPromptMarkup": ["text"],
     "FunPackNegativeErase": ["positive", "negative", "strength", "mode", "keep_size"],
-    "FunPackShotCamera": ["text", "settings", "length", "frame_rate"],
+    "FunPackShotCamera": ["text", "settings", "length", "frame_rate", "project"],
     "FunPackEnhancePrompt": [
         "clip", "text", "enabled", "instructions", "max_length", "greedy", "temperature", "top_p",
         "top_k", "min_p", "repetition_penalty", "presence_penalty", "seed", "thinking", "image", "use_image",

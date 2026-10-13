@@ -15,7 +15,7 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
     if (v !== undefined && v !== null && v !== "") put(slot, role.input, v);
   }
   if (seed) for (const { slot, role } of rolesAt(slots, "generation.seed")) put(slot, role.input, seed());      // null: the seed node's own number runs
-  for (const { slot, role } of rolesAt(slots, "run.project")) put(slot, role.input, project.id || "");      // what a node keeps per project (the words focus infusion draws on)
+  for (const slot of (slots || []).filter((s) => s.node === "FunPackShotCamera")) put(slot, "project", project.id || "");      // what the node keeps per project (the words focus infusion draws on), also for pipelines saved before it was asked for
   const source = rolesAt(slots, "assets.source_image")[0];
   if (source) put(source.slot, "media_id", project.generation_mode === "t2v" ? "" : scene.source_image || "");    // "from a prompt" starts every shot without a picture
   const plan = sceneReferences(scene, project.fixed_references);

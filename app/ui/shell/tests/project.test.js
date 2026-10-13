@@ -679,7 +679,7 @@ test("a switch waits for edits still landing elsewhere before it reads the next 
 });
 
 test("loading a project file clears its references and pins; restarting or opening a project keeps them", async () => {
-  const { project } = server();
+  const { project, sent } = server();
   project.fixed_references = { m1: 1 };
   project.scenes = [{ id: "s1", text: "", references: ["m1"] }];
   const p = createProject({});
@@ -688,5 +688,7 @@ test("loading a project file clears its references and pins; restarting or openi
   await p.open(project.id);
   assert.deepEqual([p.project.fixed_references, p.project.scenes[0].references], [{ m1: 1 }, ["m1"]], "so does opening a project");
   const loaded = await p.importProject({});
+  await p.flush();
+  assert.ok(sent.length > 0 && Object.keys(sent[sent.length - 1].fixed_references).length === 0 && sent[sent.length - 1].scenes[0].references.length === 0, "the cleared state is saved, not only shown");
   assert.deepEqual([loaded.fixed_references, loaded.scenes[0].references], [{}, []], "a project file brings no media");
 });

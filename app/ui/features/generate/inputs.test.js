@@ -76,3 +76,9 @@ test("a fixed seed (seed: null) sends no seed: the seed node's own number runs",
   const { inputs } = await buildInputs({ project: {}, scene: {}, slots: s, expand: async () => null, seed: null });
   assert.equal((inputs.n || {}).seed, undefined);
 });
+
+test("the shot camera node is told which project this is, whatever roles the saved pipeline carries", async () => {
+  const slots = [{ id: "shot_camera", node: "FunPackShotCamera", roles: [] }];
+  const { inputs } = await buildInputs({ project: { id: "proj1", scenes: [], video: {} }, scene: { id: "s", text: "x", references: [] }, slots, expand: async ({ text }) => ({ text }) });
+  assert.equal(inputs.shot_camera.project, "proj1");
+});

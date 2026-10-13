@@ -150,3 +150,8 @@ def test_an_infused_shot_often_travels_from_its_own_subject_to_the_infused_word_
             assert "window" in added, added
             travels += 1
     assert 60 < travels < 140, f"about half travel, got {travels}"
+
+
+def test_a_word_the_shot_already_says_is_not_infused_even_when_it_is_not_a_candidate_of_the_shot():
+    got = [engine._infused("A woman walks.", set(), [("woman", 1.0)], __import__("random").Random(k)) for k in range(20)]
+    assert got == [None] * 20

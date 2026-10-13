@@ -560,7 +560,8 @@ def _infused(picture, taken, bank, rng):
     and never one of this module's own words."""
     own = _own_words() - ORDINARY       # words that are also plain nouns (a person's back, a frying pan) stay available
     mine = lambda lemma: lemma not in ORDINARY and (lemma in own or any(lemma + end in own for end in ("s", "es", "d", "ed", "ing")))   # "zoom" for "zooms", "fade" for "fades"
-    options = [(lemma, w) for lemma, w in bank if not mine(lemma) and lemma not in taken and w > 0]
+    named = _hide(picture).lower()
+    options = [(lemma, w) for lemma, w in bank if not mine(lemma) and lemma not in taken and w > 0 and not re.search(rf"\b{re.escape(lemma)}", named)]
     if not options:
         return None
     lemma = rng.choices([o[0] for o in options], weights=[o[1] for o in options])[0]
