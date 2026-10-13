@@ -43,7 +43,7 @@ SETTINGS = {
                          "hint": "1 = always cut between those shortcuts, 0 = never. Ratings nudge the values in between.",
                          "when": {"cut_same_shot": True}},
     "cut_difference_chance": {"type": "float", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of an unusual transition",
-                              "hint": "0 = plain cuts only. In between, that share of cuts is a dissolve, fade or wipe. 1 = every cut is one, mixed. A cut phrase you wrote yourself stays as written. Needs “Shot cut times” or “Cut within the same shot”."},
+                              "hint": "0 = plain cuts only. In between, that share of cuts is a dissolve, fade or wipe. 1 = every cut is one, mixed. A cut phrase you wrote yourself, like “the shot cuts to…” or “the shot fades to…”, stays as written. Needs “Shot cut times” or “Cut within the same shot”."},
     "reframe_same_shot": {"type": "bool", "default": False, "label": "Reframe within the shot",
                           "hint": "Where one shortcut ends and the next begins inside a shot that is not cut, the camera moves on to what the next action is about, without a cut: one continuous take, the actions follow on. The view may turn or stay. A shot that reframes gets no extra camera move."},
     "reframe_chance": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of a reframe",

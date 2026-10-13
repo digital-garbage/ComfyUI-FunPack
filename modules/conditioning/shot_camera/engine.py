@@ -993,6 +993,7 @@ def content_fingerprint(text):
     body = re.sub(r"\[\s*Shot\s+\d+\s*\]", " ", text or "", flags=re.I)
     body = re.sub(r"At \d\d:\d\d\.\d{3},\s*(?:" + "|".join(re.escape(o) for o in OUR_OPENERS) + r")\.",
                   " ", body, flags=re.I)
+    body = re.sub(r"At \d\d:\d\d\.\d{3},\s*(?=(?:the\s+)?(?:camera|shot)\s+" + _CUT_VERB + r"\s+to\b)", " ", body, flags=re.I)   # the time before a cut phrase the user wrote
     body = _REFRAME.sub(" ", body)
     body = re.sub(r"\s+", " ", body)
     body = re.sub(r"(?:^|(?<=[.!?]\s))(?:" + "|".join(re.escape(v) for v in VIEWS) + r")\.", " ", body)

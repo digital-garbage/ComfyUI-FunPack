@@ -80,3 +80,38 @@ def test_a_move_is_never_aimed_at_a_transition_word(monkeypatch, tmp_path):
         for sentence in out.replace("\n", " ").split(". "):
             if "camera" in sentence and "At 00:" not in sentence:
                 assert not any(w in sentence for w in ("black", "white", "angle", "moment", "follows")), sentence
+
+
+import pytest
+
+
+@pytest.mark.parametrize("phrase", ["The shot fades to black.", "The shot fades out to black.", "The shot dissolves to her hand.",
+                                    "The camera wipes across to her hand.", "The shot cross-dissolves to her hand."])
+def test_the_cut_phrases_the_hint_names_are_kept_without_a_second_opener(monkeypatch, tmp_path, phrase):
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    out, _ = engine.add_shot_cuts(f"[Shot 1] {DANCE} [Shot 2] {phrase} {WAVE}", 10, seed=1, chance=0, pieces=[DANCE, WAVE], transition=1.0)
+    assert sum(out.count(o) for o in engine.OUR_OPENERS) == 0 and phrase.lower()[:12] in out.lower(), out
+
+
+def test_the_time_before_a_user_written_cut_is_not_part_of_the_prompts_identity(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    text = f"[Shot 1] {DANCE} [Shot 2] The shot cross-dissolves to her hands. {WAVE}"
+    prints = {engine.content_fingerprint(engine.add_shot_cuts(text, secs, seed=1, chance=0, pieces=[DANCE, WAVE])[0]) for secs in (12, 20, 30)}
+    assert prints == {engine.content_fingerprint(text)}, "one prompt however long the video"
+
+
+def test_between_zero_and_one_the_share_of_transitions_follows_the_slider():
+    for difference in (0.1, 0.5, 0.9):
+        hits = sum(engine._opener(random.Random(seed), difference, None)[1] is not None for seed in range(800))
+        assert abs(hits / 800 - difference) < 0.08, difference
+
+
+def test_each_cut_rolls_for_itself_so_a_shot_can_mix_plain_and_transition_cuts(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOT_CAMERA_MEMORY", str(tmp_path / "m.json"))
+    text = f"[Shot 1] {DANCE} {WAVE} {DANCE} {WAVE}"
+    mixes = 0
+    for seed in range(40):
+        out, _ = engine.add_shot_cuts(text, 16, seed=seed, chance=1, pieces=[DANCE, WAVE], transition=0.5)
+        plain = sum(out.count(o) for o in engine.CUT_OPENERS)
+        mixes += plain > 0 and sum(out.count(p) for _, p in engine.TRANSITIONS) > 0
+    assert mixes > 5
