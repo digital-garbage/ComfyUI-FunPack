@@ -315,6 +315,8 @@ def forget(kind, name=None):
         existed = any(name in (data.get(k) or {}) for k in ("picks", "rejects", "seen"))
         for k in ("picks", "rejects", "seen"):
             (data.get(k) or {}).pop(name, None)
+        for row in (data.get("projects") or {}).values():
+            existed = (row.get("seen") or {}).pop(name, None) is not None or existed
         existed = ((data.get("arms") or {}).pop(f"word:{name}", None) is not None) or existed
         existed = ((data.get("arms") or {}).pop(f"infused:{name}", None) is not None) or existed
     elif kind == "view":
@@ -373,16 +375,16 @@ def infuse_chance(chance):
     return _odds(chance, _lean("infuse:yes", "infuse:no"))
 
 
-def infusion_bank():
-    """[(lemma, weight)]: words that turned up in at least two different prompts (once MIN_PROMPTS were seen),
-    weighted by how often, and by how the runs that aimed at them were rated: a disliked word is drawn less
-    but never drops to nothing, so one bad rating does not end it."""
-    data = _read()
-    if int(data.get("prompts", 0)) < MIN_PROMPTS:
+def infusion_bank(project=""):
+    """[(lemma, weight)]: words that turned up in at least two different prompts OF THIS PROJECT (once MIN_PROMPTS of
+    them were seen), weighted by how often, and by how the runs that aimed at them were rated: a disliked word is
+    drawn less but never drops to nothing, so one bad rating does not end it. No project, no bank."""
+    row = (_read().get("projects") or {}).get(project) if project else None
+    if not row or int(row.get("prompts", 0)) < MIN_PROMPTS:
         return []
     stats = arm_stats()
     return [(lemma, n * 2.0 * arm_rate(f"infused:{lemma}", stats))
-            for lemma, n in (data.get("seen") or {}).items() if n >= 2]
+            for lemma, n in (row.get("seen") or {}).items() if n >= 2]
 
 
 def reframe_chance(chance):
@@ -399,20 +401,33 @@ def _save(data):
     os.replace(tmp, path)
 
 
+MAX_PROJECTS = 24
+
+
 @_locked
-def observe(prompt_hash, lemmas):
-    """Count each of `lemmas` once for this prompt. -> prompts seen so far (0 = nothing kept)."""
+def observe(prompt_hash, lemmas, project=""):
+    """Count each of `lemmas` once for this prompt (and once for this prompt in `project`, whose words alone
+    feed focus infusion). -> prompts seen so far (0 = nothing kept)."""
     if not lemmas:
         return 0
     data = _read()
+    key = f"{project}:{prompt_hash}" if project else prompt_hash
     hashes = data.get("hashes") or []
-    if prompt_hash in hashes:
+    if key in hashes:
         return int(data.get("prompts", 0))
     seen = data.get("seen") or {}
     for lemma in set(lemmas):
         seen[lemma] = seen.get(lemma, 0) + 1
     data.update(seen=seen, prompts=int(data.get("prompts", 0)) + 1,
-                hashes=(hashes + [prompt_hash])[-MAX_HASHES:])
+                hashes=(hashes + [key])[-MAX_HASHES:])
+    if project:
+        projects = data.get("projects") or {}
+        row = projects.pop(project, None) or {"prompts": 0, "seen": {}}          # re-inserted last: the oldest projects go first
+        for lemma in set(lemmas):
+            row["seen"][lemma] = row["seen"].get(lemma, 0) + 1
+        row["prompts"] = int(row.get("prompts", 0)) + 1
+        projects[project] = row
+        data["projects"] = dict(list(projects.items())[-MAX_PROJECTS:])
     _save(data)
     return data["prompts"]
 

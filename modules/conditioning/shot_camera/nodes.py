@@ -41,12 +41,12 @@ def _prompt_id():
         return None
 
 
-def rewrite(text, values, seconds=None, pieces=None):
+def rewrite(text, values, seconds=None, pieces=None, project=""):
     """-> (new text, what happened, what the run chose for the rating that follows)."""
     seed = f"{engine.content_fingerprint(text)}:{values.get('variation', 0)}"       # the same prompt gives the same shots; 'variation' re-rolls
     said, arms, views = [], [], []
     infuse = memory.infuse_chance(float(values.get("focus_infusion_chance", 0.0)))
-    bank = memory.infusion_bank() if infuse > 0 else []
+    bank = memory.infusion_bank(project) if infuse > 0 else []
     # A payload from before the toggle had no cut_same_shot key: Shot cut times owned the chance.
     splitting = bool(values["cut_same_shot"]) if "cut_same_shot" in values else bool(values.get("shot_cuts"))
     if (values.get("shot_cuts") or splitting) and engine.SHOT.search(text or ""):
@@ -77,7 +77,7 @@ def rewrite(text, values, seconds=None, pieces=None):
         text, report = engine.add_camera_moves(text, seed=seed, chance=chance, prior=memory.prior(), arms=memory.arm_stats(), infuse=infuse, bank=bank)
         arms += [a for r in report for a in r.get("arms", [])]
         if report:
-            memory.observe(engine.content_fingerprint(before), [w for r in report for w in r.get("lemmas", [])])
+            memory.observe(engine.content_fingerprint(before), [w for r in report for w in r.get("lemmas", [])], project)
         moved = [r for r in report if r["move"]]
         said.append(f"moves: {len(moved)} of {len(report)} shots" + ("" if moved else " (" + "; ".join(f"shot {r['shot']} {r['why']}" for r in report) + ")")
                     + (" · infused: " + ", ".join(r["infused"] for r in report if r.get("infused")) if any(r.get("infused") for r in report) else ""))
@@ -107,7 +107,8 @@ class FunPackShotCamera(io.ComfyNode):
             inputs=[io.String.Input("text", multiline=True, default=""),
                     io.Custom("FUNPACK_SETTINGS").Input("settings", optional=True),
                     io.Int.Input("length", default=124, min=1, max=100000, tooltip="Frames of the video: with the frame rate, how long the shots have between them."),
-                    io.Float.Input("frame_rate", default=25.0, min=1.0, max=240.0)],
+                    io.Float.Input("frame_rate", default=25.0, min=1.0, max=240.0),
+                    io.String.Input("project", default="", optional=True, tooltip="The project being made: the words focus infusion draws on are the ones this project's own prompts keep returning to.")],
             outputs=[io.String.Output(display_name="text"), io.String.Output(display_name="status")],
         )
 
@@ -118,12 +119,12 @@ class FunPackShotCamera(io.ComfyNode):
         return float("nan")
 
     @classmethod
-    def execute(cls, text: str, length: int, frame_rate: float, settings=None) -> io.NodeOutput:
+    def execute(cls, text: str, length: int, frame_rate: float, settings=None, project: str = "") -> io.NodeOutput:
         values = _values(settings)
         if not any(values.get(k) for k in ("camera_moves", "shot_cuts", "shot_views", "cut_same_shot", "reframe_same_shot", "detail_notes")) or not engine.SHOT.search(text or ""):
             return io.NodeOutput(text, "unchanged")
         try:
-            out, said, chose = rewrite(text, values, seconds=length / frame_rate if frame_rate else None)
+            out, said, chose = rewrite(text, values, seconds=length / frame_rate if frame_rate else None, project=project)
         except Exception as exc:                               # noqa: BLE001 -- a rewrite is never worth the run
             log.failed("FunPack Shot Camera", exc)
             return io.NodeOutput(text, f"left as written ({exc})")

@@ -93,7 +93,8 @@ def h3_reference_to_video():
                     "image": ["source_image", 0]}},
         # Off by default (its own switches in Settings): writes cut times, views and camera moves into [Shot N] blocks.
         {"id": "shot_camera", "group": "Preparation", "node": "FunPackShotCamera",
-         "roles": [{"at": "project.video", "input": "length", "label": "Length", "drives": "frames"}],
+         "roles": [{"at": "project.video", "input": "length", "label": "Length", "drives": "frames"},
+                   {"at": "run.project", "input": "project", "label": "Project"}],
          "inputs": {"text": ["enhance", 0], "settings": ["settings", 0], "length": 124, "frame_rate": 24.0}},
         {"id": "markup", "group": "Preparation", "node": "FunPackPromptMarkup",
          "inputs": {"text": ["shot_camera", 0]}},
