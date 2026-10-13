@@ -1,11 +1,12 @@
 // Shortcuts: the library of trigger -> replacement phrases, expanded into a prompt when it is generated.
 import { composer as c } from "../../composer/composer.js";
+import { alpha } from "../../shell/alpha.js";
 
 const lines = (text) => String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
 
 export function shortcuts(app, own) {
   const page = c.region.stack({ gap: "sm" });
-  let alive = true;
+  let alive = true, box = null;
   own(() => { alive = false; });
   const tell = (text) => c.toast.warn({ text });
 
@@ -61,12 +62,14 @@ export function shortcuts(app, own) {
 
   function draw(lib) {
     if (!alive) return;
-    const items = (lib.shortcuts || []).map((s) => ({ id: s.name, label: `${s.enabled ? "" : "⏸ "}${s.name}`, hint: s.triggers.join(", "), keywords: `${s.category} ${s.sub_category} ${s.replacements.join(" ")}`, group: s.category || "" }));
-    items.sort((x, y) => x.group.localeCompare(y.group) || x.label.localeCompare(y.label));
+    const items = [...(lib.shortcuts || [])].sort((x, y) => alpha(x.category || "", y.category || "") || alpha(x.name, y.name))       // by name: the pause mark in a label must not decide the order
+      .map((s) => ({ id: s.name, label: `${s.enabled ? "" : "⏸ "}${s.name}`, hint: s.triggers.join(", "), keywords: `${s.category} ${s.sub_category} ${s.replacements.join(" ")}`, group: s.category || "" }));
+    const query = box ? box.query : "";                    // what was typed in the search box survives a save, a delete, an import
+    box = c.filterList.md({ items, query, placeholder: "Search shortcuts", empty: "No shortcuts yet. Add one with + New.", onChange: (id) => edit((lib.shortcuts || []).find((s) => s.name === id)) });
     const more = c.button.sm({ label: "⋯", tone: "ghost", title: "Export, import, categories, delete all", onClick: () => tools(more.node, lib) });
     page.set([
       c.toolbar.default({ items: [c.label.section({ text: "Shortcuts" })], trailing: [c.button.sm({ label: "+ New", tone: "primary", onClick: () => edit(null) }), more] }),
-      c.filterList.md({ items, placeholder: "Search shortcuts", empty: "No shortcuts yet. Add one with + New.", onChange: (id) => edit((lib.shortcuts || []).find((s) => s.name === id)) }),
+      box,
       c.hint.default({ text: "Type a trigger in any prompt and it is replaced when you generate." }),
     ]);
   }

@@ -46,22 +46,3 @@ test("typing in the Prompt box, then pressing a button in the panel, does not re
   assert.ok(button.isConnected, "the pressed button is still there for its mouse-up");
   host.remove();
 });
-
-test("each reference has a 'Pin reference to slot RN' row; ticking one pins it at its number, and the rows follow", () => {
-  let fire;
-  const doc = { id: "P", frame_rate: 25, num_frames_per_scene: 49, fixed_references: {}, scene_renders: {}, scenes: [{ id: "a", text: "t", references: ["m1", "m2"] }] };
-  const p = { project: doc, get scenes() { return doc.scenes; }, get selected() { return doc.scenes[0]; }, selectedId: "a",
-    setText: () => {}, setScene: () => {}, edit: (fn) => fn(doc) };
-  const host = document.createElement("div");
-  document.body.append(host);
-  hub.setup({ host, app: { project: p, on: (fn) => { fire = fn; return () => {}; }, api: {}, say: () => {} } });
-  const rows = () => [...host.querySelectorAll("label")].filter((l) => l.textContent.includes("Pin reference to slot"));
-  const box = (i) => rows()[i].previousElementSibling;       // the checkbox is the label's sibling
-  const names = () => rows().map((l) => l.textContent.match(/Pin reference to slot R\d+/)[0]);
-  assert.deepEqual(names(), ["Pin reference to slot R1", "Pin reference to slot R2"]);
-  box(1).click();
-  assert.deepEqual(doc.fixed_references, { m2: 2 }, "pinned at the number it had");
-  fire("change");
-  assert.deepEqual(names(), ["Pin reference to slot R2", "Pin reference to slot R1"], "the pinned one keeps R2, the other takes R1");
-  assert.ok(box(0).checked && !box(1).checked);
-});

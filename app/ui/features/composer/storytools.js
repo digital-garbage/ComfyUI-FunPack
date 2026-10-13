@@ -1,5 +1,6 @@
 // What sits around the Story box: saved templates (scenes + variables), the $variables list, and the shortcut picker.
 import { composer as c } from "../../composer/composer.js";
+import { alpha } from "../../shell/alpha.js";
 import { applyStory, storyRoots } from "./story.js";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -88,7 +89,7 @@ export async function pickShortcut(app) {
   if (!all.length) { c.toast.warn({ text: "No shortcuts yet. Add some in the Shortcuts tab." }); return null; }
   return new Promise((resolve) => {
     const items = all.map((s) => ({ id: s.name, label: s.name, hint: (s.replacements || [])[0] || "", keywords: `${s.triggers.join(" ")} ${s.category} ${s.sub_category}`, group: [s.category, s.sub_category].filter(Boolean).join(" › ") }))
-      .sort((x, y) => x.group.localeCompare(y.group) || x.label.localeCompare(y.label));
+      .sort((x, y) => alpha(x.group, y.group) || alpha(x.label, y.label));
     let chosen = null;
     const win = c.modal.generic({ title: "Add shortcut", size: "md", onClose: () => resolve(chosen),
       body: c.filterList.md({ items, placeholder: "Search shortcuts", empty: "Nothing matches.", onChange: (id) => { chosen = all.find((s) => s.name === id).triggers[0]; win.close("done"); } }) });
