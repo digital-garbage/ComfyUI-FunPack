@@ -18,7 +18,6 @@ const mediaField = (app, p, sc, { label, hint, key, multiple, kinds, empty }) =>
       c.button.sm({ label: "✕", tone: "ghost", disabled: !ids.length, title: "Clear", onClick: () => set([]) })] }) });
 };
 
-/** One "Pin reference to the slot" per reference: a pinned one keeps its R-number when an earlier reference is switched off. */
 /** A number-or-mode pair: "Project default / Timeline trim / Custom", and the number only when Custom. */
 const lengthField = (p, sc, label, modeKey, valueKey, shown, grid) => {
   const mode = sc[modeKey] || "project";

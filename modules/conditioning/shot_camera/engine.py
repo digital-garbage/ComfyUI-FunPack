@@ -550,12 +550,15 @@ def _own_words():
     return {w for t in texts for w in re.findall(r"[a-z]+", re.sub(r"\{[a-z]+\}", " ", t.lower()))}
 
 
+ORDINARY = {"back", "side", "front", "pan", "track", "arc", "hold"}
+
+
 def _infused(picture, taken, bank, rng):
     """-> a candidate for the camera to aim at, drawn from the words the user's prompts keep returning to
     (`bank`: [(lemma, weight)]), or None. Never a word the shot already names (that would change nothing)
     and never one of this module's own words."""
-    own = _own_words()
-    mine = lambda lemma: lemma in own or any(lemma + end in own for end in ("s", "es", "d", "ed", "ing"))   # "zoom" for "zooms", "fade" for "fades"
+    own = _own_words() - ORDINARY       # words that are also plain nouns (a person's back, a frying pan) stay available
+    mine = lambda lemma: lemma not in ORDINARY and (lemma in own or any(lemma + end in own for end in ("s", "es", "d", "ed", "ing")))   # "zoom" for "zooms", "fade" for "fades"
     options = [(lemma, w) for lemma, w in bank if not mine(lemma) and lemma not in taken and w > 0]
     if not options:
         return None
@@ -638,7 +641,7 @@ def add_camera_moves(text, seed=None, chance=1.0, prior=None, choices=None, arms
 # a view and a focus. Never inside one shortcut. Nothing in a prompt knows the video's
 # length, so the caller hands it in (seconds).
 STAMP = re.compile(r"\b\d\d:\d\d\.\d{3}\b")
-ANY_STAMP = re.compile(r"\bAt\s+\d{1,2}:\d{2}(?:\.\d+)?\s*,\s*(?:the\s+)?(?:shot|camera|scene|cut|\w+\s+cut|" + _CUT_VERB + r")\b|\b\d\d:\d\d\.\d{3}\b", re.I)
+ANY_STAMP = re.compile(r"\bAt\s+\d{1,2}:\d{2}(?:\.\d+)?\s*,\s*(?:(?:the\s+)?(?:shot|camera)\s+(?:\w+ly\s+)?" + _CUT_VERB + r"|(?:\w+\s+)?cut\s+(?:to|away|back|into)|" + _CUT_VERB + r")\b|\b\d\d:\d\d\.\d{3}\b", re.I)
 # The official MiniMax-H3 guide (docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md) approves these ordinary cut phrases.
 # Dissolve, fade and wipe are for when the user asks for them, never default.
 # Each cut says what is new: a new angle, place, subject, viewpoint, state or moment. Only these four verbs.

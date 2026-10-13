@@ -52,7 +52,7 @@ SETTINGS = {
     "uneven_shots_chance": {"type": "float", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of an uneven shot length",
                             "hint": "0 = equal shots. 1 = every shot's length is changed, busier text tending to run longer. Needs a cut option on. Ratings nudge the values in between."},
     "focus_infusion_chance": {"type": "float", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of focus infusion",
-                              "hint": "0 = never. 1 = a camera focus always aims at a word your prompts keep returning to, not at the shot's own. Ratings nudge the values in between."},
+                              "hint": "0 = never. 1 = a camera focus always aims at a word your prompts keep returning to, not at the shot's own. Needs camera moves or reframes on, and a few prompts seen. Ratings nudge the values in between."},
     "shot_views": {"type": "bool", "default": False, "label": "Shot views",
                    "hint": "Later shots open on a view (side, from above, POV…), never the same twice in a row."},
     "shot_views_chance": {"type": "float", "default": 0.4, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance a shot gets a view",

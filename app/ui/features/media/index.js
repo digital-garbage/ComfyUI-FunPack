@@ -114,7 +114,7 @@ export default {
     let drawn = "";
     function draw(force) {
       const sc = p.selected, plan = sc ? sceneReferences(sc, (p.project || {}).fixed_references) : { ids: [], pins: {} }, refs = plan.ids, nums = referenceNumbers(refs, plan.pins);
-      const key = `${(sc || {}).source_image}|${refs}|${nums}|${items.map((m) => m.id)}|${selecting}|${[...chosen]}|${show.filter}`;
+      const key = `${(sc || {}).source_image}|${refs}|${nums}|${JSON.stringify(plan.pins)}|${items.map((m) => m.id)}|${selecting}|${[...chosen]}|${show.filter}`;
       if (!force && key === drawn) return;           // typing elsewhere must not rebuild the thumbnails
       drawn = key;
       const visible = new Set(items.filter((m) => show.filter === "all" || m.kind === show.filter).map((m) => m.id));

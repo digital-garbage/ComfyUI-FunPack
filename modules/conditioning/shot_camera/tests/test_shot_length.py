@@ -97,3 +97,13 @@ def test_the_chance_follows_the_slider_at_the_ends_and_ratings_tilt_it_between()
 def test_a_clock_time_in_the_story_does_not_count_as_a_written_cut_time():
     assert not engine.ANY_STAMP.search("She arrives at 8:30, and sits.")
     assert engine.ANY_STAMP.search("At 00:04.000, the shot cuts to her hand.")
+
+
+@pytest.mark.parametrize("line", ["At 9:30, he cut the rope.", "At 9:30, she cut the cake slowly.", "At 9:30, the scene opens in a park."])
+def test_a_clock_time_before_ordinary_story_text_is_not_a_written_cut_time(line):
+    assert not engine.ANY_STAMP.search(line)
+
+
+def test_words_that_are_also_plain_nouns_can_be_infused():
+    got = {engine._infused("", set(), [("back", 1), ("pan", 1)], __import__("random").Random(k))[0] for k in range(40)}
+    assert got == {"back", "pan"}

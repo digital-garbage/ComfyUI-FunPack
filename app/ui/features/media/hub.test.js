@@ -122,3 +122,23 @@ test("redrawing the bin keeps keyboard focus on the tile that has it", async () 
   const now = [...host.querySelectorAll(".cx-cell")].find((x) => x.textContent.includes("dog.png")); assert.ok(was, "focusable"); assert.equal(now, tile, "same tile node"); assert.equal(document.activeElement, tile, "the focused tile survives the redraw");
   host.remove();
 });
+
+test("pinning the first reference repaints its tile even though no number moves; toggling the focused tile keeps its focus", async () => {
+  const fixed = {};
+  const project = { selected: { id: "s1", references: ["m1", "m2"] }, project: { fixed_references: fixed }, setScene: () => {} };
+  const api = { media: async () => ({ media: [{ id: "m1", name: "cat.png", kind: "image" }, { id: "m2", name: "dog.png", kind: "image" }] }) };
+  const host = document.createElement("div");
+  document.body.append(host);
+  let fire;
+  hub.setup({ host, app: { project, api, mediaPeek: {}, say: () => {}, on: (cb) => { fire = cb; return () => {}; } } });
+  await new Promise((r) => setTimeout(r, 10));
+  const cell = (n) => [...host.querySelectorAll(".cx-cell")].find((x) => x.textContent.includes(n));
+  fixed.m1 = 1;
+  fire("project");
+  assert.match(cell("cat.png").textContent, /📌R1/, "pinned: the pin shows");
+  cell("dog.png").focus();
+  project.selected.references = ["m1"];
+  fire("project");
+  assert.equal(document.activeElement, cell("dog.png"), "the focused tile, rebuilt, keeps the focus");
+  host.remove();
+});
