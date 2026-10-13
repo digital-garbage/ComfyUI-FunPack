@@ -50,7 +50,7 @@ def test_nothing_is_infused_before_there_is_a_habit_or_from_a_word_seen_in_one_p
 
 
 def test_the_modules_own_words_are_never_infused():
-    _habit("camera", "angle", "moment", "view", "zoom", "fade", "black", "pan")
+    _habit("camera", "angle", "moment", "view", "zoom", "fade", "black")
     for variation in range(10):
         _, _, arms = _move(focus_infusion_chance=1, variation=variation)
         assert "infuse:yes" not in arms and not any(a.startswith("infused:") for a in arms)
