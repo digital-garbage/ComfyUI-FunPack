@@ -298,3 +298,10 @@ def test_an_unreadable_installed_list_installs_nothing(repo, monkeypatch):
     monkeypatch.setattr(update, "_pip_freeze", lambda: {})
     out = update.install_requirements()
     assert out["ok"] is False and ran == []
+
+
+def test_v5_has_its_codename_and_so_does_every_major_with_one():
+    from core import update as update_mod
+    assert update_mod.funpack_codename("5.0.0") == "Cunning Cranberry"
+    assert update_mod.funpack_codename("4.2.1") == "Blinding Blackout"
+    assert update_mod.funpack_codename("9.0.0") == "", "an unnamed major says nothing rather than guessing"

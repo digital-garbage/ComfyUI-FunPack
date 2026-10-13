@@ -58,6 +58,7 @@ def funpack_version() -> str:
 CODENAMES = {
     "3": "Auspicious Asparagus",
     "4": "Blinding Blackout",
+    "5": "Cunning Cranberry",      # README on main: "FunPack v5.0 'Cunning Cranberry'"
 }
 
 

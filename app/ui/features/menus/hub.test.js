@@ -11,7 +11,7 @@ const rig = (over = {}) => {
   const project = { project: { id: "P", name: "Demo" }, canUndo: true, canRedo: false, undo: () => calls.push("undo"), redo: () => calls.push("redo"), ...over };
   const selection = { ids: [], focus: null };
   const host = document.createElement("div");
-  hub.setup({ host, app: { project, selection, on: () => () => {} } });
+  hub.setup({ host, app: { project, selection, has: new Set(), on: () => () => {} } });
   return { host, calls };
 };
 const pick = async (host, menu, item) => {
@@ -35,4 +35,19 @@ test("Edit > Delete Scene is greyed until a scene is picked; File lists recent p
   await new Promise((r) => setTimeout(r, 10));
   assert.equal([...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent.includes("Delete Scene")).disabled, true);
   assert.ok([...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent.includes("Add Scene")));
+});
+
+test("clicking the same menu button again closes its menu instead of stacking a second one", async () => {
+  const { host } = rig();
+  const file = [...host.querySelectorAll("button")].find((b) => b.textContent === "File");
+  const open = () => document.querySelectorAll(".cx-popover").length;
+  const settle = () => new Promise((r) => setTimeout(r, 10));
+  const start = open();                  // earlier tests in this file may have left menus open
+  file.click(); await settle();
+  assert.equal(open(), start + 1, "the first click opens the menu");
+  file.click(); await settle();
+  assert.equal(open(), start, "the second click closes it, and does not open a second one");
+  file.click(); await settle();
+  assert.equal(open(), start + 1, "the next click opens it again");
+  file.click(); await settle();
 });

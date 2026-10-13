@@ -78,9 +78,20 @@ export default {
     };
     const off = app.on((what) => { if (what === "project.load") actions.load(); });
     const pick = (id) => (id.startsWith("open:") ? p.open(id.slice(5)) : actions[id] && actions[id]());
+    // A second click on the same menu closes it. Its own button counts as "inside" the open menu for outside-click
+    // dismissal, so without this the click opened a second menu on top of the first.
     for (const [label, items] of Object.entries(menus)) {
-      const button = c.button.menu({ label, tone: "ghost", onClick: async () => c.menu.dropdown({ anchor: button, items: await items(),
-        onPick: (id) => Promise.resolve(pick(id)).catch((err) => c.toast.warn({ text: err.message })) }) });
+      let menu = null, busy = false;
+      const button = c.button.menu({ label, tone: "ghost", onClick: async () => {
+        if (menu) return menu.close("toggle");
+        if (busy) return;
+        busy = true;
+        try {
+          const handle = c.menu.dropdown({ anchor: button, items: await items(), onClose: () => { if (menu === handle) menu = null; },
+            onPick: (id) => Promise.resolve(pick(id)).catch((err) => c.toast.warn({ text: err.message })) });
+          menu = handle;
+        } finally { busy = false; }
+      } });
       host.append(button.node);
     }
     return off;
