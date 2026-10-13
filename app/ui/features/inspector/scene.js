@@ -26,7 +26,7 @@ const pinRows = (p, sc, app) => {
   if (!plan.ids.length) return [];
   const numbers = referenceNumbers(plan.ids, plan.pins);
   return [card(...plan.ids.map((id, i) => c.checkboxRow.default({ label: `Pin reference to slot R${numbers[i]}`,
-    hint: namesOf([id], app.api, () => app.say("bin"))[0] || id, checked: plan.pins[id] != null,
+    hint: namesOf([id], app.api, () => app.say("bin"))[0] || id, checked: plan.pins[id] === numbers[i],
     onChange: (on) => {
       if (id in fixed) { app.project.edit((x) => { const next = { ...(x.fixed_references || {}) }; delete next[id]; x.fixed_references = next; return true; }); return; }
       const next = { ...(sc.reference_pins || {}) }; if (on) next[id] = numbers[i]; else delete next[id];

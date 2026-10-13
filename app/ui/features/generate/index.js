@@ -73,12 +73,17 @@ export default {
         // A picture deleted from the bin (in another project, or on another machine) is still named by id here: it would fail the run in ComfyUI.
         const bin = await Promise.resolve().then(() => app.api.media()).then((r) => new Set((r.media || []).map((m) => m.id)), () => null);
         const dead = (id) => bin && id && !bin.has(id);
-        const prune = (pr) => pr.scenes.reduce((hit, s) => {
-          const had = dead(s.source_image) || (s.references || []).some(dead);
-          if (dead(s.source_image)) s.source_image = "";
-          if (had) s.references = (s.references || []).filter((r) => !dead(r));
-          return hit || had;
-        }, false);
+        const prune = (pr) => {
+          const fx = pr.fixed_references || {}, deadFx = Object.keys(fx).filter(dead);      // a fixed slot whose picture is gone goes too, or every scene sends it
+          for (const id of deadFx) delete fx[id];
+          if (deadFx.length) pr.fixed_references = fx;
+          return pr.scenes.reduce((hit, s) => {
+            const had = dead(s.source_image) || (s.references || []).some(dead);
+            if (dead(s.source_image)) s.source_image = "";
+            if (had) s.references = (s.references || []).filter((r) => !dead(r));
+            return hit || had;
+          }, deadFx.length > 0);
+        };
         if (prune(snap)) { tell("Some pictures this project used are no longer in the media bin; they were removed from their scenes."); p.edit(prune); }
         const fixedSeed = times === 1 && p.pref("random_seed", true) === false;        // takes are compared across seeds: always fresh ones
         const drawn = new Map();

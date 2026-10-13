@@ -1,6 +1,7 @@
 // The media bin: files brought in (reference images, clips), kept apart from what runs produce.
 import { composer as c } from "../../composer/composer.js";
 import { learn } from "../../shell/bin.js";
+import { referenceNumbers, sceneReferences } from "../../shell/reference_wiring.js";
 import { MEDIA_DRAG } from "../../shell/dnd.js";
 
 const base = (id) => `/funpack/api/media/${encodeURIComponent(id)}`;
@@ -96,7 +97,7 @@ export default {
 
     let drawn = "";
     function draw(force) {
-      const sc = p.selected, refs = (sc && sc.references) || [];
+      const sc = p.selected, plan = sc ? sceneReferences(sc, (p.project || {}).fixed_references) : { ids: [], pins: {} }, refs = plan.ids, nums = referenceNumbers(refs, plan.pins);
       const key = `${(sc || {}).source_image}|${refs}|${items.map((m) => m.id)}|${selecting}|${[...chosen]}|${show.filter}`;
       if (!force && key === drawn) return;           // typing elsewhere must not rebuild the thumbnails
       drawn = key;
@@ -110,7 +111,7 @@ export default {
       if (g.setCols) g.setCols(Number(show.cols));
       // what the selected scene uses is marked on its tile, so a reference can be told from the rest
       const flags = (m) => [sc && sc.source_image === m.id ? { text: "◐", title: "The selected scene's resolution source" } : null,
-        refs.includes(m.id) ? { text: `R${refs.indexOf(m.id) + 1}`, title: `Reference ${refs.indexOf(m.id) + 1} of ${refs.length} for the selected scene` } : null].filter(Boolean);
+        refs.includes(m.id) ? { text: `R${nums[refs.indexOf(m.id)]}`, title: `Reference slot ${nums[refs.indexOf(m.id)]} for the selected scene` } : null].filter(Boolean);
       g.setItems(shown.map((m) => ({ id: m.id, label: m.name, thumb: m.kind === "audio" ? undefined : `${base(m.id)}/thumb`, badge: m.kind, flags: flags(m) })));
       g.setValue(selecting ? [...chosen] : sc ? [sc.source_image, ...refs].filter(Boolean) : []);
       selectBtn.setLabel(selecting ? "Done" : "Select");
