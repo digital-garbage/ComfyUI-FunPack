@@ -706,7 +706,30 @@ def _opener(rng, difference, last):
     return phrase, kind
 
 
-def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=(), transition=0.0):
+def _screen_time(blocks, seed, uneven, arms):
+    """-> one weight per shot, or None when every shot gets an equal share (`uneven` 0, or one shot).
+    With odds `uneven` a shot's share is changed, longer or shorter; the busier its text compared with the
+    others, the likelier longer and the more of it (damped, so no shot is a blink beside another).
+    1 changes every shot. `arms` collects "length:yes" / "length:no" for the rating that follows."""
+    if uneven <= 0 or len(blocks) < 2:
+        return None
+    words = [max(1, len(blocks[k][0].split())) for k in range(len(blocks))]
+    mean = sum(words) / len(words)
+    weights = []
+    for k, count in enumerate(words):
+        rng = random.Random(f"{seed}:length:{k}")
+        if rng.random() >= uneven:
+            weights.append(1.0)
+            arms.append("length:no")
+            continue
+        busy = count / mean
+        longer = rng.random() < min(0.9, max(0.1, 0.5 + 0.4 * (busy - 1)))
+        weights.append((1.4 + 0.6 * rng.random() if longer else 0.5 + 0.3 * rng.random()) * busy ** 0.5)
+        arms.append("length:yes")
+    return weights
+
+
+def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=(), transition=0.0, uneven=0.0):
     """-> (new prompt, info). A shot is cut between the shortcuts inside it, including the same
     shortcut used again; every shot after the first then opens with its cut time, spread evenly
     over `seconds` and rounded to whole seconds. A prompt that already carries cut times is left
@@ -751,9 +774,13 @@ def add_shot_cuts(text, seconds, seed=0, chance=0.5, pieces=(), transition=0.0):
     # it gave one-second shots next to five-second ones).
     n = len(blocks)
     gap = MIN_SHOT_SECONDS if n * MIN_SHOT_SECONDS <= seconds else 1
+    weights = _screen_time(blocks, seed, uneven, info["arms"])
+    cum = [0.0]
+    for w in weights or ():
+        cum.append(cum[-1] + w)
     times = []
     for k in range(1, n):
-        t = round(k * seconds / n)
+        t = round(k * seconds / n) if weights is None else round(seconds * cum[k] / cum[-1])
         t = max(t, (times[-1] if times else 0) + gap)          # not too close behind
         t = min(t, int(seconds) - (n - k) * gap)               # leave room for the shots after
         times.append(t)

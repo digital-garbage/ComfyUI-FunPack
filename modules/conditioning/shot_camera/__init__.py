@@ -49,6 +49,8 @@ SETTINGS = {
     "reframe_chance": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of a reframe",
                        "hint": "1 = always reframe between those shortcuts, 0 = never. Ratings nudge the values in between.",
                        "when": {"reframe_same_shot": True}},
+    "uneven_shots_chance": {"type": "float", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of an uneven shot length",
+                            "hint": "0 = equal shots. 1 = every shot's length is changed, busier text tending to run longer. Needs a cut option on. Ratings nudge the values in between."},
     "focus_infusion_chance": {"type": "float", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "label": "Chance of focus infusion",
                               "hint": "0 = never. 1 = a camera focus always aims at a word your prompts keep returning to, not at the shot's own. Ratings nudge the values in between."},
     "shot_views": {"type": "bool", "default": False, "label": "Shot views",

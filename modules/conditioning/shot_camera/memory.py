@@ -361,6 +361,12 @@ def split_chance(chance):
     return _odds(chance, _lean("split:yes", "split:no"))
 
 
+def length_chance(chance):
+    """The chance a shot's length is changed from an equal share, tilted by whether such runs were liked
+    (0 and 1 kept as set)."""
+    return _odds(chance, _lean("length:yes", "length:no"))
+
+
 def infuse_chance(chance):
     """The chance a camera focus is replaced by a word the user's prompts keep returning to, tilted by whether
     runs that did it were liked (0 and 1 kept as set)."""
