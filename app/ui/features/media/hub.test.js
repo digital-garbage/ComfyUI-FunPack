@@ -86,3 +86,23 @@ test("a reference's tile menu pins it at the slot number it holds, for every sce
   [...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent === "Unpin reference from slot R2").click();
   assert.deepEqual(doc.fixed_references, {});
 });
+
+test("toggling a reference leaves the other tiles untouched, so the bin does not jump or reload its thumbnails", async () => {
+  const scene = { id: "s1", references: [] };
+  const project = { selected: scene, project: { fixed_references: {} }, setScene: () => {} };
+  const api = { media: async () => ({ media: [{ id: "m1", name: "cat.png", kind: "image" }, { id: "m2", name: "dog.png", kind: "image" }, { id: "m3", name: "owl.png", kind: "image" }] }) };
+  const host = document.createElement("div");
+  let fire;
+  hub.setup({ host, app: { project, api, mediaPeek: {}, say: () => {}, on: (cb) => { fire = cb; return () => {}; } } });
+  await new Promise((r) => setTimeout(r, 10));
+  const tiles = () => [...host.querySelectorAll(".cx-cell")];
+  const before = tiles();
+  scene.references = ["m2"];
+  fire("change");
+  const after = tiles();
+  assert.equal(after.length, 3);
+  assert.equal(after[0], before[0], "cat.png: same tile");
+  assert.equal(after[2], before[2], "owl.png: same tile");
+  assert.notEqual(after[1], before[1], "dog.png is the one that changed: it gained its R1 mark");
+  assert.equal(after[1].querySelector(".cx-cell-flag").textContent, "R1");
+});

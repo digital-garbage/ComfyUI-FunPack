@@ -46,25 +46,41 @@ function thumbOf(item, cls = "cx-cell-thumb", marks = true) {
 function collection({ items = [], empty = EMPTY, selection = [], onActivate, onContext, drag } = {},
                     host, cellFor) {
   const chosen = new Set(selection);
+  let kept = new Map();               // id -> { cell, sig }: a tile is built once and kept while what it shows is unchanged
+
+  const mark = (cell, on) => { cell.classList.toggle("cx-on", on); cell.setAttribute("aria-selected", String(on)); };
 
   function draw() {
-    host.replaceChildren();
     if (!items.length) {
-      host.append(el("p", { cls: "cx-list-empty", text: empty }));
+      kept = new Map();
+      host.replaceChildren(el("p", { cls: "cx-list-empty", text: empty }));
       return;
     }
-    for (const item of items) {
-      const cell = cellFor(item, chosen.has(item.id));
-      cell.addEventListener("click", () => { if (onActivate) onActivate(item); });
-      if (onContext) {
-        cell.addEventListener("contextmenu", (e) => { e.preventDefault(); onContext(item, e); });
+    // Only a tile whose item changed is rebuilt. Rebuilding them all re-created every thumbnail and reset the
+    // scroll position, and a selection change alone is just a class and an attribute.
+    const next = new Map();
+    const cells = items.map((item) => {
+      const sig = JSON.stringify(item), old = kept.get(item.id);
+      let entry = old && old.sig === sig ? old : null;
+      if (!entry) {
+        const cell = cellFor(item, chosen.has(item.id));
+        cell.addEventListener("click", () => { if (onActivate) onActivate(item); });
+        if (onContext) {
+          cell.addEventListener("contextmenu", (e) => { e.preventDefault(); onContext(item, e); });
+        }
+        if (drag) {       // { type, data(item) }: a tile that can be dropped elsewhere
+          cell.draggable = true;
+          cell.addEventListener("dragstart", (e) => { e.dataTransfer.setData(drag.type, JSON.stringify(drag.data(item))); e.dataTransfer.effectAllowed = "copy"; });
+        }
+        entry = { cell, sig };
       }
-      if (drag) {       // { type, data(item) }: a tile that can be dropped elsewhere
-        cell.draggable = true;
-        cell.addEventListener("dragstart", (e) => { e.dataTransfer.setData(drag.type, JSON.stringify(drag.data(item))); e.dataTransfer.effectAllowed = "copy"; });
-      }
-      host.append(cell);
-    }
+      mark(entry.cell, chosen.has(item.id));
+      next.set(item.id, entry);
+      return entry.cell;
+    });
+    kept = next;
+    const now = [...host.children];
+    if (now.length !== cells.length || cells.some((cell, i) => cell !== now[i])) host.replaceChildren(...cells);
   }
   draw();
 
