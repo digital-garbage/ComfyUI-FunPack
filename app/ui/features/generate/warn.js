@@ -25,7 +25,11 @@ export default {
     const slow = c.button.sm({ label: "⚠ Slow torch for int8", tone: "ghost", title: "",
       onClick: () => app.maintenance?.cuda13(slow.title) }).node;
     slow.hidden = true;
-    host.append(chip, plain, keyless, twice, slow);
+    // Shot camera runs without spaCy, but aims its moves with plain word rules.
+    const rough = c.button.sm({ label: "Camera targets rougher", tone: "ghost", title: "Shot camera is on, but spaCy is not: camera moves aim with simple word rules and pick worse targets. Switch on Automatic camera and focus in Settings ▸ Modules.",
+      onClick: () => app.openSettings?.("modules") }).node;
+    rough.hidden = true;
+    host.append(chip, plain, keyless, twice, slow, rough);
     Promise.resolve().then(() => app.api?.torchBuild?.()).then((r) => {
       if (r && r.slow_int8) { slow.title = r.slow_int8; slow.hidden = false; }
     }).catch(() => {});      // unknown build: the loader still says it in the log when an int8 model loads
@@ -40,9 +44,18 @@ export default {
       plain.hidden = !ps.allOff?.();
       keyless.hidden = !(taste && ps.activeModules().includes(taste) && ps.useful(taste) && !String((ps.currentValues().taste || {}).key || "").trim());
     };
+    let asking = 0;
+    const drawRough = () => {
+      const ps = app.pipeline, cam = ps.modulesById?.().conditioning_shot_camera, ask = ++asking;
+      if (!cam || !ps.activeModules().includes(cam) || ps.allOff?.()) { rough.hidden = true; return; }
+      Promise.resolve().then(() => app.api?.addons?.()).then((all) => {
+        if (ask === asking) rough.hidden = !all || all.some((a) => a.id === "camera" && a.state === "installed");
+      }).catch(() => {});                                   // no add-on list: say nothing
+    };
     drawPlain();
+    drawRough();
     draw(app.pipeline.slots());
     drawTwice(app.pipeline.slots());
-    return app.pipeline.subscribe ? app.pipeline.subscribe(() => { draw(app.pipeline.slots()); drawTwice(app.pipeline.slots()); drawPlain(); }) : undefined;
+    return app.pipeline.subscribe ? app.pipeline.subscribe(() => { draw(app.pipeline.slots()); drawTwice(app.pipeline.slots()); drawPlain(); drawRough(); }) : undefined;
   },
 };

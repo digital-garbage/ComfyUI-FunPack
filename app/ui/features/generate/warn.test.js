@@ -61,3 +61,26 @@ test("the slow-torch chip shows the server's sentence when this build runs int8 
   await tick();
   assert.equal(slowChip(host).hidden, true, "an unreadable build is not a claim");
 });
+
+test("the rougher-camera chip shows only while shot camera is active and the camera add-on is not installed", async () => {
+  const cam = { id: "conditioning_shot_camera" };
+  let active = [cam], listener;
+  const pipeline = { slots: () => [], allOff: () => false, modulesById: () => ({ conditioning_shot_camera: cam }), activeModules: () => active,
+    useful: () => false, currentValues: () => ({}), subscribe: (fn) => { listener = fn; return () => {}; } };
+  const rough = (host) => [...host.querySelectorAll("button")].find((b) => /Camera targets rougher/.test(b.textContent));
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  let state = "available";
+  const host = document.createElement("div");
+  let opened = null;
+  warn.setup({ host, app: { pipeline, openSettings: (id) => { opened = id; }, api: { addons: async () => [{ id: "camera", state }] } } });
+  await tick();
+  assert.equal(rough(host).hidden, false, "camera on, spaCy absent: said");
+  rough(host).click();
+  assert.equal(opened, "modules");
+  state = "installed"; listener(); await tick();
+  assert.equal(rough(host).hidden, true, "spaCy installed and on");
+  state = "disabled"; listener(); await tick();
+  assert.equal(rough(host).hidden, false, "spaCy installed but switched off");
+  active = []; listener(); await tick();
+  assert.equal(rough(host).hidden, true, "shot camera not in use: nothing to say");
+});
