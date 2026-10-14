@@ -23,7 +23,7 @@ test("a click on a tile looks at it on the monitor; the context menu's resolutio
   named("a.wav").click();
   assert.equal(app.mediaPeek.item.id, "m2");
   named("cat.png").dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
-  [...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent.includes("resolution source")).click();
+  [...document.querySelectorAll(".cx-menu-item")].find((b) => b.textContent.includes("aspect ratio source")).click();
   assert.deepEqual(set, [["s1", "source_image", "m1"]]);
 });
 

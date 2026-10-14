@@ -26,7 +26,7 @@ export default {
       engine(app), "Generation", "engine module settings");
     add("models", "Models & Pipeline", "Loaders and nodes wired into the live pipeline.", "⬡", "accent",
       models(app), "Generation", "models loaders unet vae clip lora");
-    add("modules", "Modules", "Switch a module off for this project; see and re-enable ones that failed.", "☷", "neutral",
+    add("modules", "Modules", "Optional modules to install, modules to switch off for this project, and ones that failed.", "☷", "neutral",
       modules(app), "Generation", "modules enable disable quarantine");
     add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys.", "✦", "danger",
       taste(app), "Learning", "refinement taste keys rating");

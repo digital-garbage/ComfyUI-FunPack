@@ -60,8 +60,8 @@ export function sceneRows(p, app) {
       c.field.default({ label: "Source", control: c.select.md({ label: "Source", options: SOURCES, value: (sc.source || {}).type || "carry",
         onChange: (v) => p.setScene(sc.id, "source", { ...(sc.source || {}), type: v }) }) }))]),
     c.label.section({ text: "Reference media (v5 pipeline)" }),
-    card(mediaField(app, p, sc, { label: "Resolution source", hint: "Sets this scene's aspect ratio for generation — the project's own Width/Height set the actual resolution; this image's pixels are not used.",
-      key: "source_image", multiple: false, kinds: ["image"], empty: "— choose resolution source —" }),
+    card(mediaField(app, p, sc, { label: "Aspect ratio source", hint: "Sets this scene's aspect ratio for generation — the project's own Width/Height set the actual resolution; this image's pixels are not used.",
+      key: "source_image", multiple: false, kinds: ["image"], empty: "— choose aspect ratio source —" }),
     mediaField(app, p, sc, { label: "References", key: "references", multiple: true, kinds: ["image", "video", "audio"], empty: "+ Add reference" })),
     c.label.section({ text: "Length" }),
     card(c.field.row({ fields: [

@@ -1,7 +1,7 @@
 """Load one file from FunPack's media library (core/media.py) as an IMAGE.
 
 The bridge between "picked in the Media bin" and "wired into the graph": the
-media store has no idea what a reference image or a resolution source is, and
+media store has no idea what a reference image or an aspect ratio source is, and
 the graph has no idea what a media id is. This is the one place both are true.
 
 `media_id` is a plain string widget rather than a picker combo on purpose --

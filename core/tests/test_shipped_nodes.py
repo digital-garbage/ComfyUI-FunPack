@@ -69,7 +69,7 @@ FROZEN = {
     "FunPackIdentityTransfer": ["model", "vae", "positive", "negative", "latent", "image", "identity_projector",
                                 "source_id", "phase_scale", "id_strength", "arcface_mode"],
     "FunPackDecode": ["samples", "vae", "model", "audio_vae", "tile_size"],
-    "FunPackUpscaleVideo": ["filename", "subfolder", "type", "upscale_model"],
+    "FunPackUpscaleVideo": ["filename", "subfolder", "type", "upscale_model", "rtx_options"],
     "FunPackEmptyLatent": ["model", "width", "height", "length", "batch_size", "audio_vae", "frame_rate"],
     "FunPackDiffusionModelLoader": [
         "model_name", "weight_dtype", "compute_dtype", "attention", "fp16_accumulation",

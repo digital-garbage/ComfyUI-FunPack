@@ -42,3 +42,6 @@ MARKERS_FILE = ROOT / "markers.json"
 
 # Modules that failed and stay off until repaired (core/control.py). State, so beside the library.
 QUARANTINE_FILE = ROOT / "quarantine.json"
+
+# Optional features the user switched on (core/addons.py). Per machine: a new rental starts without them.
+ADDONS_FILE = ROOT / "addons.json"

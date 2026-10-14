@@ -433,15 +433,33 @@ def install_requirements(timeout: int = 900) -> dict:
         return {"ran": False, "ok": False,
                 "detail": "Could not read the installed packages, so nothing is installed (an install could move them). "
                           f"Run it yourself: {sys.executable} -m pip install <the missing packages>"}
-    # Constraints: every installed package stays at its version, so a new package's dependencies can be added
-    # but never bump one that is already here. A dependency that needs a newer one fails, and says so.
+    return _constrained(before, lambda path: _install_each(status, path, before, floor_note, timeout, model_broken))
+
+
+def _constrained(before, run):
+    """`run(constraints_path)` with every installed package held at its version, so a new package's
+    dependencies can be added but never bump one that is already here. A dependency that needs a
+    newer one fails, and says so."""
     constraints = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
     try:
         constraints.write("\n".join(f"{n}=={v}" for n, v in before.items()) + "\n")
         constraints.close()
-        return _install_each(status, constraints.name, before, floor_note, timeout, model_broken)
+        return run(constraints.name)
     finally:
         os.unlink(constraints.name)
+
+
+def install_lines(lines, timeout: int = 900) -> dict:
+    """Install the absent ones of these requirement lines, with the same guard as install_requirements:
+    nothing already present moves. Never raises."""
+    todo = [l for l in lines if (p := parse_requirement(l)) and _installed_version(p[0]) is None]
+    if not todo:
+        return {"ran": False, "ok": True, "changed": [], "detail": "Nothing to install."}
+    before = _pip_freeze()
+    if not before:
+        return {"ran": False, "ok": False, "detail": "Could not read the installed packages, so nothing was installed."}
+    status = {"install": todo, "missing": [parse_requirement(l)[0] for l in todo]}
+    return _constrained(before, lambda path: _install_each(status, path, before, "", timeout, False))
 
 
 def _install_each(status, constraints_path, before, floor_note, timeout, model_broken):

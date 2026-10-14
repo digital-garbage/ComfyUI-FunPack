@@ -23,6 +23,8 @@ export const api = {
   editPipeline: (body) => call("POST", "/api/pipeline", body),
   modules: (traits) => call("GET", `/api/modules${traits != null ? `?traits=${encodeURIComponent(traits)}` : ""}`),
   releaseModule: (id) => call("POST", "/api/control/release", { id }),
+  addons: () => call("GET", "/api/addons").then((d) => d.addons || []),
+  setAddon: (id, enabled) => call("POST", "/api/addons", { id, enabled }).then((d) => d.addons || []),
   searchNodes: (q, limit = 40) => call("GET", `/api/nodes/search?q=${encodeURIComponent(q || "")}&limit=${limit}`),
   pipelinePresets: () => call("GET", "/api/pipeline/presets"),
   setMediaSubject: (id, subject) => call("PATCH", `/api/media/${encodeURIComponent(id)}`, { subject }),
@@ -76,8 +78,8 @@ export const api = {
   },
   upscaleModels: () => call("GET", "/api/m/render/upscale_models"),
   /** The upscale is an ordinary ComfyUI job: queued on /prompt, read back from /history. -> the prompt id. */
-  async queueUpscale(media, model) {
-    const graph = { 1: { class_type: "FunPackUpscaleVideo", inputs: { filename: media.filename, subfolder: media.subfolder || "", type: media.type === "temp" ? "temp" : "output", upscale_model: model } } };
+  async queueUpscale(media, model, rtx) {
+    const graph = { 1: { class_type: "FunPackUpscaleVideo", inputs: { filename: media.filename, subfolder: media.subfolder || "", type: media.type === "temp" ? "temp" : "output", upscale_model: model, ...(rtx ? { rtx_options: JSON.stringify(rtx) } : {}) } } };
     const res = await fetch("/prompt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: graph }) });
     const body = await res.json().catch(() => ({}));
     if (!res.ok || !body.prompt_id) {

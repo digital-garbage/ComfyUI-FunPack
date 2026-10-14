@@ -25,10 +25,10 @@ export default {
     let selecting = false;
     const chosen = new Set();
     const peek = (it) => { const item = items.find((m) => m.id === it.id); if (!item) return; app.mediaPeek.item = item; app.say("media.peek"); };       // a click looks at it on the monitor
-    const pick = (it) => {                                  // an image becomes the selected scene's resolution source
+    const pick = (it) => {                                  // an image becomes the selected scene's aspect ratio source
       const sc = p.selected, item = items.find((m) => m.id === it.id);
       if (!sc || !item) return tell("Select a scene first.");
-      if (item.kind !== "image") return tell("Only an image can be a scene's resolution source.");
+      if (item.kind !== "image") return tell("Only an image can be a scene's aspect ratio source.");
       p.setScene(sc.id, "source_image", item.id);
       draw();
     };
@@ -42,8 +42,8 @@ export default {
     const pinItem = (it) => { const s = slotOf(it.id); return s && s.n <= 16 ? [{ id: "pinref", label: s.pinned ? `Unpin reference from slot R${s.n}` : `Pin reference to slot R${s.n}` }] : []; };
     const extras = (it) => (app.mediaMenu || []).flatMap((f) => { try { return f(it, items.find((m) => m.id === it.id)) || []; } catch { return []; } });       // entries other features add to a tile's menu: { id, label, run }
     const context = (it, e) => c.menu.context({ x: e.clientX, y: e.clientY, onPick: (id) => (act[id] ? act[id](it) : extras(it).find((x) => x.id === id)?.run()),
-      items: [{ id: "look", label: "Look at it on the monitor" }, ...(p.selected && p.selected.source_image === it.id ? [{ id: "unres", label: "Stop using as the selected scene's resolution source" }]
-          : [{ id: "res", label: "Use as the selected scene's resolution source", disabled: !p.selected || it.kind === "audio" || !items.some((m) => m.id === it.id && m.kind === "image") }]),
+      items: [{ id: "look", label: "Look at it on the monitor" }, ...(p.selected && p.selected.source_image === it.id ? [{ id: "unres", label: "Stop using as the selected scene's aspect ratio source" }]
+          : [{ id: "res", label: "Use as the selected scene's aspect ratio source", disabled: !p.selected || it.kind === "audio" || !items.some((m) => m.id === it.id && m.kind === "image") }]),
         p.selected && (p.selected.references || []).includes(it.id) ? { id: "unref", label: "Stop using as a reference for the selected scene" }
           : { id: "ref", label: "Use as a reference for the selected scene", disabled: !p.selected || !!(slotOf(it.id) || {}).pinned }, ...pinItem(it), { id: "rename", label: "Rename…" },
         { id: "export", label: "Save to your computer", disabled: !items.some((m) => m.id === it.id && m.kind !== "audio") }, ...extras(it).map(({ id, label, disabled }) => ({ id, label, disabled })), { separator: true }, { id: "delete", label: "Delete from the bin", danger: true }] });
@@ -126,7 +126,7 @@ export default {
       shelf.set([g]);
       if (g.setCols) g.setCols(Number(show.cols));
       // what the selected scene uses is marked on its tile, so a reference can be told from the rest
-      const flags = (m) => [sc && sc.source_image === m.id ? { text: "◐", title: "The selected scene's resolution source" } : null,
+      const flags = (m) => [sc && sc.source_image === m.id ? { text: "◐", title: "The selected scene's aspect ratio source" } : null,
         refs.includes(m.id) ? { text: `${plan.pins[m.id] ? "📌" : ""}R${nums[refs.indexOf(m.id)]}`, title: `Reference slot ${nums[refs.indexOf(m.id)]} for the selected scene${plan.pins[m.id] ? ", pinned to every scene" : ""}` } : null].filter(Boolean);
       g.setItems(shown.map((m) => ({ id: m.id, label: m.name, thumb: m.kind === "audio" ? undefined : `${base(m.id)}/thumb`, badge: m.kind, flags: flags(m) })));
       g.setValue(selecting ? [...chosen] : sc ? [sc.source_image, ...refs].filter(Boolean) : []);

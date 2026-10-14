@@ -30,6 +30,8 @@ else:
         from .core import routes    # noqa: F401  (registers routes on import)
     except Exception as exc:        # a broken route must not take ComfyUI down
         log.failed("core.routes", exc)
+    from .core import addons
+    addons.install_wanted()         # add-ons switched on in Settings: installed now, before a module imports them
 
 
 async def comfy_entrypoint():

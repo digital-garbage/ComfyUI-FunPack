@@ -12,7 +12,7 @@ import math
 import random
 import re
 
-from ..._core import log
+from ..._core import addons, log
 
 SHOT = re.compile(r"\[\s*Shot\s+(\d+)\s*\]", re.I)
 SUBJECT = re.compile(r"<\s*Subject\s*(\d+)\s*>", re.I)
@@ -95,6 +95,8 @@ def _say(what, error, effect):
 def _spacy():
     """The small English tagger, or None (said once) when it is not installed."""
     global _nlp, _tried
+    if not addons.enabled("camera"):        # switched off, or never installed: word rules, quietly
+        return None
     if not _tried:
         _tried = True
         try:

@@ -12,7 +12,7 @@ import os
 import shutil
 import subprocess
 
-from . import files
+from . import files, rtx
 
 CHUNK = 8                # frames per upscale call, at most
 CHUNK_PIXELS = 2_000_000   # ...and at most this many input pixels per call: a big upscale of 1080p is gigabytes per frame
@@ -136,35 +136,40 @@ if io is not None:
                 node_id="FunPackUpscaleVideo",
                 display_name="FunPack Upscale Video",
                 category="FunPack/Output",
-                description="Upscale a finished video file with an upscale model; keeps its fps and sound.",
+                description="Upscale a finished video file with an upscale model or NVIDIA RTX Super Resolution; keeps its fps and sound.",
                 inputs=[
                     io.String.Input("filename", default=""),
                     io.String.Input("subfolder", default=""),
                     io.Combo.Input("type", options=["output", "temp"], default="output"),
-                    io.Combo.Input("upscale_model", options=models() or [""],
-                                   tooltip="From ComfyUI/models/upscale_models. Use .safetensors."),
+                    io.Combo.Input("upscale_model", options=[rtx.NAME, *(models() or [""])],
+                                   tooltip="From ComfyUI/models/upscale_models (use .safetensors), or NVIDIA RTX Super Resolution."),
+                    io.String.Input("rtx_options", default="{}", optional=True,
+                                    tooltip="NVIDIA RTX Super Resolution options as JSON: quality, resize, scale, width, height, strength, tenbit."),
                 ],
                 outputs=[],
                 is_output_node=True,
             )
 
         @classmethod
-        def execute(cls, filename, subfolder, type, upscale_model) -> io.NodeOutput:
+        def execute(cls, filename, subfolder, type, upscale_model, rtx_options="{}") -> io.NodeOutput:
             import comfy.model_management as mm
             import folder_paths
-            from comfy_extras.nodes_upscale_model import ImageUpscaleWithModel, UpscaleModelLoader
 
             src = files.comfy_path(filename, subfolder, type)
             if not src or not os.path.isfile(src):
                 raise RuntimeError(f"{filename} is not in the {type} folder (anymore).")
-            model = UpscaleModelLoader.execute(upscale_model).result[0]
+            if upscale_model == rtx.NAME:
+                opts = rtx.options(rtx_options)
+                fn, tag = rtx.make(opts), "rtx_" + opts["quality"].lower()
+            else:
+                from comfy_extras.nodes_upscale_model import ImageUpscaleWithModel, UpscaleModelLoader
+                model = UpscaleModelLoader.execute(upscale_model).result[0]
+                fn, tag = (lambda x: ImageUpscaleWithModel.execute(model, x).result[0]), upscale_model
             out_dir = os.path.join(folder_paths.get_output_directory(), SUBFOLDER)
             os.makedirs(out_dir, exist_ok=True)
-            name = free_name(out_dir, filename, upscale_model)
-            frames = upscale_file(src, os.path.join(out_dir, name),
-                                  lambda x: ImageUpscaleWithModel.execute(model, x).result[0],
-                                  mm.throw_exception_if_processing_interrupted)
+            name = free_name(out_dir, filename, tag)
+            frames = upscale_file(src, os.path.join(out_dir, name), fn, mm.throw_exception_if_processing_interrupted)
             from ..._core import log
-            log.info("FunPack Upscale", f"{filename} with {upscale_model}: {frames} frames -> {SUBFOLDER}/{name}")
+            log.info("FunPack Upscale", f"{filename} with {tag}: {frames} frames -> {SUBFOLDER}/{name}")
             return io.NodeOutput(ui={"videos": [{"filename": name, "subfolder": SUBFOLDER,
                                                  "type": "output", "format": "video/h264-mp4"}]})

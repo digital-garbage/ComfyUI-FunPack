@@ -15,7 +15,7 @@ import os
 import time
 
 from ..._core import media, projects
-from . import files, jobs, library, serving, stitch, upscale
+from . import files, jobs, library, rtx, serving, stitch, upscale
 
 try:
     from aiohttp import web
@@ -77,7 +77,8 @@ def routes(table, base, web):
 
     @table.get(base + "/upscale_models")
     async def _upscale_models(_req):
-        return web.json_response({"models": upscale.models()})
+        from ..._core import addons
+        return web.json_response({"models": upscale.models(), "rtx": {"name": rtx.NAME, "qualities": list(rtx.QUALITIES)} if addons.enabled("nvidia_vsr") else None})
 
     @table.get(base + "/library")
     async def _library(_req):

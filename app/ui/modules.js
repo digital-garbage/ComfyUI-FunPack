@@ -42,5 +42,6 @@ export default [
   "./features/composer/index.js",
   "./features/settings/index.js",
   "./features/welcome/index.js",
+  "./features/addons/index.js",
   "./features/temp/index.js",
 ].map((path) => new URL(path, import.meta.url).href);

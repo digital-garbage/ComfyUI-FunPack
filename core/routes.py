@@ -8,7 +8,7 @@ thin adapters over pure functions in `serve`.
 import asyncio
 import json
 
-from . import (backend_log, config, control as control_mod, graph as graph_mod, log, media, nodes_manager, probe as probe_mod,
+from . import (addons as addons_mod, backend_log, config, control as control_mod, graph as graph_mod, log, media, nodes_manager, probe as probe_mod,
                projects,
                prompt_build,
                settings_card,
@@ -206,6 +206,23 @@ def register(routes, prefix=None):
         if not isinstance(mid, str) or mid not in modules().specs:
             return web.json_response({"detail": "Name a module that is installed."}, status=400)
         return web.json_response({"released": control_mod.release(mid)})
+
+    @routes.get(P + "/api/addons")
+    async def _addons_get(_req):
+        return web.json_response({"addons": addons_mod.listing()})
+
+    @routes.post(P + "/api/addons")
+    async def _addons_set(req):
+        """Switch an add-on on or off: {"id": "<add-on id>", "enabled": true}. Nothing installs now; the next start does."""
+        try:
+            body = await req.json()
+        except ValueError:
+            body = None
+        aid = body.get("id") if isinstance(body, dict) else None
+        on = body.get("enabled") if isinstance(body, dict) else None
+        if not isinstance(on, bool) or not isinstance(aid, str) or not addons_mod.set_wanted(aid, on):
+            return web.json_response({"detail": "Name an add-on this machine offers, and say true or false."}, status=400)
+        return web.json_response({"addons": addons_mod.listing()})
 
     def _pipeline():
         """Whatever module offers a default pipeline, or nothing.
