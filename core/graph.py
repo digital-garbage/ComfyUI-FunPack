@@ -651,9 +651,10 @@ def _pass_through(node: str, schemas: Schemas) -> Optional[Tuple[str, str, int]]
     """(kind, its one input, its output index) for a node that takes and gives one kind (MODEL in, MODEL
     out), or None: any other node's wiring is the person's call."""
     produced = schemas.outputs(node)
+    must = schemas.required(node)         # a LoRA loader's optional CLIP does not stop it being a MODEL patch; a schema naming none counts every input
     kinds = []
     for kind in dict.fromkeys(k for k in produced if k not in comfy_types.PRIMITIVE and k != "*"):
-        ins = [n for n, wants in schemas.inputs(node).items() if wants == kind]
+        ins = [n for n, wants in schemas.inputs(node).items() if wants == kind and (not must or n in must)]
         if len(ins) == 1:
             kinds.append((kind, ins[0], produced.index(kind)))
     return kinds[0] if len(kinds) == 1 else None

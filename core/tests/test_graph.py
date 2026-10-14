@@ -660,3 +660,20 @@ def test_a_dynamic_dropdowns_fields_are_inputs_and_needed_only_for_their_choice(
                                                            "selection.keep_percent": ("selection", ["sla", "vsa"])}}}.get)
     assert schemas.required("Sparse", {"selection": "vsa"}) == ["model", "selection", "selection.keep_percent"]
     assert schemas.required("Sparse", {"selection": "sol-attn"}) == ["model", "selection", "selection.tau"]
+
+
+def test_a_lora_loader_added_after_the_first_goes_into_the_model_chain():
+    """Its CLIP in/out is optional, so it is still a MODEL patch: left loose it never ran, and the
+    sampler read only the first LoRA."""
+    nodes = {"Lora": {"inputs": {"model": "MODEL", "lora_name": "COMBO", "clip": "CLIP"}, "outputs": ["MODEL", "CLIP", "STRING"], "required": ["model", "lora_name"]},
+             "Loader": {"inputs": {}, "outputs": ["MODEL"]}, "Sampler": {"inputs": {"model": "MODEL"}, "outputs": ["LATENT"], "required": ["model"]}}
+    schemas = graph.Schemas(nodes.get)
+    slots = [{"id": "model", "node": "Loader", "inputs": {}}, {"id": "lora", "node": "Lora", "inputs": {"model": ["model", 0], "lora_name": "a"}},
+             {"id": "sample", "node": "Sampler", "inputs": {"model": ["lora", 0]}}]
+    for _ in range(3):
+        slots, _p = graph.add(slots, "Lora", None, schemas)
+        slots, note = graph.splice(slots, slots[-1]["id"], schemas)
+        assert note is None
+    by = graph.slots_by_id(slots)
+    assert [by[i]["inputs"]["model"][0] for i in ("lora_2", "lora_3", "lora_4")] == ["lora", "lora_2", "lora_3"]
+    assert by["sample"]["inputs"]["model"] == ["lora_4", 0]
