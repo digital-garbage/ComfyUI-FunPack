@@ -111,3 +111,11 @@ def test_the_routes_list_and_switch(comfyui, here):
     assert bad == 400
     assert next(a["state"] for a in ok["addons"] if a["id"] == "camera") == "pending"
     assert json.loads(config.ADDONS_FILE.read_text())["wanted"] == ["camera"]
+
+
+def test_an_add_on_this_machine_cannot_run_is_not_enabled_even_if_wanted_and_installed(here, monkeypatch):
+    here.add("nvidia_vsr")
+    addons.set_wanted("nvidia_vsr", True)
+    assert addons.enabled("nvidia_vsr")
+    monkeypatch.setitem(addons._BY_ID["nvidia_vsr"], "offered", lambda: False)     # the folder moved to a machine without the card
+    assert not addons.enabled("nvidia_vsr")

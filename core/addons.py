@@ -81,7 +81,7 @@ def _wanted(data) -> set:
 def enabled(addon_id: str) -> bool:
     """Wanted and installed: the only state in which code may use the add-on."""
     a = _BY_ID.get(addon_id)
-    return bool(a) and addon_id in _wanted(_read()) and _present(a)
+    return bool(a) and a["offered"]() and addon_id in _wanted(_read()) and _present(a)
 
 
 def listing() -> list[dict]:

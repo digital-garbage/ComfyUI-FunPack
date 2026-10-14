@@ -32,6 +32,13 @@ def _comfyui_root():
 COMFYUI = _comfyui_root()
 
 
+@pytest.fixture(autouse=True)
+def _own_addons_file(tmp_path, monkeypatch):
+    """A developer's own addons.json must not decide what a test sees."""
+    from core import config
+    monkeypatch.setattr(config, "ADDONS_FILE", tmp_path / "addons.json")
+
+
 @pytest.fixture(scope="session")
 def comfyui():
     """ComfyUI's source tree on sys.path, or skip.

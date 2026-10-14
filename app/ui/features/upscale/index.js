@@ -35,21 +35,23 @@ export default {
     }
 
     async function run(media, pressed = false) {
-      // RTX only counts when this machine has it on right now: a project saved elsewhere may still say "rtx"
-      const rtxHere = rtxOn() && await app.api.upscaleModels().then((r) => Boolean(r.rtx)).catch(() => false);
-      const model = rtxOn() ? (rtxHere ? RTX : "") : p.pref("upscaleModel", "");
       if (!media || media.subfolder === UPSCALED) return;                    // never upscale twice
-      if (!model) return pressed ? suggest() : c.toast.warn({ text: "Upscale: pick a model or NVIDIA RTX Super Resolution in Settings ▸ Editor." });
       const key = keyOf(media), pid = p.project.id;
       if (busy.has(key)) return;
-      busy.add(key); draw(); c.toast.info({ text: `Upscaling with ${model}…` });
+      busy.add(key); draw();
       try {
+        // RTX only counts when this machine has it on right now: a project saved elsewhere may still say "rtx"
+        if (rtxOn() && !(await app.api.upscaleModels().then((r) => Boolean(r.rtx)).catch(() => false)))
+          return void c.toast.warn({ text: `${RTX} is not available on this machine (or is switched off in Settings ▸ Modules). Pick Upscale model as the Engine in Settings ▸ Editor.` });
+        const model = rtxOn() ? RTX : p.pref("upscaleModel", "");
+        if (!model) return void (pressed ? suggest() : c.toast.warn({ text: "Upscale: pick a model or NVIDIA RTX Super Resolution in Settings ▸ Editor." }));
+        c.toast.info({ text: `Upscaling with ${model}…` });
         const out = await upscale(app.api, media, model, undefined, rtxOn() ? rtxOpts() : undefined);
         const swapped = await p.editFor(pid, (pr) => swap(pr, media, out) > 0);
         if (!swapped) c.toast.warn({ text: "Upscaled, but that render was replaced meanwhile, so nothing was swapped." });
         else c.toast.good({ text: "Upscaled: the render now plays the larger video." });
       } catch (err) { c.toast.warn({ text: `Upscale failed: ${err.message}` }); }
-      busy.delete(key); draw();
+      finally { busy.delete(key); draw(); }
     }
 
     function draw() {
