@@ -35,7 +35,9 @@ export default {
     }
 
     async function run(media, pressed = false) {
-      const model = rtxOn() ? RTX : p.pref("upscaleModel", "");
+      // RTX only counts when this machine has it on right now: a project saved elsewhere may still say "rtx"
+      const rtxHere = rtxOn() && await app.api.upscaleModels().then((r) => Boolean(r.rtx)).catch(() => false);
+      const model = rtxOn() ? (rtxHere ? RTX : "") : p.pref("upscaleModel", "");
       if (!media || media.subfolder === UPSCALED) return;                    // never upscale twice
       if (!model) return pressed ? suggest() : c.toast.warn({ text: "Upscale: pick a model or NVIDIA RTX Super Resolution in Settings ▸ Editor." });
       const key = keyOf(media), pid = p.project.id;
@@ -86,8 +88,8 @@ export default {
               options: [{ value: "scale", label: "Scale by multiplier" }, { value: "size", label: "Target dimensions" }] }) }),
             ...(o.resize === "scale"
               ? [c.settingsRow.default({ label: "Scale", hint: "1 to 4 times.", control: c.slider.readout({ label: "Scale", value: o.scale, min: 1, max: 4, step: 0.05, precision: 2, onCommit: (v) => set("scale", v) }) })]
-              : [c.settingsRow.default({ label: "Width", hint: "In pixels, 64 to 8192.", control: c.number.md({ label: "Width", value: o.width, min: 64, max: 8192, step: 8, precision: 0, onChange: (v) => set("width", v) }) }),
-                 c.settingsRow.default({ label: "Height", hint: "In pixels, 64 to 8192.", control: c.number.md({ label: "Height", value: o.height, min: 64, max: 8192, step: 8, precision: 0, onChange: (v) => set("height", v) }) })])]),
+              : [c.settingsRow.default({ label: "Width", hint: "In pixels, 64 to 8192. Rounded to a multiple of 8.", control: c.number.md({ label: "Width", value: o.width, min: 64, max: 8192, step: 8, precision: 0, onChange: (v) => set("width", v) }) }),
+                 c.settingsRow.default({ label: "Height", hint: "In pixels, 64 to 8192. Rounded to a multiple of 8.", control: c.number.md({ label: "Height", value: o.height, min: 64, max: 8192, step: 8, precision: 0, onChange: (v) => set("height", v) }) })])]),
           c.settingsRow.default({ label: "Strength", hint: "How much of the effect to apply.", control: c.slider.readout({ label: "Strength", value: o.strength, min: 0, max: 1, step: 0.05, precision: 2, onCommit: (v) => set("strength", v) }) }),
           c.toggle.default({ label: "10-bit processing", hint: "More precise colour inside the upscale. The saved video stays 8-bit.", checked: o.tenbit, onChange: (v) => set("tenbit", v) }),
         ];

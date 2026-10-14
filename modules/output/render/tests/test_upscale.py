@@ -51,7 +51,7 @@ from modules.output.render import rtx  # noqa: E402
 def test_rtx_options_are_checked_by_name():
     assert rtx.options("{}")["quality"] == "ULTRA"
     assert rtx.options({"scale": 3, "quality": "DEBLUR_HIGH"})["scale"] == 3
-    for bad in ({"quality": "ULTRAA"}, {"scale": 5}, {"strength": -1}, {"resize": "huge"}, {"width": 8}):
+    for bad in ({"quality": "ULTRAA"}, {"scale": 5}, {"strength": -1}, {"resize": "huge"}, {"width": 8}, {"tenbit": "false"}):
         with pytest.raises(ValueError):
             rtx.options(bad)
     with pytest.raises(ValueError):

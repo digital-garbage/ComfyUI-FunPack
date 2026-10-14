@@ -71,7 +71,8 @@ def test_a_failed_install_is_said_and_not_retried_until_switched_off_and_on(here
     monkeypatch.setattr(update, "install_lines", lambda lines: ran.append(1) or {"ok": False, "detail": "no wheel for this Python"})
     addons.set_wanted("nvidia_vsr", True)
     addons.install_wanted()
-    assert next(a for a in addons.listing() if a["id"] == "nvidia_vsr")["failed"] == "no wheel for this Python"
+    row = next(a for a in addons.listing() if a["id"] == "nvidia_vsr")
+    assert row["failed"] == "no wheel for this Python" and row["state"] == "available", "a failed install must not read as waiting for a restart"
     addons.install_wanted()
     assert len(ran) == 1, "a broken install would be retried on every start"
     addons.set_wanted("nvidia_vsr", False)

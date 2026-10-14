@@ -33,7 +33,7 @@ def _nvidia_gpu() -> bool:
         return False
     try:
         import torch
-        return bool(torch.cuda.is_available() and torch.version.cuda)
+        return bool(torch.cuda.is_available() and torch.version.cuda and torch.cuda.get_device_capability() >= (7, 5))   # RTX starts at Turing
     except Exception:  # noqa: BLE001
         return False
 
@@ -94,7 +94,7 @@ def listing() -> list[dict]:
             continue
         here, want = _present(a), a["id"] in wanted
         out.append({"id": a["id"], "title": a["title"], "hint": a["hint"],
-                    "state": ("installed" if here else "pending") if want else ("disabled" if here else "available"),
+                    "state": ("installed" if here else "available" if failed.get(a["id"]) else "pending") if want else ("disabled" if here else "available"),   # a failed install is offered again, not "pending"
                     "failed": failed.get(a["id"]) if not here else None})
     return out
 

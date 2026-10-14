@@ -32,7 +32,8 @@ def options(raw) -> dict:
     for key, lo, hi in (("scale", 1.0, 4.0), ("strength", 0.0, 1.0), ("width", 64, 8192), ("height", 64, 8192)):
         if not isinstance(o[key], (int, float)) or isinstance(o[key], bool) or not lo <= o[key] <= hi:
             raise ValueError(f"RTX {key} must be a number from {lo} to {hi}.")
-    o["tenbit"] = bool(o["tenbit"])
+    if not isinstance(o["tenbit"], bool):
+        raise ValueError("RTX tenbit must be true or false.")
     return o
 
 

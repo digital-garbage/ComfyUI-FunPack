@@ -18,7 +18,7 @@ export const modules = (app) => function mount() {
   };
   const addonRow = (a) => {
     const pending = a.state === "pending";
-    const hint = [a.hint, pending ? RESTART_HINT : null, a.failed ? `Could not install: ${a.failed}\nSwitch it off and on to try again.` : null].filter(Boolean).join("\n");
+    const hint = [a.hint, pending ? RESTART_HINT : null, a.failed ? `Could not install: ${a.failed}\nSwitch it on to try again.` : null].filter(Boolean).join("\n");
     return c.toggle.default({ label: a.title, hint, checked: a.state === "installed" || pending, onChange: (on) => flip(a, on) });
   };
 
