@@ -101,10 +101,10 @@ export default {
           c.hint.default({ text: "Runs an upscale over a finished video and replaces the render with the result." }),
           c.settingsRow.default({ label: "Upscale", hint: "Never, with a button beside the rating, or on every new render.", control: c.select.md({ label: "Upscale", value: p.pref("upscaleMode", "never"),
             options: [{ value: "never", label: "Never" }, { value: "button", label: "When I press Upscale" }, { value: "always", label: "Always, when a render finishes" }], onChange: (v) => p.setPref("upscaleMode", v) }) }),
-          c.settingsRow.default({ label: "Engine", hint: r && r.rtx ? "An upscale model from a file, or the RTX card's own upscaler." : "An upscale model from a file. NVIDIA RTX Super Resolution can be switched on in Settings ▸ Modules.",
+          c.settingsRow.default({ label: "Engine", hint: r && r.rtx ? "An upscale model from a file, or the RTX card's own upscaler." : r && r.rtx_offered ? "An upscale model from a file. NVIDIA RTX Super Resolution can be switched on in Settings ▸ Modules." : "An upscale model from a file.",
             control: c.select.md({ label: "Engine", value: chosen, onChange: (v) => { p.setPref("upscaleEngine", v); paint(info); },
               options: [{ value: "model", label: "Upscale model" }, ...(r && r.rtx ? [{ value: "rtx", label: RTX }] : chosen === "rtx" ? [{ value: "rtx", label: `${RTX} (not installed)` }] : [])] }) }),
-          ...(chosen === "rtx" ? (r && r.rtx ? rtxRows(r) : [c.banner.warn({ text: `${RTX} is not installed here: switch it on in Settings ▸ Modules and restart ComfyUI.` })])
+          ...(chosen === "rtx" ? (r && r.rtx ? rtxRows(r) : [c.banner.warn({ text: r && !r.rtx_offered ? `${RTX} needs an NVIDIA RTX card on Windows or Linux, so it is not available here. Pick Upscale model.` : `${RTX} is not installed or is switched off: switch it on in Settings ▸ Modules and restart ComfyUI.` })])
             : [c.settingsRow.default({ label: "Model", hint: "From ComfyUI/models/upscale_models.", control: models === null ? c.text.sm({ text: "Loading…" })
               : c.select.md({ label: "Model", value: p.pref("upscaleModel", ""), onChange: (v) => p.setPref("upscaleModel", v),
                 options: [{ value: "", label: models.length ? "— pick a model —" : "Nothing in models/upscale_models" }, ...models.map((m) => ({ value: m, label: m })),

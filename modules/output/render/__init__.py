@@ -78,7 +78,8 @@ def routes(table, base, web):
     @table.get(base + "/upscale_models")
     async def _upscale_models(_req):
         from ..._core import addons
-        return web.json_response({"models": upscale.models(), "rtx": {"name": rtx.NAME, "qualities": list(rtx.QUALITIES)} if addons.enabled("nvidia_vsr") else None})
+        return web.json_response({"models": upscale.models(), "rtx": {"name": rtx.NAME, "qualities": list(rtx.QUALITIES)} if addons.enabled("nvidia_vsr") else None,
+                                  "rtx_offered": any(a["id"] == "nvidia_vsr" for a in addons.listing())})   # offered = this machine could switch it on in Settings ▸ Modules
 
     @table.get(base + "/library")
     async def _library(_req):

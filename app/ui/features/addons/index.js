@@ -18,7 +18,7 @@ export default {
       const n = all.filter((a) => used.includes(a.id) && (a.state === "available" || a.state === "disabled")).length;
       if (!n) return;
       const link = c.button.sm({ label: "Modules", tone: "ghost", onClick: () => app.openSettings("modules") });
-      c.toast.info({ text: `You have ${n} module(s) available for installation.`, action: link, duration: 12000 });
+      c.toast.info({ text: `${n} module(s) this project used are off or not installed here.`, action: link, duration: 12000 });
     };
     const off = app.on((what) => { if (what === "open") check(); });
     check();

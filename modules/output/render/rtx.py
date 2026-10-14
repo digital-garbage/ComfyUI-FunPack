@@ -61,6 +61,9 @@ def unpack10(p):
 
 def make(o):
     """-> the upscale function for these (already checked) options. Raises a sentence when the add-on is missing."""
+    from ..._core import addons
+    if not addons.enabled("nvidia_vsr"):          # installed but switched off counts too: off means off
+        raise RuntimeError(f"{NAME} is not installed or is switched off: switch it on in Settings ▸ Modules and restart ComfyUI.")
     try:
         from nvvfx import VideoSuperRes
     except ImportError as exc:

@@ -13,6 +13,7 @@ import shutil
 import subprocess
 
 from . import files, rtx
+from ..._core import addons
 
 CHUNK = 8                # frames per upscale call, at most
 CHUNK_PIXELS = 2_000_000   # ...and at most this many input pixels per call: a big upscale of 1080p is gigabytes per frame
@@ -141,7 +142,7 @@ if io is not None:
                     io.String.Input("filename", default=""),
                     io.String.Input("subfolder", default=""),
                     io.Combo.Input("type", options=["output", "temp"], default="output"),
-                    io.Combo.Input("upscale_model", options=[rtx.NAME, *(models() or [""])],
+                    io.Combo.Input("upscale_model", options=[*([rtx.NAME] if addons.enabled("nvidia_vsr") else []), *(models() or [""])],
                                    tooltip="From ComfyUI/models/upscale_models (use .safetensors), or NVIDIA RTX Super Resolution."),
                     io.String.Input("rtx_options", default="{}", optional=True,
                                     tooltip="NVIDIA RTX Super Resolution options as JSON: quality, resize, scale, width, height, strength, tenbit."),

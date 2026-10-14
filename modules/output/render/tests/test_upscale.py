@@ -77,3 +77,11 @@ def test_rtx_without_the_add_on_says_how_to_get_it(monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "nvvfx", None)
     with pytest.raises(RuntimeError, match="Settings ▸ Modules"):
         rtx.make(rtx.options("{}"))
+
+
+def test_rtx_refuses_when_switched_off_even_if_installed(monkeypatch):
+    from core import addons
+    monkeypatch.setitem(__import__("sys").modules, "nvvfx", type("M", (), {"VideoSuperRes": object}))   # the package "is installed"
+    monkeypatch.setattr(addons, "enabled", lambda _id: False)
+    with pytest.raises(RuntimeError, match="switched off"):
+        rtx.make(rtx.options("{}"))
