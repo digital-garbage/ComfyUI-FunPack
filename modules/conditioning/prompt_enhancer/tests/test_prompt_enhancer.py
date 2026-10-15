@@ -247,7 +247,7 @@ def test_the_readout_routes_are_provided_and_answer():
         def json_response(d):
             return d
     mod.routes(T(), "/m", W)
-    assert set(table) == {"/m/defaults", "/m/runs"}
+    assert set(table) == {"/m/defaults", "/m/runs", "/m/encoders"}
 
 
 def test_a_tokenizer_that_reads_the_picture_out_of_kwargs_gets_it():
@@ -270,3 +270,11 @@ def test_a_picked_encoder_that_will_not_load_keeps_the_prompt_and_says_why(monke
     out = nodes.FunPackEnhancePrompt.execute(clip=object(), text="a fox", enabled=True, encoder_file="x.gguf")
     assert out.args[0] == "a fox" and out.args[1] == "encoder failed"
     assert "x.gguf" in nodes.RUNS[-1]["status"] and not nodes.RUNS[-1]["ok"]
+
+
+def test_a_gone_encoder_file_is_text_the_graph_does_not_refuse(comfyui):
+    from modules.conditioning.prompt_enhancer import nodes
+    schema = nodes.FunPackEnhancePrompt.define_schema()
+    for name in ("encoder_file", "encoder_family"):
+        inp = next(i for i in schema.inputs if i.id == name)
+        assert inp.get_io_type() == "STRING"            # a list would refuse a vanished file even with Enhance off

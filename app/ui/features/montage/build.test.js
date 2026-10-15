@@ -9,7 +9,7 @@ const project = () => ({ num_frames_per_scene: 97, frame_rate: 25,
   scenes: [{ id: "L", text: "lead" }, { id: "A", text: "a" }, { id: "B", text: "b" }, { id: "N", text: "no render" }],
   scene_renders: { L: { media: media("L") }, A: { media: media("A"), inSec: 1 }, B: { media: media("B") } } });
 
-test("chop: segments shrink by the decay, never below 9 frames, and cover the whole length", () => {
+test("chop: segments shrink by the decay, never below 9 frames, and stop within the length (the last few frames may be left over)", () => {
   const segs = chop(97, 40, 0.5);
   assert.ok(segs.every((s) => s.frames >= 9));
   assert.ok(segs.every((s, i) => i === 0 || s.start === segs[i - 1].start + segs[i - 1].frames), "pieces butt up exactly: no overlap, no gap");

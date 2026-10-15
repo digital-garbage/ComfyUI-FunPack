@@ -51,7 +51,7 @@ SETTINGS = {
     "freenoise": {"type": "bool", "default": True, "label": "FreeNoise blending", "when": {"enabled": True},
                   "hint": "Shuffle the starting noise so neighbouring windows share it."},
     "retain_first": {"type": "bool", "default": False, "label": "Pin anchor in every window",
-                     "hint": "Keeps the first frame in every window so the whole clip stays tied to your starting image.",
+                     "hint": "Keeps the first frame in every window so the whole clip stays tied to its first frame (your starting image, when there is one).",
                      "when": {"enabled": True}},
 }
 

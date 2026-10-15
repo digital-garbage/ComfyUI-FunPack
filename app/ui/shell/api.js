@@ -50,6 +50,7 @@ export const api = {
   revolver: () => call("GET", "/api/shortcuts/revolver"),
   setRevolver: (enabled, random) => call("POST", "/api/shortcuts/revolver", { enabled, random }),
   enhancerDefaults: () => call("GET", "/api/m/conditioning_prompt_enhancer/defaults"),
+  enhancerEncoders: () => call("GET", "/api/m/conditioning_prompt_enhancer/encoders"),
   enhancerRuns: () => call("GET", "/api/m/conditioning_prompt_enhancer/runs"),
   rateTaste: (promptId, rating, axis) => call("POST", "/api/m/taste/rate", { prompt_id: promptId, rating, axis: axis || null }),
   newTasteGeneration: (promptId) => call("POST", "/api/m/taste/generation", promptId ? { prompt_id: promptId } : {}),

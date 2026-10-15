@@ -41,7 +41,7 @@ class FunPackLatentUpscalerLoader(io.ComfyNode):
                 log.info("FunPack Latent Upscaler", f"{upscaler_name}: {spec.title} upscaler")
                 return io.NodeOutput(model)
         newer = ("It looks like the newer attention-based H3 upscaler, which FunPack cannot build yet: "
-                 "use the older convolution one (h3_clean_latent_upscaler_v1). ") if any(str(k).startswith("base.") for k in sd) else ""
+                 "use an older convolution-based H3 upscaler. ") if any(str(k).startswith("base.") for k in sd) else ""
         raise RuntimeError(
             f"{upscaler_name} is not an upscaler any installed model module can load. {newer}"
             f"If it is Lightricks' or Hunyuan's, ComfyUI's own Load Latent Upscale Model "

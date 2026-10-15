@@ -84,11 +84,14 @@ test("the shot camera node is told which project this is, whatever roles the sav
 });
 
 test("text-only: a slot that can stand in for the picture is told the size of the slot that shapes it, and a picked picture is sent as is", async () => {
-  const like = { slot: "t", width: "target_width", height: "target_height" };
-  const s = [{ id: "src", roles: [{ at: "assets.source_image", input: "media_id", blank_like: like }] },
+  const like = { slot: "t", width: "target_width", height: "target_height", unsend: { slot: "e", input: "use_image" } };
+  const s = [{ id: "src", roles: [{ at: "assets.source_image", input: "media_id", blank_like: like }] }, { id: "e", inputs: { use_image: true } },
     { id: "t", inputs: { target_width: 1344, target_height: 768 }, roles: [{ at: "project.video", input: "target_width" }] }];
   const run = (project, scene) => buildInputs({ project, scene, slots: s, expand: async () => null });
-  assert.deepEqual((await run({ generation_mode: "t2v", video: { target_width: 640 } }, { source_image: "m1" })).inputs.src, { media_id: "", blank_width: 640, blank_height: 768 });
+  const t2v = await run({ generation_mode: "t2v", video: { target_width: 640 } }, { source_image: "m1" });
+  assert.deepEqual(t2v.inputs.src, { media_id: "", blank_width: 640, blank_height: 768 });
+  assert.deepEqual(t2v.inputs.e, { use_image: false });                          // the enhancer is not handed the grey stand-in
+  assert.equal((await run({ generation_mode: "i2v" }, { source_image: "m1" })).inputs.e, undefined);
   assert.deepEqual((await run({ generation_mode: "i2v" }, { source_image: "m1" })).inputs.src, { media_id: "m1" });
   assert.deepEqual((await run({ generation_mode: "i2v" }, {})).inputs.src, { media_id: "", blank_width: 1344, blank_height: 768 });
 });

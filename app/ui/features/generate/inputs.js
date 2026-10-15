@@ -24,6 +24,8 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
     const size = (name) => (raw[target.id] || {})[name] ?? (target.inputs || {})[name];
     put(source.slot, "blank_width", Number(size(like.width)) || 0);
     put(source.slot, "blank_height", Number(size(like.height)) || 0);
+    const off = like.unsend && (slots || []).find((s) => s.id === like.unsend.slot);      // a stand-in is not a picture to show anyone
+    if (off) put(off, like.unsend.input, false);
   }
   const plan = sceneReferences(scene, project.fixed_references);
   const { overrides, unwired } = wireReferences(plan.ids, slots, source ? [source.slot.id] : [], plan.pins);
