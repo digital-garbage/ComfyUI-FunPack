@@ -812,3 +812,13 @@ def test_swapping_a_marked_slot_drops_its_skip_marker():
     slots = _optional_pipeline()
     changed, problems = graph.replace(slots, "rewrite", "Markup", _without())
     assert not problems and "optional" not in {s["id"]: s for s in changed}["rewrite"]
+
+
+def test_a_malformed_optional_table_entry_is_logged_not_swallowed(monkeypatch):
+    seen = []
+    monkeypatch.setattr(graph.log, "once", lambda key, level, source, message: seen.append(message))
+    slots = _optional_pipeline()
+    for slot in slots:
+        slot.pop("optional", None)
+    graph.build(slots, _without("Rewrite", "Markup"), {"Rewrite": {"pass": "bad"}})
+    assert any("Rewrite" in m and "cannot be skipped" in m for m in seen)

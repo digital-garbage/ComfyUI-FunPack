@@ -26,7 +26,7 @@ the user's word for it was "terrifying".
 import re
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import comfy_types
+from . import comfy_types, log
 
 Link = list          # [slot_id, output_index]
 
@@ -282,7 +282,10 @@ def bypass_missing(slots: Sequence[dict], schemas: Optional[Schemas] = None,
     gone = {s["id"]: dict(s, optional=marker(s)) for s in slots
             if isinstance(s.get("node"), str) and marker(s) is not None and schemas.of(s["node"]) is None}
     for slot_id in list(gone):
-        if _optional_problems(gone[slot_id]["optional"], slot_id):
+        bad = _optional_problems(gone[slot_id]["optional"], slot_id)
+        if bad:
+            log.once(f"bad_optional:{gone[slot_id]['node']}", log.WARNING, "FunPack pipeline",
+                     f"{gone[slot_id]['node']} cannot be skipped, so the run refuses it: {bad[0]}")
             del gone[slot_id]
 
     def walk(value):
