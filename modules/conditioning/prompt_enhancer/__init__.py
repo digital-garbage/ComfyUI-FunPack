@@ -12,7 +12,7 @@ project is never rewritten as one blob and re-split.
 
 Whether a given text encoder writes sensible prose is an open question per model
 (H3's conditioning checkpoint has no trained decoder head; Gemma3/Qwen3 do). v4's
-result: confirmed working on Gemma3-12B. v5 on a rental: H3's own encoder writes no prose (the run keeps your prompt and says why); a Gemma3/Qwen3 encoder is not yet tried in v5.
+result: confirmed working on Gemma3-12B. v5 on a rental: works with Gemma 4 E4B (a real rewrite in 2.5 s); H3's own encoder writes no prose, so there the run keeps your prompt and says why.
 """
 
 from .nodes import RUNS, FunPackEnhancePrompt
