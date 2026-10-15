@@ -101,8 +101,13 @@ def pipelines(presets: Iterable[dict], installed: Callable[[str], bool]) -> List
     out = []
     for preset in presets:
         missing = sorted({s["node"] for s in preset.get("slots", []) if not installed(s["node"])})
-        if missing:
-            out.append(row("warn", f"“{preset.get('title') or preset.get('id')}” needs nodes that are not installed: {', '.join(missing)}. Install the pack that provides them (Settings ▸ Custom Nodes)."))
+        ours = [n for n in missing if n.startswith("FunPack")]          # this pack's own nodes: their module did not load
+        theirs = [n for n in missing if n not in ours]
+        title = preset.get("title") or preset.get("id")
+        if theirs:
+            out.append(row("warn", f"“{title}” needs nodes that are not installed: {', '.join(theirs)}. Install the pack that provides them (Settings ▸ Custom Nodes)."))
+        if ours:
+            out.append(row("warn", f"“{title}” needs FunPack's own {', '.join(ours)}, but the module behind it did not load. See Settings ▸ Modules for why."))
     return out or [row("ok", "Every starting point's nodes are installed")]
 
 

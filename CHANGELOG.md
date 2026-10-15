@@ -2,7 +2,7 @@
 
 ## [5.0.0] "Cunning Cranberry" - unreleased
 
-A rewrite from scratch, not an update of 4.x. Same idea (a studio for video inside ComfyUI that learns from your ratings), new architecture: every feature is a module that announces itself, so a feature cannot be forgotten in the UI, a wire cannot be missed, and a failing feature module is left out while the run carries on. 4.x projects are not imported; see "Not carried over".
+A rewrite from scratch, not an update of 4.x. Same idea (a studio for video inside ComfyUI that learns from your ratings), new architecture: every feature is a module that announces itself, so a feature cannot be forgotten in the UI, a wire cannot be missed, and a failing optional feature module is left out while the run carries on. 4.x projects are not imported; see "Not carried over".
 
 ### What it is
 
@@ -38,6 +38,7 @@ A rewrite from scratch, not an update of 4.x. Same idea (a studio for video insi
 - **`.gguf` text encoders** need the ComfyUI-GGUF node pack and work only for architectures it understands; otherwise they are refused with a message. Gemma 4 `.gguf` does not work; a loader for it may come later.
 - **H3 start frame**: in the H3 preset the scene picture sets the video's shape only; a start frame is not part of it.
 - **H3 second pass** is held back: not offered until verified.
+- The ready-made pipelines (presets) name some FunPack nodes directly: Save video, Cut opening, Shot camera, Prompt markup, Negative erase, Enhance prompt, Load media, Identity transfer. If the module behind one of them fails to load, Generate says which node is missing and refuses until you delete that card in Models & Pipeline or fix the module.
 - Turning some modules on switches the model compiler off for the run, which costs sampling time.
 
 ### Docs

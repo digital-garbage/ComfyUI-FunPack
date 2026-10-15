@@ -66,3 +66,12 @@ def test_the_blackwell_xformers_warning_follows_whether_xformers_is_on_not_insta
     for on, warned in ((True, True), (False, False)):
         monkeypatch.setattr(r, "xformers_on", lambda: on)
         assert any("xformers" in x["text"] for x in r.machine()) is warned
+
+
+def test_a_funpack_node_that_is_missing_points_at_the_modules_page_not_at_another_pack():
+    from core import readiness
+    rows = readiness.pipelines([{"id": "p", "title": "P", "slots": [{"node": "FunPackCutOpening"}, {"node": "ImageTransformKJ"}]}],
+                               installed=lambda n: False)
+    text = " | ".join(r["text"] for r in rows)
+    assert "FunPackCutOpening" in text and "Settings ▸ Modules" in text
+    assert "ImageTransformKJ" in text and "Custom Nodes" in text
