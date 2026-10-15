@@ -120,7 +120,7 @@ def stats() -> dict:
                         if k < b:
                             votes.setdefault((k, b), []).append((when, v))
             # Habits: what the cut uses now.
-            if sc.excluded or not (sc.text or "").strip():
+            if sc.excluded or sc.reused or not (sc.text or "").strip():       # a montage piece replays a shot, it is not a new one
                 continue
             present = fired(sc.text)
             scanned += 1

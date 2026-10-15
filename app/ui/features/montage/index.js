@@ -34,7 +34,7 @@ export default {
         c.field.default({ label: "Acceleration", hint: "1.0 = equal segments; lower = the lead clip's segments get shorter toward the end", control: c.slider.readout({ label: "Acceleration", value: decay, min: 0.5, max: 1, step: 0.05, onCommit: (v) => { decay = v; } }) }),
       ]);
       draw();
-      const win = c.modal.generic({ title: "Auto Montage", subtitle: "Adds a new cut at the end of the timeline: the lead clip in shrinking pieces with pieces of the cutaway clips between them. Your original clips stay as they are.", size: "md", body });
+      const win = c.modal.generic({ title: "Auto Montage", subtitle: "Adds a new cut at the end of the timeline: the lead clip in pieces (shorter and shorter, set by Acceleration) with pieces of the cutaway clips between them. Your original clips stay as they are.", size: "md", body });
       win.setFooter({ actions: [c.button.sm({ label: "Build montage", tone: "primary", onClick: () => {
         if (!pool.size) return c.toast.warn({ text: "Pick at least one cutaway clip." });
         const added = p.edit((pr) => build(pr, { leadId: lead, poolIds: [...pool], segmentFrames: seg, decay }) || false);

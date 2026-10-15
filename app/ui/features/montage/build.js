@@ -10,6 +10,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 /** What a clip can play from: {fps, from (seconds into its file), total (seconds), render?} or null when it has nothing yet. */
 export function playable(sc, p) {
   const fps = effFps(sc, p);
+  if (seconds(sc, p) * fps < 9) return null;                 // shorter than the shortest piece the model can make
   if (isVideoClip(sc)) return sc.source && sc.source.media_ref ? { fps, from: sc.source_in || 0, total: seconds(sc, p) } : null;
   const r = (p.scene_renders || {})[sc.id];
   return r && r.media ? { fps, from: (r.inSec || 0) + (sc.source_in || 0), total: seconds(sc, p), render: r } : null;

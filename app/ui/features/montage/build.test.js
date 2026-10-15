@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { build, chop } from "./build.js";
+import { build, chop, playable } from "./build.js";
 import { isGenerative, genUnitId } from "../../shell/scenes.js";
 import { removeScene } from "../../shell/edits.js";
 
@@ -57,4 +57,10 @@ test("build: deleting a piece leaves no ghost, and an off-grid clip is never rea
   const piece = p.scenes.find((s) => s.reused);
   removeScene(p, piece.id);
   assert.equal((p.scene_ghosts || []).some((g) => g.id === piece.id), false);
+});
+
+test("playable: a clip shorter than the shortest piece offers nothing to cut", () => {
+  const p = project();
+  p.scenes[1].frames = 5; p.scenes[1].frames_mode = "timeline";
+  assert.equal(playable(p.scenes[1], p), null);
 });

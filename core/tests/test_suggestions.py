@@ -44,6 +44,17 @@ def test_excluded_scenes_and_sub_clips_are_skipped_and_follows_use_timeline_orde
     assert s["follows"] == [["neon", "rain", 1]]
 
 
+def test_auto_montage_pieces_are_not_shots_the_user_wrote():
+    for n in ("rain", "neon"):
+        shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})
+    scenes = [projects.Scene(id="a", text="rain"), projects.Scene(id="b", text="neon"),
+              projects.Scene(id="p1", text="rain", gen_unit_id="p1", reused=True),
+              projects.Scene(id="p2", text="neon", gen_unit_id="p2", reused=True)]
+    projects.save(projects.Project(name="x", scenes=scenes, timeline_order=["a", "b", "p1", "p2"]))
+    s = suggestions.stats()
+    assert s["scenes"] == 2 and s["counts"] == {"rain": 1, "neon": 1} and s["follows"] == [["rain", "neon", 1]]
+
+
 def test_ratings_score_shortcuts_and_pairs_and_a_bad_image_blames_nothing():
     for n in ("rain", "neon", "fox"):
         shortcuts.save({"name": n, "triggers": [n], "replacements": ["r"]})

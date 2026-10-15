@@ -46,7 +46,7 @@ SETTINGS = {
                  "hint": "standard_uniform: windows shift a little each step. standard_static: the same windows every step. looped_uniform: the end wraps round to the start. batched: back-to-back windows with no overlap.",
                  "options": [{"value": v, "label": v} for v in SCHEDULES], "when": {"enabled": True}},
     "fuse": {"type": "enum", "default": "pyramid", "label": "Window blend",
-             "hint": "How overlapping windows are mixed: pyramid, relative, overlap-linear fade between neighbours; flat averages them equally.",
+             "hint": "How windows are mixed: pyramid (relative is the same in this ComfyUI) trusts the middle of each window most; overlap-linear fades across the overlap only; flat averages equally.",
              "options": [{"value": v, "label": v} for v in FUSES], "when": {"enabled": True}},
     "freenoise": {"type": "bool", "default": True, "label": "FreeNoise blending", "when": {"enabled": True},
                   "hint": "Shuffle the starting noise so neighbouring windows share it."},

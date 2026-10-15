@@ -72,7 +72,7 @@ export function createMaintenance({ api, flush }) {
         if (!(await ask("Check requirements", "FunPack has local changes, so the code cannot be updated. Check this install's requirements and install any that are missing?"))) return;
         return run("Checking requirements…", () => api.requirements(), (r) => deps({ requirements: r }));
       }
-      if (!(await ask("Update", `Pull the latest "${branch}" from origin, check requirements and install any that are missing, then restart ComfyUI? Any running generation will be lost.${gs.behind > 0 ? ` ${gs.behind} commit(s) available.` : ""}`))) return;
+      if (!(await ask("Update", `Pull the latest "${branch}" from origin, check requirements and install any that are missing, then restart ComfyUI. If a generation is running, the restart waits until you press Restart after it finishes.${gs.behind > 0 ? ` ${gs.behind} commit(s) available.` : ""}`))) return;
       // Requirements first and on their own, so a failed pull (no network, a refused merge) does not skip them.
       const action = async () => {
         let requirements; try { requirements = await api.requirements(); } catch (err) { requirements = { ran: false, ok: false, detail: err.message }; }
@@ -85,7 +85,7 @@ export function createMaintenance({ api, flush }) {
       if (!(gs.branches || []).length) return tell("No git branches found.");
       const branch = await c.modal.choice({ title: "Switch FunPack branch", items: gs.branches.map((b) => ({ id: b, label: b, hint: b === gs.branch ? "current" : "" })) }).result;
       if (!branch || branch === gs.branch) return;
-      if (!(await ask("Switch branch", `Switch to "${branch}", pull from origin, and restart ComfyUI? Any running generation will be lost.`))) return;
+      if (!(await ask("Switch branch", `Switch to "${branch}", pull from origin, and restart ComfyUI. If a generation is running, the restart waits until you press Restart after it finishes.`))) return;
       return run(`Switching to ${branch}…`, () => api.git("checkout", { branch }), (r) => `On ${branch}${r.updated ? ` (${r.before} → ${r.after})` : ", already up to date"}.${deps(r)}`);
     },
     async rollback() {
