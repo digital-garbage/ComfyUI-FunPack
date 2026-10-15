@@ -389,3 +389,15 @@ def test_a_symlinked_folder_aliasing_a_sibling_is_listed_under_both_names(fake_f
     (enc / "current").symlink_to(enc / "gemma")
     names = gguf_support.gguf_names("text_encoders")
     assert "current/g-Q5.gguf" in names and "gemma/g-Q5.gguf" in names
+
+
+def test_cycles_through_a_sibling_folder_and_dangling_links_do_not_flood_the_listing(fake_folders):
+    enc = fake_folders / "text_encoders"
+    other = fake_folders / "other"
+    other.mkdir()
+    (enc / "p0").symlink_to(other)
+    (enc / "p1").symlink_to(other)
+    (other / "q").symlink_to(enc)
+    (enc / "broken.gguf").symlink_to(fake_folders / "missing.gguf")
+    assert gguf_support.gguf_names("text_encoders") == ["gemma-Q5_K.gguf"]
+    assert "broken.gguf" not in gguf_support.gguf_names("text_encoders")

@@ -65,6 +65,37 @@ def has_gguf_magic(path: str) -> bool:
 
 # ── finding .gguf files ───────────────────────────────────────────────────────
 
+def _walk(root: str, limit: int = 5000, depth: int = 12):
+    """Every .gguf under `root` as a relative name, following links.
+
+    A folder is not entered again while it is one of the folders above it (same device and inode, so case, roots and
+    cycles through a sibling are all caught), and the walk stops after `limit` folders: a link to a whole disk is slow, not endless.
+    A link to a sibling folder is not a loop; it is a second name for the same files.
+    """
+    seen = [0]
+
+    def rec(path, rel, above):
+        seen[0] += 1
+        try:
+            entries = sorted(os.scandir(path), key=lambda e: e.name)
+        except OSError:
+            return
+        for e in entries:
+            try:
+                if e.is_dir():
+                    st = os.stat(e.path)
+                    key = (st.st_dev, st.st_ino)
+                    if key not in above and len(above) < depth and seen[0] < limit:
+                        yield from rec(e.path, rel + e.name + "/", above | {key})
+                elif is_gguf(e.name) and e.is_file():              # is_file: a dangling link is not a model
+                    yield rel + e.name
+            except OSError:
+                continue
+
+    st = os.stat(root)
+    yield from rec(root, "", frozenset({(st.st_dev, st.st_ino)}))
+
+
 def gguf_names(folder: str) -> list[str]:
     """`.gguf` files under a ComfyUI model folder, relative-named like get_filename_list().
 
@@ -90,17 +121,10 @@ def gguf_names(folder: str) -> list[str]:
     for root in roots:
         if not root or not os.path.isdir(root):
             continue
-        for dirpath, dirs, files in os.walk(root, followlinks=True):
-            here = os.path.realpath(dirpath) + os.sep
-            # a link back to this folder or one above it is a loop; a link to a sibling folder is just a second name
-            dirs[:] = [d for d in dirs if not here.startswith(os.path.realpath(os.path.join(dirpath, d)) + os.sep)]
-            for f in files:
-                if not is_gguf(f):
-                    continue
-                rel = os.path.relpath(os.path.join(dirpath, f), root)
-                if rel not in seen:
-                    seen.add(rel)
-                    out.append(rel)
+        for rel in _walk(root):
+            if rel not in seen:
+                seen.add(rel)
+                out.append(rel)
     return sorted(out)
 
 
@@ -324,7 +348,7 @@ def _load_native(path: str, pack: bool = False) -> tuple[dict, dict, str]:
             # type the package knows -- do not reimplement it per quant type.
             try:
                 arr = gguf.quants.dequantize(tensor.data, qtype)
-            except NotImplementedError as e:
+            except (NotImplementedError, ValueError) as e:
                 raise RuntimeError(f"{os.path.basename(path)}: tensor {name!r} uses a storage type the gguf package cannot "
                                    f"dequantize ({e}).") from e
             quantized += 1
