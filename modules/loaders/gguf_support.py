@@ -115,8 +115,8 @@ def gguf_path(folder: str, name: str) -> Optional[str]:
             pass
     for root in roots:
         cand = os.path.join(root or "", name)
-        if not os.path.realpath(cand).startswith(os.path.realpath(root or ".") + os.sep):
-            continue                                        # a name that climbs out of the model folder
+        if not os.path.normpath(cand).startswith(os.path.normpath(root or ".") + os.sep):
+            continue                                        # a name that climbs out of the model folder (symlinks inside it are fine)
         if os.path.isfile(cand):
             return cand
     return None

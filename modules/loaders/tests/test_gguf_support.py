@@ -361,3 +361,17 @@ def test_native_load_keeps_an_f32_value_too_big_for_fp16_finite(tmp_path):
     sd, _o, _n = gguf_support._load_native(str(f))
     assert torch.isfinite(sd["a"].float()).all()
 
+
+
+def test_a_symlinked_gguf_inside_the_model_folder_is_found(fake_folders):
+    (fake_folders / "elsewhere.gguf").write_bytes(b"x")
+    (fake_folders / "text_encoders" / "linked.gguf").symlink_to(fake_folders / "elsewhere.gguf")
+    assert gguf_support.gguf_path("text_encoders", "linked.gguf")
+
+
+def test_a_pack_in_managers_disabled_folder_is_not_used(fake_folders):
+    pack = fake_folders / "custom_nodes" / ".disabled" / "ComfyUI-GGUF"
+    pack.mkdir(parents=True)
+    (pack / "ops.py").write_text("")
+    (pack / "loader.py").write_text("def gguf_sd_loader(p): pass\n")
+    assert gguf_support._pack_dir() is None
