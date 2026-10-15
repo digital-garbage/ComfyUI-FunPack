@@ -1,6 +1,7 @@
 // Auto Montage: the button in the timeline header and its window.
 import { offer } from "../../shell/actions.js";
 import { composer as c } from "../../composer/composer.js";
+import { snapFrames } from "../../shell/scenes.js";
 import { playable, build } from "./build.js";
 
 const snippet = (sc) => { const t = (sc.text || "").trim().replace(/\s+/g, " "); return t ? (t.length > 36 ? `${t.slice(0, 36)}…` : t) : "(no prompt)"; };
@@ -21,18 +22,19 @@ export default {
       const picked = list.filter((s) => sel.ids.includes(s.id));
       let lead = (picked[0] || list[0]).id;
       const pool = new Set(picked.slice(1).map((s) => s.id));
-      let seg = 100, decay = 0.85;
+      const leadFrames = Math.round(playable(picked[0] || list[0], p.project).total * playable(picked[0] || list[0], p.project).fps);
+      let seg = Math.max(9, snapFrames(leadFrames / 4, "floor")), decay = 0.85;      // about four lead pieces, not one lump
       const label = (s) => `${snippet(s)} — ${Math.round(playable(s, p.project).total * playable(s, p.project).fps)}f`;
       const body = c.region.stack({ gap: "md" });
       const draw = () => body.set([
         c.field.default({ label: "Lead clip (plays in order)", control: c.select.md({ label: "Lead clip", value: lead, options: list.map((s) => ({ value: s.id, label: label(s) })), onChange: (v) => { lead = v; pool.delete(v); draw(); } }) }),
         c.field.default({ label: "Cutaway pool (random draw, in order within each clip)", control: c.checklist.default({ label: "Cutaway pool", values: [...pool],
           items: list.filter((s) => s.id !== lead).map((s) => ({ value: s.id, label: label(s) })), onChange: (v) => { pool.clear(); v.forEach((x) => pool.add(x)); } }) }),
-        c.field.default({ label: "Segment length (frames)", hint: "How long the lead clip's first piece and each cutaway piece are.", control: c.number.md({ label: "Segment length", value: seg, min: 9, step: 1, precision: 0, onChange: (v) => { seg = v; } }) }),
+        c.field.default({ label: "Segment length (frames)", hint: "How long the lead clip's first piece and each cutaway piece are, in frames. Rounded down to a length the model can make (9, 17, 25 ...).", control: c.number.md({ label: "Segment length", value: seg, min: 9, step: 1, precision: 0, onChange: (v) => { seg = v; } }) }),
         c.field.default({ label: "Acceleration", hint: "1.0 = equal segments; lower = the lead clip's segments get shorter toward the end", control: c.slider.readout({ label: "Acceleration", value: decay, min: 0.5, max: 1, step: 0.05, onCommit: (v) => { decay = v; } }) }),
       ]);
       draw();
-      const win = c.modal.generic({ title: "Auto Montage", subtitle: "Cuts the lead clip into shrinking segments and randomly inserts cutaways between them.", size: "md", body });
+      const win = c.modal.generic({ title: "Auto Montage", subtitle: "Adds a new cut at the end of the timeline: the lead clip in shrinking pieces with pieces of the cutaway clips between them. Your original clips stay as they are.", size: "md", body });
       win.setFooter({ actions: [c.button.sm({ label: "Build montage", tone: "primary", onClick: () => {
         if (!pool.size) return c.toast.warn({ text: "Pick at least one cutaway clip." });
         const added = p.edit((pr) => build(pr, { leadId: lead, poolIds: [...pool], segmentFrames: seg, decay }) || false);

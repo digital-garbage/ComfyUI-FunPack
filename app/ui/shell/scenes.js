@@ -7,7 +7,7 @@ export const DRIVEN = { frames: "num_frames_per_scene", fps: "frame_rate" };
 
 export const genUnitId = (sc) => (sc && (sc.gen_unit_id || sc.id)) || "";
 export const isVideoClip = (sc) => Boolean(sc && sc.source && sc.source.type === "video");
-export const isGenerative = (sc) => Boolean(sc) && !isVideoClip(sc);
+export const isGenerative = (sc) => Boolean(sc) && !isVideoClip(sc) && !sc.reused;       // a montage piece only replays media that already exists
 /** A timeline cut of one generated clip: only its root owns the prompt, rating and source. */
 export const isSubclip = (sc) => Boolean(sc) && (sc.cut_offset_frames || 0) > 0;
 

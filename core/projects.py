@@ -209,6 +209,8 @@ class Scene:
     #: (cut_offset_frames == 0) owns prompt, rating and source.
     gen_unit_id: str | None = None
     cut_offset_frames: int = 0
+    #: A copy of already-rendered media (Auto Montage pieces): never generated, never part of another clip's unit.
+    reused: bool = False
     guides: list = field(default_factory=list)
     #: Slip edit: where in the generated media this clip starts and how long it runs.
     source_in: float = 0.0
@@ -266,6 +268,7 @@ class Scene:
             excluded=_bool(d.get("excluded")),
             gen_unit_id=guide if is_token(guide) else None,
             cut_offset_frames=_int(d.get("cut_offset_frames"), 0, 0, 10 ** 7),
+            reused=_bool(d.get("reused")),
             guides=_dicts(d.get("guides")),
             source_in=_num(d.get("source_in"), 0.0, 0.0, 10 ** 6),
             source_dur=_num(d.get("source_dur"), None, 0.0, 10 ** 6),

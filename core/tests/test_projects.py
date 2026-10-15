@@ -576,6 +576,13 @@ def test_timeline_fields_are_checked_not_trusted():
     assert s.guides == [{"k": 1}] and s.gen_unit_id is None and s.excluded is False
 
 
+def test_a_montage_piece_stays_reused_through_a_save():
+    """Auto Montage marks its copies `reused`; losing the flag on save would let Generate remake them."""
+    s = projects.Scene.from_dict({"id": "p1", "gen_unit_id": "p1", "reused": True})
+    assert s.reused is True and projects.Scene.from_dict(__import__("dataclasses").asdict(s)).reused is True
+    assert projects.Scene.from_dict({"id": "x", "reused": "yes"}).reused is False
+
+
 def test_free_form_project_fields_must_be_the_right_shape_and_size():
     p = projects.Project.from_dict({
         "audio_tracks": [{"id": "a"}, "x", 3], "overlay_tracks": "nope", "models": [1],

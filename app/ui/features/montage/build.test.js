@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { build, chop } from "./build.js";
+import { isGenerative, genUnitId } from "../../shell/scenes.js";
+import { removeScene } from "../../shell/edits.js";
 
 const media = (n) => ({ filename: `${n}.mp4`, subfolder: "", type: "output" });
 const project = () => ({ num_frames_per_scene: 97, frame_rate: 25,
@@ -9,8 +11,9 @@ const project = () => ({ num_frames_per_scene: 97, frame_rate: 25,
 
 test("chop: segments shrink by the decay, never below 9 frames, and cover the whole length", () => {
   const segs = chop(97, 40, 0.5);
-  assert.deepEqual(segs.map((s) => s.start), [0, 40, 60, 70, 79, 88]);
   assert.ok(segs.every((s) => s.frames >= 9));
+  assert.ok(segs.every((s, i) => i === 0 || s.start === segs[i - 1].start + segs[i - 1].frames), "pieces butt up exactly: no overlap, no gap");
+  assert.ok(segs.every((s) => s.start + s.frames <= 97), "no piece reaches past the clip");
   assert.equal(chop(97, 100, 1).length, 1);
 });
 
@@ -20,15 +23,21 @@ test("build: lead pieces alternate with pool pieces, each pool clip is read fron
   const added = p.scenes.slice(4);
   assert.equal(n, added.length);
   assert.equal(added.length % 2, 0);
-  assert.deepEqual(added.filter((_, i) => i % 2 === 0).map((s) => s.gen_unit_id), added.filter((_, i) => i % 2 === 0).map(() => "L"));
+  assert.ok(added.every((s) => s.reused && s.gen_unit_id === s.id && !isGenerative(s)), "every piece is its own unit that Generate never makes");
+  assert.ok(!p.scenes.slice(0, 4).some((s) => genUnitId(s) !== s.id), "the originals gain no unit mates, so Generate cannot lengthen them");
+  const fromL = added.filter((_, i) => i % 2 === 0);
+  assert.deepEqual(fromL.map((s) => p.scene_renders[s.id].inSec).slice(0, 2), [0, 33 / 25], "the lead plays in order");
   const fromA = added.filter((_, i) => i % 2 === 1);
-  assert.ok(fromA.every((s) => s.gen_unit_id === "A"));
-  assert.deepEqual(fromA.map((s) => s.cut_offset_frames).slice(0, 2), [0, 33], "A is read in order");
+  assert.deepEqual(fromA.map((s) => p.scene_renders[s.id].inSec).slice(0, 2), [1, 1 + 33 / 25], "A is read in order");
   assert.equal(p.scene_renders[fromA[1].id].inSec, 1 + 33 / 25, "a piece plays from where it starts in A's render");
   assert.equal(p.scene_renders[fromA[1].id].media.filename, "A.mp4");
   assert.equal(added[added.length - 1].transition_to_next, "");
   assert.ok(added.every((s) => s.frames_mode === "timeline" && s.source_in === 0));
-  assert.equal(fromA[1].text, "", "a later part's prompt belongs to the first part");
+
+  const before = added.map((s) => [s.id, p.scene_renders[s.id].inSec]);
+  p.scenes.find((s) => s.id === "L").frames_mode = "timeline";
+  removeScene(p, "L");
+  assert.deepEqual(added.map((s) => [s.id, p.scene_renders[s.id].inSec]), before, "deleting the original leaves the montage as it was");
 });
 
 test("build: nothing is built without a rendered lead and a rendered pool; the project is left alone", () => {

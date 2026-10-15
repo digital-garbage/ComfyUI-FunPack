@@ -1,7 +1,8 @@
 // Auto Montage, trailer-style: the lead clip is cut into segments that shrink as it goes, and after each one a segment from a
-// pool of other rendered clips is cut in. Every piece reuses media that already exists; nothing is generated. Pure.
+// pool of other rendered clips is cut in. Every piece reuses media that already exists and is its own unit (`reused`): Generate never
+// makes it and it never lengthens the clip it was copied from. Pure.
 import { trackFor } from "../../shell/audio.js";
-import { snapFrames, effFps, seconds, isVideoClip, genUnitId } from "../../shell/scenes.js";
+import { snapFrames, effFps, seconds, isVideoClip } from "../../shell/scenes.js";
 
 const newId = () => "c" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -14,13 +15,13 @@ export function playable(sc, p) {
   return r && r.media ? { fps, from: (r.inSec || 0) + (sc.source_in || 0), total: seconds(sc, p), render: r } : null;
 }
 
-/** Cut a clip's length into [{start, frames}] (frames), each `base * decay^i` long (decay 1 = all equal). */
+/** Cut a clip's length into [{start, frames}] (frames), each `base * decay^i` long (decay 1 = all equal), rounded DOWN to the frame grid so no piece reaches past the clip or overlaps the next. */
 export function chop(totalFrames, base, decay = 1) {
   const out = [];
   for (let at = 0, i = 0; at < totalFrames - 8; i += 1) {
-    const len = Math.min(totalFrames - at, Math.max(9, Math.round(base * decay ** i)));
-    out.push({ start: at, frames: snapFrames(len) });
-    at += len;
+    const frames = snapFrames(Math.min(totalFrames - at, Math.max(9, Math.round(base * decay ** i))), "floor");
+    out.push({ start: at, frames });
+    at += frames;
   }
   return out;
 }
@@ -44,15 +45,14 @@ export function build(p, { leadId, poolIds, segmentFrames = 100, decay = 1, rand
   };
   const piece = (sc, src, start, frames) => {
     const out = clone(sc), at = start / src.fps;
-    Object.assign(out, { id: newId(), gen_unit_id: genUnitId(sc), frames, rating: "", transition_to_next: "cut", transition_frames: null, frames_mode: "timeline", excluded: false, audio_separated: false, audio_volume: sc.audio_separated ? (trackFor(p, sc.id) || {}).volume ?? 1 : sc.audio_volume });
+    const id = newId();
+    Object.assign(out, { id, gen_unit_id: id, reused: true, cut_offset_frames: 0, frames, rating: "", transition_to_next: "cut", transition_frames: null, frames_mode: "timeline", excluded: false, audio_separated: false, audio_volume: sc.audio_separated ? (trackFor(p, sc.id) || {}).volume ?? 1 : sc.audio_volume });
     if (isVideoClip(sc)) Object.assign(out, { source_in: src.from + at, source_dur: frames / src.fps });
     else {
-      out.cut_offset_frames = (sc.cut_offset_frames || 0) + start;
       out.source_in = 0;                                    // the render entry below already starts where this piece does
       p.scene_renders = p.scene_renders || {};
       p.scene_renders[out.id] = { media: src.render.media, inSec: src.from + at, renderPrompt: src.render.renderPrompt ? { ...src.render.renderPrompt } : null };
     }
-    if (out.cut_offset_frames > 0) out.text = "";           // a later part's prompt belongs to the first part
     return out;
   };
   const built = [];
