@@ -8,7 +8,6 @@ import time
 from comfy_api.latest import io
 
 from ..._core import log
-from ...loaders.clip import nodes as clip_nodes
 from . import enhance as en
 
 #: The last runs' rewrites, newest last: what the Composer's readout shows. In
@@ -25,6 +24,7 @@ _LOADED = {}      # one entry: the last separate encoder, so a second Generate d
 def _own_encoder(file, family):
     """The encoder the person picked for the enhancer, loaded the way the pipeline's own loader loads one."""
     if _LOADED.get("key") != (file, family):
+        from ...loaders.clip import nodes as clip_nodes        # here, not at the top: the enhancer must load even when the CLIP loader module did not
         _LOADED.clear()
         _LOADED.update(key=(file, family), clip=clip_nodes.FunPackCLIPLoader.execute(clip_name1=file, type=family).args[0])
     return _LOADED["clip"]

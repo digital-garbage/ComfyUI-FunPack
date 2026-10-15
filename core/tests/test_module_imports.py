@@ -57,3 +57,27 @@ def test_a_module_reaches_core_only_through_the_shim(path):
         + ", ".join(f"line {line} ({what})" for line, what in offences)
         + ". Under ComfyUI there is no top-level `core`. Use `from ..._core import ...`."
     )
+
+
+def _other_module_imports(path: Path):
+    """Imports at MODULE level that reach into a different module (`from ...group.other import`)."""
+    parts = path.relative_to(MODULES).parts
+    if len(parts) < 3:
+        return []
+    own = parts[:2]
+    found = []
+    for node in ast.parse(path.read_text()).body:             # module level only: a guarded import inside a function is how a module may ask another for help
+        if isinstance(node, ast.ImportFrom) and node.level >= 3 and node.module:
+            target = node.module.split(".")[:2]
+            if len(target) == 2 and tuple(target) != own:
+                found.append((node.lineno, f"from {'.' * node.level}{node.module} import"))
+    return found
+
+
+@pytest.mark.parametrize("path", _module_files(), ids=lambda p: str(p.relative_to(MODULES)))
+def test_a_module_does_not_depend_on_another_module_at_import(path):
+    offences = _other_module_imports(path)
+    assert not offences, (
+        f"{path.relative_to(MODULES)} imports another module at line {offences[0][0]} ({offences[0][1]}). "
+        "If that module fails to import, this one would be lost with it. Import inside the function that needs it, "
+        "guarded, or ask through PROVIDES / USES.")

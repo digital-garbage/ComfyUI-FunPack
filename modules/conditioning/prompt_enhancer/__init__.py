@@ -44,9 +44,11 @@ def routes(table, base, web):
     @table.get(base + "/encoders")
     async def _encoders(_req):
         """Encoder files and families the Enhance panel can offer (read fresh: files come and go)."""
-        from ...loaders.clip import nodes as clip_nodes
-        files = clip_nodes.encoder_files()
-        return web.json_response({"files": files, "families": clip_nodes.clip_types()})
+        try:
+            from ...loaders.clip import nodes as clip_nodes
+            return web.json_response({"files": clip_nodes.encoder_files(), "families": clip_nodes.clip_types()})
+        except Exception as exc:                                    # noqa: BLE001 -- the CLIP loader module is another module; its absence empties the picker, not the panel
+            return web.json_response({"files": [], "families": [], "why": f"the CLIP loader module is not available: {exc}"})
 
 
 PROVIDES = {"routes": routes}
