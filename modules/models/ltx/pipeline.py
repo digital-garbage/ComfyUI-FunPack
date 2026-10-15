@@ -127,9 +127,9 @@ def _uncrop(as_guide):
 
 
 def presets():
-    return [{"id": "ltx23_text_to_video", "title": "LTX 2.3 · Text to Video", "slots": _base(False)},
-            {"id": "ltx23_image_to_video", "title": "LTX 2.3 · Image to Video", "slots": _base(True)},
-            {"id": "ltx23_anchor_guide", "title": "LTX 2.3 · Anchor as guide (image steers, opening stays free)",
+    return [{"id": "ltx23_text_to_video", "title": "LTX 2.3 · Text to Video (UNTESTED)", "slots": _base(False)},
+            {"id": "ltx23_image_to_video", "title": "LTX 2.3 · Image to Video (UNTESTED)", "slots": _base(True)},
+            {"id": "ltx23_anchor_guide", "title": "LTX 2.3 · Anchor as guide (UNTESTED)",
              "slots": _base(True, True)}]
 
 

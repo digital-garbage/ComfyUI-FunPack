@@ -187,4 +187,12 @@ def test_a_size_that_is_not_a_multiple_of_32_is_said(comfyui, monkeypatch):
     said = []
     monkeypatch.setattr(log, "once", lambda key, level, source, msg: said.append(msg))
     m.empty_latent(object(), 816, 512, 9, 1, audio_vae=_AudioVae(), frame_rate=25.0)
-    assert said and "800x512" in said[0]
+    assert any("800x512" in m_ for m_ in said)
+    assert any("UNTESTED" in m_ for m_ in said)            # every LTX run says it is untested
+
+
+def test_ltx_says_loudly_that_it_is_untested(registered):
+    from core import routes
+    titles = [p["title"] for _s, make in routes.modules().providers("pipeline_presets") for p in make() if p["id"].startswith("ltx")]
+    assert titles and all("UNTESTED" in t for t in titles)
+    assert "UNTESTED" in _ltx().UNTESTED and "issues" in _ltx().UNTESTED

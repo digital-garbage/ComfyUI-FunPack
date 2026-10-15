@@ -19,8 +19,9 @@ What it contributes, and what it deliberately does NOT:
   arrangement H3 uses, so ALG, DynaShift and the guidance modules find the picture.
 * **Decode** -- the picture through the video VAE, the sound through the audio VAE.
 
-Not validated on a real LTX model yet: the shapes are tested against fakes and ComfyUI's own
-stock nodes, and the pipelines against the graph builder.
+UNTESTED. This was never run on a real LTX model, and nobody plans to test it soon: the shapes are
+checked against fakes and ComfyUI's own stock nodes, and the pipelines against the graph builder.
+You are free to try it; if something breaks, please report it in the project's Issues.
 """
 
 import comfy.model_management
@@ -82,10 +83,16 @@ def frames_for(length: int) -> int:
     return ((length - 1 + VIDEO_TEMPORAL_RATIO - 1) // VIDEO_TEMPORAL_RATIO) * VIDEO_TEMPORAL_RATIO + 1
 
 
+UNTESTED = ("LTX support is UNTESTED: it has never been run on a real LTX model and nobody plans to test it soon. "
+            "You are free to try it. If something breaks, please report it at "
+            "https://github.com/digital-garbage/ComfyUI-FunPack/issues")
+
+
 def empty_latent(model, width, height, length, batch_size=1, audio_vae=None, frame_rate=25.0):
     """The joint latent, or None when this is not an LTX audio+video model."""
     if not is_ltx(model):
         return None
+    log.once("ltx_untested", log.ALERT, "FunPack LTX", UNTESTED)
     if audio_vae is None:
         raise RuntimeError(
             "this model makes sound with the picture and sizes it from the audio VAE: wire the audio "
