@@ -174,7 +174,7 @@ class FunPackModifierSettings(io.ComfyNode):
                 # Saved settings outlive modules (removed, renamed, or one that failed to load). Refusing the run for a
                 # name nobody can act on would break every project that ever used it, so it is skipped -- out loud.
                 log.once(f"stale_module:{module_id}", log.WARNING, "FunPack Modifier Settings",
-                         f"saved settings for {module_id!r} ignored: no module with that id is installed")
+                         f"saved settings for {module_id!r} ignored: no module with that id is loaded")
                 continue
             clean, said = schema_mod.check_values(spec, values, keep_bad=guards_off)
             checked[module_id] = clean
@@ -277,7 +277,7 @@ class FunPackLoadModifiers(io.ComfyNode):
         for module_id in (settings or {}):
             if module_id not in known and module_id not in control_mod.RESERVED:
                 log.once(f"stale_module:{module_id}", log.WARNING, "FunPack Load Modifiers",
-                         f"saved settings for {module_id!r} ignored: no module with that id is installed")
+                         f"saved settings for {module_id!r} ignored: no module with that id is loaded")
         for spec in ordered:
             values, said = schema_mod.check_values(
                 spec, (settings or {}).get(spec.id), keep_bad=full_control)

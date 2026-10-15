@@ -70,11 +70,17 @@ def _import_nodes(body):
     for node in body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             yield node
-        elif isinstance(node, (ast.Try, ast.If, ast.With)):
+        elif isinstance(node, ast.ClassDef):                # a class body runs at import; its methods do not
+            yield from _import_nodes(node.body)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        else:
             for part in ("body", "orelse", "finalbody"):
-                yield from _import_nodes(getattr(node, part, []))
+                yield from _import_nodes(getattr(node, part, None) or [])
             for handler in getattr(node, "handlers", []):
                 yield from _import_nodes(handler.body)
+            for case in getattr(node, "cases", []):
+                yield from _import_nodes(case.body)
 
 
 def _other_module_imports(path: Path, mods=None, root: Path = MODULES):
@@ -93,7 +99,7 @@ def _other_module_imports(path: Path, mods=None, root: Path = MODULES):
         else:
             mod = (node.module or "").split(".") if node.module else []
             if node.level == 0:
-                targets = [tuple(mod[1:3])] if mod[:1] == ["modules"] else []
+                targets = ([tuple(mod[1:3])] if len(mod) >= 3 else [(mod[1], n) for n in names]) if mod[:1] == ["modules"] and len(mod) >= 2 else []
             elif node.level >= 3:
                 targets = [tuple(mod[:2])] if len(mod) >= 2 else [(mod[0], n) for n in names] if mod else []
             elif node.level == 2:
@@ -128,6 +134,8 @@ def test_the_guard_sees_every_way_to_import_another_module_at_load(tmp_path):
         "from ..b import x": True, "from ...loaders.c import x": True, "from .. import b": True,
         "from ...loaders import c": True, "import modules.sampling.b": True, "from modules.sampling.b import x": True,
         "try:\n    from ..b import x\nexcept ImportError:\n    x = None": True, "if True:\n    from ..b import x": True,
+        "from modules.sampling import b": True, "class K:\n    from ..b import x": True,
+        "for i in []:\n    from ..b import x": True, "match 1:\n    case 1:\n        from ..b import x": True,
         "from . import helper": False, "from ..._core import log": False, "from ..prompt_taste import x": False,
         "def f():\n    from ..b import x": False,
     }

@@ -27,8 +27,8 @@ def _model_file_choices():
     an existing pipeline's saved choice keeps its position in the list and
     nothing a user already picked moves.
     """
-    ggufs = gguf_support.gguf_names("diffusion_models") if gguf_support.backend() else []       # no pack and no gguf package: nothing could load it
-    return list(folder_paths.get_filename_list("diffusion_models")) + ggufs
+    return list(folder_paths.get_filename_list("diffusion_models")) + \
+        gguf_support.gguf_names("diffusion_models")        # listed even with no backend: a saved pick must stay valid so the loader can say what to install
 
 
 
