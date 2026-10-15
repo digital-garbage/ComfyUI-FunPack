@@ -18,7 +18,7 @@ export default {
         c.field.default({ label: "Start from", hint: "A model's own pipeline, ready to fill with files. “Keep the current pipeline” leaves Models & Pipeline as it is.",
           control: c.select.md({ label: "Start from", value: ctx.preset, onChange: (v) => { ctx.preset = v; },
             options: [{ value: "", label: "Keep the current pipeline" }, ...presets.map((p) => ({ value: p.id, label: p.title }))] }) })] }) },
-      { title: "Want the guided tour?", sub: "A walk through the screen, one part at a time. It changes nothing; Help ▸ Restart tour runs it again.", body: () => c.toggle.default({ label: "Show me around when I finish", checked: ctx.tour, onChange: (v) => { ctx.tour = v; } }) },
+      { title: "Want the guided tour?", sub: "A walk through the screen, one part at a time. It changes nothing; Help ▸ Start tour runs it again.", body: () => c.toggle.default({ label: "Show me around when I finish", checked: ctx.tour, onChange: (v) => { ctx.tour = v; } }) },
     ];
 
     let busy = false;

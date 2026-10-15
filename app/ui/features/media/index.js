@@ -99,6 +99,7 @@ export default {
         note.setText("");
       } });
     const seg = (label, options, key) => c.segmented.sm({ label, options, value: show[key], onChange: (v) => { show[key] = v; draw(true); } });
+    const tileSize = seg("Tile size", DENSITY, "cols");       // only the grid has columns
     const sort = c.select.sm({ label: "Sort", options: SORTS, value: show.sort, onChange: (v) => { show.sort = v; draw(true); } });
     const selectBtn = c.button.sm({ label: "Select", tone: "ghost", title: "Pick several files, then delete them together", onClick: () => { selecting = !selecting; chosen.clear(); draw(true); } });
     const bulk = c.button.sm({ label: "Delete (0)", tone: "danger", onClick: async () => {
@@ -109,7 +110,7 @@ export default {
     bulk.node.hidden = true;
     const clearRefs = c.button.sm({ label: "Clear references", tone: "ghost", title: "Stop using every reference picture in the selected scene", onClick: () => p.selected && p.setScene(p.selected.id, "references", []) });
     host.append(c.toolbar.default({ items: [c.text.sm({ text: "Media" })], trailing: [clearRefs, selectBtn, bulk] }).node, drop.node, note.node, seg("Show", FILTERS, "filter").node, sort.node,
-      seg("View", VIEWS, "view").node, seg("Tile size", DENSITY, "cols").node, shelf.node);
+      seg("View", VIEWS, "view").node, tileSize.node, shelf.node);
 
     let drawn = "";
     function draw(force) {
@@ -125,6 +126,7 @@ export default {
       const g = galleries[show.view];
       shelf.set([g]);
       if (g.setCols) g.setCols(Number(show.cols));
+      tileSize.node.hidden = !g.setCols;
       // what the selected scene uses is marked on its tile, so a reference can be told from the rest
       const flags = (m) => [sc && sc.source_image === m.id ? { text: "◐", title: "The selected scene's aspect ratio source" } : null,
         refs.includes(m.id) ? { text: `${plan.pins[m.id] ? "📌" : ""}R${nums[refs.indexOf(m.id)]}`, title: `Reference slot ${nums[refs.indexOf(m.id)]} for the selected scene${plan.pins[m.id] ? ", pinned to every scene" : ""}` } : null].filter(Boolean);
