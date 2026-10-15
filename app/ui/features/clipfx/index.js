@@ -7,6 +7,7 @@ export default {
   id: "clipfx",
   mount: "timeline.toolbar",
   needs: ["project", "api", "selection"],
+  modules: ["render"],
   setup({ host, app }) {
     const p = app.project;
     let library = null;

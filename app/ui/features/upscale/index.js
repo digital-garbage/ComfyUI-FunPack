@@ -8,6 +8,7 @@ export default {
   id: "upscale",
   mount: "timeline.actions",
   needs: ["project", "api", "selection"],
+  modules: ["render"],
   setup({ host, app }) {
     const p = app.project, sel = app.selection;
     const put = inPlace(host), busy = new Set();

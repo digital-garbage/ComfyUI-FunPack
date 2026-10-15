@@ -54,6 +54,9 @@ const story = (app, own) => {
   ] });
 };
 
+// Tabs whose backend module may be missing.
+const TAB_MODULE = { enhance: "conditioning_prompt_enhancer", chat: "conditioning_prompt_enhancer", files: "taste" };
+
 const sheets = { story, shortcuts, build, cuts,
   enhance, chat, files };
 
@@ -67,7 +70,7 @@ export default {
     const open = () => {
       if (win) return;
       const body = c.region.stack({ gap: "sm", fill: true });
-      const show = (tab) => { cleanup(); body.set([c.tabs.underline({ label: "Composer", tabs: TABS, value: tab, onChange: show }), sheets[tab](app, (off) => owned.push(off))]); };
+      const show = (tab) => { cleanup(); body.set([c.tabs.underline({ label: "Composer", tabs: TABS.filter((t) => !TAB_MODULE[t.value] || !app.hasModule || app.hasModule(TAB_MODULE[t.value])), value: tab, onChange: show }), sheets[tab](app, (off) => owned.push(off))]); };
       show("story");
       win = c.floating.window({ id: "composer", title: "Composer", subtitle: "prompt craft", body, width: 420, height: 520, x: 320, y: 90,
         onClose: () => { cleanup(); win = null; } });

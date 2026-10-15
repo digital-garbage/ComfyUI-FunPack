@@ -28,7 +28,7 @@ export default {
       models(app), "Generation", "models loaders unet vae clip lora");
     add("modules", "Modules", "Optional modules to install, modules to switch off for this project, and ones that failed.", "☷", "neutral",
       modules(app), "Generation", "modules enable disable quarantine");
-    add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys.", "✦", "danger",
+    if (!app.hasModule || app.hasModule("taste")) add("refinement", "Refinement & Taste", "Learned-taste state: refinement keys.", "✦", "danger",
       taste(app), "Learning", "refinement taste keys rating");
     // only when that module is installed: a section for something absent would be a dead end
     // checked again on every pipeline change: ComfyUI may be down when the page loads and answer later

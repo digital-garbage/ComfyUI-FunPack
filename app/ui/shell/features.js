@@ -1,7 +1,7 @@
 // Loads UI features. A feature file's default export is one hub, or several:
 //   { id, mount, needs?, setup({ host, app }) -> teardown? }
 // `mount` names a region (see mounts.js). A feature that cannot load, names a region nobody offers,
-// needs a service the app lacks, or throws in setup is hidden -- nothing of it reaches the screen.
+// needs a service the app lacks, names (`modules`) a backend module the server does not have, or throws in setup is hidden -- nothing of it reaches the screen.
 import { hostFor, offered } from "./mounts.js";
 
 function mountOne(hub, has, app) {
@@ -9,6 +9,8 @@ function mountOne(hub, has, app) {
   if (!host) throw new Error(`no region offers "${hub.mount}" (offered: ${offered().join(", ")})`);
   const lacking = (hub.needs || []).filter((name) => !has(name));
   if (lacking.length) throw new Error(`needs ${lacking.join(", ")}`);
+  const gone = (hub.modules || []).filter((id) => app.hasModule && !app.hasModule(id));      // a button whose backend did not load would only fail when pressed
+  if (gone.length) throw new Error(`module ${gone.join(", ")} is not installed`);
   const before = [...host.childNodes];
   const heard = [];                         // what the feature subscribed to, so a failed one can be unsubscribed
   const mine = { ...app, on: (fn) => { const off = app.on(fn); heard.push(off); return off; } };

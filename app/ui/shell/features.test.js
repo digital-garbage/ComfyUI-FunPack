@@ -34,3 +34,15 @@ test("a feature that subscribed and then threw stops hearing the app", async () 
   await loadFeatures(["throws"], { load: async (n) => ({ default: hubs[n] }), app, has: () => true });
   assert.equal(heard.size, 0);
 });
+
+test("a feature whose backend module is not installed is hidden; unknown (server down) hides nothing", async () => {
+  _reset(); offer("a", host());
+  const mod = { id: "needs-render", mount: "a", modules: ["render"], setup() {} };
+  const load = async () => ({ default: mod });
+  const gone = await loadFeatures(["x"], { load, app: { hasModule: (id) => id !== "render" }, has: () => true });
+  assert.deepEqual(gone.hidden.map((h) => h.why), ["module render is not installed"]);
+  const here = await loadFeatures(["x"], { load, app: { hasModule: () => true }, has: () => true });
+  assert.equal(here.mounted.length, 1);
+  const unknown = await loadFeatures(["x"], { load, app: {}, has: () => true });      // no hasModule: nothing to judge by
+  assert.equal(unknown.mounted.length, 1);
+});

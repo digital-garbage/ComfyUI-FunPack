@@ -8,6 +8,7 @@ export default {
   id: "continuity",
   mount: "menubar.menus",
   needs: ["project", "api", "pipeline", "inputHooks"],
+  modules: ["render"],
   setup({ app }) {
     const carryHook = async ({ project, scene, slots }) => {
       // Read from the pipeline this run was frozen with, not the live one an edit may have changed since the click.

@@ -9,6 +9,7 @@ export default {
   id: "render",
   mount: "timeline.actions",
   needs: ["project"],
+  modules: ["render"],
   setup({ host, app }) {
     const p = app.project;
     let busy = false, node = null;
