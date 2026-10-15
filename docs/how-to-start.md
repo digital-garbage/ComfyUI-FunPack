@@ -30,10 +30,10 @@ Start ComfyUI as usual and open `/funpack/` on the same address, for example `ht
 
 The model's pipeline starts empty: it needs your files.
 
-1. Open **Settings ▸ Ready to generate?**. It lists everything still missing.
-2. Open **Settings ▸ Models & Pipeline** and choose a file in each card marked with an orange dot (diffusion model, text encoder, VAE, and so on).
+1. Open **Settings ▸ Ready to generate?**. It checks the machine: ffmpeg, GPU, model folders, node packs.
+2. Open **Settings ▸ Models & Pipeline** and choose a file in each card marked with an orange dot (diffusion model, text encoder, VAE, and so on). Generate also names any file that is still missing.
 
-Put model files where ComfyUI expects them (`models/diffusion_models`, `models/text_encoders`, `models/vae`, `models/loras`). When nothing is missing, Ready to generate? says so.
+Put model files where ComfyUI expects them (`models/diffusion_models`, `models/text_encoders`, `models/vae`, `models/loras`). 
 
 `.gguf` text encoders work only for architectures ComfyUI-GGUF understands; any other is refused with a message (Gemma 4 `.gguf` is one such case). Use the `.safetensors` file of the same model.
 
@@ -51,15 +51,15 @@ Watch the Log window if nothing happens: any module that fails says why there, a
 
 ## 7. Cut, render, export
 
-Trim and split clips on the timeline. **⚡ Auto Montage** builds a new cut at the end from your rendered clips; your originals stay as they are. **⧉ Render** joins the timeline into one file; **⤓ Export** saves the picked clip.
+Trim and split clips on the timeline. **⚡ Auto Montage** builds a new cut at the end from your rendered clips; your originals stay as they are. **⧉ Render** joins the timeline into one file; **⤓ Export** downloads the picked clip (picture only: a clip whose sound was separated is silent there, Render mixes it).
 
 ## 8. Teach it your taste (optional)
 
-Rate a result with **Rate scene…** (liked, disliked, bad image, bad composition). Set a **Taste key** (the ⚠ chip on the timeline points to it: **Settings ▸ Engine ▸ System**) so ratings are remembered. **Settings ▸ Refinement & Taste** lists, exports and deletes keys. Modules that learn from ratings start acting after a few liked clips and say so when they need more.
+Rate a result with **Rate scene…** (liked, disliked, bad image, bad composition). Set a **Taste key** (the ⚠ chip on the timeline points to it: **Settings ▸ Engine ▸ System**) so ratings are remembered. **Settings ▸ Refinement & Taste** lists, exports and deletes keys. Modules that learn from ratings start acting once they have enough ratings (a few liked clips; some also need disliked ones) and say so when they need more.
 
 ## 9. Features marked experimental
 
-**Settings ▸ Modules** switches each feature on or off. Several features are experimental: built and run, but not yet proven over many runs. If a module fails while generating, the run carries on without it, the Log says why, and the module stays off until its code is repaired or you turn it back on in Settings ▸ Modules.
+**Settings ▸ Modules** switches each feature on or off. Several features are experimental: built and run, but not yet proven over many runs. If a module fails while generating, the run carries on without it, the Log says why, and the module stays off until its code changes or you turn it back on in Settings ▸ Modules.
 
 ## If something goes wrong
 
@@ -70,5 +70,5 @@ Rate a result with **Rate scene…** (liked, disliked, bad image, bad compositio
 ## Known limits in 5.0
 
 - LTX 2.x is untested (see above).
-- On H3 the scene picture sets the video's shape only; using it as a start frame is not implemented.
+- In the H3 preset the scene picture sets the video's shape only; a start frame is not part of it.
 - The H3 "second pass" preset is not offered yet: it has not been verified.

@@ -261,3 +261,11 @@ def test_a_text_encoder_gguf_the_pack_refuses_is_refused_not_loaded_as_the_wrong
     monkeypatch.setattr(gguf_support, "_load_native", lambda path: ({"w": "native"}, {}, "native"))
     with pytest.raises(RuntimeError, match="not supported"):
         gguf_support.load_clip_state_dict("/x.gguf")
+
+
+def test_a_text_encoder_gguf_without_the_pack_is_refused_not_dequantized_blind(monkeypatch):
+    monkeypatch.setattr(gguf_support, "backend", lambda: "native")
+    monkeypatch.setattr(gguf_support, "_load_native", lambda path: ({"w": "native"}, {}, "native"))
+    with pytest.raises(RuntimeError, match="ComfyUI-GGUF"):
+        gguf_support.load_clip_state_dict("/x.gguf")
+    assert gguf_support.load_state_dict("/x.gguf")[0] == {"w": "native"}      # a diffusion model still loads natively

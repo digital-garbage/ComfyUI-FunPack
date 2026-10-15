@@ -2,7 +2,7 @@
 
 **FunPack is a browser studio for video inside ComfyUI: a timeline with one clip per scene, a Composer for prompts ($variables, templates, shortcuts), pipeline cards instead of graphs, and modules that learn from your ratings - all on the regular ComfyUI backend.**
 
-v5 is a rewrite from scratch, not an update of 4.x: every feature is a module that announces itself, so one failing module never stops a run. Classic FunPack (4.x) lives on its own branch.
+v5 is a rewrite from scratch, not an update of 4.x: every feature is a module that announces itself, so a failing feature module is left out while the run carries on. Classic FunPack (4.x) lives on its own branch.
 
 <p align="left">
   <a href="https://ko-fi.com/M4M61MBGIT"><img src="https://img.shields.io/badge/Support%20me%20on%20Ko--fi-FF5E5B?style=for-the-badge&amp;logo=kofi&amp;logoColor=white" alt="Ko-fi" height="36"></a>&nbsp;

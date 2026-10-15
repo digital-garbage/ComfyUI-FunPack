@@ -240,6 +240,11 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
     which = backend()
     if which is None:
         raise RuntimeError(UNAVAILABLE)
+    if clip and which != "pack":
+        # Only the pack maps llama.cpp's tensor names back to a text encoder's; the native reader would hand over
+        # a state dict that looks loaded and is the wrong model.
+        raise RuntimeError("a text-encoder .gguf needs the ComfyUI-GGUF node pack to be read, and it is not installed. "
+                           "Install it, or use a .safetensors encoder of the same model.")
     if which == "pack":
         d = _pack_dir()
         try:
