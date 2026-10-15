@@ -51,14 +51,13 @@ Since v4.0.0 all updates will target ONLY Cutting Room editor. Nodes will receiv
 
 ## Installation
 
-FunPack is available on Comfy Registry and can be installed in any of these ways:
+With git, inside your `ComfyUI/custom_nodes` directory:
 
-1. With `comfy-cli`:
-   `comfy node install ComfyUI-FunPack`
-2. With git, inside your `ComfyUI/custom_nodes` directory:
-   `git clone https://github.com/digital-garbage/ComfyUI-FunPack`
-3. With ComfyUI-Manager:
-   Open `Custom Nodes Manager`, search for `ComfyUI-FunPack`, and click `Install`.
+`git clone -b v5 https://github.com/digital-garbage/ComfyUI-FunPack`
+
+(The `-b v5` matters: without it git gives you the classic 4.x on `main`.)
+
+`comfy-cli` (`comfy node install ComfyUI-FunPack`) and ComfyUI-Manager install what is published on Comfy Registry. They give you 5.0 only once it is published there: check Settings > About after installing.
 
 ## Dependencies
 
