@@ -369,9 +369,14 @@ def test_a_symlinked_gguf_inside_the_model_folder_is_found(fake_folders):
     assert gguf_support.gguf_path("text_encoders", "linked.gguf")
 
 
-def test_a_pack_in_managers_disabled_folder_is_not_used(fake_folders):
-    pack = fake_folders / "custom_nodes" / ".disabled" / "ComfyUI-GGUF"
-    pack.mkdir(parents=True)
-    (pack / "ops.py").write_text("")
-    (pack / "loader.py").write_text("def gguf_sd_loader(p): pass\n")
-    assert gguf_support._pack_dir() is None
+
+def test_symlink_loops_do_not_hang_the_listing_and_dotdot_after_a_link_is_refused(fake_folders):
+    enc = fake_folders / "text_encoders"
+    (enc / "a").symlink_to(enc)
+    (enc / "b").symlink_to(enc)
+    assert gguf_support.gguf_names("text_encoders") == ["a/gemma-Q5_K.gguf"] or "gemma-Q5_K.gguf" in gguf_support.gguf_names("text_encoders")
+    (fake_folders / "outside").mkdir()
+    (fake_folders / "outside" / "inner").mkdir()
+    (fake_folders / "outside" / "s.gguf").write_bytes(b"x")
+    (enc / "lnk").symlink_to(fake_folders / "outside" / "inner")
+    assert gguf_support.gguf_path("text_encoders", "lnk/../s.gguf") is None

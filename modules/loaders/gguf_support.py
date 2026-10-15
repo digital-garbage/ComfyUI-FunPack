@@ -90,7 +90,13 @@ def gguf_names(folder: str) -> list[str]:
     for root in roots:
         if not root or not os.path.isdir(root):
             continue
-        for dirpath, _dirs, files in os.walk(root, followlinks=True):
+        walked: set[str] = set()
+        for dirpath, dirs, files in os.walk(root, followlinks=True):
+            real = os.path.realpath(dirpath)
+            if real in walked:                              # a symlink loop: this folder was already listed
+                dirs[:] = []
+                continue
+            walked.add(real)
             for f in files:
                 if not is_gguf(f):
                     continue
@@ -113,6 +119,8 @@ def gguf_path(folder: str, name: str) -> Optional[str]:
             roots += list(folder_paths.get_folder_paths(extra) or [])
         except Exception:
             pass
+    if ".." in name.replace("\\", "/").split("/"):
+        return None
     for root in roots:
         cand = os.path.join(root or "", name)
         if not os.path.normpath(cand).startswith(os.path.normpath(root or ".") + os.sep):
