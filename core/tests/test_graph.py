@@ -796,3 +796,13 @@ def test_the_table_marks_nodes_by_class_for_pipelines_saved_without_any_marker()
     table = {"Rewrite": {"pass": {"0": "text"}}}
     prompt, problems = graph.build(slots, _without("Rewrite", "Markup"), table)
     assert any("Markup" in p for p in problems) and not any("Rewrite" in p for p in problems)      # Markup is not in the table: still required
+
+
+def test_a_slots_own_marker_wins_over_the_table_and_a_null_pass_value_is_not_passed_on():
+    slots = _optional_pipeline()
+    slots[2]["optional"] = {"pass": {"0": "text"}}
+    prompt, _ = graph.build(slots, _without("Rewrite", "Markup"), {"Rewrite": {"pass": {"0": "enabled"}}})
+    assert prompt["encode"]["inputs"]["prompt"] == "a typed prompt"               # the slot said "text"; the table said "enabled"
+    slots[2]["inputs"]["text"] = None
+    _prompt, problems = graph.build(slots, _without("Rewrite", "Markup"))
+    assert any("no node called" in p for p in problems)                            # nothing typed: refused, not sent as null

@@ -690,6 +690,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     // Nothing saved was accepted (a failed request, or a file the server refuses): the default
     // runs, said, and the caller must NOT save it over the project's own copy.
     slots = JSON.parse(JSON.stringify(offered));
+    skipped = {};                // the stand-in is the default pipeline: whatever the last project skipped says nothing about it
     removed = new Set(); unwired = {}; whole = false;   // the stand-in is the plain default: no flags of the project it could not load
     incomplete = []; refused = []; queueable = false;   // nor the last project's readiness
     saveNotes = ["This project's saved pipeline could not be loaded, so the default is in use."];

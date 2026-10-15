@@ -295,6 +295,8 @@ def bypass_missing(slots: Sequence[dict], schemas: Optional[Schemas] = None,
             if name is None or name not in (slot.get("inputs") or {}):
                 return None, value[0]
             value = slot["inputs"][name]
+            if value is None:                                          # nothing was typed or wired there
+                return None, slot["id"]
         return None, value[0]                                         # skipped slots reading each other in a loop
 
     while gone:                       # a slot that cannot be passed through stays; that can strand another, so look again

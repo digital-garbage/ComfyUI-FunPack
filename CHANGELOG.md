@@ -38,7 +38,7 @@ A rewrite from scratch, not an update of 4.x. Same idea (a studio for video insi
 - **`.gguf` text encoders** need the ComfyUI-GGUF node pack and work only for architectures it understands; otherwise they are refused with a message. Gemma 4 `.gguf` does not work; a loader for it may come later.
 - **H3 start frame**: in the H3 preset the scene picture sets the video's shape only; a start frame is not part of it.
 - **H3 second pass** is held back: not offered until verified.
-- The ready-made pipelines need Save video, Load media, the loaders, the sampler and decode: if the module behind one of those fails to load, Generate names the missing node and refuses. The optional nodes (Enhance prompt, Shot camera, Prompt markup, Negative erase, Cut opening, Identity transfer) are skipped instead, with a note beside Generate, and their controls are hidden. The one exception: the Reference 1 picture of Identity transfer stays on screen and does nothing until the module is back.
+- The ready-made pipelines need Save video, Load media, the loaders, the sampler and decode: if the module behind one of those fails to load, Generate names the missing node and refuses. The optional nodes (Enhance prompt, Shot camera, Prompt markup, Negative erase, Cut opening, Identity transfer) are skipped instead, with a note beside Generate, and their controls are hidden. Which nodes are optional is declared by the model module (MiniMax H3, LTX), so it applies while that module loads. The one exception: the Reference 1 picture of Identity transfer stays on screen and does nothing until the module is back.
 - Turning some modules on switches the model compiler off for the run, which costs sampling time.
 
 ### Docs

@@ -44,7 +44,7 @@ def _cases():
     return [(preset["id"], slot["id"]) for preset in _presets() for slot in preset["slots"] if slot["node"] in table]
 
 
-def test_the_six_optional_nodes_are_declared():
+def test_the_seven_optional_node_classes_are_declared():
     nodes = {s["node"] for p in _presets() for s in p["slots"] if s["node"] in _table()}
     assert nodes == {"FunPackEnhancePrompt", "FunPackShotCamera", "FunPackPromptMarkup", "FunPackApplyPromptMarkup",
                      "FunPackNegativeErase", "FunPackCutOpening", "FunPackIdentityTransfer"}

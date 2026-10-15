@@ -568,3 +568,18 @@ def test_empty_values_do_not_wipe_the_settings_the_slots_carry(server):
     assert status == 200, body
     settings = next(s for s in body["slots"] if s["node"] == "FunPackModifierSettings")
     assert json.loads(settings["inputs"]["settings"]) == {"sampling_alg": {"enabled": True}}
+
+
+def test_an_optional_node_that_is_not_installed_is_skipped_over_http_and_said(server, monkeypatch):
+    """The call sites pass the table: the check route Generate uses, and the pipeline GET."""
+    monkeypatch.setattr(routes, "optional_nodes", lambda: {"NoSuchModuleNode": {"pass": {"0": "text"}}})
+    slots = [{"id": "gone", "node": "NoSuchModuleNode", "inputs": {"text": "typed prompt"}},
+             {"id": "use", "node": "PrimitiveString", "inputs": {"value": ["gone", 0]}}]
+    status, body = _request(server, "POST", "/funpack/api/pipeline", {"action": "check", "slots": slots})
+    assert status == 200, body
+    assert [s["slot"] for s in body["skipped"]] == ["gone"]
+    assert body["notes"][0].startswith("Skipped, its module did not load") and "NoSuchModuleNode" in body["notes"][0]
+    assert body["incomplete"] == [] and body["prompt"]["use"]["inputs"]["value"] == "typed prompt"
+    monkeypatch.setattr(routes, "optional_nodes", lambda: {})
+    status, body = _request(server, "POST", "/funpack/api/pipeline", {"action": "check", "slots": slots})
+    assert body["skipped"] == [] and any("no node called 'NoSuchModuleNode'" in p for p in body["incomplete"])
