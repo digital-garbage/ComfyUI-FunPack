@@ -52,7 +52,9 @@ class Registry:
         for _spec, fn in self.providers(capability):
             try:
                 answer = fn(*args, **kwargs)
-            except Exception:                    # noqa: BLE001
+            except Exception as exc:             # noqa: BLE001
+                from . import log
+                log.failed(f"{capability} provider {_spec.id}", exc)          # skipped, but never silently
                 continue
             if answer is not None:
                 return answer

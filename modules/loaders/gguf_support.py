@@ -102,7 +102,7 @@ def _walk(root: str, limit: int = 5000, depth: int = 12):
     if cut:
         from .._core import log
         log.once(f"gguf_walk_cut:{root}", log.WARNING, "FunPack .gguf listing",
-                 f"{root}: stopped looking inside {len(cut)} folder(s) (deeper than {depth} levels or more than {limit} folders in all), so .gguf files there are not listed")
+                 f"{root}: stopped looking inside {len(cut)} folder(s) (more than {depth - 1} levels deep or more than {limit} folders in all), so .gguf files there are not listed")
 
 
 def gguf_names(folder: str) -> list[str]:

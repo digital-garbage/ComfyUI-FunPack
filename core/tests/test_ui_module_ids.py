@@ -22,6 +22,8 @@ def test_every_module_id_the_ui_names_exists():
                 named.setdefault(i, p)
         for m in re.finditer(r'hasModule\("([a-z0-9_]+)"\)', t):
             named.setdefault(m.group(1), p)
+        for m in re.finditer(r'/api/m/([a-z0-9_]+)/', t):
+            named.setdefault(m.group(1), p)
         for m in re.finditer(r'TAB_MODULE\s*=\s*\{([^}]*)\}', t):
             for i in re.findall(r':\s*"([a-z0-9_]+)"', m.group(1)):
                 named.setdefault(i, p)

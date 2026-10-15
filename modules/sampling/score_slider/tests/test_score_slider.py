@@ -29,7 +29,7 @@ def _rows(vectors):
 
 
 def test_the_direction_is_liked_minus_the_average_and_needs_three_liked():
-    from modules.sampling.score_slider import direction
+    from modules.sampling.prompt_taste import direction
     e0, e1 = torch.eye(4)[0], torch.eye(4)[1]
     few = _rows([(e0, 1.0), (e0, 1.0), (e1, -1.0)])
     assert direction(few)[0] is None
@@ -38,7 +38,7 @@ def test_the_direction_is_liked_minus_the_average_and_needs_three_liked():
 
 
 def test_similar_prompts_pick_their_own_direction():
-    from modules.sampling.score_slider import direction
+    from modules.sampling.prompt_taste import direction
     a, b, n = torch.tensor([1., 0, 0, 0]), torch.tensor([0., 1, 0, 0]), torch.tensor([0., 0, 1, 0])
     rows = _rows([(a + 0.1 * n, 1.0), (a + 0.1 * n, 1.0), (b, 1.0), (b, 1.0), (b, 1.0), (n, -1.0)])
     near_a, how = direction(rows, current=a, similar=True)

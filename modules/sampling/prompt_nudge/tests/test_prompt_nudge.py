@@ -109,7 +109,7 @@ def test_the_sounds_text_channels_are_left_alone():
 
 
 def test_a_split_negative_call_does_not_teach_the_negative_prompt(tiny_h3):
-    from modules.sampling.score_slider import cond_row
+    from modules.sampling.prompt_taste import cond_row
     c = torch.ones(2, 3, 4)
     assert cond_row(c, {"cond_or_uncond": [1, 0]}) == 1
     assert cond_row(c[:1], {"cond_or_uncond": [1]}) is None

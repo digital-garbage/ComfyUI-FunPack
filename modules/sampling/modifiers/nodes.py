@@ -273,6 +273,11 @@ class FunPackLoadModifiers(io.ComfyNode):
         # no-op while reporting that it had been applied.
         problems = []
         chosen = {}
+        known = registry_mod.current().specs
+        for module_id in (settings or {}):
+            if module_id not in known and module_id not in control_mod.RESERVED:
+                log.once(f"stale_module:{module_id}", log.WARNING, "FunPack Load Modifiers",
+                         f"saved settings for {module_id!r} ignored: no module with that id is installed")
         for spec in ordered:
             values, said = schema_mod.check_values(
                 spec, (settings or {}).get(spec.id), keep_bad=full_control)
