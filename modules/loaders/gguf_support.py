@@ -208,6 +208,12 @@ UNAVAILABLE = (
 )
 
 
+PACK_NEEDS_GGUF = (
+    "ComfyUI-GGUF is installed, but the `gguf` package it needs is not. Install it in ComfyUI's Python "
+    "(pip install -r custom_nodes/ComfyUI-FunPack/requirements.txt) and restart ComfyUI."
+)
+
+
 def load_state_dict(path: str) -> tuple[dict, dict, str]:
     """Read one .gguf into (state_dict, model_options, note).
 
@@ -250,38 +256,42 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
         try:
             loader = _load_pack_module(d, "loader")
             ops = _load_pack_module(d, "ops")
-            read = loader.gguf_sd_loader
-            if clip:
-                read = getattr(loader, "gguf_clip_loader", None) or read
+            read = (getattr(loader, "gguf_clip_loader", None) if clip else None) or loader.gguf_sd_loader
             sd = read(path)
             if isinstance(sd, tuple):        # newer ComfyUI-GGUF: (state dict, {arch_str, metadata})
                 sd = sd[0]
-            if clip and any(str(k).startswith(("blk.", "v.", "mm.", "token_embd")) for k in sd):
-                # llama.cpp's own names came back unmapped: a vision projector (mmproj) or an architecture the pack
-                # let through without a name map. Built as a text encoder it would be an empty shell that "loaded".
-                raise ValueError("this .gguf is not a text encoder ComfyUI-GGUF can map (an mmproj / vision file, or an unsupported architecture)")
+            if clip:
+                # A vision projector (mmproj) comes back from the pack with llama.cpp's own v./mm. names and nothing
+                # else; built as a text encoder it would be an empty shell that "loaded". Vision tensors beside mapped
+                # text ones are harmless (ComfyUI loads encoders non-strictly), so only "no text keys" or unmapped
+                # text names (blk./token_embd) are refused.
+                text = [str(k) for k in sd if not str(k).startswith(("v.", "mm."))]
+                if not text or any(k.startswith(("blk.", "token_embd")) for k in text):
+                    raise ValueError("it holds no text-encoder weights ComfyUI-GGUF can map (a vision projector / mmproj file?)")
             options = {}
             ggml_ops = getattr(ops, "GGMLOps", None)
             if ggml_ops is not None:
                 options["custom_operations"] = ggml_ops()
             return sd, options, f"gguf: quantized (ComfyUI-GGUF at {os.path.basename(d)})"
         except Exception as e:  # noqa: BLE001 -- any refusal is a reason to fall back
-            if importlib.util.find_spec("gguf") is None:
-                if isinstance(e, ModuleNotFoundError) and "gguf" in str(e):
-                    raise RuntimeError(UNAVAILABLE) from e        # the pack is here, the library it imports is not
-                raise
+            no_gguf = importlib.util.find_spec("gguf") is None
+            if no_gguf and isinstance(e, ModuleNotFoundError) and "gguf" in str(e):
+                raise RuntimeError(PACK_NEEDS_GGUF) from e
             if clip:
                 # The native reader keeps llama.cpp's tensor names; only the pack maps them back to a text encoder's.
                 # Loading them anyway gives a model that looks loaded and is the wrong one (a Gemma 4 .gguf did).
-                raise RuntimeError(f"this text-encoder .gguf is not supported (ComfyUI-GGUF could not read it: {e}). "
-                                   "Use a .safetensors encoder of the same model.") from e
-            sd, options, note = _load_native(path)
+                raise RuntimeError(f"this text-encoder .gguf could not be loaded as one: {e}. "
+                                   "Architectures ComfyUI-GGUF does not know (Gemma 4) and vision files are not supported; "
+                                   "if the file should work, update ComfyUI-GGUF. Or use a .safetensors encoder of the same model.") from e
+            if no_gguf:
+                raise
+            sd, options, note = _load_native(path, pack=True)
             return sd, options, (f"gguf: ComfyUI-GGUF could not read this file ({e}) -- "
                                  f"fell back. {note}")
     return _load_native(path)
 
 
-def _load_native(path: str) -> tuple[dict, dict, str]:
+def _load_native(path: str, pack: bool = False) -> tuple[dict, dict, str]:
     """Dequantize every tensor to torch at load time using gguf's reference implementation.
 
     Correct but not thrifty: the model ends up at its dequantized size, so
@@ -322,6 +332,6 @@ def _load_native(path: str) -> tuple[dict, dict, str]:
             t = t.reshape(shape)
         sd[name] = t.to(torch.float16) if t.dtype == torch.float32 else t
     note = (f"gguf: dequantized at load ({quantized} quantized tensors expanded) -- the "
-            f"file loads, but it occupies its full size in VRAM. Install ComfyUI-GGUF to "
-            f"keep it quantized.")
+            f"file loads, but it occupies its full size in VRAM."
+            + ("" if pack else " Install ComfyUI-GGUF to keep it quantized."))
     return sd, {}, note

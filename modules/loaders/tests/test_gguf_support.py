@@ -213,7 +213,7 @@ def test_pack_refusing_an_architecture_falls_back(tmp_path, monkeypatch):
     monkeypatch.setattr(gguf_support.importlib.util, "find_spec",
                         lambda name: object() if name == "gguf" else None)
     monkeypatch.setattr(gguf_support, "_load_native",
-                        lambda p: ({"w": 1}, {}, "gguf: dequantized at load"))
+                        lambda p, pack=False: ({"w": 1}, {}, "gguf: dequantized at load"))
 
     sd, options, note = gguf_support.load_state_dict("/h3.gguf")
     assert sd == {"w": 1}
@@ -259,7 +259,7 @@ def test_a_text_encoder_gguf_the_pack_refuses_is_refused_not_loaded_as_the_wrong
     monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
     monkeypatch.setattr(gguf_support.importlib.util, "find_spec", lambda name: object() if name == "gguf" else None)
     monkeypatch.setattr(gguf_support, "_load_native", lambda path: ({"w": "native"}, {}, "native"))
-    with pytest.raises(RuntimeError, match="not supported"):
+    with pytest.raises(RuntimeError, match="could not be loaded"):
         gguf_support.load_clip_state_dict("/x.gguf")
 
 
@@ -300,8 +300,25 @@ def test_a_vision_projector_gguf_the_pack_lets_through_is_refused_as_a_text_enco
     d = _pack(tmp_path, "def gguf_clip_loader(path):\n    return {'v.blk.0.attn_q.weight': 1}\n")
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
     monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
-    with pytest.raises(RuntimeError, match="not supported"):
+    monkeypatch.setattr(gguf_support.importlib.util, "find_spec", lambda name: None)        # same refusal without gguf
+    with pytest.raises(RuntimeError, match="mmproj"):
         gguf_support.load_clip_state_dict("/mmproj.gguf")
+
+
+def test_a_text_encoder_with_vision_tensors_beside_its_mapped_text_still_loads(tmp_path, monkeypatch):
+    d = _pack(tmp_path, "def gguf_clip_loader(path):\n    return {'v.model.layers.0.x': 1, 'model.layers.0.q.weight': 2}\n")
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+    sd, _o, _n = gguf_support.load_clip_state_dict("/x.gguf")
+    assert "model.layers.0.q.weight" in sd
+
+
+def test_unmapped_text_names_are_refused_as_a_text_encoder(tmp_path, monkeypatch):
+    d = _pack(tmp_path, "def gguf_clip_loader(path):\n    return {'blk.0.attn_q.weight': 1}\n")
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+    with pytest.raises(RuntimeError, match="could not be loaded"):
+        gguf_support.load_clip_state_dict("/x.gguf")
 
 
 def test_a_pack_whose_gguf_library_is_missing_says_how_to_fix_it_not_an_import_error(tmp_path, monkeypatch):
@@ -309,5 +326,7 @@ def test_a_pack_whose_gguf_library_is_missing_says_how_to_fix_it_not_an_import_e
     monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
     monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
     monkeypatch.setattr(gguf_support.importlib.util, "find_spec", lambda name: None)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="installed, but the `gguf` package"):
         gguf_support.load_state_dict("/x.gguf")
+    with pytest.raises(RuntimeError, match="installed, but the `gguf` package"):
+        gguf_support.load_clip_state_dict("/x.gguf")
