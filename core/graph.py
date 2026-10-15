@@ -259,42 +259,60 @@ def _optional_problems(optional: Any, where: str) -> List[str]:
     return []
 
 
-def bypass_missing(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[List[dict], List[dict]]:
+def bypass_missing(slots: Sequence[dict], schemas: Optional[Schemas] = None,
+                   optional: Optional[Dict[str, dict]] = None) -> Tuple[List[dict], List[dict]]:
     """(slots, skipped): the pipeline with every OPTIONAL slot whose node is not installed taken out.
 
-    What read an output of a skipped slot reads the input the slot said it passes through (a wire, or the value typed
-    into it: the prompt box writes into the Enhance slot's text, and that text has to survive the slot being skipped).
-    A slot is skipped only when every output somebody reads has a pass declared and filled; otherwise it stays, and
-    build() says the node is missing, as it does for any slot that is not optional. The input slots are not changed:
-    the skipped slot stays in the saved pipeline, so the moment its module is back, it runs again.
+    A slot is optional when it says so itself (`optional`) or when its node class is in `optional`, a table
+    {node class: {"pass": {output index: input name}}} that the model modules provide. What read an output of a
+    skipped slot reads the input the slot passes through (a wire, or the value typed into it: the prompt box writes
+    into the Enhance slot's text, and that text has to survive the slot being skipped). A slot is skipped only when
+    every read of it, however long the chain of skipped slots, ends somewhere real; otherwise it stays, and build()
+    says the node is missing, as it does for any slot that is not optional. The input list is not changed: the skipped
+    slot stays in the saved pipeline, so the moment its module is back, it runs again.
     """
     schemas = schemas or from_comfyui()
     if not isinstance(slots, (list, tuple)) or any(not isinstance(s, dict) or "id" not in s for s in slots):
         return list(slots) if isinstance(slots, (list, tuple)) else [], []        # shape_problems() reports it
-    gone = {s["id"]: s for s in slots
-            if isinstance(s.get("optional"), dict) and isinstance(s.get("node"), str) and schemas.of(s["node"]) is None}
+    table = optional or {}
+
+    def marker(slot):
+        return slot.get("optional") if isinstance(slot.get("optional"), dict) else table.get(slot.get("node"))
+
+    gone = {s["id"]: dict(s, optional=marker(s)) for s in slots
+            if isinstance(s.get("node"), str) and marker(s) is not None and schemas.of(s["node"]) is None}
     for slot_id in list(gone):
         if _optional_problems(gone[slot_id]["optional"], slot_id):
             del gone[slot_id]
-    changed = True
-    while changed:                       # a slot that cannot be skipped puts its readers' needs back, so look again
-        changed = False
-        for slot_id in list(gone):
-            passes, filled = gone[slot_id]["optional"]["pass"], gone[slot_id].get("inputs") or {}
-            reads = [i for c, _n, i in consumers(slots, slot_id) if c not in gone]       # a skipped reader reads nothing
-            if any(str(index) not in passes or passes[str(index)] not in filled for index in reads):
-                del gone[slot_id]
-                changed = True
-    if not gone:
-        return list(slots), []
 
-    def resolve(value):
+    def walk(value):
+        """(value a reader should read instead, or the id of the skipped slot that cannot be passed through)."""
         for _ in range(len(gone) + 1):
             if not (is_link(value) and value[0] in gone):
-                return value
+                return value, None
             slot = gone[value[0]]
-            value = (slot.get("inputs") or {})[slot["optional"]["pass"][str(value[1])]]
-        return None                                                  # a loop of skipped slots reading each other
+            name = slot["optional"]["pass"].get(str(value[1]))
+            if name is None or name not in (slot.get("inputs") or {}):
+                return None, value[0]
+            value = slot["inputs"][name]
+        return None, value[0]                                         # skipped slots reading each other in a loop
+
+    while gone:                       # a slot that cannot be passed through stays; that can strand another, so look again
+        failing = None
+        for slot in slots:
+            if slot["id"] in gone:
+                continue
+            for value in (slot.get("inputs") or {}).values():
+                _v, failing = walk(value)
+                if failing:
+                    break
+            if failing:
+                break
+        if not failing:
+            break
+        del gone[failing]
+    if not gone:
+        return list(slots), []
 
     kept = []
     for slot in slots:
@@ -303,14 +321,13 @@ def bypass_missing(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> 
         inputs = dict(slot.get("inputs") or {})
         for name, value in list(inputs.items()):
             if is_link(value) and value[0] in gone:
-                inputs[name] = resolve(value)
-                if inputs[name] is None:
-                    del inputs[name]
+                inputs[name] = walk(value)[0]
         kept.append(dict(slot, inputs=inputs))
     return kept, [{"slot": s["id"], "node": s["node"], "keeps": sorted(set(s["optional"]["pass"].values()))} for s in gone.values()]
 
 
-def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dict, List[str]]:
+def build(slots: Sequence[dict], schemas: Optional[Schemas] = None,
+          optional: Optional[Dict[str, dict]] = None) -> Tuple[dict, List[str]]:
     """(prompt, problems) -- the graph ComfyUI queues, and why it should not.
 
     Nothing is queued while `problems` is non-empty, so a wrong graph is refused
@@ -338,7 +355,7 @@ def build(slots: Sequence[dict], schemas: Optional[Schemas] = None) -> Tuple[dic
     if problems:
         return {}, problems
 
-    slots, _skipped = bypass_missing(slots, schemas)
+    slots, _skipped = bypass_missing(slots, schemas, optional)
     known = {s["id"] for s in slots}
     # Built once. Rebuilding it per link made validating a chain of N slots do N
     # dict rebuilds, and this runs on the event loop: the cost of checking a

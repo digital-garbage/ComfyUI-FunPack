@@ -728,3 +728,11 @@ test("a skipped optional node keeps only the controls its pass-through needs, in
   assert.strictEqual(PS.slots().find((s) => s.id === "enhance").roles.length, 2);        // what is saved still has both
   assert.deepStrictEqual(Object.keys(PS.skipped()), ["enhance"]);
 });
+
+test("the Project tab, the frame grid and the scene tab read the pipeline through view(), not slots()", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (f) => readFileSync(new URL(`../../features/${f}`, import.meta.url), "utf8");
+  assert.match(read("inspector/index.js"), /projectRows\(p, slots,/);
+  assert.match(read("inspector/index.js"), /app\.pipeline\.view/);
+  assert.match(read("inspector/scene.js"), /app\.pipeline\.view/);
+});

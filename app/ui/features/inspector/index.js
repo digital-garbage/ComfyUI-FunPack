@@ -39,7 +39,7 @@ export default {
       titled();
       if (!force && next === key) return;
       key = next;
-      body.set((tab === "scene" ? [...sceneRows(p, app), ...(p.selected ? sections.flatMap((s) => { try { return s.rows(p.selected, p); } catch { return []; } }) : [])] : projectRows(p, app.pipeline && app.pipeline.slots(), app.api))); 
+      body.set((tab === "scene" ? [...sceneRows(p, app), ...(p.selected ? sections.flatMap((s) => { try { return s.rows(p.selected, p); } catch { return []; } }) : [])] : projectRows(p, slots, app.api))); 
     }
     draw(true);
     const offSlots = app.pipeline && app.pipeline.subscribe ? app.pipeline.subscribe(() => draw(true)) : null;     // the pipeline arrives after the project

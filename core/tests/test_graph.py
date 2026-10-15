@@ -769,4 +769,30 @@ def test_two_skipped_slots_reading_each_other_do_not_hang():
         {"id": "encode", "node": "Encode", "inputs": {"prompt": ["a", 0]}},
     ]
     prompt, problems = graph.build(slots, _without("Rewrite", "Markup"))
-    assert "prompt" not in prompt["encode"]["inputs"] and problems          # refused (needs prompt), not an endless loop
+    assert any("no node called" in p for p in problems)             # nothing can be passed through a loop: both stay, and are reported missing
+
+
+def test_a_chain_that_cannot_be_passed_through_keeps_the_slot_that_breaks_it_and_does_not_crash():
+    """A skipped slot whose pass input is another skipped slot's output the second does not pass: both used to raise KeyError."""
+    nodes = {k: OPT_NODES[k] for k in ("Encode", "Out", "LoadModel")}          # A and B are not installed
+    slots = [
+        {"id": "b", "node": "B", "inputs": {"y": "typed"}, "optional": {"pass": {"0": "y"}}},
+        {"id": "a", "node": "A", "inputs": {"x": ["b", 1]}, "optional": {"pass": {"0": "x"}}},
+        {"id": "encode", "node": "Encode", "inputs": {"prompt": ["a", 0]}},
+    ]
+    schemas = graph.Schemas({k: v for k, v in nodes.items()}.get)
+    prompt, problems = graph.build(slots, schemas)                  # B has no pass for output 1: A cannot be skipped, and neither can B
+    assert any("no node called" in p for p in problems)
+    # a pass input that is not filled at all
+    slots[0]["optional"] = {"pass": {"0": "y", "1": "missing"}}
+    _prompt, problems = graph.build(slots, schemas)
+    assert any("no node called" in p for p in problems)
+
+
+def test_the_table_marks_nodes_by_class_for_pipelines_saved_without_any_marker():
+    slots = _optional_pipeline()
+    for s in slots:
+        s.pop("optional", None)
+    table = {"Rewrite": {"pass": {"0": "text"}}}
+    prompt, problems = graph.build(slots, _without("Rewrite", "Markup"), table)
+    assert any("Markup" in p for p in problems) and not any("Rewrite" in p for p in problems)      # Markup is not in the table: still required

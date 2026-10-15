@@ -122,6 +122,17 @@ def _provider_failed(what, exc, spec=None):
     log.once(f"provider:{who}:{type(exc).__name__}", log.WARNING, who, f"failed while answering -- {type(exc).__name__}: {exc}")
 
 
+def optional_nodes():
+    """{node class: {"pass": ...}} from every module that says which of its pipeline's nodes it can run without."""
+    table = {}
+    for spec, make in modules().providers("optional_nodes"):
+        try:
+            table.update(make() or {})
+        except Exception as exc:  # noqa: BLE001
+            _provider_failed("optional_nodes", exc, spec)
+    return table
+
+
 def settings_sinks():
     """Every place a module says the app's settings can be put: [{node, input}]."""
     found = []
@@ -253,10 +264,10 @@ def register(routes, prefix=None):
     @routes.get(P + "/api/pipeline")
     async def _pipeline_get(_req):
         slots = _pipeline()
-        prompt, incomplete = graph_mod.build(slots)
+        prompt, incomplete = graph_mod.build(slots, optional=optional_nodes())
         return web.json_response({"slots": slots, "refused": [],
                                   "incomplete": incomplete,
-                                  "skipped": graph_mod.bypass_missing(slots)[1],
+                                  "skipped": graph_mod.bypass_missing(slots, optional=optional_nodes())[1],
                                   "queueable": not incomplete})
 
     @routes.get(P + "/api/pipeline/presets")
@@ -502,8 +513,9 @@ def register(routes, prefix=None):
                 notes.append("nothing in this pipeline accepts module settings, "
                              "so what is set in the panels will not be applied")
 
-        prompt, incomplete = graph_mod.build(slots)
-        _kept, skipped = graph_mod.bypass_missing(slots)
+        table = optional_nodes()
+        prompt, incomplete = graph_mod.build(slots, optional=table)
+        _kept, skipped = graph_mod.bypass_missing(slots, optional=table)
         if skipped:             # first, because beside Generate only the first note is shown, and this one changes what the run does
             notes.insert(0, "Skipped, its module did not load: " + ", ".join(s["node"] for s in skipped) + ". The run goes without it (Settings ▸ Modules says why).")
         return web.json_response({

@@ -33,17 +33,19 @@ TOGETHER = {"FunPackPromptMarkup": {"FunPackPromptMarkup", "FunPackApplyPromptMa
             "FunPackApplyPromptMarkup": {"FunPackPromptMarkup", "FunPackApplyPromptMarkup"}}
 
 
+def _table():
+    from modules.models.minimax_h3.pipeline import optional_nodes as h3
+    from modules.models.ltx.pipeline import optional_nodes as ltx
+    return {**h3(), **ltx()}
+
+
 def _cases():
-    out = []
-    for preset in _presets():
-        for slot in preset["slots"]:
-            if slot.get("optional"):
-                out.append((preset["id"], slot["id"]))
-    return out
+    table = _table()
+    return [(preset["id"], slot["id"]) for preset in _presets() for slot in preset["slots"] if slot["node"] in table]
 
 
 def test_the_six_optional_nodes_are_declared():
-    nodes = {s["node"] for p in _presets() for s in p["slots"] if s.get("optional")}
+    nodes = {s["node"] for p in _presets() for s in p["slots"] if s["node"] in _table()}
     assert nodes == {"FunPackEnhancePrompt", "FunPackShotCamera", "FunPackPromptMarkup", "FunPackApplyPromptMarkup",
                      "FunPackNegativeErase", "FunPackCutOpening", "FunPackIdentityTransfer"}
 
@@ -56,8 +58,8 @@ def test_a_preset_builds_without_its_optional_node(registered, preset_id, slot_i
     real = graph.from_comfyui()
     gone = TOGETHER.get(node, {node})
     hidden = graph.Schemas(lambda name: None if name in gone else real.of(name))
-    base_prompt, base_problems = graph.build(preset["slots"], real)
-    prompt, problems = graph.build(preset["slots"], hidden)
+    base_prompt, base_problems = graph.build(preset["slots"], real, _table())
+    prompt, problems = graph.build(preset["slots"], hidden, _table())
     assert [p for p in problems if p not in base_problems] == [], f"hiding {node} breaks {preset_id}"
     away = {s["id"] for s in preset["slots"] if s["node"] in gone}
     assert slot_id not in prompt and slot_id in base_prompt
@@ -73,5 +75,23 @@ def test_the_enhance_slots_typed_text_reaches_the_encoder_when_it_is_skipped(reg
             s["inputs"] = dict(s["inputs"], text="a cat on a roof")
     real = graph.from_comfyui()
     hidden = graph.Schemas(lambda name: None if name in ("FunPackEnhancePrompt", "FunPackShotCamera", "FunPackPromptMarkup", "FunPackApplyPromptMarkup") else real.of(name))
-    prompt, _problems = graph.build(slots, hidden)
+    prompt, _problems = graph.build(slots, hidden, _table())
     assert prompt["r2v"]["inputs"]["prompt"] == "a cat on a roof"
+
+
+def test_a_pipeline_saved_without_any_marker_is_covered_too(registered):
+    """The marker is the node's, not the slot's: a saved copy has no per-slot field, and a swapped node is not marked."""
+    from core import graph
+    from modules.models.minimax_h3.pipeline import presets
+    slots = [{k: v for k, v in s.items() if k != "optional"} for s in presets()[0]["slots"]]
+    real = graph.from_comfyui()
+    hidden = graph.Schemas(lambda name: None if name == "FunPackCutOpening" else real.of(name))
+    _p, problems = graph.build(slots, hidden, _table())
+    assert not [p for p in problems if "FunPackCutOpening" in p]
+    _p, without_table = graph.build(slots, hidden)
+    assert any("FunPackCutOpening" in p for p in without_table)
+
+
+def test_the_route_helper_collects_the_tables_of_the_loaded_modules(registered):
+    from core import routes
+    assert "FunPackCutOpening" in routes.optional_nodes() and "FunPackIdentityTransfer" in routes.optional_nodes()

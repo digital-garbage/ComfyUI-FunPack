@@ -65,7 +65,7 @@ export function sceneRows(p, app) {
     mediaField(app, p, sc, { label: "References", key: "references", multiple: true, kinds: ["image", "video", "audio"], empty: "+ Add reference" })),
     c.label.section({ text: "Length" }),
     card(c.field.row({ fields: [
-      lengthField(p, sc, "Frames", "frames_mode", "frames", effFrames(sc, open), gridOf(app.pipeline && app.pipeline.slots())),
+      lengthField(p, sc, "Frames", "frames_mode", "frames", effFrames(sc, open), gridOf(app.pipeline && (app.pipeline.view || app.pipeline.slots)())),
       lengthField(p, sc, "FPS", "fps_mode", "fps", effFps(sc, open)),
     ] }),
     drift(sc, open),
