@@ -204,7 +204,8 @@ def partition(specs: Iterable, settings) -> Tuple[List, List[str]]:
     """(kept, notes): `specs` without the ones the project turned off or that are quarantined."""
     specs = list(specs)
     off, everything = off_by_project(settings), all_off(settings)
-    known = {s.id for s in specs}
+    from . import registry
+    known = {s.id for s in specs} | set(registry.current().specs)        # the list passed in is filtered (traits, capability); "loaded" is the registry
     for gone in sorted(off - known):                  # a saved "turn this module off" for a module that is no longer loaded
         log.once(f"stale_off:{gone}", log.WARNING, "FunPack modules",
                  f"{gone!r} is turned off in this project's settings, but no module with that id is loaded: ignored")

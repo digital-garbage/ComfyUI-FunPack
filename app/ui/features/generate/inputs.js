@@ -41,7 +41,7 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
     if (!(body && typeof body.text === "string")) failedExpand = true;
   }
   // Features that add inputs of their own (a Chat comment for the enhancer, say) say so through a hook: { inputs: {slot: {name: value}}, notes: [text] }.
-  const notes = failedExpand ? ["The prompt could not be expanded ($variables, anchor, postfix): the text was sent as typed."] : [];
+  const notes = failedExpand ? ["The prompt could not be expanded (shortcuts, $variables, anchor, postfix): the text was sent as typed."] : [];
   for (const hook of hooks) {
     let out;
     try { out = (await hook({ project, scene, slots })) || {}; } catch (err) { notes.push(`An add-on's input could not be added to this run: ${err.message}`); continue; }

@@ -139,3 +139,15 @@ def test_a_saved_turn_off_for_a_module_that_is_gone_is_said_once():
     control.partition([spec("b")], {"_off": {"modules": ["gone"]}})
     said = [r for r in log.history() if "'gone'" in r["message"]]
     assert len(said) == 1 and "ignored" in said[0]["message"]
+
+
+def test_a_turned_off_module_that_is_loaded_but_not_in_the_filtered_list_is_not_called_gone(monkeypatch):
+    """Callers pass a filtered list (by capability, by the model's traits); "gone" means absent from the registry."""
+    from core import log, registry
+    log._reset()
+    reg = registry.Registry()
+    reg.specs["sharpen"] = spec("sharpen")
+    monkeypatch.setattr(registry, "current", lambda rescan=False: reg)
+    control.partition([spec("other")], {"_off": {"modules": ["sharpen"]}})
+    control.partition([spec("other")], {"_off": {"all": True}})
+    assert not [r for r in log.history() if "no module with that id" in r["message"]]

@@ -111,7 +111,7 @@ def detect(path: Path, registry=None) -> dict:
             matched = claims(keyset)
         except Exception as exc:                       # noqa: BLE001
             from . import log
-            log.failed(f"{spec.id}.detect", exc)
+            log.once(f"provider:{spec.id}.detect:{type(exc).__name__}", log.WARNING, f"{spec.id}.detect", f"failed while answering -- {type(exc).__name__}: {exc}")
             continue
         if matched:
             traits = None                              # unknown, not empty: a module that never says hides nothing
@@ -121,7 +121,7 @@ def detect(path: Path, registry=None) -> dict:
                     traits = list(probe_traits(keyset))
                 except Exception as exc:                # noqa: BLE001
                     from . import log
-                    log.failed(f"{spec.id}.probe_traits", exc)
+                    log.once(f"provider:{spec.id}.probe_traits:{type(exc).__name__}", log.WARNING, f"{spec.id}.probe_traits", f"failed while answering -- {type(exc).__name__}: {exc}")
             return {"module": spec.id, "title": spec.title, "detected": True,
                     "reason": f"{p.name}: {spec.title}", "traits": traits}
     return {"module": None, "title": None, "detected": False,

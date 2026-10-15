@@ -300,3 +300,14 @@ def test_a_duplicate_id_is_said_in_the_log_not_only_in_settings():
     reg.add(validate({"id": "dup", "title": "A", "mount": "m"}, source="one"))
     reg.add(validate({"id": "dup", "title": "B", "mount": "m"}, source="two"))
     assert any("duplicate id" in r["message"] for r in log.history())
+
+
+def test_route_providers_that_raise_are_said_by_name_once_each():
+    from core import log, routes
+    log._reset()
+    a = type("S", (), {"id": "mod_a"})()
+    b = type("S", (), {"id": "mod_b"})()
+    for s in (a, b, a, b):
+        routes._provider_failed("settings_sink", KeyError("x"), s)
+    said = [r for r in log.history() if "failed while answering" in r["message"]]
+    assert sorted(r["source"] for r in said) == ["settings_sink (mod_a)", "settings_sink (mod_b)"]

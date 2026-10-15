@@ -116,9 +116,10 @@ def modules(rescan=False):
     return registry_mod.current(rescan)
 
 
-def _provider_failed(what, exc):
+def _provider_failed(what, exc, spec=None):
     """A provider raised while answering: said once per provider and kind of error, then skipped."""
-    log.once(f"provider:{what}:{type(exc).__name__}", log.WARNING, what, f"failed while answering -- {type(exc).__name__}: {exc}")
+    who = f"{what} ({spec.id})" if spec is not None else what
+    log.once(f"provider:{who}:{type(exc).__name__}", log.WARNING, who, f"failed while answering -- {type(exc).__name__}: {exc}")
 
 
 def settings_sinks():
@@ -128,7 +129,7 @@ def settings_sinks():
         try:
             sink = make()
         except Exception as exc:  # noqa: BLE001
-            _provider_failed("settings_sink", exc)
+            _provider_failed("settings_sink", exc, _spec)
             continue
         if isinstance(sink, dict) and sink.get("node") and sink.get("input"):
             found.append({"node": sink["node"], "input": sink["input"]})
@@ -268,7 +269,7 @@ def register(routes, prefix=None):
             try:
                 offered = make()
             except Exception as exc:  # noqa: BLE001
-                _provider_failed("pipeline_presets", exc)
+                _provider_failed("pipeline_presets", exc, spec)
                 continue
             for preset in (offered or []):
                 if isinstance(preset, dict) and preset.get("id") and preset.get("slots"):
@@ -306,7 +307,7 @@ def register(routes, prefix=None):
                 try:
                     presets += list(make() or [])
                 except Exception as exc:  # noqa: BLE001
-                    _provider_failed("pipeline_presets", exc)
+                    _provider_failed("pipeline_presets", exc, _spec)
             reg = modules()
             rows = readiness.machine(sysinfo.collect().get("disk", {}).get("free_gb"))
             rows += readiness.models(counts)
