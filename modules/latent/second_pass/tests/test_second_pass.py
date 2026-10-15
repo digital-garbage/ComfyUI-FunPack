@@ -21,6 +21,7 @@ def upscaler_dir(tmp_path, monkeypatch):
     from safetensors.torch import save_file
     save_file(_small_resizer().state_dict(), str(tmp_path / "h3_up.safetensors"))
     save_file({"conv_in.weight": torch.zeros(2, 2)}, str(tmp_path / "other.safetensors"))
+    save_file({"base.low_blocks.0.conv1.weight": torch.zeros(2, 2)}, str(tmp_path / "attn.safetensors"))
     monkeypatch.setitem(folder_paths.folder_names_and_paths, "latent_upscale_models",
                         ([str(tmp_path)], {".safetensors"}))
     folder_paths.filename_list_cache.pop("latent_upscale_models", None)
@@ -37,6 +38,12 @@ def test_an_unknown_file_is_refused_with_where_to_go(upscaler_dir):
     from modules.latent.second_pass.nodes import FunPackLatentUpscalerLoader
     with pytest.raises(RuntimeError, match="Load Latent Upscale Model"):
         FunPackLatentUpscalerLoader.execute("other.safetensors")
+
+
+def test_the_newer_attention_upscaler_is_named_as_such(upscaler_dir):
+    from modules.latent.second_pass.nodes import FunPackLatentUpscalerLoader
+    with pytest.raises(RuntimeError, match="attention-based"):
+        FunPackLatentUpscalerLoader.execute("attn.safetensors")
 
 
 def _nested(h=4, w=4):
