@@ -374,9 +374,18 @@ def test_symlink_loops_do_not_hang_the_listing_and_dotdot_after_a_link_is_refuse
     enc = fake_folders / "text_encoders"
     (enc / "a").symlink_to(enc)
     (enc / "b").symlink_to(enc)
-    assert gguf_support.gguf_names("text_encoders") == ["a/gemma-Q5_K.gguf"] or "gemma-Q5_K.gguf" in gguf_support.gguf_names("text_encoders")
+    assert gguf_support.gguf_names("text_encoders") == ["gemma-Q5_K.gguf"]
     (fake_folders / "outside").mkdir()
     (fake_folders / "outside" / "inner").mkdir()
     (fake_folders / "outside" / "s.gguf").write_bytes(b"x")
     (enc / "lnk").symlink_to(fake_folders / "outside" / "inner")
     assert gguf_support.gguf_path("text_encoders", "lnk/../s.gguf") is None
+
+
+def test_a_symlinked_folder_aliasing_a_sibling_is_listed_under_both_names(fake_folders):
+    enc = fake_folders / "text_encoders"
+    (enc / "gemma").mkdir()
+    (enc / "gemma" / "g-Q5.gguf").write_bytes(b"x")
+    (enc / "current").symlink_to(enc / "gemma")
+    names = gguf_support.gguf_names("text_encoders")
+    assert "current/g-Q5.gguf" in names and "gemma/g-Q5.gguf" in names

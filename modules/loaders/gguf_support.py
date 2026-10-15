@@ -90,13 +90,10 @@ def gguf_names(folder: str) -> list[str]:
     for root in roots:
         if not root or not os.path.isdir(root):
             continue
-        walked: set[str] = set()
         for dirpath, dirs, files in os.walk(root, followlinks=True):
-            real = os.path.realpath(dirpath)
-            if real in walked:                              # a symlink loop: this folder was already listed
-                dirs[:] = []
-                continue
-            walked.add(real)
+            here = os.path.realpath(dirpath) + os.sep
+            # a link back to this folder or one above it is a loop; a link to a sibling folder is just a second name
+            dirs[:] = [d for d in dirs if not here.startswith(os.path.realpath(os.path.join(dirpath, d)) + os.sep)]
             for f in files:
                 if not is_gguf(f):
                     continue
@@ -325,7 +322,11 @@ def _load_native(path: str, pack: bool = False) -> tuple[dict, dict, str]:
         else:
             # gguf.quants.dequantize is the reference implementation for every
             # type the package knows -- do not reimplement it per quant type.
-            arr = gguf.quants.dequantize(tensor.data, qtype)
+            try:
+                arr = gguf.quants.dequantize(tensor.data, qtype)
+            except NotImplementedError as e:
+                raise RuntimeError(f"{os.path.basename(path)}: tensor {name!r} uses a storage type the gguf package cannot "
+                                   f"dequantize ({e}).") from e
             quantized += 1
         t = torch.from_numpy(arr.copy())
         # GGUF stores dimensions in the opposite order to torch.
