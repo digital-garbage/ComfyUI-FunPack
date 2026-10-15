@@ -256,6 +256,10 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
             sd = read(path)
             if isinstance(sd, tuple):        # newer ComfyUI-GGUF: (state dict, {arch_str, metadata})
                 sd = sd[0]
+            if clip and any(str(k).startswith(("blk.", "v.", "mm.", "token_embd")) for k in sd):
+                # llama.cpp's own names came back unmapped: a vision projector (mmproj) or an architecture the pack
+                # let through without a name map. Built as a text encoder it would be an empty shell that "loaded".
+                raise ValueError("this .gguf is not a text encoder ComfyUI-GGUF can map (an mmproj / vision file, or an unsupported architecture)")
             options = {}
             ggml_ops = getattr(ops, "GGMLOps", None)
             if ggml_ops is not None:
@@ -263,6 +267,8 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
             return sd, options, f"gguf: quantized (ComfyUI-GGUF at {os.path.basename(d)})"
         except Exception as e:  # noqa: BLE001 -- any refusal is a reason to fall back
             if importlib.util.find_spec("gguf") is None:
+                if isinstance(e, ModuleNotFoundError) and "gguf" in str(e):
+                    raise RuntimeError(UNAVAILABLE) from e        # the pack is here, the library it imports is not
                 raise
             if clip:
                 # The native reader keeps llama.cpp's tensor names; only the pack maps them back to a text encoder's.

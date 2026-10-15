@@ -286,3 +286,28 @@ def test_a_text_encoder_gguf_with_no_backend_says_the_pack_not_pip(monkeypatch):
     monkeypatch.setattr(gguf_support, "backend", lambda: None)
     with pytest.raises(RuntimeError, match="ComfyUI-GGUF"):
         gguf_support.load_clip_state_dict("/x.gguf")
+
+
+def _pack(tmp_path, body):
+    d = tmp_path / "pack"
+    d.mkdir()
+    (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
+    (d / "loader.py").write_text(body)
+    return d
+
+
+def test_a_vision_projector_gguf_the_pack_lets_through_is_refused_as_a_text_encoder(tmp_path, monkeypatch):
+    d = _pack(tmp_path, "def gguf_clip_loader(path):\n    return {'v.blk.0.attn_q.weight': 1}\n")
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+    with pytest.raises(RuntimeError, match="not supported"):
+        gguf_support.load_clip_state_dict("/mmproj.gguf")
+
+
+def test_a_pack_whose_gguf_library_is_missing_says_how_to_fix_it_not_an_import_error(tmp_path, monkeypatch):
+    d = _pack(tmp_path, "import gguf_missing_for_this_test\ndef gguf_sd_loader(path):\n    return {}\n")
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+    monkeypatch.setattr(gguf_support.importlib.util, "find_spec", lambda name: None)
+    with pytest.raises(RuntimeError):
+        gguf_support.load_state_dict("/x.gguf")
