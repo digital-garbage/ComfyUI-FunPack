@@ -96,18 +96,22 @@ def models(counts: dict) -> List[dict]:
     return out
 
 
-def pipelines(presets: Iterable[dict], installed: Callable[[str], bool]) -> List[dict]:
+def pipelines(presets: Iterable[dict], installed: Callable[[str], bool], optional=()) -> List[dict]:
     """Nodes a starting point needs that this ComfyUI does not have (a custom-node pack is missing)."""
     out = []
     for preset in presets:
-        missing = sorted({s["node"] for s in preset.get("slots", []) if not installed(s["node"])})
+        gone = sorted({s["node"] for s in preset.get("slots", []) if not installed(s["node"])})
+        skippable = [n for n in gone if n in optional]                # the run drops these and says so
+        missing = [n for n in gone if n not in optional]
         ours = [n for n in missing if n.startswith("FunPack")]          # this pack's own nodes: their module did not load
         theirs = [n for n in missing if n not in ours]
         title = preset.get("title") or preset.get("id")
         if theirs:
             out.append(row("warn", f"“{title}” needs nodes that are not installed: {', '.join(theirs)}. Install the pack that provides them (Settings ▸ Custom Nodes)."))
         if ours:
-            out.append(row("warn", f"“{title}” needs FunPack's own {', '.join(ours)}, but the module behind it did not load. See Settings ▸ Modules for why."))
+            out.append(row("warn", f"“{title}” needs FunPack's own {', '.join(ours)}, but the module behind it did not load. The module list below says why."))
+        if skippable:
+            out.append(row("ok", f"“{title}” runs without {', '.join(skippable)}: its module did not load, and the run says so."))
     return out or [row("ok", "Every starting point's nodes are installed")]
 
 

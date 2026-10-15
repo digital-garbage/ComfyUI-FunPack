@@ -323,7 +323,7 @@ def register(routes, prefix=None):
             reg = modules()
             rows = readiness.machine(sysinfo.collect().get("disk", {}).get("free_gb"))
             rows += readiness.models(counts)
-            rows += readiness.pipelines(presets, lambda cls: cls in comfy_nodes.NODE_CLASS_MAPPINGS)
+            rows += readiness.pipelines(presets, lambda cls: cls in comfy_nodes.NODE_CLASS_MAPPINGS, optional_nodes())
             rows += readiness.modules(reg.failed, control_mod.quarantined(reg.specs.values()))
             return rows
         return web.json_response({"rows": await asyncio.to_thread(collect)})
@@ -517,7 +517,7 @@ def register(routes, prefix=None):
         prompt, incomplete = graph_mod.build(slots, optional=table)
         _kept, skipped = graph_mod.bypass_missing(slots, optional=table)
         if skipped:             # first, because beside Generate only the first note is shown, and this one changes what the run does
-            notes.insert(0, "Skipped, its module did not load: " + ", ".join(s["node"] for s in skipped) + ". The run goes without it (Settings ▸ Modules says why).")
+            notes.insert(0, "Skipped, its module did not load: " + ", ".join(s["node"] for s in skipped) + ". The run goes without it, so what it would have done (for Prompt markup: reading (word:1.5) and [phrase@t0-t1] marks) is not done. Settings ▸ Ready to generate? says why the module did not load.")
         return web.json_response({
             "slots": slots,
             "refused": problems,
