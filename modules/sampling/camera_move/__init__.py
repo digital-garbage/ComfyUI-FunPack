@@ -10,7 +10,7 @@ moved input. Shifting white noise gives white noise, so only the picture in the 
 and the model repairs the edges and re-draws detail on the remaining steps.
 
 Honest limit: a camera move on a flat picture (no new parallax), the model re-drawing what
-it uncovers. Unvalidated on a GPU.
+it uncovers.
 
 Values: pan is the fraction of the frame the picture travels over the clip (x positive =
 camera moves right, so the picture moves left; y positive = camera moves down), zoom is the

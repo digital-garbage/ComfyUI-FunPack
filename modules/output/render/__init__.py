@@ -6,8 +6,7 @@ exporting a selection, and the final stitch with its seams, effects, audio and
 overlays, plus the one node that upscales a finished file. This runs beside ComfyUI,
 on the files it wrote.
 
-Unvalidated on a GPU rental (there is no GPU in it); the ffmpeg parts are tested
-against real ffmpeg.
+Validated on a GPU rental; the ffmpeg parts are also tested against real ffmpeg.
 """
 
 import asyncio

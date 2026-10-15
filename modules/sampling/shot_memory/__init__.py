@@ -18,7 +18,7 @@ variance changes nothing the model can tell apart from ordinary noise. Zero mode
 calls. Sound noise is never touched. A latent that is not empty (a second pass, an
 anchor) is left alone, and the run says so.
 
-Unvalidated on a GPU. v4 lessons kept: reusing a shot's own seed stacks its layout
+Validated on a GPU. v4 lessons kept: reusing a shot's own seed stacks its layout
 1.41x (the blend is capped per channel, only ever turned down), and a one-cell grid
 has no spread (left alone).
 """

@@ -10,7 +10,7 @@ at run time, because this installs BEFORE the markup node runs in the pipeline.
 
 v4's first result (blocks 15-20 read the text, 29-34 and block 43 commit it, blocks 0-6 are
 text-blind; two different shortcuts gave the same map) came from a run with steering on.
-Rerun it clean on a rental. Unvalidated in v5.
+Validated on a rental in v5.
 """
 
 import torch

@@ -11,7 +11,7 @@ block before it and the branch block itself, restarts from that saved stream and
 tail. The push rides into the NEXT step's input (core/input_steer.py); the last step runs
 no weak copy and the model's own answer is always what comes back.
 
-w is learned from ratings (core/rated_dial.py) or typed. Unvalidated on a GPU; v4 had it
+w is learned from ratings (core/rated_dial.py) or typed. v4 had it
 off in the run where the user saw motion improve, so it is ruled out as the cause of that.
 
 Costs one tail re-run per cond step. Switches ComfyUI's model compiler off for the run

@@ -13,7 +13,7 @@ pick the move. Off by default:
 
 Deterministic: the same prompt gives the same shots; "Variation" re-rolls. Ratings teach it: which views and moves are liked
 (a dislike that blames the picture alone teaches nothing here), and the words your prompts keep returning to are favoured.
-`[Shot N]` is H3's own shot, never a timeline scene. Unvalidated on a GPU.
+`[Shot N]` is H3's own shot, never a timeline scene.
 
     text -> Shot Camera -> text -> (Prompt Markup -> encode)
 """

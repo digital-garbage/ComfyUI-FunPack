@@ -14,7 +14,7 @@ rating pulls the value toward the k that was liked or away from the one that
 was disliked. Manual: the k you type. Picture only; no extra model call. The
 edit rides into the NEXT step's input (core/input_steer.py), never the answer.
 
-Unvalidated on a GPU. v4's own check: on simple@4 a k of 0.9 pushes ~2% of a
+v4's own check: on simple@4 a k of 0.9 pushes ~2% of a
 step's noise, which the run reports as "barely acts" and does not learn from.
 """
 

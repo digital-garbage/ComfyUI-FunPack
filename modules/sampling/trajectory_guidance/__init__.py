@@ -7,7 +7,7 @@ like during ITS quarter, each steering only inside its own quarter.
 
 v4's probe measured the early half carrying ~88% of the late half's rating
 signal across 51 rated runs -- the direction was unanimous, nothing alone was
-significant. Unvalidated on a GPU: the honest test is the same seed off and on.
+significant.
 
 A quarter with too few ratings just doesn't act; the run says which do.
 """
