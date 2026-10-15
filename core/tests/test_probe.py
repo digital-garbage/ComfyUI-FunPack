@@ -190,7 +190,8 @@ def test_when_the_only_detector_raises_the_reason_says_so_not_that_nobody_recogn
     reg = Registry()
     reg.add(ModuleSpec(id="bad", title="Bad", mount="", provides={"detect": lambda _k: 1 / 0}))
     out = probe.detect(p, registry=reg)
-    assert not out["detected"] and "bad failed while checking it" in out["reason"]
+    assert not out["detected"] and "bad failed while looking at it" in out["reason"]
+    assert "recognises" not in out["reason"]
     assert any("bad.detect" in r["source"] and "failed while answering" in r["message"] for r in log.history())
 
 

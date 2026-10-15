@@ -82,7 +82,8 @@ def detect(path: Path, registry=None) -> dict:
     Returns ``{"module", "title", "detected", "reason", "traits"}``. `module`
     is the id of whichever model module claimed it, or None -- and None is a
     real answer, not a failure to try hard enough: it means this install has
-    no module that recognises the file, and the caller should say so rather
+    no module that recognises the file (or, said in `reason`, that a module's
+    detector raised and could not look), and the caller should say so rather
     than guess a family. `reason` is plain text for a person, always
     populated. `traits` is only ever populated when `detected` is true --
     an undetected file says nothing about what it is, so it must not narrow
@@ -127,6 +128,6 @@ def detect(path: Path, registry=None) -> dict:
             return {"module": spec.id, "title": spec.title, "detected": True,
                     "reason": f"{p.name}: {spec.title}", "traits": traits}
     return {"module": None, "title": None, "detected": False,
-            "reason": f"{p.name}: no installed model module recognises this file"
-                      + (f" ({', '.join(broken)} failed while checking it: see the Log)" if broken else ""),
+            "reason": (f"{p.name}: could not be checked, {', '.join(broken)} failed while looking at it (see the Log)" if broken
+                       else f"{p.name}: no installed model module recognises this file"),
             "traits": []}
