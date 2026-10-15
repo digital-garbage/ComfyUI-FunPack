@@ -130,3 +130,12 @@ def test_disable_all_enhancements_sits_out_every_modifier_and_nothing_else():
 def test_all_alone_is_a_valid_payload():
     assert control.bad_off({"all": True}) is None and control.bad_off({"all": False}) is None
     assert control.bad_off({"all": "yes"}) and control.bad_off({"modules": "x"})
+
+
+def test_a_saved_turn_off_for_a_module_that_is_gone_is_said_once():
+    from core import log
+    log._reset()
+    control.partition([spec("b")], {"_off": {"modules": ["gone"]}})
+    control.partition([spec("b")], {"_off": {"modules": ["gone"]}})
+    said = [r for r in log.history() if "'gone'" in r["message"]]
+    assert len(said) == 1 and "ignored" in said[0]["message"]

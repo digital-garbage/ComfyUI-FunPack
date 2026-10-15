@@ -65,8 +65,10 @@ class Registry:
         if spec.id in self.specs:
             # Two modules answering to one id means one wins by import order,
             # and which one is nobody's decision.
-            self.failed.append((spec.source, f"duplicate id {spec.id!r}, already declared by "
-                                             f"{self.specs[spec.id].source}"))
+            why = f"duplicate id {spec.id!r}, already declared by {self.specs[spec.id].source}"
+            self.failed.append((spec.source, why))
+            from . import log
+            log.warning(spec.source, f"module left out: {why}")
             return
         self.specs[spec.id] = spec
         from . import control

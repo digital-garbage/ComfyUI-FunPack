@@ -116,6 +116,11 @@ def modules(rescan=False):
     return registry_mod.current(rescan)
 
 
+def _provider_failed(what, exc):
+    """A provider raised while answering: said once per provider and kind of error, then skipped."""
+    log.once(f"provider:{what}:{type(exc).__name__}", log.WARNING, what, f"failed while answering -- {type(exc).__name__}: {exc}")
+
+
 def settings_sinks():
     """Every place a module says the app's settings can be put: [{node, input}]."""
     found = []
@@ -123,7 +128,7 @@ def settings_sinks():
         try:
             sink = make()
         except Exception as exc:  # noqa: BLE001
-            log.failed("settings_sink", exc)
+            _provider_failed("settings_sink", exc)
             continue
         if isinstance(sink, dict) and sink.get("node") and sink.get("input"):
             found.append({"node": sink["node"], "input": sink["input"]})
@@ -263,7 +268,7 @@ def register(routes, prefix=None):
             try:
                 offered = make()
             except Exception as exc:  # noqa: BLE001
-                log.failed("pipeline_presets", exc)
+                _provider_failed("pipeline_presets", exc)
                 continue
             for preset in (offered or []):
                 if isinstance(preset, dict) and preset.get("id") and preset.get("slots"):
@@ -301,7 +306,7 @@ def register(routes, prefix=None):
                 try:
                     presets += list(make() or [])
                 except Exception as exc:  # noqa: BLE001
-                    log.failed("pipeline_presets", exc)
+                    _provider_failed("pipeline_presets", exc)
             reg = modules()
             rows = readiness.machine(sysinfo.collect().get("disk", {}).get("free_gb"))
             rows += readiness.models(counts)
@@ -389,7 +394,7 @@ def register(routes, prefix=None):
             try:
                 slots = upgrade(slots, graph_mod.from_comfyui().outputs)
             except Exception as exc:  # noqa: BLE001
-                log.failed(f"{spec.id}.upgrade_slots", exc)
+                _provider_failed(f"{spec.id}.upgrade_slots", exc)
 
         # An id and a node name are strings, and only a string can be looked up
         # in the dicts below: `{"slot": ["a"]}` reaches a `in`-on-dict as an

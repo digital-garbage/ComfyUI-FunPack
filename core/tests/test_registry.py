@@ -290,3 +290,13 @@ def test_the_same_kind_of_failure_with_new_text_every_call_is_said_once():
     for _ in range(30):
         reg.ask("cap")
     assert len([r for r in log.history() if "failed while answering" in r["message"]]) == 1
+
+
+def test_a_duplicate_id_is_said_in_the_log_not_only_in_settings():
+    from core import log
+    from core.schema import validate
+    log._reset()
+    reg = registry_mod.Registry()
+    reg.add(validate({"id": "dup", "title": "A", "mount": "m"}, source="one"))
+    reg.add(validate({"id": "dup", "title": "B", "mount": "m"}, source="two"))
+    assert any("duplicate id" in r["message"] for r in log.history())

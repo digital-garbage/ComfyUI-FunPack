@@ -32,14 +32,16 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
   for (const [id, fields] of Object.entries(overrides)) raw[id] = { ...raw[id], ...fields };
 
   const prompt = rolesAt(slots, "generation.prompt")[0];
+  let failedExpand = false;
   if (prompt) {
     const text = scene.text || "";
     const body = await expand({ text, anchor: [...prefix, project.anchor].filter((x) => x && String(x).trim()).join(" "), postfix: project.postfix, postfix_enabled: project.postfix_enabled, variables: project.variables })
       .catch(() => null);         // a failing prompt-craft feature must not block the run: send what was typed
     put(prompt.slot, prompt.role.input, body && typeof body.text === "string" ? body.text : text);
+    if (!(body && typeof body.text === "string")) failedExpand = true;
   }
   // Features that add inputs of their own (a Chat comment for the enhancer, say) say so through a hook: { inputs: {slot: {name: value}}, notes: [text] }.
-  const notes = [];
+  const notes = failedExpand ? ["The prompt could not be expanded ($variables, anchor, postfix): the text was sent as typed."] : [];
   for (const hook of hooks) {
     let out;
     try { out = (await hook({ project, scene, slots })) || {}; } catch (err) { notes.push(`An add-on's input could not be added to this run: ${err.message}`); continue; }

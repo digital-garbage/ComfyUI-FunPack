@@ -19,6 +19,13 @@ test("a failing expander sends the typed text", async () => {
   assert.equal(inputs.p.text, "x");
 });
 
+test("a failing expander is said, not silent", async () => {
+  const r = await buildInputs({ project: {}, scene: { text: "x" }, slots, expand: async () => null });
+  assert.ok(r.notes.some((n) => /could not be expanded/.test(n)));
+  const ok = await buildInputs({ project: {}, scene: { text: "x" }, slots, expand: async () => ({ text: "x" }) });
+  assert.ok(!ok.notes.some((n) => /could not be expanded/.test(n)));
+});
+
 test("a role that drives length is fed from the project number the timeline draws", async () => {
   const s = [{ id: "k", roles: [{ at: "project.video", input: "length", drives: "frames" }, { at: "project.video", input: "width" }] }];
   const { inputs } = await buildInputs({ project: { num_frames_per_scene: 49, video: { length: 97, width: 640 } }, scene: {}, slots: s, expand: async () => null });
@@ -44,13 +51,13 @@ test("starting shots from a prompt sends no picture even when the scene has one"
 
 test("a hook's inputs are merged and its notes come back", async () => {
   const hook = ({ scene }) => ({ inputs: { k: { extra: scene.text } }, notes: ["said"] });
-  const r = await buildInputs({ project: {}, scene: { text: "x" }, slots, hooks: [hook, () => null], expand: async () => null });
+  const r = await buildInputs({ project: {}, scene: { text: "x" }, slots, hooks: [hook, () => null], expand: async ({ text }) => ({ text }) });
   assert.equal(r.inputs.k.extra, "x");
   assert.deepEqual(r.notes, ["said"]);
 });
 
 test("a hook that throws does not stop the run: its problem comes back as a note", async () => {
-  const r = await buildInputs({ project: {}, scene: { text: "x" }, slots, hooks: [() => { throw new Error("boom"); }], expand: async () => null });
+  const r = await buildInputs({ project: {}, scene: { text: "x" }, slots, hooks: [() => { throw new Error("boom"); }], expand: async ({ text }) => ({ text }) });
   assert.equal(r.inputs.p.text, "x");
   assert.match(r.notes[0], /boom/);
 });

@@ -120,7 +120,7 @@ export default {
             break;
           }
           if (stopped) g.cancel();                      // Stop landed while this one was being queued
-          if (!made) app.api.newTasteGeneration(g.run.state.promptId).catch(() => {});        // a run really started: the last run's unrated clips can no longer be paired with what it learned
+          if (!made && (!app.hasModule || app.hasModule("taste"))) app.api.newTasteGeneration(g.run.state.promptId).catch(() => {});        // a run really started: the last run's unrated clips can no longer be paired with what it learned
           made += 1;
           const end = await done;
           if (end === g.CANCELLED) break;
