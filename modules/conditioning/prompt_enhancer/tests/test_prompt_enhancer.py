@@ -66,11 +66,11 @@ def test_a_looping_model_is_cut_at_a_sentence_and_a_long_one_by_the_users_limit(
     e = en()
     loop = "A fox walks across the snowy field. " * 5
     out, cut = e.trim_runaway("Intro sentence here. " + loop)
-    assert cut
+    assert cut == "repeat"
     assert out.count("A fox walks across the snowy field.") == 2
-    long_text = "A sentence that goes on a bit. " * 40
+    long_text = " ".join(f"Sentence number {i} goes on a bit." for i in range(40))
     out, cut = e.trim_runaway(long_text, max_length=16)         # cap 64 chars
-    assert cut and len(out) <= 64 and out.endswith(".")
+    assert cut == "length" and len(out) <= 64 and out.endswith(".")
     assert e.trim_runaway("short", max_length=400) == ("short", False)
 
 

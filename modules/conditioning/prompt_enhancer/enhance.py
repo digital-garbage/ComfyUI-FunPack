@@ -239,7 +239,7 @@ def trim_runaway(text, max_length=None):
         if seen[key] >= REPEAT_LIMIT:
             kept = " ".join(sentences[:i]).strip()
             if kept:
-                return kept, True
+                return kept, "repeat"
     if max_length is None:
         return text, False
     cap = max(64, int(max_length) * CHARS_PER_TOKEN)
@@ -248,8 +248,8 @@ def trim_runaway(text, max_length=None):
     head = text[:cap]
     cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
     if cut > cap // 4:
-        return head[:cut + 1].strip(), True
-    return head.rsplit(" ", 1)[0].strip(), True
+        return head[:cut + 1].strip(), "length"
+    return head.rsplit(" ", 1)[0].strip(), "length"
 
 
 # --- generation --------------------------------------------------------------
@@ -367,9 +367,11 @@ def enhance(clip, text, *, system="", reference_text="", chat="", **sampling):
     if chat:
         cleaned = cut_chat_echo(cleaned)
     out, overran = trim_runaway(cleaned, max_length=sampling.get("max_length"))
-    if overran:
+    if overran == "repeat":
         status += ("; the model repeated itself instead of stopping and was cut at a sentence "
                    "(a model with a trained chat head does not do this)")
+    elif overran:
+        status += "; the answer reached the Max length setting and was cut there"
     if not out:
         return original, (status if "failed" in status or "unavailable" in status
                           else "the model returned nothing; prompt unchanged"), info
