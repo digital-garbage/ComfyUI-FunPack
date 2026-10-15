@@ -1,6 +1,6 @@
 # Changelog
 
-## [5.0.0] "Cunning Cranberry" - unreleased
+## [5.0.0] "Cunning Cranberry" - 2026-10-16
 
 A rewrite from scratch, not an update of 4.x. Same idea (a studio for video inside ComfyUI that learns from your ratings), new architecture: every feature is a module that announces itself, so a feature cannot be forgotten in the UI, a wire cannot be missed, and a failing optional feature module is left out while the run carries on. 4.x projects are not imported; see "Not carried over".
 

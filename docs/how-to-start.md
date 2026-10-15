@@ -6,9 +6,9 @@ This is the short path from "installed" to "first clip". It does not explain eve
 
 With git, inside `ComfyUI/custom_nodes`:
 
-`git clone -b v5 https://github.com/digital-garbage/ComfyUI-FunPack`
+`git clone https://github.com/digital-garbage/ComfyUI-FunPack`
 
-Without `-b v5` you get the classic 4.x. `comfy node install ComfyUI-FunPack` and ComfyUI-Manager install what is published on Comfy Registry, which is 5.0 only once it is published there; check Settings ▸ About FunPack after installing.
+For the classic 4.x add `-b v4-classic`. `comfy node install ComfyUI-FunPack` and ComfyUI-Manager install what is published on Comfy Registry, which is 5.0 only once it is published there; check Settings ▸ About FunPack after installing.
 
 Then `pip install -r requirements.txt` in the same Python environment ComfyUI uses, and restart ComfyUI. FunPack uses your existing ComfyUI and PyTorch. If pip wants to upgrade a package ComfyUI compiles against (torch, numpy, transformers, comfy-kitchen), read what it will change first: FunPack's own updater only installs what is missing and reports the rest.
 
