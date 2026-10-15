@@ -290,6 +290,14 @@ def test_a_setting_no_module_declares_is_skipped_and_said_at_this_node_too(regis
     assert any("strenght" in r["message"] and "ignored" in r["message"] for r in _log.history())
 
 
+def test_a_module_id_no_module_has_is_skipped_and_said_at_this_node_too(registry, patcher):
+    from modules.sampling.modifiers.nodes import FunPackLoadModifiers
+    from core import log as _log
+    _log._reset()
+    FunPackLoadModifiers.execute(patcher, settings={"ghost_module": {"x": 1}})          # the node that runs in generation
+    assert any("'ghost_module'" in r["message"] and "no module with that id is loaded" in r["message"] for r in _log.history())
+
+
 # --- full control turns off the refusals too --------------------------------
 
 def _full_control(registry):

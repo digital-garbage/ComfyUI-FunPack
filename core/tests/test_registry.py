@@ -259,3 +259,18 @@ def test_a_provider_that_raises_is_skipped_and_said_once():
     assert reg.ask("cap") == "ok" and reg.ask("cap") == "ok"
     said = [r for r in log.history() if "failed while answering" in r["message"]]
     assert len(said) == 1 and "ZeroDivisionError" in said[0]["message"]
+
+
+def test_a_provider_that_fails_in_a_new_way_is_said_again():
+    from core import log
+    from core.schema import validate
+    log._reset()
+    calls = iter([ValueError("a"), MemoryError("b")])
+
+    def flaky():
+        raise next(calls)
+    reg = registry_mod.Registry()
+    reg.add(validate({"id": "flaky", "title": "F", "mount": "m", "provides": {"cap": flaky}}, source="a"))
+    reg.ask("cap"); reg.ask("cap")
+    said = [r["message"] for r in log.history() if "failed while answering" in r["message"]]
+    assert len(said) == 2 and "ValueError" in said[0] and "MemoryError" in said[1]
