@@ -45,8 +45,7 @@ def routes(table, base, web):
     async def _encoders(_req):
         """Encoder files and families the Enhance panel can offer (read fresh: files come and go)."""
         from ...loaders.clip import nodes as clip_nodes
-        from ...loaders import gguf_support
-        files = [f for f in clip_nodes.encoder_files() if gguf_support.backend() == "pack" or not gguf_support.is_gguf(f)]      # only the pack can read a text encoder's .gguf
+        files = clip_nodes.encoder_files()
         return web.json_response({"files": files, "families": clip_nodes.clip_types()})
 
 

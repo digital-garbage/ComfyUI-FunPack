@@ -330,3 +330,34 @@ def test_a_pack_whose_gguf_library_is_missing_says_how_to_fix_it_not_an_import_e
         gguf_support.load_state_dict("/x.gguf")
     with pytest.raises(RuntimeError, match="installed, but the `gguf` package"):
         gguf_support.load_clip_state_dict("/x.gguf")
+
+
+def test_a_name_that_climbs_out_of_the_model_folder_is_not_found(fake_folders):
+    (fake_folders / "secret.gguf").write_bytes(b"x")
+    assert gguf_support.gguf_path("text_encoders", "../secret.gguf") is None
+    assert gguf_support.gguf_path("text_encoders", "gemma-Q5_K.gguf")
+
+
+def test_a_pack_switched_off_by_manager_is_not_used(fake_folders):
+    pack = fake_folders / "custom_nodes" / "ComfyUI-GGUF.disabled"
+    pack.mkdir(parents=True)
+    (pack / "ops.py").write_text("")
+    (pack / "loader.py").write_text("def gguf_sd_loader(p): pass\n")
+    assert gguf_support._pack_dir() is None
+    (fake_folders / "custom_nodes" / "ComfyUI-GGUF").mkdir()
+    (fake_folders / "custom_nodes" / "ComfyUI-GGUF" / "ops.py").write_text("")
+    (fake_folders / "custom_nodes" / "ComfyUI-GGUF" / "loader.py").write_text("def gguf_sd_loader(p): pass\n")
+    assert gguf_support._pack_dir().endswith("ComfyUI-GGUF")
+
+
+def test_native_load_keeps_an_f32_value_too_big_for_fp16_finite(tmp_path):
+    gguf = pytest.importorskip("gguf")
+    torch = pytest.importorskip("torch")
+    import numpy as np
+    f = tmp_path / "t.gguf"
+    w = gguf.GGUFWriter(str(f), "llama")
+    w.add_tensor("a", np.array([[70000.0, 1.0]], dtype=np.float32))
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+    sd, _o, _n = gguf_support._load_native(str(f))
+    assert torch.isfinite(sd["a"].float()).all()
+

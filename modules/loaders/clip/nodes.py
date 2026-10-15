@@ -43,10 +43,9 @@ def clip_types():
 
 
 def encoder_files():
-    """Text encoder files, `.gguf` included. Same reasoning as the diffusion
-    model loader's own file-list helper."""
-    return list(folder_paths.get_filename_list("text_encoders")) + \
-        gguf_support.gguf_names("text_encoders")
+    """Text encoder files; `.gguf` ones only when the ComfyUI-GGUF pack is there to read them."""
+    ggufs = gguf_support.gguf_names("text_encoders") if gguf_support.backend() == "pack" else []
+    return list(folder_paths.get_filename_list("text_encoders")) + ggufs
 
 
 class FunPackCLIPLoader(io.ComfyNode):

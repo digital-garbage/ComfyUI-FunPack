@@ -115,6 +115,8 @@ def gguf_path(folder: str, name: str) -> Optional[str]:
             pass
     for root in roots:
         cand = os.path.join(root or "", name)
+        if not os.path.realpath(cand).startswith(os.path.realpath(root or ".") + os.sep):
+            continue                                        # a name that climbs out of the model folder
         if os.path.isfile(cand):
             return cand
     return None
@@ -176,6 +178,8 @@ def _pack_dir() -> Optional[str]:
     if not os.path.isdir(base):
         return None
     for entry in sorted(os.listdir(base)):
+        if entry.endswith(".disabled"):                             # Manager's way of switching a pack off
+            continue
         d = os.path.join(base, entry)
         loader = os.path.join(d, "loader.py")
         if not os.path.isfile(loader) or not os.path.isfile(os.path.join(d, "ops.py")):
@@ -248,7 +252,8 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
         # Only the pack maps llama.cpp's tensor names back to a text encoder's; the native reader would hand over
         # a state dict that looks loaded and is the wrong model.
         raise RuntimeError("a text-encoder .gguf needs the ComfyUI-GGUF node pack to be read, and it is not installed. "
-                           "Install it, or use a .safetensors encoder of the same model.")
+                           "Installing it helps only for architectures it handles (not Gemma 4, not vision files); "
+                           "otherwise use a .safetensors encoder of the same model.")
     if which is None:
         raise RuntimeError(UNAVAILABLE)
     if which == "pack":
@@ -281,8 +286,8 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
                 # The native reader keeps llama.cpp's tensor names; only the pack maps them back to a text encoder's.
                 # Loading them anyway gives a model that looks loaded and is the wrong one (a Gemma 4 .gguf did).
                 raise RuntimeError(f"this text-encoder .gguf could not be loaded as one: {e}. "
-                                   "Architectures ComfyUI-GGUF does not know (Gemma 4) and vision files are not supported; "
-                                   "if the file should work, update ComfyUI-GGUF. Or use a .safetensors encoder of the same model.") from e
+                                   "If the file is intact, its architecture is not one ComfyUI-GGUF handles (Gemma 4, vision files) "
+                                   "or ComfyUI-GGUF is out of date. Use a .safetensors encoder of the same model.") from e
             if no_gguf:
                 raise
             sd, options, note = _load_native(path, pack=True)
@@ -330,7 +335,9 @@ def _load_native(path: str, pack: bool = False) -> tuple[dict, dict, str]:
                 f"is not laid out the way the gguf package describes it.")
         if shape:
             t = t.reshape(shape)
-        sd[name] = t.to(torch.float16) if t.dtype == torch.float32 else t
+        if t.dtype == torch.float32 and t.numel():       # fp16 halves the size; a tensor too big for its range goes bf16 instead of inf
+            t = t.to(torch.float16) if t.abs().max() < 60000 else t.to(torch.bfloat16)
+        sd[name] = t
     note = (f"gguf: dequantized at load ({quantized} quantized tensors expanded) -- the "
             f"file loads, but it occupies its full size in VRAM."
             + ("" if pack else " Install ComfyUI-GGUF to keep it quantized."))
