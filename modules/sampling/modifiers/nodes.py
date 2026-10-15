@@ -276,7 +276,7 @@ class FunPackLoadModifiers(io.ComfyNode):
         known = registry_mod.current().specs
         for module_id in (settings or {}):
             if module_id not in known and module_id not in control_mod.RESERVED:
-                log.once(f"stale_module:{module_id}", log.WARNING, "FunPack Load Modifiers",
+                log.once(f"stale_module_load:{module_id}", log.WARNING, "FunPack Load Modifiers",
                          f"saved settings for {module_id!r} ignored: no module with that id is loaded")
         for spec in ordered:
             values, said = schema_mod.check_values(

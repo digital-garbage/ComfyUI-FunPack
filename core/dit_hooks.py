@@ -248,7 +248,10 @@ def target_rows(mod_segments, seq_len, device, stream):
     for _spec, provider in registry.current().providers("target_rows"):
         try:
             mask = provider(mod_segments, seq_len, device, stream)
-        except Exception:                        # noqa: BLE001
+        except Exception as exc:                 # noqa: BLE001
+            from . import log
+            log.once(f"provider:target_rows:{_spec.id}:{type(exc).__name__}", log.WARNING, f"target_rows provider {_spec.id}",
+                     f"failed while answering -- {type(exc).__name__}: {exc}")         # skipped, but the callers' "could not find the rows" now has a cause
             continue
         if mask is not None:
             return mask

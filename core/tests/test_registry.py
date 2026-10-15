@@ -274,3 +274,19 @@ def test_a_provider_that_fails_in_a_new_way_is_said_again():
     reg.ask("cap"); reg.ask("cap")
     said = [r["message"] for r in log.history() if "failed while answering" in r["message"]]
     assert len(said) == 2 and "ValueError" in said[0] and "MemoryError" in said[1]
+
+
+def test_the_same_kind_of_failure_with_new_text_every_call_is_said_once():
+    """The spam guard: a provider asked on every sampling step must not fill the log."""
+    from core import log
+    from core.schema import validate
+    log._reset()
+    n = iter(range(100))
+
+    def noisy():
+        raise ValueError(f"row {next(n)}")
+    reg = registry_mod.Registry()
+    reg.add(validate({"id": "noisy", "title": "N", "mount": "m", "provides": {"cap": noisy}}, source="a"))
+    for _ in range(30):
+        reg.ask("cap")
+    assert len([r for r in log.history() if "failed while answering" in r["message"]]) == 1
