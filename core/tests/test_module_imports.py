@@ -59,17 +59,30 @@ def test_a_module_reaches_core_only_through_the_shim(path):
     )
 
 
+def _module_dirs():
+    """group/name of every directory that announces a module (has `ID = ` in its __init__)."""
+    return {(p.parent.parent.name, p.parent.name) for p in MODULES.glob("*/*/__init__.py") if "\nID = " in "\n" + p.read_text()}
+
+
 def _other_module_imports(path: Path):
-    """Imports at MODULE level that reach into a different module (`from ...group.other import`)."""
+    """Imports at MODULE level that reach into a different module: `from ...group.other import` (three dots), or a
+    sibling module of the same group (`from ..other import`, two dots). Plain shared files are fine."""
     parts = path.relative_to(MODULES).parts
     if len(parts) < 3:
         return []
     own = parts[:2]
+    mods = _module_dirs()
     found = []
     for node in ast.parse(path.read_text()).body:             # module level only: a guarded import inside a function is how a module may ask another for help
-        if isinstance(node, ast.ImportFrom) and node.level >= 3 and node.module:
-            target = node.module.split(".")[:2]
-            if len(target) == 2 and tuple(target) != own:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            target = node.module.split(".")
+            if node.level >= 3 and len(target) >= 2:
+                hit = tuple(target[:2]) != own and tuple(target[:2]) in mods
+            elif node.level == 2:
+                hit = (own[0], target[0]) in mods and target[0] != own[1]
+            else:
+                hit = False
+            if hit:
                 found.append((node.lineno, f"from {'.' * node.level}{node.module} import"))
     return found
 

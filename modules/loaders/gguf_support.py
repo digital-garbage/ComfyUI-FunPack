@@ -73,6 +73,7 @@ def _walk(root: str, limit: int = 5000, depth: int = 12):
     A link to a sibling folder is not a loop; it is a second name for the same files.
     """
     seen = [0]
+    cut = []
 
     def rec(path, rel, above):
         seen[0] += 1
@@ -85,8 +86,12 @@ def _walk(root: str, limit: int = 5000, depth: int = 12):
                 if e.is_dir():
                     st = os.stat(e.path)
                     key = (st.st_dev, st.st_ino)
-                    if key not in above and len(above) < depth and seen[0] < limit:
-                        yield from rec(e.path, rel + e.name + "/", above | {key})
+                    if key in above:
+                        continue
+                    if len(above) >= depth or seen[0] >= limit:
+                        cut.append(e.path)
+                        continue
+                    yield from rec(e.path, rel + e.name + "/", above | {key})
                 elif is_gguf(e.name) and e.is_file():              # is_file: a dangling link is not a model
                     yield rel + e.name
             except OSError:
@@ -94,6 +99,10 @@ def _walk(root: str, limit: int = 5000, depth: int = 12):
 
     st = os.stat(root)
     yield from rec(root, "", frozenset({(st.st_dev, st.st_ino)}))
+    if cut:
+        from .._core import log
+        log.once(f"gguf_walk_cut:{root}", log.WARNING, "FunPack .gguf listing",
+                 f"{root}: stopped looking inside {len(cut)} folder(s) (deeper than {depth} levels or more than {limit} folders in all), so .gguf files there are not listed")
 
 
 def gguf_names(folder: str) -> list[str]:
@@ -350,7 +359,7 @@ def _load_native(path: str, pack: bool = False) -> tuple[dict, dict, str]:
                 arr = gguf.quants.dequantize(tensor.data, qtype)
             except (NotImplementedError, ValueError) as e:
                 raise RuntimeError(f"{os.path.basename(path)}: tensor {name!r} uses a storage type the gguf package cannot "
-                                   f"dequantize ({e}).") from e
+                                   f"dequantize or is damaged ({e}).") from e
             quantized += 1
         t = torch.from_numpy(arr.copy())
         # GGUF stores dimensions in the opposite order to torch.

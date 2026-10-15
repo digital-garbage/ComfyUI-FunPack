@@ -55,7 +55,7 @@ const story = (app, own) => {
 };
 
 // Tabs whose backend module may be missing.
-const TAB_MODULE = { enhance: "conditioning_prompt_enhancer", chat: "conditioning_prompt_enhancer", files: "taste" };
+const TAB_MODULE = { enhance: "conditioning_prompt_enhancer", chat: "conditioning_prompt_enhancer" };
 
 const sheets = { story, shortcuts, build, cuts,
   enhance, chat, files };

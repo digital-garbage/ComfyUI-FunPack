@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from comfy.patcher_extension import WrappersMP
 
 from ..._core import dit_hooks, log, registry, streams
-from ..score_slider import cond_row
+from ..prompt_taste import cond_row
 
 ID = "velocity_bias"
 TITLE = "Velocity bias"

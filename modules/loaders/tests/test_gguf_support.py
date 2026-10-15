@@ -401,3 +401,18 @@ def test_cycles_through_a_sibling_folder_and_dangling_links_do_not_flood_the_lis
     (enc / "broken.gguf").symlink_to(fake_folders / "missing.gguf")
     assert gguf_support.gguf_names("text_encoders") == ["gemma-Q5_K.gguf"]
     assert "broken.gguf" not in gguf_support.gguf_names("text_encoders")
+
+
+def test_a_listing_that_stops_early_says_so(fake_folders):
+    from modules.loaders.gguf_support import _walk
+    from modules import _core
+    _core.log._reset()
+    enc = fake_folders / "text_encoders"
+    deep = enc
+    for i in range(4):
+        deep = deep / f"d{i}"
+        deep.mkdir()
+    (deep / "deep.gguf").write_bytes(b"x")
+    names = list(_walk(str(enc), depth=2))
+    assert "d0/d1/d2/d3/deep.gguf" not in names
+    assert any("not listed" in r["message"] for r in _core.log.history())

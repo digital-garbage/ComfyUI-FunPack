@@ -14,7 +14,7 @@ import torch
 from comfy.patcher_extension import WrappersMP
 
 from ..._core import dit_hooks, log, registry, streams
-from ..score_slider import KIND, MIN_LIKED, NAME, cond_row, direction
+from ..prompt_taste import KIND, MIN_LIKED, NAME, cond_row, direction
 
 ID = "prompt_nudge"
 TITLE = "Taste prompt nudge"

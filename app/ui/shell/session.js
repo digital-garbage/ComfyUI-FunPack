@@ -97,7 +97,7 @@ export function createGenerator({ run, transport, check, ready, slots, values, i
       // run is either started or refused -- and it stays up while the run goes.
       transport.warn((plan.notes || [])[0] || null);
 
-      if (!plan.queueable || !plan.prompt) {
+      if (!plan.queueable || !plan.prompt || !Object.keys(plan.prompt).length) {
         // The first reason, whichever kind it is. A refusal and an unfinished
         // pipeline both stop the run, and both belong next to Generate.
         const stopping = [...(plan.refused || []), ...(plan.incomplete || [])];
