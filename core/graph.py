@@ -808,6 +808,7 @@ def replace(slots: Sequence[dict], slot_id: str, class_type: str,
         roles = [r for r in (slot.get("roles") or []) if isinstance(r, dict) and r.get("input") in have]
         out = dict(slot, node=class_type, inputs={})
         out.pop("roles", None)
+        out.pop("optional", None)          # the marker belonged to the old node class
         if roles:
             out["roles"] = roles
         return out

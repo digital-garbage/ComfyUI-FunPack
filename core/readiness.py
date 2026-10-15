@@ -109,9 +109,9 @@ def pipelines(presets: Iterable[dict], installed: Callable[[str], bool], optiona
         if theirs:
             out.append(row("warn", f"“{title}” needs nodes that are not installed: {', '.join(theirs)}. Install the pack that provides them (Settings ▸ Custom Nodes)."))
         if ours:
-            out.append(row("warn", f"“{title}” needs FunPack's own {', '.join(ours)}, but the module behind it did not load. The module list below says why."))
+            out.append(row("warn", f"“{title}” needs FunPack's own {', '.join(ours)}, but it is not available (its module did not load, or the node was rejected). The Log says why."))
         if skippable:
-            out.append(row("ok", f"“{title}” runs without {', '.join(skippable)}: its module did not load, and the run says so."))
+            out.append(row("ok", f"“{title}” runs without {', '.join(skippable)}: its node is not available, and the run says so."))
     return out or [row("ok", "Every starting point's nodes are installed")]
 
 

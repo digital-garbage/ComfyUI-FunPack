@@ -73,7 +73,7 @@ def test_a_funpack_node_that_is_missing_points_at_the_modules_page_not_at_anothe
     rows = readiness.pipelines([{"id": "p", "title": "P", "slots": [{"node": "FunPackCutOpening"}, {"node": "ImageTransformKJ"}]}],
                                installed=lambda n: False)
     text = " | ".join(r["text"] for r in rows)
-    assert "FunPackCutOpening" in text and "module list" in text
+    assert "FunPackCutOpening" in text and "not available" in text
     assert "ImageTransformKJ" in text and "Custom Nodes" in text
 
 

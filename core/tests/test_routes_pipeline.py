@@ -578,7 +578,7 @@ def test_an_optional_node_that_is_not_installed_is_skipped_over_http_and_said(se
     status, body = _request(server, "POST", "/funpack/api/pipeline", {"action": "check", "slots": slots})
     assert status == 200, body
     assert [s["slot"] for s in body["skipped"]] == ["gone"]
-    assert body["notes"][0].startswith("Skipped, its module did not load") and "NoSuchModuleNode" in body["notes"][0]
+    assert body["notes"][0].startswith("Skipped, its node is not available") and "NoSuchModuleNode" in body["notes"][0]
     assert body["incomplete"] == [] and body["prompt"]["use"]["inputs"]["value"] == "typed prompt"
     monkeypatch.setattr(routes, "optional_nodes", lambda: {})
     status, body = _request(server, "POST", "/funpack/api/pipeline", {"action": "check", "slots": slots})

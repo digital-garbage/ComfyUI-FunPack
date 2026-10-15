@@ -806,3 +806,9 @@ def test_a_slots_own_marker_wins_over_the_table_and_a_null_pass_value_is_not_pas
     slots[2]["inputs"]["text"] = None
     _prompt, problems = graph.build(slots, _without("Rewrite", "Markup"))
     assert any("no node called" in p for p in problems)                            # nothing typed: refused, not sent as null
+
+
+def test_swapping_a_marked_slot_drops_its_skip_marker():
+    slots = _optional_pipeline()
+    changed, problems = graph.replace(slots, "rewrite", "Markup", _without())
+    assert not problems and "optional" not in {s["id"]: s for s in changed}["rewrite"]

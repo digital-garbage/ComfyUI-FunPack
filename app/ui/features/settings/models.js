@@ -126,7 +126,7 @@ export const models = (app) => function mount() {
     const spec = specs[slot.node];
     if (spec === undefined) return [c.hint.default({ text: "Loading…" })];
     const head = c.header.sm({ text: label(slot) });
-    if (spec === null && (ps.skipped && ps.skipped() || {})[slot.id]) return [head, c.banner.warn({ text: `${slot.node} is skipped: its module did not load, so the run goes without it. Settings ▸ Ready to generate? says why; when it is back, this node runs again.` })];
+    if (spec === null && (ps.skipped && ps.skipped() || {})[slot.id]) return [head, c.banner.warn({ text: `${slot.node} is skipped: it is not available (its module did not load, or the node was rejected), so the run goes without it. The Log says why; when it is back, this node runs again.` })];
     if (spec === null) return [head, structure(slot), c.banner.warn({ text: `${slot.node} is not installed — this slot can't be edited or run. Install the pack that provides it, swap it for another node, or remove it.` }), installRow(slot.node)];
     const sockets = (spec.sockets || []).filter((w) => showing(w, slot, spec)).map((s) => c.field.default({ label: s.name, hint: s.required ? `${s.type} · needed` : s.type, control: wiring(slot, s.name, s.type, slot.inputs && slot.inputs[s.name], "Not connected") }));
     const rows = (spec.widgets || []).filter((w) => showing(w, slot, spec)).flatMap((w) => {
@@ -157,11 +157,11 @@ export const models = (app) => function mount() {
   const nodeCard = (slot) => {
     const node = document.createElement("button");
     node.type = "button"; node.className = "fp-node-card cx-focusable";
-    const skipped = Boolean((ps.skipped && ps.skipped() || {})[slot.id]);      // optional, and its module did not load: the run goes without it
+    const skipped = Boolean((ps.skipped && ps.skipped() || {})[slot.id]);      // optional, and not available: the run goes without it
     const needs = !skipped && (specs[slot.node] === null || ps.incomplete().some((t) => mine(t, slot.id)));
     const head = Object.assign(document.createElement("span"), { className: "fp-node-title", textContent: label(slot) });
-    const dot = Object.assign(document.createElement("span"), { className: `fp-node-state${needs ? " fp-needs" : ""}`, title: skipped ? "Skipped: its module did not load" : needs ? "Needs attention" : "Ready" });
-    const sub = Object.assign(document.createElement("span"), { className: "fp-node-sub", textContent: skipped ? "skipped: its module did not load" : summary(slot) });
+    const dot = Object.assign(document.createElement("span"), { className: `fp-node-state${needs ? " fp-needs" : ""}`, title: skipped ? "Skipped: not available" : needs ? "Needs attention" : "Ready" });
+    const sub = Object.assign(document.createElement("span"), { className: "fp-node-sub", textContent: skipped ? "skipped: not available" : summary(slot) });
     node.append(dot, head, sub);
     node.addEventListener("click", () => { openId = slot.id; draw(); });
     return { node };
