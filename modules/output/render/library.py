@@ -13,8 +13,8 @@ def _param(label, default, lo, hi, step):
 
 
 EFFECTS = [
-    {"id": "zoom_in", "name": "Zoom in (push)", "description": "Timed push-in (set ratio, length, start in inspector)"},
-    {"id": "zoom_out", "name": "Zoom out (pull back)", "description": "Timed pull-back (set ratio, length, start in inspector)"},
+    {"id": "zoom_in", "name": "Zoom in (push)", "description": "Slow push-in: the picture grows 15% over the first 25 frames of the clip (all of a shorter clip)."},
+    {"id": "zoom_out", "name": "Zoom out (pull back)", "description": "Slow pull-back: the picture starts 15% bigger and settles to normal over the first 25 frames of the clip."},
     {"id": "blur", "name": "Gaussian blur", "param": _param("Strength (0–1)", 0.3, 0, 1, 0.05)},
     {"id": "fade_in", "name": "Fade in", "param": _param("Seconds", 0.5, 0, 10, 0.1)},
     {"id": "fade_out", "name": "Fade out", "param": _param("Seconds", 0.5, 0, 10, 0.1)},

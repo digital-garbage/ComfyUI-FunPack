@@ -43,7 +43,7 @@ ADDONS = (
      "hint": "Native upscaling for images and videos. Installs NVIDIA's own package, under its licence.",
      "requires": ("nvidia-vfx>=0.2",), "modules": ("nvvfx",), "offered": _nvidia_gpu},
     {"id": "camera", "title": "Automatic camera and focus",
-     "hint": "Inserting camera moves, cuts, transitions and focus changes into your prompts, based on spaCy",
+     "hint": "Lets Shot camera aim camera moves, cuts, transitions and focus at the right things in your prompts, using spaCy.",
      "requires": ("spacy>=3.8,<3.9", _SPACY_MODEL), "modules": ("spacy", "en_core_web_sm"), "offered": lambda: True},
 )
 _BY_ID = {a["id"]: a for a in ADDONS}

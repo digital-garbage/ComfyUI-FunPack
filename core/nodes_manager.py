@@ -85,7 +85,7 @@ def node_dir(name: str) -> Path:
         raise CustomNodeError(f"{raw!r} is not a directory.")
     if resolved == FUNPACK_ROOT:
         raise CustomNodeError(
-            "That is FunPack itself. Use Settings ▸ Update FunPack, or remove it by hand.")
+            "That is FunPack itself. Use Settings ▸ Updates & ComfyUI, or remove it by hand.")
     return resolved
 
 

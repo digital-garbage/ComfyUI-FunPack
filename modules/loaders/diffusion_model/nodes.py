@@ -79,8 +79,8 @@ class FunPackDiffusionModelLoader(io.ComfyNode):
                 # they are here because a knob whose value was measured is still a knob.
                 io.Float.Input("sla_sparsity", extra_dict=shows(("sla", [True]), ("sla_method", ["sla", "vsa"])), default=sla_attention.SLA_DEFAULTS["sparsity_ratio"],
                               min=0.0, max=0.95, step=0.05, optional=True,
-                              tooltip="Fraction of key blocks skipped, when attention is "
-                                      "sla_h3. 0.90 is validated; 0.85 is lightx2v's own value "
+                              tooltip="Fraction of key blocks skipped while SLA is on (of video "
+                                      "cubes for method vsa). 0.90 is validated; 0.85 is lightx2v's own value "
                                       "and ~15% slower. Break-even is around 0.60 -- below that "
                                       "the kernel is SLOWER than dense, so a low value is a "
                                       "loss, not a safe fallback."),

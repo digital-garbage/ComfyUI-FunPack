@@ -528,7 +528,7 @@ def register(routes, prefix=None):
                 # unapplied one. Send them to finish the first restart instead.
                 return web.json_response({
                     "detail": "An earlier update is applied and waiting on a restart "
-                              "(Settings ▸ Updates). Restart before doing anything else here.",
+                              "(Settings ▸ Updates & ComfyUI). Restart before doing anything else here.",
                 }, status=409)
             try:
                 result = await asyncio.to_thread(action, **kwargs)

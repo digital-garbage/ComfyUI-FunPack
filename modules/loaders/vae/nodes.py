@@ -41,7 +41,8 @@ class FunPackVAELoader(io.ComfyNode):
             description="Load a VAE with an explicit compute dtype.",
             inputs=[
                 io.Combo.Input("vae_name", options=vae_files()),
-                io.Combo.Input("dtype", options=list(DTYPES), default="bfloat16"),
+                io.Combo.Input("dtype", options=list(DTYPES), default="bfloat16",
+                               tooltip="The precision the VAE works in. bfloat16 is the default; MiniMax H3 needs it."),
             ],
             outputs=[
                 io.Vae.Output(display_name="vae"),

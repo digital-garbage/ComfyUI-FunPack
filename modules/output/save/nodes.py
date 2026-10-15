@@ -85,7 +85,7 @@ class FunPackSaveVideo(io.ComfyNode):
             node_id="FunPackSaveVideo",
             display_name="FunPack Save Video",
             category="FunPack/Output",
-            description="Save as MP4 (H.264): on the GPU's encoder when there is one, otherwise on every CPU core.",
+            description="Save as MP4: on the GPU's encoder (H.264 or H.265) when there is one, otherwise H.264 on every CPU core.",
             inputs=[
                 io.Image.Input("images"),
                 io.Audio.Input("audio", optional=True),
