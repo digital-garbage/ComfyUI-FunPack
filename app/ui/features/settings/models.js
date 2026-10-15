@@ -156,10 +156,11 @@ export const models = (app) => function mount() {
   const nodeCard = (slot) => {
     const node = document.createElement("button");
     node.type = "button"; node.className = "fp-node-card cx-focusable";
-    const needs = specs[slot.node] === null || ps.incomplete().some((t) => mine(t, slot.id));
+    const skipped = Boolean((ps.skipped && ps.skipped() || {})[slot.id]);      // optional, and its module did not load: the run goes without it
+    const needs = !skipped && (specs[slot.node] === null || ps.incomplete().some((t) => mine(t, slot.id)));
     const head = Object.assign(document.createElement("span"), { className: "fp-node-title", textContent: label(slot) });
-    const dot = Object.assign(document.createElement("span"), { className: `fp-node-state${needs ? " fp-needs" : ""}`, title: needs ? "Needs attention" : "Ready" });
-    const sub = Object.assign(document.createElement("span"), { className: "fp-node-sub", textContent: summary(slot) });
+    const dot = Object.assign(document.createElement("span"), { className: `fp-node-state${needs ? " fp-needs" : ""}`, title: skipped ? "Skipped: its module did not load" : needs ? "Needs attention" : "Ready" });
+    const sub = Object.assign(document.createElement("span"), { className: "fp-node-sub", textContent: skipped ? "skipped: its module did not load" : summary(slot) });
     node.append(dot, head, sub);
     node.addEventListener("click", () => { openId = slot.id; draw(); });
     return { node };

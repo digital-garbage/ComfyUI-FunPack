@@ -677,3 +677,96 @@ def test_a_lora_loader_added_after_the_first_goes_into_the_model_chain():
     by = graph.slots_by_id(slots)
     assert [by[i]["inputs"]["model"][0] for i in ("lora_2", "lora_3", "lora_4")] == ["lora", "lora_2", "lora_3"]
     assert by["sample"]["inputs"]["model"] == ["lora_4", 0]
+
+
+# --- optional slots: a pipeline that runs without a node whose module did not load ---------------
+
+OPT_NODES = {
+    "Encode": {"inputs": {"prompt": "STRING", "model": "MODEL"}, "outputs": ["LATENT"], "required": ["prompt"]},
+    "Rewrite": {"inputs": {"text": "STRING", "enabled": "BOOLEAN"}, "outputs": ["STRING"]},
+    "Markup": {"inputs": {"text": "STRING"}, "outputs": ["STRING"]},
+    "Out": {"inputs": {"latent": "LATENT"}, "outputs": []},
+    "LoadModel": NODES["LoadModel"],
+    "Tune": {"inputs": {"model": "MODEL"}, "outputs": ["MODEL"]},
+}
+
+
+def _optional_pipeline():
+    return [
+        {"id": "model", "node": "LoadModel", "inputs": {"name": "a"}},
+        {"id": "tune", "node": "Tune", "inputs": {"model": ["model", 0]}, "optional": {"pass": {"0": "model"}}},
+        {"id": "rewrite", "node": "Rewrite", "inputs": {"text": "a typed prompt", "enabled": False}, "optional": {"pass": {"0": "text"}}},
+        {"id": "markup", "node": "Markup", "inputs": {"text": ["rewrite", 0]}, "optional": {"pass": {"0": "text"}}},
+        {"id": "encode", "node": "Encode", "inputs": {"prompt": ["markup", 0], "model": ["tune", 0]}},
+        {"id": "out", "node": "Out", "inputs": {"latent": ["encode", 0]}},
+    ]
+
+
+def _without(*gone):
+    return graph.Schemas({k: v for k, v in OPT_NODES.items() if k not in gone}.get)
+
+
+def test_a_skipped_slot_hands_on_the_text_that_was_typed_into_it():
+    """The prompt box writes into the Enhance slot's text input; skipping the slot must not lose it."""
+    prompt, problems = graph.build(_optional_pipeline(), _without("Rewrite", "Markup"))
+    assert problems == []
+    assert prompt["encode"]["inputs"]["prompt"] == "a typed prompt"
+    assert "rewrite" not in prompt and "markup" not in prompt
+
+
+def test_a_skipped_slot_hands_on_the_wire_that_fed_it():
+    prompt, problems = graph.build(_optional_pipeline(), _without("Tune"))
+    assert problems == [] and prompt["encode"]["inputs"]["model"] == ["model", 0] and "tune" not in prompt
+
+
+def test_nothing_is_skipped_when_the_node_is_there():
+    prompt, problems = graph.build(_optional_pipeline(), _without())
+    assert problems == [] and prompt["encode"]["inputs"]["prompt"] == ["markup", 0] and "rewrite" in prompt
+
+
+def test_the_slots_that_were_skipped_are_named_and_the_saved_pipeline_is_untouched():
+    slots = _optional_pipeline()
+    kept, skipped = graph.bypass_missing(slots, _without("Rewrite", "Markup", "Tune"))
+    assert sorted(s["slot"] for s in skipped) == ["markup", "rewrite", "tune"]
+    assert [s["id"] for s in kept] == ["model", "encode", "out"]
+    assert [s["id"] for s in slots] == ["model", "tune", "rewrite", "markup", "encode", "out"]       # the input is not edited
+    assert slots[3]["inputs"]["text"] == ["rewrite", 0]
+
+
+def test_an_optional_slot_with_no_pass_for_a_read_output_is_still_reported_missing():
+    slots = _optional_pipeline()
+    slots[2]["optional"] = {"pass": {"5": "text"}}
+    _prompt, problems = graph.build(slots, _without("Rewrite"))
+    assert any("no node called 'Rewrite'" in p for p in problems)
+
+
+def test_an_optional_slot_whose_pass_input_is_empty_is_still_reported_missing():
+    slots = _optional_pipeline()
+    del slots[2]["inputs"]["text"]
+    _prompt, problems = graph.build(slots, _without("Rewrite"))
+    assert any("no node called 'Rewrite'" in p for p in problems)
+
+
+def test_a_slot_that_is_not_marked_optional_still_refuses_when_missing():
+    slots = _optional_pipeline()
+    del slots[1]["optional"]
+    _prompt, problems = graph.build(slots, _without("Tune"))
+    assert any("no node called 'Tune'" in p for p in problems)
+
+
+def test_a_malformed_optional_is_refused_as_a_shape_problem():
+    slots = _optional_pipeline()
+    slots[1]["optional"] = {"pass": "model"}
+    assert any("optional must be" in p for p in graph.shape_problems(slots))
+    slots[1]["optional"] = {"pass": {"zero": "model"}}
+    assert any("optional must be" in p for p in graph.shape_problems(slots))
+
+
+def test_two_skipped_slots_reading_each_other_do_not_hang():
+    slots = [
+        {"id": "a", "node": "Rewrite", "inputs": {"text": ["b", 0]}, "optional": {"pass": {"0": "text"}}},
+        {"id": "b", "node": "Markup", "inputs": {"text": ["a", 0]}, "optional": {"pass": {"0": "text"}}},
+        {"id": "encode", "node": "Encode", "inputs": {"prompt": ["a", 0]}},
+    ]
+    prompt, problems = graph.build(slots, _without("Rewrite", "Markup"))
+    assert "prompt" not in prompt["encode"]["inputs"] and problems          # refused (needs prompt), not an endless loop

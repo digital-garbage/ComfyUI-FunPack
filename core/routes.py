@@ -256,6 +256,7 @@ def register(routes, prefix=None):
         prompt, incomplete = graph_mod.build(slots)
         return web.json_response({"slots": slots, "refused": [],
                                   "incomplete": incomplete,
+                                  "skipped": graph_mod.bypass_missing(slots)[1],
                                   "queueable": not incomplete})
 
     @routes.get(P + "/api/pipeline/presets")
@@ -502,10 +503,14 @@ def register(routes, prefix=None):
                              "so what is set in the panels will not be applied")
 
         prompt, incomplete = graph_mod.build(slots)
+        _kept, skipped = graph_mod.bypass_missing(slots)
+        if skipped:             # first, because beside Generate only the first note is shown, and this one changes what the run does
+            notes.insert(0, "Skipped, its module did not load: " + ", ".join(s["node"] for s in skipped) + ". The run goes without it (Settings ▸ Modules says why).")
         return web.json_response({
             "slots": slots,
             "refused": problems,
             "incomplete": incomplete,
+            "skipped": skipped,
             "notes": notes,
             "queueable": not (problems or incomplete),
             "prompt": prompt if not (problems or incomplete) else None,

@@ -8,7 +8,7 @@ A rewrite from scratch, not an update of 4.x. Same idea (a studio for video insi
 
 - **A browser studio at `/funpack/`**: timeline with one clip per scene, Composer (story in one box, cut word, templates, `$variables`, shortcuts), properties, media bin, preview, takes, rating, Export, Render, project wizard and guided tour.
 - **Models & Pipeline**: the pipeline as cards. Pick files, swap or add nodes (any installed custom node), wire one node's output into another's input, import a ComfyUI workflow. The server refuses what would not build and says why.
-- **Modules** (Settings ▸ Modules): each feature switches on or off on its own. A module that fails during a run is left out of it, the log says why, and it stays off until its code changes and ComfyUI restarts, or you turn it back on.
+- **Modules** (Settings ▸ Modules): each feature switches on or off on its own. A pipeline runs without an optional node whose module did not load, and says so. A module that fails during a run is left out of it, the log says why, and it stays off until its code changes and ComfyUI restarts, or you turn it back on.
 - **Learning from ratings**: a Taste key remembers ratings; the guidance, steering and prompt modules that use them start acting once they have enough ratings (a few liked clips for some, ten or more rated clips for others; some also need disliked ones) and say so when they need more.
 
 ### Models
@@ -38,7 +38,7 @@ A rewrite from scratch, not an update of 4.x. Same idea (a studio for video insi
 - **`.gguf` text encoders** need the ComfyUI-GGUF node pack and work only for architectures it understands; otherwise they are refused with a message. Gemma 4 `.gguf` does not work; a loader for it may come later.
 - **H3 start frame**: in the H3 preset the scene picture sets the video's shape only; a start frame is not part of it.
 - **H3 second pass** is held back: not offered until verified.
-- The ready-made pipelines (presets) name some FunPack nodes directly: Save video, Cut opening, Shot camera, Prompt markup, Negative erase, Enhance prompt, Load media, Identity transfer. If the module behind one of them fails to load, Generate says which node is missing and refuses until you delete that card in Models & Pipeline or fix the module.
+- The ready-made pipelines need Save video, Load media, the loaders, the sampler and decode: if the module behind one of those fails to load, Generate names the missing node and refuses. The optional nodes (Enhance prompt, Shot camera, Prompt markup, Negative erase, Cut opening, Identity transfer) are skipped instead, with a note beside Generate; their controls, and the Reference 1 picture of Identity transfer, stay on screen and do nothing until the module is back.
 - Turning some modules on switches the model compiler off for the run, which costs sampling time.
 
 ### Docs

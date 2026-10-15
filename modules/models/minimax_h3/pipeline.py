@@ -93,13 +93,15 @@ def h3_reference_to_video():
         {"id": "enhance", "group": "Preparation", "node": "FunPackEnhancePrompt",
          "roles": [{"at": "generation.prompt", "input": "text", "label": "Prompt"},
                    {"at": "generation.prompt", "input": "enabled", "label": "Enhance prompt"}],
+         "optional": {"pass": {"0": "text"}},
          "inputs": {"clip": ["clip", 0], "text": "", "enabled": False,
                     "image": ["source_image", 0]}},
         # Off by default (its own switches in Settings): writes cut times, views and camera moves into [Shot N] blocks.
         {"id": "shot_camera", "group": "Preparation", "node": "FunPackShotCamera",
          "roles": [{"at": "project.video", "input": "length", "label": "Length", "drives": "frames"}],
+         "optional": {"pass": {"0": "text"}},
          "inputs": {"text": ["enhance", 0], "settings": ["settings", 0], "length": 124, "frame_rate": 24.0}},
-        {"id": "markup", "group": "Preparation", "node": "FunPackPromptMarkup",
+        {"id": "markup", "group": "Preparation", "node": "FunPackPromptMarkup", "optional": {"pass": {"0": "text"}},
          "inputs": {"text": ["shot_camera", 0]}},
         {"id": "r2v", "group": "Preparation", "node": "MiniMaxH3ReferenceToVideo",
          "roles": [{"at": "project.video", "input": "length", "label": "Length", "drives": "frames"}],
@@ -119,11 +121,12 @@ def h3_reference_to_video():
             "model": ["shift", 0], "settings": ["settings", 0]}},
 
         {"id": "markup_apply", "group": "Preparation", "node": "FunPackApplyPromptMarkup",
+         "optional": {"pass": {"0": "model", "1": "positive"}},
          "inputs": {"model": ["modifiers", 0], "clip": ["clip", 0], "positive": ["r2v", 0],
                     "latent": ["r2v", 1], "markup": ["markup", 1]}},
 
         # Strength 0 = untouched. Above it, the negative prompt (dead at CFG 1) is taken out of the words.
-        {"id": "erase", "group": "Preparation", "node": "FunPackNegativeErase",
+        {"id": "erase", "group": "Preparation", "node": "FunPackNegativeErase", "optional": {"pass": {"0": "positive"}},
          "inputs": {"positive": ["markup_apply", 1], "negative": ["negative", 0], "strength": 0.0,
                     "mode": "project", "keep_size": True}},
 
@@ -141,7 +144,7 @@ def h3_reference_to_video():
         {"id": "decode", "group": "Render", "node": "FunPackDecode", "inputs": {
             "samples": ["sampler", 0], "vae": ["vae", 0], "model": ["shift", 0],
             "audio_vae": ["audio_vae", 0]}},
-        {"id": "cut", "group": "Render", "node": "FunPackCutOpening",
+        {"id": "cut", "group": "Render", "node": "FunPackCutOpening", "optional": {"pass": {"0": "images", "1": "audio"}},
          "roles": [{"at": "project.video", "input": "frames", "label": "Cut opening frames"}],
          "inputs": {"images": ["decode", 0], "audio": ["decode", 1], "frames": 0, "fps": 24.0}},
         {"id": "save", "group": "Render", "node": "FunPackSaveVideo", "inputs": {

@@ -84,6 +84,7 @@ def _base(image_to_video: bool, as_guide: bool = False):
             # A reference face carried into the clip. The picture is the scene's first reference
             # (assets.reference_1): with none picked this node passes everything through untouched.
             {"id": "identity", "group": "Preparation", "node": "FunPackIdentityTransfer",
+             "optional": {"pass": {"0": "model", "1": "positive", "2": "negative"}},
              "inputs": {"model": ["modifiers", 0], "vae": ["model", 2], "positive": positive_source,
                         "negative": negative_source, "latent": latent_source, "source_id": 2.0,
                         "phase_scale": 1.0, "id_strength": 1.0, "arcface_mode": "auto_adjust"}},

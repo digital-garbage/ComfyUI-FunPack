@@ -711,3 +711,20 @@ test("a node change asked for while a value save is on its way holds a run back 
   assert.strictEqual(PS.slots().find((x) => x.id === "gen").node, "Other", "the run freezes the pipeline after the swap");
   await swap;
 });
+
+test("a skipped optional node keeps only the controls its pass-through needs, in view() and never in the saved slots", async () => {
+  const slots = [
+    { id: "enhance", node: "Enhance", roles: [{ at: "generation.prompt", input: "text" }, { at: "generation.prompt", input: "enabled" }], inputs: { text: "", enabled: false } },
+    { id: "gen", node: "Gen", inputs: { steps: 8 } },
+  ];
+  const API = {
+    pipeline: async () => ({ slots, incomplete: [], refused: [], queueable: true, skipped: [{ slot: "enhance", node: "Enhance", keeps: ["text"] }] }),
+    editPipeline: async (b) => ({ slots: b.slots, incomplete: [], refused: [], queueable: true }),
+    modules: async () => ({ modules: [] }), probeFamily: async () => ({}),
+  };
+  const PS = createPipelineState(API, {});
+  await PS.ensureLoaded();
+  assert.deepStrictEqual(PS.view().find((s) => s.id === "enhance").roles.map((r) => r.input), ["text"]);
+  assert.strictEqual(PS.slots().find((s) => s.id === "enhance").roles.length, 2);        // what is saved still has both
+  assert.deepStrictEqual(Object.keys(PS.skipped()), ["enhance"]);
+});

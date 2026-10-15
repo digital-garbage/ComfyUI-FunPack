@@ -99,6 +99,11 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
   let pending = false;
   let pendingBody = null;
   let saveNotes = [];
+  // Optional nodes the server left out of the run because their module did not load: { slotId: { slot, node, keeps } }.
+  // The controls that belong to them are hidden (see the slots accessor); the saved pipeline still has them.
+  let skipped = {};
+  const skipMap = (r) => Object.fromEntries(((r && r.skipped) || []).map((x) => [x.slot, x]));
+  const seen = (s0) => { const k = skipped[s0.id]; return k && s0.roles ? { ...s0, roles: s0.roles.filter((r) => (k.keeps || []).includes(r.input)) } : s0; };
 
   // What a settings_sink already holds, read back out of the live slots --
   // place() (core/graph.py) writes a whole values blob as one opaque JSON
@@ -156,6 +161,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         slots = pipe.slots || [];
         offered = JSON.parse(JSON.stringify(slots));
         incomplete = pipe.incomplete || [];
+        skipped = skipMap(pipe);
         refused = pipe.refused || [];
         queueable = !!pipe.queueable;
         await refreshManifest();
@@ -255,6 +261,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         keepTyped(before);    // an edit queued behind this one stays in the slots a run reads
         applyGroups();
         incomplete = (res && res.incomplete) || [];
+        skipped = skipMap(res);
         refused = (res && res.refused) || [];
         queueable = !!(res && res.queueable);
         saveNotes = (res && res.notes) || [];
@@ -459,6 +466,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
       refusedNow = (res && res.refused) || [];
       if (res && res.slots && !refusedNow.length) { const before = slots; slots = res.slots; keepTyped(before); applyGroups(); }
       incomplete = (res && res.incomplete) || [];
+      skipped = skipMap(res);
       refused = refusedNow;
       queueable = !!(res && res.queueable);
       saveNotes = notesNow = (res && res.notes) || [];
@@ -530,6 +538,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         unwired = JSON.parse(JSON.stringify(snap.unwired || {}));
         groupEdits = {}; pendingValues = {}; pendingBody = null; pending = false;
         incomplete = res.incomplete || []; refused = []; queueable = !!res.queueable;
+        skipped = skipMap(res);
         saveNotes = res.notes || [];
         try { await refreshManifest(); } catch (_) { /* the next save retries it */ }
         refill = fillEmptySinks(keep);
@@ -662,6 +671,7 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
         if (res && res.slots && !(res.refused || []).length) {
           slots = res.slots;
           incomplete = res.incomplete || []; refused = []; queueable = !!res.queueable;
+          skipped = skipMap(res);
           saveNotes = res.notes || [];
           // The modules offered depend on the model this pipeline names, which may differ from the
           // previous project's: refresh, or the next settings edit drops this project's modules.
@@ -694,6 +704,9 @@ export function createPipelineState(rawApi, { answerMs = ANSWER_MS } = {}) {
     whole: () => whole,
     unwiredMap: () => JSON.parse(JSON.stringify(unwired)),
     slots: () => slots,
+    /** The slots as the controls should show them: a skipped node keeps only the controls its pass-through needs. Read-only; never save this. */
+    view: () => (slots && Object.keys(skipped).length ? slots.map(seen) : slots),
+    skipped: () => skipped,
     incomplete: () => incomplete,
     refused: () => refused,
     queueable: () => queueable,
