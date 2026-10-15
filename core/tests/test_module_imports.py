@@ -31,7 +31,7 @@ def _absolute_core_imports(path: Path):
     Walks the AST rather than the text, so an import nested in a function, a
     method or a try block is found exactly like a top-level one.
     """
-    tree = ast.parse(path.read_text(), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
@@ -61,7 +61,7 @@ def test_a_module_reaches_core_only_through_the_shim(path):
 
 def _module_dirs():
     """group/name of every directory that announces a module (has `ID = ` in its __init__)."""
-    return {(p.parent.parent.name, p.parent.name) for p in MODULES.glob("*/*/__init__.py") if "\nID = " in "\n" + p.read_text()}
+    return {(p.parent.parent.name, p.parent.name) for p in MODULES.glob("*/*/__init__.py") if "\nID = " in "\n" + p.read_text(encoding="utf-8")}
 
 
 def _import_nodes(body):
@@ -92,7 +92,7 @@ def _other_module_imports(path: Path, mods=None, root: Path = MODULES):
     group = parts[0]
     own = parts[:2] if len(parts) >= 3 else None            # a file at group level belongs to no module
     found = []
-    for node in _import_nodes(ast.parse(path.read_text()).body):
+    for node in _import_nodes(ast.parse(path.read_text(encoding="utf-8")).body):
         names = [a.name for a in node.names]
         if isinstance(node, ast.Import):
             targets = [tuple(n.split(".")[1:3]) for n in names if n.split(".")[0] == "modules"]
@@ -101,6 +101,8 @@ def _other_module_imports(path: Path, mods=None, root: Path = MODULES):
             if node.level == 0:
                 targets = ([tuple(mod[1:3])] if len(mod) >= 3 else [(mod[1], n) for n in names]) if mod[:1] == ["modules"] and len(mod) >= 2 else []
             elif node.level >= 3:
+                targets = [tuple(mod[:2])] if len(mod) >= 2 else [(mod[0], n) for n in names] if mod else []
+            elif node.level == 2 and own is None:            # from a group-level file, `..` is the modules root: `..group.module`
                 targets = [tuple(mod[:2])] if len(mod) >= 2 else [(mod[0], n) for n in names] if mod else []
             elif node.level == 2:
                 targets = [(group, mod[0])] if mod else [(group, n) for n in names]
@@ -144,5 +146,6 @@ def test_the_guard_sees_every_way_to_import_another_module_at_load(tmp_path):
         f.write_text(src + "\n")
         assert bool(_other_module_imports(f, mods, tmp_path)) is bad, src
     helper = tmp_path / "sampling" / "helper.py"
-    helper.write_text("from .b import x\n")
-    assert _other_module_imports(helper, mods, tmp_path), "a shared helper may not import a module"
+    for src in ("from .b import x", "from ..loaders.c import x", "from ..loaders import c"):
+        helper.write_text(src + "\n")
+        assert _other_module_imports(helper, mods, tmp_path), f"a shared helper may not import a module: {src}"

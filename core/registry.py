@@ -54,7 +54,7 @@ class Registry:
                 answer = fn(*args, **kwargs)
             except Exception as exc:             # noqa: BLE001
                 from . import log
-                log.once(f"provider:{capability}:{_spec.id}:{exc}", log.WARNING, f"{capability} provider {_spec.id}",
+                log.once(f"provider:{capability}:{_spec.id}", log.WARNING, f"{capability} provider {_spec.id}",
                          f"failed while answering -- {type(exc).__name__}: {exc}")          # skipped, never silently, said once
                 continue
             if answer is not None:
