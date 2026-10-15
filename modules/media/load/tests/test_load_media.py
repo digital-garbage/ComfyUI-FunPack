@@ -59,3 +59,14 @@ def test_deleted_media_is_refused_even_with_a_well_formed_id(store):
     media.delete(entry["id"])
     with pytest.raises(RuntimeError, match="not in the library"):
         FunPackLoadMedia.execute(entry["id"]).result
+
+
+def test_a_blank_size_stands_in_for_nothing_picked_and_a_picked_image_still_wins(store):
+    from modules.media.load.nodes import FunPackLoadMedia
+    images, = FunPackLoadMedia.execute("", blank_width=64, blank_height=32).result
+    assert tuple(images.shape) == (1, 32, 64, 3)
+    entry = media.save_upload("ref.png", _png_bytes())
+    images, = FunPackLoadMedia.execute(entry["id"], blank_width=64, blank_height=32).result
+    assert images.shape[1:3] == (6, 4)
+    with pytest.raises(RuntimeError, match="nothing is picked"):
+        FunPackLoadMedia.execute("", blank_width=64, blank_height=0).result

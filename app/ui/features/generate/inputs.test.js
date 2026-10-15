@@ -82,3 +82,13 @@ test("the shot camera node is told which project this is, whatever roles the sav
   const { inputs } = await buildInputs({ project: { id: "proj1", scenes: [], video: {} }, scene: { id: "s", text: "x", references: [] }, slots, expand: async ({ text }) => ({ text }) });
   assert.equal(inputs.shot_camera.project, "proj1");
 });
+
+test("text-only: a slot that can stand in for the picture is told the size of the slot that shapes it, and a picked picture is sent as is", async () => {
+  const like = { slot: "t", width: "target_width", height: "target_height" };
+  const s = [{ id: "src", roles: [{ at: "assets.source_image", input: "media_id", blank_like: like }] },
+    { id: "t", inputs: { target_width: 1344, target_height: 768 }, roles: [{ at: "project.video", input: "target_width" }] }];
+  const run = (project, scene) => buildInputs({ project, scene, slots: s, expand: async () => null });
+  assert.deepEqual((await run({ generation_mode: "t2v", video: { target_width: 640 } }, { source_image: "m1" })).inputs.src, { media_id: "", blank_width: 640, blank_height: 768 });
+  assert.deepEqual((await run({ generation_mode: "i2v" }, { source_image: "m1" })).inputs.src, { media_id: "m1" });
+  assert.deepEqual((await run({ generation_mode: "i2v" }, {})).inputs.src, { media_id: "", blank_width: 1344, blank_height: 768 });
+});

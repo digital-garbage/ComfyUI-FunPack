@@ -10,6 +10,7 @@ a run queues, the same way a scene's prompt text lands on CLIPTextEncode's
 `text`), not from someone typing a file name into this node by hand.
 """
 
+import torch
 from comfy_api.latest import InputImpl, io
 
 from ..._core import log, media as media_mod
@@ -27,13 +28,23 @@ class FunPackLoadMedia(io.ComfyNode):
                 io.String.Input(
                     "media_id", default="",
                     tooltip="A media library id, picked in the Media bin."),
+                io.Int.Input(
+                    "blank_width", default=0, min=0, max=16384, optional=True,
+                    tooltip="With nothing picked, make a plain grey picture this wide instead of refusing. 0 = refuse."),
+                io.Int.Input(
+                    "blank_height", default=0, min=0, max=16384, optional=True,
+                    tooltip="With nothing picked, make a plain grey picture this tall instead of refusing. 0 = refuse."),
             ],
             outputs=[io.Image.Output(display_name="image")],
         )
 
     @classmethod
-    def execute(cls, media_id: str) -> io.NodeOutput:
+    def execute(cls, media_id: str, blank_width: int = 0, blank_height: int = 0) -> io.NodeOutput:
         mid = (media_id or "").strip()
+        if not mid and blank_width > 0 and blank_height > 0:
+            # A text-only start: the picture exists only to give the pipeline a SHAPE (see the H3 preset).
+            log.info("FunPack Load Media", f"nothing picked: a plain {blank_width}x{blank_height} picture stands in")
+            return io.NodeOutput(torch.full((1, blank_height, blank_width, 3), 0.5))
         if not mid:
             raise RuntimeError(
                 "FunPack Load Media: nothing is picked for this input. "

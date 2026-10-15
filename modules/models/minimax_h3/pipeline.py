@@ -61,8 +61,11 @@ def h3_reference_to_video():
          # role's name and sets `media_id` from the scene's own picked image,
          # the same way "generation.prompt" is found by name and set from the
          # scene's own text -- neither is addressed by this preset's slot id.
-         "roles": [{"at": "assets.source_image", "input": "media_id"}],
-         "inputs": {"media_id": ""}},
+         # `blank_like`: with no picture (text-only), buildInputs gives this node the size of that
+         # slot's target_width/height, so a plain grey stand-in carries the project's own shape.
+         "roles": [{"at": "assets.source_image", "input": "media_id",
+                    "blank_like": {"slot": "image_transform", "width": "target_width", "height": "target_height"}}],
+         "inputs": {"media_id": "", "blank_width": 0, "blank_height": 0}},
         {"id": "image_transform", "group": "Reference media", "node": "ImageTransformKJ",
          # target_width/height are the PIXEL BUDGET, set in Project settings
          # like any other project resolution -- not the dropped picture's own

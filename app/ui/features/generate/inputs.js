@@ -18,6 +18,13 @@ export async function buildInputs({ project, scene, slots, expand, frames, hooks
   for (const slot of (slots || []).filter((s) => s.node === "FunPackShotCamera")) put(slot, "project", project.id || "");      // what the node keeps per project (the words focus infusion draws on), also for pipelines saved before it was asked for
   const source = rolesAt(slots, "assets.source_image")[0];
   if (source) put(source.slot, "media_id", project.generation_mode === "t2v" ? "" : scene.source_image || "");    // "from a prompt" starts every shot without a picture
+  const like = source && source.role.blank_like;
+  if (like && !raw[source.slot.id].media_id) {          // text-only: a plain picture of the size the pipeline asks for stands in
+    const target = (slots || []).find((s) => s.id === like.slot) || { inputs: {} };
+    const size = (name) => (raw[target.id] || {})[name] ?? (target.inputs || {})[name];
+    put(source.slot, "blank_width", Number(size(like.width)) || 0);
+    put(source.slot, "blank_height", Number(size(like.height)) || 0);
+  }
   const plan = sceneReferences(scene, project.fixed_references);
   const { overrides, unwired } = wireReferences(plan.ids, slots, source ? [source.slot.id] : [], plan.pins);
   for (const [id, fields] of Object.entries(overrides)) raw[id] = { ...raw[id], ...fields };
