@@ -121,7 +121,7 @@ class FunPackModifierSettings(io.ComfyNode):
         problems = []
         skip = control_mod.skipped(raw)           # off or quarantined: its values are not read, so not checked
         for module_id, values in raw.items():
-            if module_id in skip or module_id in control_mod.RETIRED:
+            if module_id in skip:
                 continue
             if module_id in control_mod.RESERVED:
                 said = control_mod.bad_off(values)
@@ -130,8 +130,7 @@ class FunPackModifierSettings(io.ComfyNode):
                 continue
             spec = specs.get(module_id)
             if spec is None:
-                problems.append(f"no module named {module_id!r} is installed")
-                continue
+                continue                  # named in saved settings, not installed: execute() says so (once) and runs without it
             _clean, said = schema_mod.check_values(spec, values)
             problems.extend(said)
         return problems
@@ -161,7 +160,7 @@ class FunPackModifierSettings(io.ComfyNode):
         problems, checked = [], {}
         skip = control_mod.skipped(raw)
         for module_id, values in raw.items():
-            if module_id in skip or module_id in control_mod.RETIRED:
+            if module_id in skip:
                 continue
             if module_id in control_mod.RESERVED:
                 said = control_mod.bad_off(values)
@@ -172,9 +171,10 @@ class FunPackModifierSettings(io.ComfyNode):
                 continue
             spec = specs.get(module_id)
             if spec is None:
-                # Silently ignoring it is how v4 accumulated settings that meant
-                # nothing and a list of dead keys to remember.
-                problems.append(f"no module named {module_id!r} is installed.")
+                # Saved settings outlive modules (removed, renamed, or one that failed to load). Refusing the run for a
+                # name nobody can act on would break every project that ever used it, so it is skipped -- out loud.
+                log.once(f"stale_module:{module_id}", log.WARNING, "FunPack Modifier Settings",
+                         f"saved settings for {module_id!r} ignored: no module with that id is installed")
                 continue
             clean, said = schema_mod.check_values(spec, values, keep_bad=guards_off)
             checked[module_id] = clean

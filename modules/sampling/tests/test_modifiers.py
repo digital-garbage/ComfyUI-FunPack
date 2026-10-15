@@ -279,13 +279,15 @@ def test_an_out_of_range_value_is_refused_at_this_node_too(registry, patcher):
         FunPackLoadModifiers.execute(patcher, settings={"alg": {"strength": 99.0}})
 
 
-def test_a_setting_no_module_declares_is_refused_at_this_node_too(registry, patcher):
+def test_a_setting_no_module_declares_is_skipped_and_said_at_this_node_too(registry, patcher):
     from modules.sampling.modifiers.nodes import FunPackLoadModifiers
     registry.specs["alg"] = _spec("alg", lambda t, v, key: "on", settings={
         "strength": {"type": "float", "default": 4.0, "min": 1.0, "max": 16.0, "label": "S"},
     })
-    with pytest.raises(RuntimeError, match="no setting named"):
-        FunPackLoadModifiers.execute(patcher, settings={"alg": {"strenght": 4.0}})
+    from core import log as _log
+    _log._reset()
+    FunPackLoadModifiers.execute(patcher, settings={"alg": {"strenght": 4.0}})          # the run goes on
+    assert any("strenght" in r["message"] and "ignored" in r["message"] for r in _log.history())
 
 
 # --- full control turns off the refusals too --------------------------------

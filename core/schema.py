@@ -266,9 +266,11 @@ def check_values(spec, values: Any, keep_bad: bool = False) -> Tuple[Dict[str, A
     for key, value in values.items():
         declared = spec.settings.get(key)
         if declared is None:
-            # Not repaired by dropping it silently: a key nobody declares is
-            # either a typo or a leftover, and both are worth saying once.
-            problems.append(f"{spec.id}: no setting named {key!r}.")
+            # A key nobody declares is a leftover (a setting that was removed or renamed) or a typo. Refusing the run would
+            # break every project saved before the change, so it is skipped -- and said, once per run.
+            from . import log
+            log.once(f"stale_setting:{spec.id}.{key}", log.WARNING, "FunPack settings",
+                     f"{spec.id}: saved setting {key!r} ignored: this module has no such setting")
             continue
         problem = _value_problem(declared, key, value, spec.id)
         if problem:

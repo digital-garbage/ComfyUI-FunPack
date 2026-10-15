@@ -23,9 +23,6 @@ from . import config, log, patching
 
 #: Keys of the settings payload that are not module ids.
 RESERVED = frozenset({"_off"})
-#: Modules that shipped and were removed. Projects and pipelines saved while they existed still name them, and that is
-#: not a mistake: their values are ignored. (An id in neither list is a typo or a missing pack, and is still refused.)
-RETIRED = frozenset({"appearance"})
 
 _TRANSIENT = ("Interrupt", "OutOfMemory", "OOM")        # not the module's fault: say nothing, remember nothing
 _lock = threading.Lock()

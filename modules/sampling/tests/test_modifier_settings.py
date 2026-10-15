@@ -54,15 +54,22 @@ def test_malformed_json_says_so_instead_of_meaning_nothing(registry):
         _run("{not json")
 
 
-def test_a_setting_no_module_declares_is_reported(registry):
-    """In v4 this was simply ignored, which is how dead keys accumulated."""
-    with pytest.raises(RuntimeError, match="no setting named 'stength'"):
-        _run('{"alg": {"stength": 0.5}}')
+def test_a_setting_no_module_declares_is_skipped_and_said(registry):
+    """Saved settings outlive settings: the run goes on, the log names the dead key (v4 did it silently)."""
+    from core import log as _log
+    _log._reset()
+    values, _status = _run('{"alg": {"stength": 0.5}}')
+    assert "stength" not in values["alg"]
+    assert any("stength" in r["message"] and "ignored" in r["message"] for r in _log.history())
 
 
-def test_a_module_that_is_not_installed_is_reported(registry):
-    with pytest.raises(RuntimeError, match="no module named 'ghost'"):
-        _run('{"ghost": {"x": 1}}')
+def test_a_module_that_is_not_installed_is_skipped_and_said(registry):
+    """A module that was removed, renamed or failed to load must not stop the projects that saved settings for it."""
+    from core import log as _log
+    _log._reset()
+    values, _status = _run('{"ghost": {"x": 1}, "alg": {"enabled": true}}')
+    assert "ghost" not in values and values["alg"]["enabled"] is True
+    assert any("'ghost'" in r["message"] and "ignored" in r["message"] for r in _log.history())
 
 
 @pytest.mark.parametrize("payload,expected", [
@@ -121,13 +128,13 @@ def test_nan_specifically_is_not_silently_accepted(registry):
 
 def test_a_bad_payload_is_refused_before_anything_runs(registry):
     """ComfyUI calls validate_inputs inside validate_prompt, before any node
-    executes. Without it a typo'd module id was found only after the checkpoint
-    had already loaded -- on a rented GPU that is the cost paid before the guard
-    fires, which is the thing this project builds guards to avoid."""
+    executes: a wrong VALUE is found before the checkpoint loads, not after
+    (on a rented GPU that is the cost the guard exists to avoid)."""
     from modules.sampling.modifiers.nodes import FunPackModifierSettings
 
-    said = FunPackModifierSettings.validate_inputs('{"ghost": {"x": 1}}')
-    assert said is not True and "no module named 'ghost'" in said
+    said = FunPackModifierSettings.validate_inputs('{"alg": {"enabled": "yes please"}}')
+    assert said is not True
+    assert FunPackModifierSettings.validate_inputs('{"ghost": {"x": 1}}') is True      # a name nobody has is skipped, not refused
 
 
 def test_a_good_payload_passes_validation(registry):
