@@ -143,6 +143,13 @@ def test_every_failure_returns_the_original_prompt(clip):
     assert out == "a fox" and not info["ok"] and status
 
 
+@pytest.mark.parametrize("answer", [",,,,,,,,,,,,,,,,,,,,", "...  ---  !!!", "1234 5678", "x ,,,,,,,,,,,,,,,,,,,, ,,,,,"])
+def test_an_answer_with_no_words_is_a_failure_not_a_prompt(answer):
+    """A text encoder that is not a chat model answered with 400 commas; the run used them as the prompt."""
+    out, status, info = en().enhance(FakeClip(answer), "a red fox in the snow")
+    assert out == "a red fox in the snow" and not info["ok"] and "no usable words" in status
+
+
 def test_an_empty_prompt_is_skipped_not_sent():
     clip = FakeClip()
     out, status, _ = en().enhance(clip, "   ")

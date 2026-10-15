@@ -373,5 +373,11 @@ def enhance(clip, text, *, system="", reference_text="", chat="", **sampling):
     if not out:
         return original, (status if "failed" in status or "unavailable" in status
                           else "the model returned nothing; prompt unchanged"), info
+    visible = "".join(out.split())
+    if not re.search(r"[^\W\d_]{2,}", out) or sum(c.isalpha() for c in visible) < len(visible) // 4:
+        # Seen on a real GPU: an encoder that is not a chat model answered with 400 commas, and that WAS sent
+        # on to the video model, which then made something unrelated to the prompt.
+        return original, ("the model wrote no usable words (" + out[:20].replace("\n", " ")
+                          + "...); prompt unchanged. This text encoder may not be a chat model"), info
     info.update(after=out, ok=True)
     return out, f"{status}; prompt {len(original)} -> {len(out)} chars", info
