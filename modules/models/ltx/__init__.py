@@ -34,7 +34,7 @@ from .pipeline import presets as _pipeline_presets
 has_block = _traits.has_block
 
 ID = "model_ltx"
-TITLE = "LTX 2.x"
+TITLE = "LTX 2.x (UNTESTED)"
 STAGE = "load"
 CATEGORY = "system"
 STATUS = "experimental"

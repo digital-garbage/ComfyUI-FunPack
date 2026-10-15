@@ -246,3 +246,18 @@ def test_gguf_is_a_declared_requirement():
     lines = [ln.strip() for ln in reqs.read_text(encoding="utf-8").splitlines()
              if ln.strip() and not ln.startswith("#")]
     assert any(ln == "gguf" or ln.startswith("gguf") for ln in lines)
+
+
+def test_a_text_encoder_gguf_the_pack_refuses_is_refused_not_loaded_as_the_wrong_model(tmp_path, monkeypatch):
+    d = tmp_path / "pack"
+    d.mkdir()
+    (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
+    (d / "loader.py").write_text(
+        "def gguf_clip_loader(path):\n"
+        "    raise ValueError(\"Unexpected text model architecture type in GGUF file: 'gemma4'\")\n")
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+    monkeypatch.setattr(gguf_support.importlib.util, "find_spec", lambda name: object() if name == "gguf" else None)
+    monkeypatch.setattr(gguf_support, "_load_native", lambda path: ({"w": "native"}, {}, "native"))
+    with pytest.raises(RuntimeError, match="not supported"):
+        gguf_support.load_clip_state_dict("/x.gguf")

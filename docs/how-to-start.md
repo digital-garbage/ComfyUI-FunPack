@@ -10,7 +10,7 @@ Any one of these:
 - `git clone https://github.com/digital-garbage/ComfyUI-FunPack` inside `ComfyUI/custom_nodes`
 - ComfyUI-Manager: Custom Nodes Manager, search `ComfyUI-FunPack`, Install.
 
-Then `pip install -r requirements.txt` in the same Python environment ComfyUI uses, and restart ComfyUI. FunPack uses your existing ComfyUI and PyTorch; it never upgrades them on its own.
+Then `pip install -r requirements.txt` in the same Python environment ComfyUI uses, and restart ComfyUI. FunPack uses your existing ComfyUI and PyTorch. If pip wants to upgrade a package ComfyUI compiles against (torch, numpy, transformers, comfy-kitchen), read what it will change first: FunPack's own updater only installs what is missing and reports the rest.
 
 ## 2. Open FunPack
 
@@ -24,7 +24,7 @@ Start ComfyUI as usual and open `/funpack/` on the same address, for example `ht
 |---|---|
 | MiniMax H3 | The model FunPack is built and tested around. |
 | Stable Diffusion 1.5 | Experimental. |
-| LTX 2.x | **UNTESTED.** Never run on a real LTX model, and nobody plans to test it soon. You are free to try it; if something breaks, please report it in [Issues](https://github.com/digital-garbage/ComfyUI-FunPack/issues). |
+| LTX 2.x (UNTESTED) | **UNTESTED.** Never run on a real LTX model, and nobody plans to test it soon. You are free to try it; if something breaks, please report it in [Issues](https://github.com/digital-garbage/ComfyUI-FunPack/issues). |
 
 ## 4. Pick your files
 
@@ -35,11 +35,11 @@ The model's pipeline starts empty: it needs your files.
 
 Put model files where ComfyUI expects them (`models/diffusion_models`, `models/text_encoders`, `models/vae`, `models/loras`). When nothing is missing, Ready to generate? says so.
 
-`.gguf` files load only for the architectures ComfyUI-GGUF understands. Anything else is not supported yet (Gemma 4 `.gguf` is one such case).
+`.gguf` text encoders work only for architectures ComfyUI-GGUF understands; any other is refused with a message (Gemma 4 `.gguf` is one such case). Use the `.safetensors` file of the same model.
 
 ## 5. Write the story
 
-Click **Composer** and write all scenes in one box, separated by the cut word (see the Cuts tab). Each piece becomes one clip on the timeline. Composer also keeps `$variables`, templates and shortcuts, and has an optional **Enhance** tab: a language model rewrites each finished prompt. On H3, pick a chat encoder (for example Gemma 4) under Enhance ▸ Encoder, because H3's own encoder cannot write prose.
+Click **Composer** and write all scenes in one box, separated by the cut word (see the Cuts tab). Each piece becomes one clip on the timeline. Composer also keeps `$variables`, templates and shortcuts, and has an optional **Enhance** tab: a language model rewrites each finished prompt. On H3, pick a chat encoder (for example Gemma 4) under Enhance ▸ Encoder, because H3's own encoder cannot write prose. Leave Encoder family at its default unless your encoder belongs to another family (Gemma 4 worked with the default).
 
 ## 6. Generate
 
@@ -55,11 +55,11 @@ Trim and split clips on the timeline. **⚡ Auto Montage** builds a new cut at t
 
 ## 8. Teach it your taste (optional)
 
-Rate a result with **Rate scene…** (liked, disliked, bad image, bad composition). Set a **Taste key** (the ⚠ chip on the timeline, or **Settings ▸ Refinement & Taste**) so ratings are remembered. Modules that learn from ratings start acting after a few liked clips and say so when they need more.
+Rate a result with **Rate scene…** (liked, disliked, bad image, bad composition). Set a **Taste key** (the ⚠ chip on the timeline points to it: **Settings ▸ Engine ▸ System**) so ratings are remembered. **Settings ▸ Refinement & Taste** lists, exports and deletes keys. Modules that learn from ratings start acting after a few liked clips and say so when they need more.
 
 ## 9. Features marked experimental
 
-**Settings ▸ Modules** switches each feature on or off and shows its state. Experimental ones are built and run, but not yet proven over many runs. If one fails it is switched off for the rest of that run and the log says why.
+**Settings ▸ Modules** switches each feature on or off. Several features are experimental: built and run, but not yet proven over many runs. If a module fails while generating, the run carries on without it, the Log says why, and the module stays off until its code is repaired or you turn it back on in Settings ▸ Modules.
 
 ## If something goes wrong
 
@@ -71,4 +71,4 @@ Rate a result with **Rate scene…** (liked, disliked, bad image, bad compositio
 
 - LTX 2.x is untested (see above).
 - On H3 the scene picture sets the video's shape only; using it as a start frame is not implemented.
-- The H3 "second pass" preset needs a compatible H3 latent upscaler file and has not been verified.
+- The H3 "second pass" preset is not offered yet: it has not been verified.

@@ -257,6 +257,11 @@ def _load(path: str, clip: bool) -> tuple[dict, dict, str]:
         except Exception as e:  # noqa: BLE001 -- any refusal is a reason to fall back
             if importlib.util.find_spec("gguf") is None:
                 raise
+            if clip:
+                # The native reader keeps llama.cpp's tensor names; only the pack maps them back to a text encoder's.
+                # Loading them anyway gives a model that looks loaded and is the wrong one (a Gemma 4 .gguf did).
+                raise RuntimeError(f"this text-encoder .gguf is not supported (ComfyUI-GGUF could not read it: {e}). "
+                                   "Use a .safetensors encoder of the same model.") from e
             sd, options, note = _load_native(path)
             return sd, options, (f"gguf: ComfyUI-GGUF could not read this file ({e}) -- "
                                  f"fell back. {note}")

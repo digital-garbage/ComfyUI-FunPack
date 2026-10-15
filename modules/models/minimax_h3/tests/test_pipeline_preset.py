@@ -33,8 +33,7 @@ def registered(comfyui):
 def test_the_preset_is_offered(registered):
     from modules.models.minimax_h3.pipeline import presets
     offered = presets()
-    assert [p["id"] for p in offered] == [
-        "minimax_h3_reference_to_video", "minimax_h3_reference_to_video_second_pass"]
+    assert [p["id"] for p in offered] == ["minimax_h3_reference_to_video"]      # the second-pass preset is held back
     assert all(p["slots"] for p in offered)
 
 

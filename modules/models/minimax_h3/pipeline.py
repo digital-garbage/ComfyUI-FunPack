@@ -206,10 +206,9 @@ def h3_reference_to_video_second_pass():
 def presets():
     return [{"id": "minimax_h3_reference_to_video",
              "title": "MiniMax H3 · Reference to Video",
-             "slots": h3_reference_to_video()},
-            {"id": "minimax_h3_reference_to_video_second_pass",
-             "title": "MiniMax H3 · Reference to Video + second pass",
-             "slots": h3_reference_to_video_second_pass()}]
+             "slots": h3_reference_to_video()}]
+    # Held back, not offered: h3_reference_to_video_second_pass() builds clean but was never verified on a GPU
+    # (it needs a compatible H3 latent upscaler file). Add it back here once it has been.
 
 
 PROVIDES = {"pipeline_presets": presets}
