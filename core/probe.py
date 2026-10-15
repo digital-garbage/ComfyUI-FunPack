@@ -106,10 +106,12 @@ def detect(path: Path, registry=None) -> dict:
 
     keyset = set(keys)
     reg = registry or registry_mod.current()
+    broken = []
     for spec, claims in reg.providers("detect"):
         try:
             matched = claims(keyset)
         except Exception as exc:                       # noqa: BLE001
+            broken.append(spec.id)
             from . import log
             log.once(f"provider:{spec.id}.detect:{type(exc).__name__}", log.WARNING, f"{spec.id}.detect", f"failed while answering -- {type(exc).__name__}: {exc}")
             continue
@@ -125,5 +127,6 @@ def detect(path: Path, registry=None) -> dict:
             return {"module": spec.id, "title": spec.title, "detected": True,
                     "reason": f"{p.name}: {spec.title}", "traits": traits}
     return {"module": None, "title": None, "detected": False,
-            "reason": f"{p.name}: no installed model module recognises this file",
+            "reason": f"{p.name}: no installed model module recognises this file"
+                      + (f" ({', '.join(broken)} failed while checking it: see the Log)" if broken else ""),
             "traits": []}

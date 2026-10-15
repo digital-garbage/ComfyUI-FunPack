@@ -248,7 +248,7 @@ def register(routes, prefix=None):
         try:
             mount(routes, f"{P}/api/m/{spec.id}", web)
         except Exception as exc:  # noqa: BLE001
-            log.failed(f"{spec.id}.routes", exc)
+            _provider_failed(f"{spec.id}.routes", exc)
 
     @routes.get(P + "/api/pipeline")
     async def _pipeline_get(_req):

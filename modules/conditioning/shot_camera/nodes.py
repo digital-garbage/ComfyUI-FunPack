@@ -126,13 +126,13 @@ class FunPackShotCamera(io.ComfyNode):
         try:
             out, said, chose = rewrite(text, values, seconds=length / frame_rate if frame_rate else None, project=project)
         except Exception as exc:                               # noqa: BLE001 -- a rewrite is never worth the run
-            log.failed("FunPack Shot Camera", exc)
+            log.broke("FunPack Shot Camera", exc, "rewriting the prompt")
             return io.NodeOutput(text, f"left as written ({exc})")
         pid = _prompt_id()
         if pid and (chose["views"] or chose["arms"] or chose.get("text") is not None):
             try:
                 memory.record_run(pid, chose)
             except Exception as exc:                           # noqa: BLE001 -- only the learning is lost, not the run
-                log.failed("FunPack Shot Camera", exc)
+                log.broke("FunPack Shot Camera", exc, "remembering this run")
         log.info("FunPack Shot Camera", said)
         return io.NodeOutput(out, said)

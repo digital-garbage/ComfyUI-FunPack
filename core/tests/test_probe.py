@@ -182,6 +182,18 @@ def test_a_detector_that_raises_is_skipped_not_fatal(tmp_path):
     assert out["module"] == "good"
 
 
+def test_when_the_only_detector_raises_the_reason_says_so_not_that_nobody_recognises_the_file(tmp_path):
+    from core import log
+    log._reset()
+    p = tmp_path / "m.safetensors"
+    _write_safetensors(p, ["real.weight"])
+    reg = Registry()
+    reg.add(ModuleSpec(id="bad", title="Bad", mount="", provides={"detect": lambda _k: 1 / 0}))
+    out = probe.detect(p, registry=reg)
+    assert not out["detected"] and "bad failed while checking it" in out["reason"]
+    assert any("bad.detect" in r["source"] and "failed while answering" in r["message"] for r in log.history())
+
+
 # --- resolve_diffusion_model -------------------------------------------------
 #
 # `folder_paths` only exists inside a running ComfyUI, and whether it happens
