@@ -269,3 +269,20 @@ def test_a_text_encoder_gguf_without_the_pack_is_refused_not_dequantized_blind(m
     with pytest.raises(RuntimeError, match="ComfyUI-GGUF"):
         gguf_support.load_clip_state_dict("/x.gguf")
     assert gguf_support.load_state_dict("/x.gguf")[0] == {"w": "native"}      # a diffusion model still loads natively
+
+
+def test_a_pack_that_returns_a_state_dict_and_extras_still_gives_a_state_dict(tmp_path, monkeypatch):
+    d = tmp_path / "pack"
+    d.mkdir()
+    (d / "ops.py").write_text("class GGMLOps:\n    pass\n")
+    (d / "loader.py").write_text("def gguf_sd_loader(path):\n    return ({'w': 1}, {'arch_str': 'flux'})\n")
+    monkeypatch.setattr(gguf_support, "_pack_dir", lambda: str(d))
+    monkeypatch.delitem(sys.modules, gguf_support._PKG_NAME, raising=False)
+    sd, _options, note = gguf_support.load_state_dict("/x.gguf")
+    assert sd == {"w": 1} and "quantized" in note
+
+
+def test_a_text_encoder_gguf_with_no_backend_says_the_pack_not_pip(monkeypatch):
+    monkeypatch.setattr(gguf_support, "backend", lambda: None)
+    with pytest.raises(RuntimeError, match="ComfyUI-GGUF"):
+        gguf_support.load_clip_state_dict("/x.gguf")
