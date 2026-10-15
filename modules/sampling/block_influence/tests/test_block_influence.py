@@ -358,3 +358,32 @@ def test_flatness_reads_raw_push_so_a_growing_stream_with_equal_pushes_is_flat()
     rows = [{"reward": w, "rows": {"ratio": torch.tensor(ratio), "raw": torch.ones(10),
                                    "novelty": torch.full((10,), 0.5)}} for w in (1.0, 1.0, -1.0, -1.0)]
     assert profile(rows)["flatness"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_the_measurement_stays_out_of_comfys_memory_recorder_but_the_block_does_not(monkeypatch):
+    """With a Taste key set the recording is on in every run. Its running sums allocate differently from step to
+    step, which broke ComfyUI's memory recorder ("aimdo memory compile error", seen on a real GPU) unless another
+    module had switched the recorder off. The measuring is paused; the block itself must still run recorded."""
+    import contextlib
+    import comfy.model_prefetch as mp
+    from modules.sampling.block_influence import measure
+    paused = {"now": False, "block_ran_paused": None, "entered": 0}
+
+    @contextlib.contextmanager
+    def pause(sync=False):
+        paused["now"], paused["entered"] = True, paused["entered"] + 1
+        try:
+            yield
+        finally:
+            paused["now"] = False
+
+    monkeypatch.setattr(mp, "pause_malloc_graph", pause, raising=False)     # older ComfyUIs lack it
+    tally = measure.Tally(2)
+
+    def block(args):
+        paused["block_ran_paused"] = paused["now"]
+        return {"img": args["img"] + 1.0}
+
+    tally.measure(0, {"img": torch.zeros(8, 4)}, block)
+    assert paused["block_ran_paused"] is False, "the block must run inside the recorder, as it always did"
+    assert paused["entered"] >= 1, "the measurement's own allocations must be paused"

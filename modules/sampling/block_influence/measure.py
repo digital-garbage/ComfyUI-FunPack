@@ -1,5 +1,7 @@
 """The probe's arithmetic and its stored profile: no model, no routes."""
 
+import contextlib
+
 import torch
 
 from ..._core import config, dit_hooks, registry
@@ -25,6 +27,17 @@ def set_enabled(on: bool) -> bool:
     SWITCH.parent.mkdir(parents=True, exist_ok=True)
     SWITCH.write_text("1" if on else "0")
     return bool(on)
+
+
+def _aside():
+    """The measurement's own tensors stay out of ComfyUI's memory recorder (aimdo), which assumes every step
+    allocates the same: the running sums grow differently from step to step and broke it ("aimdo memory compile
+    error") whenever no other module had switched the recorder off. The block itself still runs inside it."""
+    try:
+        from comfy.model_prefetch import pause_malloc_graph
+    except ImportError:                          # a ComfyUI without the recorder has nothing to pause
+        return contextlib.nullcontext()
+    return pause_malloc_graph()
 
 
 class Tally:
@@ -58,27 +71,29 @@ class Tally:
         """Run the block and record how far it moved the picture rows."""
         src = args.get("img")
         sel = before = None
-        if torch.is_tensor(src) and src.dim() == 2:
-            span = self._span(args, src)
-            if span is not None:
-                sel = slice(span[0], span[1], max(1, (span[1] - span[0]) // self.max_rows))
-                # A COPY, read before the block runs: a block that writes its residual in
-                # place leaves `src` already holding the result, and every delta is zero.
-                before = src[sel].detach().to(torch.float32, copy=True)
+        with _aside():
+            if torch.is_tensor(src) and src.dim() == 2:
+                span = self._span(args, src)
+                if span is not None:
+                    sel = slice(span[0], span[1], max(1, (span[1] - span[0]) // self.max_rows))
+                    # A COPY, read before the block runs: a block that writes its residual in
+                    # place leaves `src` already holding the result, and every delta is zero.
+                    before = src[sel].detach().to(torch.float32, copy=True)
         out = original(args)
-        if before is not None and torch.is_tensor(out.get("img")) \
-                and out["img"].shape[0] == src.shape[0]:
-            delta = out["img"][sel].detach().float() - before
-            push = delta.norm()
-            self._add("raw", block, push)
-            self._add("ratio", block, push / before.norm().clamp(min=1e-8))
-            last, last_block = self._prev
-            # A block index that does not exceed the last one means a new step began:
-            # pairing across it would compare the end of one step to the start of the next.
-            if last is not None and block > last_block and last.shape == delta.shape:
-                self._add("novelty", block, torch.nn.functional.cosine_similarity(
-                    delta.flatten(), last.flatten(), dim=0))
-            self._prev = (delta, block)
+        with _aside():
+            if before is not None and torch.is_tensor(out.get("img")) \
+                    and out["img"].shape[0] == src.shape[0]:
+                delta = out["img"][sel].detach().float() - before
+                push = delta.norm()
+                self._add("raw", block, push)
+                self._add("ratio", block, push / before.norm().clamp(min=1e-8))
+                last, last_block = self._prev
+                # A block index that does not exceed the last one means a new step began:
+                # pairing across it would compare the end of one step to the start of the next.
+                if last is not None and block > last_block and last.shape == delta.shape:
+                    self._add("novelty", block, torch.nn.functional.cosine_similarity(
+                        delta.flatten(), last.flatten(), dim=0))
+                self._prev = (delta, block)
         return out
 
     def blocks_seen(self) -> int:
