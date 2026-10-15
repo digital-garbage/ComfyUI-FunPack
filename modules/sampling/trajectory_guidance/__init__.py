@@ -29,7 +29,7 @@ SETTINGS = {
     "enabled": {
         "type": "bool", "default": False,
         "label": "Early taste guidance",
-        "hint": "After 10+ ratings, nudges motion and layout too, not just the finish.",
+        "hint": "After 10+ rated clips (some liked, some disliked), nudges motion and layout too, not just the finish.",
     },
     "strength": {
         "type": "float", "default": 0.02, "min": 0.0, "max": 0.2, "step": 0.005,

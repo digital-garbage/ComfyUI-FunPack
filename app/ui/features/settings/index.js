@@ -40,7 +40,7 @@ export default {
     };
     app.pipeline.ensureLoaded().then(offerShot);
     app.pipeline.subscribe(offerShot);
-    add("system", "Updates & ComfyUI", "Server connection, FunPack code updates, pipeline health.", "⟳", "good",
+    add("system", "Updates & ComfyUI", "Update FunPack, switch its branch, roll back, or restart ComfyUI.", "⟳", "good",
       system(app), "System", "update git branch restart rollback");
     add("customnodes", "Custom Nodes", "Install, update and remove ComfyUI node packs.", "⧉", "neutral",
       packs(app), "System", "custom nodes packs install");

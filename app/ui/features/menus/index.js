@@ -66,14 +66,14 @@ export default {
           { id: "delete", label: "Delete Current Project", danger: true, disabled: !p.project }];
       },
       Edit: () => [{ id: "undo", label: "Undo", hint: "⌘Z", disabled: !p.canUndo }, { id: "redo", label: "Redo", hint: "⇧⌘Z", disabled: !p.canRedo }, { separator: true },
-        { id: "add", label: "Add Scene", disabled: !p.project }, { id: "del", label: "Delete Scene", disabled: !sel.ids.length }, { separator: true },
-        { id: "left", label: "Move Clip Left", hint: "timeline cut", disabled: !sel.focus }, { id: "right", label: "Move Clip Right", hint: "timeline cut", disabled: !sel.focus }, { separator: true },
+        { id: "add", label: "Add Scene", disabled: !p.project }, { id: "del", label: sel.ids.length > 1 ? `Delete ${sel.ids.length} Scenes` : "Delete Scene", disabled: !sel.ids.length }, { separator: true },
+        { id: "left", label: "Move Clip Left", hint: "earlier", disabled: !sel.focus }, { id: "right", label: "Move Clip Right", hint: "later", disabled: !sel.focus }, { separator: true },
         { id: "exclude", label: "Toggle Exclude", disabled: !sel.focus }],
       View: () => [{ id: "refresh", label: "Refresh Preview" }, { id: "reset", label: "Reset Layout" }],
       Help: () => {
         const running = Boolean(app.tourOn?.());
         return [...(app.has.has("tour") ? [{ id: "tour", label: running ? "Restart tour" : "Start tour" }, { id: "faq", label: "Skip to FAQ" },
-          ...(running ? [{ id: "exit", label: "Exit tour" }] : []), { separator: true }] : []), { id: "welcome", label: "Welcome tour…" }];
+          ...(running ? [{ id: "exit", label: "Exit tour" }] : []), { separator: true }] : []), { id: "welcome", label: "Welcome window…" }];
       },
     };
     const off = app.on((what) => { if (what === "project.load") actions.load(); });

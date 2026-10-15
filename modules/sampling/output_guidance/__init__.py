@@ -32,7 +32,7 @@ SETTINGS = {
     "enabled": {
         "type": "bool", "default": False,
         "label": "Taste guidance",
-        "hint": "After 10+ ratings, nudges the finish of each clip toward what you rated up.",
+        "hint": "After 10+ rated clips (some liked, some disliked), nudges the finish of each clip toward what you rated up.",
     },
     "strength": {
         "type": "float", "default": 0.02, "min": 0.0, "max": 0.2, "step": 0.005,

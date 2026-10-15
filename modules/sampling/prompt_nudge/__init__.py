@@ -29,7 +29,7 @@ SETTINGS = {
     "enabled": {
         "type": "bool", "default": False,
         "label": "Taste prompt nudge",
-        "hint": "Shifts the prompt toward what your liked prompts share. Free: no extra passes.",
+        "hint": "Shifts the prompt toward what your liked prompts share. Needs 3 liked clips. Free: no extra passes.",
     },
     "strength": {
         "type": "float", "default": 0.02, "min": 0.0, "max": 0.1, "step": 0.005,

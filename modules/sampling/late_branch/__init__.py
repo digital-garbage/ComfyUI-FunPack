@@ -46,8 +46,8 @@ SETTINGS = {
             {"value": "learned", "label": "Learn from ratings"},
             {"value": "manual", "label": "My value"},
         ],
-        "label": "Strength", "ui": "segmented",
-        "hint": "Learn: each rating nudges it toward what you liked.",
+        "label": "How strong", "ui": "segmented",
+        "hint": "Learn from ratings: each rating nudges how much the push is toward what you liked. My value: you set it below.",
         "when": {"enabled": True},
     },
     "strength": {

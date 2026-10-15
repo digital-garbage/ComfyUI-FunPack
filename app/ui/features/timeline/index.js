@@ -80,7 +80,7 @@ const tools = {
       const open = p.project, ids = open ? sel.ids : [];
       put(c.hint.default({ text: `${clock(head.at)} / ${clock(open ? totalSeconds(open) : 0)}` }).node,
         btn("＋ Add", () => { const sc = p.edit((pr) => edits.addScene(pr)); if (sc) p.select(sc.id); }, !open),
-        btn("Split", split, !ids.length, "Split the selected clip at the playhead"),
+        btn("Split", split, !ids.length, "Cut the selected clip at the playhead (in the middle when the playhead is elsewhere)"),
         btn("Remove", () => ids.forEach((id) => p.edit((pr) => edits.removeScene(pr, id))), !ids.length),
         c.chip.neutral({ label: ids.length ? `${ids.length} clip${ids.length > 1 ? "s" : ""} selected` : "no clip selected" }).node);
     };
@@ -97,7 +97,7 @@ const zoom = {
   needs: ["say"],
   setup({ host, app }) {
     const b = (label, what, title) => c.button.sm({ label, tone: "ghost", title, onClick: () => app.say(what) }).node;
-    const keys = c.hint.default({ text: "J K L · S split · I O in/out · + − zoom" }).node;
+    const keys = c.hint.default({ text: "J back 1 s · K pause · L play · S split · I / O clip start / end · + − zoom" }).node;
     keys.classList.add("fp-keyhint");          // the first thing to go when the row runs out of room
     host.append(keys,
       b("−", "zoom.out", "Zoom out"), b("＋", "zoom.in", "Zoom in"), b("fit", "zoom.fit", "Fit the cut to the window"));

@@ -28,8 +28,8 @@ export default {
         c.field.default({ label: "Lead clip (plays in order)", control: c.select.md({ label: "Lead clip", value: lead, options: list.map((s) => ({ value: s.id, label: label(s) })), onChange: (v) => { lead = v; pool.delete(v); draw(); } }) }),
         c.field.default({ label: "Cutaway pool (random draw, in order within each clip)", control: c.checklist.default({ label: "Cutaway pool", values: [...pool],
           items: list.filter((s) => s.id !== lead).map((s) => ({ value: s.id, label: label(s) })), onChange: (v) => { pool.clear(); v.forEach((x) => pool.add(x)); } }) }),
-        c.field.default({ label: "Segment length (frames)", control: c.number.md({ label: "Segment length", value: seg, min: 9, step: 1, precision: 0, onChange: (v) => { seg = v; } }) }),
-        c.field.default({ label: "Acceleration", hint: "1.0 = constant, lower = faster cuts toward the end", control: c.slider.readout({ label: "Acceleration", value: decay, min: 0.5, max: 1, step: 0.05, onCommit: (v) => { decay = v; } }) }),
+        c.field.default({ label: "Segment length (frames)", hint: "How long the lead clip's first piece and each cutaway piece are.", control: c.number.md({ label: "Segment length", value: seg, min: 9, step: 1, precision: 0, onChange: (v) => { seg = v; } }) }),
+        c.field.default({ label: "Acceleration", hint: "1.0 = equal segments; lower = the lead clip's segments get shorter toward the end", control: c.slider.readout({ label: "Acceleration", value: decay, min: 0.5, max: 1, step: 0.05, onCommit: (v) => { decay = v; } }) }),
       ]);
       draw();
       const win = c.modal.generic({ title: "Auto Montage", subtitle: "Cuts the lead clip into shrinking segments and randomly inserts cutaways between them.", size: "md", body });

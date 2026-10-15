@@ -150,10 +150,10 @@ export default {
       if (key === drawn) return;          // progress ticks must not rebuild the buttons
       drawn = key;
       const working = busy || held || g.state().phase === QUEUED || g.state().phase === RUNNING;     // also a run this page did not start
-      const go = c.button.sm({ label: working ? "Generating…" : "▶ Generate", tone: "primary", disabled: working || !open,
+      const go = c.button.sm({ label: working ? "Generating…" : "▶ Generate", tone: "primary", disabled: working || !open, title: "Generate every scene on the timeline, except left-out scenes and video clips. An earlier render of a scene stays as a take.",
         onClick: () => runUnits(unitsOf(p.scenes)) });
-      const one = c.button.sm({ label: picked > 1 ? `Selected (${picked})` : "Selected", disabled: working || !picked, onClick: () => runUnits(unitsOf(pickedScenes())) });
-      const stop = c.button.sm({ label: "■ Stop", tone: "danger", onClick: () => { stopped = true; g.cancel(); } });
+      const one = c.button.sm({ label: picked > 1 ? `Selected (${picked})` : "Selected", title: "Generate only the picked scenes", disabled: working || !picked, onClick: () => runUnits(unitsOf(pickedScenes())) });
+      const stop = c.button.sm({ label: "■ Stop", tone: "danger", title: "Stop the run that is going", onClick: () => { stopped = true; g.cancel(); } });
       stop.node.hidden = !working;
       put(go.node, one.node, stop.node);
     }

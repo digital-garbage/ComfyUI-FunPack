@@ -27,8 +27,8 @@ SETTINGS = {
     "style": {
         "type": "enum", "default": "natural", "label": "Temporal style",
         "options": [{"value": v, "label": v.replace("_", " ")} for v in STYLES],
-        "hint": "How motion and time feel. accelerate/freeze hold the motion, decelerate/rapid make it punchier, "
-                "pulse repeats ease-downs, loop joins the end to the start.",
+        "hint": "How motion feels. natural: unchanged. accelerate, freeze: smoother, held motion (freeze most). decelerate: punchier, bigger steps. "
+                "pulse: repeated punch-then-ease. rapid start/end: punchy at the start and/or end. loop: the end joins the start.",
     },
 }
 

@@ -35,7 +35,7 @@ SETTINGS = {
     "enabled": {
         "type": "bool", "default": False,
         "label": "Taste slider",
-        "hint": "Leans the finish toward what your liked prompts share. Costs 2 extra passes per late step.",
+        "hint": "Leans the finish toward what your liked prompts share. Needs 3 liked clips. Costs 2 extra passes per late step.",
     },
     "strength": {
         "type": "float", "default": 1.0, "min": -3.0, "max": 3.0, "step": 0.25,

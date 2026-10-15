@@ -38,7 +38,7 @@ export const taste = (app) => function mount() {
     page.set([
       error ? c.banner.warn({ text: `Could not read the keys: ${error}` }) : null,
       keys && !keys.length && !error ? c.emptyState.default({ icon: "✦", title: "No keys yet", hint: "A key appears once you rate a render with learning on." }) : null,
-      ...(keys || []).map((name) => c.settingsRow.default({ label: name, hint: "Refinement key", control: c.toolbar.default({ items: [
+      ...(keys || []).map((name) => c.settingsRow.default({ label: name, hint: "Taste key: what your ratings taught under this name", control: c.toolbar.default({ items: [
         c.button.sm({ label: "⤓ Export", tone: "ghost", onClick: () => exportKey(name) }),
         c.button.sm({ label: "Delete", tone: "danger", onClick: () => remove(name) })] }) })),
       c.label.section({ text: "Bring a key here" }),

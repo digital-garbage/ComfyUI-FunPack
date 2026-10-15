@@ -30,7 +30,7 @@ SETTINGS = {
     "enabled": {
         "type": "bool", "default": False,
         "label": "Taste attention",
-        "hint": "Learns from your ratings and shifts what the picture pays attention to.",
+        "hint": "Learns from your ratings and shifts what the picture pays attention to. Does nothing until the Taste key has 2+ liked and 2+ disliked runs.",
     },
     "strength": {
         "type": "float", "default": 2.0, "min": 0.0, "max": 10.0, "step": 0.05,

@@ -61,8 +61,8 @@ SETTINGS = {
     },
     "until_sigma": {
         "type": "float", "default": 0.6, "min": 0.0, "max": 1.0, "step": 0.05,
-        "label": "How long for", "ui": "slider",
-        "hint": "The starting image comes back sharp once the picture settles.",
+        "label": "Sharp again at noise", "ui": "slider",
+        "hint": "The blurred start is used until the noise falls to this level (1 = full noise, 0 = clean). Lower keeps it blurred for longer; 1 never blurs.",
         "when": {"enabled": True},
     },
 }

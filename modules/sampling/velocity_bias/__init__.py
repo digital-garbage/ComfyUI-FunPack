@@ -7,7 +7,7 @@ latent is turned toward the average banked direction, without adding energy (the
 with a cap so it never wipes the current clip. A thin overlay of remembered motion: the best use is
 crossing a remembered action onto a new prompt, and it can re-insert a cut your liked clips had.
 
-"Like the nearest liked prompt" picks one real clip's motion instead of the average of all.
+"Like the nearest liked prompt" picks one real clip's motion instead of the average of all (the average when none is close enough).
 Banked directions are the size of the whole latent, so a clip is only matched with banked clips of the
 same shape (length and frame size); a run of another shape says so and goes unbiased.
 Picture only: sound is never touched.

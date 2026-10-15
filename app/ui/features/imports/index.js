@@ -1,4 +1,4 @@
-// "＋ Import" on the timeline toolbar: a video from the media bin as a clip of its own, or a sound as an audio track at the playhead.
+// "＋ From bin" on the timeline toolbar: a video from the media bin as a clip of its own, or a sound as an audio track at the playhead.
 import { composer as c } from "../../composer/composer.js";
 import { addVideoClip, addAudioTrack } from "../../shell/imports.js";
 import { learn } from "../../shell/bin.js";
@@ -42,7 +42,7 @@ export default {
       if (seconds == null) c.toast.warn({ text: asset.kind === "video" ? "The file's length could not be read; the clip uses the project's length." : "The file's length could not be read: the lane cannot be trimmed, and plays to the end of the file." });
     }
 
-    const menu = c.button.menu({ label: "＋ Import", tone: "ghost", onClick: () => c.menu.dropdown({ anchor: menu, items: [{ id: "video", label: "Video clip…", disabled: !p.project }, { id: "audio", label: "Audio track…", disabled: !p.project }],
+    const menu = c.button.menu({ label: "＋ From bin", tone: "ghost", onClick: () => c.menu.dropdown({ anchor: menu, items: [{ id: "video", label: "Video clip…", disabled: !p.project }, { id: "audio", label: "Audio track…", disabled: !p.project }],
       onPick: (id) => choose(id) }) });
     host.append(menu.node);
 

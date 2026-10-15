@@ -51,14 +51,14 @@ SETTINGS = {
             {"value": "learned", "label": "Learn from ratings"},
             {"value": "manual", "label": "My value"},
         ],
-        "label": "Strength", "ui": "segmented",
-        "hint": "Learn: each rating nudges it toward what you liked.",
+        "label": "How strong", "ui": "segmented",
+        "hint": "Learn from ratings: each rating nudges how much the boost is toward what you liked. My value: you set it below.",
         "when": {"enabled": True},
     },
     "alpha": {
         "type": "float", "default": 2.0, "min": 0.5, "max": 3.0, "step": 0.1,
         "label": "Alpha", "ui": "slider",
-        "hint": "The paper used 1.2-2.5.",
+        "hint": "Higher boosts more. The paper used 1.2-2.5.",
         "when": {"enabled": True, "mode": "manual"},
     },
     "block": {

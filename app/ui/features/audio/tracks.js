@@ -24,7 +24,7 @@ export default {
       let volume = t.volume != null ? t.volume : 1, start = t.start_sec || 0;
       const body = c.region.stack({ gap: "sm", children: [
         c.hint.default({ text: separated ? "This clip's own sound. It follows its clip; slide or trim it on the timeline." : "A sound over the cut. Slide and trim it on the timeline." }),
-        c.field.default({ label: "Volume", control: c.slider.readout({ label: "Volume", value: volume, min: 0, max: 2, step: 0.05, precision: 2, onCommit: (v) => { volume = v; } }) }),
+        c.field.default({ label: "Volume", hint: "1 = as recorded. Above 1 makes the rendered sound louder; the monitor plays at most 1.", control: c.slider.readout({ label: "Volume", value: volume, min: 0, max: 2, step: 0.05, precision: 2, onCommit: (v) => { volume = v; } }) }),
         separated ? null : c.field.default({ label: "Starts at (s)", control: c.number.md({ label: "Starts at", value: start, min: 0, step: 0.1, onChange: (v) => { start = v; } }) }),
       ].filter(Boolean) });
       const win = c.modal.generic({ title: t.label || "Audio track", size: "sm", body });

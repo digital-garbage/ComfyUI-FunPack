@@ -1,4 +1,4 @@
-// The welcome screen: shown the first time this browser opens the app, and from Help ▸ Welcome tour.
+// The welcome screen: shown the first time this browser opens the app, and from Help ▸ Welcome window.
 import { composer as c } from "../../composer/composer.js";
 import { list } from "../../shell/project.js";
 
@@ -38,7 +38,7 @@ export default {
       const recent = app.project.project;
       const done = () => { markSeen(); if (win) win.close("done"); };
       const tiles = c.region.stack({ gap: "sm", children: [
-        card("Update", "Check this install for a newer version", () => app.maintenance.update()), card("Switch branch", "Pick another branch", () => app.maintenance.switchBranch()),
+        card("Update", "Pull the newest version from origin and restart ComfyUI", () => app.maintenance.update()), card("Switch branch", "Pick another branch", () => app.maintenance.switchBranch()),
         card("Restart ComfyUI", "Reload the server without updating", () => app.maintenance.restart()), card("Rollback update", "Undo the last update", () => app.maintenance.rollback())] });
       tiles.node.classList.add("fp-tiles");
       win = c.modal.generic({

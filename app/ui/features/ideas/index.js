@@ -87,7 +87,7 @@ export default {
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
 
     app.editorSettings.push(() => c.region.stack({ gap: "sm", children: [
-      c.toggle.default({ label: "Shortcut ideas", hint: "A 💡 beside prompt boxes lights up when shortcut categories in your library aren't used in the prompt. Click it for insertable ideas; it never pops up on its own.",
+      c.toggle.default({ label: "Shortcut ideas", hint: "Shows a 💡 beside the Story and Prompt boxes while you are in them. Click it for shortcuts to insert: pairings you use, what usually follows the previous shot, and categories this prompt does not use yet.",
         checked: on(), onChange: (v) => { p.setPref("suggestions", v); if (!v) closeBulb(); } })] }));
     return () => { closeBulb(); clearTimeout(hold); document.removeEventListener("focusin", onFocus); document.removeEventListener("focusout", onBlur); window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); };
   },

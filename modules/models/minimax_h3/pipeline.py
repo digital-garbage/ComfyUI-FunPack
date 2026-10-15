@@ -105,7 +105,9 @@ def h3_reference_to_video():
              "length": 124, "ref_image_size": "match"}},
         {"id": "negative", "group": "Preparation", "node": "CLIPTextEncode",
          # H3 samples at CFG 1, where a negative prompt does nothing -- wired
-         # only because FunPackSampler requires SOME conditioning here.
+         # only because FunPackSampler requires SOME conditioning here. The project's Negative
+         # prompt lands here so Shadow negative and Negative erase have words to work from.
+         "roles": [{"at": "project.negative", "input": "text", "label": "Negative prompt"}],
          "inputs": {"clip": ["clip", 0], "text": ""}},
 
         {"id": "settings", "group": "Preparation", "node": "FunPackModifierSettings", "inputs": {"settings": "{}"}},

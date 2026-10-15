@@ -45,7 +45,7 @@ SETTINGS = {
     "enabled": {
         "type": "bool", "default": False,
         "label": "Shot memory",
-        "hint": "Starts from the layout of shots you liked, with new details.",
+        "hint": "Some runs start from the layout of a shot you liked, with new details; ratings tune how often.",
     },
     "mode": {
         "type": "enum", "default": "learned", "options": [
@@ -53,7 +53,7 @@ SETTINGS = {
             {"value": "manual", "label": "My value"},
         ],
         "label": "How much", "ui": "segmented",
-        "hint": "Learn: how strongly to reuse is tuned by your ratings.",
+        "hint": "Learn from ratings: each rating nudges how much is reused toward what you liked. My value: you set it below.",
         "when": {"enabled": True},
     },
     "amount": {

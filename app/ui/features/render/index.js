@@ -29,7 +29,7 @@ export default {
       } catch (err) { tell(err.message); } finally { busy = false; draw(); }
     }
     function draw() {
-      const next = c.button.sm({ label: busy ? "Rendering…" : "⧉ Render", tone: "render", disabled: busy || !p.project, onClick: render }).node;
+      const next = c.button.sm({ label: busy ? "Rendering…" : "⧉ Render", tone: "render", title: "Join the generated clips into one video and save it in the media bin", disabled: busy || !p.project, onClick: render }).node;
       if (node) node.replaceWith(next); else host.append(next);
       node = next;
     }
