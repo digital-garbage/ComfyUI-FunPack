@@ -60,7 +60,7 @@ FROZEN = {
     "FunPackShotCamera": ["text", "settings", "length", "frame_rate", "project"],
     "FunPackEnhancePrompt": [
         "clip", "text", "enabled", "instructions", "max_length", "greedy", "temperature", "top_p",
-        "top_k", "min_p", "repetition_penalty", "presence_penalty", "seed", "thinking", "image", "use_image",
+        "top_k", "min_p", "repetition_penalty", "presence_penalty", "seed", "thinking", "encoder_file", "encoder_family", "image", "use_image",
         "shortcuts", "lorebooks", "reference_intro", "chat",
     ],
     "FunPackApplyPromptMarkup": ["model", "clip", "positive", "latent", "markup"],

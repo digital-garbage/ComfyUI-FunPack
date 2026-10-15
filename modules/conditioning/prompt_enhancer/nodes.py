@@ -8,6 +8,7 @@ import time
 from comfy_api.latest import io
 
 from ..._core import log
+from ...loaders.clip import nodes as clip_nodes
 from . import enhance as en
 
 #: The last runs' rewrites, newest last: what the Composer's readout shows. In
@@ -16,6 +17,17 @@ RUNS = collections.deque(maxlen=20)
 
 
 _MARKUP = re.compile(r"\([^()]*:\s*[\d.]+\)|\[[^\]]*[@|][^\]]*\]")
+
+
+_LOADED = {}      # one entry: the last separate encoder, so a second Generate does not load a 9 GB file again
+
+
+def _own_encoder(file, family):
+    """The encoder the person picked for the enhancer, loaded the way the pipeline's own loader loads one."""
+    if _LOADED.get("key") != (file, family):
+        _LOADED.clear()
+        _LOADED.update(key=(file, family), clip=clip_nodes.FunPackCLIPLoader.execute(clip_name1=file, type=family).args[0])
+    return _LOADED["clip"]
 
 
 def _prompt_id():
@@ -57,6 +69,10 @@ class FunPackEnhancePrompt(io.ComfyNode):
                              tooltip="0 = a fresh rewrite every run. Any other number repeats the same rewrite."),
                 io.Boolean.Input("thinking", default=False, optional=True,
                                  tooltip="Let a thinking model reason first. Its reasoning eats the token budget."),
+                io.Combo.Input("encoder_file", options=[""] + clip_nodes.encoder_files(), default="", optional=True,
+                               tooltip="A text encoder file just for rewriting (Gemma, Qwen...). Empty uses the model's own encoder."),
+                io.Combo.Input("encoder_family", options=clip_nodes.clip_types(), default="stable_diffusion", optional=True,
+                               tooltip="Which family that file is for. Only used with an encoder file."),
                 io.Image.Input("image", optional=True, tooltip="Shown to the model alongside the prompt."),
                 io.Boolean.Input("use_image", default=True, optional=True,
                                  tooltip="Send the picture (when one is connected) to the model."),
@@ -82,7 +98,7 @@ class FunPackEnhancePrompt(io.ComfyNode):
     @classmethod
     def execute(cls, clip, text, enabled=False, instructions="", max_length=400, greedy=False,
                 temperature=0.7, top_p=0.92, top_k=50, min_p=0.05, repetition_penalty=1.3,
-                presence_penalty=0.0, seed=0, thinking=False, image=None, use_image=True, shortcuts="",
+                presence_penalty=0.0, seed=0, thinking=False, encoder_file="", encoder_family="stable_diffusion", image=None, use_image=True, shortcuts="",
                 lorebooks="", reference_intro="", chat="") -> io.NodeOutput:
         if not enabled:
             # still the final prompt, and the Composer's Enhance tab shows what was encoded either way
@@ -93,6 +109,14 @@ class FunPackEnhancePrompt(io.ComfyNode):
             log.once("prompt_enhancer:markup", log.ALERT, "FunPack Prompt enhancer",
                      "the prompt has (word:1.5) / [a@2-4] / [a|b] markup, which the model will "
                      "read as plain text: with the enhancer on, markup does not survive a rewrite")
+        if encoder_file:
+            try:
+                clip = _own_encoder(encoder_file, encoder_family)
+            except Exception as e:                                  # noqa: BLE001 -- the prompt must still go through
+                log.warning("FunPack Prompt enhancer", f"could not load {encoder_file}: {e}; the original prompt is used")
+                RUNS.append({"prompt_id": _prompt_id(), "status": f"could not load the encoder {encoder_file}: {e}", "before": text,
+                             "after": text, "thinking": "", "sent": "", "ok": False})
+                return io.NodeOutput(text, "encoder failed")
         lines = lambda s: [x for x in str(s or "").splitlines() if x.strip()]    # noqa: E731
         groups = en.sources(lines(shortcuts), lines(lorebooks))
         try:

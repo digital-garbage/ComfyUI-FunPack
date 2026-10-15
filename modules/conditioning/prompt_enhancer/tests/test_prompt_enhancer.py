@@ -260,3 +260,13 @@ def test_a_tokenizer_that_reads_the_picture_out_of_kwargs_gets_it():
     clip = Clip("A fox runs.")
     _, status, _ = en().enhance(clip, "fox", image=object())
     assert "takes no picture" not in status and "image" in clip.seen
+
+
+def test_a_picked_encoder_that_will_not_load_keeps_the_prompt_and_says_why(monkeypatch):
+    from modules.conditioning.prompt_enhancer import nodes
+    def boom(file, family):
+        raise RuntimeError("no such family")
+    monkeypatch.setattr(nodes, "_own_encoder", boom)
+    out = nodes.FunPackEnhancePrompt.execute(clip=object(), text="a fox", enabled=True, encoder_file="x.gguf")
+    assert out.args[0] == "a fox" and out.args[1] == "encoder failed"
+    assert "x.gguf" in nodes.RUNS[-1]["status"] and not nodes.RUNS[-1]["ok"]

@@ -9,7 +9,7 @@ const DIALS = [["temperature", 0.7, 0, 2, 0.05, "Higher gives more varied wordin
 
 export function enhance(app, own) {
   const ps = app.pipeline, page = c.region.stack({ gap: "sm" });
-  let defaults = null, last = null, alive = true;
+  let defaults = null, last = null, alive = true, spec = null;
   own(() => { alive = false; });
   const slot = () => (ps.slots() || []).find((s) => s.node === NODE) || null;
   const set = async (name, value) => { const sl = slot(); if (sl) { await ps.save({ inputs: { [sl.id]: { [name]: value } } }); draw(); } };
@@ -22,6 +22,12 @@ export function enhance(app, own) {
     return [c.label.section({ text: "Last run" }), c.hint.default({ text: last.status || "" }), part("Before", last.before),
       c.field.default({ label: "After", control: c.text.sm({ text: last.after || "" }) }), part("Model's thinking", last.thinking), part("Sent to the model (chat run)", last.sent)].filter(Boolean);
   }
+  const choices = (name) => (((spec && spec.widgets) || []).find((w) => w.name === name) || {}).choices || [];
+  const pick = (name, label, first, hint) => {
+    const cur = (slot().inputs || {})[name] || "", list = choices(name);
+    const opts = [...(first ? [{ value: "", label: first }] : []), ...[...list, ...(cur && !list.includes(cur) ? [cur] : [])].map((v) => ({ value: v, label: String(v) }))];
+    return field(label, c.select.md({ label, value: cur, options: opts, onChange: (v) => set(name, v) }), hint);
+  };
   function draw() {
     if (!alive) return;
     const sl = slot();
@@ -33,6 +39,8 @@ export function enhance(app, own) {
       c.hint.default({ text: "A language model rewrites the finished prompt before it is encoded. Off, or if it fails, your prompt is used as typed. (word:1.5) and [a@2-4] markup does not survive a rewrite." }),
       c.toggle.default({ label: "Enhance prompt", checked: on, onChange: (x) => set("enabled", x) }),
       ...(!on ? readout() : [
+        pick("encoder_file", "Encoder", "The model's own encoder", "The text encoder that writes the rewrite. Models like H3's own encoder cannot write prose: pick a chat model such as Gemma 4 here."),
+        ...((val("encoder_file", "") && choices("encoder_family").length) ? [pick("encoder_family", "Encoder family", "", "Which family that file is for.")] : []),
         field("Instructions", c.textarea.md({ label: "Instructions", rows: 6, value: val("instructions", ""), placeholder: defaults ? defaults.instructions : "(built-in instructions)", onCommit: (x) => set("instructions", x) }), "Empty uses the built-in instructions."),
         num("Max tokens", val("max_length", 400), 32, 4096, 8, "max_length", "The longest the rewrite may be."),
         c.toggle.default({ label: "Use the picture", hint: "Sends the scene's picture to the model along with the prompt.", checked: val("use_image", true), onChange: (x) => set("use_image", x) }),
@@ -49,6 +57,7 @@ export function enhance(app, own) {
   }
   draw();
   ps.ensureLoaded().then(draw);
+  app.api.describeNodes([NODE]).then((r) => { spec = (r.nodes || {})[NODE] || null; draw(); }).catch(() => {});
   // Another project's pipeline, or an edit made elsewhere: redraw, but never under a field being typed in.
   const typing = () => page.node.contains(document.activeElement);
   own(ps.subscribe(() => { if (!typing()) draw(); }));
