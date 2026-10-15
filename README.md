@@ -57,7 +57,7 @@ With git, inside your `ComfyUI/custom_nodes` directory:
 
 (The `-b v5` matters: without it git gives you the classic 4.x on `main`.)
 
-`comfy-cli` (`comfy node install ComfyUI-FunPack`) and ComfyUI-Manager install what is published on Comfy Registry. They give you 5.0 only once it is published there: check Settings > About after installing.
+`comfy-cli` (`comfy node install ComfyUI-FunPack`) and ComfyUI-Manager install what is published on Comfy Registry. They give you 5.0 only once it is published there: check Settings > About FunPack after installing.
 
 ## Dependencies
 
