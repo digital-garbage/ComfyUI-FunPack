@@ -3,7 +3,7 @@
 import { composer as c } from "../../composer/composer.js";
 
 /** A `when` clause names sibling settings on the same module that must hold a value for the row to show. */
-export const whenSatisfied = (values, id, when) => !when || Object.entries(when).every(([k, v]) => (values[id] || {})[k] === v);
+export const whenSatisfied = (values, id, when) => !when || Object.entries(when).every(([k, v]) => (Array.isArray(v) ? v : [v]).includes((values[id] || {})[k]));
 
 export function settingRow(id, name, spec, values, onChange) {
   const label = spec.label || name;

@@ -46,3 +46,15 @@ test("build: nothing is built without a rendered lead and a rendered pool; the p
   assert.equal(build(p, { leadId: "L", poolIds: ["N"] }), 0);
   assert.equal(JSON.stringify(p), before);
 });
+
+test("build: deleting a piece leaves no ghost, and an off-grid clip is never read past its end", () => {
+  const p = project();
+  p.scene_renders.L = { media: media("L") };
+  p.scenes[0].frames = 103; p.scenes[0].frames_mode = "timeline";           // 103 is off the 8k+1 grid; its nearest grid length, 105, is past the end
+  build(p, { leadId: "L", poolIds: ["A"], segmentFrames: 33, decay: 1, random: () => 0 });
+  const lastLead = p.scenes.filter((s) => s.reused).filter((_, i) => i % 2 === 0).pop();
+  assert.ok(p.scene_renders[lastLead.id].inSec * 25 + lastLead.frames <= 103, "no piece plays past the clip");
+  const piece = p.scenes.find((s) => s.reused);
+  removeScene(p, piece.id);
+  assert.equal((p.scene_ghosts || []).some((g) => g.id === piece.id), false);
+});

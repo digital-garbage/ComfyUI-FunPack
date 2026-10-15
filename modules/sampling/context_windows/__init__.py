@@ -41,7 +41,7 @@ SETTINGS = {
                "when": {"enabled": True}},
     "overlap": {"type": "int", "default": 40, "min": 0, "max": 512, "step": 8, "label": "Window overlap (frames)",
                 "hint": "Frames neighbouring windows share. More overlap joins smoother but runs slower; it must be shorter than the window.",
-                "when": {"enabled": True}},
+                "when": {"enabled": True, "schedule": [v for v in SCHEDULES if v != "batched"]}},
     "schedule": {"type": "enum", "default": "standard_uniform", "label": "Window schedule",
                  "hint": "standard_uniform: windows shift a little each step. standard_static: the same windows every step. looped_uniform: the end wraps round to the start. batched: back-to-back windows with no overlap.",
                  "options": [{"value": v, "label": v} for v in SCHEDULES], "when": {"enabled": True}},

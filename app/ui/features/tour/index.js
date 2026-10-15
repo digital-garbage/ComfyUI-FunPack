@@ -11,7 +11,7 @@ const STEPS = [
   { at: zone(2), side: "left", title: "Properties", text: "Project settings (size, length, postfix) and the picked scene's prompt, source, references and length." },
   { at: zone(3), side: "top", title: "Timeline", text: "One clip per scene. Drag the edges to trim, press S to split, Space to play. Lanes below carry separated sound." },
   { at: button("◆ Composer"), side: "top", title: "Composer", text: "Write the whole story in one box, cut at the cut word; keep templates, $variables and shortcuts; chat with the prompt enhancer." },
-  { at: button("▶ Generate"), side: "top", title: "Generate", text: "Makes every scene on the timeline, except left-out scenes and video clips; an earlier render of a scene stays as a take. “Generate this scene” in Properties makes just the picked one; rate a result so FunPack learns your taste." },
+  { at: button("▶ Generate"), side: "top", title: "Generate", text: "Makes every scene on the timeline, except left-out scenes, video clips and Auto Montage pieces; an earlier render of a scene stays as a take. “Generate this scene” in Properties makes just the picked one; rate a result so FunPack learns your taste." },
   { at: () => document.querySelector(".cx-frame-main"), side: "bottom", title: "FAQ", text: "Nothing happens? Check the ComfyUI chip at the top right and the Log window. Wrong look? Settings ▸ Appearance. Lost a layout? View ▸ Reset Layout. Lost a project? File ▸ Open recent. That is the tour: Help ▸ Start tour runs it again." },
 ];
 

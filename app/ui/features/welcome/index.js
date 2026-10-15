@@ -38,7 +38,7 @@ export default {
       const recent = app.project.project;
       const done = () => { markSeen(); if (win) win.close("done"); };
       const tiles = c.region.stack({ gap: "sm", children: [
-        card("Update", "Pull the newest version from origin and restart ComfyUI", () => app.maintenance.update()), card("Switch branch", "Pick another branch", () => app.maintenance.switchBranch()),
+        card("Update", "Pull the newest version from origin; ComfyUI restarts if it changed and nothing is generating", () => app.maintenance.update()), card("Switch branch", "Pick another branch", () => app.maintenance.switchBranch()),
         card("Restart ComfyUI", "Reload the server without updating", () => app.maintenance.restart()), card("Rollback update", "Undo the last update", () => app.maintenance.rollback())] });
       tiles.node.classList.add("fp-tiles");
       win = c.modal.generic({

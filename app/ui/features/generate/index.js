@@ -135,7 +135,7 @@ export default {
           if (kept === false) tell(`Scene ${snap.scenes.findIndex((s) => s.id === root.id) + 1} was removed while it was being made, so its result is not on the timeline. It is in ComfyUI's output folder as ${images[images.length - 1].filename}.`);
           snap.scene_renders = structuredClone(p.project.scene_renders || {});                       // ...and in what the next shot reads
         }
-        if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out or is a video clip.");
+        if (!made && !stopped && !said) tell("Nothing to generate: every scene is left out, a video clip or an Auto Montage piece.");
       } finally { busy = false; draw(); }
     }
     app.runner.units = (units, times) => runUnits(units, times);
@@ -150,7 +150,7 @@ export default {
       if (key === drawn) return;          // progress ticks must not rebuild the buttons
       drawn = key;
       const working = busy || held || g.state().phase === QUEUED || g.state().phase === RUNNING;     // also a run this page did not start
-      const go = c.button.sm({ label: working ? "Generating…" : "▶ Generate", tone: "primary", disabled: working || !open, title: "Generate every scene on the timeline, except left-out scenes and video clips. An earlier render of a scene stays as a take.",
+      const go = c.button.sm({ label: working ? "Generating…" : "▶ Generate", tone: "primary", disabled: working || !open, title: "Generate every scene on the timeline, except left-out scenes, video clips and Auto Montage pieces. An earlier render of a scene stays as a take.",
         onClick: () => runUnits(unitsOf(p.scenes)) });
       const one = c.button.sm({ label: picked > 1 ? `Selected (${picked})` : "Selected", title: "Generate only the picked scenes", disabled: working || !picked, onClick: () => runUnits(unitsOf(pickedScenes())) });
       const stop = c.button.sm({ label: "■ Stop", tone: "danger", title: "Stop the run that is going", onClick: () => { stopped = true; g.cancel(); } });

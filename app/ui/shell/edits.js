@@ -22,6 +22,7 @@ function ghostOrDrop(p, sc, afterId, pending) {
   const renders = p.scene_renders || (p.scene_renders = {});
   const r = renders[sc.id];
   delete renders[sc.id];
+  if (sc.reused) return;                                   // a montage piece is a copy: nothing to regenerate, so nothing to leave behind
   p.scene_ghosts = (p.scene_ghosts || []).filter((g) => g.id !== sc.id);
   if (!(r && r.media) && !pending) return;
   p.scene_ghosts.push({

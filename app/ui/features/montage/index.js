@@ -23,7 +23,7 @@ export default {
       let lead = (picked[0] || list[0]).id;
       const pool = new Set(picked.slice(1).map((s) => s.id));
       const leadFrames = Math.round(playable(picked[0] || list[0], p.project).total * playable(picked[0] || list[0], p.project).fps);
-      let seg = Math.max(9, snapFrames(leadFrames / 4, "floor")), decay = 0.85;      // about four lead pieces, not one lump
+      let seg = Math.max(9, snapFrames(leadFrames / 2.5, "floor")), decay = 0.85;      // a handful of lead pieces, not one lump and not a flicker
       const label = (s) => `${snippet(s)} — ${Math.round(playable(s, p.project).total * playable(s, p.project).fps)}f`;
       const body = c.region.stack({ gap: "md" });
       const draw = () => body.set([

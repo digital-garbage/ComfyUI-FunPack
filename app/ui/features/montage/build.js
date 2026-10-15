@@ -33,9 +33,9 @@ export function build(p, { leadId, poolIds, segmentFrames = 100, decay = 1, rand
   const pool = (poolIds || []).map(find).filter((s) => s && playable(s, p));
   if (!leadSrc || !pool.length) return 0;
   const base = Math.max(9, Math.round(segmentFrames)), dk = Math.min(1, Math.max(0.3, decay));
-  const leadSegs = chop(snapFrames(leadSrc.total * leadSrc.fps), base, dk);
+  const leadSegs = chop(snapFrames(leadSrc.total * leadSrc.fps, "floor"), base, dk);
   // Each pool clip is its own queue read front to back: chance only picks WHICH clip to draw from next.
-  const queues = pool.map((sc) => ({ sc, src: playable(sc, p), cursor: 0, chunks: chop(snapFrames(playable(sc, p).total * playable(sc, p).fps), base, 1) })).filter((q) => q.chunks.length);
+  const queues = pool.map((sc) => ({ sc, src: playable(sc, p), cursor: 0, chunks: chop(snapFrames(playable(sc, p).total * playable(sc, p).fps, "floor"), base, 1) })).filter((q) => q.chunks.length);
   if (!leadSegs.length || !queues.length) return 0;
   const next = () => {
     let open = queues.filter((q) => q.cursor < q.chunks.length);
