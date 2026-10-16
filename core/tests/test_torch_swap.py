@@ -20,7 +20,7 @@ def fake(monkeypatch):
 
     def pip(args, timeout):
         state["calls"].append(args)
-        out = "torch==2.10.0+cu128\nnumpy==2.1.0\nnvidia-cublas-cu12==12.8\ntriton==3.6.0\nfoo @ file:///x\n" if args[0] == "freeze" else ""
+        out = "torch==2.10.0+cu128\nnumpy==2.1.0\nnvidia-cublas-cu12==12.8\ncuda-bindings==12.9\ntriton==3.6.0\nfoo @ file:///x\n" if args[0] == "freeze" else ""
         return subprocess.CompletedProcess(args, state["codes"].get(args[0], 0), out, "pip said no")
 
     monkeypatch.setattr(torch_swap, "_pip", pip)
@@ -156,3 +156,21 @@ def test_a_torch_without_cuda_is_refused_before_any_download(fake, monkeypatch):
     monkeypatch.setattr(torch.version, "cuda", None)
     r = torch_swap.swap()
     assert r["installed"] is False and "no CUDA" in r["message"] and fake["calls"] == []
+
+
+def test_a_pin_pip_names_in_a_conflict_is_released_and_the_download_retried(fake, monkeypatch):
+    seen = []
+    real = fake["calls"]
+    monkeypatch.setattr(torch_swap, "_constraints", lambda path: open(path, "w").write("numpy==2.1.0\nscipy==1.0\n"))
+    pip = torch_swap._pip
+
+    def flaky(args, timeout):
+        if args[0] == "download":
+            c = open(args[args.index("-c") + 1]).read()
+            seen.append(c)
+            if "scipy" in c:
+                return subprocess.CompletedProcess(args, 1, "", "Conflict: scipy 1.0 depends on x")
+        return pip(args, timeout)
+    monkeypatch.setattr(torch_swap, "_pip", flaky)
+    r = torch_swap.swap()
+    assert r["installed"] is True and len(seen) == 2 and "scipy" not in seen[1] and "numpy" in seen[1]

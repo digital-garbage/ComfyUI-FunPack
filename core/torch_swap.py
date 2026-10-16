@@ -54,11 +54,23 @@ def _constraints(path):
     """Everything else stays at the version it is now. torch's own family and the CUDA runtime
     wheels are left free: they are what changes."""
     proc = _pip(["freeze", "--exclude-editable"], 120)
-    free = PACKAGES + ("triton",)
+    free = PACKAGES + ("triton", "nvidia-", "cuda-", "cuda_")   # cuda-bindings & co are CUDA-major specific
     lines = [l for l in proc.stdout.splitlines()
-             if "==" in l and not l.split("==")[0].lower().startswith(free + ("nvidia-",))]
+             if "==" in l and not l.split("==")[0].lower().startswith(free)]
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def _release(path, output):
+    """Unpin the constrained packages pip names in its conflict report, so the solver can move
+    them to what the new torch needs. -> whether anything was freed (else a retry is pointless)."""
+    text = output.lower().replace("_", "-")
+    with open(path) as f:
+        lines = f.read().splitlines()
+    kept = [l for l in lines if l.split("==")[0].lower().replace("_", "-") not in text]
+    with open(path, "w") as f:
+        f.write("\n".join(kept) + "\n")
+    return len(kept) < len(lines)
 
 
 def _imports(names):
@@ -92,8 +104,11 @@ def swap(timeout=3600):
         _constraints(constraints)
         new = _pins(have, TARGET)
         step = f"Downloading {', '.join(new)} (several GB)…"
-        proc = _pip(["download", "-d", f"{work}/wheels", "--index-url", INDEX.format(tag=TARGET),
-                     "--extra-index-url", PYPI, "-c", constraints, *new], timeout)
+        for _ in range(4):
+            proc = _pip(["download", "-d", f"{work}/wheels", "--index-url", INDEX.format(tag=TARGET),
+                         "--extra-index-url", PYPI, "-c", constraints, *new], timeout)
+            if proc.returncode == 0 or not _release(constraints, (proc.stderr or "") + (proc.stdout or "")):
+                break
         if proc.returncode != 0:
             return {"installed": False, "message": f"The download failed, so nothing was changed.\n{_tail(proc)}"}
         step = "Installing the downloaded build…"
