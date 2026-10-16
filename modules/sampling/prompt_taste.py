@@ -11,13 +11,14 @@ MIN_LIKED = 3               # v4: direction_count >= 3
 
 def direction(rows, current=None, similar=False):
     """-> (unit vector | None, how it was found)."""
-    pooled = [(r["rows"][NAME].float(), r["reward"]) for r in rows if NAME in r["rows"]]
+    pooled = [(r["rows"][NAME].detach().float().cpu(), r["reward"]) for r in rows if NAME in r["rows"]]
     liked = [p for p, w in pooled if w > 0]
     if len(liked) < MIN_LIKED:
         return None, f"needs {MIN_LIKED} liked clips ({len(liked)} so far)"
     mean = torch.stack([p for p, _w in pooled]).mean(0)
     if similar and current is not None:
-        near = sorted(((float(F.cosine_similarity(p, current.float(), dim=0)), p) for p in liked),
+        current = current.detach().float().cpu()      # the stored rows live on the CPU; the live prompt is on the GPU
+        near = sorted(((float(F.cosine_similarity(p, current, dim=0)), p) for p in liked),
                       key=lambda s: -s[0])[:NEAREST]
         near = [(s, p) for s, p in near if s >= MIN_SIM]
         if near:
